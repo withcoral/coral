@@ -6,22 +6,11 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
-use crate::testing::{Answer, ScriptedCoral};
-
-const TOKEN: &str = "test-run-executor-token";
+use crate::testing::{Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, start_run_executor};
 
 /// Starts a Run Executor that holds eight Runs, until the sender drops.
 fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<()> {
-    let config = RunExecutorConfig {
-        coral_address: coral.address().parse().unwrap(),
-        token: Token::new(TOKEN.to_owned()).unwrap(),
-        max_runs_held: 8,
-    };
-    let (retire, retired) = oneshot::channel::<()>();
-    tokio::spawn(run(config, health, async {
-        drop(retired.await);
-    }));
-    retire
+    start_run_executor(coral, 8, RunLimits::default(), health)
 }
 
 #[tokio::test]
@@ -54,8 +43,8 @@ async fn hello_carries_the_token_and_a_move_reopens_on_a_fresh_connection() {
     }
     for call in calls {
         assert_eq!(
-            call.authorization.as_deref(),
-            Some("Bearer test-run-executor-token")
+            call.authorization,
+            Some(format!("Bearer {RUN_EXECUTOR_TOKEN}"))
         );
         assert_eq!(
             call.hello,

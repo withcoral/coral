@@ -131,6 +131,516 @@ pub struct Compiled {
     #[prost(uint64, tag = "1")]
     pub number: u64,
 }
+/// A message the Run Executor sends on a Run stream.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RunRequest {
+    /// The message.
+    #[prost(oneof = "run_request::Message", tags = "1, 2, 3")]
+    pub message: ::core::option::Option<run_request::Message>,
+}
+/// Nested message and enum types in `RunRequest`.
+pub mod run_request {
+    /// The message.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Message {
+        /// The first message on every Run stream.
+        #[prost(message, tag = "1")]
+        Open(super::Open),
+        /// The package is loaded into a fresh isolate.
+        #[prost(message, tag = "2")]
+        Loaded(super::Loaded),
+        /// One of the Program's requests.
+        #[prost(message, tag = "3")]
+        Request(super::Request),
+    }
+}
+/// A message Coral sends on a Run stream.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunResponse {
+    /// The message.
+    #[prost(oneof = "run_response::Message", tags = "1, 2, 3, 4, 5, 6")]
+    pub message: ::core::option::Option<run_response::Message>,
+}
+/// Nested message and enum types in `RunResponse`.
+pub mod run_response {
+    /// The message.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Message {
+        /// The Run's package, the answer to Open for a held Run not started.
+        #[prost(message, tag = "1")]
+        Package(super::Package),
+        /// The Run started: the Program may run.
+        #[prost(message, tag = "2")]
+        Started(super::Started),
+        /// The highest request number committed.
+        #[prost(message, tag = "3")]
+        Committed(super::Committed),
+        /// The answer to one Invoke.
+        #[prost(message, tag = "4")]
+        ToolResult(super::ToolResult),
+        /// A recorded termination: stop the Program.
+        #[prost(message, tag = "5")]
+        Terminate(super::Terminate),
+        /// Coral's last message on the stream.
+        #[prost(message, tag = "6")]
+        Ended(super::Ended),
+    }
+}
+/// Opens a Run stream for one taken Run.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Open {
+    /// The Run's id.
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    /// The execution claim it was taken with.
+    #[prost(string, tag = "2")]
+    pub claim_id: ::prost::alloc::string::String,
+    /// The Run Executor's protocol level.
+    #[prost(uint32, tag = "3")]
+    pub protocol_level: u32,
+}
+/// What a Run Executor needs to load and run one Program.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Package {
+    /// The emitted JavaScript.
+    #[prost(string, tag = "1")]
+    pub script: ::prost::alloc::string::String,
+    /// The authored source map of the script.
+    #[prost(string, tag = "2")]
+    pub source_map: ::prost::alloc::string::String,
+    /// The SHA-256 digest of the script and the source map, as
+    /// `coral_run_executor::package_digest` computes it.
+    #[prost(bytes = "vec", tag = "3")]
+    pub sha256: ::prost::alloc::vec::Vec<u8>,
+    /// The Run's value limits.
+    #[prost(message, optional, tag = "4")]
+    pub value_limits: ::core::option::Option<ValueLimits>,
+    /// The Saved Function snapshots linked into the script.
+    #[prost(message, repeated, tag = "5")]
+    pub linked_snapshots: ::prost::alloc::vec::Vec<LinkedSnapshot>,
+    /// Coral's protocol level.
+    #[prost(uint32, tag = "6")]
+    pub protocol_level: u32,
+    /// The Run's W3C `traceparent`. Empty: none.
+    #[prost(string, tag = "7")]
+    pub traceparent: ::prost::alloc::string::String,
+}
+/// The value limits a Run accepted, in bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ValueLimits {
+    /// The most decoded bytes per Binary Value.
+    #[prost(uint64, tag = "1")]
+    pub binary_bytes: u64,
+    /// The most encoded JSON bytes at a host crossing.
+    #[prost(uint64, tag = "2")]
+    pub host_bytes: u64,
+    /// The most bytes per upstream request or result.
+    #[prost(uint64, tag = "3")]
+    pub upstream_bytes: u64,
+    /// The Run Output Budget.
+    #[prost(uint64, tag = "4")]
+    pub run_output_bytes: u64,
+}
+/// One Saved Function snapshot linked into a package.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LinkedSnapshot {
+    /// Its path relative to `coral.functions`, such as `debug.fetch`.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// The snapshot's id, which names it in a source location.
+    #[prost(string, tag = "2")]
+    pub saved_function_id: ::prost::alloc::string::String,
+}
+/// The package is loaded; the Run Executor waits for Started.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Loaded {}
+/// The Run started.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Started {
+    /// The time until the Run's deadline, in milliseconds, counted from this
+    /// message.
+    #[prost(uint64, tag = "1")]
+    pub deadline_ms: u64,
+    /// The Run CPU Budget, in milliseconds. Unset: none.
+    #[prost(uint64, optional, tag = "2")]
+    pub cpu_budget_ms: ::core::option::Option<u64>,
+}
+/// The committed watermark.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Committed {
+    /// The highest request number committed.
+    #[prost(uint64, tag = "1")]
+    pub request_number: u64,
+}
+/// One of the Program's requests, numbered from one per Run in the
+/// Program's order.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Request {
+    /// The request's number.
+    #[prost(uint64, tag = "1")]
+    pub number: u64,
+    /// What the Program asks.
+    #[prost(oneof = "request::Kind", tags = "2, 3, 4, 5")]
+    pub kind: ::core::option::Option<request::Kind>,
+}
+/// Nested message and enum types in `Request`.
+pub mod request {
+    /// What the Program asks.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Kind {
+        /// A Tool Invocation, which ToolResult answers.
+        #[prost(message, tag = "2")]
+        Invoke(super::Invoke),
+        /// A Program Emission.
+        #[prost(message, tag = "3")]
+        Emit(super::Emit),
+        /// A Program Log.
+        #[prost(message, tag = "4")]
+        Log(super::Log),
+        /// The Program's end, the last request.
+        #[prost(message, tag = "5")]
+        Finish(super::Finish),
+    }
+}
+/// One Tool Invocation.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Invoke {
+    /// The Tool's complete Call Path.
+    #[prost(string, tag = "1")]
+    pub call_path: ::prost::alloc::string::String,
+    /// The arguments, as native JSON.
+    #[prost(string, tag = "2")]
+    pub arguments_json: ::prost::alloc::string::String,
+    /// The authored call site. Unset: none.
+    #[prost(message, optional, tag = "3")]
+    pub location: ::core::option::Option<Location>,
+}
+/// One Program Emission.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Emit {
+    /// The value, as native JSON.
+    #[prost(string, tag = "1")]
+    pub value_json: ::prost::alloc::string::String,
+    /// The authored call site. Unset: none.
+    #[prost(message, optional, tag = "2")]
+    pub location: ::core::option::Option<Location>,
+}
+/// One Program Log.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Log {
+    /// Its level.
+    #[prost(enumeration = "LogLevel", tag = "1")]
+    pub level: i32,
+    /// Its message.
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    /// The authored call site. Unset: none.
+    #[prost(message, optional, tag = "3")]
+    pub location: ::core::option::Option<Location>,
+}
+/// An authored source location.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Location {
+    /// The Saved Function snapshot that holds it. Empty: the Program body.
+    #[prost(string, tag = "1")]
+    pub saved_function_id: ::prost::alloc::string::String,
+    /// The one-based line.
+    #[prost(uint32, tag = "2")]
+    pub line: u32,
+    /// The one-based column, in UTF-16 code units.
+    #[prost(uint32, tag = "3")]
+    pub column: u32,
+}
+/// How the Program ended.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Finish {
+    /// The completion.
+    #[prost(oneof = "finish::Completion", tags = "1, 2, 3")]
+    pub completion: ::core::option::Option<finish::Completion>,
+}
+/// Nested message and enum types in `Finish`.
+pub mod finish {
+    /// The completion.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Completion {
+        /// The Final Value, as native JSON.
+        #[prost(string, tag = "1")]
+        ValueJson(::prost::alloc::string::String),
+        /// A failure.
+        #[prost(message, tag = "2")]
+        Failure(super::Failure),
+        /// An end that carries nothing more.
+        #[prost(enumeration = "super::FinishEnd", tag = "3")]
+        End(i32),
+    }
+}
+/// A Program failure.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Failure {
+    /// The Run failure code, such as `program_rejected`.
+    #[prost(string, tag = "1")]
+    pub code: ::prost::alloc::string::String,
+    /// Its safe message.
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    /// The Program error, as JSON. Empty: none.
+    #[prost(string, tag = "3")]
+    pub error_json: ::prost::alloc::string::String,
+}
+/// The answer to one Invoke, at Applied.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ToolResult {
+    /// The Invoke's request number.
+    #[prost(uint64, tag = "1")]
+    pub number: u64,
+    /// The Run Output Budget bytes Coral counted for the result.
+    #[prost(uint64, tag = "2")]
+    pub bytes: u64,
+    /// The outcome.
+    #[prost(oneof = "tool_result::Outcome", tags = "3, 4, 5, 6")]
+    pub outcome: ::core::option::Option<tool_result::Outcome>,
+}
+/// Nested message and enum types in `ToolResult`.
+pub mod tool_result {
+    /// The outcome.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Outcome {
+        /// The Tool Result, as native JSON.
+        #[prost(string, tag = "3")]
+        ResultJson(::prost::alloc::string::String),
+        /// A Coral Failure.
+        #[prost(message, tag = "4")]
+        Rejection(super::Rejection),
+        /// A complete upstream outcome that is not a declared success.
+        #[prost(message, tag = "5")]
+        UpstreamError(super::UpstreamError),
+        /// A host failure: the Program stops without a catchable result.
+        #[prost(message, tag = "6")]
+        Fatal(super::Fatal),
+    }
+}
+/// A Coral Failure the Program catches as a `ToolError`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Rejection {
+    /// Its stable code.
+    #[prost(string, tag = "1")]
+    pub code: ::prost::alloc::string::String,
+    /// Its safe message.
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    /// The lowercase W3C trace id it names. Empty: none.
+    #[prost(string, tag = "3")]
+    pub trace_id: ::prost::alloc::string::String,
+    /// Call Paths near the one named, nearest first.
+    #[prost(string, repeated, tag = "4")]
+    pub suggestions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// An upstream outcome the Program catches as a `ToolError`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpstreamError {
+    /// Its stable code.
+    #[prost(string, tag = "1")]
+    pub code: ::prost::alloc::string::String,
+    /// Its safe message.
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    /// The encoded Tool Result the Program does not receive.
+    #[prost(string, tag = "3")]
+    pub outcome_json: ::prost::alloc::string::String,
+}
+/// A host failure.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Fatal {}
+/// A recorded termination.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Terminate {
+    /// Why the Run ends.
+    #[prost(enumeration = "TerminateReason", tag = "1")]
+    pub reason: i32,
+}
+/// How the Run ended, or that the Run Executor does not hold it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Ended {
+    /// The end.
+    #[prost(enumeration = "RunEnd", tag = "1")]
+    pub end: i32,
+}
+/// A Program Log's level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LogLevel {
+    /// Not set; breaks the protocol.
+    Unspecified = 0,
+    /// `console.debug`.
+    Debug = 1,
+    /// `console.info` or `console.log`.
+    Info = 2,
+    /// `console.warn`.
+    Warn = 3,
+    /// `console.error`.
+    Error = 4,
+}
+impl LogLevel {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LOG_LEVEL_UNSPECIFIED",
+            Self::Debug => "LOG_LEVEL_DEBUG",
+            Self::Info => "LOG_LEVEL_INFO",
+            Self::Warn => "LOG_LEVEL_WARN",
+            Self::Error => "LOG_LEVEL_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LOG_LEVEL_UNSPECIFIED" => Some(Self::Unspecified),
+            "LOG_LEVEL_DEBUG" => Some(Self::Debug),
+            "LOG_LEVEL_INFO" => Some(Self::Info),
+            "LOG_LEVEL_WARN" => Some(Self::Warn),
+            "LOG_LEVEL_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+/// An end of a Program that carries nothing more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FinishEnd {
+    /// Not set; breaks the protocol.
+    Unspecified = 0,
+    /// The Program returned `undefined`: an absent Final Value.
+    Absent = 1,
+    /// The host stopped the Program.
+    HostTerminated = 2,
+    /// The isolate reached its heap limit.
+    MemoryLimit = 3,
+    /// The Program used its Run CPU Budget.
+    CpuBudget = 4,
+    /// The Program's output exceeded the Run Output Budget.
+    OutputBudget = 5,
+    /// The Run Executor ended the Program at the Run's deadline.
+    DeadlineReached = 6,
+}
+impl FinishEnd {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "FINISH_END_UNSPECIFIED",
+            Self::Absent => "FINISH_END_ABSENT",
+            Self::HostTerminated => "FINISH_END_HOST_TERMINATED",
+            Self::MemoryLimit => "FINISH_END_MEMORY_LIMIT",
+            Self::CpuBudget => "FINISH_END_CPU_BUDGET",
+            Self::OutputBudget => "FINISH_END_OUTPUT_BUDGET",
+            Self::DeadlineReached => "FINISH_END_DEADLINE_REACHED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FINISH_END_UNSPECIFIED" => Some(Self::Unspecified),
+            "FINISH_END_ABSENT" => Some(Self::Absent),
+            "FINISH_END_HOST_TERMINATED" => Some(Self::HostTerminated),
+            "FINISH_END_MEMORY_LIMIT" => Some(Self::MemoryLimit),
+            "FINISH_END_CPU_BUDGET" => Some(Self::CpuBudget),
+            "FINISH_END_OUTPUT_BUDGET" => Some(Self::OutputBudget),
+            "FINISH_END_DEADLINE_REACHED" => Some(Self::DeadlineReached),
+            _ => None,
+        }
+    }
+}
+/// Why a recorded termination ends a Run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TerminateReason {
+    /// Not set.
+    Unspecified = 0,
+    /// A cancellation won.
+    Canceled = 1,
+    /// The Run's deadline won.
+    TimedOut = 2,
+    /// The Run was interrupted.
+    Interrupted = 3,
+}
+impl TerminateReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TERMINATE_REASON_UNSPECIFIED",
+            Self::Canceled => "TERMINATE_REASON_CANCELED",
+            Self::TimedOut => "TERMINATE_REASON_TIMED_OUT",
+            Self::Interrupted => "TERMINATE_REASON_INTERRUPTED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TERMINATE_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "TERMINATE_REASON_CANCELED" => Some(Self::Canceled),
+            "TERMINATE_REASON_TIMED_OUT" => Some(Self::TimedOut),
+            "TERMINATE_REASON_INTERRUPTED" => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
+}
+/// A Run's end on a Run stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RunEnd {
+    /// Not set.
+    Unspecified = 0,
+    /// The Run succeeded.
+    Succeeded = 1,
+    /// The Run failed.
+    Failed = 2,
+    /// The Run was canceled.
+    Canceled = 3,
+    /// The Run timed out.
+    TimedOut = 4,
+    /// The Run was interrupted.
+    Interrupted = 5,
+    /// The claim does not match: the Run Executor does not hold the Run.
+    NotHeld = 6,
+}
+impl RunEnd {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RUN_END_UNSPECIFIED",
+            Self::Succeeded => "RUN_END_SUCCEEDED",
+            Self::Failed => "RUN_END_FAILED",
+            Self::Canceled => "RUN_END_CANCELED",
+            Self::TimedOut => "RUN_END_TIMED_OUT",
+            Self::Interrupted => "RUN_END_INTERRUPTED",
+            Self::NotHeld => "RUN_END_NOT_HELD",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RUN_END_UNSPECIFIED" => Some(Self::Unspecified),
+            "RUN_END_SUCCEEDED" => Some(Self::Succeeded),
+            "RUN_END_FAILED" => Some(Self::Failed),
+            "RUN_END_CANCELED" => Some(Self::Canceled),
+            "RUN_END_TIMED_OUT" => Some(Self::TimedOut),
+            "RUN_END_INTERRUPTED" => Some(Self::Interrupted),
+            "RUN_END_NOT_HELD" => Some(Self::NotHeld),
+            _ => None,
+        }
+    }
+}
 /// Generated client implementations.
 pub mod link_service_client {
     #![allow(
@@ -250,6 +760,32 @@ pub mod link_service_client {
                 .insert(GrpcMethod::new("coral.run_executor.v1.LinkService", "Pull"));
             self.inner.streaming(req, path, codec).await
         }
+        /// A Run stream: one per Run the Run Executor holds, on its current
+        /// connection. The Run Executor opens it with Open.
+        pub async fn run(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::RunRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::RunResponse>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.run_executor.v1.LinkService/Run",
+            );
+            let mut req = request.into_streaming_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("coral.run_executor.v1.LinkService", "Run"));
+            self.inner.streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -278,6 +814,18 @@ pub(crate) mod link_service_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::PullRequest>>,
         ) -> std::result::Result<tonic::Response<Self::PullStream>, tonic::Status>;
+        /// Server streaming response type for the Run method.
+        type RunStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::RunResponse, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// A Run stream: one per Run the Run Executor holds, on its current
+        /// connection. The Run Executor opens it with Open.
+        async fn run(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::RunRequest>>,
+        ) -> std::result::Result<tonic::Response<Self::RunStream>, tonic::Status>;
     }
     /// The link between a Run Executor and Coral. Coral serves it, and the Run
     /// Executor dials it; the Run Executor serves nothing.
@@ -388,6 +936,51 @@ pub(crate) mod link_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PullSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.run_executor.v1.LinkService/Run" => {
+                    #[allow(non_camel_case_types)]
+                    struct RunSvc<T: LinkService>(pub Arc<T>);
+                    impl<
+                        T: LinkService,
+                    > tonic::server::StreamingService<super::RunRequest> for RunSvc<T> {
+                        type Response = super::RunResponse;
+                        type ResponseStream = T::RunStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<tonic::Streaming<super::RunRequest>>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as LinkService>::run(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RunSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

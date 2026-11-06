@@ -4,25 +4,40 @@
 use std::future::{Future, pending};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use coral_credentials::Secret;
 use coral_telemetry::safe;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::http::Uri;
 use tonic::metadata::AsciiMetadataValue;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::server::TcpIncoming;
-use tonic::transport::{Endpoint, Server};
+use tonic::transport::{Channel, Endpoint, Server};
 use tonic_health::ServingStatus;
 
+use crate::run::{self, RunLimits};
 use crate::wire::v1::link_service_client::LinkServiceClient;
-use crate::wire::v1::{Hello, Limits, PullRequest, PullResponse, pull_request, pull_response};
+use crate::wire::v1::{
+    Hello, Limits, PullRequest, PullResponse, Room, pull_request, pull_response,
+};
+
+/// A client of Coral on one connection: every call carries the bearer
+/// credential.
+pub(crate) type Client = LinkServiceClient<InterceptedService<Channel, Bearer>>;
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
 pub const PROTOCOL_LEVEL: u32 = 1;
+
+/// Whether a peer at `level` may share a stream: its level equals this one
+/// or differs by one.
+pub(crate) const fn compatible(level: u32) -> bool {
+    level.abs_diff(PROTOCOL_LEVEL) <= 1
+}
 
 /// The longest Run this Run Executor holds: the Run deadline's maximum.
 const MAX_RUN_DURATION_SECONDS: u32 = 900;
@@ -48,6 +63,8 @@ pub struct RunExecutorConfig {
     pub token: Token,
     /// The most Runs it holds at once: its free room while it holds none.
     pub max_runs_held: u32,
+    /// What each Run runs within.
+    pub run_limits: RunLimits,
 }
 
 /// Holds the link to Coral until `retire` completes. Serves the gRPC health
@@ -131,6 +148,22 @@ impl Token {
     }
 }
 
+/// Puts the token on every call.
+#[derive(Clone)]
+pub(crate) struct Bearer(Token);
+
+impl tonic::service::Interceptor for Bearer {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        request
+            .metadata_mut()
+            .insert("authorization", self.0.bearer()?);
+        Ok(request)
+    }
+}
+
 /// How a pull stream ended.
 enum End {
     /// Coral ended its side cleanly after Welcome, to move the stream (the
@@ -146,6 +179,11 @@ struct Link {
     hello: Hello,
     /// Whether a pull stream Coral welcomed is open.
     linked: watch::Sender<bool>,
+    run_limits: RunLimits,
+    /// The Runs held, each from its `Taken` to its stream's end.
+    held: Arc<AtomicU32>,
+    /// A held Run's stream ended, so a unit freed.
+    freed: Arc<Notify>,
 }
 
 impl Link {
@@ -168,7 +206,18 @@ impl Link {
             token: config.token,
             hello,
             linked,
+            run_limits: config.run_limits,
+            held: Arc::default(),
+            freed: Arc::default(),
         }
+    }
+
+    /// The units of room free. One `Taken` that crossed a report of none
+    /// holds a Run above the room.
+    fn free(&self) -> u32 {
+        self.hello
+            .free
+            .saturating_sub(self.held.load(Ordering::SeqCst))
     }
 
     /// Opens the pull stream again each time it ends, forever.
@@ -194,20 +243,15 @@ impl Link {
         let Ok(channel) = self.endpoint.connect().await else {
             return End::Failed;
         };
-        let token = self.token.clone();
-        let mut client =
-            LinkServiceClient::with_interceptor(channel, move |mut request: tonic::Request<()>| {
-                request
-                    .metadata_mut()
-                    .insert("authorization", token.bearer()?);
-                Ok(request)
-            });
+        let mut client = LinkServiceClient::with_interceptor(channel, Bearer(self.token.clone()));
         // The Run Executor's side of the stream ends when `outbound` drops,
-        // as this call returns. The room it reports is its whole room: it
-        // holds nothing yet.
+        // as this call returns.
         let (outbound, requests) = mpsc::channel(1);
         let hello = PullRequest {
-            message: Some(pull_request::Message::Hello(self.hello.clone())),
+            message: Some(pull_request::Message::Hello(Hello {
+                free: self.free(),
+                ..self.hello.clone()
+            })),
         };
         if outbound.try_send(hello).is_err() {
             return End::Failed;
@@ -218,12 +262,24 @@ impl Link {
         let mut inbound = response.into_inner();
         loop {
             let welcomed = *self.linked.borrow();
-            match inbound.message().await {
+            let message = tokio::select! {
+                message = inbound.message() => message,
+                () = self.freed.notified(), if welcomed => {
+                    let room = PullRequest {
+                        message: Some(pull_request::Message::Room(Room { free: self.free() })),
+                    };
+                    if outbound.send(room).await.is_err() {
+                        return End::Failed;
+                    }
+                    continue;
+                }
+            };
+            match message {
                 Ok(None) if welcomed => return End::Moved,
                 Ok(Some(PullResponse {
                     message: Some(pull_response::Message::Welcome(welcome)),
                 })) if !welcomed => {
-                    if welcome.protocol_level.abs_diff(PROTOCOL_LEVEL) > 1 {
+                    if !compatible(welcome.protocol_level) {
                         tracing::warn!(
                             coral.run_executor.protocol_level = safe::number(PROTOCOL_LEVEL),
                             coral.run_executor.peer_protocol_level =
@@ -234,9 +290,24 @@ impl Link {
                     }
                     self.linked.send_replace(true);
                 }
-                // Taken and Compile are not served yet, so they break the
-                // protocol here as any other message does. A clean end
-                // before Welcome is no move.
+                Ok(Some(PullResponse {
+                    message: Some(pull_response::Message::Taken(taken)),
+                })) if welcomed => {
+                    // Each Run's stream rides this connection.
+                    for taken in taken.runs {
+                        self.held.fetch_add(1, Ordering::SeqCst);
+                        let (held, freed) = (self.held.clone(), self.freed.clone());
+                        let stream = run::hold(client.clone(), taken, self.run_limits);
+                        tokio::spawn(async move {
+                            stream.await;
+                            held.fetch_sub(1, Ordering::SeqCst);
+                            freed.notify_one();
+                        });
+                    }
+                }
+                // Compile is not served yet, so it breaks the protocol here
+                // as any other message does. A clean end before Welcome is
+                // no move.
                 Ok(_) | Err(_) => return End::Failed,
             }
         }
