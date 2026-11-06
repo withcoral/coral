@@ -99,6 +99,7 @@ impl CredentialValues {
 /// The address of one Credential Field's value in a Secret Store, deliberately
 /// without serialization. It is not a secret, but it reveals where the customer
 /// keeps one, so diagnostic formatting redacts it.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SecretReference {
     store: String,
     path: String,

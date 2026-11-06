@@ -344,20 +344,6 @@ pub(super) const fn wire_method(kind: AuthenticationKind) -> wire::CredentialMet
     }
 }
 
-/// Write-only field values from one request, bounded like every other secret.
-pub(super) fn credential_values(
-    values: std::collections::HashMap<String, String>,
-) -> Result<coral_credentials::CredentialValues, Status> {
-    let values = values
-        .into_iter()
-        .map(|(name, value)| coral_credentials::Secret::new(value).map(|secret| (name, secret)))
-        .collect::<Result<_, _>>()
-        .and_then(coral_credentials::CredentialValues::new)
-        .map_err(domain::Error::from)
-        .map_err(error)?;
-    Ok(values)
-}
-
 pub(super) fn credential_fields(
     fields: std::collections::BTreeMap<String, coral_catalog::CredentialField>,
 ) -> std::collections::HashMap<String, wire::CredentialField> {
@@ -477,6 +463,7 @@ impl GrpcServices {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             automatic_refresh: authentication.automatic_refresh,
+            holds_secret_references: authentication.holds_secret_references,
             granted_scope: authentication.granted_scope,
             credential_expire_time: authentication.expires_at_unix_nanos.map(timestamp),
             publication,
@@ -722,12 +709,12 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let id = ProviderSetupId::parse(id).map_err(error)?;
         let authentication = self
             .accounts()?
-            .authorize_setup(
+            .authorize_setup_fields(
                 &context,
                 &owner,
                 &id,
                 req.configuration_revision,
-                credential_values(req.credential_values)?,
+                super::accounts::credential_fields(req.credential_values, req.secret_references)?,
             )
             .await
             .map_err(error)?;

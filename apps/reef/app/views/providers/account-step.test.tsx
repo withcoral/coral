@@ -172,6 +172,14 @@ describe('the account step', () => {
     expect(html).not.toContain('Add provider')
   })
 
+  // Catches: offering to keep a sign-in with references as your own account, which
+  // Coral refuses at the last step.
+  it('keeps a sign-in that names a secret store for the shared account only', () => {
+    const html = render({ ...held, holdsSecretReferences: true })
+    expect(html).toContain('Use this account')
+    expect(html).not.toContain('Connect now with this account')
+  })
+
   // Catches: offering an individual-account add that Coral would refuse,
   // because nobody could sign in to the provider afterwards.
   it('offers to connect later only when Coral says each person can', () => {

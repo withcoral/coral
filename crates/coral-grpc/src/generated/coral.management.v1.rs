@@ -815,6 +815,9 @@ pub struct ProviderSetup {
     /// added without a sign-in. False when nothing can be connected.
     #[prost(bool, tag = "23")]
     pub connect_later_available: bool,
+    /// The provisional grant names a Secret Store, so only a shared Account can keep it.
+    #[prost(bool, tag = "24")]
+    pub holds_secret_references: bool,
 }
 /// What a Program asked a Setup to publish when it called addProvider. The
 /// person who finishes the Setup can change either.
@@ -934,6 +937,26 @@ pub struct AuthorizeProviderSetupRequest {
     /// Exact reviewed configuration; stale secret submissions must not seal new settings.
     #[prost(int64, tag = "3")]
     pub configuration_revision: i64,
+    /// Secret References by field name, for the shared Account Publication would make.
+    /// A field appears here or in credential_values, never both. Discovery refuses them.
+    #[prost(map = "string, message", tag = "5")]
+    pub secret_references: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        CredentialFieldReference,
+    >,
+}
+/// The address of one Credential Field's value in a Secret Store granted to the Workspace.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CredentialFieldReference {
+    /// secretStores/{store}.
+    #[prost(string, tag = "1")]
+    pub secret_store: ::prost::alloc::string::String,
+    /// Where the value lives in the store.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+    /// The key within the entry, where the store has keys.
+    #[prost(string, tag = "3")]
+    pub key: ::prost::alloc::string::String,
 }
 /// Selects how every Invocation through the Provider obtains credentials.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3961,7 +3984,7 @@ pub struct UserAccountInspection {
     pub pending_connection: ::core::option::Option<AccountConnectionRequest>,
 }
 /// An opaque Account reference with safe readiness, never upstream account metadata.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProviderAccount {
     /// UUID, not a credential or private credential generation.
     #[prost(string, tag = "1")]
@@ -3987,6 +4010,13 @@ pub struct ProviderAccount {
     /// Configuring Coral User identifier, not a verified upstream identity.
     #[prost(string, tag = "8")]
     pub configured_by_user: ::prost::alloc::string::String,
+    /// The Credential Fields a Secret Store holds, by field name. Any other field holds
+    /// a typed value, which is never returned.
+    #[prost(map = "string, message", tag = "9")]
+    pub secret_references: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        CredentialFieldReference,
+    >,
 }
 /// Inspects one exact scope; no all-Users inspection exists.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -4180,19 +4210,6 @@ pub struct SubmitProviderAccountSecretRequest {
         ::prost::alloc::string::String,
         CredentialFieldReference,
     >,
-}
-/// The address of one Credential Field's value in a Secret Store granted to the Workspace.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CredentialFieldReference {
-    /// secretStores/{store}.
-    #[prost(string, tag = "1")]
-    pub secret_store: ::prost::alloc::string::String,
-    /// Where the value lives in the store.
-    #[prost(string, tag = "2")]
-    pub path: ::prost::alloc::string::String,
-    /// The key within the entry, where the store has keys.
-    #[prost(string, tag = "3")]
-    pub key: ::prost::alloc::string::String,
 }
 /// Encoded OAuth callback data, passed only from the Reef server to Coral.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

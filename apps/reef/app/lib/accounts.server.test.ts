@@ -880,6 +880,23 @@ describe('secret references on a shared account', () => {
     expect(view.secretStores).toEqual(['platform'])
   })
 
+  // Catches: Reconnect asking for saved references again, or one moved to another
+  // store on its own because it lost its grant.
+  it('opens with the saved references, and keeps their store on offer', async () => {
+    mocks.getProviderAccount.mockResolvedValue({
+      account: {
+        secretReferences: {
+          token: { secretStore: 'secretStores/removed', path: 'team/forecast', key: 'token' },
+        },
+      },
+    })
+    const view = await loadPending(sharedProvider)
+    expect(view.savedReferences).toEqual({
+      token: { store: 'removed', path: 'team/forecast', key: 'token' },
+    })
+    expect(view.secretStores).toEqual(['platform', 'removed'])
+  })
+
   // Catches: a User offered a reference that Coral refuses.
   it('offers your own account no store, without asking Coral', async () => {
     mocks.listWorkspaceSecretStores.mockClear()

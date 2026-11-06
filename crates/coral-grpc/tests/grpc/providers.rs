@@ -137,6 +137,7 @@ impl ConfiguredSetupFixture for SetupClient {
         if !credential.is_empty() {
             let mut authorization =
                 tonic::Request::new(management::AuthorizeProviderSetupRequest {
+                    secret_references: std::collections::HashMap::new(),
                     configuration_revision: confirmed
                         .get_ref()
                         .configuration
@@ -525,6 +526,7 @@ async fn stale_secret_form_is_rejected_before_sealing_against_new_configuration(
     let error = client
         .authorize_provider_setup(request(
             management::AuthorizeProviderSetupRequest {
+                secret_references: std::collections::HashMap::new(),
                 name: setup.name,
                 credential_values: token_values(TOKEN),
                 configuration_revision: review.revision,
@@ -886,6 +888,7 @@ async fn configuration_review_precedes_credentials_and_refuses_early_authorizati
     let refused = setups
         .authorize_provider_setup(request(
             management::AuthorizeProviderSetupRequest {
+                secret_references: std::collections::HashMap::new(),
                 configuration_revision: 1,
                 name: setup.name,
                 credential_values: token_values(TOKEN),
@@ -1273,6 +1276,7 @@ async fn workspace_owner_publishes_with_explicit_shared_or_self_account_retentio
         let authorized = setups
             .authorize_provider_setup(request(
                 management::AuthorizeProviderSetupRequest {
+                    secret_references: std::collections::HashMap::new(),
                     configuration_revision: 1,
                     name: setup.name.clone(),
                     credential_values: token_values(TOKEN),
@@ -1370,6 +1374,7 @@ async fn concurrent_secret_authorizations_return_their_own_grants() {
             client
                 .authorize_provider_setup(request(
                     management::AuthorizeProviderSetupRequest {
+                        secret_references: std::collections::HashMap::new(),
                         name,
                         configuration_revision: 1,
                         credential_values: std::collections::HashMap::from([(
@@ -1774,6 +1779,7 @@ async fn provider_route_mutation_requires_reef_user_owner_and_current_provider_e
     let authorized = setups
         .authorize_provider_setup(request(
             management::AuthorizeProviderSetupRequest {
+                secret_references: std::collections::HashMap::new(),
                 configuration_revision: 1,
                 name: shared.name.clone(),
                 credential_values: token_values(TOKEN),

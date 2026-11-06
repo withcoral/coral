@@ -820,6 +820,8 @@ message ProviderSetup {
   // Whether each person can connect their own account after the provider is
   // added without a sign-in. False when nothing can be connected.
   bool connect_later_available = 23;
+  // The provisional grant names a Secret Store, so only a shared Account can keep it.
+  bool holds_secret_references = 24;
 }
 
 // What a Program asked a Setup to publish when it called addProvider. The
@@ -906,6 +908,19 @@ message AuthorizeProviderSetupRequest {
   map<string, string> credential_values = 4;
   // Exact reviewed configuration; stale secret submissions must not seal new settings.
   int64 configuration_revision = 3;
+  // Secret References by field name, for the shared Account Publication would make.
+  // A field appears here or in credential_values, never both. Discovery refuses them.
+  map<string, CredentialFieldReference> secret_references = 5;
+}
+
+// The address of one Credential Field's value in a Secret Store granted to the Workspace.
+message CredentialFieldReference {
+  // secretStores/{store}.
+  string secret_store = 1;
+  // Where the value lives in the store.
+  string path = 2;
+  // The key within the entry, where the store has keys.
+  string key = 3;
 }
 
 // Selects how every Invocation through the Provider obtains credentials.

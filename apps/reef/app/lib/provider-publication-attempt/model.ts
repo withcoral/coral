@@ -440,6 +440,8 @@ export function accountStep(
   setup: SetupView,
 ): { reopens: boolean; plan: AccountPlan; publishOnReturn: boolean } {
   const held = setup.authorized && Boolean(setup.provisionalGrantId)
+  // A sign-in that names a secret store can only become the shared account.
+  const ownHeld = held && !setup.holdsSecretReferences
   const returning = Boolean(attempt.returnFromConnect)
   const credentialFree = isCredentialFree(setup)
   const route = attempt.account ?? setup.request?.route ?? null
@@ -449,14 +451,16 @@ export function accountStep(
         ? 'shared-keep'
         : 'shared-connect'
       : route === 'caller'
-        ? held
+        ? ownHeld
           ? 'own-keep'
           : returning || !attempt.account || !setup.connectLaterAvailable
             ? 'own-connect'
             : 'own-later'
-        : held
+        : ownHeld
           ? 'own-keep'
-          : 'shared-connect'
+          : held
+            ? 'shared-keep'
+            : 'shared-connect'
   return {
     reopens: returning && !credentialFree,
     plan,

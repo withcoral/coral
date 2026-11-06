@@ -78,6 +78,7 @@ export function AuthorizationPage({
                     value={<Inputs.CredentialInput {...input} />}
                     field={field}
                     stores={v.secretStores}
+                    saved={v.savedReferences[field]}
                   />
                 ) : (
                   <Inputs.CredentialInput {...input} />

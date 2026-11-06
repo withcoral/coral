@@ -764,3 +764,476 @@ async fn one_account_mixes_a_typed_value_and_a_reference() {
         .unwrap();
     assert_eq!(values.get("email").unwrap().expose(), "typed@example.com");
 }
+
+impl Shared {
+    /// A confirmed Setup for a new Provider, and its configuration revision.
+    async fn setup(&self) -> (crate::ProviderSetupId, i64) {
+        let setup = self
+            .providers
+            .prepare_openapi_fixture(
+                &self.owner,
+                &self.workspace,
+                crate::OpenApiDocument::parse(CREDENTIAL_REQUIRED_OPENAPI).unwrap(),
+            )
+            .await
+            .unwrap();
+        let review = self
+            .providers
+            .review_setup_configuration(self.owner.actor(), &self.workspace, setup.id())
+            .await
+            .unwrap();
+        (setup.id().clone(), review.revision)
+    }
+
+    async fn publish(
+        &self,
+        setup: &crate::ProviderSetupId,
+        route: crate::access::CredentialRoute,
+        grant: ProviderAccountId,
+    ) -> Result<ProviderId, Error> {
+        let published = self
+            .providers
+            .publish_workspace_provider(
+                &self.owner,
+                crate::tests::publication_request(
+                    &self.workspace,
+                    setup,
+                    "from_setup",
+                    route,
+                    "a0000000-0000-4000-8000-000000000099",
+                )
+                .with_account_grant(grant),
+            )
+            .await?
+            .skip_search();
+        Ok(published.published_provider().unwrap().id().clone())
+    }
+}
+
+// Catches: a read value sealed during Setup, or references lost at Publication,
+// so the Provider's Account would have nothing to send.
+#[tokio::test]
+async fn a_reference_set_in_setup_seals_nothing_read_and_reaches_the_published_account() {
+    let f = shared().await;
+    let (setup, revision) = f.setup().await;
+    let reads = f.store.reads();
+
+    let authorized = f
+        .accounts
+        .authorize_setup_fields(
+            &f.owner,
+            &f.workspace,
+            &setup,
+            revision,
+            reference("team", PATH, "token"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(f.store.reads(), reads + 1, "the check reads once");
+    assert!(authorized.authorized);
+    assert!(authorized.holds_secret_references);
+
+    let database = f.db.database();
+    let mut tx = database.begin().await.unwrap();
+    let row = super::setup_repository::load(&mut tx, &f.workspace, &setup)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.rollback().await.unwrap();
+    let sealed = f
+        .accounts
+        .vault
+        .open_sealed(
+            &row.credential_generation,
+            row.encrypted_credentials.as_deref().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        sealed.as_str(),
+        "{}",
+        "no value read from the store is sealed"
+    );
+
+    let provider = f
+        .publish(
+            &setup,
+            crate::access::CredentialRoute::Fixed,
+            authorized.provisional_grant_id.unwrap(),
+        )
+        .await
+        .unwrap();
+    let view = f
+        .accounts
+        .get_account(&f.owner, &f.workspace, &provider, &AccountScope::Shared)
+        .await
+        .unwrap();
+    assert_eq!(
+        view.account.unwrap().secret_references,
+        BTreeMap::from([(
+            CredentialValues::TOKEN.to_owned(),
+            SecretReference::new("team".into(), PATH.into(), Some("token".into())).unwrap(),
+        )])
+    );
+}
+
+// Catches: a refused reference that replaces the Setup's reviewed grant, or a
+// store read before the check that should have stopped it.
+#[tokio::test]
+async fn a_reference_refused_in_setup_changes_nothing() {
+    enum Fails {
+        Ungranted,
+        Undefined,
+        MissingEntry,
+        MissingKey,
+        StoreDenies,
+        StaleRevision,
+    }
+    for fails in [
+        Fails::Ungranted,
+        Fails::Undefined,
+        Fails::MissingEntry,
+        Fails::MissingKey,
+        Fails::StoreDenies,
+        Fails::StaleRevision,
+    ] {
+        let f = shared().await;
+        let (setup, revision) = f.setup().await;
+        let typed = f
+            .accounts
+            .authorize_setup(
+                &f.owner,
+                &f.workspace,
+                &setup,
+                revision,
+                CredentialValues::token(Secret::new(TYPED.into()).unwrap()),
+            )
+            .await
+            .unwrap();
+        if matches!(fails, Fails::StoreDenies) {
+            f.store.fail_with(Some(StoreError::PermissionDenied));
+        }
+        let (fields, submitted, reads) = match fails {
+            Fails::Ungranted => (reference("ungranted", PATH, "token"), revision, 0),
+            Fails::Undefined => (reference("missing", PATH, "token"), revision, 0),
+            Fails::MissingEntry => (reference("team", "team/none", "token"), revision, 1),
+            Fails::MissingKey => (reference("team", PATH, "none"), revision, 1),
+            Fails::StoreDenies => (reference("team", PATH, "token"), revision, 1),
+            Fails::StaleRevision => (reference("team", PATH, "token"), revision + 1, 0),
+        };
+        let before = f.store.reads();
+
+        let result = f
+            .accounts
+            .authorize_setup_fields(&f.owner, &f.workspace, &setup, submitted, fields)
+            .await;
+
+        match fails {
+            Fails::Ungranted | Fails::Undefined => {
+                assert!(
+                    matches!(result, Err(Error::SecretStoreNotGranted)),
+                    "{result:?}"
+                );
+            }
+            Fails::MissingEntry => assert!(
+                matches!(
+                    result,
+                    Err(Error::SecretStoreRead(StoreError::EntryNotFound))
+                ),
+                "{result:?}"
+            ),
+            Fails::MissingKey => assert!(
+                matches!(result, Err(Error::SecretStoreRead(StoreError::KeyNotFound))),
+                "{result:?}"
+            ),
+            Fails::StoreDenies => assert!(
+                matches!(
+                    result,
+                    Err(Error::SecretStoreRead(StoreError::PermissionDenied))
+                ),
+                "{result:?}"
+            ),
+            Fails::StaleRevision => {
+                assert!(matches!(result, Err(Error::EtagMismatch)), "{result:?}");
+            }
+        }
+        assert_eq!(f.store.reads(), before + reads);
+        let after = f
+            .providers
+            .setup_authentication(f.owner.actor(), &f.workspace, &setup, 11)
+            .await
+            .unwrap();
+        assert_eq!(after.provisional_grant_id, typed.provisional_grant_id);
+        assert!(!after.holds_secret_references);
+    }
+}
+
+// Catches: a Member saving a reference, so anyone in a Workspace could make Coral
+// read a store path, or an OAuth Setup that takes one and stores nothing usable.
+#[tokio::test]
+async fn setup_refuses_a_reference_from_a_member_and_on_oauth() {
+    let f = shared().await;
+    let (setup, revision) = f.setup().await;
+    let reads = f.store.reads();
+    let member = change_context(f.member.clone(), 11, 'c');
+    let refused = f
+        .accounts
+        .authorize_setup_fields(
+            &member,
+            &f.workspace,
+            &setup,
+            revision,
+            reference("team", PATH, "token"),
+        )
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
+                _
+            )))
+        ),
+        "{refused:?}"
+    );
+
+    let oauth = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"OAuth","version":"1"},
+        "servers":[{"url":"https://oauth.example"}], "security":[{"oauth":["read"]}],
+        "components":{"securitySchemes":{"oauth":{"type":"oauth2","flows":{"authorizationCode":{
+            "authorizationUrl":"https://oauth.example/authorize",
+            "tokenUrl":"https://oauth.example/token", "scopes":{"read":"Read"}
+        }}}}},
+        "paths":{"/data":{"get":{"operationId":"getData","responses":{"200":{"description":"Data"}}}}}
+    });
+    let oauth = f
+        .providers
+        .prepare_openapi_fixture(
+            &f.owner,
+            &f.workspace,
+            crate::OpenApiDocument::parse(&oauth.to_string()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = f
+        .providers
+        .review_setup_configuration(f.owner.actor(), &f.workspace, oauth.id())
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.accounts
+            .authorize_setup_fields(
+                &f.owner,
+                &f.workspace,
+                oauth.id(),
+                review.revision,
+                reference("team", PATH, "token")
+            )
+            .await,
+        Err(Error::AccountInput)
+    ));
+    assert_eq!(f.store.reads(), reads);
+}
+
+// Catches: discovery taking a reference, which would let a Setup with no account
+// choice read a store, and leave the Setup moved on.
+#[tokio::test]
+async fn discovery_refuses_a_reference() {
+    let f = shared().await;
+    let server = crate::setup_tests::mcp_server("stored-canary").await;
+    let setup = f
+        .providers
+        .prepare_setup(
+            &f.owner,
+            &f.workspace,
+            crate::tests::mcp_url(server.uri()),
+            None,
+        )
+        .await
+        .unwrap();
+    let review = f
+        .providers
+        .review_setup_configuration(f.owner.actor(), &f.workspace, setup.id())
+        .await
+        .unwrap();
+    let mut values = review.document.unwrap().suggested;
+    values.authentication = Some(coral_catalog::AuthenticationConfiguration::Bearer);
+    let confirmed = f
+        .providers
+        .confirm_setup_configuration(&f.owner, &f.workspace, setup.id(), review.revision, values)
+        .await
+        .unwrap();
+    let reads = f.store.reads();
+
+    let result = f
+        .accounts
+        .authorize_setup_fields(
+            &f.owner,
+            &f.workspace,
+            setup.id(),
+            confirmed.revision,
+            reference("team", PATH, "token"),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::SecretReferenceNotAllowed)),
+        "{result:?}"
+    );
+    assert_eq!(f.store.reads(), reads);
+    let inspected = f
+        .providers
+        .inspect_setup(f.owner.actor(), &f.workspace, setup.id(), 11)
+        .await
+        .unwrap();
+    assert_eq!(
+        inspected.setup.state(),
+        crate::ProviderSetupState::AwaitingAuthorization
+    );
+    assert!(!inspected.authentication.authorized);
+}
+
+// Catches: a grant with references becoming a User's own Account, where a User could
+// name a path holding another person's secret, or a refusal that spends the Setup.
+#[tokio::test]
+async fn publication_refuses_references_for_a_callers_account() {
+    let f = shared().await;
+    let (setup, revision) = f.setup().await;
+    let grant = f
+        .accounts
+        .authorize_setup_fields(
+            &f.owner,
+            &f.workspace,
+            &setup,
+            revision,
+            reference("team", PATH, "token"),
+        )
+        .await
+        .unwrap()
+        .provisional_grant_id
+        .unwrap();
+    let providers = f
+        .providers
+        .inspect_providers(f.owner.actor(), &f.workspace)
+        .await
+        .unwrap()
+        .len();
+
+    let refused = f
+        .publish(&setup, crate::access::CredentialRoute::Caller, grant)
+        .await;
+
+    assert!(
+        matches!(refused, Err(Error::SecretReferenceNotAllowed)),
+        "{refused:?}"
+    );
+    assert_eq!(
+        f.providers
+            .inspect_providers(f.owner.actor(), &f.workspace)
+            .await
+            .unwrap()
+            .len(),
+        providers
+    );
+    let provider = f
+        .publish(&setup, crate::access::CredentialRoute::Fixed, grant)
+        .await
+        .unwrap();
+    let view = f
+        .accounts
+        .get_account(&f.owner, &f.workspace, &provider, &AccountScope::Shared)
+        .await
+        .unwrap();
+    assert!(
+        view.account
+            .unwrap()
+            .secret_references
+            .contains_key(CredentialValues::TOKEN)
+    );
+}
+
+// Catches: Reconnect's unchanged references kept as if nothing happened, which would
+// let an approval outlive an explicit replacement, or inspection returning typed fields.
+#[tokio::test]
+async fn saving_an_unchanged_reference_still_replaces_the_authorization() {
+    let f = shared().await;
+    assert!(
+        f.view().await.account.unwrap().secret_references.is_empty(),
+        "a typed field is never returned as a reference"
+    );
+    f.save(reference("team", PATH, "token")).await.unwrap();
+    let pending = f.evidence().await;
+
+    f.save(reference("team", PATH, "token")).await.unwrap();
+
+    assert!(matches!(
+        f.read(&pending).await,
+        Err(Error::AccountRequired)
+    ));
+    assert_eq!(f.read(&f.evidence().await).await.unwrap(), "stored-canary");
+    assert_eq!(
+        f.view()
+            .await
+            .account
+            .unwrap()
+            .secret_references
+            .keys()
+            .collect::<Vec<_>>(),
+        [CredentialValues::TOKEN]
+    );
+}
+
+// Catches: an update's Publication dropping references, which would replace the
+// shared Account with an empty sealed record and nothing to send.
+#[tokio::test]
+async fn updating_a_provider_moves_the_setups_references_to_its_shared_account() {
+    let f = shared().await;
+    let setup = f
+        .providers
+        .prepare_update_fixture(
+            &f.owner,
+            &f.workspace,
+            &f.provider,
+            crate::OpenApiDocument::parse(CREDENTIAL_REQUIRED_OPENAPI).unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = f
+        .providers
+        .review_setup_configuration(f.owner.actor(), &f.workspace, setup.id())
+        .await
+        .unwrap();
+    let grant = f
+        .accounts
+        .authorize_setup_fields(
+            &f.owner,
+            &f.workspace,
+            setup.id(),
+            review.revision,
+            reference("team", PATH, "token"),
+        )
+        .await
+        .unwrap()
+        .provisional_grant_id
+        .unwrap();
+
+    f.providers
+        .regenerate_provider(
+            &f.owner,
+            crate::ProviderRegenerationRequest::new(
+                authorization_request(),
+                f.workspace.clone(),
+                f.provider.clone(),
+                setup.id().clone(),
+                review.revision,
+            )
+            .with_account_grant(grant)
+            .with_incompatible_configuration_confirmation(),
+        )
+        .await
+        .unwrap()
+        .skip_search();
+
+    let view = f.view().await.account.unwrap();
+    assert!(view.secret_references.contains_key(CredentialValues::TOKEN));
+    assert_eq!(f.read(&f.evidence().await).await.unwrap(), "stored-canary");
+}

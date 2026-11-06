@@ -52,6 +52,7 @@ export function AccountStep({
   callbackUrl,
   backPath,
   documentationUrl = null,
+  secretStores = [],
   disabled = false,
 }: {
   /** The attempt as the page holds it, with this step's own edits already applied. */
@@ -66,6 +67,8 @@ export function AccountStep({
   backPath: string
   /** Where the recipe says to find the credentials to enter. */
   documentationUrl?: string | null
+  /** The stores the shared account can name. */
+  secretStores?: string[]
   disabled?: boolean
 }) {
   const { account: settled, credentialFree } = attemptProgress(attempt, setup, result)
@@ -218,7 +221,7 @@ export function AccountStep({
                 <Typography.BodyLargeStrong as="h3">
                   {accountLabels.caller}
                 </Typography.BodyLargeStrong>
-                {held && (
+                {held && !setup.holdsSecretReferences && (
                   <Radio.Item
                     variant="card"
                     value="own-keep"
@@ -295,6 +298,7 @@ export function AccountStep({
                 pending={pending}
                 id={secretFormId}
                 extra={accountField}
+                secretStores={shared ? secretStores : []}
               >
                 {documentationUrl && (
                   <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
