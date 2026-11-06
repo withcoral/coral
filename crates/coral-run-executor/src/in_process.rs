@@ -213,6 +213,10 @@ mod tests {
         for (error, kind) in errors {
             let client = compile_error(error());
             assert_eq!(client.code(), kind, "{:?}", error());
+            // The pull stream carries every kind the compiler reports.
+            let carried =
+                crate::compile_wire::compile_error(crate::compile_wire::failure(client.clone()));
+            assert_eq!(carried.ok(), Some(client.clone()), "{:?}", error());
             assert_eq!(
                 CompileFailure::from(client),
                 CompileFailure::from(error()),

@@ -4,10 +4,11 @@
 use std::future::{Future, pending};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coral_credentials::Secret;
 use coral_telemetry::safe;
+use coral_v8::IsolateLimits;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -17,12 +18,19 @@ use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Endpoint, Server};
 use tonic_health::ServingStatus;
 
+use crate::compile_wire::{self, ProtocolError};
 use crate::wire::v1::link_service_client::LinkServiceClient;
-use crate::wire::v1::{Hello, Limits, PullRequest, PullResponse, pull_request, pull_response};
+use crate::wire::v1::{
+    Compile, Compiled, Hello, Limits, PullRequest, PullResponse, Room, pull_request, pull_response,
+};
+use crate::{CompilerClient, InProcessCompiler};
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
 pub const PROTOCOL_LEVEL: u32 = 1;
+/// The largest message either side of the link sends or accepts. A
+/// compile's sources and declarations, and its package, fit in it.
+pub const MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// The longest Run this Run Executor holds: the Run deadline's maximum.
 const MAX_RUN_DURATION_SECONDS: u32 = 900;
@@ -48,21 +56,46 @@ pub struct RunExecutorConfig {
     pub token: Token,
     /// The most Runs it holds at once: its free room while it holds none.
     pub max_runs_held: u32,
+    /// The Program Compiler's heap limit, in bytes.
+    pub compiler_heap_bytes: usize,
 }
 
-/// Holds the link to Coral until `retire` completes. Serves the gRPC health
-/// service on `health`, when given, until then.
+/// Why a Run Executor stopped before it retired.
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    /// The warm Program Compiler could not start.
+    #[error("the Program Compiler could not start")]
+    Compiler(#[source] coral_v8::Error),
+    /// The health listener failed.
+    #[error("the health listener failed")]
+    Health(#[source] tonic::transport::Error),
+}
+
+/// Warms the Program Compiler, then holds the link to Coral until `retire`
+/// completes. Serves the gRPC health service on `health`, when given, until
+/// then.
 ///
 /// # Errors
 ///
-/// Returns the health listener's failure.
+/// Returns a compiler that cannot start, before any dial, or the health
+/// listener's failure.
 pub async fn run(
     config: RunExecutorConfig,
     health: Option<TcpListener>,
     retire: impl Future<Output = ()>,
-) -> Result<(), tonic::transport::Error> {
+) -> Result<(), RunError> {
+    let limits = IsolateLimits::new(
+        IsolateLimits::defaults().execution_heap_bytes(),
+        config.compiler_heap_bytes,
+    )
+    .map_err(RunError::Compiler)?;
+    // `new` returns once the compiler is warm, so Hello waits for it.
+    let compiler = tokio::task::spawn_blocking(move || InProcessCompiler::new(limits))
+        .await
+        .map_err(|_panicked| RunError::Compiler(coral_v8::Error::CompilerUnavailable))?
+        .map_err(RunError::Compiler)?;
     let (linked, linked_rx) = watch::channel(false);
-    let link = Link::new(config, linked);
+    let link = Link::new(config, Arc::new(compiler), linked);
     let health = async {
         match health {
             Some(listener) => serve_health(listener, linked_rx).await,
@@ -71,7 +104,7 @@ pub async fn run(
     };
     tokio::select! {
         () = link.hold() => Ok(()),
-        result = health => result,
+        result = health => result.map_err(RunError::Health),
         () = retire => Ok(()),
     }
 }
@@ -144,12 +177,17 @@ struct Link {
     endpoint: Endpoint,
     token: Token,
     hello: Hello,
+    compiler: Arc<dyn CompilerClient>,
     /// Whether a pull stream Coral welcomed is open.
     linked: watch::Sender<bool>,
 }
 
 impl Link {
-    fn new(config: RunExecutorConfig, linked: watch::Sender<bool>) -> Self {
+    fn new(
+        config: RunExecutorConfig,
+        compiler: Arc<dyn CompilerClient>,
+        linked: watch::Sender<bool>,
+    ) -> Self {
         let endpoint = Endpoint::from(config.coral_address.0)
             .connect_timeout(CONNECT_TIMEOUT)
             .http2_keep_alive_interval(KEEPALIVE)
@@ -167,6 +205,7 @@ impl Link {
             endpoint,
             token: config.token,
             hello,
+            compiler,
             linked,
         }
     }
@@ -201,7 +240,9 @@ impl Link {
                     .metadata_mut()
                     .insert("authorization", token.bearer()?);
                 Ok(request)
-            });
+            })
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES);
         // The Run Executor's side of the stream ends when `outbound` drops,
         // as this call returns. The room it reports is its whole room: it
         // holds nothing yet.
@@ -216,29 +257,88 @@ impl Link {
             return End::Failed;
         };
         let mut inbound = response.into_inner();
+        let (queue, queued) = mpsc::unbounded_channel();
+        let (answered, mut answers) = mpsc::unbounded_channel();
+        tokio::spawn(serve(Arc::clone(&self.compiler), queued, answered));
+        // A compile holds one unit of room from Compile to Compiled. A report
+        // and a take can cross, so `held` can pass the room for a moment.
+        let mut held: u32 = 0;
         loop {
             let welcomed = *self.linked.borrow();
-            match inbound.message().await {
-                Ok(None) if welcomed => return End::Moved,
-                Ok(Some(PullResponse {
-                    message: Some(pull_response::Message::Welcome(welcome)),
-                })) if !welcomed => {
-                    if welcome.protocol_level.abs_diff(PROTOCOL_LEVEL) > 1 {
-                        tracing::warn!(
-                            coral.run_executor.protocol_level = safe::number(PROTOCOL_LEVEL),
-                            coral.run_executor.peer_protocol_level =
-                                safe::number(welcome.protocol_level),
-                            "Coral's protocol level is more than one apart; closing the pull stream"
-                        );
-                        return End::Failed;
+            tokio::select! {
+                message = inbound.message() => match message {
+                    Ok(None) if welcomed => return End::Moved,
+                    Ok(Some(PullResponse {
+                        message: Some(pull_response::Message::Welcome(welcome)),
+                    })) if !welcomed => {
+                        if welcome.protocol_level.abs_diff(PROTOCOL_LEVEL) > 1 {
+                            tracing::warn!(
+                                coral.run_executor.protocol_level = safe::number(PROTOCOL_LEVEL),
+                                coral.run_executor.peer_protocol_level =
+                                    safe::number(welcome.protocol_level),
+                                "Coral's protocol level is more than one apart; closing the pull stream"
+                            );
+                            return End::Failed;
+                        }
+                        self.linked.send_replace(true);
                     }
-                    self.linked.send_replace(true);
+                    Ok(Some(PullResponse {
+                        message: Some(pull_response::Message::Compile(compile)),
+                    })) if welcomed => {
+                        held = held.saturating_add(1);
+                        if queue.send((Instant::now(), compile)).is_err() {
+                            return End::Failed;
+                        }
+                    }
+                    // Taken is not served yet, so it breaks the protocol here
+                    // as any other message does. A clean end before Welcome
+                    // is no move.
+                    Ok(_) | Err(_) => return End::Failed,
+                },
+                answer = answers.recv() => {
+                    // A Compile that broke the protocol, or a serving task
+                    // that stopped, ends the stream.
+                    let Some(Ok(compiled)) = answer else {
+                        return End::Failed;
+                    };
+                    held = held.saturating_sub(1);
+                    let free = self.hello.free.saturating_sub(held);
+                    for message in [
+                        pull_request::Message::Compiled(compiled),
+                        pull_request::Message::Room(Room { free }),
+                    ] {
+                        let message = PullRequest { message: Some(message) };
+                        if outbound.send(message).await.is_err() {
+                            return End::Failed;
+                        }
+                    }
                 }
-                // Taken and Compile are not served yet, so they break the
-                // protocol here as any other message does. A clean end
-                // before Welcome is no move.
-                Ok(_) | Err(_) => return End::Failed,
             }
+        }
+    }
+}
+
+/// Serves one pull stream's compiles on the warm compiler, one at a time in
+/// the order they came: the queue is the room. It stops once the stream
+/// ends, so a call queued on it is not compiled.
+async fn serve(
+    compiler: Arc<dyn CompilerClient>,
+    mut queued: mpsc::UnboundedReceiver<(Instant, Compile)>,
+    answered: mpsc::UnboundedSender<Result<Compiled, ProtocolError>>,
+) {
+    while let Some((received, compile)) = queued.recv().await {
+        if answered.is_closed() {
+            return;
+        }
+        let compiler = Arc::clone(&compiler);
+        let served = tokio::task::spawn_blocking(move || {
+            compile_wire::serve(compiler.as_ref(), received, compile)
+        });
+        let Ok(answer) = served.await else {
+            return;
+        };
+        if answered.send(answer).is_err() {
+            return;
         }
     }
 }

@@ -314,7 +314,9 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
-    pub(crate) fn new(
+    /// A package with its non-blocking diagnostics, as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         javascript: String,
         source_map: String,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -369,6 +371,12 @@ pub struct SavedFunctionDeclarationField {
 }
 
 impl SavedFunctionDeclarationField {
+    /// The field at `path` with its `text`.
+    #[must_use]
+    pub const fn new(path: String, text: String) -> Self {
+        Self { path, text }
+    }
+
     /// Returns the readable JavaScript path rooted at `input` or `result`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -392,7 +400,9 @@ pub struct SavedFunctionCompilation {
 }
 
 impl SavedFunctionCompilation {
-    pub(crate) const fn new(
+    /// The authoring output as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         declaration: String,
         declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -446,6 +456,12 @@ pub struct SavedFunctionReference {
 }
 
 impl SavedFunctionReference {
+    /// The reference to `path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(path: String, line: u64, column: u64) -> Self {
+        Self { path, line, column }
+    }
+
     /// Returns the dotted path relative to `coral.functions`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -482,6 +498,18 @@ impl LinkedSavedFunctionSource {
             source,
         }
     }
+
+    /// The path under `coral.functions`.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// The module source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 }
 
 /// The Call Paths one Saved Function module or Program body names
@@ -493,6 +521,12 @@ pub struct SavedFunctionCallPaths {
 }
 
 impl SavedFunctionCallPaths {
+    /// The `functions` and `tools` one source names.
+    #[must_use]
+    pub const fn new(functions: Vec<SavedFunctionReference>, tools: ToolReferences) -> Self {
+        Self { functions, tools }
+    }
+
     /// Returns the directly named `coral.functions` paths.
     #[must_use]
     pub fn functions(&self) -> &[SavedFunctionReference] {
@@ -516,6 +550,18 @@ pub struct ToolReferences {
 }
 
 impl ToolReferences {
+    /// The `chains` one source names, and their `call_paths`.
+    #[must_use]
+    pub const fn new(call_paths: Vec<String>, chains: Vec<ToolChain>) -> Self {
+        Self { call_paths, chains }
+    }
+
+    /// Returns the chains.
+    #[must_use]
+    pub fn chains(&self) -> &[ToolChain] {
+        &self.chains
+    }
+
     /// Returns every chain prefix that could be a Tool Call Path, such
     /// as `coral.providers.github.repos.get`, so `get.call(...)` still names
     /// `get`.
@@ -533,13 +579,64 @@ impl ToolReferences {
 /// One literal chain, relative to `coral`, where it starts in the source, and
 /// whether it is called.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct ToolChain {
+pub struct ToolChain {
     segments: Vec<String>,
     start: u64,
     called: bool,
     /// The one-based authored line and column where it starts.
     line: u64,
     column: u64,
+}
+
+impl ToolChain {
+    /// The chain of `segments` at offset `start`, authored `line` and
+    /// `column`.
+    #[must_use]
+    pub const fn new(
+        segments: Vec<String>,
+        start: u64,
+        called: bool,
+        line: u64,
+        column: u64,
+    ) -> Self {
+        Self {
+            segments,
+            start,
+            called,
+            line,
+            column,
+        }
+    }
+
+    /// Returns the chain's segments.
+    #[must_use]
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
+
+    /// Returns its offset in the source.
+    #[must_use]
+    pub const fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// Returns whether the source calls it.
+    #[must_use]
+    pub const fn called(&self) -> bool {
+        self.called
+    }
+
+    /// Returns the one-based authored line where it starts.
+    #[must_use]
+    pub const fn line(&self) -> u64 {
+        self.line
+    }
+
+    /// Returns the one-based authored column where it starts.
+    #[must_use]
+    pub const fn column(&self) -> u64 {
+        self.column
+    }
 }
 
 /// A called literal `coral.providers` or `coral.workspace` chain that names
@@ -553,6 +650,16 @@ pub struct UnknownToolCall {
 }
 
 impl UnknownToolCall {
+    /// The unknown `call_path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(call_path: String, line: u64, column: u64) -> Self {
+        Self {
+            call_path,
+            line,
+            column,
+        }
+    }
+
     /// The complete chain as written, such as
     /// `coral.providers.notion.retrievePage`.
     #[must_use]
@@ -595,6 +702,18 @@ impl CallableDeclaration {
             path_segments,
             declaration,
         }
+    }
+
+    /// Returns the path segments.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// Returns the declaration.
+    #[must_use]
+    pub fn declaration(&self) -> &str {
+        &self.declaration
     }
 }
 
@@ -652,6 +771,26 @@ impl CoralDeclarations {
         self.functions = Some(functions);
         self
     }
+
+    /// Returns the size above which a typed declaration is saved untyped.
+    #[must_use]
+    pub const fn declaration_max_bytes(&self) -> usize {
+        self.declaration_max_bytes
+    }
+
+    /// Returns the chains and declarations that type the Tools, if any do.
+    #[must_use]
+    pub fn tools(&self) -> Option<(&[ToolChain], &[CallableDeclaration])> {
+        self.tools
+            .as_ref()
+            .map(|tools| (tools.chains.as_slice(), tools.declarations.as_slice()))
+    }
+
+    /// Returns the declarations that type `coral.functions`, if any do.
+    #[must_use]
+    pub fn functions(&self) -> Option<&[CallableDeclaration]> {
+        self.functions.as_deref()
+    }
 }
 
 /// TypeScript compiler diagnostic category.
@@ -679,6 +818,24 @@ pub struct CompilerDiagnostic {
 }
 
 impl CompilerDiagnostic {
+    /// The diagnostic as the compiler reported it.
+    #[must_use]
+    pub const fn new(
+        category: DiagnosticCategory,
+        code: u64,
+        message: String,
+        line: Option<u64>,
+        column: Option<u64>,
+    ) -> Self {
+        Self {
+            category,
+            code,
+            message,
+            line,
+            column,
+        }
+    }
+
     /// Returns the diagnostic category.
     #[must_use]
     pub const fn category(&self) -> DiagnosticCategory {

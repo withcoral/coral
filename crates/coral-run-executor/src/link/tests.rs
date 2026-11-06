@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use coral_test_support::TEST_COMPILATION_TIMEOUT;
+use coral_v8::{CallableDeclaration, CoralDeclarations, LinkedSavedFunctionSource};
 use tokio::sync::oneshot;
 use tonic::Code;
 use tonic_health::pb::HealthCheckRequest;
@@ -7,16 +9,25 @@ use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
 use crate::testing::{Answer, ScriptedCoral};
+use crate::wire::v1::compile::Call;
+use crate::wire::v1::compile_failure::Failure;
+use crate::wire::v1::{CompileFailure, compiled};
+use crate::{CompileError, PullStreamCompiler};
 
 const TOKEN: &str = "test-run-executor-token";
 
-/// Starts a Run Executor that holds eight Runs, until the sender drops.
-fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<()> {
-    let config = RunExecutorConfig {
+fn config(coral: &ScriptedCoral, compiler_heap_bytes: usize) -> RunExecutorConfig {
+    RunExecutorConfig {
         coral_address: coral.address().parse().unwrap(),
         token: Token::new(TOKEN.to_owned()).unwrap(),
         max_runs_held: 8,
-    };
+        compiler_heap_bytes,
+    }
+}
+
+/// Starts a Run Executor that holds eight Runs, until the sender drops.
+fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<()> {
+    let config = config(coral, IsolateLimits::defaults().compiler_heap_bytes());
     let (retire, retired) = oneshot::channel::<()>();
     tokio::spawn(run(config, health, async {
         drop(retired.await);
@@ -175,4 +186,229 @@ async fn wait_for(health: &mut HealthClient<tonic::transport::Channel>, status: 
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+const PROGRAM: &str = "const team = await coral.functions.team.lookup({});\n\
+    return await coral.providers.github.repos.get({ owner: team, repo: \"coral\" })\n\
+    + await coral.providers.notion.search({});";
+const LOOKUP: &str = "export default async function lookup() { return \"withcoral\"; }";
+const SAVED: &str = "export default async function repo(input: { owner: string }) {\n\
+    return coral.providers.github.repos.get({ owner: input.owner, repo: 1 })\n\
+    ?? coral.functions.team.lookup({});\n}";
+const REPOS_GET: &str = "export default function (input: { \"owner\": string; \"repo\": string }): Promise<{ status: 200; data: { \"id\": number } }>;";
+
+/// A named call, which returns its result's debug text: it carries every
+/// field.
+type NamedCall = (&'static str, fn(&dyn CompilerClient) -> String);
+
+/// One call of each kind, on success and on a typed error.
+const CALLS: [NamedCall; 11] = [
+    ("program references", |client| {
+        format!(
+            "{:?}",
+            client.program_references(TEST_COMPILATION_TIMEOUT, PROGRAM)
+        )
+    }),
+    ("an invalid reference", |client| {
+        let source = "return await coral.functions[name]();";
+        format!(
+            "{:?}",
+            client.program_references(TEST_COMPILATION_TIMEOUT, source)
+        )
+    }),
+    ("unknown Tool calls", |client| {
+        let named = client
+            .program_references(TEST_COMPILATION_TIMEOUT, PROGRAM)
+            .unwrap();
+        let callable = ["coral.providers.github.repos.get".to_owned()];
+        let unknown = client.unknown_tool_calls(TEST_COMPILATION_TIMEOUT, named.tools(), &callable);
+        format!("{unknown:?}")
+    }),
+    ("dependency references", |client| {
+        format!(
+            "{:?}",
+            client.dependency_references(TEST_COMPILATION_TIMEOUT, SAVED)
+        )
+    }),
+    ("a compile", |client| {
+        format!(
+            "{:?}",
+            client.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
+        )
+    }),
+    ("a linked compile", |client| {
+        let lookup = LinkedSavedFunctionSource::new(
+            vec!["team".to_owned(), "lookup".to_owned()],
+            LOOKUP.to_owned(),
+        );
+        let source = "return await coral.functions.team.lookup({});";
+        format!(
+            "{:?}",
+            client.compile(TEST_COMPILATION_TIMEOUT, source, &[lookup])
+        )
+    }),
+    ("a rejected compile", |client| {
+        format!(
+            "{:?}",
+            client.compile(TEST_COMPILATION_TIMEOUT, "return (", &[])
+        )
+    }),
+    ("call paths", |client| {
+        format!("{:?}", client.call_paths(TEST_COMPILATION_TIMEOUT, SAVED))
+    }),
+    ("an untyped prepare", |client| {
+        format!(
+            "{:?}",
+            client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, None)
+        )
+    }),
+    ("a typed prepare", |client| {
+        let named = client.call_paths(TEST_COMPILATION_TIMEOUT, SAVED).unwrap();
+        let declaration = |path: &str, text: &str| {
+            CallableDeclaration::new(
+                path.split('.').map(str::to_owned).collect(),
+                text.to_owned(),
+            )
+        };
+        let declarations = CoralDeclarations::new(256 * 1024)
+            .with_tools(
+                named.tools(),
+                vec![declaration("providers.github.repos.get", REPOS_GET)],
+            )
+            .with_functions(vec![declaration(
+                "team.lookup",
+                "export default function lookup(): Promise<string>;",
+            )]);
+        let prepared = client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, Some(&declarations));
+        format!("{prepared:?}")
+    }),
+    ("a rejected prepare", |client| {
+        format!(
+            "{:?}",
+            client.prepare(TEST_COMPILATION_TIMEOUT, "import x from \"y\";", None)
+        )
+    }),
+];
+
+#[tokio::test]
+async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let _retire = start(&coral, None);
+    let mut call = coral.next_call().await;
+    let remote = Arc::clone(&call.compiler);
+    let results = tokio::task::spawn_blocking(move || {
+        let local = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
+        CALLS.map(|(name, call)| (name, call(remote.as_ref()), call(&local)))
+    })
+    .await
+    .unwrap();
+    for (name, remote, local) in &results {
+        assert_eq!(remote, local, "{name}");
+    }
+    assert!(
+        results
+            .iter()
+            .any(|(_, result, _)| result.starts_with("Err(Diagnostics(Reference"))
+    );
+    // Each answer frees the unit its compile held and reports the room. The
+    // eleven cases send thirteen calls: two cases call twice.
+    let answers = 13;
+    for _ in 0..answers {
+        assert_eq!(call.rooms.recv().await, Some(8));
+    }
+}
+
+#[test]
+fn a_call_past_its_time_answers_timed_out() {
+    let compiler = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
+    let source = || {
+        Some(Call::Compile(crate::wire::v1::ProgramSource {
+            source: "return 42;".to_owned(),
+            saved_functions: Vec::new(),
+        }))
+    };
+    let now = Instant::now();
+    // No time left, and a call that waited in the queue past its time.
+    for (received, time_left_ms) in [
+        (now, 0),
+        (now.checked_sub(Duration::from_secs(3)).unwrap(), 2_000),
+    ] {
+        let compile = Compile {
+            number: 7,
+            time_left_ms,
+            call: source(),
+        };
+        let served = compile_wire::serve(&compiler, received, compile).unwrap();
+        let timed_out = compiled::Answer::Failure(CompileFailure {
+            failure: Some(Failure::TimedOut(true)),
+        });
+        assert_eq!((served.number, served.answer), (7, Some(timed_out)));
+    }
+    let compile = Compile {
+        number: 8,
+        time_left_ms: 2_000,
+        call: source(),
+    };
+    let served = compile_wire::serve(&compiler, Instant::now(), compile).unwrap();
+    assert!(matches!(served.answer, Some(compiled::Answer::Package(_))));
+}
+
+#[tokio::test]
+async fn hello_waits_for_a_warm_compiler() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    // A valid heap limit too small for the compiler to load in.
+    let result = run(config(&coral, 8 * 1024 * 1024), None, pending()).await;
+    assert!(matches!(result, Err(RunError::Compiler(_))), "{result:?}");
+    assert!(coral.try_next_call().is_none(), "no pull stream opened");
+}
+
+#[test]
+fn an_answer_that_breaks_the_protocol_is_refused_and_a_closed_stream_fails_its_calls() {
+    let (outbound, mut sent) = mpsc::unbounded_channel();
+    let compiler = Arc::new(PullStreamCompiler::new(outbound));
+    let calling = Arc::clone(&compiler);
+    let waiting =
+        std::thread::spawn(move || calling.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[]));
+    let Some(PullResponse {
+        message: Some(pull_response::Message::Compile(compile)),
+    }) = sent.blocking_recv()
+    else {
+        panic!("a Compile");
+    };
+    let package = |sha256: Vec<u8>| {
+        compiled::Answer::Package(crate::wire::v1::Package {
+            script: "42".to_owned(),
+            source_map: "{}".to_owned(),
+            sha256,
+            diagnostics: Vec::new(),
+        })
+    };
+    for (number, answer) in [
+        (
+            compile.number + 1,
+            Some(package(compile_wire::package_sha256("42", "{}").to_vec())),
+        ),
+        (
+            0,
+            Some(package(compile_wire::package_sha256("42", "{}").to_vec())),
+        ),
+        (compile.number, None),
+        (
+            compile.number,
+            Some(package(compile_wire::package_sha256("4", "2{}").to_vec())),
+        ),
+    ] {
+        let refused = compiler.answer(Compiled { number, answer });
+        assert!(matches!(refused, Err(ProtocolError)), "{number}");
+    }
+    compiler.close();
+    assert_eq!(
+        waiting.join().unwrap(),
+        Err(CompileError::Unavailable(crate::Unavailable::Stopped))
+    );
+    let after = compiler.program_references(TEST_COMPILATION_TIMEOUT, "return 1;");
+    assert_eq!(
+        after,
+        Err(CompileError::Unavailable(crate::Unavailable::Stopped))
+    );
 }
