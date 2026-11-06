@@ -86,7 +86,7 @@ fn current_approval() -> SimpleExpr {
             .to_owned(),
     )
 }
-/// The Invocation `i` is pending, as the literal that migration 0058's index
+/// The Invocation `i` is pending, as the literal that migration 0059's index
 /// states. Given a bound state, `SQLite` would prepare the statement again on
 /// every execution to compare the value with that index's predicate.
 pub(crate) fn invocation_pending() -> SimpleExpr {
