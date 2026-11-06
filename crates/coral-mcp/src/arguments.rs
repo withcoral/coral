@@ -24,14 +24,13 @@ const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or 
 /// saves it as a Saved Function to type-check it, so keep that Program whole.
 pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find tools and Saved Functions with `coral.workspace.catalog()`. `providers` counts each Call Root's `tools` and `groups`, such as `{ pulls: 27 }`. `tools` holds every entry: `callPath`, `signature`, `complete`, `description`. Filter `tools` in code, such as by regex. Return matches and `providers`, never all `tools`. Call a read from an entry when it is `complete`. Else, and before a write, pass its `callPath` in `coral.workspace.search({ paths })` to read its declaration. No pattern finds it? `coral.workspace.search({ query })` ranks by keywords.
+Find tools and Saved Functions with `coral.workspace.catalog()`. The end of this description counts this workspace's tools by Call Root and group: choose a regex from it. `tools` holds every entry: `callPath`, `signature`, `complete`, `description`. Filter `tools` in code, such as by regex. Return only matches, never all `tools`. Call a read from an entry when it is `complete`. Else, and before a write, pass its `callPath` in `coral.workspace.search({ paths })` to read its declaration. No pattern finds it? `coral.workspace.search({ query })` ranks by keywords.
 ```ts
 const { data } = await coral.workspace.catalog();
 const hits = data.tools.filter((t) => /pull/i.test(t.callPath) && /list/i.test(t.callPath + t.description));
 const paths = hits.filter((t) => !t.complete).slice(0, 10).map((t) => t.callPath);
 const read = paths.length ? (await coral.workspace.search({ paths })).data : undefined;
 return {
-  providers: data.providers,
   hits: hits.slice(0, 20).map((t) => [t.callPath, t.signature, t.description]),
   declarations: read?.descriptions.map((d) => d.typescript_declaration),
 };
@@ -291,6 +290,23 @@ fn argument_problem(name: &str, arguments: &Value, failed_field: Option<&str>) -
 pub(crate) fn tools() -> Vec<Tool> {
     TOOLS.clone()
 }
+
+/// PROTOTYPE (regex-search): [`tools`], with `workspace` appended to
+/// `exec`'s description: the caller's tools counted by Call Root and group.
+pub(crate) fn tools_with_workspace(workspace: &str) -> Vec<Tool> {
+    let mut tools = tools();
+    if let Some(exec) = tools
+        .iter_mut()
+        .find(|tool| tool.name == ExecArguments::NAME)
+    {
+        exec.description = Some(format!("{EXEC_TOOL_DESCRIPTION}{workspace}").into());
+    }
+    tools
+}
+
+/// PROTOTYPE (regex-search): the most characters `exec`'s description may
+/// reach with the workspace summary. Claude Code keeps the first 4096.
+pub(crate) const EXEC_DESCRIPTION_WITH_WORKSPACE_MAX: usize = 4000;
 
 /// The served tool named `name`. The name returned is Coral's own, never the
 /// caller's text.

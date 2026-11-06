@@ -1522,6 +1522,14 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         .skip(1)
         .map(|block| block.split("\n```").next().expect("a closed block"))
         .collect::<Vec<_>>();
+    // PROTOTYPE (regex-search): exec names this caller's tools by Call Root.
+    eprintln!("exec description: {description}");
+    assert!(
+        description.contains("This workspace's tools")
+            && description.contains("- coral.providers.weather (")
+            && description.len() <= 4000,
+        "{description}"
+    );
     let [find, call_found] = programs[..] else {
         panic!("one Program finds and one calls: {description}");
     };

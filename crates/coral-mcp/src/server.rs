@@ -447,9 +447,28 @@ impl ServerHandler for McpServer {
         // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
         // and Claude Code rejects a tools/list result that omits them. Older
         // versions ignore the extra fields, so the hints are not version-gated.
-        std::future::ready(Ok(ListToolsResult::with_all_items(arguments::tools())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
+        async move {
+            // PROTOTYPE (regex-search): `exec` names what this caller can
+            // call, counted by Call Root and group, read for this request
+            // alone. Without it, `exec` keeps its fixed description.
+            let tools = match self
+                .runtime
+                .modules
+                .commands
+                .catalog_call_paths(&self.runtime.principal, &self.workspace_id)
+                .await
+            {
+                Ok(paths) => arguments::tools_with_workspace(&workspace_summary(
+                    &paths,
+                    arguments::EXEC_DESCRIPTION_WITH_WORKSPACE_MAX
+                        - arguments::EXEC_TOOL_DESCRIPTION.len(),
+                )),
+                Err(_error) => arguments::tools(),
+            };
+            Ok(ListToolsResult::with_all_items(tools)
+                .with_ttl_ms(0)
+                .with_cache_scope(CacheScope::Private))
+        }
     }
 
     // Embedded output URIs label one result's blocks; they are never listed or read.
@@ -487,6 +506,54 @@ impl ServerHandler for McpServer {
             .with_ttl_ms(0)
             .with_cache_scope(CacheScope::Private)))
     }
+}
+
+/// PROTOTYPE (regex-search): the text `exec`'s description ends with: each
+/// Call Root's tool count and groups, within `budget` characters. A line
+/// that does not fit names fewer groups, then only its count.
+fn workspace_summary(paths: &[String], budget: usize) -> String {
+    let summary = coral_search::projection::catalog_summary(paths.iter().map(String::as_str));
+    let mut text = String::from(
+        "\n\nThis workspace's tools, by Call Root: the count, then each group of `<root>.<group>.*` with its count.",
+    );
+    for provider in &summary {
+        let head = format!("\n- {} ({})", provider.call_root, provider.tools);
+        let mut line = head.clone();
+        let mut groups = provider.groups.iter().collect::<Vec<_>>();
+        // The biggest groups first, so a cut keeps the ones most worth a regex.
+        groups.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));
+        let named = groups
+            .iter()
+            .map(|(group, count)| format!("{group} {count}"))
+            .collect::<Vec<_>>();
+        if !named.is_empty() {
+            line.push_str(": ");
+            line.push_str(&named.join(", "));
+        }
+        let room = budget.saturating_sub(text.len());
+        if line.len() > room {
+            line = head;
+            let mut kept = Vec::new();
+            for group in &named {
+                let candidate = format!(
+                    "{line}: {}, …",
+                    [kept.clone(), vec![group.clone()]].concat().join(", ")
+                );
+                if candidate.len() > room {
+                    break;
+                }
+                kept.push(group.clone());
+            }
+            if !kept.is_empty() {
+                line = format!("{line}: {}, …", kept.join(", "));
+            }
+            if line.len() > room {
+                break;
+            }
+        }
+        text.push_str(&line);
+    }
+    text
 }
 
 fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {

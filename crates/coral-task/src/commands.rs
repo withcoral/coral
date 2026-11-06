@@ -83,6 +83,27 @@ impl TaskCommands {
         }
     }
 
+    /// PROTOTYPE (regex-search): the Call Path of every Tool and Saved
+    /// Function `actor` can call in `workspace_id`, for `tools/list` to
+    /// summarize. Records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Authority and persistence failures.
+    pub async fn catalog_call_paths(
+        &self,
+        actor: &coral_workspace::AuthenticatedPrincipal,
+        workspace_id: &coral_workspace::WorkspaceId,
+    ) -> Result<Vec<String>, coral_search::Error> {
+        Ok(self
+            .search
+            .catalog_call_paths(actor, workspace_id)
+            .await?
+            .into_iter()
+            .map(|path| path.as_str().to_owned())
+            .collect())
+    }
+
     /// Retains exactly one requested search page before returning it.
     ///
     /// No MCP tool calls this: agents discover with `coral.workspace.search`

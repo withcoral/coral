@@ -328,6 +328,39 @@ impl UniversalSearchModule {
         Ok(hits)
     }
 
+    /// PROTOTYPE (regex-search): the Call Path of every Entity the caller
+    /// can call, in Call Path order, without hydrating any. Reads no index.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::search`].
+    pub async fn catalog_call_paths(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+    ) -> Result<Vec<CallPath>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let authority = self
+            .authorize(&mut transaction, actor, workspace_id)
+            .await?;
+        let loaded = LoadedGenerations::default();
+        let context = RequestContext {
+            actor,
+            authority: &authority,
+            workspace_id,
+            terms: None,
+            loaded: &loaded,
+        };
+        let (listed, _statuses) = self
+            .list_in_transaction(&mut transaction, context, None)
+            .await?;
+        transaction.commit().await?;
+        Ok(listed
+            .into_iter()
+            .map(|ranked| ranked.entity.call_path().clone())
+            .collect())
+    }
+
     /// The Call Roots of the Providers the caller can search now, in order:
     /// the values a search's Provider filter accepts. Reads no index.
     ///

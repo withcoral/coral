@@ -47,7 +47,7 @@ pub fn search_result(page: &SearchPage) -> SearchResult {
 #[must_use]
 pub fn catalog(hits: &[SearchHit]) -> coral_catalog::CatalogResult {
     coral_catalog::CatalogResult {
-        providers: catalog_providers(hits),
+        providers: catalog_summary(hits.iter().map(|hit| hit.call_path().as_str())),
         tools: hits
             .iter()
             .map(|hit| coral_catalog::CatalogEntry {
@@ -64,12 +64,16 @@ pub fn catalog(hits: &[SearchHit]) -> coral_catalog::CatalogResult {
     }
 }
 
-/// One summary per Call Root, in Call Path order: its entry count, and the
-/// entry count under each next segment that holds more than one level.
-fn catalog_providers(hits: &[SearchHit]) -> Vec<coral_catalog::CatalogProvider> {
+/// PROTOTYPE (regex-search): one summary per Call Root, in Call Path order:
+/// its entry count, and the entry count under each next segment that holds
+/// more than one level.
+#[must_use]
+pub fn catalog_summary<'a>(
+    call_paths: impl IntoIterator<Item = &'a str>,
+) -> Vec<coral_catalog::CatalogProvider> {
     let mut providers = std::collections::BTreeMap::<String, coral_catalog::CatalogProvider>::new();
-    for hit in hits {
-        let segments: Vec<&str> = hit.call_path().as_str().split('.').collect();
+    for call_path in call_paths {
+        let segments: Vec<&str> = call_path.split('.').collect();
         // coral.providers.<namespace>, or coral.workspace / coral.functions.
         let root_len = if segments.get(1) == Some(&"providers") {
             3
