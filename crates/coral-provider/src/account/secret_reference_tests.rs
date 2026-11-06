@@ -1,5 +1,5 @@
-//! Accounts whose Credential Fields include a Secret Reference. Nothing writes
-//! one yet, so these fixtures set the column directly. Storage treats every
+//! How storage treats Credential Fields that include a Secret Reference, whether well
+//! formed or not, so these fixtures set the column directly. Storage treats every
 //! scope alike, so a User's Account serves as the simplest one to retire.
 use super::{AccountModule, AccountScope, AccountState, CredentialEvidence, ProviderAccountId};
 use crate::Error;
@@ -156,7 +156,7 @@ fn token(value: &str) -> CredentialValues {
     CredentialValues::token(Secret::new(value.into()).unwrap())
 }
 
-/// Coral holds no Secret Store yet, so any reference leaves a typed-in Account
+/// This module defines no Secret Store, so any reference leaves the Account
 /// unusable. It never falls back to the fields it can read.
 #[tokio::test]
 async fn an_account_with_a_reference_fails_closed_and_changes_nothing() {

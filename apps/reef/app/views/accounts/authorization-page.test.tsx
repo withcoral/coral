@@ -7,6 +7,7 @@ import { AuthorizationPage } from './authorization-page'
 import type { AuthorizationView } from './types'
 
 const view: AuthorizationView = {
+  secretStores: [],
   providerName: 'GitHub',
   scope: 'user',
   path: '/workspaces/w/account-authorizations/original?returnTo=%2Fworkspaces%2Fw%2Factivity%3Frequest%3Doriginal',

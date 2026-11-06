@@ -1076,3 +1076,18 @@ async fn two_processes_that_boot_together_install_one_builtin_provider() {
     );
     assert!(first.workspaces_without_builtin().await.unwrap().is_empty());
 }
+
+/// ADR 0032: a Program cannot set or change a Secret Reference, so it cannot probe a
+/// store through the setup check. Only the private gRPC surface takes one.
+#[tokio::test]
+async fn no_builtin_tool_takes_a_secret_reference() {
+    let keys = BuiltinWorkspace::new().await.keys().await;
+    assert!(!keys.is_empty());
+    for key in keys {
+        let key = key.to_lowercase();
+        assert!(
+            !key.contains("secret") && !key.contains("credential"),
+            "{key}"
+        );
+    }
+}

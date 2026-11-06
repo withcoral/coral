@@ -60,6 +60,16 @@ coral_failures! {
     AccountRequired => "account_required",
     /// Credential refresh could not complete; Account state is unchanged.
     CredentialRefreshFailed => "credential_refresh_failed",
+    /// The Account's Secret Store did not answer, or is outside the destination policy.
+    SecretStoreUnreachable => "secret_store_unreachable",
+    /// The Account's Secret Store has no entry for one of its fields.
+    SecretEntryNotFound => "secret_entry_not_found",
+    /// The entry in the Account's Secret Store lacks the key for one of its fields.
+    SecretKeyNotFound => "secret_key_not_found",
+    /// The Account's Secret Store denied this read.
+    SecretStorePermissionDenied => "secret_store_permission_denied",
+    /// The Account's Secret Store answered with no usable value.
+    SecretStoreMalformedResponse => "secret_store_malformed_response",
     /// The Provider owner must repair the shared OAuth application; account grants remain intact.
     OAuthClientConfiguration => "oauth_client_configuration",
     /// The exact Account authorization changed before dispatch.
@@ -123,6 +133,13 @@ impl CoralFailure {
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",
+            Self::SecretStoreUnreachable => "Tool account's secret store is unreachable",
+            Self::SecretEntryNotFound => "Tool account's secret store has no such entry",
+            Self::SecretKeyNotFound => "Tool account's secret store entry has no such key",
+            Self::SecretStorePermissionDenied => "Tool account's secret store denied the read",
+            Self::SecretStoreMalformedResponse => {
+                "Tool account's secret store sent an unusable response"
+            }
             Self::OAuthClientConfiguration => {
                 "Ask the Provider owner to repair the OAuth application"
             }

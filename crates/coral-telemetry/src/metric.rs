@@ -28,8 +28,8 @@ pub use attribute::{
     AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome,
     CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
     DbSystem, DropReason, GateKind, Interface, InvocationEnd, OutputKind, PrincipalKind,
-    ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus, SignalKind,
-    TerminationReason, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus, SecretStoreRead,
+    SignalKind, TerminationReason, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -105,6 +105,7 @@ struct Catalog {
     output_size: Histogram<u64>,
     output_rejections: Counter<u64>,
     run_claims: Counter<u64>,
+    secret_store_read_duration: Histogram<f64>,
     telemetry_dropped: Counter<u64>,
 }
 
@@ -541,6 +542,10 @@ impl Metrics {
                 "{output}",
                 "Outputs a Program Run could not keep, because they were too large or invalid.",
             ),
+            secret_store_read_duration: seconds(
+                "coral.secret_store.read.duration",
+                "How long one read from a Secret Store took, by its outcome.",
+            ),
             run_claims: counter(
                 "coral.run.claims",
                 "{claim}",
@@ -946,6 +951,20 @@ pub fn run_claimed(claim: ClaimKind, outcome: ClaimOutcome) {
             1,
             &[
                 KeyValue::new("operation", claim.as_str()),
+                KeyValue::new("outcome", outcome.as_str()),
+            ],
+        );
+    });
+}
+
+/// Records one read from a Secret Store. Nothing here carries the store's name,
+/// a path, a key or a value.
+pub fn secret_store_read(kind: &'static str, outcome: SecretStoreRead, elapsed: Duration) {
+    with(|catalog| {
+        catalog.secret_store_read_duration.record(
+            elapsed.as_secs_f64(),
+            &[
+                KeyValue::new("secret_store.kind", kind),
                 KeyValue::new("outcome", outcome.as_str()),
             ],
         );

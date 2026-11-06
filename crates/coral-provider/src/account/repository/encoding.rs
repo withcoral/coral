@@ -174,6 +174,18 @@ pub(in crate::account) fn encode_values(
         .map(Zeroizing::new)
         .map_err(|_invalid| Error::AccountInput)
 }
+/// A record of typed values, which may be empty when a Secret Store holds every field.
+pub(in crate::account) fn encode_sealed_fields(
+    values: &BTreeMap<String, Secret>,
+) -> Result<Zeroizing<String>, Error> {
+    let exposed: BTreeMap<&str, &str> = values
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.expose()))
+        .collect();
+    serde_json::to_string(&exposed)
+        .map(Zeroizing::new)
+        .map_err(|_invalid| Error::AccountInput)
+}
 pub(in crate::account) fn decode_values(value: &str) -> Result<CredentialValues, Error> {
     CredentialValues::new(decode_sealed_fields(value)?).map_err(|_invalid| Error::AccountInput)
 }
@@ -193,12 +205,32 @@ pub(in crate::account) fn decode_sealed_fields(
         .collect()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredReference {
     store: String,
     path: String,
     key: Option<String>,
+}
+
+/// The references to store beside an Account's sealed record, by field name.
+pub(in crate::account) fn encode_references(
+    references: &BTreeMap<String, SecretReference>,
+) -> Result<String, Error> {
+    let stored: BTreeMap<&str, StoredReference> = references
+        .iter()
+        .map(|(name, reference)| {
+            (
+                name.as_str(),
+                StoredReference {
+                    store: reference.store().to_owned(),
+                    path: reference.path().to_owned(),
+                    key: reference.key().map(str::to_owned),
+                },
+            )
+        })
+        .collect();
+    serde_json::to_string(&stored).map_err(|_invalid| Error::AccountInput)
 }
 
 /// The references stored beside an Account's sealed record, by field name.

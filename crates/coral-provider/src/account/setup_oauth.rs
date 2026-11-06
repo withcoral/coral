@@ -781,7 +781,13 @@ impl AccountModule {
                 return Err(Error::AccountRequired);
             }
             access = current
-                .current_account_credentials(self, &mut tx, owner, now.occurred_at_unix_nanos())
+                .current_account_credentials(
+                    self,
+                    &mut tx,
+                    owner,
+                    now.occurred_at_unix_nanos(),
+                    access,
+                )
                 .await?;
             tx.commit().await?;
         }

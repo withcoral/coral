@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { data, redirect, type RouterContextProvider } from 'react-router'
-import { credentialFieldViews, credentialValuesFrom } from './credential-fields.server'
+import {
+  credentialFieldViews,
+  credentialFieldsFrom,
+  credentialValuesFrom,
+} from './credential-fields.server'
+import { secretStoreId } from './organization.server'
 import { redirectToProviderConsent } from './provider-consent.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { ConnectError, Code } from '@connectrpc/connect'
@@ -206,16 +211,27 @@ export async function loadAuthorization(
   const started = safeReturnTo(returnTo)
   if (state === 'succeeded' && (scope === 'user' || scope === 'agent') && started)
     throw redirect(started, { headers: accountHeaders })
+  const oauth =
+    value.userCode !== undefined || Boolean(value.consentNavigation) || value.consentRejected
+  const problem = new URL(request.url).searchParams.get('secretStoreProblem')
   return {
     ...accountNavigation(returnTo, path, workspaceName(params.workspace)),
+    // Only a shared Account's secret entry takes a reference.
+    secretStores:
+      scope === 'shared' && !oauth && state === 'pending'
+        ? await offeredSecretStores(api, workspaceName(params.workspace))
+        : [],
+    secretStoreProblem:
+      problem && Object.hasOwn(SECRET_STORE_PROBLEMS, problem)
+        ? SECRET_STORE_PROBLEMS[problem]
+        : undefined,
     providerName: (providerParents ?? parents)[1]?.label || 'Unavailable provider',
     parents,
     scope,
     retryPath,
     state,
     userCode: value.userCode,
-    oauth:
-      value.userCode !== undefined || Boolean(value.consentNavigation) || value.consentRejected,
+    oauth,
     applicationFailure: value.failureCode === 'oauth_client_configuration',
     failure: value.failureCode,
     automaticRefresh: value.automaticRefresh,
@@ -726,6 +742,31 @@ async function consentRedirect(
   return response
 }
 
+/** What each refused Secret Reference tells the Workspace Owner to do. */
+const SECRET_STORE_PROBLEMS: Record<string, string> = {
+  SECRET_STORE_NOT_GRANTED:
+    'This workspace has no grant for this secret store. Ask an organization owner to grant it.',
+  SECRET_STORE_UNREACHABLE:
+    'Coral cannot reach this secret store. Ask your operator to check its address and outbound settings.',
+  SECRET_ENTRY_NOT_FOUND: 'The secret store has no entry at this path. Check the path.',
+  SECRET_KEY_NOT_FOUND: 'This entry has no such key. Check the key.',
+  SECRET_STORE_PERMISSION_DENIED:
+    'The secret store denied this read. Check the path, or ask your operator to check its policy.',
+  SECRET_STORE_MALFORMED_RESPONSE: 'The secret store sent an unusable value. Check the entry.',
+}
+
+function withSecretStoreProblem(path: string, reason: string) {
+  const url = new URL(path, 'http://reef')
+  url.searchParams.set('secretStoreProblem', reason)
+  return `${url.pathname}${url.search}`
+}
+
+/** The stores a shared Account may name. Only a workspace owner can list them. */
+async function offeredSecretStores(api: ReturnType<typeof management>, parent: string) {
+  const { secretStores } = await api.secretStores.listWorkspaceSecretStores({ parent })
+  return secretStores.filter((store) => store.available).map((store) => secretStoreId(store.name))
+}
+
 export async function authorizationAction(
   request: Request,
   context: Readonly<RouterContextProvider>,
@@ -740,10 +781,7 @@ export async function authorizationAction(
       case 'navigate':
         return await consentRedirect(api, context, name, path)
       case 'secret':
-        await api.accounts.submitProviderAccountSecret({
-          name,
-          credentialValues: credentialValuesFrom(form),
-        })
+        await api.accounts.submitProviderAccountSecret({ name, ...credentialFieldsFrom(form) })
         break
       case 'cancel':
         await api.accounts.cancelProviderAccountAuthorization({ name })
@@ -752,6 +790,9 @@ export async function authorizationAction(
         throw new Response('Invalid action', { status: 400, headers: accountHeaders })
     }
   } catch (error) {
+    // A reference that failed its check leaves the connection open, so you can fix it here.
+    if (error instanceof ConnectError && Object.hasOwn(SECRET_STORE_PROBLEMS, error.rawMessage))
+      return redirect(withSecretStoreProblem(path, error.rawMessage), { headers: accountHeaders })
     if (
       (error instanceof ConnectError && error.code === Code.FailedPrecondition) ||
       (error instanceof Response && error.status === 409)

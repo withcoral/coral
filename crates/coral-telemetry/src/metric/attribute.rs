@@ -139,6 +139,18 @@ attribute! {
 }
 
 attribute! {
+    /// How a read from a Secret Store ended, for `outcome`.
+    SecretStoreRead {
+        Read => "read",
+        Unreachable => "unreachable",
+        EntryNotFound => "entry_not_found",
+        KeyNotFound => "key_not_found",
+        PermissionDenied => "permission_denied",
+        MalformedResponse => "malformed_response",
+    }
+}
+
+attribute! {
     /// The protocol of a Provider Tool, for `provider.protocol`.
     ProviderProtocol {
         Http => "http",

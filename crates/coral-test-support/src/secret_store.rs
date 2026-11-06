@@ -4,7 +4,27 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use coral_secret_store::{Error, Secret, SecretReference, SecretStore};
+use coral_secret_store::{
+    Error, Secret, SecretReference, SecretStore, SecretStoreKind, SecretStoreName, SecretStores,
+};
+
+/// A registry that defines each of these stores under its name.
+///
+/// # Panics
+/// On an invalid or repeated name, which is a mistake in the test.
+#[must_use]
+pub fn secret_stores<const N: usize>(
+    stores: [(&str, std::sync::Arc<dyn SecretStore>); N],
+) -> SecretStores {
+    SecretStores::new(stores.map(|(name, store)| {
+        (
+            SecretStoreName::parse(name).expect("store name"),
+            SecretStoreKind::KvV2,
+            store,
+        )
+    }))
+    .expect("store names")
+}
 
 /// Holds entries of named keys, like a KV store, and fails on request.
 #[derive(Default)]

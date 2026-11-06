@@ -769,6 +769,7 @@ pub(crate) async fn start_server(
     );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
+            .with_secret_stores(secret_stores.clone())
             .with_client_bootstrap_policy(client_bootstrap_policy);
         match client_id_metadata_document {
             Some(document) => accounts.with_client_id_metadata_document(document),
