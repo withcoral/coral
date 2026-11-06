@@ -58,6 +58,11 @@ const CORAL: &[&str] = &[
     // The Saved Function and its Call Path.
     "coral.saved_function.id",
     "coral.saved_function.call_path",
+    // A read from a Secret Store: the name the operator gave it, its kind and
+    // how long the read took, in milliseconds. Never a metric attribute.
+    "coral.secret_store.name",
+    "coral.secret_store.kind",
+    "coral.secret_store.read_ms",
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
     // A Run Executor's protocol level and its peer's, when a link refuses

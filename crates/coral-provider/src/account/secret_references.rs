@@ -7,6 +7,7 @@ use coral_credentials::{CredentialField, CredentialValues, Secret, SecretReferen
 use coral_db::Transaction;
 use coral_secret_store::Error as StoreError;
 use coral_telemetry::metric::{self, SecretStoreRead};
+use coral_telemetry::safe;
 use coral_workspace::{ChangeContext, WorkspaceId};
 
 use super::{
@@ -15,6 +16,44 @@ use super::{
 };
 use crate::Error;
 use coral_catalog::ProviderCredentialContract;
+
+/// The name of a store this deployment defines.
+struct DefinedStoreName<'a>(&'a str);
+
+impl std::fmt::Display for DefinedStoreName<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+/// Only a read from a store found in the registry makes one, so it names a store
+/// the operator defined.
+impl safe::Identifier for DefinedStoreName<'_> {}
+
+/// Names the store a read went to, which the read metric leaves out.
+fn log_read(
+    store: &DefinedStoreName<'_>,
+    kind: &'static str,
+    read: SecretStoreRead,
+    elapsed: std::time::Duration,
+) {
+    if matches!(read, SecretStoreRead::Read) {
+        tracing::info!(
+            coral.secret_store.name = safe::id(store),
+            coral.secret_store.kind = safe::kind(kind),
+            coral.secret_store.read_ms = safe::number(elapsed.as_millis()),
+            "read a value from a Secret Store"
+        );
+    } else {
+        tracing::warn!(
+            coral.secret_store.name = safe::id(store),
+            coral.secret_store.kind = safe::kind(kind),
+            coral.secret_store.read_ms = safe::number(elapsed.as_millis()),
+            error.type = safe::kind(read.as_str()),
+            "failed to read a value from a Secret Store"
+        );
+    }
+}
 
 impl AccountModule {
     /// Completes secret entry when each Credential Field is either a typed value
@@ -150,14 +189,12 @@ impl AccountModule {
             .ok_or(Error::AccountRequired)?;
         let started = std::time::Instant::now();
         let result = store.read(reference).await;
-        metric::secret_store_read(
-            name,
-            kind.as_str(),
-            result
-                .as_ref()
-                .map_or_else(|error| outcome(*error), |_value| SecretStoreRead::Read),
-            started.elapsed(),
-        );
+        let elapsed = started.elapsed();
+        let read = result
+            .as_ref()
+            .map_or_else(|error| outcome(*error), |_value| SecretStoreRead::Read);
+        metric::secret_store_read(kind.as_str(), read, elapsed);
+        log_read(&DefinedStoreName(name), kind.as_str(), read, elapsed);
         result.map_err(Error::SecretStoreRead)
     }
 

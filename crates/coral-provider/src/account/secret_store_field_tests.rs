@@ -287,6 +287,40 @@ async fn a_failed_read_fails_closed_without_naming_the_path() {
     assert_eq!(f.store.reads(), reads, "preparation never reads the store");
 }
 
+// Catches: a read the operator can't trace to its store, since the metric never
+// names one, or a record that carries the path, the key or the value.
+#[tokio::test]
+async fn each_read_logs_its_store_and_never_its_path_or_value() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    // For the whole process: `set_default` misses a callsite another test's
+    // thread registered first. No other test here asserts on logs.
+    let exported = coral_telemetry::testing::ExportCapture::default();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(exported.log_layer()),
+    )
+    .unwrap();
+    let f = shared().await;
+    f.save(reference("team", PATH, "token")).await.unwrap();
+    let evidence = f.evidence().await;
+    f.read(&evidence).await.unwrap();
+    f.store.fail_with(Some(StoreError::PermissionDenied));
+    f.read(&evidence).await.unwrap_err();
+
+    let logs = exported.text();
+    for expected in [
+        "coral.secret_store.name",
+        "\"team\"",
+        "coral.secret_store.read_ms",
+        "permission_denied",
+    ] {
+        assert!(logs.contains(expected), "{expected} in {logs}");
+    }
+    for secret in [PATH, "stored-canary"] {
+        assert!(!logs.contains(secret), "{secret} in {logs}");
+    }
+}
+
 // Catches: a revoked store still answering, which ADR 0032 forbids, or a removed
 // grant reaching the store at all.
 #[tokio::test]

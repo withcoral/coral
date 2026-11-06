@@ -36,6 +36,7 @@ sea-query.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 unicode-general-category.workspace = true
 uuid = { workspace = true, features = ["v5"] }
 zeroize.workspace = true
@@ -50,3 +51,5 @@ tempfile.workspace = true
 wiremock.workspace = true
 coral-test-support.workspace = true
 flate2.workspace = true
+coral-telemetry = { workspace = true, features = ["test-support"] }
+tracing-subscriber.workspace = true

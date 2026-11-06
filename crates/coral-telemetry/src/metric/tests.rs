@@ -209,7 +209,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "coral.secret_store.read.duration",
         "histogram",
         "s",
-        &["outcome", "secret_store.kind", "secret_store.name"],
+        &["outcome", "secret_store.kind"],
     ),
     (
         "coral.telemetry.dropped",
@@ -266,7 +266,6 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     run_recovered(RecoveryOutcome::Ended);
     run_claimed(ClaimKind::Recover, ClaimOutcome::Won);
     secret_store_read(
-        "team",
         "kv_v2",
         SecretStoreRead::EntryNotFound,
         Duration::from_millis(4),

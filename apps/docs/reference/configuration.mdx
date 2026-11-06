@@ -166,7 +166,7 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`     | URL of the http otel endpoint to which telemetry will be sent.                     | No       | N/A                                                                                                                                     |
 | `headers`      | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                    |
-| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
+| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info`                                             |
 | `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 | `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
@@ -195,7 +195,7 @@ The UI checks the endpoint, protocol and sampler values only when export is on.
 
 #### Metrics
 
-With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. Apart from `secret_store.name`, the name you give a store, no attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.
+With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.
 
 - On `coral.request.duration`, `operation` is the route template or the gRPC method. An MCP tool call is `tools/call` followed by the tool's name, such as `tools/call exec`.
 - On `coral.run.claims`, `operation` is the claim: `accept`, `start`, `recover` or `takeover`.
@@ -230,8 +230,10 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                             |
 | `coral.output.size`                      | Histogram | `output.kind`                                                           |
 | `coral.output.rejections`                | Counter   | `output.kind`                                                           |
-| `coral.secret_store.read.duration`       | Histogram | `secret_store.name`, `secret_store.kind`, `outcome`                     |
+| `coral.secret_store.read.duration`       | Histogram | `secret_store.kind`, `outcome`                                          |
 | `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
+
+No metric names a Secret Store. To find the store behind a slow or failing read, use the log records: each read logs `coral.secret_store.name`, `coral.secret_store.kind` and `coral.secret_store.read_ms`. A failed read logs at `warn` and adds `error.type`.
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 

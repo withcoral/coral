@@ -6,8 +6,7 @@
 //! the functions here, which find the catalog through the current tracing
 //! dispatcher, so they record nothing without the layer and a test scopes
 //! them as it scopes spans. Each attribute is one of a bounded set: an enum
-//! here, a code Coral's own code fixes, or `secret_store.name`, a name the operator
-//! fixes in deployment config. No other attribute holds an identifier,
+//! here, or a code Coral's own code fixes. No attribute holds an identifier,
 //! a Provider name, a Tool Call Path, a client, an endpoint or an error's
 //! text. Durations are seconds, sizes are bytes, active and queue values are
 //! gauges, transitions are counters and distributions are histograms.
@@ -958,19 +957,13 @@ pub fn run_claimed(claim: ClaimKind, outcome: ClaimOutcome) {
     });
 }
 
-/// Records one read from a Secret Store. `store` is the name config gives it, and
-/// nothing here carries a path, a key or a value.
-pub fn secret_store_read(
-    store: &str,
-    kind: &'static str,
-    outcome: SecretStoreRead,
-    elapsed: Duration,
-) {
+/// Records one read from a Secret Store. Nothing here carries the store's name,
+/// a path, a key or a value.
+pub fn secret_store_read(kind: &'static str, outcome: SecretStoreRead, elapsed: Duration) {
     with(|catalog| {
         catalog.secret_store_read_duration.record(
             elapsed.as_secs_f64(),
             &[
-                KeyValue::new("secret_store.name", store.to_owned()),
                 KeyValue::new("secret_store.kind", kind),
                 KeyValue::new("outcome", outcome.as_str()),
             ],

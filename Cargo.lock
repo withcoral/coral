@@ -937,6 +937,8 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "unicode-general-category",
  "url",
  "uuid",
