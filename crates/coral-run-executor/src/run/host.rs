@@ -48,7 +48,7 @@ struct State {
     /// The Run Output Budget bytes counted.
     output: usize,
     /// Each request above the committed watermark, with its weight under
-    /// the Applied cap: its encoded size.
+    /// the Applied cap: its output bytes, which are zero for an Invoke.
     unconfirmed: BTreeMap<u64, usize>,
     /// The sum of `unconfirmed`'s weights.
     unconfirmed_bytes: usize,
@@ -181,11 +181,10 @@ impl RunHost {
     }
 
     /// Numbers and sends one of the Program's requests once no more than the
-    /// Applied cap is above the committed watermark, and counts `bytes`
-    /// against the Run Output Budget. `false` when the Program must stop
-    /// instead.
+    /// Applied cap is above the committed watermark, and counts its output
+    /// `bytes` against the Run Output Budget and the Applied cap. `false` when
+    /// the Program must stop instead.
     fn send(&self, kind: request::Kind, bytes: usize, answer: Option<Answer>) -> bool {
-        let weight = kind.encoded_len();
         let mut state = self.state();
         while state.unconfirmed_bytes > self.applied_cap_bytes && !state.stopped {
             state = self
@@ -205,8 +204,8 @@ impl RunHost {
         state.output = state.output.saturating_add(bytes);
         let number = state.last.saturating_add(1);
         state.last = number;
-        state.unconfirmed.insert(number, weight);
-        state.unconfirmed_bytes = state.unconfirmed_bytes.saturating_add(weight);
+        state.unconfirmed.insert(number, bytes);
+        state.unconfirmed_bytes = state.unconfirmed_bytes.saturating_add(bytes);
         if let Some(answer) = answer {
             state.invocations.insert(number, answer);
         }

@@ -240,30 +240,46 @@ async fn a_final_value_counts_against_the_run_output_budget() {
     }
 }
 
-/// Catches: a Program that sends past the Applied cap, or one that a
-/// Committed never releases.
+/// Catches: an Applied cap that counts Invokes, a Program that sends past it,
+/// or one that a Committed never releases.
 #[tokio::test]
 async fn the_applied_cap_holds_the_next_request_until_committed() {
     let (mut coral, _retire) = linked(8).await;
-    let source = r#"await coral.emit("123456789");
+    let source = r#"await Promise.all([1, 2, 3].map((id) =>
+  coral.providers.tracker.issues.get({ id, note: "longer than the cap" })));
+await coral.emit("123456789");
 console.info("next");
 return 1;"#;
     let mut run = started(&mut coral, compiled(source), None).await;
-    assert_eq!(next_request(&mut run).await, (1, emit(r#""123456789""#, 1)));
-    // 11 bytes above the watermark, more than the cap of 8: the Log waits.
+    // Each Invoke is longer than the cap of 8, but counts no output: none waits.
+    for number in 1..=3 {
+        let (sent, kind) = next_request(&mut run).await;
+        assert_eq!(sent, number);
+        assert!(matches!(kind, request::Kind::Invoke(_)), "{kind:?}");
+    }
+    for number in 1..=3 {
+        run.send(result(
+            number,
+            0,
+            tool_result::Outcome::ResultJson("{}".to_owned()),
+        ))
+        .await;
+    }
+    assert_eq!(next_request(&mut run).await, (4, emit(r#""123456789""#, 3)));
+    // 11 output bytes above the watermark, more than the cap: the Log waits.
     let held = tokio::time::timeout(Duration::from_millis(300), run.next()).await;
     assert!(held.is_err(), "the next request waits, got {held:?}");
     run.send(run_response::Message::Committed(Committed {
-        request_number: 1,
+        request_number: 4,
     }))
     .await;
     let (number, kind) = next_request(&mut run).await;
     assert!(
-        matches!((number, &kind), (2, request::Kind::Log(log)) if log.message == "next"),
+        matches!((number, &kind), (5, request::Kind::Log(log)) if log.message == "next"),
         "{kind:?}"
     );
     let value = finish(finish::Completion::ValueJson("1".to_owned()));
-    assert_eq!(next_request(&mut run).await, (3, value));
+    assert_eq!(next_request(&mut run).await, (6, value));
 }
 
 /// Catches: a Terminate that leaves a waiting Program blocked, or one that
