@@ -50,7 +50,7 @@ function credentialFree(tools: Record<string, object>, server?: string) {
 async function builtinCall(runner: ReturnType<typeof programRunner>, tool: string, call: unknown) {
   const { update } = await observeRun(
     runner,
-    await runner.exec(`return await coral.workspace.${tool}(${JSON.stringify(call)});`),
+    await runner.exec(`return await coral.${tool}(${JSON.stringify(call)});`),
   )
   expect(update.required_actions).toEqual([])
   return (update.final_value as { value: { data: { status: string; url: string } } }).value.data
@@ -579,7 +579,7 @@ test("A workspace owner declines their Program's rename, then approves it, and t
       credentialFree({ getForecast: {} }),
       { unattended: ['addProvider'] },
     )
-    const rename = `try { return await coral.workspace.updateProvider(${JSON.stringify({
+    const rename = `try { return await coral.updateProvider(${JSON.stringify({
       namespace: 'weather',
       displayName: 'Forecasts',
     })}); } catch (error) { return error.code; }`

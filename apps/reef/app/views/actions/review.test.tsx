@@ -96,7 +96,7 @@ describe('exact approval review', () => {
       [],
     ],
   ])('shows %s with an inline OpenAPI document as the call sent it', (_, sent, fields) => {
-    const detail = { ...approval, callPath: 'coral.workspace.addProvider', arguments: sent }
+    const detail = { ...approval, callPath: 'coral.addProvider', arguments: sent }
     renderRoute(
       <ActionReviewSession request={detail}>
         <ApprovalReview detail={detail} context={approvalContext} />

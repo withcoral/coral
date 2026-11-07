@@ -26,7 +26,7 @@ function revealedAt(task: string, run: string, record: string) {
 
 /**
  * Waits until the selected discovery Run's return value, the description its Program read
- * with `coral.workspace.search` then, shows the recorded source that holds `marker`.
+ * with `coral.search` then, shows the recorded source that holds `marker`.
  */
 async function openRecordedSource(page: Page, marker: string) {
   await shownPayload(
@@ -87,13 +87,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
               )
             ).isError,
           ).not.toBe(true)
-          expect((await execute.describe('coral.functions.history.snapshot')).isError).not.toBe(
-            true,
-          )
+          expect((await execute.describe('coral.private.history.snapshot')).isError).not.toBe(true)
           const observed = await observeRun(
             execute,
             await execute.exec(
-              'for (let i = 0; i < 30; i++) coral.emit({i}); return coral.functions.history.snapshot();',
+              'for (let i = 0; i < 30; i++) coral.emit({i}); return coral.private.history.snapshot();',
             ),
           )
           run = observed.update.run_id
@@ -112,7 +110,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           expect(rejected.isError).toBe(true)
           // Keep enough children to require real scrolling in the continuous history.
           for (let index = 0; index < 45; index++) {
-            expect((await execute.describe('coral.functions.history.snapshot')).isError).not.toBe(
+            expect((await execute.describe('coral.private.history.snapshot')).isError).not.toBe(
               true,
             )
           }

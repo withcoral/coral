@@ -8,7 +8,7 @@ use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_telemetry::safe;
-use coral_v8::CompileFailure;
+use coral_v8::{BuiltinTools, CompileFailure};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
 use uuid::Uuid;
@@ -338,10 +338,16 @@ impl RunModule {
             &source,
             linked.iter().map(|snapshot| snapshot.source().as_str()),
         )?;
+        let builtin_tools = self.builtin_tools(workspace_id).await?;
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
-            engine.compile_with_saved_functions(compilation_deadline, &source, &compile_linked)
+            engine.compile_with_saved_functions(
+                compilation_deadline,
+                &source,
+                &compile_linked,
+                &builtin_tools,
+            )
         });
         let package = match timeout_at(compilation_deadline.into(), compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
@@ -539,6 +545,20 @@ impl RunModule {
         Err(Error::ProgramAdmission(
             coral_v8::bounded_diagnostic_message(&message),
         ))
+    }
+
+    /// The Workspace's Built-in Tools, which the Run calls on `coral`: the
+    /// ones its Built-in Provider holds now, as discovery and Invocation
+    /// admission read them. A newer or older Coral may have written them, so
+    /// a Tool this version cannot perform fails when called, as
+    /// `tool_unavailable`, and not as a missing member.
+    async fn builtin_tools(&self, workspace_id: &WorkspaceId) -> Result<BuiltinTools, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let paths =
+            coral_provider::builtin_tool_paths_in_transaction(&mut transaction, workspace_id)
+                .await?;
+        transaction.commit().await?;
+        Ok(BuiltinTools::new(paths))
     }
 
     /// The paths among `call_paths` that Invocation admission would

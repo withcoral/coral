@@ -411,7 +411,7 @@ const directActivation = activation('add or reconnect the server')
 const pluginActivation = activation('add or reconnect the server or install a plugin')
 /** A configured server may not work, so the role's steps wait for a call that does. */
 const liveCheck =
-  '7. If your client needs a reload, a restart or a new chat, ask me to do that now. Wait for me. Then call coral.workspace.listProviders on the server with this exact URL. If I chose to use or reconnect another server, call it on that server instead. A configured server is not enough. If the call fails, do not say that the server is ready. Ask me if I want to reconnect. If I do, go to step 4. Do not continue until the call works.'
+  '7. If your client needs a reload, a restart or a new chat, ask me to do that now. Wait for me. Then call coral.listProviders on the server with this exact URL. If I chose to use or reconnect another server, call it on that server instead. A configured server is not enough. If the call fails, do not say that the server is ready. Ask me if I want to reconnect. If I do, go to step 4. Do not continue until the call works.'
 /** The whole prompt: the opener, the steps that connect to the MCP server, then `steps`. */
 const promptCopy = (opener: string, connect: string[], steps: string[], data: string) =>
   [
@@ -433,23 +433,23 @@ const promptCopy = (opener: string, connect: string[], steps: string[], data: st
   ].join('\n')
 /** How the client reads a tool policy, which lists only the tools with a rule. */
 const policyReview =
-  "If I agree, read the provider's tool policy with coral.workspace.getPolicy. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
+  "If I agree, read the provider's tool policy with coral.getPolicy. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
 /** An owner's prompt, which adds a provider. */
 const onboardingCopy = (connect: string[], data = dataRule) =>
   promptCopy(
     'Help me connect to my Coral workspace "Operations team". Then help me add a provider if I want one.',
     connect,
     [
-      '8. Search the workspace tools for coral.workspace.addProvider. Describe it to read its input. If you cannot find it, this server may not act as me. Ask me if I want to reconnect. If I do, go to step 4.',
+      '8. Search the workspace tools for coral.addProvider. Describe it to read its input. If you cannot find it, this server may not act as me. Ask me if I want to reconnect. If I do, go to step 4.',
       '9. Ask me if I want to add a provider now. Suggest one or two services for it. Base them only on what you already know about me. Do not search my files, messages or other data for ideas. Do not say that you know my tools when you do not. If you know nothing relevant, give general examples, such as GitHub or a weather service. Tell me that these are only examples. I can name any other service. I can also skip this step. Do not choose one for me. If you give me choices, always include "Another service" and "Skip for now". If I choose another service, ask me which one. If your tool cannot take a typed answer, ask me in this chat.',
-      '10. If I skip, tell me that I can add a provider later. Then stop. Do not use coral.workspace.addProvider.',
-      '11. Use coral.workspace.addProvider to add the provider that I name. If Coral asks for an approval, guide me through it.',
+      '10. If I skip, tell me that I can add a provider later. Then stop. Do not use coral.addProvider.',
+      '11. Use coral.addProvider to add the provider that I name. If Coral asks for an approval, guide me through it.',
       '12. When the status is needs_person, give me the returned link. I review, finish and publish the provider on that page. The call does not wait for me.',
-      "13. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published. Call the provider's tools under its callRoot in that list. I can change its namespace on the page.",
+      "13. When I tell you I am done, use coral.listProviders to check that the provider is published. Call the provider's tools under its callRoot in that list. I can change its namespace on the page.",
       '14. When the provider is published, ask me if I want to review its tool policy. Wait for my answer.',
       `15. ${policyReview}`,
       '16. If I want a change, propose it. Wait for me to confirm it.',
-      '17. Use coral.workspace.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
+      '17. Use coral.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
     ],
     data,
   )
@@ -459,12 +459,12 @@ const memberCopy = (connect: string[], data = dataRule) =>
     'Help me connect to my Coral workspace "Operations team".',
     connect,
     [
-      '8. Use coral.workspace.listProviders to show me the providers in this workspace.',
+      '8. Use coral.listProviders to show me the providers in this workspace.',
       "9. Call a provider's tools under coral.providers.<namespace>.",
-      '10. Only a workspace owner can add a provider. If I want a new provider, tell me to ask a workspace owner. Do not call coral.workspace.addProvider.',
+      '10. Only a workspace owner can add a provider. If I want a new provider, tell me to ask a workspace owner. Do not call coral.addProvider.',
       "11. After you show me the providers, ask me if I want to review a provider's tool policy. Wait for my answer.",
       `12. ${policyReview}`,
-      '13. Only a workspace owner can change a tool policy. If I want a change, help me ask a workspace owner for it. Do not call coral.workspace.updatePolicy.',
+      '13. Only a workspace owner can change a tool policy. If I want a change, help me ask a workspace owner for it. Do not call coral.updatePolicy.',
     ],
     data,
   )
@@ -472,10 +472,10 @@ const directStep = `${reconnectOrAdd} add the MCP server at https://mcp.example.
 const signInStep =
   'This server needs a sign-in with OAuth. When a browser opens, guide me to sign in and approve the access.'
 const signInOwner =
-  '6. Sign in as me, a user who owns this workspace. Do not use an agent API key. Only a workspace owner can use coral.workspace.addProvider.'
+  '6. Sign in as me, a user who owns this workspace. Do not use an agent API key. Only a workspace owner can use coral.addProvider.'
 const localStep = 'Connect directly. This server does not need OAuth or a sign-in.'
 const localOwner =
-  '6. Do not use an agent API key. Without one, this server acts as me, the owner of this workspace. Only a workspace owner can use coral.workspace.addProvider.'
+  '6. Do not use an agent API key. Without one, this server acts as me, the owner of this workspace. Only a workspace owner can use coral.addProvider.'
 const signInCopy = onboardingCopy([directActivation, `${directStep} ${signInStep}`, signInOwner])
 const localCopy = onboardingCopy([directActivation, `${directStep} ${localStep}`, localOwner])
 const pluginSignInCopy = onboardingCopy(
@@ -593,7 +593,7 @@ export const AskYourAgentWithPluginsWithoutSignIn: Story = {
 }
 // A member signs in as themselves and uses the providers. Only an owner adds one.
 // Catches: a member's prompt that asks them to sign in as an owner or to call
-// coral.workspace.addProvider, or a member without the prompt tab.
+// coral.addProvider, or a member without the prompt tab.
 export const AskYourAgentMember: Story = {
   render: () => (
     <>

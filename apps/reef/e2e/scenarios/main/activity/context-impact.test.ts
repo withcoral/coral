@@ -59,7 +59,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
       const discovery = await observeRun(
         execute,
         await execute.exec(
-          "return (await coral.workspace.search({ paths: ['coral.providers.contextFixture.read'] })).data.descriptions[0].typescript_declaration;",
+          "return (await coral.search({ paths: ['coral.providers.contextFixture.read'] })).data.descriptions[0].typescript_declaration;",
         ),
       )
       const run = `workspaces/${workspace}/runs/${observed.update.run_id}`

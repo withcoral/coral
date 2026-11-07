@@ -39,7 +39,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
     let paused!: RunUpdate
     await step('The Run waits for the owner to approve updatePolicy', async () => {
       const started = await runner.exec(
-        'return (await coral.workspace.updatePolicy({ namespace: "alpha", tools: { lookup: "disabled", remove: "enabled" } })).data;',
+        'return (await coral.updatePolicy({ namespace: "alpha", tools: { lookup: "disabled", remove: "enabled" } })).data;',
       )
       expect(started.isError).not.toBe(true)
       paused = started.structuredContent
@@ -86,11 +86,11 @@ test("An owner's Program cannot change the policy of the built-in provider's too
       await expectPolicy(page, 'addProvider', 'Ask')
     })
     await step('No namespace reaches Coral, so the Program gets provider_not_found', async () => {
-      // The Built-in Provider's tools are called under coral.workspace.
+      // The Built-in Provider's tools are called directly on coral.
       const { update } = await observeRun(
         runner,
         await runner.exec(
-          'try { return await coral.workspace.updatePolicy({ namespace: "workspace", tools: { updatePolicy: "disabled", addProvider: "enabled" } }); } catch (error) { return error.code; }',
+          'try { return await coral.updatePolicy({ namespace: "workspace", tools: { updatePolicy: "disabled", addProvider: "enabled" } }); } catch (error) { return error.code; }',
         ),
       )
       expect(update.final_value).toEqual({ kind: 'value', value: 'provider_not_found' })

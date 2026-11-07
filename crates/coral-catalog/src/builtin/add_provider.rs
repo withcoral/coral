@@ -54,7 +54,7 @@ pub(super) fn definition() -> Definition {
                  the URL is reachable, then call again. When status is needs_person, show \
                  the person the returned url. The Provider's Tools exist only after the \
                  person publishes it. To check later whether the person published it, call \
-                 coral.workspace.listProviders."
+                 coral.listProviders."
                     .to_string(),
             ),
         ),

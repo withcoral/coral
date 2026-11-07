@@ -96,7 +96,7 @@ test('Agent credential issuance, rotation, disablement, expiry and destructive c
           ).isError,
         ).not.toBe(true)
         expect(
-          (await runner.exec('return coral.functions.answer();')).structuredContent.final_value,
+          (await runner.exec('return coral.private.answer();')).structuredContent.final_value,
         ).toEqual({ kind: 'value', value: 42 })
         retainedTask = `workspaces/${workspace}/tasks/${runner.taskId()}`
       })

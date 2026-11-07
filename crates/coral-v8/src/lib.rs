@@ -598,6 +598,26 @@ impl CallableDeclaration {
     }
 }
 
+/// The Built-in Tools a Program calls directly on `coral`, by Tool Key, such
+/// as `search` for `coral.search`. A Program is compiled with them, so it
+/// calls exactly the ones it was admitted with, and a Saved Function is typed
+/// with them.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct BuiltinTools(Vec<String>);
+
+impl BuiltinTools {
+    /// The Built-in Tools with these keys.
+    #[must_use]
+    pub fn new(keys: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// The keys as the compiler reads them.
+    pub(crate) fn json(&self) -> std::sync::Arc<str> {
+        serde_json::Value::from(self.0.clone()).to_string().into()
+    }
+}
+
 /// The declarations that type the `coral` namespace for one Saved Function
 /// save.
 ///

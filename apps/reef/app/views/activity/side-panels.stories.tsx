@@ -444,7 +444,7 @@ const describedTool: Extract<DiscoveryContext, { kind: 'describe' }> = {
 }
 const describedFunction: Extract<DiscoveryContext, { kind: 'describe' }> = {
   kind: 'describe',
-  callPath: 'coral.functions.github.openIssuesByLabel',
+  callPath: 'coral.private.github.openIssuesByLabel',
   types: ['Issue', 'Label'],
 }
 /** A panel's one list of facts: no heading, and the same gap between every pair of rows, so
@@ -1956,7 +1956,7 @@ const exactAddProviderArguments =
   '"credentialRoute":"fixed","maxForecasts":9007199254740993,' +
   '"label":"first as sent","label":"second as sent"}'
 /** The program that makes this exact call, its arguments written out as sent. */
-const exactAddProviderProgram = `return await coral.workspace.addProvider(${exactAddProviderArguments})`
+const exactAddProviderProgram = `return await coral.addProvider(${exactAddProviderArguments})`
 /** Edge case: addProvider JSON that rows would change, a large integer and a duplicate key,
  * shows whole, exactly as sent, in one block. The ordinary arguments renderer does this for any
  * such JSON; nothing here is special to OpenAPI: no copy apart, no placeholder. */
@@ -1965,7 +1965,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     'Approval · addProvider with an inline OpenAPI document, exact-JSON fallback',
     approvalPage(
       approval({
-        callPath: 'coral.workspace.addProvider',
+        callPath: 'coral.addProvider',
         provider: `${workspace}/providers/coral`,
         providerLabel: 'Coral workspace',
         arguments: exactAddProviderArguments,
@@ -1978,7 +1978,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const review = within(dialog).getByRole('region', {
-      name: 'Review coral.workspace.addProvider',
+      name: 'Review coral.addProvider',
     })
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
@@ -2018,7 +2018,7 @@ const addProviderCall = {
 }
 /** A typical program that adds the provider with this call. */
 const addProviderProgram = `const call = ${JSON.stringify(addProviderCall, null, 2)}
-return await coral.workspace.addProvider(call)`
+return await coral.addProvider(call)`
 /** A typical addProvider call through the ordinary arguments: one row per field, and the
  * inline document whole inside `source`, as sent. The Arguments disclosure is the one way to
  * fold it; nothing is special to OpenAPI. */
@@ -2027,20 +2027,20 @@ export const ApprovalAddProviderOpenApi: Story = {
     'Approval · addProvider with an inline OpenAPI document',
     approvalPage(
       approval({
-        callPath: 'coral.workspace.addProvider',
+        callPath: 'coral.addProvider',
         provider: `${workspace}/providers/coral`,
         providerLabel: 'Coral workspace',
         arguments: JSON.stringify(addProviderCall),
       }),
       { source: addProviderProgram },
     ),
-    { evidence: 'coral.workspace.addProvider' },
+    { evidence: 'coral.addProvider' },
   ),
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const review = within(dialog).getByRole('region', {
-      name: 'Review coral.workspace.addProvider',
+      name: 'Review coral.addProvider',
     })
     const sent = within(review)
       .getByText('Arguments (4)', { selector: 'summary' })

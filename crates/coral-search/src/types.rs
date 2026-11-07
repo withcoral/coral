@@ -235,12 +235,8 @@ impl TryFrom<SearchInput> for SearchRequest {
 
 /// Parses the `provider` filter: a Provider Namespace, such as `github`, or
 /// `coral` for the Built-in Provider. A complete `coral.providers` Call
-/// Root is rejected with the namespace to use instead. `coral.workspace`, the
-/// Built-in Provider's old Call Root, still selects it until callers migrate.
+/// Root is rejected with the namespace to use instead.
 fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
-    if value == "coral.workspace" {
-        return Ok(ProviderCallRoot::Builtin);
-    }
     match ProviderCallRoot::parse(value) {
         Ok(ProviderCallRoot::Builtin) => Ok(ProviderCallRoot::Builtin),
         Ok(ProviderCallRoot::Owner(namespace)) => Err(Error::InvalidInput(format!(
@@ -336,34 +332,19 @@ impl SearchRequest {
 /// The root that every Private Tool's Call Path starts with.
 const PRIVATE_TOOL_ROOT: &str = "coral.private";
 
-/// Each old root that callers still name until they migrate, and the root
-/// that replaced it.
-const OLD_ROOTS: [(&str, &str); 2] = [
-    ("coral.workspace.", "coral."),
-    ("coral.functions.", "coral.private."),
-];
-
 /// Complete public JavaScript path for one Tool or Saved Function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);
 
 impl CallPath {
     /// Parses one complete Call Path: a Provider Call Root or `coral.private`
-    /// followed by the relative path. A path under an old root, such as
-    /// `coral.workspace.search`, is the Call Path under the root that
-    /// replaced it.
+    /// followed by the relative path.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] unless every path member is a safe
     /// JavaScript identifier under `coral` with a root and a relative path.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let current = OLD_ROOTS.iter().find_map(|(old, current)| {
-            value
-                .strip_prefix(old)
-                .map(|rest| format!("{current}{rest}"))
-        });
-        let value = current.as_deref().unwrap_or(value);
         let segments = value.split('.').collect::<Vec<_>>();
         let shaped = ProviderCallRoot::split_call_path(value).is_some()
             || matches!(segments.as_slice(), ["coral", "private", _, ..]);

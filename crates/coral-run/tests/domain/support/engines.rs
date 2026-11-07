@@ -60,6 +60,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         _deadline: std::time::Instant,
         source: &str,
         _linked: &[SavedFunctionSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
@@ -115,6 +116,7 @@ impl ProgramEngine for SnapshotEngine {
         _deadline: std::time::Instant,
         _source: &str,
         linked: &[SavedFunctionSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         let linked = linked
             .first()
@@ -591,6 +593,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         _deadline: std::time::Instant,
         _source: &str,
         linked: &[SavedFunctionSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(&linked.len().to_string()))
     }

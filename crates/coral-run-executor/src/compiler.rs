@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    CompileFailure, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
+    BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
     SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference, ToolReferences,
     UnknownToolCall,
 };
@@ -51,7 +51,7 @@ pub trait CompilerClient: Send + Sync {
     ) -> Result<Vec<SavedFunctionReference>, CompileError>;
 
     /// A Program body lowered with the Saved Functions it links, which
-    /// initialize in the given order.
+    /// initialize in the given order, and with `builtin_tools` on `coral`.
     ///
     /// # Errors
     ///
@@ -62,6 +62,7 @@ pub trait CompilerClient: Send + Sync {
         time_left: Duration,
         source: &str,
         saved_functions: &[LinkedSavedFunctionSource],
+        builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError>;
 
     /// The Saved Functions and Tools that one Saved Function module names
@@ -77,8 +78,9 @@ pub trait CompilerClient: Send + Sync {
         source: &str,
     ) -> Result<SavedFunctionCallPaths, CompileError>;
 
-    /// One Saved Function's declaration and advisory diagnostics, typed by
-    /// `declarations` when there are any.
+    /// One Saved Function's declaration and advisory diagnostics, with
+    /// `builtin_tools` on `coral` and typed by `declarations` when there are
+    /// any.
     ///
     /// # Errors
     ///
@@ -88,6 +90,7 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<SavedFunctionCompilation, CompileError>;
 }

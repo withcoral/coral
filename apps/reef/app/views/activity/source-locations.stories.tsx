@@ -45,7 +45,7 @@ const source = [
   ...Array.from({ length: 60 }, (_, i) => `  // Second batch note ${i}`),
   "  console.info('sent', 2)",
   '  coral.emit({ sent: 2 })',
-  '  await coral.functions.billing.notify()',
+  '  await coral.private.billing.notify()',
   '}',
 ].join('\n')
 const snapshot = 'export default async () => {\n  await coral.providers.mail.archive({})\n}'

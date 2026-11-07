@@ -148,73 +148,27 @@ function savedFunctionRuntimeBody(source, target, extraEdits) {
   return editedSavedFunctionBody(sourceFile, edits, defaultName);
 }
 
-// `saves` names the private carrier and holds the edits that carry what the
-// Program body and each module save.
-function linkedProgramSource(body, savedFunctions, target, saves) {
-  const pathKeys = new Set();
-  for (const savedFunction of savedFunctions) {
-    if (
-      !Array.isArray(savedFunction.pathSegments) ||
-      savedFunction.pathSegments.length === 0 ||
-      savedFunction.pathSegments.some((segment) => typeof segment !== 'string') ||
-      typeof savedFunction.source !== 'string'
-    ) {
-      throw new Error('Saved Function closure contains an invalid source entry');
-    }
-    const key = savedFunction.pathSegments.join('.');
-    if (pathKeys.has(key)) {
-      throw new Error('Saved Function closure contains a duplicate path');
-    }
-    pathKeys.add(key);
-  }
-  for (const key of pathKeys) {
-    for (const other of pathKeys) {
-      if (key !== other && other.startsWith(`${key}.`)) {
-        throw new Error('Saved Function closure contains a callable namespace conflict');
-      }
-    }
-  }
+const COMPLETE_ROOT_GLOBAL = '__coralCompleteRoot';
 
-  const modules = savedFunctions.map((savedFunction, index) => ({
-    ...savedFunction,
-    index,
-    body: savedFunctionRuntimeBody(savedFunction.source, target, saves.moduleEdits[index]),
-  }));
+// Private source that runs before any authored code: it takes the host's
+// root completion, builds `coral.private` from the linked Private Tools, each
+// of which a getter reads once its module has initialized, and completes
+// `coral` with it and a member for each Built-in Tool in `builtinTools`.
+// Module code then sets `__coralSavedFunctionDefaults[index]`.
+function coralRootPrelude(builtinTools, savedFunctions) {
+  if (
+    !Array.isArray(builtinTools) ||
+    builtinTools.some(
+      (key) => typeof key !== 'string' || !ts.isIdentifierText(key, ts.ScriptTarget.ES2025),
+    )
+  ) {
+    throw new Error('Built-in Tools must be identifiers');
+  }
   const linkedPaths = JSON.stringify(
     savedFunctions.map((savedFunction) => savedFunction.pathSegments),
   );
-  const sourceParts = [];
-  const authoredMappings = [];
-  let generatedLine = 0;
-  function append(text) {
-    // A CR ending the previous part and this LF form one CRLF terminator.
-    const joinsCrLf = sourceParts.at(-1)?.endsWith('\r') && text.startsWith('\n');
-    sourceParts.push(text);
-    generatedLine += sourceLineCount(text) - 1 - (joinsCrLf ? 1 : 0);
-  }
-
-  append(`(async () => {
-    ${savedFunctionCarrierDeclaration(saves.carrier)}
-    let __coralFunctions = Object.freeze(Object.create(null));
-    const __coralHost = globalThis.coral;
-    const __coralHasOwn = Object.hasOwn;
-    const __coralPrivateRoot = {
-      get() { return __coralFunctions; },
-      enumerable: true,
-      configurable: false,
-    };
-    const __coralLinkedMembers = Object.create(null);
-    Object.defineProperties(__coralLinkedMembers, {
-      private: __coralPrivateRoot,
-      functions: { ...__coralPrivateRoot, enumerable: false },
-    });
-    Object.preventExtensions(__coralLinkedMembers);
-    const coral = new Proxy(__coralLinkedMembers, {
-      get(target, property) {
-        return __coralHasOwn(target, property) ? target[property] : __coralHost[property];
-      },
-    });
-
+  return `    const __coralCompleteRoot = globalThis.${COMPLETE_ROOT_GLOBAL};
+    Reflect.deleteProperty(globalThis, "${COMPLETE_ROOT_GLOBAL}");
     const __coralLinkedPaths = ${linkedPaths};
     const __coralSavedFunctionDefaults = Object.create(null);
     for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
@@ -260,7 +214,66 @@ function linkedProgramSource(body, savedFunctions, target, saves) {
     for (const __coralNamespace of __coralFunctionNamespaces.toReversed()) {
       Object.freeze(__coralNamespace);
     }
-    __coralFunctions = __coralFunctionRoot;
+    if (__coralCompleteRoot !== undefined) {
+      __coralCompleteRoot(${JSON.stringify(builtinTools)}, __coralFunctionRoot);
+    } else {
+      // An execution without the Program host calls no Tool, so its \`coral\`
+      // holds only the Private Tools it links.
+      Object.defineProperty(globalThis, "coral", {
+        value: Object.freeze(Object.defineProperty(Object.create(null), "private", {
+          value: __coralFunctionRoot,
+          enumerable: true,
+        })),
+        enumerable: true,
+      });
+    }`;
+}
+
+// `saves` names the private carrier and holds the edits that carry what the
+// Program body and each module save.
+function linkedProgramSource(body, savedFunctions, builtinTools, target, saves) {
+  const pathKeys = new Set();
+  for (const savedFunction of savedFunctions) {
+    if (
+      !Array.isArray(savedFunction.pathSegments) ||
+      savedFunction.pathSegments.length === 0 ||
+      savedFunction.pathSegments.some((segment) => typeof segment !== 'string') ||
+      typeof savedFunction.source !== 'string'
+    ) {
+      throw new Error('Saved Function closure contains an invalid source entry');
+    }
+    const key = savedFunction.pathSegments.join('.');
+    if (pathKeys.has(key)) {
+      throw new Error('Saved Function closure contains a duplicate path');
+    }
+    pathKeys.add(key);
+  }
+  for (const key of pathKeys) {
+    for (const other of pathKeys) {
+      if (key !== other && other.startsWith(`${key}.`)) {
+        throw new Error('Saved Function closure contains a callable namespace conflict');
+      }
+    }
+  }
+
+  const modules = savedFunctions.map((savedFunction, index) => ({
+    ...savedFunction,
+    index,
+    body: savedFunctionRuntimeBody(savedFunction.source, target, saves.moduleEdits[index]),
+  }));
+  const sourceParts = [];
+  const authoredMappings = [];
+  let generatedLine = 0;
+  function append(text) {
+    // A CR ending the previous part and this LF form one CRLF terminator.
+    const joinsCrLf = sourceParts.at(-1)?.endsWith('\r') && text.startsWith('\n');
+    sourceParts.push(text);
+    generatedLine += sourceLineCount(text) - 1 - (joinsCrLf ? 1 : 0);
+  }
+
+  append(`(async () => {
+    ${savedFunctionCarrierDeclaration(saves.carrier)}
+${coralRootPrelude(builtinTools, savedFunctions)}
 `);
 
   for (const module of modules) {

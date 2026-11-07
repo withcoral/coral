@@ -49,7 +49,7 @@ pub(super) fn definition() -> Definition {
 struct Arguments {
     #[schemars(
         length(min = 1),
-        description = "Dotted path under coral.functions, without that prefix, such as \
+        description = "Dotted path under coral.private, without that prefix, such as \
                        github.pulls.listStale."
     )]
     path: String,

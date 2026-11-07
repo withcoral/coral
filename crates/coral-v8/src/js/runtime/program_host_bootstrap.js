@@ -17,7 +17,6 @@
   const create = Object.create;
   const keys = Object.keys;
   const isArray = Array.isArray;
-  const hasOwn = Object.hasOwn;
   const NativeProxy = Proxy;
 
   class ToolError extends NativeError {
@@ -141,14 +140,13 @@
     configurable: false,
   });
 
-  // The Program host's own members. Every other string member is a Call
-  // Path under `coral`: a Built-in Tool, such as `coral.search`, or another
-  // root, such as `coral.providers`. The host resolves the Tool from the
-  // complete Call Path, so a misspelled one fails as `tool_not_found` with
-  // the nearest Call Paths. `workspace` is the old name of `coral` itself,
-  // so its calls reach the Built-in Tools at their new Call Paths.
-  const members = create(null);
-  Object.defineProperties(members, {
+  // The Program host's own members. The compiled Program completes `coral`
+  // before any authored code runs: it adds a member for each Built-in Tool
+  // it was compiled with, such as `coral.search`, and `private`, which holds
+  // the Private Tools it links. Then no member can be added, so a misspelled
+  // one is undefined and throws where the Program uses it.
+  const coral = create(null);
+  Object.defineProperties(coral, {
     ToolError: {
       value: ToolError,
       enumerable: true,
@@ -167,26 +165,34 @@
       writable: false,
       configurable: false,
     },
-    workspace: {
-      value: callablePath('coral'),
-      enumerable: false,
-      writable: false,
-      configurable: false,
-    },
-  });
-  Object.preventExtensions(members);
-  const coral = new NativeProxy(members, {
-    get(target, property) {
-      if (hasOwn(target, property)) return target[property];
-      if (typeof property !== 'string' || property === 'then') return undefined;
-      return callablePath(`coral.${property}`);
-    },
   });
   Object.defineProperty(globalThis, 'coral', {
     value: coral,
     enumerable: true,
     writable: false,
     configurable: false,
+  });
+  Object.defineProperty(globalThis, '__coralCompleteRoot', {
+    value: (builtinTools, privateTools) => {
+      for (const key of builtinTools) {
+        Object.defineProperty(coral, key, {
+          value: callablePath(`coral.${key}`),
+          enumerable: true,
+          writable: false,
+          configurable: false,
+        });
+      }
+      Object.defineProperty(coral, 'private', {
+        value: privateTools,
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+      Object.preventExtensions(coral);
+    },
+    enumerable: false,
+    writable: false,
+    configurable: true,
   });
 
   // Returned only to the host; Programs cannot mint a ToolError. An

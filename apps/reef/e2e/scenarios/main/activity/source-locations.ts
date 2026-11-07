@@ -30,7 +30,7 @@ const program = [
   '}',
   "console.info('looked up')",
   'coral.emit({ done: true })',
-  'await coral.functions.locations.notify()',
+  'await coral.private.locations.notify()',
   "return 'ok'",
 ].join('\n')
 const snapshot = [

@@ -1493,7 +1493,7 @@ pub(super) fn workspace_call(tool: &str, arguments: &str) -> RunSubmission {
 /// admission cannot check.
 fn computed_workspace_call(tool: &str, arguments: &str) -> RunSubmission {
     calling(
-        &format!("coral.workspace[[\"{tool}\"].join(\"\")]"),
+        &format!("globalThis[[\"co\", \"ral\"].join(\"\")][[\"{tool}\"].join(\"\")]"),
         arguments,
     )
 }

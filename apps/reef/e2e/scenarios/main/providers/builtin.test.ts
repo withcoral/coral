@@ -71,7 +71,7 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
         taskIntent: 'List the providers',
       })
       const listing =
-        'try { await coral.workspace.listProviders({}); return "listed"; } catch (error) { return error.code; }'
+        'try { await coral.listProviders({}); return "listed"; } catch (error) { return error.code; }'
       const listProviders = async () =>
         (await observeRun(runner, await runner.exec(listing))).update.final_value
       await step('A Program cannot call Coral while it is disabled', async () => {

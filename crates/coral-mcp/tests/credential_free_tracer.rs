@@ -805,7 +805,7 @@ async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_ver
             "`fetch`",
             "`setTimeout`",
             "`coral.ToolError`",
-            "`coral.workspace.search`",
+            "`coral.search`",
             "`invoking_user`",
         ] {
             assert!(

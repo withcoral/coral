@@ -321,7 +321,7 @@ message ActivitySourceLocation {
 }
 // One stack frame in code the author wrote.
 message ActivityErrorFrame {
-  // "Program" or "Saved Function coral.functions.{path}". Unlike
+  // "Program" or "Saved Function coral.private.{path}". Unlike
   // ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
   string source = 1;
   // Line number, starting at 1.

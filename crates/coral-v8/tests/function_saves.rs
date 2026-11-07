@@ -9,8 +9,8 @@ use coral_value as _;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use coral_v8::{
-    AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutor, ProgramHost,
+    AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
+    IsolateLimits, LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutor, ProgramHost,
     ProgramOutputHostError,
 };
 use deno_core_icudata as _;
@@ -28,7 +28,9 @@ const SAVE: &str = "coral.saveFunction";
 fn compiler() -> &'static ProgramCompiler {
     static COMPILER: OnceLock<ProgramCompiler> = OnceLock::new();
     COMPILER.get_or_init(|| {
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler")
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+            .expect("start compiler")
+            .with_builtin_tools(&BuiltinTools::new(["saveFunction", "deleteFunction"]))
     })
 }
 
@@ -410,9 +412,8 @@ fn a_save_call_admission_cannot_read_is_refused() {
         ),
         (
             "a computed path",
-            "const f = () => 1;\nawait coral.workspace[\"saveFunction\"]({ source: f });"
-                .to_string(),
-            "coral.workspace",
+            "const f = () => 1;\nawait coral[\"saveFunction\"]({ source: f });".to_string(),
+            "coral[",
             LITERAL_REFUSAL.to_string(),
         ),
         (
@@ -455,12 +456,13 @@ fn no_authored_value_reaches_the_tool_as_a_source() {
     let body = r#"const f = () => 1;
 await coral.saveFunction({ path: "t", description: "d", source: f, toJSON() { return { path: "t", description: "d", source: "forged" }; } });
 const name = ["save", "Function"].join("");
-await coral.workspace[name]({ path: "a", description: "d", source: "export default () => 1" });
-await coral.workspace[name]({ path: "b", description: "d", source: { text: "export default () => 1" } });
+const host = globalThis[["co", "ral"].join("")];
+await host[name]({ path: "a", description: "d", source: "export default () => 1" });
+await host[name]({ path: "b", description: "d", source: { text: "export default () => 1" } });
 const carrierless = typeof globalThis["__coral" + "SavedFunctionSource"];
 let refused;
 try {
-  await coral.workspace[name](["c", "d", "export default () => 1"]);
+  await host[name](["c", "d", "export default () => 1"]);
 } catch (error) {
   refused = error.code;
 }

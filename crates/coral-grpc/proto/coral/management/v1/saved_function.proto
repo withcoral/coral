@@ -40,7 +40,7 @@ message ListSavedFunctionsResponse {
 
 // Source-free summary of one current Saved Function.
 message SavedFunctionSummary {
-  // Saved Function Path relative to coral.functions.
+  // Saved Function Path relative to coral.private.
   string path = 1;
   // Exact authored description.
   string description = 2;
@@ -52,7 +52,7 @@ message SavedFunctionSummary {
 message GetSavedFunctionRequest {
   // workspaces/{workspace}.
   string parent = 1;
-  // Saved Function Path relative to coral.functions.
+  // Saved Function Path relative to coral.private.
   string path = 2;
 }
 
@@ -60,13 +60,13 @@ message GetSavedFunctionRequest {
 message DeleteSavedFunctionRequest {
   // workspaces/{workspace}.
   string parent = 1;
-  // Saved Function Path relative to coral.functions.
+  // Saved Function Path relative to coral.private.
   string path = 2;
 }
 
 // One current Saved Function with its authoring material.
 message SavedFunction {
-  // Saved Function Path relative to coral.functions.
+  // Saved Function Path relative to coral.private.
   string path = 1;
   // Exact authored description.
   string description = 2;

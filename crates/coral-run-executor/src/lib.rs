@@ -20,6 +20,7 @@ mod pull;
 pub mod testing;
 
 pub use compiler::{CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
+pub use coral_v8::BuiltinTools;
 pub use in_process::InProcessCompiler;
 pub use link::{
     AddressError, CoralAddress, PROTOCOL_LEVEL, RunExecutorConfig, Token, TokenError, run,

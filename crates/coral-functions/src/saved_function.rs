@@ -61,6 +61,10 @@ pub(crate) trait SavedFunctionCompiler: Send + Sync {
 
 struct V8SavedFunctionCompiler {
     compiler: Arc<dyn CompilerClient>,
+    /// The Built-in Tools of this Coral version, which type `coral`. Typing
+    /// is advisory, so a Workspace whose Built-in catalog another Coral
+    /// version wrote costs a save at most a diagnostic.
+    builtin_tools: coral_run_executor::BuiltinTools,
 }
 
 impl SavedFunctionCompiler for V8SavedFunctionCompiler {
@@ -82,9 +86,12 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
         source: &str,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<PreparedSavedFunction, CompileFailure> {
-        let compiled = self
-            .compiler
-            .prepare(time_left(deadline), source, declarations)?;
+        let compiled = self.compiler.prepare(
+            time_left(deadline),
+            source,
+            &self.builtin_tools,
+            declarations,
+        )?;
         let declaration = SavedFunctionDeclaration::from_compiler(compiled.declaration())
             .map_err(|error| error.to_string())?;
         let declaration_field_projection =
@@ -187,7 +194,12 @@ impl SavedFunctionModule {
             deletion: SavedFunctionDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
-            compiler: Arc::new(V8SavedFunctionCompiler { compiler }),
+            compiler: Arc::new(V8SavedFunctionCompiler {
+                compiler,
+                builtin_tools: coral_run_executor::BuiltinTools::new(
+                    coral_catalog::BuiltinTool::keys(),
+                ),
+            }),
             compilation_timeout,
         }
     }

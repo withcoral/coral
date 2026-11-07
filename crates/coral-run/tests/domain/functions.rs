@@ -449,55 +449,93 @@ async fn without_saved_functions_the_tools_are_unavailable() {
     }
 }
 
-// Catches: a Built-in Tool or Private Tool that only its old root reaches,
-// an old root that stops working before call sites migrate, or a result or
-// description that reports a Call Path under an old root.
+// Catches: a Built-in Tool or Private Tool that its root on `coral` does not
+// reach, or a result or description that reports another root.
 #[tokio::test]
-async fn the_new_and_old_roots_reach_the_same_tools() {
+async fn programs_reach_the_builtin_and_private_tools_on_coral() {
     let (scope, _index) = authoring_scope("user:functions-roots").await;
-    for (name, builtin_root, private_root) in [
-        ("new roots", "coral", "coral.private"),
-        ("old roots", "coral.workspace", "coral.functions"),
+    let saved = outcome(&scope, &scope.owner, save("people.greet", SOURCE)).await;
+    assert_eq!(
+        saved.pointer("/data/call_path"),
+        Some(&json!("coral.private.people.greet")),
+        "{saved}"
+    );
+    assert_eq!(
+        outcome(&scope, &scope.owner, greet()).await,
+        json!("hello Ada")
+    );
+    let described = outcome(
+        &scope,
+        &scope.owner,
+        submission(
+            "const { data } = await coral.search({ paths: \
+             ['coral.search', 'coral.private.people.greet'] });\n\
+             return data.descriptions.map((description) => description.call_path);",
+        ),
+    )
+    .await;
+    assert_eq!(
+        described,
+        json!(["coral.search", "coral.private.people.greet"])
+    );
+}
+
+// Catches: an old root that still reaches a Tool, a refusal that does not
+// name the new path or where the source names the old one, or a stored
+// source that names one and still links.
+#[tokio::test]
+async fn an_old_root_is_refused_where_it_is_written_with_its_new_path() {
+    let (scope, _index) = authoring_scope("user:functions-old-roots").await;
+    outcome(&scope, &scope.owner, save("people.greet", SOURCE)).await;
+    let refused = |source: &str| {
+        let scope = &scope;
+        let source = source.to_owned();
+        async move {
+            let before = scope.fixture.runs.count_runs().await.expect("count Runs");
+            let error = scope
+                .fixture
+                .runs
+                .start(&scope.owner, &scope.workspace_id, submission(&source))
+                .await
+                .expect_err("an old root is refused");
+            assert_eq!(
+                scope.fixture.runs.count_runs().await.expect("count Runs"),
+                before,
+                "{source}"
+            );
+            let crate::Error::ProgramAdmission(message) = error else {
+                panic!("{source}: {error:?}");
+            };
+            message
+        }
+    };
+    for (source, refusal) in [
+        (
+            "\nreturn await coral.workspace.search({});",
+            "Program:2:14: `coral.workspace` is now `coral`: call its Tools directly on `coral`",
+        ),
+        (
+            "\nreturn coral.functions.people.greet('Ada');",
+            "Program:2:8: `coral.functions` is now `coral.private`",
+        ),
     ] {
-        let save_tool = format!("{builtin_root}.saveFunction");
-        let saved = outcome(
-            &scope,
-            &scope.owner,
-            submission(&format!(
-                "{SOURCE}\nreturn await {save_tool}({{ path: 'people.greet', \
-                 description: 'Greet one person by name.', source: saved }});"
-            )),
-        )
-        .await;
-        assert_eq!(
-            saved.pointer("/data/call_path"),
-            Some(&json!("coral.private.people.greet")),
-            "{name}: {saved}"
-        );
-        assert_eq!(
-            outcome(
-                &scope,
-                &scope.owner,
-                submission(&format!("return {private_root}.people.greet('Ada');")),
-            )
-            .await,
-            json!("hello Ada"),
-            "{name}"
-        );
-        let described = outcome(
-            &scope,
-            &scope.owner,
-            submission(&format!(
-                "const {{ data }} = await {builtin_root}.search({{ paths: \
-                 ['{builtin_root}.search', '{private_root}.people.greet'] }});\n\
-                 return data.descriptions.map((description) => description.call_path);"
-            )),
-        )
-        .await;
-        assert_eq!(
-            described,
-            json!(["coral.search", "coral.private.people.greet"]),
-            "{name}"
-        );
+        assert_eq!(refused(source).await, refusal);
     }
+
+    // Coral never rewrites a stored source.
+    scope
+        .fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE saved_function_records \
+             SET source = source || ' void coral.functions.people.greet;'",
+        )
+        .await
+        .expect("store a source that names the old root");
+    let message = refused("return coral.private.people.greet('Ada');").await;
+    assert!(
+        message.starts_with("Saved Function coral.private.people.greet:")
+            && message.ends_with(": `coral.functions` is now `coral.private`"),
+        "{message}"
+    );
 }

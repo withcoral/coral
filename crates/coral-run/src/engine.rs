@@ -31,7 +31,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
-use coral_v8::CompileFailure;
+use coral_v8::{BuiltinTools, CompileFailure};
 
 use crate::execution::ExecutionStop;
 use crate::{
@@ -98,11 +98,14 @@ pub(crate) trait ProgramEngine: Send + Sync {
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
+    /// Compiles `source` with the Saved Functions it links and with
+    /// `builtin_tools`, the Workspace's Built-in Tools, on `coral`.
     fn compile_with_saved_functions(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
+        _builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
             self.compile(deadline, source)
@@ -207,8 +210,7 @@ impl ProgramEngine for V8ProgramEngine {
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        let compiled = self.compiler.compile(time_left(deadline), source, &[])?;
-        package_from_compiled(&compiled)
+        self.compile_with_saved_functions(deadline, source, &[], &BuiltinTools::default())
     }
 
     fn compile_with_saved_functions(
@@ -216,10 +218,8 @@ impl ProgramEngine for V8ProgramEngine {
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
+        builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
-        if linked.is_empty() {
-            return self.compile(deadline, source);
-        }
         let sources = linked
             .iter()
             .map(|snapshot| {
@@ -229,9 +229,9 @@ impl ProgramEngine for V8ProgramEngine {
                 )
             })
             .collect::<Vec<_>>();
-        let compiled = self
-            .compiler
-            .compile(time_left(deadline), source, &sources)?;
+        let compiled =
+            self.compiler
+                .compile(time_left(deadline), source, &sources, builtin_tools)?;
         package_from_compiled(&compiled)
     }
 

@@ -47,7 +47,7 @@ pub(super) fn definition() -> Definition {
             false,
             vec!["providers".to_string()],
             Some(
-                "Read the saved values with coral.workspace.getProvider first. Send namespace \
+                "Read the saved values with coral.getProvider first. Send namespace \
                  and only the fields to change. An omitted field keeps its saved value. A sent \
                  value replaces its saved value. A sent map changes only the keys it names: \
                  to drop a request header, send requestHeaders with that header set to null. \
@@ -65,7 +65,7 @@ pub(super) fn definition() -> Definition {
                  displayName. When status is needs_person, show the person the returned \
                  url. Calls keep the saved configuration until the person publishes the \
                  change. To check later whether the person published it, call \
-                 coral.workspace.getProvider."
+                 coral.getProvider."
                     .to_string(),
             ),
         ),

@@ -13,17 +13,31 @@ globalThis.__coralTypeScriptVersion = ts.version;
 globalThis.__coralConfigureCompiler = function configureCompiler(librarySourcesJson) {
   configureTypeScriptLibraries(JSON.parse(librarySourcesJson));
 };
-globalThis.__coralCompile = function compileVirtualProgram(body, fileName, targetName) {
-  return compilerResultJson(compileProgram(body, fileName, targetName));
+globalThis.__coralCompile = function compileVirtualProgram(
+  body,
+  builtinToolsJson,
+  fileName,
+  targetName,
+) {
+  return compilerResultJson(
+    compileProgram(body, JSON.parse(builtinToolsJson), fileName, targetName),
+  );
 };
 globalThis.__coralPrepareSavedFunction = function prepareVirtualSavedFunction(
   source,
+  builtinToolsJson,
   declarationsJson,
   fileName,
   targetName,
 ) {
   return compilerResultJson(
-    prepareSavedFunction(source, JSON.parse(declarationsJson), fileName, targetName),
+    prepareSavedFunction(
+      source,
+      JSON.parse(builtinToolsJson),
+      JSON.parse(declarationsJson),
+      fileName,
+      targetName,
+    ),
   );
 };
 globalThis.__coralAnalyzeSavedFunctionCallPaths = function analyzeVirtualSavedFunctionCallPaths(
@@ -50,10 +64,17 @@ globalThis.__coralAnalyzeSavedFunctionDependencies =
 globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   body,
   savedFunctionsJson,
+  builtinToolsJson,
   fileName,
   targetName,
 ) {
   return compilerResultJson(
-    compileLinkedProgram(body, JSON.parse(savedFunctionsJson), fileName, targetName),
+    compileLinkedProgram(
+      body,
+      JSON.parse(savedFunctionsJson),
+      JSON.parse(builtinToolsJson),
+      fileName,
+      targetName,
+    ),
   );
 };

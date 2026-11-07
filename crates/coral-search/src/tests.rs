@@ -2194,7 +2194,8 @@ fn describe_requires_one_complete_safe_call_path() {
     for invalid in [
         "weather.getForecast",
         "coral.weather.getForecast",
-        "coral.workspace.search.paths",
+        "coral.workspace.search",
+        "coral.functions.internal.formatForecast",
         "coral.private",
         "coral.providers.weather",
         "coral.emit.value",
@@ -2213,19 +2214,6 @@ fn describe_requires_one_complete_safe_call_path() {
         assert_eq!(
             CallPath::parse(valid).expect("valid Call Path").as_str(),
             valid
-        );
-    }
-    // Callers name the old roots until they migrate.
-    for (old, current) in [
-        ("coral.workspace.addProvider", "coral.addProvider"),
-        (
-            "coral.functions.internal.formatForecast",
-            "coral.private.internal.formatForecast",
-        ),
-    ] {
-        assert_eq!(
-            CallPath::parse(old).expect("valid Call Path").as_str(),
-            current
         );
     }
 }

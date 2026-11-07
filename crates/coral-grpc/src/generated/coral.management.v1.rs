@@ -54,7 +54,7 @@ pub struct Provider {
     #[prost(string, tag = "12")]
     pub call_root: ::prost::alloc::string::String,
     /// Whether this is the Workspace's Built-in Provider, which Coral defines
-    /// and manages under coral.workspace.
+    /// and manages under coral.
     #[prost(bool, tag = "13")]
     pub builtin: bool,
     /// Digest of the uploaded icon's content, which changes with the icon.
@@ -6012,7 +6012,7 @@ pub mod activity_source_location {
 /// One stack frame in code the author wrote.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityErrorFrame {
-    /// "Program" or "Saved Function coral.functions.{path}". Unlike
+    /// "Program" or "Saved Function coral.private.{path}". Unlike
     /// ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
@@ -14541,7 +14541,7 @@ pub struct ListSavedFunctionsResponse {
 /// Source-free summary of one current Saved Function.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SavedFunctionSummary {
-    /// Saved Function Path relative to coral.functions.
+    /// Saved Function Path relative to coral.private.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
     /// Exact authored description.
@@ -14557,7 +14557,7 @@ pub struct GetSavedFunctionRequest {
     /// workspaces/{workspace}.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// Saved Function Path relative to coral.functions.
+    /// Saved Function Path relative to coral.private.
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
 }
@@ -14567,14 +14567,14 @@ pub struct DeleteSavedFunctionRequest {
     /// workspaces/{workspace}.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// Saved Function Path relative to coral.functions.
+    /// Saved Function Path relative to coral.private.
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
 }
 /// One current Saved Function with its authoring material.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SavedFunction {
-    /// Saved Function Path relative to coral.functions.
+    /// Saved Function Path relative to coral.private.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
     /// Exact authored description.

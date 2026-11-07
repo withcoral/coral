@@ -141,7 +141,7 @@ it('keeps the titles and paths of an untrimmed page whose coverage the current s
 
 const exact: DiscoveryContext = {
   kind: 'describe',
-  callPath: 'coral.functions.github.openIssuesByLabel',
+  callPath: 'coral.private.github.openIssuesByLabel',
   types: [],
 }
 
@@ -150,7 +150,7 @@ it('reads a stored Saved Function description with its source and diagnostics', 
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
   expect(view.description).toMatchObject({
     kind: 'saved_function',
-    callPath: 'coral.functions.github.openIssuesByLabel',
+    callPath: 'coral.private.github.openIssuesByLabel',
     title: 'github.openIssuesByLabel',
     tool: null,
     savedFunction: {

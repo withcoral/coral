@@ -116,7 +116,7 @@ Coral adds the credentials and checks each call against your policy. If
 posting to Slack requires approval, the run pauses there until you approve it.
 Only the pull request numbers go back to the agent, not the full GitHub
 response. Once this works, the agent can save it as a function, and later
-programs call it as `coral.functions.<name>()`.
+programs call it as `coral.private.<name>()`.
 
 To learn about providers, accounts, policy, and workspaces, read
 [Concepts](https://withcoral.com/docs/guides/concepts).

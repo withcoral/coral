@@ -8,15 +8,7 @@ const BUILTIN_ROOT = 'coral'
 /** The root of every Private Tool's Call Path. */
 const PRIVATE_ROOT = 'coral.private.'
 /** The members of `coral` that name no Built-in Tool. */
-const NON_TOOL_MEMBERS = new Set([
-  'providers',
-  'private',
-  'shared',
-  'emit',
-  'ToolError',
-  'workspace',
-  'functions',
-])
+const NON_TOOL_MEMBERS = new Set(['providers', 'private', 'shared', 'emit', 'ToolError'])
 /** Each old root that a retained Run may have recorded, and the root that replaced it. */
 const OLD_ROOTS = [
   ['coral.workspace.', 'coral.'],

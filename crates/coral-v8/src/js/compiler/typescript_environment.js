@@ -29,10 +29,9 @@ const DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE = 100002;
 // `coral` is a constant of an object type, not a namespace of constants, so
 // `coral.private` type-checks although `private` is a strict-mode reserved
 // word. A namespace of types alone merges with it, so `coral.ToolError` also
-// names the error's type. Every other member is any: a Built-in Tool the
-// source names only through an alias, or one that the unknown-Tool
-// diagnostic reports.
-function coralHostDeclaration({ providers, builtins, workspace, privateTools }) {
+// names the error's type. Its members are exactly the Program host's: any
+// other member is an error where the source names it.
+function coralHostDeclaration({ builtins, providers, privateTools }) {
   return `
 declare namespace coral {
   /**
@@ -56,13 +55,8 @@ declare const coral: {
   ${builtins}
   readonly providers: ${providers};
   readonly private: ${privateTools};
-  /** The old name of \`coral.private\`. */
-  readonly functions: ${privateTools};
-  /** The old name of \`coral\`, whose members are the Built-in Tools. */
-  readonly workspace: ${workspace};
   readonly emit: (value: unknown) => Promise<void>;
   readonly ToolError: abstract new (...args: never) => coral.ToolError;
-  readonly [member: string]: any;
 };
 
 declare const console: {
@@ -146,7 +140,7 @@ function unknownTools(tools, { namespaceCalls = false } = {}) {
       const key = segments.slice(0, length).join('.');
       if (resolved.has(key)) break;
       if (namespaces.has(key) && (length < segments.length || !namespaceCalls)) continue;
-      unknown.push({ start, line, column, callPath: `coral.${segments.join('.')}` });
+      unknown.push({ start, line, column, segments, callPath: `coral.${segments.join('.')}` });
       break;
     }
   }
@@ -172,36 +166,37 @@ function unknownToolCalls(chains, callPaths) {
 }
 
 // The declaration files that type `coral`, and the Tool chains that name
-// nothing the caller can call. Without `declarations`, or without one root's,
-// that root is any.
-function coralSurface(declarations) {
+// nothing the caller can call. Each of `builtinTools` is a member of `coral`,
+// typed by its declaration or any without one. Without `declarations`, or
+// without one root's, that root is any.
+function coralSurface(builtinTools, declarations) {
   const sources = {};
   // Tool paths are relative to `coral`, so one tree holds both
   // `providers` and the Built-in Tools.
   const tools = typedRoot(sources, 'coral', declarations?.tools?.declarations);
   const privateTools = typedRoot(sources, 'coral.private', declarations?.functions);
-  const builtins = callableNode();
-  for (const [member, node] of tools?.children ?? []) {
-    if (member !== 'providers') builtins.children.set(member, node);
-  }
+  const builtins = builtinTools.map((key) => {
+    const declared = tools?.children.get(key);
+    return `readonly ${JSON.stringify(key)}: ${declared === undefined ? 'any' : renderCallableNode(declared, true)};`;
+  });
   sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration({
+    builtins: builtins.join('\n  '),
     providers:
       tools === undefined
         ? 'any'
         : renderCallableNode(tools.children.get('providers') ?? callableNode(), true),
-    builtins: [...builtins.children]
-      .map(
-        ([member, node]) =>
-          `readonly ${JSON.stringify(member)}: ${renderCallableNode(node, true)};`,
-      )
-      .join('\n  '),
-    workspace: tools === undefined ? 'any' : renderCallableNode(builtins, true),
     privateTools: privateTools === undefined ? 'any' : renderCallableNode(privateTools, false),
   });
-  return {
-    sources,
-    unknownTools: tools === undefined ? [] : unknownTools(declarations.tools),
-  };
+  // A member of `coral` that is no Built-in Tool is a TypeScript error
+  // already, so it needs no Coral diagnostic too.
+  const builtinKeys = new Set(builtinTools);
+  const unknown =
+    tools === undefined
+      ? []
+      : unknownTools(declarations.tools).filter(
+          ({ segments }) => segments[0] === 'providers' || builtinKeys.has(segments[0]),
+        );
+  return { sources, unknownTools: unknown };
 }
 
 function diagnosticSortPosition(value) {
@@ -336,9 +331,10 @@ function virtualTypeScriptProgram(
   };
 }
 
-// One source typed by `declarations`, or untyped without them.
-function typedVirtualProgram(fileName, source, compilerOptions, declarations) {
-  const surface = coralSurface(declarations);
+// One source typed by `declarations`, or untyped without them. `coral` holds
+// `builtinTools` either way.
+function typedVirtualProgram(fileName, source, compilerOptions, builtinTools, declarations) {
+  const surface = coralSurface(builtinTools, declarations);
   const typed = virtualTypeScriptProgram(
     fileName,
     source,

@@ -167,7 +167,7 @@ message Provider {
   // Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
   string call_root = 12;
   // Whether this is the Workspace's Built-in Provider, which Coral defines
-  // and manages under coral.workspace.
+  // and manages under coral.
   bool builtin = 13;
   // Digest of the uploaded icon's content, which changes with the icon.
   // Empty when the Provider has no uploaded icon.

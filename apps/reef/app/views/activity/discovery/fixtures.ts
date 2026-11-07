@@ -150,7 +150,7 @@ const subIssuesHit = {
 
 const functionHit = {
   kind: 'saved_function',
-  call_path: 'coral.functions.github.openIssuesByLabel',
+  call_path: 'coral.private.github.openIssuesByLabel',
   signature_line:
     'openIssuesByLabel(input: { owner: string; repo: string; label: string; limit?: number }): Promise<Array<{ number: number; title: string; url: string }>>',
   description_snippet:
@@ -311,7 +311,7 @@ const describeTool = {
 
 const describeFunction = {
   kind: 'saved_function',
-  call_path: 'coral.functions.github.openIssuesByLabel',
+  call_path: 'coral.private.github.openIssuesByLabel',
   description:
     'Lists the open issues of one repository that carry a label, newest first, with number, title and URL. Use it before triage to see what waits under a label.',
   typescript_declaration:

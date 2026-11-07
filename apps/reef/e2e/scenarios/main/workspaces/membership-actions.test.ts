@@ -43,7 +43,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           )
         ).isError,
       ).not.toBe(true)
-      retainedRun = (await runner.exec('return coral.functions.answer();')).structuredContent
+      retainedRun = (await runner.exec('return coral.private.answer();')).structuredContent
       expect(retainedRun.final_value).toEqual({ kind: 'value', value: 42 })
     },
     { actor: bob.label, storageState: bob.storageState, purpose: 'setup' },
@@ -136,7 +136,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
     async ({ page, target }) => {
       const id = workspace.name.split('/')[1]
       const runner = programRunner(page, target, id, { accessToken: await mcpToken(page, id) })
-      expect((await runner.describe('coral.functions.answer')).isError).toBe(true)
+      expect((await runner.describe('coral.private.answer')).isError).toBe(true)
       const retained = (await runner.wait({ ...retainedRun, next_cursor: '' })).structuredContent
       expect(retained.final_value).toEqual({ kind: 'value', value: 42 })
       expect(runner.calls.exec ?? 0).toBe(0)

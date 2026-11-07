@@ -18,7 +18,7 @@ test('An MCP client on 2026-07-28 is handed the link, decides in Reef, and waits
           waiting = await runWaitingForApproval(page, target, accessToken, owner, '2026-07-28')
           const [action] = waiting.paused.required_actions
           expect(action.url).toContain(`/${waiting.approval}`)
-          expect(action.tool).toBe('coral.workspace.addProvider')
+          expect(action.tool).toBe('coral.addProvider')
           expect(action.provider).toEqual(expect.any(String))
           expect(await instances.holder(waiting.run)).toBe(owner)
         },

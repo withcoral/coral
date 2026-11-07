@@ -12,10 +12,10 @@ use crate::profile::TYPESCRIPT_PROFILE;
 use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map};
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
-    CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
-    IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl, SavedFunctionCallPaths,
-    SavedFunctionCompilation, SavedFunctionDeclarationField, SavedFunctionReference,
-    ToolReferences, UnknownToolCall,
+    BuiltinTools, CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory,
+    Error, IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl,
+    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionDeclarationField,
+    SavedFunctionReference, ToolReferences, UnknownToolCall,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -63,11 +63,16 @@ type CompilerJob = Box<
 /// the isolate overgrown, has the worker build a replacement after it answers,
 /// before the worker takes the next request. A request queued meanwhile waits
 /// for that build. A rejection leaves the isolate in place. Handles from
-/// [`Self::with_role`] share the thread and queue, which stop when the last
-/// handle drops.
+/// [`Self::with_role`] and [`Self::with_builtin_tools`] share the thread and
+/// queue, which stop when the last handle drops.
+///
+/// Each request compiles against the handle's [`BuiltinTools`]: a Program
+/// calls them on `coral`, and a Saved Function is typed with them. A handle
+/// from [`Self::new`] has none.
 pub struct ProgramCompiler {
     worker: Arc<CompilerWorker>,
     role: CompilerRole,
+    builtin_tools: Arc<str>,
 }
 
 /// The compiler thread and its bounded queue.
@@ -139,6 +144,7 @@ impl ProgramCompiler {
                     limits: isolate_limits,
                 }),
                 role,
+                builtin_tools: BuiltinTools::default().json(),
             }),
             Ok(Err(error)) => {
                 if worker.join().is_err() {
@@ -162,6 +168,18 @@ impl ProgramCompiler {
         Self {
             worker: Arc::clone(&self.worker),
             role,
+            builtin_tools: Arc::clone(&self.builtin_tools),
+        }
+    }
+
+    /// Another handle on this compiler's thread and queue, whose requests
+    /// compile against `builtin_tools`.
+    #[must_use]
+    pub fn with_builtin_tools(&self, builtin_tools: &BuiltinTools) -> Self {
+        Self {
+            worker: Arc::clone(&self.worker),
+            role: self.role,
+            builtin_tools: builtin_tools.json(),
         }
     }
 
@@ -182,8 +200,9 @@ impl ProgramCompiler {
     /// compiler-isolate failure, or a compiler worker availability error.
     pub fn compile(&self, deadline: Instant, source: &str) -> Result<CompiledProgram, Error> {
         let source = source.to_string();
+        let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile(&source)
+            compiler.compile(&source, &builtin_tools)
         })
     }
 
@@ -203,10 +222,11 @@ impl ProgramCompiler {
         source: &str,
     ) -> Result<SavedFunctionCompilation, Error> {
         let source = source.to_string();
+        let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(
             CompilerOperation::SavedFunction,
             deadline,
-            move |compiler| compiler.prepare_saved_function(&source, "null"),
+            move |compiler| compiler.prepare_saved_function(&source, &builtin_tools, "null"),
         )
     }
 
@@ -230,10 +250,13 @@ impl ProgramCompiler {
         let declarations_json = serde_json::to_string(declarations)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
+        let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(
             CompilerOperation::SavedFunction,
             deadline,
-            move |compiler| compiler.prepare_saved_function(&source, &declarations_json),
+            move |compiler| {
+                compiler.prepare_saved_function(&source, &builtin_tools, &declarations_json)
+            },
         )
     }
 
@@ -356,8 +379,9 @@ impl ProgramCompiler {
         let saved_functions_json = serde_json::to_string(saved_functions)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
+        let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile_with_saved_functions(&source, &saved_functions_json)
+            compiler.compile_with_saved_functions(&source, &saved_functions_json, &builtin_tools)
         })
     }
 
@@ -609,11 +633,12 @@ impl CompilerIsolate {
             .map(drop)
     }
 
-    fn compile(&mut self, body: &str) -> Result<CompiledProgram, Error> {
+    fn compile(&mut self, body: &str, builtin_tools: &str) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompile",
             &[
                 body,
+                builtin_tools,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
@@ -624,12 +649,14 @@ impl CompilerIsolate {
     fn prepare_saved_function(
         &mut self,
         source: &str,
+        builtin_tools: &str,
         declarations_json: &str,
     ) -> Result<SavedFunctionCompilation, Error> {
         let json = self.call(
             "__coralPrepareSavedFunction",
             &[
                 source,
+                builtin_tools,
                 declarations_json,
                 SAVED_FUNCTION_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
@@ -740,12 +767,14 @@ impl CompilerIsolate {
         &mut self,
         source: &str,
         saved_functions_json: &str,
+        builtin_tools: &str,
     ) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompileLinkedProgram",
             &[
                 source,
                 saved_functions_json,
+                builtin_tools,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],

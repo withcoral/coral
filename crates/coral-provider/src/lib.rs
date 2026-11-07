@@ -729,6 +729,39 @@ pub async fn provider_tool_paths_in_transaction(
     Ok(Some((active.provider.id().clone(), paths)))
 }
 
+/// The relative paths of the Workspace's Built-in Tools, each a member of a
+/// Program's `coral`: the Tools of its Built-in Provider's current
+/// Generation, which a newer or older Coral may have written. They are the
+/// same for every caller, so they reveal nothing that discovery conceals; a
+/// Tool the caller cannot reach still fails when called. Empty when the
+/// Workspace has no Built-in Provider.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider-package failure.
+pub async fn builtin_tool_paths_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<String>, Error> {
+    let Some(active) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::Builtin),
+        repository::ProviderHold::None,
+    )
+    .await?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(
+        coral_catalog::tool_paths_in_transaction(transaction, &active.generation_id)
+            .await?
+            .into_iter()
+            .map(|path| path.relative_path().to_owned())
+            .collect(),
+    )
+}
+
 /// The Principal that asks Invocation admission to call a Tool.
 ///
 /// It carries what admission needs to load the Principal's Workspace authority

@@ -7,9 +7,10 @@ use coral_value as _;
 use std::sync::{Arc, Mutex};
 
 use coral_v8::{
-    AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutionControl, ProgramExecutor,
-    ProgramHost, ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE, ToolHostError,
+    AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
+    IsolateLimits, LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutionControl,
+    ProgramExecutor, ProgramHost, ProgramOutputHostError, SavedFunctionReference,
+    TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
 #[cfg(unix)]
@@ -410,14 +411,14 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
 
     let shadowed_global = compiler
         .saved_function_paths(compilation_deadline(),
-            "const globalThis = { coral: { functions: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
+            "const globalThis = { coral: { private: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
         )
         .expect("ignore a local globalThis binding");
     assert!(shadowed_global.is_empty());
 
     let shadowed = compiler
         .prepare_saved_function(compilation_deadline(),
-            "export default function local(coral: { functions: { local: { value(): number } } }): number { return coral.private.local.value(); }",
+            "export default function local(coral: { private: { local: { value(): number } } }): number { return coral.private.local.value(); }",
         )
         .expect("prepare a callable with a local coral parameter");
     assert!(shadowed.references().is_empty());
@@ -426,16 +427,16 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
         "const key = 'one'; return coral.private.alpha[key]();",
         "const key = 'one'; return (coral.private.alpha as any)[key]();",
         "const functions = coral.private; return functions.alpha.one();",
-        "const root = coral; return root.functions.alpha.one();",
-        "const key = 'functions'; return coral[key].alpha.one();",
+        "const root = coral; return root.private.alpha.one();",
+        "const key = 'private'; return coral[key].alpha.one();",
         "return globalThis.coral.private.alpha.one();",
         "const global = globalThis; return global.coral.private.alpha.one();",
         "let global = globalThis; return global.coral.private.alpha.one();",
-        "const key = 'coral'; return globalThis[key].functions.alpha.one();",
-        "let key = 'functions'; return globalThis.coral[key].alpha.one();",
-        "const key = unknownKey; return globalThis[key].functions.alpha.one();",
-        "const { coral: globalCoral } = globalThis; return globalCoral.functions.alpha.one();",
-        "const { functions } = globalThis.coral; return functions.alpha.one();",
+        "const key = 'coral'; return globalThis[key].private.alpha.one();",
+        "let key = 'private'; return globalThis.coral[key].alpha.one();",
+        "const key = unknownKey; return globalThis[key].private.alpha.one();",
+        "const { coral: globalCoral } = globalThis; return globalCoral.private.alpha.one();",
+        "const { private: functions } = globalThis.coral; return functions.alpha.one();",
         "const pick = (root: any, key: string) => root[key]; return pick(coral.private, 'alpha')();",
         "const key = 'base'; class RuntimeHeritage extends coral.private.models[key] {} return RuntimeHeritage;",
     ] {
@@ -450,9 +451,9 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for source in [
-        "return ((coral)).functions.alpha.one();",
-        "return (coral as any).functions.alpha.one();",
-        "return (((coral as any))).functions.alpha.one();",
+        "return ((coral)).private.alpha.one();",
+        "return (coral as any).private.alpha.one();",
+        "return (((coral as any))).private.alpha.one();",
     ] {
         let references = compiler
             .saved_function_paths(compilation_deadline(), source)
@@ -811,14 +812,14 @@ fn saved_function_authoring_types_the_coral_host_root() {
     let misused = compiler
         .prepare_saved_function(
             compilation_deadline(),
-            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); coral.emit = coral.emit; return 1; }",
+            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); return coral.missing; }",
         )
         .expect("host root misuse is advisory");
     for (code, name) in [
         (2339, "'table'"),
         (2540, "'log'"),
         (2511, "abstract"),
-        (2540, "'emit'"),
+        (2339, "'missing'"),
     ] {
         assert!(
             misused
@@ -931,29 +932,29 @@ fn tool_paths_are_not_thenables() {
     );
 }
 
-// Catches: a Built-in Tool, an Owner's Provider Tool or another member of
-// `coral` that the runtime does not send to the host by its complete Call
-// Path, the old `workspace` root reaching anything but `coral` itself, or
-// `coral` becoming a thenable. A literal member that names no Tool, such as
-// `coral.emitt`, reaches the host here only because Program Admission, which
-// refuses it before a Run exists, is coral-run's.
+// Catches: a Built-in Tool or Owner's Provider Tool that the runtime does not
+// send to the host by its complete Call Path, a Built-in Tool the Program was
+// not compiled with, a misspelled member such as `coral.emitt` that becomes a
+// Tool call instead of throwing where it is used, an old root that still
+// reaches anything, or `coral` becoming a thenable.
 #[test]
 fn programs_call_every_call_root_under_coral_by_its_complete_path() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let compiler = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .with_builtin_tools(&BuiltinTools::new(["addProvider", "listProviders"]));
     let program = compiler
         .compile(
             compilation_deadline(),
             "await coral.providers.workspace.create({ id: 1 }); await coral.addProvider(); \
-             await coral.workspace.listProviders(); await coral.emitt(1); \
+             let typo = 'no error'; try { coral.emitt(1); } catch (error) { typo = error.name; } \
              return [typeof coral.emit, coral.ToolError.name, Object.keys(coral).sort(), \
-                     coral.then, coral.providers === coral.providers];",
+                     coral.then, typeof coral.search, typeof coral.workspace, typo];",
         )
         .expect("compile Call Root calls");
     let host = Arc::new(CapturingToolHost::default());
     let outcome = ProgramExecutor::new(IsolateLimits::default())
         .execute_with_host(&program, host.clone())
-        .expect("invoke every Call Root");
+        .expect("invoke both Call Roots");
     assert_eq!(
         host.calls.lock().expect("calls").as_slice(),
         &[
@@ -962,13 +963,15 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
                 "{\"id\":1}".to_string()
             ),
             ("coral.addProvider".to_string(), "{}".to_string()),
-            ("coral.listProviders".to_string(), "{}".to_string()),
-            ("coral.emitt".to_string(), "1".to_string()),
         ]
     );
     assert_eq!(
         outcome.final_value_json(),
-        Some("[\"function\",\"ToolError\",[\"ToolError\",\"emit\",\"providers\"],null,true]")
+        Some(
+            "[\"function\",\"ToolError\",\
+             [\"ToolError\",\"addProvider\",\"emit\",\"listProviders\",\"private\",\"providers\"],\
+             null,\"undefined\",\"undefined\",\"TypeError\"]"
+        )
     );
 }
 

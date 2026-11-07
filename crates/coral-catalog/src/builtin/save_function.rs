@@ -22,7 +22,7 @@ pub(super) fn definition() -> Definition {
         presentation: ToolPresentation::new(
             Some("Save function".to_string()),
             "Create or replace one of your Saved Functions. Later Programs call it as \
-             coral.functions.<path>(...)."
+             coral.private.<path>(...)."
                 .to_string(),
             false,
             vec!["functions".to_string()],
@@ -51,7 +51,7 @@ pub(super) fn definition() -> Definition {
 struct Arguments {
     #[schemars(
         length(min = 1),
-        description = "Dotted path under coral.functions, without that prefix, such as \
+        description = "Dotted path under coral.private, without that prefix, such as \
                        github.pulls.listStale."
     )]
     path: String,

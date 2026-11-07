@@ -42,7 +42,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
             )
           ).isError,
         ).not.toBe(true)
-      expect((await runner.describe('coral.functions.live.fixture')).isError).not.toBe(true)
+      expect((await runner.describe('coral.private.live.fixture')).isError).not.toBe(true)
       tasks.set(`${workspace.name}/tasks/${runner.taskId()}`, runner)
       return runner
     }
@@ -82,9 +82,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
       latest = await arrival()
       // A retained row's changed context proves a post-arrival emission reached the reader.
       // Do not synchronize on a total count or an arbitrary polling delay.
-      expect((await tasks.get(name)!.describe('coral.functions.live.fixture')).isError).not.toBe(
-        true,
-      )
+      expect((await tasks.get(name)!.describe('coral.private.live.fixture')).isError).not.toBe(true)
       await expect.poll(() => impact.getAttribute('title'), { timeout: 10_000 }).not.toBe(before)
     }
     await step(

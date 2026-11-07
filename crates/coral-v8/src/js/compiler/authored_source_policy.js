@@ -315,24 +315,12 @@ function globalThisExpressionSegments(node, checker, sourceFile, seen = new Set(
   return undefined;
 }
 
-// The old roots, which Programs still reach until their call sites
-// migrate: `coral.workspace` is `coral` itself, and `coral.functions` is
-// `coral.private`. Every analysis reads segments through this, so each sees
-// only the new roots. `coral.workspace` stays as written alone, before a
-// computed segment, or before `private` or `functions`: the runtime sends
-// each of those to the host as a Tool call, so none reaches a Private Tool.
-function canonicalCoralSegments(segments) {
-  if (
-    segments[0] === 'workspace' &&
-    typeof segments[1] === 'string' &&
-    segments[1] !== 'private' &&
-    segments[1] !== 'functions'
-  ) {
-    return segments.slice(1);
-  }
-  if (segments[0] === 'functions') return ['private', ...segments.slice(1)];
-  return segments;
-}
+// The roots Coral once called by other names, and the refusal that names
+// each one's replacement. A source that names one fails where it does.
+const RENAMED_ROOTS = new Map([
+  ['workspace', '`coral.workspace` is now `coral`: call its Tools directly on `coral`'],
+  ['functions', '`coral.functions` is now `coral.private`'],
+]);
 
 function coralAccess(node, checker, sourceFile) {
   const segments = [];
@@ -347,18 +335,15 @@ function coralAccess(node, checker, sourceFile) {
   }
   if (!ts.isIdentifier(current)) return undefined;
   if (isHostCoralIdentifier(current, checker, sourceFile)) {
-    return { root: 'lexical', segments: canonicalCoralSegments(segments) };
+    return { root: 'lexical', segments };
   }
   const globalSegments = globalThisExpressionSegments(current, checker, sourceFile);
   if (globalSegments !== undefined) {
     const complete = [...globalSegments, ...segments];
     if (complete[0] === 'coral') {
-      return { root: 'global', segments: canonicalCoralSegments(complete.slice(1)) };
+      return { root: 'global', segments: complete.slice(1) };
     }
-    if (
-      complete[0] === undefined &&
-      (complete.includes('private') || complete.includes('functions'))
-    ) {
+    if (complete[0] === undefined && complete.includes('private')) {
       return { root: 'computed_global', segments: complete };
     }
   }
@@ -457,6 +442,10 @@ function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
     }
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       const access = coralAccess(node, checker, sourceFile);
+      const renamed = RENAMED_ROOTS.get(access?.segments[0]);
+      if (renamed !== undefined && (access.root === 'lexical' || access.root === 'global')) {
+        return reject(renamed, node);
+      }
       if (
         (access?.root === 'global' &&
           (access.segments[0] === 'private' ||
@@ -573,10 +562,9 @@ function analyzeSavedFunctionDependencies(source, fileName, targetName) {
   return savedFunctionDependencyAnalysis(sourceFile, program);
 }
 
-// The members of `coral` that name no Tool: the Private Tools' root, the
-// Program host's own members, and an old root that canonical segments still
-// hold because a computed segment or nothing follows it.
-const NON_TOOL_MEMBERS = new Set(['private', 'emit', 'ToolError', 'workspace', 'functions']);
+// The members of `coral` that name no Tool: the Private Tools' root and the
+// Program host's own members.
+const NON_TOOL_MEMBERS = new Set(['private', 'emit', 'ToolError']);
 
 // The number of segments under `coral` that name a Tool's Call Root:
 // `providers.<namespace>` for an Owner's Provider, none for the Built-in

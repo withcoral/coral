@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits, LinkedSavedFunctionSource,
-    ProgramCompiler, SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference,
-    ToolReferences, UnknownToolCall,
+    BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits,
+    LinkedSavedFunctionSource, ProgramCompiler, SavedFunctionCallPaths, SavedFunctionCompilation,
+    SavedFunctionReference, ToolReferences, UnknownToolCall,
 };
 
 use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
@@ -69,13 +69,14 @@ impl CompilerClient for InProcessCompiler {
         time_left: Duration,
         source: &str,
         saved_functions: &[LinkedSavedFunctionSource],
+        builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError> {
         let deadline = deadline(time_left);
+        let run = self.run.with_builtin_tools(builtin_tools);
         if saved_functions.is_empty() {
-            self.run.compile(deadline, source)
+            run.compile(deadline, source)
         } else {
-            self.run
-                .compile_with_saved_functions(deadline, source, saved_functions)
+            run.compile_with_saved_functions(deadline, source, saved_functions)
         }
         .map_err(compile_error)
     }
@@ -94,15 +95,16 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<SavedFunctionCompilation, CompileError> {
         let deadline = deadline(time_left);
+        let authoring = self.authoring.with_builtin_tools(builtin_tools);
         match declarations {
             Some(declarations) => {
-                self.authoring
-                    .prepare_typed_saved_function(deadline, source, declarations)
+                authoring.prepare_typed_saved_function(deadline, source, declarations)
             }
-            None => self.authoring.prepare_saved_function(deadline, source),
+            None => authoring.prepare_saved_function(deadline, source),
         }
         .map_err(compile_error)
     }
@@ -227,12 +229,17 @@ mod tests {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         assert_eq!(
             compiler
-                .compile(Duration::ZERO, "return 42;", &[])
+                .compile(Duration::ZERO, "return 42;", &[], &BuiltinTools::default())
                 .map(drop),
             Err(CompileError::TimedOut)
         );
         compiler
-            .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
+            .compile(
+                TEST_COMPILATION_TIMEOUT,
+                "return 42;",
+                &[],
+                &BuiltinTools::default(),
+            )
             .expect("a call with time left compiles");
     }
 }

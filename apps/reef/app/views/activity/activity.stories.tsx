@@ -1091,7 +1091,7 @@ export const RetainedSource: Story = {
       detail: {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
-        source: 'return coral.functions.billing.calculate();',
+        source: 'return coral.private.billing.calculate();',
         linkedFunctions: [
           {
             savedFunction: 'old-function-id',
@@ -1438,7 +1438,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(within(savedFunction).getByText('saved function')).toBeVisible()
     // An icon beside the call path opens today's function, named with its path.
     const current = within(savedFunction).getByRole('link', {
-      name: /^Open current function coral\.functions\./,
+      name: /^Open current function coral\.private\./,
     })
     await expect(current).toBeVisible()
     await expect(current.getAttribute('href')).toMatch(/\/functions\//)
@@ -1531,7 +1531,7 @@ export const HistoricalDescribeSavedFunction: Story = {
   args: discovery(
     {
       kind: 'describe',
-      callPath: 'coral.functions.github.openIssuesByLabel',
+      callPath: 'coral.private.github.openIssuesByLabel',
       types: ['Issue', 'Label'],
     },
     stored.describeFunction,
@@ -1540,7 +1540,7 @@ export const HistoricalDescribeSavedFunction: Story = {
     const opened = await openDetail(canvasElement)
     // The request states the Call Path, under its label, as the search states its query.
     await expect(opened.getByText('Call path').nextElementSibling).toHaveTextContent(
-      'coral.functions.github.openIssuesByLabel',
+      'coral.private.github.openIssuesByLabel',
     )
     // The types the agent asked for, when it named any.
     await expect(opened.getByText('Types').nextElementSibling).toHaveTextContent('IssueLabel')

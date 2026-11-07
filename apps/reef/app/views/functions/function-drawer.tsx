@@ -73,7 +73,7 @@ export function FunctionDrawer({
   form,
   canDelete,
 }: FunctionDrawerProps) {
-  const callPath = `coral.functions.${f.path}`
+  const callPath = `coral.private.${f.path}`
   return (
     <Drawer listPath={listPath} title={f.path}>
       <Markdown>{f.description}</Markdown>

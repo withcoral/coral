@@ -1239,7 +1239,7 @@ const describedTool: Described = {
 }
 const describedFunction: Described = {
   kind: 'describe',
-  callPath: 'coral.functions.github.openIssuesByLabel',
+  callPath: 'coral.private.github.openIssuesByLabel',
   types: ['Issue', 'Label'],
 }
 /** A retained `describe` call, selected, with `evidence` as Coral stored it. */
@@ -1275,7 +1275,7 @@ it.each([
     context: describedFunction,
     response: stored.describeFunction,
     asked: ['Call path', 'Types', 'Intent'],
-    title: 'coral.functions.github.openIssuesByLabel',
+    title: 'coral.private.github.openIssuesByLabel',
     kind: 'saved function',
     summary: ['1 error'],
     folded: [

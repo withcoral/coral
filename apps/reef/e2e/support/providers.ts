@@ -717,7 +717,7 @@ export interface RunUpdate {
   failure?: { code: string }
 }
 
-/** What `coral.workspace.search` returns for exact Call Paths. */
+/** What `coral.search` returns for exact Call Paths. */
 interface DescribedPath {
   descriptions: { call_path: string; typescript_declaration: string }[]
   missing: { call_path: string; suggestions: string[] }[]
@@ -968,7 +968,7 @@ export function programRunner(
     },
     /**
      * Saves a function the way an agent does: a Program declares `declarations`, which declare
-     * the function `name` at its top level, and passes it to `coral.workspace.saveFunction`.
+     * the function `name` at its top level, and passes it to `coral.saveFunction`.
      * Coral stores {@link savedSource} of them. The Program is one more uncounted exec of the
      * Task; a failed save is an error result.
      */
@@ -982,7 +982,7 @@ export function programRunner(
       // A failed save keeps its Run's failure, so a scenario can show why.
       let failure: ToolResult<RunUpdate> | undefined
       const saved = await runUncounted(
-        `${declarations}\nreturn (await coral.workspace.saveFunction({ ${fields}, source: ${name} })).data;`,
+        `${declarations}\nreturn (await coral.saveFunction({ ${fields}, source: ${name} })).data;`,
         'Save a reusable function',
         (result) => {
           failure = result
@@ -1002,25 +1002,23 @@ export function programRunner(
       })
     },
     /**
-     * Searches the way an agent does, with `coral.workspace.search` inside a Program. The
+     * Searches the way an agent does, with `coral.search` inside a Program. The
      * Program is one more uncounted exec of the Task; a failed Run is an error result.
      */
     async search(query?: string): Promise<ToolResult<{ hits: { call_path: string }[] }>> {
       const input = JSON.stringify(query === undefined ? {} : { query })
       const found = await runUncounted<{ hits: { call_path: string }[] }>(
-        `return (await coral.workspace.search(${input})).data;`,
+        `return (await coral.search(${input})).data;`,
       )
       return found ?? { isError: true, structuredContent: { hits: [] } }
     },
     /**
-     * Reads one Call Path's description with `coral.workspace.search` in a Program. An error
+     * Reads one Call Path's description with `coral.search` in a Program. An error
      * result when the path names nothing this caller can call, as `missing` reports it.
      */
     async describe(path: string): Promise<ToolResult<DescribedPath>> {
       const input = JSON.stringify({ paths: [path] })
-      const found = await runUncounted<DescribedPath>(
-        `return (await coral.workspace.search(${input})).data;`,
-      )
+      const found = await runUncounted<DescribedPath>(`return (await coral.search(${input})).data;`)
       if (!found) return { isError: true, structuredContent: { descriptions: [], missing: [] } }
       return { ...found, isError: found.structuredContent.missing.length > 0 }
     },
@@ -1065,7 +1063,7 @@ export async function pausedForApproval(runner: ReturnType<typeof programRunner>
 export async function openReview(page: Page, paused: RunUpdate, tool: string) {
   // The entry's link opens the Approvals Page with its review already open.
   await page.goto(paused.required_actions[0].url)
-  const review = page.getByRole('region', { name: `Review coral.workspace.${tool}`, exact: true })
+  const review = page.getByRole('region', { name: `Review coral.${tool}`, exact: true })
   await review.getByRole('button', { name: 'Approve', exact: true }).waitFor()
   return review
 }

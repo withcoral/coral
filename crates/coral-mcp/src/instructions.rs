@@ -15,10 +15,10 @@ Coral runs TypeScript Programs that call the user's connected providers.
 
 ## Workflow
 1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
-2. Find provider tools and Saved Functions with `coral.workspace.search` in a Program; `exec` shows how.
+2. Find provider tools and Saved Functions with `coral.search` in a Program; `exec` shows how.
 3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new Run and can repeat external effects.
 4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the Final Value or failure.
-5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.workspace.saveFunction` in that Run. Skip one call, one-off writes and exploration. Tell the user its path.
+5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.saveFunction` in that Run. Skip one call, one-off writes and exploration. Tell the user its path.
 6. When the work is done or cannot continue, call `end_task` once with the outcome.
 
 ## Program rules

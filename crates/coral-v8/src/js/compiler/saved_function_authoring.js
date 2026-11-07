@@ -341,7 +341,8 @@ function savedFunctionDeclarationResult(emitted, diagnostics, references) {
 }
 
 // Prepares one Saved Function, typed by `declarations` when they are given.
-function prepareSavedFunction(source, declarations, fileName, targetName) {
+// `builtinTools` are the keys of the Built-in Tools it can call on `coral`.
+function prepareSavedFunction(source, builtinTools, declarations, fileName, targetName) {
   const compilerOptions = {
     ...PROGRAM_COMPILER_OPTIONS,
     target: resolveTypeScriptTarget(targetName),
@@ -353,7 +354,13 @@ function prepareSavedFunction(source, declarations, fileName, targetName) {
     skipLibCheck: true,
     types: [],
   };
-  const checked = typedVirtualProgram(fileName, source, compilerOptions, declarations);
+  const checked = typedVirtualProgram(
+    fileName,
+    source,
+    compilerOptions,
+    builtinTools,
+    declarations,
+  );
   const { program, sourceFile } = checked;
 
   const syntacticDiagnostics = program.getSyntacticDiagnostics(sourceFile);
@@ -415,7 +422,7 @@ function prepareSavedFunction(source, declarations, fileName, targetName) {
   // Typing never fails a save. A typed declaration that cannot be saved is
   // emitted again untyped, as it was before callers supplied declarations,
   // and the diagnostics say why.
-  const untyped = typedVirtualProgram(fileName, source, compilerOptions, null);
+  const untyped = typedVirtualProgram(fileName, source, compilerOptions, builtinTools, null);
   return savedFunctionDeclarationResult(
     emitSavedFunctionDeclaration(untyped.program, fileName, compilerOptions),
     checked.advisoryDiagnostics(failure),

@@ -40,8 +40,9 @@ function hasSyntaxErrors(sourceFile) {
 }
 
 // The Program body runs in an inner function, so no authored declaration
-// shadows a name the private source before it reads.
-function compileProgram(body, fileName, targetName) {
+// shadows a name the private source before it reads. `builtinTools` are the
+// keys of the Built-in Tools the Program calls on `coral`.
+function compileProgram(body, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   const wrapped = wrapProgramBody(body);
   const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
@@ -67,17 +68,22 @@ function compileProgram(body, fileName, targetName) {
       ? programExtraction(sourceFile, program, wrapped.authoredMappings, carrier)
       : { edits: [] };
   const compiled = compiledProgramBody(body, extraction.edits ?? []);
+  const prefix = `(async () => { ${savedFunctionCarrierDeclaration(carrier)}\n${coralRootPrelude(builtinTools, [])}\nreturn await (async () => {\n`;
+  const bodyLine = sourceLineCount(prefix) - 1;
   return compileProgramSource(
-    `(async () => { ${savedFunctionCarrierDeclaration(carrier)} return await (async () => {\n${compiled.text}\n})(); })();\n`,
+    `${prefix}${compiled.text}\n})(); })();\n`,
     fileName,
     compilerOptions,
-    compiled.mappings.map((mapping) => ({ ...mapping, generatedLine: mapping.generatedLine + 1 })),
+    compiled.mappings.map((mapping) => ({
+      ...mapping,
+      generatedLine: mapping.generatedLine + bodyLine,
+    })),
     validationError,
     extraction.refusal,
   );
 }
 
-function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
+function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   if (!Array.isArray(savedFunctions)) {
     throw new Error('Saved Function closure must be an array');
@@ -165,7 +171,7 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
       diagnostics: [],
     };
   }
-  const linked = linkedProgramSource(body, savedFunctions, target, saves);
+  const linked = linkedProgramSource(body, savedFunctions, builtinTools, target, saves);
   return compileProgramSource(
     linked.source,
     fileName,
