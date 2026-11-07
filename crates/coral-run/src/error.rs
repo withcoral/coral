@@ -52,6 +52,12 @@ coral_failures! {
     ProviderPublicationFailed => "provider_publication_failed",
     /// None of the caller's Saved Functions is at the requested path.
     SavedFunctionNotFound => "saved_function_not_found",
+    /// One of the caller's Private Tools is already at the path.
+    PrivateToolExists => "private_tool_exists",
+    /// None of the caller's Private Tools is at the path.
+    PrivateToolNotFound => "private_tool_not_found",
+    /// The caller's Private Tool is not at the revision the call expected.
+    PrivateToolRevisionConflict => "private_tool_revision_conflict",
     /// Exact Tool policy disables this Invocation.
     ToolDisabled => "tool_disabled",
     /// The retained Credential Route changed.
@@ -122,6 +128,9 @@ impl CoralFailure {
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not change the Provider",
             Self::SavedFunctionNotFound => "Saved Function was not found",
+            Self::PrivateToolExists => "A Private Tool is already at this path",
+            Self::PrivateToolNotFound => "Private Tool was not found",
+            Self::PrivateToolRevisionConflict => "Private Tool changed since the expected revision",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",

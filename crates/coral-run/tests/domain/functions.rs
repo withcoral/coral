@@ -14,13 +14,7 @@ const SOURCE: &str = "const saved = (name: string): string => `hello ${name}`;";
 /// either Tool, and the index each save notifies.
 async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) {
     let mut scope = AdminScope::new(user).await;
-    let module = SavedFunctionModule::new(
-        scope.fixture.database.clone(),
-        scope.fixture.workspaces.clone(),
-        crate::IsolateLimits::default(),
-        coral_test_support::TEST_COMPILATION_TIMEOUT,
-    )
-    .unwrap();
+    let module = functions_module(&scope);
     let index =
         coral_search::SearchIndex::new(scope.fixture.database.clone(), Duration::from_secs(3_600));
     scope.fixture.runs = scope
@@ -29,6 +23,17 @@ async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) 
         .clone()
         .with_saved_functions(crate::SavedFunctions::new(module, index.clone()));
     (scope, index)
+}
+
+/// The module that stores `scope`'s Saved Functions.
+fn functions_module(scope: &AdminScope) -> SavedFunctionModule {
+    SavedFunctionModule::new(
+        scope.fixture.database.clone(),
+        scope.fixture.workspaces.clone(),
+        crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
+    )
+    .unwrap()
 }
 
 /// A Workspace member who does not own the Workspace.
@@ -537,5 +542,220 @@ async fn an_old_root_is_refused_where_it_is_written_with_its_new_path() {
         message.starts_with("Saved Function coral.private.people.greet:")
             && message.ends_with(": `coral.functions` is now `coral.private`"),
         "{message}"
+    );
+}
+
+/// The function `addTool` and `updateTool` save in place of `saved`: it
+/// says goodbye, so a call shows which version is current.
+const OTHER_SOURCE: &str = "const saved = (name: string): string => `bye ${name}`;";
+
+/// A Program that declares `declarations` and returns `expression`'s
+/// value, or a Tool error's code and message.
+fn tool_call(declarations: &str, expression: &str) -> RunSubmission {
+    submission(&format!(
+        "{declarations}
+try {{
+    return await {expression};
+}} catch (error) {{
+    if (!(error instanceof coral.ToolError)) throw error;
+    return {{ code: error.code, message: error.message }};
+}}"
+    ))
+}
+
+/// `coral.addTool` or `coral.updateTool` saving `saved` from
+/// `declarations` at `path`, with `extra` fields after `source`.
+fn author(verb: &str, path: &str, declarations: &str, extra: &str) -> RunSubmission {
+    tool_call(
+        declarations,
+        &format!(
+            "coral.{verb}({{ path: {path}, description: 'Greet one person by name.', \
+             source: saved{extra} }})",
+            path = json!(path),
+        ),
+    )
+}
+
+fn remove(path: &str) -> RunSubmission {
+    tool_call(
+        "",
+        &format!("coral.removeTool({{ path: {path} }})", path = json!(path)),
+    )
+}
+
+/// The actions of `actor`'s lifecycle Events, oldest first.
+async fn lifecycle_actions(
+    scope: &AdminScope,
+    functions: &SavedFunctionModule,
+    actor: &AuthenticatedPrincipal,
+) -> Vec<coral_functions::LifecycleAction> {
+    let mut events = functions
+        .list_lifecycle_events(actor, &scope.workspace_id)
+        .await
+        .unwrap();
+    events.sort_by_key(coral_functions::AdministrativeLifecycleEvent::occurred_at_unix_nanos);
+    events
+        .iter()
+        .map(coral_functions::AdministrativeLifecycleEvent::action)
+        .collect()
+}
+
+// Catches: an addTool that replaces an existing tool, an updateTool that
+// creates a missing one or overwrites a revision that moved, a removeTool
+// of a missing path that reports success, a refusal under any code but its
+// own, or a refused call that changes the tool or records an Event.
+#[tokio::test]
+async fn create_only_replace_only_and_revision_conflicts_are_refused_and_change_nothing() {
+    use coral_functions::LifecycleAction::{Created, Deleted, Replaced};
+    let (scope, _index) = authoring_scope("user:tools-intents").await;
+    let functions = functions_module(&scope);
+    let before = lifecycle_actions(&scope, &functions, &scope.owner).await;
+    let added = outcome(
+        &scope,
+        &scope.owner,
+        author("addTool", "people.greet", SOURCE, ""),
+    )
+    .await;
+    assert_eq!(
+        (
+            added.pointer("/data/call_path"),
+            added.pointer("/data/revision")
+        ),
+        (Some(&json!("coral.private.people.greet")), Some(&json!(1))),
+        "{added}"
+    );
+
+    for (run, code) in [
+        (
+            author("addTool", "people.greet", OTHER_SOURCE, ""),
+            "private_tool_exists",
+        ),
+        (
+            author("updateTool", "people.missing", OTHER_SOURCE, ""),
+            "private_tool_not_found",
+        ),
+        (
+            author(
+                "updateTool",
+                "people.greet",
+                OTHER_SOURCE,
+                ", expectedRevision: 2",
+            ),
+            "private_tool_revision_conflict",
+        ),
+        (remove("people.missing"), "private_tool_not_found"),
+    ] {
+        let events = lifecycle_actions(&scope, &functions, &scope.owner).await;
+        let refused = outcome(&scope, &scope.owner, run).await;
+        assert_eq!(refused.get("code"), Some(&json!(code)), "{refused}");
+        assert_eq!(
+            outcome(&scope, &scope.owner, greet()).await,
+            json!("hello Ada"),
+            "{code}: the tool is unchanged"
+        );
+        assert!(
+            admission_refuses(
+                &scope,
+                &scope.owner,
+                submission("return coral.private.people.missing('Ada');"),
+            )
+            .await,
+            "{code}: nothing was created"
+        );
+        assert_eq!(
+            lifecycle_actions(&scope, &functions, &scope.owner).await,
+            events,
+            "{code}: no Event"
+        );
+    }
+
+    for (run, revision) in [
+        (
+            author(
+                "updateTool",
+                "people.greet",
+                OTHER_SOURCE,
+                ", expectedRevision: 1",
+            ),
+            2,
+        ),
+        (author("updateTool", "people.greet", SOURCE, ""), 3),
+    ] {
+        let updated = outcome(&scope, &scope.owner, run).await;
+        assert_eq!(
+            updated.pointer("/data/revision"),
+            Some(&json!(revision)),
+            "{updated}"
+        );
+    }
+    assert_eq!(
+        outcome(&scope, &scope.owner, greet()).await,
+        json!("hello Ada")
+    );
+    let removed = outcome(&scope, &scope.owner, remove("people.greet")).await;
+    assert_eq!(
+        removed.pointer("/data/call_path"),
+        Some(&json!("coral.private.people.greet")),
+        "{removed}"
+    );
+    assert!(admission_refuses(&scope, &scope.owner, greet()).await);
+    let after = lifecycle_actions(&scope, &functions, &scope.owner).await;
+    assert_eq!(
+        after.get(before.len()..),
+        Some(&[Created, Replaced, Replaced, Deleted][..])
+    );
+}
+
+// Catches: an authoring Tool an Agent or Member cannot reach without a
+// rule, or one that adds, updates or removes another Principal's tool.
+#[tokio::test]
+async fn each_principal_adds_updates_and_removes_only_its_own_tools() {
+    let (scope, _index) = authoring_scope("user:tools-own").await;
+    let member = member(&scope, "user:tools-member").await;
+    let agent =
+        registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
+    outcome(
+        &scope,
+        &scope.owner,
+        author("addTool", "people.greet", SOURCE, ""),
+    )
+    .await;
+    for principal in [&member, &agent] {
+        for (run, code) in [
+            (
+                author("updateTool", "people.greet", OTHER_SOURCE, ""),
+                "private_tool_not_found",
+            ),
+            (remove("people.greet"), "private_tool_not_found"),
+        ] {
+            let refused = outcome(&scope, principal, run).await;
+            assert_eq!(
+                refused.get("code"),
+                Some(&json!(code)),
+                "{principal:?}: {refused}"
+            );
+        }
+        let added = outcome(
+            &scope,
+            principal,
+            author("addTool", "people.greet", OTHER_SOURCE, ""),
+        )
+        .await;
+        assert_eq!(
+            added.pointer("/data/revision"),
+            Some(&json!(1)),
+            "{principal:?}: {added}"
+        );
+        assert_eq!(
+            outcome(&scope, principal, greet()).await,
+            json!("bye Ada"),
+            "{principal:?}"
+        );
+        let removed = outcome(&scope, principal, remove("people.greet")).await;
+        assert!(removed.pointer("/data/call_path").is_some(), "{removed}");
+    }
+    assert_eq!(
+        outcome(&scope, &scope.owner, greet()).await,
+        json!("hello Ada")
     );
 }

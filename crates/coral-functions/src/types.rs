@@ -439,16 +439,27 @@ fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
         .to_owned()
 }
 
-/// Complete authoring input for one atomic create-or-replace operation.
+/// Complete authoring input for one atomic save: create or replace by
+/// default, or only one of them through [`Self::create_only`] and
+/// [`Self::replace_only`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedFunctionSave {
     path: SavedFunctionPath,
     description: SavedFunctionDescription,
     source: SavedFunctionSource,
+    intent: SaveIntent,
+}
+
+/// What a save requires of the function currently at its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveIntent {
+    CreateOrReplace,
+    Create,
+    Replace { expected_revision: Option<u64> },
 }
 
 impl SavedFunctionSave {
-    /// Builds already-validated authoring input.
+    /// Builds already-validated authoring input that creates or replaces.
     #[must_use]
     pub const fn new(
         path: SavedFunctionPath,
@@ -459,6 +470,41 @@ impl SavedFunctionSave {
             path,
             description,
             source,
+            intent: SaveIntent::CreateOrReplace,
+        }
+    }
+
+    /// Saves only when no function is at the path; otherwise the save fails
+    /// with [`Error::SavedFunctionExists`].
+    #[must_use]
+    pub const fn create_only(mut self) -> Self {
+        self.intent = SaveIntent::Create;
+        self
+    }
+
+    /// Saves only over a function at the path, and, with
+    /// `expected_revision`, only while that function is at that revision.
+    /// Otherwise the save fails with [`Error::SavedFunctionNotFound`] or
+    /// [`Error::SavedFunctionRevisionConflict`].
+    #[must_use]
+    pub const fn replace_only(mut self, expected_revision: Option<u64>) -> Self {
+        self.intent = SaveIntent::Replace { expected_revision };
+        self
+    }
+
+    /// Checks the intent against the revision of the function at the path,
+    /// read under the save's hold.
+    pub(crate) const fn admits(&self, current_revision: Option<u64>) -> Result<(), Error> {
+        match (self.intent, current_revision) {
+            (SaveIntent::Create, Some(_)) => Err(Error::SavedFunctionExists),
+            (SaveIntent::Replace { .. }, None) => Err(Error::SavedFunctionNotFound),
+            (
+                SaveIntent::Replace {
+                    expected_revision: Some(expected),
+                },
+                Some(current),
+            ) if expected != current => Err(Error::SavedFunctionRevisionConflict { current }),
+            _ => Ok(()),
         }
     }
 

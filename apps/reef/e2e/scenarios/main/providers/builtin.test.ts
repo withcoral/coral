@@ -102,6 +102,9 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
           'listProviders',
           'getPolicy',
           'search',
+          'addTool',
+          'updateTool',
+          'removeTool',
           'saveFunction',
           'deleteFunction',
         ]) {

@@ -153,7 +153,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#"export default function (input: { "description": string; "path": string; "source": (...args: never[]) => unknown })"#,
                 r#""call_path": string"#,
                 r#""declaration": string"#,
-                r#""diagnostics": Array<Diagnostic>"#,
+                // The catalog numbers a type name each Tool repeats.
+                r#""diagnostics": Array<Diagnostic"#,
                 r#""diagnostics_truncated": boolean"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
@@ -161,6 +162,37 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         (
             BuiltinTool::DeleteFunction,
             // Deleting again fails, so it is not idempotent.
+            ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
+            &[
+                r#"export default function (input: { "path": string })"#,
+                r#""call_path": string"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::AddTool,
+            // A second add at the path fails, and it replaces nothing.
+            ToolHints::new(Some(false), Some(false), Some(false), Some(false)),
+            &[
+                r#"export default function (input: { "description": string; "path": string; "source": (...args: never[]) => unknown })"#,
+                r#""revision": number"#,
+                r#""declaration": string"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::UpdateTool,
+            // A replace discards the previous source and adds a revision.
+            ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
+            &[
+                r#"export default function (input: { "description": string; "expectedRevision"?: number; "path": string; "source": (...args: never[]) => unknown })"#,
+                r#""revision": number"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::RemoveTool,
+            // Removing again fails, so it is not idempotent.
             ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
             &[
                 r#"export default function (input: { "path": string })"#,
@@ -202,23 +234,33 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         target_keys,
         [
             "addProvider",
+            "addTool",
             "deleteFunction",
             "getPolicy",
             "getProvider",
             "listProviders",
+            "removeTool",
             "saveFunction",
             "search",
             "updatePolicy",
-            "updateProvider"
+            "updateProvider",
+            "updateTool"
         ]
     );
     // The retained Generation keeps the enabled default the catalog declares
-    // for the Tools that change only the caller's own Saved Functions, and
+    // for the Tools that change only the caller's own Private Tools, and
     // for no other Tool, so policy reads it from storage.
     let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
         assert_eq!(
             facts.declares_enabled_by_default(),
-            ["saveFunction", "deleteFunction"].contains(&key),
+            [
+                "saveFunction",
+                "deleteFunction",
+                "addTool",
+                "updateTool",
+                "removeTool"
+            ]
+            .contains(&key),
             "{key}"
         );
     };

@@ -1,18 +1,22 @@
-// A literal `coral.saveFunction({ source: name })` call saves the
-// function `name` names: a function the calling source declares at its top
-// level. Admission extracts its module, the declaration and every top-level
-// declaration statement it reaches, and replaces the `source` value with a
-// private carrier of that text. Only the Program host reads a carrier, so no
+// A literal `coral.addTool({ source: name })` call, or `updateTool` or
+// `saveFunction`, saves the function `name` names: a function the calling
+// source declares at its top level. Admission extracts its module, the
+// declaration and every top-level declaration statement it reaches, and
+// replaces the `source` value with a private carrier of that text. Only the Program host reads a carrier, so no
 // authored value reaches the Tool as a source.
 
 const SAVE_FUNCTION_SOURCE_GLOBAL = '__coralSavedFunctionSource';
 
-function isSaveFunctionAccess(access) {
-  return (
-    access?.root === 'lexical' &&
+// The Built-in Tools that take a function as `source`.
+const SAVING_TOOLS = new Set(['saveFunction', 'addTool', 'updateTool']);
+
+// The saving Tool `access` names, or undefined.
+function savingTool(access) {
+  return access?.root === 'lexical' &&
     access.segments.length === 1 &&
-    access.segments[0] === 'saveFunction'
-  );
+    SAVING_TOOLS.has(access.segments[0])
+    ? access.segments[0]
+    : undefined;
 }
 
 // Whether every segment from `coral` to `node` is a property name.
@@ -204,7 +208,7 @@ function isSourceProperty(property) {
 }
 
 // The edits that carry each saved function's module to its literal
-// `coral.saveFunction` call in `sourceFile`, or the first refusal.
+// saving call in `sourceFile`, or the first refusal.
 // `container` holds the source's top-level statements, `sourceName` and
 // `scope` name it in a refusal, and `carrier` names the private function that
 // wraps each module.
@@ -274,15 +278,16 @@ function savedFunctionExtraction({
   walkRuntimeNodes(sourceFile, (node) => {
     if (
       !(ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) ||
-      parentContinuesCoralPath(node) ||
-      !isSaveFunctionAccess(coralAccess(node, checker, sourceFile))
+      parentContinuesCoralPath(node)
     ) {
       return true;
     }
+    const tool = savingTool(coralAccess(node, checker, sourceFile));
+    if (tool === undefined) return true;
     const call = calleeCall(node);
     if (!isLiteralCoralChain(node) || call === undefined) {
       return refuse(
-        'Call coral.saveFunction by its literal path, so it can take a function as source',
+        `Call coral.${tool} by its literal path, so it can take a function as source`,
         node,
       );
     }
@@ -293,7 +298,7 @@ function savedFunctionExtraction({
         ? input.properties.filter(isSourceProperty)
         : [];
     if (sources.length === 0) {
-      return refuse('Pass coral.saveFunction one object literal with source', call);
+      return refuse(`Pass coral.${tool} one object literal with source`, call);
     }
     if (sources.length > 1) {
       return refuse('Pass source once', sources[1]);

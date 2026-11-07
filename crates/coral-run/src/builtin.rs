@@ -98,6 +98,17 @@ impl BuiltinCall {
                     BuiltinArguments::DeleteFunction(arguments) => {
                         functions::DeleteFunction::new(&arguments).map(Self::DeleteFunction)
                     }
+                    BuiltinArguments::AddTool(arguments) => {
+                        functions::SaveFunction::add(&arguments)
+                            .map(|call| Self::SaveFunction(Box::new(call)))
+                    }
+                    BuiltinArguments::UpdateTool(arguments) => {
+                        functions::SaveFunction::update(&arguments)
+                            .map(|call| Self::SaveFunction(Box::new(call)))
+                    }
+                    BuiltinArguments::RemoveTool(arguments) => {
+                        functions::DeleteFunction::remove(&arguments).map(Self::DeleteFunction)
+                    }
                 }),
         )
     }
@@ -154,7 +165,10 @@ pub(crate) async fn recover(
             | BuiltinTool::UpdatePolicy
             | BuiltinTool::Search
             | BuiltinTool::SaveFunction
-            | BuiltinTool::DeleteFunction,
+            | BuiltinTool::DeleteFunction
+            | BuiltinTool::AddTool
+            | BuiltinTool::UpdateTool
+            | BuiltinTool::RemoveTool,
         )
         | None => Ok(None),
     }
@@ -190,7 +204,7 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) renamer: Option<&'a dyn ProviderRenamer>,
     /// Where `search` discovers, as the invoking Principal.
     pub(crate) search: &'a coral_search::UniversalSearchModule,
-    /// Where `saveFunction` and `deleteFunction` author; without it, they
+    /// Where the authoring Tools author; without it, they
     /// fail as `tool_unavailable`.
     pub(crate) functions: Option<&'a SavedFunctions>,
     pub(crate) actor: &'a AuthenticatedPrincipal,

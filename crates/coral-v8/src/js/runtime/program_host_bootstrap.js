@@ -29,7 +29,7 @@
   Object.freeze(ToolError.prototype);
   Object.freeze(ToolError);
 
-  // A literal `coral.saveFunction` call passes its source in a
+  // A literal call to a saving Tool passes its source in a
   // carrier that admission writes and the compiled wrapper takes before any
   // authored code runs. A carrier has no prototype, so no Program reaches
   // this class, and a private field marks it, so no Program forges one.
@@ -54,11 +54,10 @@
     configurable: true,
   });
 
-  // The arguments of `coral.saveFunction` as the Tool reads them: `source`
-  // only when a carrier holds it, so no authored value reaches the Tool as a
+  // The arguments of a saving Tool as the Tool reads them: `source` only
+  // when a carrier holds it, so no authored value reaches the Tool as a
   // source. Undefined unless the input is an object.
-  const SAVE_FUNCTION_PATH = 'coral.saveFunction';
-  const saveFunctionArguments = (input) => {
+  const savingArguments = (input) => {
     if (typeof input !== 'object' || input === null || isArray(input)) return undefined;
     const encoded = create(null);
     for (const key of keys(input)) {
@@ -85,7 +84,13 @@
         let encoded = '{}';
         if (args.length === 1) {
           try {
-            const input = path === SAVE_FUNCTION_PATH ? saveFunctionArguments(args[0]) : args[0];
+            // Plain comparisons, so no prototype a Program can replace
+            // decides which Tool takes a carried source.
+            const saving =
+              path === 'coral.saveFunction' ||
+              path === 'coral.addTool' ||
+              path === 'coral.updateTool';
+            const input = saving ? savingArguments(args[0]) : args[0];
             if (input === undefined) return invoke(path);
             encoded = nativeStringify(input);
           } catch {

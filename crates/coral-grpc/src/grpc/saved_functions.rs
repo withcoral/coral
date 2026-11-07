@@ -17,6 +17,8 @@ fn error(error: coral_functions::Error) -> Status {
         E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
         E::SavedFunctionNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
+        E::SavedFunctionExists => (tonic::Code::AlreadyExists, "ALREADY_EXISTS"),
+        E::SavedFunctionRevisionConflict { .. } => (tonic::Code::Aborted, "ABORTED"),
         // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
         E::SavedFunctionAdmission(_)
         | E::SavedFunctionPathConflict

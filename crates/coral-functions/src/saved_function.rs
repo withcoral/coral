@@ -313,6 +313,7 @@ impl SavedFunctionModule {
                 &prepared.references,
             )
             .await?;
+        save.admits(previous.as_ref().map(SavedFunction::revision))?;
         let (id, revision, action) = match previous.as_ref() {
             None => (SavedFunctionId::generate(), 1, LifecycleAction::Created),
             Some(previous) => (

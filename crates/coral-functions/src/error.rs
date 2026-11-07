@@ -7,6 +7,15 @@ pub enum Error {
     /// The Saved Function is absent or concealed from this Principal.
     #[error("Saved Function was not found")]
     SavedFunctionNotFound,
+    /// A create-only save found a function at its path.
+    #[error("a Saved Function is already at this path")]
+    SavedFunctionExists,
+    /// A replace-only save expected a revision other than the current one.
+    #[error("the Saved Function is at revision {current}")]
+    SavedFunctionRevisionConflict {
+        /// The revision of the function at the path.
+        current: u64,
+    },
     /// Source could not become one accepted callable definition.
     #[error("Saved Function authoring failed: {0}")]
     SavedFunctionAdmission(String),
@@ -64,6 +73,8 @@ impl Error {
         match self {
             Self::InvalidInput { .. } => "invalid_input",
             Self::SavedFunctionNotFound { .. } => "saved_function_not_found",
+            Self::SavedFunctionExists => "saved_function_exists",
+            Self::SavedFunctionRevisionConflict { .. } => "saved_function_revision_conflict",
             Self::SavedFunctionAdmission { .. } => "saved_function_admission",
             Self::SavedFunctionPathConflict => "saved_function_path_conflict",
             Self::SavedFunctionCompilationTimedOut { .. } => "saved_function_compilation_timed_out",
@@ -91,6 +102,8 @@ impl Error {
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
             Self::SavedFunctionNotFound => "saved_function_not_found",
+            Self::SavedFunctionExists => "saved_function_exists",
+            Self::SavedFunctionRevisionConflict { .. } => "saved_function_revision_conflict",
             Self::SavedFunctionAdmission(_) | Self::SavedFunctionPathConflict => {
                 "saved_function_admission_failed"
             }

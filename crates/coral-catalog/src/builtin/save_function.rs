@@ -62,32 +62,14 @@ struct Arguments {
                        types; the declaration is shown beside it."
     )]
     description: String,
-    #[schemars(schema_with = "source_schema")]
+    #[schemars(schema_with = "super::private_tools::source_schema")]
     source: String,
 }
-
-/// The opaque type of `source`: a Program passes a function, and admission
-/// replaces it with the module it extracts, which the Program host encodes
-/// as the string this schema describes.
-pub(super) const SOURCE_OPAQUE_TYPE: &str = "SavedFunctionSource";
-
-/// Accepts any function a Program declares.
-pub(super) const SOURCE_TYPESCRIPT_TYPE: &str = "(...args: never[]) => unknown";
 
 /// What to correct when no extracted module reached the Tool: a call
 /// admission could not read, such as one through a computed path, has none.
 const SOURCE_REASON: &str = "pass a function declared at the top level, through a literal \
                              coral.saveFunction call";
-
-fn source_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "string",
-        "minLength": 1,
-        "x-coral-opaque-type": SOURCE_OPAQUE_TYPE,
-        "description": "A function declared at the top level of this Program, after you have \
-                        called it.",
-    })
-}
 
 /// `saveFunction`'s arguments in the shape the schema allows.
 /// coral-functions checks each value itself.

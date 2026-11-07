@@ -37,6 +37,7 @@ mod delete_function;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod private_tools;
 mod provider_input;
 mod save_function;
 mod search;
@@ -51,6 +52,9 @@ pub use get_provider::{
 };
 pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
+};
+pub use private_tools::{
+    RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments,
 };
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
 pub use save_function::{SaveFunctionArguments, SaveFunctionResult};
@@ -80,8 +84,8 @@ pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";
 
 /// The TypeScript type of each opaque value a Built-in Tool takes.
 pub(crate) const OPAQUE_TYPES: [(&str, &str); 1] = [(
-    save_function::SOURCE_OPAQUE_TYPE,
-    save_function::SOURCE_TYPESCRIPT_TYPE,
+    private_tools::SOURCE_OPAQUE_TYPE,
+    private_tools::SOURCE_TYPESCRIPT_TYPE,
 )];
 
 /// The identity a built-in Generation pins: the prefix and the catalog's
@@ -148,10 +152,18 @@ pub enum BuiltinTool {
     SaveFunction,
     /// Deletes one of the caller's own Saved Functions.
     DeleteFunction,
+    /// Creates one of the caller's own Private Tools; fails when one is
+    /// at the path.
+    AddTool,
+    /// Replaces one of the caller's own Private Tools; fails when none is
+    /// at the path, or when its revision is not the one expected.
+    UpdateTool,
+    /// Removes one of the caller's own Private Tools.
+    RemoveTool,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 12] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -161,6 +173,9 @@ impl BuiltinTool {
         Self::Search,
         Self::SaveFunction,
         Self::DeleteFunction,
+        Self::AddTool,
+        Self::UpdateTool,
+        Self::RemoveTool,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -176,6 +191,9 @@ impl BuiltinTool {
             Self::Search => "search",
             Self::SaveFunction => "saveFunction",
             Self::DeleteFunction => "deleteFunction",
+            Self::AddTool => "addTool",
+            Self::UpdateTool => "updateTool",
+            Self::RemoveTool => "removeTool",
         }
     }
 
@@ -206,6 +224,7 @@ impl BuiltinTool {
             Self::Search => search::NEEDS,
             Self::SaveFunction => save_function::NEEDS,
             Self::DeleteFunction => delete_function::NEEDS,
+            Self::AddTool | Self::UpdateTool | Self::RemoveTool => private_tools::NEEDS,
         }
     }
 }
@@ -360,6 +379,12 @@ pub enum BuiltinArguments {
     SaveFunction(SaveFunctionArguments),
     /// `deleteFunction`'s arguments.
     DeleteFunction(DeleteFunctionArguments),
+    /// `addTool`'s arguments.
+    AddTool(ToolSaveArguments),
+    /// `updateTool`'s arguments.
+    UpdateTool(ToolSaveArguments),
+    /// `removeTool`'s arguments.
+    RemoveTool(RemoveToolArguments),
 }
 
 impl BuiltinArguments {
@@ -392,6 +417,11 @@ impl BuiltinArguments {
             BuiltinTool::DeleteFunction => {
                 DeleteFunctionArguments::parse(arguments).map(Self::DeleteFunction)
             }
+            BuiltinTool::AddTool => ToolSaveArguments::parse_add(arguments).map(Self::AddTool),
+            BuiltinTool::UpdateTool => {
+                ToolSaveArguments::parse_update(arguments).map(Self::UpdateTool)
+            }
+            BuiltinTool::RemoveTool => RemoveToolArguments::parse(arguments).map(Self::RemoveTool),
         }
     }
 }
@@ -685,6 +715,9 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::Search => search::definition(),
         BuiltinTool::SaveFunction => save_function::definition(),
         BuiltinTool::DeleteFunction => delete_function::definition(),
+        BuiltinTool::AddTool => private_tools::add_definition(),
+        BuiltinTool::UpdateTool => private_tools::update_definition(),
+        BuiltinTool::RemoveTool => private_tools::remove_definition(),
     }
 }
 

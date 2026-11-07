@@ -30,7 +30,13 @@ fn compiler() -> &'static ProgramCompiler {
     COMPILER.get_or_init(|| {
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
             .expect("start compiler")
-            .with_builtin_tools(&BuiltinTools::new(["saveFunction", "deleteFunction"]))
+            .with_builtin_tools(&BuiltinTools::new([
+                "saveFunction",
+                "deleteFunction",
+                "addTool",
+                "updateTool",
+                "removeTool",
+            ]))
     })
 }
 
@@ -73,11 +79,15 @@ struct ToolCalls {
 
 impl ToolCalls {
     fn saves(&self) -> Vec<(Value, Option<AuthoredLocation>)> {
+        self.calls_to(SAVE)
+    }
+
+    fn calls_to(&self, call_path: &str) -> Vec<(Value, Option<AuthoredLocation>)> {
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .filter(|(path, _arguments, _location)| path == SAVE)
+            .filter(|(path, _arguments, _location)| path == call_path)
             .map(|(_path, arguments, location)| (arguments.clone(), location.clone()))
             .collect()
     }
@@ -514,5 +524,60 @@ await coral.saveFunction({ path: "a", description: "d", source: f }); throw new 
     assert_eq!(
         (&call.source, format!("{}:{}", call.line, call.column)),
         (&AuthoredSource::Program, location(body, "saveFunction("))
+    );
+}
+
+// Catches: an addTool or updateTool call whose function admission does not
+// extract, a host that lets an authored value reach either as its source,
+// or a refusal that names another Tool.
+#[test]
+fn add_tool_and_update_tool_take_a_function_as_save_function_does() {
+    for tool in ["addTool", "updateTool"] {
+        let body = format!(
+            r#"const f = () => 1;
+await coral.{tool}({{ path: "a", description: "d", source: f, expectedRevision: 1 }});
+const host = globalThis[["co", "ral"].join("")];
+await host["{tool}"]({{ path: "b", description: "d", source: "export default () => 1" }});"#
+        );
+        let program = admit(&body, &[]).unwrap_or_else(|error| panic!("{tool}: {error}"));
+        let (output, host) = run(&program);
+        output.unwrap_or_else(|error| panic!("{tool}: {error}"));
+        assert_eq!(
+            host.calls_to(&format!("coral.{tool}"))
+                .into_iter()
+                .map(|(arguments, _location)| arguments)
+                .collect::<Vec<_>>(),
+            [
+                serde_json::json!({
+                    "path": "a",
+                    "description": "d",
+                    "source": "const f = () => 1;\n\nexport default f;\n",
+                    "expectedRevision": 1,
+                }),
+                serde_json::json!({ "path": "b", "description": "d" }),
+            ],
+            "{tool}"
+        );
+
+        let uncalled = format!("const save = coral.{tool};");
+        assert_eq!(
+            save_refusal(&uncalled, &[]),
+            format!(
+                "Program:{}: Call coral.{tool} by its literal path, so it can take a \
+                 function as source",
+                location(&uncalled, "coral.")
+            ),
+        );
+    }
+    // removeTool takes no source, so admission reads none.
+    let program = admit(r#"await coral.removeTool({ path: "a" });"#, &[]).expect("admit");
+    let (output, host) = run(&program);
+    output.expect("run");
+    assert_eq!(
+        host.calls_to("coral.removeTool")
+            .into_iter()
+            .map(|(arguments, _location)| arguments)
+            .collect::<Vec<_>>(),
+        [serde_json::json!({ "path": "a" })]
     );
 }

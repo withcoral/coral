@@ -26,6 +26,9 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::Search => super::search::tests::valid_arguments(),
         BuiltinTool::SaveFunction => super::save_function::valid_arguments(),
         BuiltinTool::DeleteFunction => super::delete_function::valid_arguments(),
+        BuiltinTool::AddTool => super::private_tools::valid_add_arguments(),
+        BuiltinTool::UpdateTool => super::private_tools::valid_update_arguments(),
+        BuiltinTool::RemoveTool => super::private_tools::valid_remove_arguments(),
     }
 }
 

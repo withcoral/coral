@@ -22,12 +22,13 @@ pub use builtin::{
     DeleteFunctionResult, Description, DescriptionAuthoring, GetPolicyArguments, GetPolicyResult,
     GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
     ListedProviderState, ListedSetup, ListedSetupState, MissingPath, NON_TOOL_ROOT_MEMBERS,
-    PathsResult, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
-    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SaveFunctionArguments, SaveFunctionResult,
-    SavedDetail, SavedDiagnostic, SavedDiagnosticCategory, SearchArguments, SearchHit,
-    SearchOutput, SearchResult, SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState,
-    SearchRetrieverStatus, SourceChange, UpdatePolicyArguments, UpdatePolicyResult,
-    UpdateProviderArguments, UpdateProviderResult,
+    PathsResult, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput, RemoveToolArguments,
+    RemovedToolResult, SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SaveFunctionArguments,
+    SaveFunctionResult, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory, SavedToolResult,
+    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
+    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, SourceChange,
+    ToolSaveArguments, UpdatePolicyArguments, UpdatePolicyResult, UpdateProviderArguments,
+    UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{

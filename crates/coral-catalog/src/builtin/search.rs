@@ -389,7 +389,7 @@ impl SearchOutput {
 }
 
 /// Whether a JSON reader holds `value` exactly.
-const fn exact_in_json(value: u64) -> bool {
+pub(super) const fn exact_in_json(value: u64) -> bool {
     value <= JSON_SAFE_INTEGER_MAX
 }
 
