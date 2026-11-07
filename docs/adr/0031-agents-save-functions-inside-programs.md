@@ -2,34 +2,31 @@
 status: accepted
 ---
 
-# Agents save Saved Functions from inside Programs
+# Agents author their Private Tools from inside Programs
 
-Amended by [ADR 0032](0032-every-callable-is-a-tool.md): Saved Functions are now Private Tools at `coral.private`, the
-Built-in Tools sit directly on `coral`, and saving uses `coral.addTool`, `coral.updateTool` and `coral.removeTool`.
-
-An agent saves and deletes its own Saved Functions by calling the Built-in Tools `coral.workspace.saveFunction` and
-`coral.workspace.deleteFunction` from a Program, not through MCP `save_function` and `delete_function`. Both act only in
-the caller's own `coral.functions` namespace, and every Principal that authors in the Workspace reaches them, Agents
-included. With ADR 0026, Coral's MCP surface keeps only the tools that run Programs, observe Runs and end Tasks.
+An agent creates, replaces and removes its own Private Tools by calling the Built-in Tools `coral.addTool`,
+`coral.updateTool` and `coral.removeTool` from a Program, not through MCP `save_function` and `delete_function`. They
+act only on the caller's own Private Tools at `coral.private`, and every Principal that authors in the Workspace
+reaches them, Agents included (ADR 0032 decides their arguments). With ADR 0026, Coral's MCP surface keeps only the tools that run Programs, observe Runs and end Tasks.
 
 A Program saves a function by reference: `source` names a function that the calling source declares at its top level,
 as a function declaration or as a `const` bound to an arrow or function expression. The Program declares the reusable
-work as that function, calls it, and after it returns passes it to `saveFunction`, so an agent tests and saves in one
-Run. No string form exists. We first took `source` as a string, and agents struggled to escape backticks and `${` in
+work as that function, calls it, and after it returns passes it to `addTool` or `updateTool`, so an agent tests and
+saves in one Run. No string form exists. We first took `source` as a string, and agents struggled to escape backticks and `${` in
 the sources they wrote as template literals; a reference has nothing to escape.
 
-At Program admission, Coral finds each literal `coral.workspace.saveFunction(...)` call, in the Program and in every
-Saved Function it links, each scoped to its own top-level declarations. It saves the module the call names: the function
+At Program admission, Coral finds each literal `coral.addTool(...)` and `coral.updateTool(...)` call, in the Program
+and in every Private Tool it links, each scoped to its own top-level declarations. It saves the module the call names: the function
 and every top-level declaration statement it reaches, followed through every reference, function bodies and types
 included, as written and in source order, with the function as its default export. A dependency can be any declaration:
 a `const`, `let` or `var` with any initializer, including `await` and Tool calls, a function, a class, a type, an
 interface or an enum. A top-level statement that declares nothing is not saved. Coral applies no effect analysis, as for
-any Saved Function: top-level initialization runs once in each Run that links the module. That module is the source the
+any Private Tool: top-level initialization runs once in each Run that links the module. That module is the source the
 save receives, records and stores; the save-time compile is unchanged. Admission refuses, with an authored location, a
 literal call that does not pass one object literal with one `source` that names such a function, a function that reaches
-a name declared inside a top-level block or loop, and a `saveFunction` named through a literal computed key or not
-called. Admission follows only the literal path from `coral`. A call it cannot read, such as one through a variable that
-holds `coral.workspace` or a path the Program computes, reaches the Tool with no source and fails there. Programs are
+a name declared inside a top-level block or loop, and an authoring Tool named through a literal computed key or not
+called. Admission follows only the literal path from `coral`. A call it cannot read, such as one through a path the
+Program computes, reaches the Tool with no source and fails there. Programs are
 not type-checked: type errors in the saved function stay advisory in the save result's `diagnostics` (ADR 0020). The
 Program host passes the Tool only the module admission saved, so no value a Program writes reaches the Tool as a source.
 The host is that rule's only guard: the Tool cannot tell that module from other text.
@@ -84,13 +81,13 @@ body with a module and cannot test the function before it saves it; and `source`
 
 - **Saving is a Tool Invocation.** A save or delete is recorded in its Run like any other Invocation, not as a separate
   Task Interaction. The save and delete interactions already in Task history keep their record and their display.
-- **A Built-in Tool's catalog can declare its default Tool Access State.** Neither Tool is read-only, so their hints
-  alone would require approval. Coral's catalog declares them `enabled` with no exact rule, because they change only
-  the caller's own functions. Each retained Generation keeps the declaration beside the Tool's hints, so policy, the
-  pending-approval queries and discovery read the same default. An Owner can still require approval for either Tool or
+- **A Built-in Tool's catalog can declare its default Tool Access State.** No authoring Tool is read-only, so their
+  hints alone would require approval. Coral's catalog declares them `enabled` with no exact rule, because they change
+  only the caller's own tools. Each retained Generation keeps the declaration beside the Tool's hints, so policy, the
+  pending-approval queries and discovery read the same default. An Owner can still require approval for any of them or
   disable it with an exact rule. Only Coral's own catalog declares a default; a Provider's source cannot.
 - **A Program can test what it saves, then save it.** It can call its own function before it saves it; admission does
-  not require it. It cannot call the saved version by its path in the same Run: admission links Saved Functions before the Program runs and refuses a
+  not require it. It cannot call the saved version by its path in the same Run: admission links Private Tools before the Program runs and refuses a
   Program that names one the caller does not have, so the path is callable from the next Program, and a replace or
   delete leaves an accepted Run unchanged.
 - **A save outlives its Run.** A Run that fails, is canceled or times out after a save keeps the save. Coral checks that
@@ -99,13 +96,12 @@ body with a module and cannot test the function before it saves it; and `source`
 - **A save's compile must not wait on its own Run.** A Program waits while its save compiles. Under ADR 0027 a compile
   holds a unit of a Run Executor's room, so it must not wait for room its own Run holds: on an executor with room for one
   Run, every save would wait out its bound and fail.
-- **A function that does not compile fails its Program's admission.** A syntax error or an import in it is the
+- **A tool that does not compile fails its Program's admission.** A syntax error or an import in it is the
   Program's to correct. A path that cannot hold the function still fails the save.
 - **A save's record carries its Run Trace**, which links the request that started the Run, as every change a Program
   makes through a Built-in Tool does.
-- **A Saved Function can save functions.** Admission extracts from each linked module as from the Program, and linked
-  code runs in its Program's isolate, so Coral cannot tell their calls apart and does not try. A save does not check
-  the saves inside the source it stores. A module extracted from a Program passed that check at the Program's
+- **A Private Tool can author Private Tools.** Admission extracts from each linked module as from the Program. A save
+  does not check the saves inside the source it stores. A module extracted from a Program passed that check at the Program's
   admission, but a source saved as text, as Reef saves one, can hold a save that admission refuses in every Program
   that links it.
-- A client that turns code mode off (ADR 0024) cannot save functions, as it cannot discover.
+- A client that turns code mode off (ADR 0024) cannot author tools, as it cannot discover.

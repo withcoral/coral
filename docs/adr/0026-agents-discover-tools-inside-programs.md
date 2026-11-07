@@ -4,10 +4,7 @@ status: accepted
 
 # Agents discover Tools from inside Programs
 
-Amended by [ADR 0032](0032-every-callable-is-a-tool.md): Saved Functions are now Private Tools at `coral.private`, the
-Built-in Tools sit directly on `coral`, and saving uses `coral.addTool`, `coral.updateTool` and `coral.removeTool`.
-
-An agent finds Provider Tools and Saved Functions by calling the Built-in Tool `coral.workspace.search` from a Program,
+An agent finds Provider, Private and Shared Tools by calling the Built-in Tool `coral.search` from a Program,
 not through MCP `search` and `describe` tools. One discovery operation in `coral-search` serves it: a query returns
 ranked Search Hits, and exact Call Paths return their Authoring Descriptions, each from one read snapshot and typed for
 the Program that receives them. Coral's MCP surface keeps only the tools that run, observe and record work.
