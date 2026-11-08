@@ -35,7 +35,7 @@ pub(super) fn definition() -> Definition {
              Workspace."
                 .to_string(),
             false,
-            vec!["providers".to_string(), "policy".to_string()],
+            vec!["policy".to_string()],
             Some(
                 "Pass the namespace of a Provider whose Tools are called under \
                  coral.providers.<namespace>, and 1 to 100 of its Tools, each by its path \

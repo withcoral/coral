@@ -32,7 +32,7 @@ pub(super) fn definition() -> Definition {
              Workspace, including the disabled Tools that search does not show."
                 .to_string(),
             false,
-            vec!["providers".to_string(), "policy".to_string()],
+            vec!["policy".to_string()],
             Some(
                 "Pass the namespace of a Provider whose Tools are called under \
                  coral.providers.<namespace>. A namespace that no Provider holds fails with \
