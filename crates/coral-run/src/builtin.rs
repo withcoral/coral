@@ -46,8 +46,8 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
-    SaveFunction(Box<functions::SaveFunction>),
-    DeleteFunction(functions::DeleteFunction),
+    SaveTool(Box<functions::SaveTool>),
+    RemoveTool(functions::RemoveTool),
 }
 
 pub use functions::SavedFunctions;
@@ -91,23 +91,14 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
-                    BuiltinArguments::SaveFunction(arguments) => {
-                        functions::SaveFunction::new(&arguments)
-                            .map(|call| Self::SaveFunction(Box::new(call)))
-                    }
-                    BuiltinArguments::DeleteFunction(arguments) => {
-                        functions::DeleteFunction::new(&arguments).map(Self::DeleteFunction)
-                    }
-                    BuiltinArguments::AddTool(arguments) => {
-                        functions::SaveFunction::add(&arguments)
-                            .map(|call| Self::SaveFunction(Box::new(call)))
-                    }
+                    BuiltinArguments::AddTool(arguments) => functions::SaveTool::add(&arguments)
+                        .map(|call| Self::SaveTool(Box::new(call))),
                     BuiltinArguments::UpdateTool(arguments) => {
-                        functions::SaveFunction::update(&arguments)
-                            .map(|call| Self::SaveFunction(Box::new(call)))
+                        functions::SaveTool::update(&arguments)
+                            .map(|call| Self::SaveTool(Box::new(call)))
                     }
                     BuiltinArguments::RemoveTool(arguments) => {
-                        functions::DeleteFunction::remove(&arguments).map(Self::DeleteFunction)
+                        functions::RemoveTool::new(&arguments).map(Self::RemoveTool)
                     }
                 }),
         )
@@ -123,8 +114,8 @@ impl BuiltinCall {
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
-            Self::SaveFunction(call) => call.perform(host).await,
-            Self::DeleteFunction(call) => call.perform(host).await,
+            Self::SaveTool(call) => call.perform(host).await,
+            Self::RemoveTool(call) => call.perform(host).await,
         }
     }
 }
@@ -164,8 +155,6 @@ pub(crate) async fn recover(
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
             | BuiltinTool::Search
-            | BuiltinTool::SaveFunction
-            | BuiltinTool::DeleteFunction
             | BuiltinTool::AddTool
             | BuiltinTool::UpdateTool
             | BuiltinTool::RemoveTool,

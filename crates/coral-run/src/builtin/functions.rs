@@ -1,5 +1,4 @@
-//! Performs `coral.addTool`, `updateTool` and `removeTool`, and the
-//! `saveFunction` and `deleteFunction` they replace: Private Tool
+//! Performs `coral.addTool`, `updateTool` and `removeTool`: Private Tool
 //! authoring as the invoking Principal, in its own namespace. Each
 //! call is this Invocation of this Run, recorded like any other, not a
 //! separate Task Interaction. The source a save receives is the module
@@ -8,10 +7,7 @@
 //! its functions before it ran, and a save or delete outlives the Run that
 //! made it (ADR 0031).
 
-use coral_catalog::{
-    DeleteFunctionArguments, DeleteFunctionResult, RemoveToolArguments, RemovedToolResult,
-    SaveFunctionArguments, SaveFunctionResult, SavedToolResult, ToolSaveArguments,
-};
+use coral_catalog::{RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments};
 use coral_functions::{
     SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
     SavedFunctionSave, SavedFunctionSource,
@@ -48,85 +44,38 @@ impl SavedFunctions {
     }
 }
 
-/// Which Tools a call answers as: the Saved Function verbs, or the
-/// Private Tool verbs that replace them, with their own failures and
-/// results.
-#[derive(Clone, Copy)]
-enum Surface {
-    SavedFunctions,
-    PrivateTools,
-}
-
-impl Surface {
-    /// The failure for a path that names none of the caller's tools.
-    const fn not_found(self) -> CoralFailure {
-        match self {
-            Self::SavedFunctions => CoralFailure::SavedFunctionNotFound,
-            Self::PrivateTools => CoralFailure::PrivateToolNotFound,
-        }
-    }
-}
-
-/// `saveFunction`'s, `addTool`'s or `updateTool`'s arguments, each checked
-/// by coral-functions.
+/// `addTool`'s or `updateTool`'s arguments, each checked by
+/// coral-functions.
 #[derive(Clone)]
-pub(crate) struct SaveFunction {
+pub(crate) struct SaveTool {
     save: SavedFunctionSave,
-    surface: Surface,
 }
 
-impl SaveFunction {
-    /// `saveFunction`, which creates or replaces.
-    pub(super) fn new(arguments: &SaveFunctionArguments) -> Result<Self, Rejection> {
-        Self::checked(
-            arguments.path(),
-            arguments.description(),
-            arguments.source(),
-            Surface::SavedFunctions,
-        )
-    }
-
+impl SaveTool {
     /// `addTool`, which only creates.
     pub(super) fn add(arguments: &ToolSaveArguments) -> Result<Self, Rejection> {
-        Self::private_tool(arguments).map(|call| Self {
-            save: call.save.create_only(),
-            ..call
+        Self::checked(arguments).map(|save| Self {
+            save: save.create_only(),
         })
     }
 
     /// `updateTool`, which only replaces, at the expected revision if any.
     pub(super) fn update(arguments: &ToolSaveArguments) -> Result<Self, Rejection> {
-        Self::private_tool(arguments).map(|call| Self {
-            save: call.save.replace_only(arguments.expected_revision()),
-            ..call
+        Self::checked(arguments).map(|save| Self {
+            save: save.replace_only(arguments.expected_revision()),
         })
-    }
-
-    fn private_tool(arguments: &ToolSaveArguments) -> Result<Self, Rejection> {
-        Self::checked(
-            arguments.path(),
-            arguments.description(),
-            arguments.source(),
-            Surface::PrivateTools,
-        )
     }
 
     /// Checks the path, description and source before any other work, and
     /// names every one to correct.
-    fn checked(
-        path: &str,
-        description: &str,
-        source: &str,
-        surface: Surface,
-    ) -> Result<Self, Rejection> {
-        let path = SavedFunctionPath::parse(path);
-        let description = SavedFunctionDescription::parse(description);
-        let source = SavedFunctionSource::parse(source);
+    fn checked(arguments: &ToolSaveArguments) -> Result<SavedFunctionSave, Rejection> {
+        let path = SavedFunctionPath::parse(arguments.path());
+        let description = SavedFunctionDescription::parse(arguments.description());
+        let source = SavedFunctionSource::parse(arguments.source());
         match (path, description, source) {
-            (Ok(path), Ok(description), Ok(source)) => Ok(Self {
-                save: SavedFunctionSave::new(path, description, source),
-                surface,
-            }),
+            (Ok(path), Ok(description), Ok(source)) => {
+                Ok(SavedFunctionSave::new(path, description, source))
+            }
             (path, description, source) => Err(Rejection::invalid_inputs(
                 [
                     ("path", path.err()),
@@ -159,7 +108,7 @@ impl SaveFunction {
                 Some(&declarations),
             )
             .await
-            .map_err(|error| failure("source", error, self.surface))?;
+            .map_err(|error| failure("source", error))?;
         #[cfg(test)]
         host.run.prepared();
         if !host.run.still_current().await? {
@@ -171,7 +120,7 @@ impl SaveFunction {
             .module
             .save_in_transaction(&mut transaction, prepared)
             .await
-            .map_err(|error| failure("source", error, self.surface))?;
+            .map_err(|error| failure("source", error))?;
         let result = SavedToolResult {
             call_path: call_path(function.path()),
             description: function.description().as_str().to_owned(),
@@ -198,41 +147,21 @@ impl SaveFunction {
             .inner
             .index
             .sync_function(host.workspace_id.clone(), function.id().clone());
-        Ok(match self.surface {
-            Surface::PrivateTools => result.into_tool_result(),
-            Surface::SavedFunctions => SaveFunctionResult {
-                call_path: result.call_path,
-                description: result.description,
-                declaration: result.declaration,
-                diagnostics: result.diagnostics,
-                diagnostics_truncated: result.diagnostics_truncated,
-            }
-            .into_tool_result(),
-        })
+        Ok(result.into_tool_result())
     }
 }
 
-/// `deleteFunction`'s or `removeTool`'s path, checked by coral-functions.
+/// `removeTool`'s path, checked by coral-functions.
 #[derive(Clone)]
-pub(crate) struct DeleteFunction {
+pub(crate) struct RemoveTool {
     path: SavedFunctionPath,
-    surface: Surface,
 }
 
-impl DeleteFunction {
-    /// `deleteFunction`.
-    pub(super) fn new(arguments: &DeleteFunctionArguments) -> Result<Self, Rejection> {
-        Self::checked(arguments.path(), Surface::SavedFunctions)
-    }
-
-    /// `removeTool`.
-    pub(super) fn remove(arguments: &RemoveToolArguments) -> Result<Self, Rejection> {
-        Self::checked(arguments.path(), Surface::PrivateTools)
-    }
-
-    fn checked(path: &str, surface: Surface) -> Result<Self, Rejection> {
-        SavedFunctionPath::parse(path)
-            .map(|path| Self { path, surface })
+impl RemoveTool {
+    /// `removeTool`, with its path checked before any other work.
+    pub(super) fn new(arguments: &RemoveToolArguments) -> Result<Self, Rejection> {
+        SavedFunctionPath::parse(arguments.path())
+            .map(|path| Self { path })
             .map_err(|error| Rejection::invalid_inputs(vec![problem("path", &error)]))
     }
 
@@ -250,7 +179,7 @@ impl DeleteFunction {
             .module
             .delete_in_transaction(&mut transaction, &context, host.workspace_id, &self.path)
             .await
-            .map_err(|error| failure("path", error, self.surface))?;
+            .map_err(|error| failure("path", error))?;
         transaction.commit().await?;
         // The delete never touches the search tables; this removes the
         // function's rows sooner than a reconcile pass.
@@ -258,11 +187,10 @@ impl DeleteFunction {
             .inner
             .index
             .sync_function(host.workspace_id.clone(), deleted);
-        let call_path = call_path(&self.path);
-        Ok(match self.surface {
-            Surface::PrivateTools => RemovedToolResult { call_path }.into_tool_result(),
-            Surface::SavedFunctions => DeleteFunctionResult { call_path }.into_tool_result(),
-        })
+        Ok(RemovedToolResult {
+            call_path: call_path(&self.path),
+        }
+        .into_tool_result())
     }
 }
 
@@ -300,12 +228,13 @@ fn problem(field: &str, error: &coral_functions::Error) -> InputProblem {
 }
 
 /// A failure the Program can read and correct, or a host error. `field` is
-/// the argument an authoring failure names, and `surface` the Tools whose
-/// failures it reports.
-fn failure(field: &str, error: coral_functions::Error, surface: Surface) -> Error {
+/// the argument an authoring failure names.
+fn failure(field: &str, error: coral_functions::Error) -> Error {
     use coral_functions::Error as E;
     match error {
-        E::SavedFunctionNotFound => Error::InvocationRejected(surface.not_found().into()),
+        E::SavedFunctionNotFound => {
+            Error::InvocationRejected(CoralFailure::PrivateToolNotFound.into())
+        }
         E::PrivateToolExists => Error::InvocationRejected(CoralFailure::PrivateToolExists.into()),
         E::PrivateToolRevisionConflict { current } => Error::InvocationRejected(Rejection::naming(
             CoralFailure::PrivateToolRevisionConflict,

@@ -146,30 +146,6 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinTool::SaveFunction,
-            // Not read-only; its catalog declares the enabled default below.
-            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
-            &[
-                r#"export default function (input: { "description": string; "path": string; "source": (...args: never[]) => unknown })"#,
-                r#""call_path": string"#,
-                r#""declaration": string"#,
-                // The catalog numbers a type name each Tool repeats.
-                r#""diagnostics": Array<Diagnostic"#,
-                r#""diagnostics_truncated": boolean"#,
-                "metadata: { kind: \"builtin\" }",
-            ][..],
-        ),
-        (
-            BuiltinTool::DeleteFunction,
-            // Deleting again fails, so it is not idempotent.
-            ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
-            &[
-                r#"export default function (input: { "path": string })"#,
-                r#""call_path": string"#,
-                "metadata: { kind: \"builtin\" }",
-            ][..],
-        ),
-        (
             BuiltinTool::AddTool,
             // A second add at the path fails, and it replaces nothing.
             ToolHints::new(Some(false), Some(false), Some(false), Some(false)),
@@ -235,12 +211,10 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         [
             "addProvider",
             "addTool",
-            "deleteFunction",
             "getPolicy",
             "getProvider",
             "listProviders",
             "removeTool",
-            "saveFunction",
             "search",
             "updatePolicy",
             "updateProvider",
@@ -253,14 +227,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
         assert_eq!(
             facts.declares_enabled_by_default(),
-            [
-                "saveFunction",
-                "deleteFunction",
-                "addTool",
-                "updateTool",
-                "removeTool"
-            ]
-            .contains(&key),
+            ["addTool", "updateTool", "removeTool"].contains(&key),
             "{key}"
         );
     };

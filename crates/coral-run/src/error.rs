@@ -50,7 +50,9 @@ coral_failures! {
     ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
-    /// None of the caller's Saved Functions is at the requested path.
+    /// No function of the caller's was at the path `deleteFunction` named.
+    /// Coral no longer performs that Tool; the code stays so retained
+    /// Invocations still read.
     SavedFunctionNotFound => "saved_function_not_found",
     /// One of the caller's Private Tools is already at the path.
     PrivateToolExists => "private_tool_exists",

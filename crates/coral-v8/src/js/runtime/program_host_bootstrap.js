@@ -87,10 +87,7 @@
             // Plain comparisons, so no prototype a Program can replace
             // decides which Tool takes a carried source. Admission lists
             // the same Tools in SAVING_TOOLS; change both.
-            const saving =
-              path === 'coral.saveFunction' ||
-              path === 'coral.addTool' ||
-              path === 'coral.updateTool';
+            const saving = path === 'coral.addTool' || path === 'coral.updateTool';
             const input = saving ? savingArguments(args[0]) : args[0];
             if (input === undefined) return invoke(path);
             encoded = nativeStringify(input);

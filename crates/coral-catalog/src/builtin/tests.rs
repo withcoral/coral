@@ -24,8 +24,6 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
         BuiltinTool::Search => super::search::tests::valid_arguments(),
-        BuiltinTool::SaveFunction => super::save_function::valid_arguments(),
-        BuiltinTool::DeleteFunction => super::delete_function::valid_arguments(),
         BuiltinTool::AddTool => super::private_tools::valid_add_arguments(),
         BuiltinTool::UpdateTool => super::private_tools::valid_update_arguments(),
         BuiltinTool::RemoveTool => super::private_tools::valid_remove_arguments(),
@@ -316,9 +314,8 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
         )])
 }
 
-/// What `saveFunction`, `deleteFunction` and the Private Tool authoring
-/// Tools return.
-fn function_results() -> [(BuiltinTool, Value); 5] {
+/// What the Private Tool authoring Tools return.
+fn private_tool_results() -> [(BuiltinTool, Value); 3] {
     let saved = super::SavedToolResult {
         call_path: "coral.private.github.pulls.listStale".to_owned(),
         description: "List stale pull requests.".to_owned(),
@@ -334,30 +331,6 @@ fn function_results() -> [(BuiltinTool, Value); 5] {
         revision: 2,
     };
     [
-        (
-            BuiltinTool::SaveFunction,
-            super::SaveFunctionResult {
-                call_path: "coral.private.github.pulls.listStale".to_owned(),
-                description: "List stale pull requests.".to_owned(),
-                declaration: "export default function (): Promise<string[]>;".to_owned(),
-                diagnostics: vec![crate::SavedDiagnostic {
-                    category: crate::SavedDiagnosticCategory::Error,
-                    code: 2_322,
-                    message: "Type 'number' is not assignable to type 'string'.".to_owned(),
-                    line: Some(1),
-                    column: None,
-                }],
-                diagnostics_truncated: false,
-            }
-            .into_tool_result(),
-        ),
-        (
-            BuiltinTool::DeleteFunction,
-            super::DeleteFunctionResult {
-                call_path: "coral.private.github.pulls.listStale".to_owned(),
-            }
-            .into_tool_result(),
-        ),
         (
             BuiltinTool::AddTool,
             super::SavedToolResult {
@@ -449,7 +422,7 @@ fn each_result_meets_its_output_schema() {
             .into_iter()
             .map(|result| (BuiltinTool::Search, result)),
     );
-    results.extend(function_results());
+    results.extend(private_tool_results());
     for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),
@@ -494,10 +467,7 @@ fn a_missing_path_carries_at_most_three_suggestions() {
 #[test]
 fn a_save_without_an_extracted_source_is_refused_naming_source() {
     type Parse = fn(&Value) -> Result<(), Vec<super::ArgumentProblem>>;
-    let parsers: [(&str, Parse); 3] = [
-        ("saveFunction", |arguments| {
-            super::SaveFunctionArguments::parse(arguments).map(drop)
-        }),
+    let parsers: [(&str, Parse); 2] = [
         ("addTool", |arguments| {
             super::ToolSaveArguments::parse_add(arguments).map(drop)
         }),

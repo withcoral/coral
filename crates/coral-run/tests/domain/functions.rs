@@ -462,66 +462,6 @@ async fn programs_reach_the_builtin_and_private_tools_on_coral() {
     );
 }
 
-// Catches: an old root that still reaches a Tool, a refusal that does not
-// name the new path or where the source names the old one, or a stored
-// source that names one and still links.
-#[tokio::test]
-async fn an_old_root_is_refused_where_it_is_written_with_its_new_path() {
-    let (scope, _index) = authoring_scope("user:functions-old-roots").await;
-    outcome(&scope, &scope.owner, add("people.greet", SOURCE)).await;
-    let refused = |source: &str| {
-        let scope = &scope;
-        let source = source.to_owned();
-        async move {
-            let before = scope.fixture.runs.count_runs().await.expect("count Runs");
-            let error = scope
-                .fixture
-                .runs
-                .start(&scope.owner, &scope.workspace_id, submission(&source))
-                .await
-                .expect_err("an old root is refused");
-            assert_eq!(
-                scope.fixture.runs.count_runs().await.expect("count Runs"),
-                before,
-                "{source}"
-            );
-            let crate::Error::ProgramAdmission(message) = error else {
-                panic!("{source}: {error:?}");
-            };
-            message
-        }
-    };
-    for (source, refusal) in [
-        (
-            "\nreturn await coral.workspace.search({});",
-            "Program:2:14: `coral.workspace` is now `coral`: call its Tools directly on `coral`",
-        ),
-        (
-            "\nreturn coral.functions.people.greet('Ada');",
-            "Program:2:8: `coral.functions` is now `coral.private`",
-        ),
-    ] {
-        assert_eq!(refused(source).await, refusal);
-    }
-
-    // Coral never rewrites a stored source.
-    scope
-        .fixture
-        .test_database
-        .execute_fixture_sql(
-            "UPDATE saved_function_records \
-             SET source = source || ' void coral.functions.people.greet;'",
-        )
-        .await
-        .expect("store a source that names the old root");
-    let message = refused("return coral.private.people.greet('Ada');").await;
-    assert!(
-        message.starts_with("Saved Function coral.private.people.greet:")
-            && message.ends_with(": `coral.functions` is now `coral.private`"),
-        "{message}"
-    );
-}
-
 /// The function `addTool` and `updateTool` save in place of `saved`: it
 /// says goodbye, so a call shows which version is current.
 const OTHER_SOURCE: &str = "const saved = (name: string): string => `bye ${name}`;";

@@ -170,7 +170,7 @@ pub(super) fn source_schema(_generator: &mut schemars::SchemaGenerator) -> schem
 
 /// What to correct when no extracted module reached `tool`: a call
 /// admission could not read, such as one through a computed path, has none.
-pub(super) fn missing_source(arguments: &Value, tool: BuiltinTool) -> Option<ArgumentProblem> {
+fn missing_source(arguments: &Value, tool: BuiltinTool) -> Option<ArgumentProblem> {
     arguments
         .as_object()
         .is_none_or(|fields| !fields.contains_key("source"))
@@ -186,9 +186,7 @@ pub(super) fn missing_source(arguments: &Value, tool: BuiltinTool) -> Option<Arg
 }
 
 /// A problem for each of `fields` whose value is empty.
-pub(super) fn empty<'a>(
-    fields: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Vec<ArgumentProblem> {
+fn empty<'a>(fields: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<ArgumentProblem> {
     fields
         .into_iter()
         .filter(|(_field, value)| value.is_empty())

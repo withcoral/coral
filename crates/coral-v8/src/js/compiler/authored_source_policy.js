@@ -315,13 +315,6 @@ function globalThisExpressionSegments(node, checker, sourceFile, seen = new Set(
   return undefined;
 }
 
-// The roots Coral once called by other names, and the refusal that names
-// each one's replacement. A source that names one fails where it does.
-const RENAMED_ROOTS = new Map([
-  ['workspace', '`coral.workspace` is now `coral`: call its Tools directly on `coral`'],
-  ['functions', '`coral.functions` is now `coral.private`'],
-]);
-
 function coralAccess(node, checker, sourceFile) {
   const segments = [];
   let current = unwrapTransparentExpression(node);
@@ -442,10 +435,6 @@ function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
     }
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       const access = coralAccess(node, checker, sourceFile);
-      const renamed = RENAMED_ROOTS.get(access?.segments[0]);
-      if (renamed !== undefined && (access.root === 'lexical' || access.root === 'global')) {
-        return reject(renamed, node);
-      }
       if (
         (access?.root === 'global' &&
           (access.segments[0] === 'private' ||

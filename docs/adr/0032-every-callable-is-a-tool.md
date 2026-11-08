@@ -27,7 +27,8 @@ a call.
 
 - **Roots and verbs.** `coral.functions` becomes `coral.private`, and `coral.workspace.*` moves onto `coral`.
   `coral.providers` keeps its name.
-  - There are no aliases, because usage is low. An old path fails at admission with an error that names the new path.
+  - There are no aliases and no pointers. An old path fails at admission like any path that names no Tool. Retained
+    Runs keep the paths they recorded, and Reef reads them under the new roots.
   - `saveFunction` and `deleteFunction` become `coral.addTool` (create only), `coral.updateTool` (replace only, with an
     optional expected revision) and `coral.removeTool`.
   - `addTool` and `updateTool` take an optional `policy`, the tool's default Tool Access State. It is `enabled` when
@@ -80,8 +81,8 @@ a call.
   it. Owner-published Tools would have given one catalog two writers.
 - **`coral.tools` or `coral.library` as the shared root, `coral.mine` and `coral.ours`, or renaming `coral.providers`.**
   `private` and `shared` name the scope, which is how people describe the act of sharing.
-- **Permanent aliases for the old roots.** Use is low, and an error that names the new path is clearer than a silent
-  second name.
+- **Permanent aliases for the old roots, or refusals that name the new path.** Either is code that Coral keeps for
+  names no Program should still use.
 - **Banning some calls from Shared Tool bodies:** the authoring Tools, Owner-only Built-ins, Private Tools, `globalThis`
   and computed paths. Every call inside a Shared Tool already runs under the caller's authority and policy, and only
   Owners publish. A ban would surprise authors and add no protection that policy does not already give.
