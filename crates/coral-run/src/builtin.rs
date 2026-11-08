@@ -187,7 +187,7 @@ pub(crate) trait InvokingRun: Send + Sync {
     fn now(&self) -> Result<i64, Error>;
 
     /// Lets a test end the Run once the call prepared its work and before
-    /// it checks the Run: addProvider's Setup, or saveFunction's compile.
+    /// it checks the Run: addProvider's Setup, or addTool's compile.
     #[cfg(test)]
     fn prepared(&self) {}
 }

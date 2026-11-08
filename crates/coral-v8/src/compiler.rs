@@ -188,8 +188,8 @@ impl ProgramCompiler {
     /// JavaScript is valid input because it is valid TypeScript source. The
     /// official compiler applies syntax and Coral capability checks here;
     /// ordinary semantic diagnostics are not an execution gate. Each literal
-    /// `coral.saveFunction` call carries the module of the function
-    /// it names: that top-level declaration and every top-level declaration
+    /// `coral.addTool` or `coral.updateTool` call carries the module of the
+    /// function it names: that top-level declaration and every top-level declaration
     /// it reaches, as written. The retained source map contains authored
     /// locations only.
     ///

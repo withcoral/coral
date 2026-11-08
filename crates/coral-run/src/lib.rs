@@ -423,8 +423,8 @@ impl RunModule {
         &self.instance
     }
 
-    /// Lets `coral.saveFunction` and `deleteFunction` author the
-    /// invoking Principal's Saved Functions. Without it, such a call fails
+    /// Lets `coral.addTool`, `updateTool` and `removeTool` author the
+    /// invoking Principal's Private Tools. Without it, such a call fails
     /// with `tool_unavailable`.
     #[must_use]
     pub fn with_saved_functions(mut self, functions: SavedFunctions) -> Self {

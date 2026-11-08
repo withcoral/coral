@@ -79,7 +79,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           })
           expect(
             (
-              await execute.saveFunction(
+              await execute.addTool(
                 'history.snapshot',
                 'Retained history fixture',
                 original,
@@ -98,7 +98,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           task = execute.taskId()
           expect(
             (
-              await execute.saveFunction(
+              await execute.updateTool(
                 'history.snapshot',
                 'Changed current function',
                 replacement,

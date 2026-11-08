@@ -43,14 +43,8 @@ test('Organization owner removes current work across workspaces through Members 
           accessToken: await mcpToken(page, workspace.name.split('/')[1]),
         })
         expect(
-          (
-            await runner.saveFunction(
-              'answer',
-              'Private answer',
-              'const answer = () => 42;',
-              'answer',
-            )
-          ).isError,
+          (await runner.addTool('answer', 'Private answer', 'const answer = () => 42;', 'answer'))
+            .isError,
         ).not.toBe(true)
         const run = (await runner.exec('return coral.private.answer();')).structuredContent
         expect(run.state).toBe('succeeded')

@@ -105,8 +105,6 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
           'addTool',
           'updateTool',
           'removeTool',
-          'saveFunction',
-          'deleteFunction',
         ]) {
           await page.getByRole('link', { name: shown, exact: true }).waitFor()
         }

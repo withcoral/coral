@@ -951,6 +951,26 @@ export function programRunner(
       Object.assign(calls, counted)
     }
   }
+  /** Saves the function `name` that `declarations` declare with the authoring Tool `verb`. */
+  const authorTool = async (
+    verb: 'addTool' | 'updateTool',
+    path: string,
+    description: string,
+    declarations: string,
+    name: string,
+  ): Promise<ToolResult> => {
+    const fields = `path: ${JSON.stringify(path)}, description: ${JSON.stringify(description)}`
+    // A failed save keeps its Run's failure, so a scenario can show why.
+    let failure: ToolResult<RunUpdate> | undefined
+    const saved = await runUncounted(
+      `${declarations}\nreturn (await coral.${verb}({ ${fields}, source: ${name} })).data;`,
+      'Save a reusable tool',
+      (result) => {
+        failure = result
+      },
+    )
+    return saved ?? { isError: true, structuredContent: failure?.structuredContent ?? {} }
+  }
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
     return started(await rpc('tools/call', { name: 'exec', arguments: execArguments(program) }))
@@ -967,28 +987,27 @@ export function programRunner(
       })
     },
     /**
-     * Saves a function the way an agent does: a Program declares `declarations`, which declare
-     * the function `name` at its top level, and passes it to `coral.saveFunction`.
+     * Adds a Private Tool the way an agent does: a Program declares `declarations`, which declare
+     * the function `name` at its top level, and passes it to `coral.addTool`.
      * Coral stores {@link savedSource} of them. The Program is one more uncounted exec of the
      * Task; a failed save is an error result.
      */
-    async saveFunction(
+    async addTool(
       path: string,
       description: string,
       declarations: string,
       name: string,
     ): Promise<ToolResult> {
-      const fields = `path: ${JSON.stringify(path)}, description: ${JSON.stringify(description)}`
-      // A failed save keeps its Run's failure, so a scenario can show why.
-      let failure: ToolResult<RunUpdate> | undefined
-      const saved = await runUncounted(
-        `${declarations}\nreturn (await coral.saveFunction({ ${fields}, source: ${name} })).data;`,
-        'Save a reusable function',
-        (result) => {
-          failure = result
-        },
-      )
-      return saved ?? { isError: true, structuredContent: failure?.structuredContent ?? {} }
+      return authorTool('addTool', path, description, declarations, name)
+    },
+    /** {@link addTool}, but `coral.updateTool` replaces the Private Tool already at `path`. */
+    async updateTool(
+      path: string,
+      description: string,
+      declarations: string,
+      name: string,
+    ): Promise<ToolResult> {
+      return authorTool('updateTool', path, description, declarations, name)
     },
     async wait(update: RunUpdate): Promise<ToolResult<RunUpdate>> {
       await initialize()

@@ -34,14 +34,8 @@ test('Row actions keep the last Owner and removing another person keeps the admi
       const id = workspace.name.split('/')[1]
       const runner = programRunner(page, target, id, { accessToken: await mcpToken(page, id) })
       expect(
-        (
-          await runner.saveFunction(
-            'answer',
-            'Private answer',
-            'const answer = () => 42;',
-            'answer',
-          )
-        ).isError,
+        (await runner.addTool('answer', 'Private answer', 'const answer = () => 42;', 'answer'))
+          .isError,
       ).not.toBe(true)
       retainedRun = (await runner.exec('return coral.private.answer();')).structuredContent
       expect(retainedRun.final_value).toEqual({ kind: 'value', value: 42 })

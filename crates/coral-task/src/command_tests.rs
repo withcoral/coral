@@ -58,7 +58,7 @@ impl Fixture {
     }
 
     /// Saves a function as `call`'s Principal the way a Program's
-    /// `coral.saveFunction` does: typed from the Tools it can
+    /// `coral.addTool` or `coral.updateTool` does: typed from the Tools it can
     /// discover, then the index is told. No Task Attempt records it.
     async fn save_function(
         &self,
@@ -99,7 +99,7 @@ impl Fixture {
     }
 
     /// Deletes `call`'s Principal's function at `path` the way a Program's
-    /// `coral.deleteFunction` does, then tells the index.
+    /// `coral.removeTool` does, then tells the index.
     async fn delete_function(
         &self,
         call: &AttributedCommand,

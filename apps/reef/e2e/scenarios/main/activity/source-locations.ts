@@ -123,7 +123,7 @@ export async function sourceLocations(context: TestContext) {
       taskIntent: `Locate calls ${crypto.randomUUID()}`,
     })
     expect(
-      (await execute.saveFunction('locations.notify', 'Notify after lookups', snapshot, 'notify'))
+      (await execute.addTool('locations.notify', 'Notify after lookups', snapshot, 'notify'))
         .isError,
     ).not.toBe(true)
     const observed = await observeRun(execute, await execute.exec(program))
@@ -204,7 +204,7 @@ export async function sourceLocations(context: TestContext) {
     await step('Change the Saved Function; the Run keeps the snapshot it accepted', async () => {
       expect(
         (
-          await execute.saveFunction(
+          await execute.updateTool(
             'locations.notify',
             'Replaced after the Run',
             replacement,

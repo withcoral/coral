@@ -232,7 +232,8 @@ impl SavedFunctionModule {
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
     /// `SearchIndex::sync_function` after its commit, as
-    /// `coral.saveFunction` does. Until then, the reconcile task indexes the function.
+    /// `coral.addTool` and `coral.updateTool` do. Until then, the reconcile task
+    /// indexes the function.
     ///
     /// # Errors
     ///

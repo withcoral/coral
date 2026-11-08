@@ -78,22 +78,25 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
             )
             .await;
         assert_eq!(continued["isError"], false, "{version}: {continued}");
-        // The alias rule applies once the aliased Saved Function exists.
-        let saved = session
-            .saving_value(
-                task.as_str().expect("Task id"),
-                &super::Save {
-                    path: "linear.inbox",
-                    description: "Count inbox items",
-                    declarations: "function inbox() { return { total: 0 }; }",
-                    name: "inbox",
-                },
-            )
-            .await;
-        assert_eq!(
-            saved["call_path"], "coral.private.linear.inbox",
-            "{version}: {saved}"
-        );
+        // The alias rule applies once the aliased Private Tool exists. It
+        // outlives this session, so later versions reuse it.
+        if SUPPORTED_PROTOCOL_VERSIONS.first() == Some(version) {
+            let saved = session
+                .saving_value(
+                    task.as_str().expect("Task id"),
+                    &super::Save {
+                        path: "linear.inbox",
+                        description: "Count inbox items",
+                        declarations: "function inbox() { return { total: 0 }; }",
+                        name: "inbox",
+                    },
+                )
+                .await;
+            assert_eq!(
+                saved["call_path"], "coral.private.linear.inbox",
+                "{version}: {saved}"
+            );
+        }
 
         for (program, code, message) in [
             (

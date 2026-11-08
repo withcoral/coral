@@ -1,6 +1,6 @@
 //! Interface tests for saving a function by reference: what admission
-//! extracts for each literal `coral.saveFunction` call, what it
-//! refuses, and what the Tool receives at run time.
+//! extracts for each literal `coral.addTool` or `coral.updateTool` call,
+//! what it refuses, and what the Tool receives at run time.
 
 use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
@@ -23,20 +23,14 @@ use thiserror as _;
 use tracing as _;
 use v8 as _;
 
-const SAVE: &str = "coral.saveFunction";
+const ADD: &str = "coral.addTool";
 
 fn compiler() -> &'static ProgramCompiler {
     static COMPILER: OnceLock<ProgramCompiler> = OnceLock::new();
     COMPILER.get_or_init(|| {
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
             .expect("start compiler")
-            .with_builtin_tools(&BuiltinTools::new([
-                "saveFunction",
-                "deleteFunction",
-                "addTool",
-                "updateTool",
-                "removeTool",
-            ]))
+            .with_builtin_tools(&BuiltinTools::new(["addTool", "updateTool", "removeTool"]))
     })
 }
 
@@ -79,7 +73,7 @@ struct ToolCalls {
 
 impl ToolCalls {
     fn saves(&self) -> Vec<(Value, Option<AuthoredLocation>)> {
-        self.calls_to(SAVE)
+        self.calls_to(ADD)
     }
 
     fn calls_to(&self, call_path: &str) -> Vec<(Value, Option<AuthoredLocation>)> {
@@ -165,13 +159,13 @@ fn a_save_carries_the_function_and_every_top_level_declaration_it_reaches() {
   return owner.toUpperCase();
 }
 const unrelated = 1;
-await coral.saveFunction({ path: "a.b", description: "d", source: snapshot });"#,
+await coral.addTool({ path: "a.b", description: "d", source: snapshot });"#,
             "async function snapshot(owner: string) {\n  return owner.toUpperCase();\n}\n\nexport default snapshot;\n",
         ),
         (
             "a const arrow",
             r#"const double = async (value: number) => value * 2;
-await coral.saveFunction({ path: "a.b", description: "d", source: double });"#,
+await coral.addTool({ path: "a.b", description: "d", source: double });"#,
             "const double = async (value: number) => value * 2;\n\nexport default double;\n",
         ),
         (
@@ -187,7 +181,7 @@ interface Row { name: string; count: number }
 const factor = 10; // per row
 function scale(count: number) { return count * factor; }
 type Unused = string;
-await coral.saveFunction({ path: "a.b", description: "d", source: list });"#,
+await coral.addTool({ path: "a.b", description: "d", source: list });"#,
             "// Formats one row.\nfunction format(row: Row): string {\n  return `${row.name}: ${scale(row.count)}`; // scaled\n}\n\n/** Lists rows. */\nconst list = (rows: Row[]) => rows.map(format);\n\ninterface Row { name: string; count: number }\n\nconst factor = 10; // per row\n\nfunction scale(count: number) { return count * factor; }\n\nexport default list;\n",
         ),
         (
@@ -199,20 +193,20 @@ type Answer = { level: Level; count: number; token: unknown; retries: number };
 async function answer(): Promise<Answer> {
   return { level: Level.High, count: new Counter().add(), token, retries };
 }
-await coral.saveFunction({ path: "a.b", description: "d", source: answer });"#,
+await coral.addTool({ path: "a.b", description: "d", source: answer });"#,
             "enum Level { Low = \"low\", High = \"high\" }\n\nclass Counter { count = 0; add() { this.count += 1; return this.count; } }\n\nconst token = await coral.providers.auth.token({}), retries = 2;\n\ntype Answer = { level: Level; count: number; token: unknown; retries: number };\n\nasync function answer(): Promise<Answer> {\n  return { level: Level.High, count: new Counter().add(), token, retries };\n}\n\nexport default answer;\n",
         ),
         (
             "shorthand source",
             r#"const source = (name: string) => `hello ${name}`;
-await coral.saveFunction({ path: "a.b", description: "d", source });"#,
+await coral.addTool({ path: "a.b", description: "d", source });"#,
             "const source = (name: string) => `hello ${name}`;\n\nexport default source;\n",
         ),
         (
             "a save inside a function, indented, with a cast",
             r#"  function helper() { return 1; }
   async function main() {
-    await coral.saveFunction({
+    await coral.addTool({
       path: "a.b",
       description: "d",
       source: helper as any,
@@ -224,7 +218,7 @@ await coral.saveFunction({ path: "a.b", description: "d", source });"#,
         (
             "a const whose function a type assertion wraps",
             r#"const next = ((value: number) => value + 1) satisfies (value: number) => number;
-await coral.saveFunction({ path: "a.b", description: "d", source: next });"#,
+await coral.addTool({ path: "a.b", description: "d", source: next });"#,
             "const next = ((value: number) => value + 1) satisfies (value: number) => number;\n\nexport default next;\n",
         ),
         (
@@ -232,17 +226,17 @@ await coral.saveFunction({ path: "a.b", description: "d", source: next });"#,
             r#"function pick(value: string): string;
 function pick(value: number): number;
 function pick(value: string | number) { return value; }
-await coral.saveFunction({ path: "a.b", description: "d", source: pick });"#,
+await coral.addTool({ path: "a.b", description: "d", source: pick });"#,
             "function pick(value: string): string;\n\nfunction pick(value: number): number;\n\nfunction pick(value: string | number) { return value; }\n\nexport default pick;\n",
         ),
         (
             "a function that saves another keeps the save as written",
             r#"const inner = () => 1;
 async function outer() {
-  return coral.saveFunction({ path: "x.inner", description: "d", source: inner });
+  return coral.addTool({ path: "x.inner", description: "d", source: inner });
 }
-await coral.saveFunction({ path: "x.outer", description: "d", source: outer });"#,
-            "const inner = () => 1;\n\nasync function outer() {\n  return coral.saveFunction({ path: \"x.inner\", description: \"d\", source: inner });\n}\n\nexport default outer;\n",
+await coral.addTool({ path: "x.outer", description: "d", source: outer });"#,
+            "const inner = () => 1;\n\nasync function outer() {\n  return coral.addTool({ path: \"x.inner\", description: \"d\", source: inner });\n}\n\nexport default outer;\n",
         ),
     ];
     for (name, body, expected) in cases {
@@ -258,7 +252,7 @@ fn a_linked_saved_function_saves_from_its_own_top_level() {
             r#"const inner = () => 1;
 
 async function outer() {
-  return coral.saveFunction({ path: "x.inner", description: "d", source: inner });
+  return coral.addTool({ path: "x.inner", description: "d", source: inner });
 }
 
 export default outer;
@@ -268,9 +262,9 @@ export default outer;
         (
             "its own default export, without export or default",
             r#"export default async function save() {
-  return coral.saveFunction({ path: "x.copy", description: "d", source: save });
+  return coral.addTool({ path: "x.copy", description: "d", source: save });
 }"#,
-            "async function save() {\n  return coral.saveFunction({ path: \"x.copy\", description: \"d\", source: save });\n}\n\nexport default save;\n",
+            "async function save() {\n  return coral.addTool({ path: \"x.copy\", description: \"d\", source: save });\n}\n\nexport default save;\n",
         ),
     ];
     for (name, module, expected) in cases {
@@ -285,14 +279,14 @@ export default outer;
 /// A Program that declares `declarations` and saves `source`.
 fn saving(declarations: &str, source: &str) -> String {
     format!(
-        r#"{declarations}await coral.saveFunction({{ path: "a", description: "d", source: {source} }});"#
+        r#"{declarations}await coral.addTool({{ path: "a", description: "d", source: {source} }});"#
     )
 }
 
 const NAME_REFUSAL: &str = "source must name a function declared at the top level of this Program";
 
 const LITERAL_REFUSAL: &str =
-    "Call coral.saveFunction by its literal path, so it can take a function as source";
+    "Call coral.addTool by its literal path, so it can take a function as source";
 
 fn assert_refusals(cases: &[(&str, String, &str, String)]) {
     for (name, body, at, message) in cases {
@@ -404,9 +398,9 @@ fn a_save_call_admission_cannot_read_is_refused() {
     assert_refusals(&[
         (
             "no source",
-            r#"await coral.saveFunction({ path: "a", description: "d" });"#.to_string(),
-            "coral.saveFunction",
-            "Pass coral.saveFunction one object literal with source".to_string(),
+            r#"await coral.addTool({ path: "a", description: "d" });"#.to_string(),
+            "coral.addTool",
+            "Pass coral.addTool one object literal with source".to_string(),
         ),
         (
             "two sources",
@@ -422,20 +416,20 @@ fn a_save_call_admission_cannot_read_is_refused() {
         ),
         (
             "a computed path",
-            "const f = () => 1;\nawait coral[\"saveFunction\"]({ source: f });".to_string(),
+            "const f = () => 1;\nawait coral[\"addTool\"]({ source: f });".to_string(),
             "coral[",
             LITERAL_REFUSAL.to_string(),
         ),
         (
             "an uncalled reference",
-            "const save = coral.saveFunction;".to_string(),
-            "coral.saveFunction",
+            "const save = coral.addTool;".to_string(),
+            "coral.addTool",
             LITERAL_REFUSAL.to_string(),
         ),
     ]);
 
-    let aliased = saving("const c = coral;\nconst f = () => 1;\n", "f")
-        .replace("coral.saveFunction", "c.saveFunction");
+    let aliased =
+        saving("const c = coral;\nconst f = () => 1;\n", "f").replace("coral.addTool", "c.addTool");
     // Reference analysis refuses the alias before any save is read.
     assert!(
         matches!(
@@ -447,7 +441,7 @@ fn a_save_call_admission_cannot_read_is_refused() {
         admit(&aliased, &[]).map(drop)
     );
 
-    let module = "export default async function save() {\n  return coral.saveFunction({ path: \"y\", description: \"d\", source: \"text\" });\n}";
+    let module = "export default async function save() {\n  return coral.addTool({ path: \"y\", description: \"d\", source: \"text\" });\n}";
     assert_eq!(
         save_refusal("await coral.private.x.save();", &[linked("x.save", module)]),
         format!(
@@ -464,8 +458,8 @@ fn no_authored_value_reaches_the_tool_as_a_source() {
     // every source but a carrier and refuses an input that is not an object.
     // A `toJSON` beside a carried source cannot replace it.
     let body = r#"const f = () => 1;
-await coral.saveFunction({ path: "t", description: "d", source: f, toJSON() { return { path: "t", description: "d", source: "forged" }; } });
-const name = ["save", "Function"].join("");
+await coral.addTool({ path: "t", description: "d", source: f, toJSON() { return { path: "t", description: "d", source: "forged" }; } });
+const name = ["add", "Tool"].join("");
 const host = globalThis[["co", "ral"].join("")];
 await host[name]({ path: "a", description: "d", source: "export default () => 1" });
 await host[name]({ path: "b", description: "d", source: { text: "export default () => 1" } });
@@ -503,7 +497,7 @@ return { carrierless, refused };"#;
 #[test]
 fn a_carried_source_keeps_every_authored_location() {
     let body = r#"function f() { return 1; }
-await coral.saveFunction({ path: "a", description: "d", source: f }); throw new Error("after");"#;
+await coral.addTool({ path: "a", description: "d", source: f }); throw new Error("after");"#;
     let program = admit(body, &[]).expect("admit");
     let (output, host) = run(&program);
     let Err(Error::ProgramRejected(error)) = output else {
@@ -523,52 +517,47 @@ await coral.saveFunction({ path: "a", description: "d", source: f }); throw new 
     };
     assert_eq!(
         (&call.source, format!("{}:{}", call.line, call.column)),
-        (&AuthoredSource::Program, location(body, "saveFunction("))
+        (&AuthoredSource::Program, location(body, "addTool("))
     );
 }
 
-// Catches: an addTool or updateTool call whose function admission does not
-// extract, a host that lets an authored value reach either as its source,
-// or a refusal that names another Tool.
+// Catches: an updateTool call whose function admission does not extract,
+// a host that lets an authored value reach it as its source, a refusal
+// that names another Tool, or a removeTool call admission reads a source in.
 #[test]
-fn add_tool_and_update_tool_take_a_function_as_save_function_does() {
-    for tool in ["addTool", "updateTool"] {
-        let body = format!(
-            r#"const f = () => 1;
-await coral.{tool}({{ path: "a", description: "d", source: f, expectedRevision: 1 }});
+fn update_tool_takes_a_function_as_add_tool_does_and_remove_tool_takes_none() {
+    let body = r#"const f = () => 1;
+await coral.updateTool({ path: "a", description: "d", source: f, expectedRevision: 1 });
 const host = globalThis[["co", "ral"].join("")];
-await host["{tool}"]({{ path: "b", description: "d", source: "export default () => 1" }});"#
-        );
-        let program = admit(&body, &[]).unwrap_or_else(|error| panic!("{tool}: {error}"));
-        let (output, host) = run(&program);
-        output.unwrap_or_else(|error| panic!("{tool}: {error}"));
-        assert_eq!(
-            host.calls_to(&format!("coral.{tool}"))
-                .into_iter()
-                .map(|(arguments, _location)| arguments)
-                .collect::<Vec<_>>(),
-            [
-                serde_json::json!({
-                    "path": "a",
-                    "description": "d",
-                    "source": "const f = () => 1;\n\nexport default f;\n",
-                    "expectedRevision": 1,
-                }),
-                serde_json::json!({ "path": "b", "description": "d" }),
-            ],
-            "{tool}"
-        );
+await host["updateTool"]({ path: "b", description: "d", source: "export default () => 1" });"#;
+    let program = admit(body, &[]).expect("admit");
+    let (output, host) = run(&program);
+    output.expect("run");
+    assert_eq!(
+        host.calls_to("coral.updateTool")
+            .into_iter()
+            .map(|(arguments, _location)| arguments)
+            .collect::<Vec<_>>(),
+        [
+            serde_json::json!({
+                "path": "a",
+                "description": "d",
+                "source": "const f = () => 1;\n\nexport default f;\n",
+                "expectedRevision": 1,
+            }),
+            serde_json::json!({ "path": "b", "description": "d" }),
+        ]
+    );
 
-        let uncalled = format!("const save = coral.{tool};");
-        assert_eq!(
-            save_refusal(&uncalled, &[]),
-            format!(
-                "Program:{}: Call coral.{tool} by its literal path, so it can take a \
-                 function as source",
-                location(&uncalled, "coral.")
-            ),
-        );
-    }
+    let uncalled = "const save = coral.updateTool;";
+    assert_eq!(
+        save_refusal(uncalled, &[]),
+        format!(
+            "Program:{}: Call coral.updateTool by its literal path, so it can take a \
+             function as source",
+            location(uncalled, "coral.")
+        ),
+    );
     // removeTool takes no source, so admission reads none.
     let program = admit(r#"await coral.removeTool({ path: "a" });"#, &[]).expect("admit");
     let (output, host) = run(&program);

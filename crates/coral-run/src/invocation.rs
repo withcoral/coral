@@ -198,7 +198,7 @@ pub(crate) struct ToolInvoker {
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     /// What `coral.search` discovers through.
     search: coral_search::UniversalSearchModule,
-    /// What `coral.saveFunction` and `deleteFunction` author through.
+    /// What `coral.addTool`, `updateTool` and `removeTool` author through.
     functions: Option<crate::builtin::SavedFunctions>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,

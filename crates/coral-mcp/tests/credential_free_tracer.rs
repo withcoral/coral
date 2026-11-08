@@ -538,15 +538,15 @@ async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
 }
 
 /// Calls the Built-in authoring `tool` with `arguments` from a Program in
-/// `task`, as an agent saves or deletes a Saved Function, and returns the
-/// Tool Result's data or the failure the Program caught.
+/// `task`, as an agent adds, updates or removes a Private Tool, and returns
+/// the Tool Result's data or the failure the Program caught.
 async fn authoring_value(client: &SdkClient, task: &str, tool: &str, arguments: &Value) -> Value {
     program_value(client, task, &authoring_program(tool, arguments)).await
 }
 
 /// Saves the function `name` that `declarations` declare at the top level
-/// of a Program in `task`, as an agent saves a Saved Function, and returns
-/// the Tool Result's data or the failure the Program caught.
+/// of a Program in `task`, as an agent adds a Private Tool, and returns the
+/// Tool Result's data or the failure the Program caught.
 async fn saving_value(client: &SdkClient, task: &str, save: &Save<'_>) -> Value {
     program_value(client, task, &save.program()).await
 }
@@ -561,14 +561,14 @@ struct Save<'a> {
 }
 
 impl Save<'_> {
-    /// The Program that declares the function and saves it, as
+    /// The Program that declares the function and adds it, as
     /// [`authoring_program`] calls a Tool.
     fn program(&self) -> String {
         format!(
             "{}\n{}",
             self.declarations,
             authored_call(
-                "saveFunction",
+                "addTool",
                 &format!(
                     "{{ path: {}, description: {}, source: {} }}",
                     json!(self.path),
@@ -1543,7 +1543,7 @@ return { found: found.data, read: read.data };"#,
     let deleted = authoring_value(
         &client_a,
         &task_id,
-        "deleteFunction",
+        "removeTool",
         &json!({ "path": "weather.currentTemperature" }),
     )
     .await;

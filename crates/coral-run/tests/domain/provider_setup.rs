@@ -681,7 +681,7 @@ async fn a_namespace_in_use_is_a_conflict() {
 }
 
 /// Ends the Run just after a Built-in call prepares its work: addProvider's
-/// Setup, or saveFunction's compile.
+/// Setup, or addTool's compile.
 pub(super) struct RunEndsAfterPreparation {
     pub(super) clock: Arc<TestClock>,
 }

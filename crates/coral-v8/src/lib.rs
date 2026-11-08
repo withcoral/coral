@@ -776,8 +776,8 @@ pub enum Error {
         /// One-based authored source column.
         column: u64,
     },
-    /// A literal `coral.saveFunction` call did not name a function
-    /// its source declares at the top level. The message starts with the
+    /// A literal `coral.addTool` or `coral.updateTool` call did not name a
+    /// function its source declares at the top level. The message starts with the
     /// authored source and location.
     #[error("{0}")]
     InvalidFunctionSave(String),

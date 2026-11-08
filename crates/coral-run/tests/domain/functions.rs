@@ -1,6 +1,6 @@
-//! `coral.saveFunction` and `deleteFunction` author the invoking
-//! Principal's Saved Functions from inside a Program, over the real V8
-//! engine. Authoring rules are tested at their owner, coral-functions, and
+//! `coral.addTool`, `coral.updateTool` and `coral.removeTool` author the
+//! invoking Principal's Private Tools from inside a Program, over the real
+//! V8 engine. Authoring rules are tested at their owner, coral-functions, and
 //! the default Access State at coral-policy.
 use super::provider_setup::{AdminScope, RunEndsAfterPreparation, final_value, workspace_call};
 use super::*;
@@ -58,23 +58,10 @@ async fn member(scope: &AdminScope, user: &str) -> AuthenticatedPrincipal {
     AuthenticatedPrincipal::user(member)
 }
 
-/// A Program that declares `declarations`, which declare `saved`, and saves
+/// A Program that declares `declarations`, which declare `saved`, and adds
 /// `saved` at `path`. It returns a Tool error's code and message.
-fn save(path: &str, declarations: &str) -> RunSubmission {
-    submission(&format!(
-        "{declarations}
-try {{
-    return await coral.saveFunction({{ path: {path}, description: 'Greet one person by name.', source: saved }});
-}} catch (error) {{
-    if (!(error instanceof coral.ToolError)) throw error;
-    return {{ code: error.code, message: error.message }};
-}}",
-        path = json!(path),
-    ))
-}
-
-fn delete(path: &str) -> RunSubmission {
-    workspace_call("deleteFunction", &json!({ "path": path }).to_string())
+fn add(path: &str, declarations: &str) -> RunSubmission {
+    author("addTool", path, declarations, "")
 }
 
 fn greet() -> RunSubmission {
@@ -142,19 +129,19 @@ async fn invocations(
         .count()
 }
 
-// Catches: a Principal that cannot save without an Owner's rule, or waits
-// for approval; a save a later Program cannot call, recorded as anything but
-// an Invocation of its Run; a Program saving into another Principal's
-// namespace; or a delete that leaves the function callable.
+// Catches: a Principal that cannot add a tool without an Owner's rule, or
+// waits for approval; a tool a later Program cannot call, recorded as
+// anything but an Invocation of its Run; a Program adding into another
+// Principal's namespace; or a removal that leaves the tool callable.
 #[tokio::test]
-async fn each_principal_saves_and_deletes_its_own_function_with_no_rule() {
+async fn each_principal_adds_and_removes_its_own_tool_with_no_rule() {
     let (scope, _index) = authoring_scope("user:functions-owner").await;
     let member = member(&scope, "user:functions-member").await;
     let agent =
         registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
     let principals = [scope.owner.clone(), member, agent];
     for principal in &principals {
-        let run = scope.start(principal, save("people.greet", SOURCE)).await;
+        let run = scope.start(principal, add("people.greet", SOURCE)).await;
         let saved = final_value(&scope.terminal(principal, &run).await);
         assert_eq!(
             saved.pointer("/data/call_path"),
@@ -190,19 +177,13 @@ async fn each_principal_saves_and_deletes_its_own_function_with_no_rule() {
         );
     }
     for principal in &principals {
-        let deleted = outcome(&scope, principal, delete("people.greet")).await;
+        let removed = outcome(&scope, principal, remove("people.greet")).await;
         assert_eq!(
-            deleted.pointer("/data/call_path"),
+            removed.pointer("/data/call_path"),
             Some(&json!("coral.private.people.greet")),
-            "{deleted}"
+            "{removed}"
         );
         assert!(admission_refuses(&scope, principal, greet()).await);
-        let again = outcome(&scope, principal, delete("people.greet")).await;
-        assert_eq!(
-            again.get("code"),
-            Some(&json!("saved_function_not_found")),
-            "{again}"
-        );
     }
 }
 
@@ -214,7 +195,7 @@ async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
     let typed = outcome(
         &scope,
         &scope.owner,
-        save(
+        add(
             "people.count",
             "const saved = (): number => { const n: number = 'one'; return n; };",
         ),
@@ -236,13 +217,13 @@ async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
         ),
     ] {
         assert!(
-            admission_refuses(&scope, &scope.owner, save(path, declarations)).await,
+            admission_refuses(&scope, &scope.owner, add(path, declarations)).await,
             "{path}"
         );
     }
     // `people` is a namespace that holds people.count.
     for path in ["1bad", "people"] {
-        let refused = outcome(&scope, &scope.owner, save(path, SOURCE)).await;
+        let refused = outcome(&scope, &scope.owner, add(path, SOURCE)).await;
         assert_eq!(
             refused.get("code"),
             Some(&json!("invalid_input")),
@@ -275,11 +256,9 @@ async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
 async fn an_approved_save_compiles_and_commits() {
     let (scope, _index) = authoring_scope("user:functions-rules").await;
     scope
-        .set_access_to("coral.saveFunction", ToolAccessState::ApprovalRequired)
+        .set_access_to("coral.addTool", ToolAccessState::ApprovalRequired)
         .await;
-    let run = scope
-        .start(&scope.owner, save("people.greet", SOURCE))
-        .await;
+    let run = scope.start(&scope.owner, add("people.greet", SOURCE)).await;
     scope.approve(&scope.owner, &run).await;
     let saved = final_value(&scope.terminal(&scope.owner, &run).await);
     assert_eq!(
@@ -302,7 +281,7 @@ async fn a_save_outlives_its_failed_run_and_search_finds_it() {
         .start(
             &scope.owner,
             submission(&format!(
-                "{SOURCE}\nawait coral.saveFunction({{ path: 'people.greet', \
+                "{SOURCE}\nawait coral.addTool({{ path: 'people.greet', \
                  description: 'Greet one person by name.', source: saved }});\n\
                  throw new Error('after the save');"
             )),
@@ -348,9 +327,7 @@ async fn a_run_that_ends_while_its_save_compiles_saves_nothing() {
     scope.fixture.runs.invocation_observer = Arc::new(RunEndsAfterPreparation {
         clock: scope.fixture.clock.clone(),
     });
-    let run = scope
-        .start(&scope.owner, save("people.greet", SOURCE))
-        .await;
+    let run = scope.start(&scope.owner, add("people.greet", SOURCE)).await;
     assert_eq!(
         scope.terminal(&scope.owner, &run).await.state(),
         RunState::TimedOut
@@ -365,7 +342,7 @@ async fn a_run_that_ends_while_its_save_compiles_saves_nothing() {
 async fn a_program_calls_its_function_then_saves_it_in_one_run() {
     let (scope, _index) = authoring_scope("user:functions-same-run").await;
     let by_path = format!(
-        "{SOURCE}\nawait coral.saveFunction({{ path: 'people.greet', \
+        "{SOURCE}\nawait coral.addTool({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
          return coral.private.people.greet('Ada');"
     );
@@ -377,7 +354,7 @@ async fn a_program_calls_its_function_then_saves_it_in_one_run() {
 
     let tested = format!(
         "{SOURCE}\nconst greeting = saved('Ada');\n\
-         await coral.saveFunction({{ path: 'people.greet', \
+         await coral.addTool({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
          return greeting;"
     );
@@ -391,21 +368,21 @@ async fn a_program_calls_its_function_then_saves_it_in_one_run() {
     );
 }
 
-// Catches: a Saved Function that cannot save a function it declares, or
-// delete one, when a later Program calls it.
+// Catches: a Private Tool that cannot add a tool from a function it
+// declares, or remove one, when a later Program calls it.
 #[tokio::test]
-async fn a_saved_function_saves_and_deletes_functions() {
+async fn a_private_tool_adds_and_removes_tools() {
     let (scope, _index) = authoring_scope("user:functions-from-functions").await;
     let tools = format!(
         "{SOURCE}
 async function saver() {{
-    return coral.saveFunction({{ path: 'people.greet', description: 'Greet one person by name.', source: saved }});
+    return coral.addTool({{ path: 'people.greet', description: 'Greet one person by name.', source: saved }});
 }}
 async function remover() {{
-    return coral.deleteFunction({{ path: 'people.greet' }});
+    return coral.removeTool({{ path: 'people.greet' }});
 }}
-const saving = await coral.saveFunction({{ path: 'tools.saver', description: 'Save the greeting.', source: saver }});
-const removing = await coral.saveFunction({{ path: 'tools.remover', description: 'Delete the greeting.', source: remover }});
+const saving = await coral.addTool({{ path: 'tools.saver', description: 'Add the greeting.', source: saver }});
+const removing = await coral.addTool({{ path: 'tools.remover', description: 'Remove the greeting.', source: remover }});
 return [saving.data.diagnostics, removing.data.diagnostics];"
     );
     // A function is the type `source` takes, so neither save has a type error.
@@ -444,7 +421,7 @@ return [saving.data.diagnostics, removing.data.diagnostics];"
 #[tokio::test]
 async fn without_saved_functions_the_tools_are_unavailable() {
     let scope = AdminScope::new("user:functions-unwired").await;
-    for run in [save("people.greet", SOURCE), delete("people.greet")] {
+    for run in [add("people.greet", SOURCE), remove("people.greet")] {
         let refused = outcome(&scope, &scope.owner, run).await;
         assert_eq!(
             refused.get("code"),
@@ -459,7 +436,7 @@ async fn without_saved_functions_the_tools_are_unavailable() {
 #[tokio::test]
 async fn programs_reach_the_builtin_and_private_tools_on_coral() {
     let (scope, _index) = authoring_scope("user:functions-roots").await;
-    let saved = outcome(&scope, &scope.owner, save("people.greet", SOURCE)).await;
+    let saved = outcome(&scope, &scope.owner, add("people.greet", SOURCE)).await;
     assert_eq!(
         saved.pointer("/data/call_path"),
         Some(&json!("coral.private.people.greet")),
@@ -491,7 +468,7 @@ async fn programs_reach_the_builtin_and_private_tools_on_coral() {
 #[tokio::test]
 async fn an_old_root_is_refused_where_it_is_written_with_its_new_path() {
     let (scope, _index) = authoring_scope("user:functions-old-roots").await;
-    outcome(&scope, &scope.owner, save("people.greet", SOURCE)).await;
+    outcome(&scope, &scope.owner, add("people.greet", SOURCE)).await;
     let refused = |source: &str| {
         let scope = &scope;
         let source = source.to_owned();

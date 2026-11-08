@@ -34,7 +34,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
       if (sequence === 1)
         expect(
           (
-            await runner.saveFunction(
+            await runner.addTool(
               'live.fixture',
               'Describe fixture',
               'const fixture = () => 42;',
@@ -234,9 +234,9 @@ test('Activity automatically streams new rows and continuously loads bounded chi
             port.getBoundingClientRect().top -
             port.clientHeight
         })
-        const newLabel = 'Save a reusable function'
+        const newLabel = 'Save a reusable tool'
         expect(
-          (await latest.saveFunction('live.added', 'New child', 'const added = () => 43;', 'added'))
+          (await latest.addTool('live.added', 'New child', 'const added = () => 43;', 'added'))
             .isError,
         ).not.toBe(true)
         await taskSection()
