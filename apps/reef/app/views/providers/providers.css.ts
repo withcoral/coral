@@ -614,6 +614,8 @@ export const iconUpload = style({
 
 // The drawer's usage: the total, the days as bars, then who called the tool.
 export const usage = style({ display: 'grid', gap: 12 })
+// A drawer section whose control keeps its own width under its heading.
+export const drawerSection = style({ display: 'grid', gap: 12, justifyItems: 'start' })
 export const usageChart = style({ display: 'grid', gap: 4 })
 export const usageAxis = style({
   ...theme.typography.bodySmall,

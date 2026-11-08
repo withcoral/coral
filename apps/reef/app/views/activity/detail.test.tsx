@@ -1156,8 +1156,10 @@ it.each([
       ['idempotent', 'idempotent'],
       ['openWorld', 'open world'],
     ] as const) {
+      // Only a hint declared true shows; a false one has no "not" label.
       const declared = hit.tool?.hints[hint]
-      if (declared !== undefined) expect(row).toHaveTextContent(declared ? label : `not ${label}`)
+      if (declared) expect(row).toHaveTextContent(label)
+      expect(row.textContent).not.toContain(`not ${label}`)
     }
     // Matched paths show as a count chip; the paths themselves stay with the data.
     const paths = hit.matched.paths.length

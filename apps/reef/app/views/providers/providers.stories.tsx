@@ -515,7 +515,7 @@ export const TreeToolSelected: Story = {
           .getAllByRole('checkbox', { name: `Select ${name}`, hidden: true })[0]!
           .closest<HTMLElement>('[role="row"]')!,
       )
-    const labels = ['Read-only', 'Destructive', 'Idempotent', 'Open world', 'Not read-only']
+    const labels = ['Read-only', 'Destructive', 'Idempotent', 'Open world']
     const shown = (scope: ReturnType<typeof within>) =>
       labels.filter((label) => scope.queryByText(label, { exact: true }))
     await expect(shown(row('issues.list'))).toEqual(['Read-only', 'Idempotent'])
@@ -526,10 +526,10 @@ export const TreeToolSelected: Story = {
         name: 'issues.create',
       }),
     )
-    await expect(drawer.getByText('Not read-only', { exact: true })).toBeVisible()
-    await expect(drawer.getByText('Not destructive', { exact: true })).toBeVisible()
+    // The drawer shows only the hints declared true, and the policy under its own heading.
     await expect(drawer.getByText('Open world', { exact: true })).toBeVisible()
-    await expect(drawer.queryByText(/idempotent/i)).toBeNull()
+    await expect(drawer.queryByText(/read-only|destructive|idempotent/i)).toBeNull()
+    await expect(drawer.getByRole('heading', { name: 'Policy' })).toBeVisible()
   },
 }
 // Weather declares no hints, so its row shows no labels.
@@ -548,7 +548,7 @@ export const TreeToolWithoutDescription: Story = {
         .getByRole('checkbox', { name: 'Select getForecast', hidden: true })
         .closest<HTMLElement>('[role="row"]')!,
     )
-    for (const label of ['Read-only', 'Destructive', 'Idempotent', 'Open world', 'Not read-only'])
+    for (const label of ['Read-only', 'Destructive', 'Idempotent', 'Open world'])
       await expect(row.queryByText(label, { exact: true })).toBeNull()
   },
 }

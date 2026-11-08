@@ -272,7 +272,7 @@ const hintLabels: [keyof ToolHintsView, string][] = [
   ['idempotent', 'idempotent'],
   ['openWorld', 'open world'],
 ]
-/** A hint shows only when the provider declared it; a declared false reads "not". */
+/** A hint shows only when the provider declared it true. */
 function Flags({
   tool,
   approval = 'pill',
@@ -296,14 +296,13 @@ function Flags({
           deprecated
         </Pill>
       )}
-      {hintLabels.map(([hint, label]) => {
-        const declared = tool.hints[hint]
-        return declared === undefined ? null : (
-          <Pill key={hint} color={declared ? 'gray' : 'graySubtle'} size="small" variant="outline">
-            {declared ? label : `not ${label}`}
+      {hintLabels.map(([hint, label]) =>
+        tool.hints[hint] === true ? (
+          <Pill key={hint} color="gray" size="small" variant="outline">
+            {label}
           </Pill>
-        )
-      })}
+        ) : null,
+      )}
     </>
   )
 }

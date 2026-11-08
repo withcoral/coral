@@ -90,71 +90,51 @@ const bulkPolicyOptions = policyOptions.map(({ icon, ...option }) => ({
 const hintLabels: {
   hint: keyof ToolHintsView
   label: string
-  declaredFalse: string
   color: PillColor
   tooltip: string
-  falseTooltip: string
 }[] = [
   {
     hint: 'readOnly',
     label: 'Read-only',
-    declaredFalse: 'Not read-only',
     color: 'graySubtle',
     tooltip: 'The provider says this tool changes nothing.',
-    falseTooltip: 'The provider says this tool can change data.',
   },
   {
     hint: 'destructive',
     label: 'Destructive',
-    declaredFalse: 'Not destructive',
     color: 'red',
     tooltip: 'The provider says this tool can delete or overwrite data.',
-    falseTooltip: 'The provider says this tool does not delete or overwrite data.',
   },
   {
     hint: 'idempotent',
     label: 'Idempotent',
-    declaredFalse: 'Not idempotent',
     color: 'green',
     tooltip: 'The provider says a repeated call has no further effect.',
-    falseTooltip: 'The provider says a repeated call can have a further effect.',
   },
   {
     hint: 'openWorld',
     label: 'Open world',
-    declaredFalse: 'Not open world',
     color: 'graySubtle',
     tooltip: 'The provider says this tool reaches systems outside the provider.',
-    falseTooltip: 'The provider says this tool stays inside the provider.',
   },
 ]
 
-/**
- * The provider's declared hints as small labels. A row shows only the hints
- * declared true; the drawer also shows those declared false.
- */
-function HintLabels({
-  hints,
-  declaredFalse = false,
-}: {
-  hints: ToolHintsView
-  declaredFalse?: boolean
-}) {
-  return hintLabels.map(
-    ({ hint, label, declaredFalse: falseLabel, color, tooltip, falseTooltip }) => {
-      const value = hints[hint]
-      if (value === undefined || (!value && !declaredFalse)) return null
-      return (
-        <Tooltip key={hint} content={value ? tooltip : falseTooltip} maxWidth={320}>
-          <span className={styles.inlineTooltipTarget} tabIndex={0}>
-            <Pill size="small" variant="outline" color={value ? color : 'graySubtle'}>
-              {value ? label : falseLabel}
-            </Pill>
-          </span>
-        </Tooltip>
-      )
-    },
-  )
+/** The hints the provider declared true. A hint declared false or not at all shows nothing. */
+function shownHints(hints: ToolHintsView) {
+  return hintLabels.filter(({ hint }) => hints[hint] === true)
+}
+
+/** The provider's declared hints as small labels, only those declared true. */
+function HintLabels({ hints }: { hints: ToolHintsView }) {
+  return shownHints(hints).map(({ hint, label, color, tooltip }) => (
+    <Tooltip key={hint} content={tooltip} maxWidth={320}>
+      <span className={styles.inlineTooltipTarget} tabIndex={0}>
+        <Pill size="small" variant="outline" color={color}>
+          {label}
+        </Pill>
+      </span>
+    </Tooltip>
+  ))
 }
 
 export function WorkspaceProvidersPage(props: WorkspaceProvidersPageProps) {
@@ -2130,6 +2110,24 @@ function usageTip(usage: ToolUsage, day: number) {
 }
 
 /** One tool's calls over the window: the total, each day, and who called it. */
+/** The drawer's policy control, headed as its Usage section is. */
+function ToolPolicySection(props: {
+  canChange: boolean
+  form: FormContext
+  provider: ProviderView
+  tool: ToolView
+}) {
+  const headingId = useId()
+  return (
+    <section aria-labelledby={headingId} className={styles.drawerSection}>
+      <Typography.BodyStrong as="h3" id={headingId}>
+        Policy
+      </Typography.BodyStrong>
+      <PolicySelect {...props} />
+    </section>
+  )
+}
+
 function ToolUsageSection({ usage }: { usage: ToolUsage }) {
   const headingId = useId()
   const days = usage.daily.length
@@ -2274,12 +2272,19 @@ function ToolDetailsDrawer({
                   variant="bare"
                 />
               </div>
-              <div className={styles.pills}>
-                <HintLabels hints={tool.hints} declaredFalse />
-                {provider && (
-                  <PolicySelect canChange={canChange} form={form} provider={provider} tool={tool} />
-                )}
-              </div>
+              {shownHints(tool.hints).length > 0 && (
+                <div className={styles.pills}>
+                  <HintLabels hints={tool.hints} />
+                </div>
+              )}
+              {provider && (
+                <ToolPolicySection
+                  canChange={canChange}
+                  form={form}
+                  provider={provider}
+                  tool={tool}
+                />
+              )}
               {provider?.searchIndex?.state === 'pending' && (
                 <Banner variant="info" title="Indexing…">
                   Search cannot find this tool yet. Agents can still call it.

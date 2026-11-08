@@ -1444,7 +1444,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(current.getAttribute('href')).toMatch(/\/functions\//)
     // Approval shows as the Providers page's named hand; other flags keep their text.
     await expect(within(merge).getByRole('img', { name: /^Ask/ })).toBeVisible()
-    for (const flag of ['destructive', 'not idempotent', 'tag: pulls'])
+    for (const flag of ['destructive', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
     await expect(within(results).queryByText(/Matched declaration paths/)).toBeNull()
     // Each card folds its own retained guidance, description and signature into Details.
