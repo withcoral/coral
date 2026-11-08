@@ -1372,55 +1372,34 @@ fn oauth_scopes(prepared: &coral_catalog::PreparedProviderCatalog) -> Option<Vec
 }
 
 #[test]
-fn operations_share_one_oauth_grant_up_to_the_scope_limit() {
-    // The scheme declares 101 scopes; each Tool asks for 60 of them.
-    let declared = (0..=100)
-        .map(|index| format!("s{index}: s{index}"))
+fn operations_share_one_oauth_grant_for_every_scope_they_request() {
+    // Two Tools ask for overlapping halves of 300 declared scopes. One grant
+    // requests their whole union, however long the provider makes it.
+    let declared = (0..300)
+        .map(|index| format!("s{index:03}: s{index:03}"))
         .collect::<Vec<_>>()
         .join(", ");
     let oauth = format!(
         r#"{{ type: oauth2, flows: {{ authorizationCode: {{ authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: {{ {declared} }} }} }} }}"#
     );
-    let scope_list = |range: std::ops::RangeInclusive<usize>| {
+    let scope_list = |range: std::ops::Range<usize>| {
         range
-            .map(|index| format!("s{index}"))
+            .map(|index| format!("s{index:03}"))
             .collect::<Vec<_>>()
-            .join(", ")
     };
-    for (case, admin_scopes, union_size) in [
-        ("union within the limit", scope_list(40..=99), Some(100)),
-        ("union over the limit", scope_list(41..=100), None),
-    ] {
-        let document = OpenApiDocument::parse(&two_scheme_document(
-            (&oauth, &scope_list(0..=59)),
-            (&oauth, &admin_scopes),
-        ))
-        .expect("overlapping scope fixture");
-        match materialize(
-            DestinationPolicy::default(),
-            &ProviderSetupInput::from(document),
-            &[],
-        ) {
-            MaterializationOutcome::Ready(prepared) => {
-                assert_eq!(
-                    oauth_scopes(&prepared).map(|scopes| scopes.len()),
-                    union_size,
-                    "{case}"
-                );
-            }
-            MaterializationOutcome::Rejected(diagnostic) => {
-                assert!(union_size.is_none(), "{case}: {}", diagnostic.message());
-                assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
-                assert_eq!(
-                    diagnostic.message(),
-                    "the Provider's Tools together request more OAuth scopes than one \
-                     grant can hold at #/paths/~1probe/get: UserAuth and AdminAuth together \
-                     exceed the scope limit",
-                    "{case}"
-                );
-            }
-        }
-    }
+    let document = OpenApiDocument::parse(&two_scheme_document(
+        (&oauth, &scope_list(0..160).join(", ")),
+        (&oauth, &scope_list(140..300).join(", ")),
+    ))
+    .expect("overlapping scope fixture");
+    let MaterializationOutcome::Ready(prepared) = materialize(
+        DestinationPolicy::default(),
+        &ProviderSetupInput::from(document),
+        &[],
+    ) else {
+        panic!("overlapping scopes share one grant");
+    };
+    assert_eq!(oauth_scopes(&prepared), Some(scope_list(0..300)));
 }
 
 #[test]

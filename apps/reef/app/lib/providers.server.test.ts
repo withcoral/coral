@@ -56,11 +56,20 @@ it.each([
 })
 
 // Catches: a reason that is missing from the map falling through to the
-// form-fields sentence, which sends the reader to correct a form that is right.
+// form-fields sentence, which sends the reader to correct a form that is right,
+// and a sign-in discovery failure hiding its cause behind one generic sentence.
 it.each([
   [
     'OUTBOUND_DESTINATION_REJECTED',
     "Coral's outbound settings do not allow this address. Check the deployment's outbound settings before you try again.",
+  ],
+  [
+    'AUTHORIZATION_DISCOVERY_PKCE_UNSUPPORTED',
+    'The authorization server does not support S256 PKCE. Sign-in needs it. Contact the server owner.',
+  ],
+  [
+    'AUTHORIZATION_DISCOVERY_SOMETHING_NEWER',
+    "Coral does not support this server's sign-in requirements.",
   ],
   [
     'UNMAPPED_PRECONDITION',

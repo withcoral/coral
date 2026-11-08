@@ -783,7 +783,6 @@ fn oauth_configuration_normalizes_exact_scopes_and_rejects_unsafe_or_unbounded_f
         oauth(vec!["quote\"".into()]),
         oauth(vec!["slash\\".into()]),
         oauth(vec!["x".repeat(257)]),
-        oauth((0..101).map(|n| format!("scope{n}")).collect()),
     ]
     .into_iter()
     .map(|contract| (contract, "authentication.scopes"))
@@ -901,10 +900,6 @@ fn oauth_review_does_not_suggest_unbounded_or_secret_bearing_declarations() {
             vec!["read".into()],
         ),
         ("https://auth.test/authorize".into(), vec!["x".repeat(257)]),
-        (
-            "https://auth.test/authorize".into(),
-            (0..101).map(|n| format!("scope{n}")).collect(),
-        ),
     ] {
         let mut source: serde_json::Value =
             serde_json::from_str(simple_document().as_str()).unwrap();

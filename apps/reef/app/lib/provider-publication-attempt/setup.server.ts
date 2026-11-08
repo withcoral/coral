@@ -40,6 +40,7 @@ import { field, privateHeaders, type ManagementApi } from '../management.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { toolGroup, providerFailure, routeChoice, uuidOr404 } from '../providers.server'
 import { OPENAPI_DOCUMENT_MAX_BYTES, OPENAPI_DOCUMENT_SIZE_LABEL } from '../provider-input-limits'
+import { authorizationDiscoveryMessage } from '../authorization-discovery'
 import { recipeDocument } from '../provider-recipes/library.server'
 import {
   accountChoice,
@@ -445,7 +446,8 @@ function configurationView(
       key,
       reasons,
     })),
-    diagnostic: review.diagnostic,
+    // A discovery failure reads as its cause; other diagnostics stay as codes.
+    diagnostic: authorizationDiscoveryMessage(review.diagnostic) ?? review.diagnostic,
     // A source Coral read suggests a configuration, even one it cannot publish.
     readable: review.suggested !== undefined || !review.diagnostic,
     errors: review.errors,

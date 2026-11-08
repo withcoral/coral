@@ -114,6 +114,23 @@ describe('setupView with confirmed authentication settings', () => {
   })
 })
 
+// Catches: a stored sign-in discovery failure showing as a bare code, and a
+// mapping that rewrites the other diagnostics the views compare as codes.
+it.each([
+  [
+    'resource_metadata_unavailable',
+    "Coral cannot read this server's OAuth resource metadata. Check the server URL. If it is correct, contact the server owner.",
+  ],
+  ['empty_mcp_catalog', 'empty_mcp_catalog'],
+])('shows the %s diagnostic as its cause', async (diagnostic, shown) => {
+  const view = await viewOf({
+    inputKind: ProviderSetupInputKind.MCP,
+    configuration: { diagnostic },
+  })
+
+  expect(view.configuration?.diagnostic).toBe(shown)
+})
+
 describe('setupView service name for sign-in copy', () => {
   const sentryDocument =
     'https://raw.githubusercontent.com/getsentry/sentry-api-schema/refs/heads/main/openapi-derefed.json'
