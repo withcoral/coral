@@ -784,6 +784,72 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
     }
 }
 
+// Catches: a create-only or replace-only save that compiles before it finds
+// its path taken or missing, so it costs a compile and can report the
+// compile's failure instead of its own.
+#[tokio::test]
+async fn a_save_whose_intent_the_path_refuses_never_compiles() {
+    let fixture = SavedFunctionTestModules::new().await;
+    let (workspace_id, principal) = fixture.user_workspace("user:intent-before-compile").await;
+    let path = SavedFunctionPath::parse("reports.current").expect("path");
+    let save = |path: &SavedFunctionPath| {
+        SavedFunctionSave::new(
+            path.clone(),
+            SavedFunctionDescription::parse("Report the current value").expect("description"),
+            SavedFunctionSource::parse("export default () => 42;").expect("source"),
+        )
+    };
+    fixture
+        .saved_functions
+        .save(
+            &saved_function_change(principal.clone(), 10, 'a'),
+            &workspace_id,
+            save(&path),
+        )
+        .await
+        .expect("the first save");
+    // Every compile times out, so only a check before it can refuse.
+    let timing_out = SavedFunctionModule::with_compiler(
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+        Arc::new(GatedSavedFunctionCompiler::failing(
+            CompileFailure::TimedOut,
+        )),
+    );
+    let missing = SavedFunctionPath::parse("reports.missing").expect("path");
+    for (refused, expected) in [
+        (save(&path).create_only(), "private_tool_exists"),
+        (
+            save(&missing).replace_only(None),
+            "saved_function_not_found",
+        ),
+        (
+            save(&path).replace_only(Some(2)),
+            "private_tool_revision_conflict",
+        ),
+    ] {
+        let error = timing_out
+            .save(
+                &saved_function_change(principal.clone(), 20, 'b'),
+                &workspace_id,
+                refused,
+            )
+            .await
+            .expect_err("the path refuses the intent");
+        assert_eq!(error.code(), expected, "{error}");
+    }
+    assert!(matches!(
+        timing_out
+            .save(
+                &saved_function_change(principal.clone(), 30, 'c'),
+                &workspace_id,
+                save(&path).replace_only(Some(1)),
+            )
+            .await,
+        Err(Error::SavedFunctionCompilationTimedOut)
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
     let fixture = SavedFunctionTestModules::new().await;

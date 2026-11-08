@@ -270,6 +270,12 @@ impl SavedFunctionModule {
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSave, Error> {
         self.authorize_active(context.actor(), workspace_id).await?;
+        if save.has_precondition() {
+            save.admits(
+                self.current_revision(context.actor(), workspace_id, save.path())
+                    .await?,
+            )?;
+        }
         let prepared = self
             .prepare_source(
                 context.actor(),
@@ -765,6 +771,26 @@ impl SavedFunctionModule {
         }
         transaction.commit().await?;
         Ok(functions)
+    }
+
+    /// The revision of the actor's function at `path`, from a snapshot.
+    /// Only a precheck reads it: the save decides under its hold.
+    async fn current_revision(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        path: &SavedFunctionPath,
+    ) -> Result<Option<u64>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let current = repository::find_current_in_transaction(
+            &mut transaction,
+            workspace_id,
+            actor.principal(),
+            path,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(current.as_ref().map(SavedFunction::revision))
     }
 
     async fn authorize_active(

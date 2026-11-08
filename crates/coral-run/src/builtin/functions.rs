@@ -306,16 +306,14 @@ fn failure(field: &str, error: coral_functions::Error, surface: Surface) -> Erro
     use coral_functions::Error as E;
     match error {
         E::SavedFunctionNotFound => Error::InvocationRejected(surface.not_found().into()),
-        E::SavedFunctionExists => Error::InvocationRejected(CoralFailure::PrivateToolExists.into()),
-        E::SavedFunctionRevisionConflict { current } => {
-            Error::InvocationRejected(Rejection::naming(
-                CoralFailure::PrivateToolRevisionConflict,
-                vec![InputProblem::new(
-                    "expectedRevision",
-                    format!("the current revision is {current}"),
-                )],
-            ))
-        }
+        E::PrivateToolExists => Error::InvocationRejected(CoralFailure::PrivateToolExists.into()),
+        E::PrivateToolRevisionConflict { current } => Error::InvocationRejected(Rejection::naming(
+            CoralFailure::PrivateToolRevisionConflict,
+            vec![InputProblem::new(
+                "expectedRevision",
+                format!("the current revision is {current}"),
+            )],
+        )),
         // The path holds or lies under the caller's other functions.
         E::SavedFunctionPathConflict => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem("path", &error)]))

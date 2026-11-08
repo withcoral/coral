@@ -475,7 +475,7 @@ impl SavedFunctionSave {
     }
 
     /// Saves only when no function is at the path; otherwise the save fails
-    /// with [`Error::SavedFunctionExists`].
+    /// with [`Error::PrivateToolExists`].
     #[must_use]
     pub const fn create_only(mut self) -> Self {
         self.intent = SaveIntent::Create;
@@ -485,25 +485,31 @@ impl SavedFunctionSave {
     /// Saves only over a function at the path, and, with
     /// `expected_revision`, only while that function is at that revision.
     /// Otherwise the save fails with [`Error::SavedFunctionNotFound`] or
-    /// [`Error::SavedFunctionRevisionConflict`].
+    /// [`Error::PrivateToolRevisionConflict`].
     #[must_use]
     pub const fn replace_only(mut self, expected_revision: Option<u64>) -> Self {
         self.intent = SaveIntent::Replace { expected_revision };
         self
     }
 
-    /// Checks the intent against the revision of the function at the path,
-    /// read under the save's hold.
+    /// Whether the save requires anything of the function at its path.
+    pub(crate) const fn has_precondition(&self) -> bool {
+        !matches!(self.intent, SaveIntent::CreateOrReplace)
+    }
+
+    /// Checks the intent against the revision of the function at the path:
+    /// first from a snapshot, so a refused save never compiles, then under
+    /// the save's hold, which decides.
     pub(crate) const fn admits(&self, current_revision: Option<u64>) -> Result<(), Error> {
         match (self.intent, current_revision) {
-            (SaveIntent::Create, Some(_)) => Err(Error::SavedFunctionExists),
+            (SaveIntent::Create, Some(_)) => Err(Error::PrivateToolExists),
             (SaveIntent::Replace { .. }, None) => Err(Error::SavedFunctionNotFound),
             (
                 SaveIntent::Replace {
                     expected_revision: Some(expected),
                 },
                 Some(current),
-            ) if expected != current => Err(Error::SavedFunctionRevisionConflict { current }),
+            ) if expected != current => Err(Error::PrivateToolRevisionConflict { current }),
             _ => Ok(()),
         }
     }

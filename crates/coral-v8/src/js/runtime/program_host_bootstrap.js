@@ -85,7 +85,8 @@
         if (args.length === 1) {
           try {
             // Plain comparisons, so no prototype a Program can replace
-            // decides which Tool takes a carried source.
+            // decides which Tool takes a carried source. Admission lists
+            // the same Tools in SAVING_TOOLS; change both.
             const saving =
               path === 'coral.saveFunction' ||
               path === 'coral.addTool' ||

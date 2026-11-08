@@ -25,7 +25,7 @@ async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) 
     (scope, index)
 }
 
-/// The module that stores `scope`'s Saved Functions.
+/// The module that stores `scope`'s Private Tools.
 fn functions_module(scope: &AdminScope) -> SavedFunctionModule {
     SavedFunctionModule::new(
         scope.fixture.database.clone(),

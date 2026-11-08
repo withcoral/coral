@@ -316,8 +316,23 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
         )])
 }
 
-/// What `saveFunction` and `deleteFunction` return.
-fn function_results() -> [(BuiltinTool, Value); 2] {
+/// What `saveFunction`, `deleteFunction` and the Private Tool authoring
+/// Tools return.
+fn function_results() -> [(BuiltinTool, Value); 5] {
+    let saved = super::SavedToolResult {
+        call_path: "coral.private.github.pulls.listStale".to_owned(),
+        description: "List stale pull requests.".to_owned(),
+        declaration: "export default function (): Promise<string[]>;".to_owned(),
+        diagnostics: vec![crate::SavedDiagnostic {
+            category: crate::SavedDiagnosticCategory::Warning,
+            code: 6_133,
+            message: "'unused' is declared but its value is never read.".to_owned(),
+            line: None,
+            column: Some(3),
+        }],
+        diagnostics_truncated: true,
+        revision: 2,
+    };
     [
         (
             BuiltinTool::SaveFunction,
@@ -339,6 +354,24 @@ fn function_results() -> [(BuiltinTool, Value); 2] {
         (
             BuiltinTool::DeleteFunction,
             super::DeleteFunctionResult {
+                call_path: "coral.private.github.pulls.listStale".to_owned(),
+            }
+            .into_tool_result(),
+        ),
+        (
+            BuiltinTool::AddTool,
+            super::SavedToolResult {
+                revision: 1,
+                diagnostics: Vec::new(),
+                diagnostics_truncated: false,
+                ..saved.clone()
+            }
+            .into_tool_result(),
+        ),
+        (BuiltinTool::UpdateTool, saved.into_tool_result()),
+        (
+            BuiltinTool::RemoveTool,
+            super::RemovedToolResult {
                 call_path: "coral.private.github.pulls.listStale".to_owned(),
             }
             .into_tool_result(),
@@ -457,28 +490,70 @@ fn a_missing_path_carries_at_most_three_suggestions() {
 
 // Catches: a save that reaches the Tool without the module admission
 // extracts, as one through a computed path does, being read as anything
-// but a missing source.
+// but a missing source, or a refusal that names another Tool.
 #[test]
 fn a_save_without_an_extracted_source_is_refused_naming_source() {
-    for arguments in [
-        json!({ "path": "a.b", "description": "d" }),
-        json!(["a.b", "d", "export default () => 1"]),
-        json!("export default () => 1"),
+    type Parse = fn(&Value) -> Result<(), Vec<super::ArgumentProblem>>;
+    let parsers: [(&str, Parse); 3] = [
+        ("saveFunction", |arguments| {
+            super::SaveFunctionArguments::parse(arguments).map(drop)
+        }),
+        ("addTool", |arguments| {
+            super::ToolSaveArguments::parse_add(arguments).map(drop)
+        }),
+        ("updateTool", |arguments| {
+            super::ToolSaveArguments::parse_update(arguments).map(drop)
+        }),
+    ];
+    for (tool, parse) in parsers {
+        for arguments in [
+            json!({ "path": "a.b", "description": "d" }),
+            json!(["a.b", "d", "export default () => 1"]),
+            json!("export default () => 1"),
+        ] {
+            let problems = parse(&arguments).expect_err("no source");
+            assert_eq!(
+                problems
+                    .iter()
+                    .map(|problem| (problem.field(), problem.reason()))
+                    .collect::<Vec<_>>(),
+                [(
+                    "source",
+                    format!(
+                        "pass a function declared at the top level, through a literal \
+                         coral.{tool} call"
+                    )
+                    .as_str()
+                )],
+                "{tool}: {arguments}"
+            );
+        }
+    }
+}
+
+// Catches: an updateTool that accepts a revision no tool can be at, or
+// that accepts `null` for an argument to omit.
+#[test]
+fn update_tool_refuses_a_revision_below_one_naming_expected_revision() {
+    let save = json!({ "path": "a.b", "description": "d", "source": "export default 1" });
+    for (revision, reason) in [
+        (json!(0), "pass a revision of 1 or more"),
+        (json!(null), "expected u64"),
     ] {
-        let problems = super::SaveFunctionArguments::parse(&arguments)
-            .map(|_arguments| ())
-            .expect_err("no source");
+        let mut arguments = save.clone();
+        if let Some(fields) = arguments.as_object_mut() {
+            fields.insert("expectedRevision".to_owned(), revision.clone());
+        }
+        let problems = super::ToolSaveArguments::parse_update(&arguments)
+            .map(drop)
+            .expect_err("a refused revision");
         assert_eq!(
             problems
                 .iter()
                 .map(|problem| (problem.field(), problem.reason()))
                 .collect::<Vec<_>>(),
-            [(
-                "source",
-                "pass a function declared at the top level, through a literal \
-                 coral.saveFunction call"
-            )],
-            "{arguments}"
+            [("expectedRevision", reason)],
+            "{revision}"
         );
     }
 }

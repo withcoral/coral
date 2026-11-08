@@ -7,7 +7,8 @@
 
 const SAVE_FUNCTION_SOURCE_GLOBAL = '__coralSavedFunctionSource';
 
-// The Built-in Tools that take a function as `source`.
+// The Built-in Tools that take a function as `source`. The Program host
+// in runtime/program_host_bootstrap.js lists them too; change both.
 const SAVING_TOOLS = new Set(['saveFunction', 'addTool', 'updateTool']);
 
 // The saving Tool `access` names, or undefined.

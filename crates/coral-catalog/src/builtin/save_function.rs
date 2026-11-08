@@ -9,6 +9,7 @@ use schemars::generate::Contract;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::private_tools::{empty, missing_source};
 use super::{ArgumentProblem, BuiltinTool, Declared, Definition, derived_schema, tool_result};
 use crate::{SavedDiagnostic, ToolHints, ToolPresentation};
 
@@ -66,11 +67,6 @@ struct Arguments {
     source: String,
 }
 
-/// What to correct when no extracted module reached the Tool: a call
-/// admission could not read, such as one through a computed path, has none.
-const SOURCE_REASON: &str = "pass a function declared at the top level, through a literal \
-                             coral.saveFunction call";
-
 /// `saveFunction`'s arguments in the shape the schema allows.
 /// coral-functions checks each value itself.
 #[derive(Debug, Clone)]
@@ -105,24 +101,17 @@ impl SaveFunctionArguments {
     ///
     /// Returns the argument to correct.
     pub fn parse(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
-        if arguments
-            .as_object()
-            .is_none_or(|fields| !fields.contains_key("source"))
-        {
-            return Err(vec![ArgumentProblem::new("source", SOURCE_REASON)]);
+        if let Some(problem) = missing_source(arguments, BuiltinTool::SaveFunction) {
+            return Err(vec![problem]);
         }
         let arguments: Arguments = super::read(arguments).map_err(|problem| vec![problem])?;
-        let empty = [
-            ("path", &arguments.path),
-            ("description", &arguments.description),
-            ("source", &arguments.source),
-        ]
-        .into_iter()
-        .filter(|(_field, value)| value.is_empty())
-        .map(|(field, _value)| ArgumentProblem::new(field, "pass a value that is not empty"))
-        .collect::<Vec<_>>();
-        if !empty.is_empty() {
-            return Err(empty);
+        let problems = empty([
+            ("path", arguments.path.as_str()),
+            ("description", arguments.description.as_str()),
+            ("source", arguments.source.as_str()),
+        ]);
+        if !problems.is_empty() {
+            return Err(problems);
         }
         Ok(Self {
             path: arguments.path,

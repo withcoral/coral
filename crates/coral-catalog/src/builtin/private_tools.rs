@@ -186,7 +186,9 @@ pub(super) fn missing_source(arguments: &Value, tool: BuiltinTool) -> Option<Arg
 }
 
 /// A problem for each of `fields` whose value is empty.
-fn empty<'a>(fields: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<ArgumentProblem> {
+pub(super) fn empty<'a>(
+    fields: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<ArgumentProblem> {
     fields
         .into_iter()
         .filter(|(_field, value)| value.is_empty())
@@ -272,9 +274,9 @@ impl ToolSaveArguments {
         match Self::checked(path, description, source, expected_revision) {
             Ok(arguments) if problems.is_empty() => Ok(arguments),
             Ok(_arguments) => Err(problems),
-            Err(mut empty) => {
-                empty.append(&mut problems);
-                Err(empty)
+            Err(mut found) => {
+                found.append(&mut problems);
+                Err(found)
             }
         }
     }
@@ -285,13 +287,13 @@ impl ToolSaveArguments {
         source: String,
         expected_revision: Option<u64>,
     ) -> Result<Self, Vec<ArgumentProblem>> {
-        let empty = empty([
+        let problems = empty([
             ("path", path.as_str()),
             ("description", description.as_str()),
             ("source", source.as_str()),
         ]);
-        if !empty.is_empty() {
-            return Err(empty);
+        if !problems.is_empty() {
+            return Err(problems);
         }
         Ok(Self {
             path,
@@ -322,9 +324,9 @@ impl RemoveToolArguments {
     /// Returns the argument to correct.
     pub fn parse(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
         let RemoveArguments { path } = super::read(arguments).map_err(|problem| vec![problem])?;
-        let empty = empty([("path", path.as_str())]);
-        if !empty.is_empty() {
-            return Err(empty);
+        let problems = empty([("path", path.as_str())]);
+        if !problems.is_empty() {
+            return Err(problems);
         }
         Ok(Self { path })
     }
