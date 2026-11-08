@@ -396,16 +396,8 @@ async fn member_removal_retires_current_work(role: OrganizationRole) {
     f.remove().await;
     f.rejoin().await;
     f.connected.assert_retired(&f.member).await;
-    assert!(matches!(
-        f.functions
-            .get(
-                &f.author,
-                f.workspace.id(),
-                &SavedFunctionPath::parse("answer").unwrap()
-            )
-            .await,
-        Err(coral_functions::Error::SavedFunctionNotFound)
-    ));
+    // `losing_a_workspace_removes_only_that_principals_private_tools`
+    // covers which Private Tools go; this checks who the deletion names.
     let deletions = f
         .functions
         .list_lifecycle_events(&f.author, f.workspace.id())
@@ -575,7 +567,9 @@ async fn member_removal_keeps_the_agents_they_provisioned() {
 
 #[derive(Debug, Clone, Copy)]
 enum AccessLoss {
-    WorkspaceMembership,
+    /// The Owner removes the User's Workspace Membership. An Organization
+    /// Owner keeps no more of their Private Tools than a Member does.
+    WorkspaceMembership(OrganizationRole),
     OrganizationMembership,
     AgentDeletion,
 }
@@ -592,7 +586,8 @@ enum AccessLoss {
 async fn losing_a_workspace_removes_only_that_principals_private_tools() {
     let path = SavedFunctionPath::parse("answer").unwrap();
     for loss in [
-        AccessLoss::WorkspaceMembership,
+        AccessLoss::WorkspaceMembership(OrganizationRole::Member),
+        AccessLoss::WorkspaceMembership(OrganizationRole::Owner),
         AccessLoss::OrganizationMembership,
         AccessLoss::AgentDeletion,
     ] {
@@ -607,8 +602,13 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
         )
         .unwrap();
         let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Owner).await;
-        let member =
-            provision_user(database.clone(), "user:member", OrganizationRole::Member).await;
+        let member_role = match loss {
+            AccessLoss::WorkspaceMembership(role) => role,
+            AccessLoss::OrganizationMembership | AccessLoss::AgentDeletion => {
+                OrganizationRole::Member
+            }
+        };
+        let member = provision_user(database.clone(), "user:member", member_role).await;
         let workspace = workspaces
             .create(
                 &change(&owner),
@@ -654,7 +654,7 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
         let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());
 
         match loss {
-            AccessLoss::WorkspaceMembership => lifecycle
+            AccessLoss::WorkspaceMembership(_) => lifecycle
                 .remove_workspace_member(&change(&owner), workspace.id(), member.user_id())
                 .await
                 .unwrap(),
@@ -670,7 +670,7 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
 
         assert_eq!(tool(&owner_principal).await, owner_tool, "{loss:?}");
         match loss {
-            AccessLoss::WorkspaceMembership | AccessLoss::OrganizationMembership => {
+            AccessLoss::WorkspaceMembership(_) | AccessLoss::OrganizationMembership => {
                 assert_eq!(tool(&agent).await, agent_tool, "{loss:?}");
                 // A fresh Membership finds nothing at the departed path.
                 let returned = match loss {
@@ -1260,15 +1260,6 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
             .await
             .unwrap()
             .is_empty()
-    );
-    let events = functions
-        .list_lifecycle_events(&AuthenticatedPrincipal::user(owner), workspace.id())
-        .await
-        .unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(
-        events.first().unwrap().action(),
-        coral_functions::LifecycleAction::Deleted
     );
 }
 

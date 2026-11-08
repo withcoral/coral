@@ -196,6 +196,7 @@ enum BuiltinChange {
     ConnectAccount,
     RotateOAuthClientSecret,
     Delete,
+    Disable,
 }
 
 /// An Owner can only disable or restore the Built-in Provider and set its
@@ -206,7 +207,8 @@ enum BuiltinChange {
     clippy::too_many_lines,
     reason = "one table covers every change the Providers Coral defines refuse and the two the Built-in Provider allows"
 )]
-async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
+async fn an_owner_can_only_disable_and_restore_the_builtin_provider_and_cannot_change_the_private_one()
+ {
     let harness = Harness::new().await;
     let (database, providers) = (harness.database.clone(), &harness.providers);
     let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
@@ -244,18 +246,23 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
             .unwrap()
     };
 
-    for (provider, change) in [&builtin, &private].into_iter().flat_map(|provider| {
-        [
-            BuiltinChange::Rename,
-            BuiltinChange::SetIcon,
-            BuiltinChange::Reconfigure,
-            BuiltinChange::Regenerate,
-            BuiltinChange::ConnectAccount,
-            BuiltinChange::RotateOAuthClientSecret,
-            BuiltinChange::Delete,
-        ]
-        .map(|change| (provider, change))
-    }) {
+    let refused = [
+        BuiltinChange::Rename,
+        BuiltinChange::SetIcon,
+        BuiltinChange::Reconfigure,
+        BuiltinChange::Regenerate,
+        BuiltinChange::ConnectAccount,
+        BuiltinChange::RotateOAuthClientSecret,
+        BuiltinChange::Delete,
+    ];
+    // Nothing reads the Private Provider's state yet, so it refuses a
+    // disable too (#2977).
+    for (provider, change) in refused.map(|change| (&builtin, change)).into_iter().chain(
+        refused
+            .into_iter()
+            .chain([BuiltinChange::Disable])
+            .map(|change| (&private, change)),
+    ) {
         let before = events().await.len();
         let context = context.clone().with_etag(&provider.etag()).unwrap();
         let result = match change {
@@ -320,6 +327,10 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
                 .delete_provider(&context, workspace.id(), provider.id())
                 .await
                 .map(drop),
+            BuiltinChange::Disable => providers
+                .disable_provider(&context, workspace.id(), provider.id())
+                .await
+                .map(drop),
         };
         assert!(
             matches!(result, Err(Error::BuiltinProviderManaged)),
@@ -343,39 +354,25 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
         transaction.rollback().await.unwrap();
     }
 
-    let refused = providers
-        .disable_provider(
-            &change_context(owner.clone(), 15, '2')
-                .with_etag(&private.etag())
-                .unwrap(),
-            workspace.id(),
-            private.id(),
-        )
-        .await;
-    assert!(
-        matches!(refused, Err(Error::BuiltinProviderManaged)),
-        "{refused:?}"
-    );
-    let (provider, at) = (&builtin, 20);
     let before = events().await.len();
     let disabled = providers
         .disable_provider(
-            &change_context(owner.clone(), at, '2')
-                .with_etag(&provider.etag())
+            &change_context(owner.clone(), 20, '2')
+                .with_etag(&builtin.etag())
                 .unwrap(),
             workspace.id(),
-            provider.id(),
+            builtin.id(),
         )
         .await
         .unwrap();
     assert_eq!(disabled.state(), ProviderState::Disabled);
     let restored = providers
         .restore_provider(
-            &change_context(owner.clone(), at + 10, '3')
+            &change_context(owner.clone(), 30, '3')
                 .with_etag(&disabled.etag())
                 .unwrap(),
             workspace.id(),
-            provider.id(),
+            builtin.id(),
         )
         .await
         .unwrap();
