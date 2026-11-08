@@ -184,7 +184,7 @@ function main() {
       defaultId: 0,
       cancelId: 1,
     })
-    if (response === 0 && !quit.quitting()) quit.start({ replacePort: failure.listener })
+    if (response === 0) quit.start({ replacePort: failure.listener })
     else quit.quitCompletely()
   }
 

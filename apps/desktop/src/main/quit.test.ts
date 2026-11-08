@@ -223,6 +223,9 @@ describe('an update', () => {
 
     const stopping = quit.stopForUpdate()
     expect(quit.quitting()).toBe(true)
+    // A quit from the Dock or Command+Q waits until both processes stop.
+    expect(quitApp()).toBe(true)
+    expect(app.ended).toBe(false)
     stops[0].resolve()
     await stopping
 

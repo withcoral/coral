@@ -3,12 +3,9 @@
 // Coral outlives its last window (ADR 0014), so only a Quit that must stop
 // Coral does.
 
-import type { PersistedListener } from './ports'
+import type { StartOptions } from './supervisor'
 
-export type StartOptions = {
-  /** Start on a new port for this listener instead of the kept one. */
-  replacePort?: PersistedListener
-}
+export type { StartOptions }
 
 export type QuitLifecycle = {
   /** Quit Completely, Quit in the failure dialogs, SIGINT/SIGTERM. Always stops Coral. */
