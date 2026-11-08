@@ -55,6 +55,11 @@
       }
     ]
   },
+  "footer": {
+    "socials": {
+      "website": "https://withcoral.com"
+    }
+  },
   "navigation": {
     "groups": [
       {
