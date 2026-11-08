@@ -1,6 +1,6 @@
 //! MCP projection of transport-neutral Principal authentication.
 use crate::WorkspaceMcpUrls;
-use coral_auth::{PrincipalAuthentication, WorkspaceFixedBy};
+use coral_auth::PrincipalAuthentication;
 use coral_mcp::{AuthenticationError, McpEndpoint, OauthProtectedResource, WorkspaceAuthenticator};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
@@ -31,12 +31,12 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
         endpoint: &McpEndpoint,
         bearer: Option<&str>,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let fixed_by = match endpoint {
-            McpEndpoint::Workspace(workspace) => WorkspaceFixedBy::Url(workspace),
-            McpEndpoint::Organization => WorkspaceFixedBy::Credential,
-        };
         self.authentication
-            .authenticate(fixed_by, bearer, &self.urls.endpoint_resource(endpoint))
+            .authenticate(
+                endpoint.workspace_fixed_by(),
+                bearer,
+                &self.urls.endpoint_resource(endpoint),
+            )
             .await
             .map_err(AuthenticationError::from)
     }

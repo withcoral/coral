@@ -310,7 +310,9 @@ async fn local_mode_admits_the_local_owner_without_a_credential_and_agents_with_
     let here = fixture.agent(workspace).await;
     let there = fixture.agent(&second).await;
     let user_token = fixture.token("owner", AUDIENCE);
-    let owner = local_owner().principal().clone();
+    let owner = AuthenticatedPrincipal::user(coral_workspace::local_organization_owner())
+        .principal()
+        .clone();
     let own_agent = here.agent.principal().clone();
     let foreign_agent = there.agent.principal().clone();
     let accepted = |principal: &Principal, workspace: Option<&WorkspaceId>| {

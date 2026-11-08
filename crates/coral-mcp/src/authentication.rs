@@ -1,4 +1,4 @@
-use coral_auth::{PrincipalAuthentication, WorkspaceFixedBy};
+use coral_auth::PrincipalAuthentication;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::McpEndpoint;
@@ -56,13 +56,11 @@ impl WorkspaceAuthenticator for LocalAuthentication {
         endpoint: &McpEndpoint,
         bearer: Option<&str>,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let fixed_by = match endpoint {
-            McpEndpoint::Workspace(workspace) => WorkspaceFixedBy::Url(workspace),
-            McpEndpoint::Organization => WorkspaceFixedBy::Credential,
-        };
+        // Local mode verifies no User token, so no audience is read. An empty
+        // audience matches no token if that ever changes.
         Ok(self
             .0
-            .authenticate(fixed_by, bearer, &endpoint.path())
+            .authenticate(endpoint.workspace_fixed_by(), bearer, "")
             .await?)
     }
 }
