@@ -45,6 +45,11 @@
   "navbar": {
     "links": [
       {
+        "label": "withcoral.com",
+        "href": "https://withcoral.com",
+        "icon": "globe"
+      },
+      {
         "label": "Download",
         "href": "/getting-started/install-locally",
         "icon": "download"
@@ -52,18 +57,6 @@
       {
         "type": "github",
         "href": "https://github.com/withcoral/coral"
-      }
-    ]
-  },
-  "footer": {
-    "links": [
-      {
-        "items": [
-          {
-            "label": "withcoral.com",
-            "href": "https://withcoral.com"
-          }
-        ]
       }
     ]
   },
