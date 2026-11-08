@@ -38,12 +38,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
         self.authentication
             .authenticate(fixed_by, bearer, &self.urls.endpoint_resource(endpoint))
             .await
-            .map_err(|error| match error {
-                coral_auth::AuthenticationError::Unauthenticated => {
-                    AuthenticationError::Unauthenticated
-                }
-                coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
-            })
+            .map_err(AuthenticationError::from)
     }
     fn oauth_resource(&self, endpoint: &McpEndpoint) -> Option<OauthProtectedResource> {
         Some(OauthProtectedResource {

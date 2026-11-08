@@ -17,6 +17,9 @@
 //!   an exact caller-supplied audience and Workspace, returning canonical evidence
 //!   with current Organization or Agent Registration authority. JWT machinery is
 //!   private; Adapters own URL projection and protocol error responses.
+//!   [`PrincipalAuthentication::local`] serves auth-disabled deployments with the
+//!   same interface: no credential is the implicit local Owner, and any credential
+//!   must be an Agent's.
 //!
 //! # Invariants
 //!

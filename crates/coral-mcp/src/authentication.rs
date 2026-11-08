@@ -1,6 +1,5 @@
-use coral_workspace::{
-    AuthenticatedPrincipal, WorkspaceId, WorkspaceModule, local_organization_owner,
-};
+use coral_auth::{PrincipalAuthentication, WorkspaceFixedBy};
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::McpEndpoint;
 
@@ -48,53 +47,32 @@ pub trait WorkspaceAuthenticator: Send + Sync {
     }
 }
 
-pub(crate) struct LocalAuthentication(pub WorkspaceModule);
+/// Auth-disabled local authentication: [`PrincipalAuthentication::local`] at an MCP endpoint.
+pub(crate) struct LocalAuthentication(pub PrincipalAuthentication);
 #[async_trait::async_trait]
 impl WorkspaceAuthenticator for LocalAuthentication {
-    /// No credential is the implicit local User, who has no sign-in to pick a
-    /// Workspace with, so at `/mcp` only an Agent credential works.
     async fn authenticate(
         &self,
         endpoint: &McpEndpoint,
         bearer: Option<&str>,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        match (endpoint, bearer) {
-            (McpEndpoint::Workspace(workspace), None) => Ok((
-                AuthenticatedPrincipal::user(local_organization_owner()),
-                workspace.clone(),
-            )),
-            (McpEndpoint::Organization, None) => Err(AuthenticationError::WorkspaceUrlRequired),
-            (McpEndpoint::Workspace(workspace), Some(credential)) => Ok((
-                self.0
-                    .authenticate_agent(workspace, credential, now()?)
-                    .await?,
-                workspace.clone(),
-            )),
-            (McpEndpoint::Organization, Some(credential)) => Ok(self
-                .0
-                .authenticate_agent_credential(credential, now()?)
-                .await?),
-        }
+        let fixed_by = match endpoint {
+            McpEndpoint::Workspace(workspace) => WorkspaceFixedBy::Url(workspace),
+            McpEndpoint::Organization => WorkspaceFixedBy::Credential,
+        };
+        Ok(self
+            .0
+            .authenticate(fixed_by, bearer, &endpoint.path())
+            .await?)
     }
 }
 
-pub(crate) fn now() -> Result<i64, AuthenticationError> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_error| AuthenticationError::Unavailable)?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|_error| AuthenticationError::Unavailable)
-}
-
-impl From<coral_workspace::Error> for AuthenticationError {
-    fn from(error: coral_workspace::Error) -> Self {
+impl From<coral_auth::AuthenticationError> for AuthenticationError {
+    fn from(error: coral_auth::AuthenticationError) -> Self {
         match error {
-            coral_workspace::Error::InvalidAgentCredential
-            | coral_workspace::Error::AgentNotFound
-            | coral_workspace::Error::AgentDisabled
-            | coral_workspace::Error::AgentRegistrationExpired
-            | coral_workspace::Error::PermissionDenied(_) => AuthenticationError::Unauthenticated,
-            _ => AuthenticationError::Unavailable,
+            coral_auth::AuthenticationError::Unauthenticated => Self::Unauthenticated,
+            coral_auth::AuthenticationError::Unavailable => Self::Unavailable,
+            coral_auth::AuthenticationError::WorkspaceUrlRequired => Self::WorkspaceUrlRequired,
         }
     }
 }

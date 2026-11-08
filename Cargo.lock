@@ -847,6 +847,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "coral-auth",
  "coral-catalog",
  "coral-db",
  "coral-functions",

@@ -10,6 +10,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::routing::get;
+use coral_auth as _;
 use coral_catalog::{OpenApiDocument, ToolKey};
 use coral_functions::SavedFunctionModule;
 use coral_mcp::{McpHttpConfig, McpModules, SUPPORTED_PROTOCOL_VERSIONS, start_local};

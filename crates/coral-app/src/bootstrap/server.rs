@@ -342,9 +342,14 @@ impl PreparedServerBuilder {
         let workspace_authentication = session_auth
             .as_ref()
             .map(|auth| auth.workspace_authentication(coral_db.clone()));
-        let private_authentication = session_auth
-            .as_ref()
-            .map(|auth| auth.principal_authentication(coral_db.clone()));
+        let private_authentication = session_auth.as_ref().map_or_else(
+            || {
+                coral_auth::PrincipalAuthentication::local(coral_workspace::WorkspaceModule::new(
+                    coral_db.clone(),
+                ))
+            },
+            |auth| auth.principal_authentication(coral_db.clone()),
+        );
         if session_auth.is_none() {
             coral_workspace::OrganizationModule::new(coral_db.clone())
                 .provision_login(&coral_workspace::ChangeContext::new(
@@ -742,7 +747,7 @@ impl Drop for RunningServer {
 pub(crate) async fn start_server(
     database: Arc<Database>,
     mode: ServerMode,
-    authentication: Option<coral_auth::PrincipalAuthentication>,
+    authentication: coral_auth::PrincipalAuthentication,
     vault: Option<coral_credentials::CredentialVault>,
     client_id_metadata_document: Option<String>,
     client_bootstrap_policy: coral_provider::account::ClientBootstrapPolicy,
