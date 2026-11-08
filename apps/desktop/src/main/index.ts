@@ -16,6 +16,7 @@ import { createDockPresence } from './dock'
 import { failureMessage, failurePage, failureTitle, startingPage } from './local-pages'
 import { logSink } from './logs'
 import { spawnLauncher, type Launcher, type OutputSink } from './process'
+import { createQuitLifecycle } from './quit'
 import { utilityLauncher } from './reef'
 import { runtimeLauncher, withLoopbackProxyBypass, type ReefEnv } from './runtime'
 import { createSupervisor, SupervisorError, type Failure, type SupervisorState } from './supervisor'
@@ -65,6 +66,16 @@ function main() {
     reef: reefLauncher(dataDir, output('reef')),
     readinessTimeoutMs: packaged ? PACKAGED_READINESS_TIMEOUT_MS : DEV_READINESS_TIMEOUT_MS,
     checkUpdates: updatable,
+  })
+  const quit = createQuitLifecycle({
+    platform: process.platform,
+    stopCoral: () => supervisor.stop(),
+    startCoral: async (options) => void (await supervisor.start(options)),
+    // quitFromMenu needs the windows, so it is declared below.
+    closeWindows: () => quitFromMenu(),
+    exit: () => app.quit(),
+    onStartFailure: logStartFailure,
+    log,
   })
 
   let state: SupervisorState = { status: 'stopped' }
@@ -129,25 +140,6 @@ function main() {
     else void offerRestart(next.failure)
   })
 
-  // Set once Quit begins. Nothing starts Coral after that, so Quit's stop
-  // leaves no process behind.
-  let quitting = false
-  // Set by every Quit that Coral offers and that must stop it. On macOS, a quit
-  // that arrives without it came from the Dock or the app switcher.
-  let quitRequested = false
-  const quitCompletely = () => {
-    quitRequested = true
-    app.quit()
-  }
-  // Set when macOS logs the person out, restarts or shuts down. This relies
-  // on macOS posting that notice before it asks the apps to quit.
-  let sessionEnding = false
-  const restart = () =>
-    void supervisor
-      .stop()
-      .then(() => (quitting ? undefined : supervisor.start()))
-      .catch(logStartFailure)
-
   // Coral restarts by itself after a crash, within limits; past them, or when
   // it cannot start at all, the user decides.
   let offering = false
@@ -169,8 +161,8 @@ function main() {
           continue
         }
         // The user may have restarted from the menu meanwhile.
-        if (response === 0 && state.status === 'failed') restart()
-        if (response === 2) quitCompletely()
+        if (response === 0 && state.status === 'failed') quit.restart()
+        if (response === 2) quit.quitCompletely()
         return
       }
     } finally {
@@ -192,9 +184,8 @@ function main() {
       defaultId: 0,
       cancelId: 1,
     })
-    if (response === 0 && !quitting)
-      void supervisor.start({ replacePort: failure.listener }).catch(logStartFailure)
-    else quitCompletely()
+    if (response === 0 && !quit.quitting()) quit.start({ replacePort: failure.listener })
+    else quit.quitCompletely()
   }
 
   // Launching Coral again is the way back to the window, and the only one on
@@ -218,8 +209,8 @@ function main() {
   // by themselves, not during Quit.
   let background: Background | undefined
   const lastWindowClosed = () => {
-    if (quitting) return
-    if (!background) return quitCompletely()
+    if (quit.quitting()) return
+    if (!background) return quit.quitCompletely()
     // The Dock icon stays while the notice is open. The person may open the
     // window again meanwhile.
     void background.lastWindowClosed().then(syncDock)
@@ -235,33 +226,9 @@ function main() {
     for (const open of windows) open.close()
   }
 
-  // Quit waits for both processes to stop, so none outlives the app.
-  let stopped = false
-  app.on('before-quit', (event) => {
-    if (stopped) return
-    event.preventDefault()
-    if (quitting) return
-    if (process.platform === 'darwin' && !quitRequested && !sessionEnding) return quitFromMenu()
-    quitting = true
-    void supervisor.stop().finally(() => {
-      stopped = true
-      app.quit()
-    })
-  })
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, quitCompletely)
-
-  // The installer replaces the app only after both processes stop. If the
-  // hand-off fails, Coral starts again.
-  const stopForUpdate = async () => {
-    quitting = true
-    await supervisor.stop()
-    stopped = true
-  }
-  const resumeAfterUpdate = () => {
-    stopped = false
-    quitting = false
-    void supervisor.start().catch(logStartFailure)
-  }
+  app.on('before-quit', (event) => quit.beforeQuit(event))
+  for (const signal of ['SIGINT', 'SIGTERM'] as const)
+    process.on(signal, () => quit.quitCompletely())
 
   void app.whenReady().then(async () => {
     // Sessions exist only once the app is ready, and before any web contents.
@@ -277,7 +244,7 @@ function main() {
         : undefined,
     )
     // powerMonitor works only once the app is ready.
-    powerMonitor.on('shutdown', () => (sessionEnding = true))
+    powerMonitor.on('shutdown', () => quit.sessionEnding())
     // macOS passes a login item no arguments, and reports the login launch.
     const hidden =
       startedInBackground ||
@@ -291,16 +258,20 @@ function main() {
       onChange: () => menu(),
     })
     const { settings: backgroundSettings } = background
-    const drawTray = installTray(iconsDir(), { open: openOrFocusWindow, quit: quitCompletely }, log)
+    const drawTray = installTray(
+      iconsDir(),
+      { open: openOrFocusWindow, quit: quit.quitCompletely },
+      log,
+    )
     menuBarItem = drawTray !== undefined
     const menu = () => {
       const settings = backgroundSettings()
       const version = updates?.ready()
       installMenu({
-        restart,
+        restart: quit.restart,
         showLogs,
         quit: quitFromMenu,
-        quitCompletely,
+        quitCompletely: quit.quitCompletely,
         settings,
         update: updates?.menuItem(),
       })
@@ -313,15 +284,15 @@ function main() {
       updates = startUpdates({
         appImage,
         log,
-        stopCoral: stopForUpdate,
-        resumeCoral: resumeAfterUpdate,
+        stopCoral: quit.stopForUpdate,
+        resumeCoral: quit.resumeAfterUpdate,
         onMenuChange: menu,
       })
     menu()
     // A second launch or the Dock may have opened the window already.
     if (!hidden && !window) openWindow()
     else syncDock()
-    void supervisor.start().catch(logStartFailure)
+    quit.start()
   })
 }
 
