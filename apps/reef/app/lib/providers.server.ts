@@ -460,8 +460,10 @@ const statuses: Partial<Record<Code, number>> = {
 const DISCOVERY_PREFIX = 'AUTHORIZATION_DISCOVERY_'
 function failureReason(code: string): string | undefined {
   if (!code.startsWith(DISCOVERY_PREFIX)) return reasons[code]
+  const discovery = code.slice(DISCOVERY_PREFIX.length)
   return (
-    authorizationDiscoveryMessage(code.slice(DISCOVERY_PREFIX.length).toLowerCase()) ??
+    authorizationDiscoveryMessage(discovery.toLowerCase()) ??
+    reasons[discovery] ??
     "Coral does not support this server's sign-in requirements."
   )
 }

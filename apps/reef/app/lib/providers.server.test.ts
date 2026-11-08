@@ -68,6 +68,10 @@ it.each([
     'The authorization server does not support S256 PKCE. Sign-in needs it. Contact the server owner.',
   ],
   [
+    'AUTHORIZATION_DISCOVERY_OUTBOUND_DESTINATION_REJECTED',
+    "Coral's outbound settings do not allow this address. Check the deployment's outbound settings before you try again.",
+  ],
+  [
     'AUTHORIZATION_DISCOVERY_SOMETHING_NEWER',
     "Coral does not support this server's sign-in requirements.",
   ],
@@ -75,7 +79,7 @@ it.each([
     'UNMAPPED_PRECONDITION',
     'Coral could not read the document or server. Check the form fields. Correct any errors before you try again.',
   ],
-])('maps %s to its own sentence or to the form-fields fallback', (reason, message) => {
+])('maps %s to its own sentence or to a fallback', (reason, message) => {
   const result = providerFailure(
     new ConnectError(reason, Code.FailedPrecondition),
     'Coral could not read the document or server. ',

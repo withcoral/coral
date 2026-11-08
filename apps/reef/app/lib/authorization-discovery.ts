@@ -1,10 +1,10 @@
 // Why Coral could not learn how to sign in to an MCP server, keyed by the
 // discovery code Coral reports. A failed add carries the code as
 // AUTHORIZATION_DISCOVERY_<CODE>; a setup that read the catalog stores it as
-// its configuration diagnostic.
+// its configuration diagnostic. Only codes that discovery alone reports belong
+// here: a stored diagnostic carries no provenance, and other steps also report
+// outbound_destination_rejected.
 const messages: Record<string, string> = {
-  outbound_destination_rejected:
-    "Coral's outbound settings do not allow this server's sign-in addresses. Check the deployment's outbound settings before you try again.",
   resource_metadata_unavailable:
     "Coral cannot read this server's OAuth resource metadata. Check the server URL. If it is correct, contact the server owner.",
   resource_mismatch:
@@ -18,7 +18,7 @@ const messages: Record<string, string> = {
   insecure_endpoint:
     'This server gives sign-in addresses that do not use HTTPS. Contact the server owner.',
   client_bootstrap_failed:
-    'The server did not register Coral as an OAuth client. Try again later, or enter a client ID from the server owner.',
+    'Automatic OAuth client registration does not work with this server. Enter a client ID from the server owner.',
   challenge_unsupported:
     'This server asks for a sign-in method that Coral does not support. Use an API key if the server offers one.',
 }

@@ -122,6 +122,7 @@ it.each([
     "Coral cannot read this server's OAuth resource metadata. Check the server URL. If it is correct, contact the server owner.",
   ],
   ['empty_mcp_catalog', 'empty_mcp_catalog'],
+  ['outbound_destination_rejected', 'outbound_destination_rejected'],
 ])('shows the %s diagnostic as its cause', async (diagnostic, shown) => {
   const view = await viewOf({
     inputKind: ProviderSetupInputKind.MCP,
