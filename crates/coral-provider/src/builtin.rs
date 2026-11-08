@@ -1,10 +1,14 @@
-//! The Built-in Provider: "Coral" at the Call Root `coral`.
+//! The Providers Coral defines in every Workspace: the Built-in Provider,
+//! "Coral" at the Call Root `coral`, and the Private Provider, "Private" at
+//! `coral.private`.
 //!
-//! Every Workspace gets one when it is created, with its own Generation of the
-//! Coral-defined catalog. It has no Setup, no Publication and no Accounts.
-//! When Coral boots, it installs one in each Workspace that has none, such as
-//! a Workspace created before Coral had it, and updates every Workspace's
-//! Built-in Provider to the catalog it serves.
+//! Every Workspace gets one of each when it is created, each with its own
+//! Generation. It has no Setup, no Publication and no Accounts. The Built-in
+//! Provider's Generation holds the Coral-defined catalog. The Private
+//! Provider's holds no Tool: its Tools are each Principal's Private Tools,
+//! which coral-functions keeps. When Coral boots, it installs each in every
+//! Workspace that has none, such as a Workspace created before Coral had it,
+//! and updates every Workspace's Built-in Provider to the catalog it serves.
 use coral_catalog::ProviderGenerationId;
 use coral_db::Transaction;
 use coral_workspace::{ChangeContext, TraceId, WorkspaceId};
@@ -38,24 +42,34 @@ impl ProviderModule {
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
     ) -> Result<Committed<Provider>, Error> {
-        let authority = self
-            .check_owner_configuration_in_transaction(transaction, context.actor(), workspace_id)
+        let (provider, generation) = self
+            .install_by_owner(transaction, context, workspace_id, CoralDefined::Builtin)
             .await?;
-        let Some(access) = prepare_builtin_access(transaction, workspace_id).await? else {
-            return Err(Error::ProviderCallRootConflict);
-        };
-        self.insert_builtin(
-            transaction,
-            access,
-            LifecycleActor::User {
-                user_id: context.actor().user_id().clone(),
-                authority_source: authority,
-            },
-            context.occurred_at_unix_nanos(),
-            context.trace_id(),
-        )
-        .await
-        .map(|(provider, generation)| first_generation(provider, generation))
+        Ok(first_generation(provider, generation))
+    }
+
+    /// Creates the Workspace's Private Provider in the caller's transaction,
+    /// with the acting Owner as its recorded actor. Its Generation declares
+    /// no Tool, so Universal Search has nothing to index.
+    ///
+    /// Workspace creation calls this in the transaction that creates the
+    /// Workspace. It joins that transaction and never commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority failure unless the actor is a Workspace Owner,
+    /// [`Error::ProviderCallRootConflict`] when the Workspace already has a
+    /// Private Provider, or a persistence failure. An error may follow
+    /// writes; do not commit the transaction after one.
+    pub async fn install_private_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+    ) -> Result<Provider, Error> {
+        self.install_by_owner(transaction, context, workspace_id, CoralDefined::Private)
+            .await
+            .map(|(provider, _generation)| provider)
     }
 
     /// Lists the Workspaces, in any state, that have no Built-in Provider,
@@ -65,21 +79,17 @@ impl ProviderModule {
     ///
     /// Returns a persistence or corrupt-data failure.
     pub async fn workspaces_without_builtin(&self) -> Result<Vec<WorkspaceId>, Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let installed = provider_repository::builtin_active_generations(&mut transaction)
-            .await?
-            .into_iter()
-            .map(|active| active.workspace_id().clone())
-            .collect::<std::collections::HashSet<_>>();
-        let missing = self
-            .workspaces
-            .workspace_ids_in_transaction(&mut transaction)
-            .await?
-            .into_iter()
-            .filter(|workspace_id| !installed.contains(workspace_id))
-            .collect();
-        transaction.rollback().await?;
-        Ok(missing)
+        self.workspaces_without(CoralDefined::Builtin).await
+    }
+
+    /// Lists the Workspaces, in any state, that have no Private Provider,
+    /// such as one created before Coral had it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or corrupt-data failure.
+    pub async fn workspaces_without_private(&self) -> Result<Vec<WorkspaceId>, Error> {
+        self.workspaces_without(CoralDefined::Private).await
     }
 
     /// Creates the Built-in Provider of a Workspace that has none, in its own
@@ -95,6 +105,91 @@ impl ProviderModule {
         workspace_id: &WorkspaceId,
         occurred_at_unix_nanos: i64,
     ) -> Result<Committed<Option<Provider>>, Error> {
+        Ok(
+            match self
+                .install_missing(workspace_id, occurred_at_unix_nanos, CoralDefined::Builtin)
+                .await?
+            {
+                Some((provider, generation)) => {
+                    let (provider, search) = first_generation(provider, generation).into_parts();
+                    Committed::new(Some(provider), search)
+                }
+                None => Committed::unchanged(None),
+            },
+        )
+    }
+
+    /// Creates the Private Provider of a Workspace that has none, in its own
+    /// transaction, with Coral as the recorded actor. The Workspace may be in
+    /// any state. `None` means the Workspace is gone or another process
+    /// installed it first, and nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence failure.
+    pub async fn install_missing_private(
+        &self,
+        workspace_id: &WorkspaceId,
+        occurred_at_unix_nanos: i64,
+    ) -> Result<Option<Provider>, Error> {
+        Ok(self
+            .install_missing(workspace_id, occurred_at_unix_nanos, CoralDefined::Private)
+            .await?
+            .map(|(provider, _generation)| provider))
+    }
+
+    async fn install_by_owner(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        kind: CoralDefined,
+    ) -> Result<(Provider, ProviderGenerationId), Error> {
+        let authority = self
+            .check_owner_configuration_in_transaction(transaction, context.actor(), workspace_id)
+            .await?;
+        let Some(access) = prepare_access(transaction, workspace_id, kind).await? else {
+            return Err(Error::ProviderCallRootConflict);
+        };
+        self.insert(
+            transaction,
+            access,
+            kind,
+            LifecycleActor::User {
+                user_id: context.actor().user_id().clone(),
+                authority_source: authority,
+            },
+            context.occurred_at_unix_nanos(),
+            context.trace_id(),
+        )
+        .await
+    }
+
+    async fn workspaces_without(&self, kind: CoralDefined) -> Result<Vec<WorkspaceId>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let installed =
+            provider_repository::root_active_generations(&mut transaction, &kind.call_root())
+                .await?
+                .into_iter()
+                .map(|active| active.workspace_id().clone())
+                .collect::<std::collections::HashSet<_>>();
+        let missing = self
+            .workspaces
+            .workspace_ids_in_transaction(&mut transaction)
+            .await?
+            .into_iter()
+            .filter(|workspace_id| !installed.contains(workspace_id))
+            .collect();
+        transaction.rollback().await?;
+        Ok(missing)
+    }
+
+    async fn install_missing(
+        &self,
+        workspace_id: &WorkspaceId,
+        occurred_at_unix_nanos: i64,
+        kind: CoralDefined,
+    ) -> Result<Option<(Provider, ProviderGenerationId)>, Error> {
         let mut transaction = self.database.begin().await?;
         // Processes that boot together each try; the first one to hold the
         // Workspace installs it, and the others then find it installed.
@@ -104,46 +199,62 @@ impl ProviderModule {
             .await?
         {
             transaction.rollback().await?;
-            return Ok(Committed::unchanged(None));
+            return Ok(None);
         }
-        let Some(access) = prepare_builtin_access(&mut transaction, workspace_id).await? else {
+        let Some(access) = prepare_access(&mut transaction, workspace_id, kind).await? else {
             transaction.rollback().await?;
-            return Ok(Committed::unchanged(None));
+            return Ok(None);
         };
-        let (provider, generation) = self
-            .insert_builtin(
+        let installed = self
+            .insert(
                 &mut transaction,
                 access,
+                kind,
                 LifecycleActor::Coral,
                 occurred_at_unix_nanos,
                 &TraceId::current_or_new(),
             )
             .await?;
         transaction.commit().await?;
-        let (provider, search) = first_generation(provider, generation).into_parts();
-        Ok(Committed::new(Some(provider), search))
+        Ok(Some(installed))
     }
 
-    /// Writes the Built-in Provider with a Generation of the catalog this
-    /// process serves, and the event that records who installed it.
-    async fn insert_builtin(
+    /// Writes the Provider with its Generation, and the event that records
+    /// who installed it.
+    async fn insert(
         &self,
         transaction: &mut Transaction<'_>,
         access: ProviderAccess,
+        kind: CoralDefined,
         actor: LifecycleActor,
         occurred_at_unix_nanos: i64,
         trace_id: &TraceId,
     ) -> Result<(Provider, ProviderGenerationId), Error> {
         let workspace_id = access.workspace_id().clone();
-        let generation = coral_catalog::publish_builtin_generation_in_transaction(
-            transaction,
-            &self.builtin_catalog,
-            occurred_at_unix_nanos,
-        )
-        .await?;
+        let (generation, display_name, action) = match kind {
+            CoralDefined::Builtin => (
+                coral_catalog::publish_builtin_generation_in_transaction(
+                    transaction,
+                    &self.builtin_catalog,
+                    occurred_at_unix_nanos,
+                )
+                .await?,
+                coral_catalog::BUILTIN_PROVIDER_DISPLAY_NAME,
+                LifecycleAction::BuiltinProviderInstalled,
+            ),
+            CoralDefined::Private => (
+                coral_catalog::publish_private_generation_in_transaction(
+                    transaction,
+                    occurred_at_unix_nanos,
+                )
+                .await?,
+                coral_catalog::PRIVATE_PROVIDER_DISPLAY_NAME,
+                LifecycleAction::PrivateProviderInstalled,
+            ),
+        };
         let provider = Provider::new(
             access,
-            ProviderDisplayName::parse(coral_catalog::BUILTIN_PROVIDER_DISPLAY_NAME)?,
+            ProviderDisplayName::parse(display_name)?,
             ProviderState::Active,
         );
         provider_repository::insert_provider(
@@ -158,7 +269,7 @@ impl ProviderModule {
             provider_repository::NewLifecycleEvent {
                 workspace_id: Some(&workspace_id),
                 actor,
-                action: LifecycleAction::BuiltinProviderInstalled,
+                action,
                 target_id: &provider.id().to_string(),
                 outcome: LifecycleOutcome::Succeeded,
                 changed_field_paths: &[
@@ -178,6 +289,22 @@ impl ProviderModule {
     }
 }
 
+/// A Provider every Workspace has, which Coral defines and installs.
+#[derive(Debug, Clone, Copy)]
+enum CoralDefined {
+    Builtin,
+    Private,
+}
+
+impl CoralDefined {
+    const fn call_root(self) -> ProviderCallRoot {
+        match self {
+            Self::Builtin => ProviderCallRoot::Builtin,
+            Self::Private => ProviderCallRoot::Private,
+        }
+    }
+}
+
 /// A new Built-in Provider, whose first Generation search must index.
 fn first_generation(provider: Provider, generation: ProviderGenerationId) -> Committed<Provider> {
     let search = SearchChange::Activated(ActivatedGeneration::new(
@@ -189,17 +316,19 @@ fn first_generation(provider: Provider, generation: ProviderGenerationId) -> Com
     Committed::new(provider, search)
 }
 
-/// The Built-in Provider's access, or `None` when the Workspace already has one.
-async fn prepare_builtin_access(
+/// The new Provider's access, or `None` when the Workspace already has one
+/// at its Call Root.
+async fn prepare_access(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
+    kind: CoralDefined,
 ) -> Result<Option<ProviderAccess>, Error> {
     Ok(
         match access::prepare(
             transaction,
             workspace_id,
             ProviderId::generate(),
-            ProviderCallRoot::Builtin,
+            kind.call_root(),
             CredentialRoute::None,
         )
         .await?

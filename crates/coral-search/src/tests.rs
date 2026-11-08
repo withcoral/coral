@@ -409,6 +409,62 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
         editable.diagnostics_truncated(),
         scope.saved.diagnostics_truncated()
     );
+
+    // A Private Tool's description is a Tool Description of the
+    // Workspace's Private Provider.
+    let AuthoringDescription::PrivateTool(private) = described_function.authoring() else {
+        panic!("the tracer function is a Private Tool");
+    };
+    let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
+    let provider =
+        coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
+            .await
+            .unwrap()
+            .expect("the Workspace's Private Provider");
+    transaction.rollback().await.unwrap();
+    assert_eq!(private.provider_id(), provider.id());
+    assert_eq!(private.provider_display_name(), "Private");
+    assert_eq!(
+        private.approval_requirement(),
+        ApprovalRequirement::NotRequired
+    );
+    assert_eq!(private.revision(), scope.saved.revision());
+    let projected = crate::projection::exact_description(&described_function);
+    for (field, expected) in [
+        ("/kind", serde_json::json!("saved_function")),
+        ("/provider_id", serde_json::json!(provider.id().to_string())),
+        ("/provider_display_name", serde_json::json!("Private")),
+        ("/approval_required", serde_json::json!(false)),
+        ("/revision", serde_json::json!(scope.saved.revision())),
+    ] {
+        assert_eq!(projected.pointer(field), Some(&expected), "{field}");
+    }
+
+    // Another Principal of the Workspace describes nothing at that path.
+    let member = organization_user(fixture.search.database.clone(), "user:describe-member").await;
+    fixture
+        .workspaces
+        .set_membership(
+            &change(scope.user.clone(), 50, '5'),
+            &scope.workspace_id,
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let elsewhere = fixture
+        .search
+        .describe(
+            &AuthenticatedPrincipal::user(member),
+            &scope.workspace_id,
+            &CallPath::parse(TracerScope::FUNCTION).expect("Call Path"),
+            &[],
+        )
+        .await;
+    assert!(
+        matches!(elsewhere, Err(Error::AuthoringDescriptionNotFound)),
+        "{elsewhere:?}"
+    );
 }
 
 #[tokio::test]
@@ -3948,7 +4004,8 @@ impl TestModules {
             .provision_login(&change(user.clone(), 1, '1'))
             .await
             .unwrap();
-        self.workspaces
+        let workspace_id = self
+            .workspaces
             .create(
                 &change(user.clone(), 10, '1'),
                 WorkspaceDisplayName::parse("Search tracer").expect("display name"),
@@ -3956,7 +4013,18 @@ impl TestModules {
             .await
             .expect("create Workspace")
             .id()
-            .clone()
+            .clone();
+        let mut transaction = self.search.database.begin().await.unwrap();
+        self.providers
+            .install_private_in_transaction(
+                &mut transaction,
+                &change(user.clone(), 10, '1'),
+                &workspace_id,
+            )
+            .await
+            .expect("install the Private Provider");
+        transaction.commit().await.unwrap();
+        workspace_id
     }
 
     async fn publish_openapi(

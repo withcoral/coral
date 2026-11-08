@@ -20,6 +20,8 @@ mod builtin;
 #[cfg(test)]
 mod builtin_tests;
 mod change;
+#[cfg(test)]
+mod private_tests;
 pub use change::{Committed, SearchChange};
 #[cfg(test)]
 mod credential_lifecycle_tests;
@@ -729,6 +731,27 @@ pub async fn provider_tool_paths_in_transaction(
     Ok(Some((active.provider.id().clone(), paths)))
 }
 
+/// The Workspace's Private Provider, in any state; `None` when the Workspace
+/// has none yet. Its Tools are the Private Tools coral-functions keeps, so
+/// the caller owns authority and decides which of them a Principal reaches.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider failure.
+pub async fn private_provider_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Option<Provider>, Error> {
+    Ok(repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::Private),
+        repository::ProviderHold::None,
+    )
+    .await?
+    .map(|active| active.provider))
+}
+
 /// The relative paths of the Workspace's Built-in Tools, each a member of a
 /// Program's `coral`: the Tools of its Built-in Provider's current
 /// Generation, which a newer or older Coral may have written. They are the
@@ -901,6 +924,8 @@ async fn reached_tool(
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
         },
+        // No Call Path splits to it: coral-functions resolves Private Tools.
+        ProviderCallRoot::Private => return Ok(None),
     };
     Ok(
         reached_tool_by_root(transaction, workspace_id, &call_root, relative_path, lock)
@@ -1095,6 +1120,24 @@ async fn inspected_provider_in_transaction(
     } else {
         Err(Error::ProviderNotFound)
     }
+}
+
+/// The Workspace's Providers, optionally narrowed to one identity, that
+/// Provider listings, readiness and search read. The Private Provider is
+/// left out: its Generation holds no Tool and it has no Accounts, and
+/// coral-functions keeps each Principal's Private Tools.
+pub(crate) async fn listed_providers(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<Vec<repository::ProviderWithActiveGeneration>, Error> {
+    Ok(
+        repository::management_providers(transaction, workspace_id, provider_filter)
+            .await?
+            .into_iter()
+            .filter(|stored| stored.provider.call_root() != &ProviderCallRoot::Private)
+            .collect(),
+    )
 }
 
 /// Whether inspection under `evidence` shows `stored`: as in discovery, only

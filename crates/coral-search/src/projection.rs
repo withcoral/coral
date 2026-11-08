@@ -155,8 +155,15 @@ pub fn description(exact: &ExactAuthoringDescription) -> Description {
             hints: DeclaredHints::from(tool.hints()),
             approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
         },
-        AuthoringDescription::SavedFunction(_function) => Description::SavedFunction {
+        // The kind keeps the name retained Task history uses.
+        AuthoringDescription::PrivateTool(tool) => Description::SavedFunction {
             authoring: authoring(exact.authoring()),
+            provider_id: tool.provider_id().to_string(),
+            provider_display_name: tool.provider_display_name().to_owned(),
+            // A Private Tool declares no hints.
+            hints: DeclaredHints::from(coral_catalog::ToolHints::default()),
+            approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
+            revision: tool.revision(),
             detail: exact.saved_function_detail().map(|detail| SavedDetail {
                 source: detail.source().as_str().to_owned(),
                 diagnostics: detail.diagnostics().iter().map(diagnostic).collect(),

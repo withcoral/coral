@@ -61,13 +61,16 @@ enum MaterializedTools {
 }
 
 const BUILTIN_INPUT_KIND: &str = "builtin";
+const PRIVATE_INPUT_KIND: &str = "private";
 
-/// The exact input one Generation pins: a Setup's input, or the identity of
-/// the Built-in Provider's Coral-defined catalog.
+/// The exact input one Generation pins: a Setup's input, the identity of
+/// the Built-in Provider's Coral-defined catalog, or the Private Provider's
+/// catalog, which declares no Tool.
 #[derive(Clone, Copy)]
 pub(super) enum GenerationInput<'a> {
     Setup(&'a ProviderSetupInput),
     Builtin(&'a BuiltinCatalogIdentity),
+    Private,
 }
 
 impl<'a> GenerationInput<'a> {
@@ -75,6 +78,7 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.kind().as_str(),
             Self::Builtin(_) => BUILTIN_INPUT_KIND,
+            Self::Private => PRIVATE_INPUT_KIND,
         }
     }
 
@@ -82,13 +86,14 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.as_str(),
             Self::Builtin(identity) => identity.as_str(),
+            Self::Private => crate::private::PRIVATE_CATALOG_IDENTITY,
         }
     }
 
     fn configuration(self) -> Option<&'a crate::ProviderConfiguration> {
         match self {
             Self::Setup(input) => input.configuration(),
-            Self::Builtin(_) => None,
+            Self::Builtin(_) | Self::Private => None,
         }
     }
 }
@@ -97,10 +102,20 @@ impl<'a> GenerationInput<'a> {
 enum StoredGenerationInput {
     Setup(ProviderSetupInput),
     Builtin(BuiltinCatalogIdentity),
+    Private,
 }
 
 impl StoredGenerationInput {
     fn from_storage(kind: &str, pinned: &str) -> Result<Self, Error> {
+        if kind == PRIVATE_INPUT_KIND {
+            return if pinned == crate::private::PRIVATE_CATALOG_IDENTITY {
+                Ok(Self::Private)
+            } else {
+                Err(Error::CorruptData(
+                    "private Generation pins an unknown catalog".to_string(),
+                ))
+            };
+        }
         if kind == BUILTIN_INPUT_KIND {
             return BuiltinCatalogIdentity::parse(pinned)
                 .map(Self::Builtin)
@@ -120,6 +135,9 @@ impl StoredGenerationInput {
             Self::Builtin(identity) => {
                 ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes())
             }
+            Self::Private => ProviderSetupInputDigest::of_bytes(
+                crate::private::PRIVATE_CATALOG_IDENTITY.as_bytes(),
+            ),
         }
     }
 }
@@ -940,9 +958,9 @@ pub(super) async fn load_builtin_identity(
     }
     match pinned {
         StoredGenerationInput::Builtin(identity) => Ok(identity),
-        StoredGenerationInput::Setup(_) => Err(Error::CorruptData(
-            "the Built-in Provider's Generation pins a Setup input".to_string(),
-        )),
+        StoredGenerationInput::Setup(_) | StoredGenerationInput::Private => Err(
+            Error::CorruptData("the Built-in Provider's Generation pins another input".to_string()),
+        ),
     }
 }
 

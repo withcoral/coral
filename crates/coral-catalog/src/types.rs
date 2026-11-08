@@ -1566,6 +1566,25 @@ impl PreparedProviderCatalog {
         }
     }
 
+    /// A catalog that declares no Tool, with the TypeScript view that
+    /// stands for an empty one.
+    pub(crate) fn without_tools(
+        display_name: String,
+        schema_graph: SchemaGraph,
+        schema_graph_json: String,
+        typescript_view: String,
+    ) -> Self {
+        Self {
+            display_name,
+            schema_graph,
+            schema_graph_json,
+            typescript_view,
+            tools: Vec::new(),
+            shared_types: SharedTypes::default(),
+            configuration_json: None,
+        }
+    }
+
     /// Binds credentials only after structural and authoring availability is final.
     /// Every recipe retains the same contract, even an unavailable first Tool.
     pub(crate) fn bind_http_credential_destinations(mut self) -> Result<Self, Error> {

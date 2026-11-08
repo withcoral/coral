@@ -101,6 +101,26 @@
             "typescript_declaration": {
               "type": "string"
             },
+            "provider_id": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "provider_display_name": {
+              "type": "string"
+            },
+            "hints": {
+              "$ref": "#/$defs/Hints"
+            },
+            "approval_required": {
+              "type": "boolean"
+            },
+            "revision": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "minimum": 0
+            },
             "source": {
               "type": "string"
             },
@@ -118,7 +138,12 @@
             "kind",
             "call_path",
             "description",
-            "typescript_declaration"
+            "typescript_declaration",
+            "provider_id",
+            "provider_display_name",
+            "hints",
+            "approval_required",
+            "revision"
           ]
         }
       ]

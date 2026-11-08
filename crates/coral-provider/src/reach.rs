@@ -15,6 +15,8 @@ use crate::{ActiveProvider, Error, ProviderCallRoot};
 /// Built-in Tool declares the Workspace action it needs, and the role
 /// must permit that action. A Tool that another Coral version defines
 /// needs Owner authority, so a rollback shows a non-Owner nothing new.
+/// The Private Provider's catalog holds no Tool: coral-functions decides
+/// which Private Tools a Principal reaches, so this reaches none.
 #[must_use]
 pub fn reaches(call_root: &ProviderCallRoot, tool: &ToolKey, role: Option<WorkspaceRole>) -> bool {
     match call_root {
@@ -22,6 +24,7 @@ pub fn reaches(call_root: &ProviderCallRoot, tool: &ToolKey, role: Option<Worksp
         ProviderCallRoot::Builtin => BuiltinTool::from_key(tool.as_str())
             .map_or(WorkspaceAction::Configure, BuiltinTool::needs)
             .permitted_to(role),
+        ProviderCallRoot::Private => false,
     }
 }
 
@@ -54,8 +57,10 @@ pub async fn unreached_tools_in_transaction(
 
 /// Whether `role` reaches any Tool of the Provider at `call_root`, whose
 /// active Generation is `generation`. A Provider with no Tool the
-/// Principal reaches is absent to it. Reads the catalog only for the Built-in
-/// Provider.
+/// Principal reaches is absent to it. Reads the catalog only for a Provider
+/// Coral defines. The Private Provider's catalog holds no Tool, so it is
+/// absent to every Principal here: coral-functions finds each Principal's
+/// Private Tools.
 pub(crate) async fn reaches_provider_in_transaction(
     transaction: &mut Transaction<'_>,
     call_root: &ProviderCallRoot,

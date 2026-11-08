@@ -199,13 +199,14 @@ enum BuiltinChange {
 }
 
 /// An Owner can only disable or restore the Built-in Provider and set its
-/// Tools' policy. Every other change is rejected and changes nothing.
+/// Tools' policy, and cannot change the Private Provider at all. Every other
+/// change is rejected and changes nothing.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table covers every change the Built-in Provider refuses and the two it allows"
+    reason = "one table covers every change the Providers Coral defines refuse and the two the Built-in Provider allows"
 )]
-async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
+async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
     let harness = Harness::new().await;
     let (database, providers) = (harness.database.clone(), &harness.providers);
     let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
@@ -221,6 +222,10 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         .await
         .unwrap()
         .skip_search();
+    let private = providers
+        .install_private_in_transaction(&mut transaction, &context, workspace.id())
+        .await
+        .unwrap();
     transaction.commit().await.unwrap();
     let document = || {
         ProviderSetupSource::OpenApiDocument(
@@ -239,23 +244,26 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
             .unwrap()
     };
 
-    for change in [
-        BuiltinChange::Rename,
-        BuiltinChange::SetIcon,
-        BuiltinChange::Reconfigure,
-        BuiltinChange::Regenerate,
-        BuiltinChange::ConnectAccount,
-        BuiltinChange::RotateOAuthClientSecret,
-        BuiltinChange::Delete,
-    ] {
+    for (provider, change) in [&builtin, &private].into_iter().flat_map(|provider| {
+        [
+            BuiltinChange::Rename,
+            BuiltinChange::SetIcon,
+            BuiltinChange::Reconfigure,
+            BuiltinChange::Regenerate,
+            BuiltinChange::ConnectAccount,
+            BuiltinChange::RotateOAuthClientSecret,
+            BuiltinChange::Delete,
+        ]
+        .map(|change| (provider, change))
+    }) {
         let before = events().await.len();
-        let context = context.clone().with_etag(&builtin.etag()).unwrap();
+        let context = context.clone().with_etag(&provider.etag()).unwrap();
         let result = match change {
             BuiltinChange::Rename => providers
                 .rename_provider(
                     &context,
                     workspace.id(),
-                    builtin.id(),
+                    provider.id(),
                     ProviderDisplayName::parse("Renamed").unwrap(),
                 )
                 .await
@@ -264,13 +272,13 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
                 .set_provider_icon(
                     &context,
                     workspace.id(),
-                    builtin.id(),
+                    provider.id(),
                     Some(crate::ProviderIcon::parse(b"<svg/>".to_vec()).unwrap()),
                 )
                 .await
                 .map(drop),
             BuiltinChange::Reconfigure => providers
-                .prepare_setup(&context, workspace.id(), document(), Some(builtin.id()))
+                .prepare_setup(&context, workspace.id(), document(), Some(provider.id()))
                 .await
                 .map(drop),
             BuiltinChange::Regenerate => providers
@@ -279,7 +287,7 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse("15000000-0000-4000-8000-000000000611").unwrap(),
                         workspace.id().clone(),
-                        builtin.id().clone(),
+                        provider.id().clone(),
                         unrelated_setup.id().clone(),
                         1,
                     ),
@@ -291,7 +299,7 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
                 .start_secret(
                     &context,
                     workspace.id(),
-                    builtin.id(),
+                    provider.id(),
                     ManagementRequestId::parse("15000000-0000-4000-8000-000000000612").unwrap(),
                 )
                 .await
@@ -302,14 +310,14 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
                     .rotate_oauth_client_secret(
                         &context,
                         workspace.id(),
-                        builtin.id(),
+                        provider.id(),
                         "client",
                         Secret::new("rotated-secret".into()).unwrap(),
                     )
                     .await
             }
             BuiltinChange::Delete => providers
-                .delete_provider(&context, workspace.id(), builtin.id())
+                .delete_provider(&context, workspace.id(), provider.id())
                 .await
                 .map(drop),
         };
@@ -319,34 +327,55 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         );
         assert_eq!(events().await.len(), before, "{change:?} records no event");
         let mut transaction = database.begin_read_snapshot().await.unwrap();
-        let [current] = crate::active_providers_in_transaction(&mut transaction, workspace.id())
-            .await
-            .unwrap()
-            .try_into()
-            .expect("the Built-in Provider remains the Workspace's only Provider");
-        assert_eq!(current.provider(), &builtin, "{change:?}");
+        let current = if provider.call_root() == &ProviderCallRoot::Private {
+            crate::private_provider_in_transaction(&mut transaction, workspace.id())
+                .await
+                .unwrap()
+        } else {
+            crate::active_providers_in_transaction(&mut transaction, workspace.id())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|active| active.provider().clone())
+                .find(|current| current.id() == provider.id())
+        };
+        assert_eq!(current.as_ref(), Some(provider), "{change:?}");
         transaction.rollback().await.unwrap();
     }
 
+    let refused = providers
+        .disable_provider(
+            &change_context(owner.clone(), 15, '2')
+                .with_etag(&private.etag())
+                .unwrap(),
+            workspace.id(),
+            private.id(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(Error::BuiltinProviderManaged)),
+        "{refused:?}"
+    );
+    let (provider, at) = (&builtin, 20);
     let before = events().await.len();
     let disabled = providers
         .disable_provider(
-            &change_context(owner.clone(), 20, '2')
-                .with_etag(&builtin.etag())
+            &change_context(owner.clone(), at, '2')
+                .with_etag(&provider.etag())
                 .unwrap(),
             workspace.id(),
-            builtin.id(),
+            provider.id(),
         )
         .await
         .unwrap();
     assert_eq!(disabled.state(), ProviderState::Disabled);
     let restored = providers
         .restore_provider(
-            &change_context(owner.clone(), 30, '3')
+            &change_context(owner.clone(), at + 10, '3')
                 .with_etag(&disabled.etag())
                 .unwrap(),
             workspace.id(),
-            builtin.id(),
+            provider.id(),
         )
         .await
         .unwrap();

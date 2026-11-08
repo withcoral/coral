@@ -74,7 +74,7 @@ impl Fixture {
     /// A process that serves `catalog` boots at `at`.
     async fn boot(&self, catalog: BuiltinCatalog, at: i64) {
         let workflow = ProviderWorkflow::new(self.providers(catalog), self.index.clone());
-        workflow.install_missing_builtins(at).await.unwrap();
+        workflow.install_missing_coral_providers(at).await.unwrap();
         workflow.update_builtin_catalogs(at).await.unwrap();
     }
 

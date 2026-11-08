@@ -47,7 +47,7 @@ impl AccountModule {
         .await?;
         let caller = AccountCaller::User(user.clone());
         let mut result = Vec::new();
-        for stored in crate::repository::management_providers(&mut tx, workspace, None).await? {
+        for stored in crate::listed_providers(&mut tx, workspace, None).await? {
             if stored.provider.access().credential_route() != CredentialRoute::Caller {
                 continue;
             }

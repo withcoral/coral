@@ -182,10 +182,11 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
 }
 
 #[test]
-fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() {
+fn call_root_parsing_accepts_owner_namespaces_and_only_the_roots_coral_defines() {
     enum Parsed<'a> {
         Owner(&'a str),
         Builtin,
+        Private,
         Rejected,
     }
     let segment = "a".repeat(128);
@@ -196,10 +197,11 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
         ("coral.providers.workspace", Parsed::Owner("workspace")),
         (long.as_str(), Parsed::Owner(segment.as_str())),
         ("coral", Parsed::Builtin),
+        ("coral.private", Parsed::Private),
         ("coral.workspace", Parsed::Rejected),
         // Coral defines no other root, so none parses.
         ("coral.billing", Parsed::Rejected),
-        ("coral.private", Parsed::Rejected),
+        ("coral.shared", Parsed::Rejected),
         ("coral.emit", Parsed::Rejected),
         ("coral.ToolError", Parsed::Rejected),
         (&format!("{long}a"), Parsed::Rejected),
@@ -230,6 +232,10 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
             }
             Parsed::Builtin => assert!(
                 matches!(parsed, Ok(ProviderCallRoot::Builtin)),
+                "{value}: {parsed:?}"
+            ),
+            Parsed::Private => assert!(
+                matches!(parsed, Ok(ProviderCallRoot::Private)),
                 "{value}: {parsed:?}"
             ),
             Parsed::Rejected => assert!(

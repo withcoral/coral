@@ -58,6 +58,10 @@ impl ProviderChange {
         let permitted = match call_root {
             ProviderCallRoot::Owner(_) => true,
             ProviderCallRoot::Builtin => matches!(self, Self::SetState),
+            // Nothing reads the Private Provider's state yet, so a disable
+            // would stop no Private Tool. The kill switch comes with
+            // Private Tool policy (#2977).
+            ProviderCallRoot::Private => false,
         };
         if permitted {
             Ok(())

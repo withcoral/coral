@@ -687,34 +687,58 @@ pub enum Description {
         #[schemars(description = "")]
         approval_required: bool,
     },
-    /// A Saved Function.
+    /// One of the caller's own Private Tools. Its kind keeps the name Task
+    /// history retained, so earlier descriptions still read.
     #[schemars(description = "")]
     SavedFunction {
         /// What every kind has.
         #[serde(flatten)]
         authoring: DescriptionAuthoring,
-        /// The source and saved diagnostics of the caller's own Saved
-        /// Function; absent when the lookup named `types`.
+        /// Its Provider's id: the Workspace's Private Provider.
+        #[schemars(
+            description = "",
+            extend("format" = "uuid", "minLength" = 36, "maxLength" = 36)
+        )]
+        provider_id: String,
+        /// Its Provider's display name.
+        #[schemars(description = "")]
+        provider_display_name: String,
+        /// The hints it declares.
+        #[schemars(description = "")]
+        hints: DeclaredHints,
+        /// Whether a person must approve each call.
+        #[schemars(description = "")]
+        approval_required: bool,
+        /// Its current revision, which `updateTool` takes as
+        /// `expectedRevision`.
+        #[schemars(description = "", range(max = JSON_SAFE_INTEGER_MAX))]
+        revision: u64,
+        /// Its source and saved diagnostics; absent when the lookup named
+        /// `types`.
         #[serde(flatten)]
         detail: Option<SavedDetail>,
     },
 }
 
 impl Description {
-    /// Whether a JSON reader holds every integer in it exactly: a saved
-    /// diagnostic's code, line and column. See
+    /// Whether a JSON reader holds every integer in it exactly: a Private
+    /// Tool's revision, and a saved diagnostic's code, line and column. See
     /// [`SearchOutput::is_exact_in_json`].
     #[must_use]
     pub fn is_exact_in_json(&self) -> bool {
         match self {
-            Self::ProviderTool { .. } | Self::SavedFunction { detail: None, .. } => true,
+            Self::ProviderTool { .. } => true,
             Self::SavedFunction {
-                detail: Some(detail),
-                ..
-            } => detail
-                .diagnostics
-                .iter()
-                .all(SavedDiagnostic::is_exact_in_json),
+                revision, detail, ..
+            } => {
+                *revision <= JSON_SAFE_INTEGER_MAX
+                    && detail.as_ref().is_none_or(|detail| {
+                        detail
+                            .diagnostics
+                            .iter()
+                            .all(SavedDiagnostic::is_exact_in_json)
+                    })
+            }
         }
     }
 }
@@ -922,6 +946,11 @@ pub(super) mod tests {
                     },
                     Description::SavedFunction {
                         authoring: authoring("coral.private.weekly"),
+                        provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
+                        provider_display_name: "Private".to_owned(),
+                        hints: DeclaredHints::from(crate::ToolHints::default()),
+                        approval_required: false,
+                        revision: 3,
                         detail: Some(SavedDetail {
                             source: "export default async function weekly() {}".to_owned(),
                             diagnostics: vec![SavedDiagnostic {
@@ -936,6 +965,11 @@ pub(super) mod tests {
                     },
                     Description::SavedFunction {
                         authoring: authoring("coral.private.daily"),
+                        provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
+                        provider_display_name: "Private".to_owned(),
+                        hints: DeclaredHints::from(crate::ToolHints::default()),
+                        approval_required: true,
+                        revision: 1,
                         detail: None,
                     },
                 ],
@@ -1050,6 +1084,11 @@ pub(super) mod tests {
             SearchOutput::Paths(PathsResult {
                 descriptions: vec![Description::SavedFunction {
                     authoring: authoring("coral.private.weekly"),
+                    provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
+                    provider_display_name: "Private".to_owned(),
+                    hints: DeclaredHints::from(crate::ToolHints::default()),
+                    approval_required: false,
+                    revision: 3,
                     detail: Some(SavedDetail {
                         source: "export default async function weekly() {}".to_owned(),
                         diagnostics: vec![SavedDiagnostic {

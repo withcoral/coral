@@ -30,6 +30,9 @@ pub enum ProviderCallRoot {
     /// `coral`: the Workspace's Built-in Provider, which Coral defines. Its
     /// Tools sit directly on `coral`, beside `emit` and `ToolError`.
     Builtin,
+    /// `coral.private`: the Workspace's Private Provider, whose Tools are
+    /// each Principal's own Private Tools.
+    Private,
 }
 
 /// The short name an Owner gives a Provider: a non-reserved safe ASCII
@@ -42,6 +45,8 @@ pub struct ProviderNamespace {
 
 /// The Call Root of every Workspace's Built-in Provider.
 const BUILTIN_ROOT: &str = "coral";
+/// The Call Root of every Workspace's Private Provider.
+const PRIVATE_ROOT: &str = "coral.private";
 /// The prefix of every Owner-added Provider's Call Root.
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
 
@@ -73,14 +78,17 @@ impl ProviderNamespace {
 }
 
 impl ProviderCallRoot {
-    /// Validates one Call Root: `coral.providers.<namespace>` or `coral`.
+    /// Validates one Call Root: `coral.providers.<namespace>`, `coral` or
+    /// `coral.private`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] for any other value.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        if value == BUILTIN_ROOT {
-            return Ok(Self::Builtin);
+        match value {
+            BUILTIN_ROOT => return Ok(Self::Builtin),
+            PRIVATE_ROOT => return Ok(Self::Private),
+            _ => {}
         }
         value
             .strip_prefix(OWNER_ROOT_PREFIX)
@@ -88,7 +96,7 @@ impl ProviderCallRoot {
             .map(Self::Owner)
             .ok_or_else(|| {
                 Error::InvalidInput(
-                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral"
+                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, coral, or coral.private"
                         .to_string(),
                 )
             })
@@ -116,16 +124,17 @@ impl ProviderCallRoot {
         match self {
             Self::Owner(namespace) => &namespace.call_root,
             Self::Builtin => BUILTIN_ROOT,
+            Self::Private => PRIVATE_ROOT,
         }
     }
 
-    /// Returns the namespace an Owner gave the Provider; `None` for the
-    /// Built-in Provider, which has none.
+    /// Returns the namespace an Owner gave the Provider; `None` for a
+    /// Provider Coral defines, which has none.
     #[must_use]
     pub const fn namespace(&self) -> Option<&ProviderNamespace> {
         match self {
             Self::Owner(namespace) => Some(namespace),
-            Self::Builtin => None,
+            Self::Builtin | Self::Private => None,
         }
     }
 

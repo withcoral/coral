@@ -1,4 +1,5 @@
 use coral_db::Transaction;
+use coral_policy::ToolAccessState;
 use coral_workspace::{Principal, PrincipalId, PrincipalKind};
 use coral_workspace::{TraceId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
@@ -35,6 +36,7 @@ enum SavedFunctionRecords {
     DiagnosticsTruncated,
     SavedAtUnixNanos,
     DefinitionRevision,
+    DefaultAccessState,
 }
 
 #[derive(Iden)]
@@ -72,6 +74,7 @@ struct SavedFunctionRow {
     diagnostics_truncated: bool,
     saved_at_unix_nanos: i64,
     definition_revision: i64,
+    default_access_state: String,
 }
 
 impl SavedFunctionRow {
@@ -105,12 +108,7 @@ impl SavedFunctionRow {
             self.declaration_fields_failure.as_deref(),
         )?;
         let diagnostics = decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?;
-        let revision = u64::try_from(self.definition_revision)
-            .ok()
-            .filter(|revision| *revision > 0)
-            .ok_or_else(|| {
-                Error::CorruptData("Saved Function has invalid definition revision".to_string())
-            })?;
+        let revision = decode_revision(self.definition_revision)?;
         Ok(SavedFunction::new(
             id,
             workspace_id,
@@ -124,6 +122,7 @@ impl SavedFunctionRow {
             self.diagnostics_truncated,
             self.saved_at_unix_nanos,
             revision,
+            access_state_from_storage(&self.default_access_state)?,
         ))
     }
 }
@@ -305,6 +304,8 @@ struct ExactSavedFunctionDescriptionRow {
     source: String,
     diagnostics_json: String,
     diagnostics_truncated: bool,
+    definition_revision: i64,
+    default_access_state: String,
 }
 
 impl ExactSavedFunctionDescriptionRow {
@@ -326,6 +327,8 @@ impl ExactSavedFunctionDescriptionRow {
                 diagnostics,
                 self.diagnostics_truncated,
             ),
+            decode_revision(self.definition_revision)?,
+            access_state_from_storage(&self.default_access_state)?,
         ))
     }
 }
@@ -715,6 +718,8 @@ pub(crate) async fn exact_description_material_in_transaction(
                     SavedFunctionRecords::Source,
                     SavedFunctionRecords::DiagnosticsJson,
                     SavedFunctionRecords::DiagnosticsTruncated,
+                    SavedFunctionRecords::DefinitionRevision,
+                    SavedFunctionRecords::DefaultAccessState,
                 ])
                 .from(SavedFunctionRecords::Table)
                 .and_where(
@@ -758,6 +763,7 @@ pub(crate) async fn insert_current(
             SavedFunctionRecords::DiagnosticsTruncated,
             SavedFunctionRecords::SavedAtUnixNanos,
             SavedFunctionRecords::DefinitionRevision,
+            SavedFunctionRecords::DefaultAccessState,
         ])
         .values_panic([
             Expr::val(function.id().to_string()),
@@ -782,6 +788,7 @@ pub(crate) async fn insert_current(
             Expr::val(function.diagnostics_truncated()),
             Expr::val(function.saved_at_unix_nanos()),
             Expr::val(revision),
+            Expr::val(access_state_as_storage(function.default_access_state())),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -1093,7 +1100,7 @@ fn current_statement(
         .to_owned()
 }
 
-fn saved_function_columns() -> [SavedFunctionRecords; 16] {
+fn saved_function_columns() -> [SavedFunctionRecords; 17] {
     [
         SavedFunctionRecords::Id,
         SavedFunctionRecords::WorkspaceId,
@@ -1111,6 +1118,7 @@ fn saved_function_columns() -> [SavedFunctionRecords; 16] {
         SavedFunctionRecords::DiagnosticsTruncated,
         SavedFunctionRecords::SavedAtUnixNanos,
         SavedFunctionRecords::DefinitionRevision,
+        SavedFunctionRecords::DefaultAccessState,
     ]
 }
 
@@ -1127,75 +1135,30 @@ fn stored_revision(revision: u64) -> Result<i64, Error> {
         .map_err(|_error| Error::CorruptData("Saved Function revision overflowed".to_string()))
 }
 
-/// Counts the Saved Functions created in `[start, end)` unix nanoseconds,
-/// across every Workspace. A replacement is not a new one. The caller
-/// authorizes the read.
-///
-/// # Errors
-///
-/// Returns a database failure.
-pub async fn functions_created(
-    tx: &mut Transaction<'_>,
-    start: i64,
-    end: i64,
-) -> Result<u64, Error> {
-    let created: Option<(i64,)> = tx
-        .fetch_optional(
-            Query::select()
-                .expr(Expr::col(SavedFunctionLifecycleEvents::Id).count())
-                .from(SavedFunctionLifecycleEvents::Table)
-                .and_where(
-                    Expr::col(SavedFunctionLifecycleEvents::Action)
-                        .eq(LifecycleAction::Created.as_storage_str()),
-                )
-                .and_where(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).gte(start))
-                .and_where(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).lt(end))
-                .to_owned(),
-        )
-        .await?;
-    Ok(created.map_or(0, |(created,)| u64::try_from(created).unwrap_or_default()))
+const fn access_state_as_storage(state: ToolAccessState) -> &'static str {
+    match state {
+        ToolAccessState::Enabled => "enabled",
+        ToolAccessState::ApprovalRequired => "approval_required",
+        ToolAccessState::Disabled => "disabled",
+    }
 }
 
-/// When the first Saved Function was created, before `end` unix
-/// nanoseconds. The caller authorizes the read.
-///
-/// # Errors
-///
-/// Returns a database failure.
-pub async fn first_created_before(
-    tx: &mut Transaction<'_>,
-    end: i64,
-) -> Result<Option<i64>, Error> {
-    let first: Option<(Option<i64>,)> = tx
-        .fetch_optional(
-            Query::select()
-                .expr(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).min())
-                .from(SavedFunctionLifecycleEvents::Table)
-                .and_where(
-                    Expr::col(SavedFunctionLifecycleEvents::Action)
-                        .eq(LifecycleAction::Created.as_storage_str()),
-                )
-                .and_where(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).lt(end))
-                .to_owned(),
-        )
-        .await?;
-    Ok(first.and_then(|(at,)| at))
+fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
+    match value {
+        "enabled" => Ok(ToolAccessState::Enabled),
+        "approval_required" => Ok(ToolAccessState::ApprovalRequired),
+        "disabled" => Ok(ToolAccessState::Disabled),
+        _ => Err(Error::CorruptData(
+            "Private Tool has an invalid default Tool Access State".to_string(),
+        )),
+    }
 }
 
-/// Counts the Saved Functions that exist now, across every Workspace. The
-/// caller authorizes the read.
-///
-/// # Errors
-///
-/// Returns a database failure.
-pub async fn function_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
-    let total: Option<(i64,)> = tx
-        .fetch_optional(
-            Query::select()
-                .expr(Expr::col(SavedFunctionRecords::Id).count())
-                .from(SavedFunctionRecords::Table)
-                .to_owned(),
-        )
-        .await?;
-    Ok(total.map_or(0, |(total,)| u64::try_from(total).unwrap_or_default()))
+fn decode_revision(stored: i64) -> Result<u64, Error> {
+    u64::try_from(stored)
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            Error::CorruptData("Saved Function has invalid definition revision".to_string())
+        })
 }

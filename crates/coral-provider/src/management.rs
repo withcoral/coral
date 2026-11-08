@@ -138,7 +138,9 @@ impl ProviderModule {
         .ok_or(Error::ProviderNotFound)?;
         match stored.provider.call_root() {
             ProviderCallRoot::Owner(_) => {}
-            ProviderCallRoot::Builtin => return Err(Error::BuiltinProviderManaged),
+            ProviderCallRoot::Builtin | ProviderCallRoot::Private => {
+                return Err(Error::BuiltinProviderManaged);
+            }
         }
         let kind =
             coral_catalog::setup_input_kind_in_transaction(&mut tx, &stored.generation_id).await?;
@@ -162,7 +164,7 @@ impl ProviderModule {
         let mut tx = self.database.begin_read_snapshot().await?;
         let evidence = self.management_authority(&mut tx, actor, workspace).await?;
         let mut result = Vec::new();
-        for stored in repository::management_providers(&mut tx, workspace, None).await? {
+        for stored in crate::listed_providers(&mut tx, workspace, None).await? {
             if crate::inspects(&mut tx, &evidence, &stored).await? {
                 result.push(stored.provider);
             }
@@ -231,7 +233,7 @@ impl ProviderModule {
             .check_principal_inspection_in_snapshot(tx, actor, workspace, now)
             .await?
             .effective_user_role();
-        let providers = repository::management_providers(tx, workspace, None).await?;
+        let providers = crate::listed_providers(tx, workspace, None).await?;
         let mut published = Vec::with_capacity(providers.len());
         for active in providers {
             if !crate::reach::reaches_provider_in_transaction(

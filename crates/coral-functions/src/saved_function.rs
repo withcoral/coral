@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use coral_db::{Database, Transaction};
+use coral_policy::ToolAccessState;
 use coral_telemetry::safe;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
@@ -321,14 +322,22 @@ impl SavedFunctionModule {
             )
             .await?;
         save.admits(previous.as_ref().map(SavedFunction::revision))?;
-        let (id, revision, action) = match previous.as_ref() {
-            None => (SavedFunctionId::generate(), 1, LifecycleAction::Created),
+        // A new Private Tool is enabled by default, and a replacement keeps
+        // the default its Tool had.
+        let (id, revision, action, default_access_state) = match previous.as_ref() {
+            None => (
+                SavedFunctionId::generate(),
+                1,
+                LifecycleAction::Created,
+                ToolAccessState::Enabled,
+            ),
             Some(previous) => (
                 previous.id().clone(),
                 previous.revision.checked_add(1).ok_or_else(|| {
                     Error::CorruptData("Saved Function revision overflowed".to_string())
                 })?,
                 LifecycleAction::Replaced,
+                previous.default_access_state(),
             ),
         };
         let function = SavedFunction::new(
@@ -344,6 +353,7 @@ impl SavedFunctionModule {
             prepared.diagnostics_truncated,
             context.occurred_at_unix_nanos(),
             revision,
+            default_access_state,
         );
         authority.require_current_at(now_unix_nanos()?)?;
         match previous.as_ref() {

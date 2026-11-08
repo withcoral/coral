@@ -3,6 +3,7 @@ use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::Duration;
 use tokio::sync::Notify;
 
+use coral_policy::ToolAccessState;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_v8::CompileFailure;
 use coral_workspace::{
@@ -654,6 +655,110 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .expect("Owner's User function stays private and current")
             .id(),
         owner_function.id()
+    );
+}
+
+/// The Saved Function rows an earlier Coral wrote, for one User and one
+/// Agent, read back after the upgrade as each owner's Private Tools, with
+/// every part of the definition kept.
+// Catches: an upgrade that loses or rewrites part of a definition, gives a
+// Private Tool another owner, or leaves it without the default Tool Access
+// State and the binding to the definition Coral performs.
+#[tokio::test]
+async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
+    let before_upgrade = coral_test_support::edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| migration.version != 60)
+            .collect()
+    });
+    let fixture = SavedFunctionTestModules::on_plan(&before_upgrade).await;
+    let (workspace_id, owner) = fixture.user_workspace("user:upgrade-owner").await;
+    let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
+    let declaration = "export default function lookup(input: { id: string }): Promise<string>;";
+    let diagnostics = r#"[{"category":"warning","code":6133,"message":"'unused' is declared but its value is never read.","line":2,"column":7}]"#;
+    let stored = [
+        (
+            &owner,
+            "00000000-0000-4000-8000-0000000000a1",
+            "crm.lookup",
+            3,
+        ),
+        (
+            &agent,
+            "00000000-0000-4000-8000-0000000000a2",
+            "ops.lookup",
+            7,
+        ),
+    ];
+    for (principal, id, path, revision) in stored {
+        fixture
+            .fixture
+            .execute_fixture_sql(&format!(
+                "INSERT INTO saved_function_records (id, workspace_id, principal_id, \
+                 principal_kind, path, description, source, declaration, \
+                 declaration_fields_format, declaration_fields_status, \
+                 declaration_fields_json, declaration_fields_failure, diagnostics_json, \
+                 diagnostics_truncated, saved_at_unix_nanos, definition_revision) \
+                 VALUES ('{id}', '{workspace_id}', '{}', '{}', '{path}', 'Look up {path}', \
+                 'export default async function lookup(input) {{ return input.id; }}', \
+                 '{declaration}', 'saved-function-declaration-fields-v1', 'ready', '[]', \
+                 NULL, '{}', FALSE, 15, {revision})",
+                principal.principal().id().as_str(),
+                principal.principal().kind().as_storage_str(),
+                diagnostics.replace('\'', "''"),
+            ))
+            .await
+            .expect("write a Saved Function as an earlier Coral did");
+    }
+
+    fixture
+        .database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    let agent_id = agent.principal().id().clone();
+    for (principal, id, path, revision) in stored {
+        let tool = fixture
+            .saved_functions
+            .get(
+                principal,
+                &workspace_id,
+                &SavedFunctionPath::parse(path).expect("path"),
+            )
+            .await
+            .expect("the owner reads its Private Tool");
+        assert_eq!(tool.id().to_string(), id);
+        assert_eq!(tool.principal(), principal.principal());
+        assert_eq!(tool.description().as_str(), format!("Look up {path}"));
+        assert_eq!(
+            tool.source().as_str(),
+            "export default async function lookup(input) { return input.id; }"
+        );
+        assert_eq!(tool.declaration().as_str(), declaration);
+        assert_eq!(
+            serde_json::to_string(tool.diagnostics()).expect("encode diagnostics"),
+            diagnostics
+        );
+        assert!(!tool.diagnostics_truncated());
+        assert_eq!(tool.saved_at_unix_nanos(), 15);
+        assert_eq!(tool.revision(), revision);
+        assert_eq!(tool.default_access_state(), ToolAccessState::Enabled);
+        assert_eq!(tool.execution_binding().definition(), tool.id());
+        assert_eq!(tool.execution_binding().revision(), revision);
+    }
+    // A Workspace Owner still reads an Agent's Private Tool.
+    assert_eq!(
+        fixture
+            .saved_functions
+            .list_agent(&owner, &workspace_id, &agent_id)
+            .await
+            .expect("the Owner lists the Agent's Private Tools")
+            .iter()
+            .map(|tool| tool.path().as_str())
+            .collect::<Vec<_>>(),
+        ["ops.lookup"]
     );
 }
 
@@ -1415,7 +1520,7 @@ impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
 }
 
 struct SavedFunctionTestModules {
-    _fixture: TestDatabase,
+    fixture: TestDatabase,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
     saved_functions: SavedFunctionModule,
@@ -1423,7 +1528,11 @@ struct SavedFunctionTestModules {
 
 impl SavedFunctionTestModules {
     async fn new() -> Self {
-        let fixture = TestDatabase::new(coral_db::migration_plan())
+        Self::on_plan(coral_db::migration_plan()).await
+    }
+
+    async fn on_plan(plan: &coral_db::MigrationPlan) -> Self {
+        let fixture = TestDatabase::new(plan)
             .await
             .expect("create Saved Function test database");
         let database = fixture.database();
@@ -1436,7 +1545,7 @@ impl SavedFunctionTestModules {
         )
         .expect("start Saved Function compiler");
         Self {
-            _fixture: fixture,
+            fixture,
             database,
             workspaces,
             saved_functions,

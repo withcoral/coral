@@ -23,8 +23,9 @@ use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
-    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderFilter, RetrieverCoverage,
-    SavedFunctionAuthoringDescription, SearchEvidence, SearchHit,
+    ApprovalRequirement, CallPath, EntityKind, Error, ExactAuthoringDescription,
+    PrivateToolAuthoringDescription, ProviderCallRoot, RetrieverCoverage, SearchEvidence,
+    SearchHit,
 };
 
 /// Ranks, hydrates, and describes Saved Functions.
@@ -240,11 +241,30 @@ impl EntityRetriever for SavedFunctionRetriever {
         else {
             return Ok(None);
         };
-        Ok(Some(ExactAuthoringDescription::saved_function(
-            SavedFunctionAuthoringDescription::new(
+        // Coral installs it in every Workspace before it serves requests.
+        let Some(provider) =
+            coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
+                .await?
+        else {
+            return Ok(None);
+        };
+        // No exact rule can name a Private Tool yet, so its default decides
+        // (#2977 brings Owner rules). A disabled Tool leaves describe, as a
+        // disabled Provider Tool does.
+        let approval_requirement = match exact.default_access_state() {
+            coral_policy::ToolAccessState::Enabled => ApprovalRequirement::NotRequired,
+            coral_policy::ToolAccessState::ApprovalRequired => ApprovalRequirement::Required,
+            coral_policy::ToolAccessState::Disabled => return Ok(None),
+        };
+        Ok(Some(ExactAuthoringDescription::private_tool(
+            PrivateToolAuthoringDescription::new(
                 call_path.clone(),
                 exact.authoring().description().as_str().to_string(),
                 exact.authoring().declaration().as_str().to_string(),
+                provider.id().clone(),
+                provider.display_name().to_owned(),
+                exact.revision(),
+                approval_requirement,
             ),
             exact.detail().clone(),
         )))

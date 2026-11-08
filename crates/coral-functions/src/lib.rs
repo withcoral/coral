@@ -48,9 +48,9 @@ pub use saved_function::{
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::SavedFunctionSelection;
 pub use types::{
-    AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, ExactSavedFunctionAuthoringMaterial,
-    ExactSavedFunctionDescriptionMaterial, LifecycleAction, LifecycleOutcome,
-    SAVED_FUNCTION_DECLARATION_MAX_BYTES, SAVED_FUNCTION_DESCRIPTION_MAX_BYTES,
+    AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, CodeExecutionBinding,
+    ExactSavedFunctionAuthoringMaterial, ExactSavedFunctionDescriptionMaterial, LifecycleAction,
+    LifecycleOutcome, SAVED_FUNCTION_DECLARATION_MAX_BYTES, SAVED_FUNCTION_DESCRIPTION_MAX_BYTES,
     SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT, SAVED_FUNCTION_DIAGNOSTIC_MESSAGE_MAX_BYTES,
     SAVED_FUNCTION_PAGE_MAX_SIZE, SAVED_FUNCTION_PATH_MAX_BYTES, SAVED_FUNCTION_PATH_MAX_SEGMENTS,
     SAVED_FUNCTION_SOURCE_MAX_BYTES, SavedFunction, SavedFunctionAuthoringMaterial,

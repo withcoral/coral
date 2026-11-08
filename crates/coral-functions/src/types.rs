@@ -1,5 +1,6 @@
 use std::fmt;
 
+use coral_policy::ToolAccessState;
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{TraceId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -584,6 +585,7 @@ pub struct SavedFunction {
     diagnostics_truncated: bool,
     saved_at_unix_nanos: i64,
     pub(crate) revision: u64,
+    default_access_state: ToolAccessState,
 }
 
 impl SavedFunction {
@@ -604,6 +606,7 @@ impl SavedFunction {
         diagnostics_truncated: bool,
         saved_at_unix_nanos: i64,
         revision: u64,
+        default_access_state: ToolAccessState,
     ) -> Self {
         Self {
             id,
@@ -618,6 +621,7 @@ impl SavedFunction {
             diagnostics_truncated,
             saved_at_unix_nanos,
             revision,
+            default_access_state,
         }
     }
 
@@ -688,6 +692,46 @@ impl SavedFunction {
     }
 
     /// Returns the definition revision; each accepted save at this path adds one.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the Private Tool's Tool Access State when no exact rule
+    /// matches it.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
+    }
+
+    /// Returns the code Execution Binding of this Private Tool: the
+    /// definition Coral performs when it is called.
+    #[must_use]
+    pub fn execution_binding(&self) -> CodeExecutionBinding {
+        CodeExecutionBinding {
+            definition: self.id.clone(),
+            revision: self.revision,
+        }
+    }
+}
+
+/// A Private Tool's Execution Binding. Coral performs the Tool by running the
+/// definition it names, so it carries no destination, credential, or
+/// routing data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeExecutionBinding {
+    definition: SavedFunctionId,
+    revision: u64,
+}
+
+impl CodeExecutionBinding {
+    /// Returns the Private Tool whose definition Coral performs.
+    #[must_use]
+    pub const fn definition(&self) -> &SavedFunctionId {
+        &self.definition
+    }
+
+    /// Returns the revision of that definition.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
@@ -1068,14 +1112,36 @@ impl ExactSavedFunctionAuthoringMaterial {
 pub struct ExactSavedFunctionDescriptionMaterial {
     authoring: SavedFunctionAuthoringMaterial,
     detail: ExactSavedFunctionAuthoringMaterial,
+    revision: u64,
+    default_access_state: ToolAccessState,
 }
 
 impl ExactSavedFunctionDescriptionMaterial {
     pub(crate) const fn new(
         authoring: SavedFunctionAuthoringMaterial,
         detail: ExactSavedFunctionAuthoringMaterial,
+        revision: u64,
+        default_access_state: ToolAccessState,
     ) -> Self {
-        Self { authoring, detail }
+        Self {
+            authoring,
+            detail,
+            revision,
+            default_access_state,
+        }
+    }
+
+    /// Returns the Private Tool's current definition revision.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the Private Tool's Tool Access State when no exact rule
+    /// matches it.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
     }
 
     /// Returns source-free public authoring material.

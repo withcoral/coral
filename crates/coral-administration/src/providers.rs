@@ -101,15 +101,32 @@ impl ProviderWorkflow {
     }
 
     /// Installs the Built-in Provider, with the catalog this process serves,
-    /// in every Workspace that has none, each in its own transaction, then
-    /// tells Universal Search. Bootstrap runs it before the process takes
-    /// requests. A Workspace whose install fails waits for the next boot, and
-    /// the others still install.
+    /// and the Private Provider in every Workspace that has none, each in its
+    /// own transaction, then tells Universal Search. Bootstrap runs it before
+    /// the process takes requests. A Workspace whose install fails waits for
+    /// the next boot, and the others still install.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`ProviderModule::workspaces_without_builtin`].
-    pub async fn install_missing_builtins(&self, occurred_at_unix_nanos: i64) -> Result<(), Error> {
+    /// Returns the errors of [`ProviderModule::workspaces_without_builtin`]
+    /// and [`ProviderModule::workspaces_without_private`].
+    pub async fn install_missing_coral_providers(
+        &self,
+        occurred_at_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        for workspace_id in self.providers.workspaces_without_private().await? {
+            if let Err(error) = self
+                .providers
+                .install_missing_private(&workspace_id, occurred_at_unix_nanos)
+                .await
+            {
+                tracing::warn!(
+                    coral.workspace.id = safe::id(&workspace_id),
+                    error.type = safe::kind(error.code()),
+                    "failed to install a Private Provider"
+                );
+            }
+        }
         for workspace_id in self.providers.workspaces_without_builtin().await? {
             match self
                 .providers

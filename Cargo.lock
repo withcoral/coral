@@ -776,6 +776,7 @@ dependencies = [
  "async-trait",
  "coral-catalog",
  "coral-db",
+ "coral-policy",
  "coral-run-executor",
  "coral-telemetry",
  "coral-test-support",

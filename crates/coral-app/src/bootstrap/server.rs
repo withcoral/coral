@@ -870,19 +870,19 @@ pub(crate) async fn start_server(
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
     let provider_workflow =
         coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
-    // Every Workspace has a Built-in Provider with this process's catalog
-    // before the process takes requests. A rollback moves Workspaces back the
-    // same way.
+    // Every Workspace has a Built-in Provider with this process's catalog,
+    // and a Private Provider, before the process takes requests. A rollback
+    // moves Workspaces back the same way.
     let booted_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
         .ok_or_else(|| AppError::FailedPrecondition("system clock is out of range".into()))?;
     provider_workflow
-        .install_missing_builtins(booted_at)
+        .install_missing_coral_providers(booted_at)
         .await
         .map_err(|error| {
-            AppError::FailedPrecondition(format!("Built-in Provider install failed: {error}"))
+            AppError::FailedPrecondition(format!("Coral's Provider install failed: {error}"))
         })?;
     provider_workflow
         .update_builtin_catalogs(booted_at)

@@ -41,6 +41,8 @@ mod inspection;
 mod mcp;
 mod openapi;
 mod paths;
+mod private;
+pub use private::PRIVATE_PROVIDER_DISPLAY_NAME;
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors
 /// Returns a persistence or corrupt-evidence error.
@@ -266,6 +268,29 @@ pub async fn publish_builtin_generation_in_transaction(
         &ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes()),
         catalog.prepared(),
         builtin::MATERIALIZER_VERSION,
+        created_at_unix_nanos,
+    )
+    .await
+}
+
+/// Publishes one Workspace's Private Provider Generation, which declares no
+/// Tool. The caller owns the transaction and commits the Provider that
+/// selects it atomically with this facet.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn publish_private_generation_in_transaction(
+    transaction: &mut Transaction<'_>,
+    created_at_unix_nanos: i64,
+) -> Result<ProviderGenerationId, Error> {
+    let identity = private::PRIVATE_CATALOG_IDENTITY;
+    repository::publish_generation(
+        transaction,
+        repository::GenerationInput::Private,
+        &ProviderSetupInputDigest::of_bytes(identity.as_bytes()),
+        private::prepared()?,
+        private::MATERIALIZER_VERSION,
         created_at_unix_nanos,
     )
     .await

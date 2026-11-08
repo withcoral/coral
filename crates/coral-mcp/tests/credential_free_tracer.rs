@@ -294,7 +294,8 @@ impl Tracer {
         let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
         let workspace_b = create_workspace(&workspaces, &local_user, "Tracer B", 11, '2').await;
-        // Agents discover through the Built-in Provider's search, which
+        // Agents discover through the Built-in Provider's search and describe
+        // their Private Tools through the Private Provider, both of which
         // creating a Workspace in production installs.
         for (workspace, at) in [(&workspace_a, 13), (&workspace_b, 14)] {
             let mut transaction = db.begin().await.expect("begin the Built-in install");
@@ -308,6 +309,14 @@ impl Tracer {
                 .expect("install the Built-in Provider")
                 // The reconcile below indexes it.
                 .skip_search();
+            providers
+                .install_private_in_transaction(
+                    &mut transaction,
+                    &change(local_user.clone(), at, '2'),
+                    workspace,
+                )
+                .await
+                .expect("install the Private Provider");
             transaction
                 .commit()
                 .await

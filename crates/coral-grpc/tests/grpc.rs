@@ -173,6 +173,13 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
         );
+        // Every Workspace Coral serves has its Private Provider.
+        let mut tx = database.begin().await.unwrap();
+        providers
+            .install_private_in_transaction(&mut tx, &change(&owner), workspace.id())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_id_metadata_document(
                 "https://reef.example/.well-known/oauth-client".into(),

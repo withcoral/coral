@@ -88,10 +88,7 @@ pub async fn inspect_provider_readiness_in_transaction(
 ) -> Result<Vec<ProviderReadiness>, Error> {
     let principal = AuthenticatedPrincipal::user(actor.clone());
     let mut result = Vec::new();
-    for stored in
-        crate::repository::management_providers(tx, evidence.workspace().id(), provider_filter)
-            .await?
-    {
+    for stored in crate::listed_providers(tx, evidence.workspace().id(), provider_filter).await? {
         if !crate::inspects(tx, evidence, &stored).await? {
             continue;
         }
@@ -125,9 +122,7 @@ pub async fn inspect_agent_providers_in_transaction(
         return Err(coral_workspace::Error::AgentNotFound.into());
     }
     let mut result = Vec::new();
-    for stored in
-        crate::repository::management_providers(tx, evidence.workspace().id(), None).await?
-    {
+    for stored in crate::listed_providers(tx, evidence.workspace().id(), None).await? {
         let contract =
             coral_catalog::credential_contract_in_transaction(tx, &stored.generation_id).await?;
         let presented =

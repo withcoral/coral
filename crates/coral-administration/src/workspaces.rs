@@ -45,12 +45,14 @@ impl WorkspaceWorkflow {
     }
 
     /// Creates an active Workspace, the creator's Owner Membership, and the
-    /// Workspace's Built-in Provider.
+    /// Workspace's Built-in and Private Providers.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`WorkspaceModule::create_in_transaction`] and
-    /// [`ProviderModule::install_builtin_in_transaction`]. Failure writes nothing.
+    /// Returns the errors of [`WorkspaceModule::create_in_transaction`],
+    /// [`ProviderModule::install_builtin_in_transaction`] and
+    /// [`ProviderModule::install_private_in_transaction`]. Failure writes
+    /// nothing.
     pub async fn create_workspace(
         &self,
         context: &ChangeContext,
@@ -64,6 +66,9 @@ impl WorkspaceWorkflow {
         let installed = self
             .providers
             .install_builtin_in_transaction(&mut transaction, context, workspace.id())
+            .await?;
+        self.providers
+            .install_private_in_transaction(&mut transaction, context, workspace.id())
             .await?;
         transaction.commit().await?;
         crate::providers::notify(&self.search, installed);

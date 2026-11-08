@@ -687,8 +687,8 @@ invokes each subsequent page. Coral returns one provider response per invocation
 combine pages. _Avoid_: Transparent pagination, automatic pagination
 
 **Execution Binding**: The upstream-specific invocation recipe attached to a Tool behind Coral's common Tool
-interface. A v1 binding describes HTTP, MCP, or a Built-in Provider Tool without exposing routing or credential details to
-Programs. _Avoid_:
+interface. A v1 binding describes HTTP, MCP, a Built-in Provider Tool, or code: a Private Tool's code binding names the
+definition Coral performs, with no upstream. None exposes routing or credential details to Programs. _Avoid_:
 Execution attachment, client transport, File Collection binding
 
 **Upstream Outcome**: A complete upstream result received for one Tool Invocation and represented according to its

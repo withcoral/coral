@@ -499,6 +499,17 @@ impl TestModules {
             )
             .await
             .expect("create Workspace");
+        // Every Workspace Coral serves has its Private Provider.
+        let mut transaction = self.database.begin().await.expect("begin");
+        self.providers
+            .install_private_in_transaction(
+                &mut transaction,
+                &change(user.clone(), 10, '1'),
+                workspace.id(),
+            )
+            .await
+            .expect("install the Private Provider");
+        transaction.commit().await.expect("commit");
         let principal = AuthenticatedPrincipal::user(user);
         (workspace.id().clone(), principal)
     }

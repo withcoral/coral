@@ -140,6 +140,7 @@ impl Fixture {
             )
             .await
             .unwrap();
+        install_private_provider(&database, &workspaces, &user, workspace.id()).await;
         let actor = AuthenticatedPrincipal::user(user.clone());
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
         let functions = coral_functions::SavedFunctionModule::new(
@@ -245,16 +246,23 @@ impl Fixture {
 
     /// Creates another Workspace that the fixture's User owns.
     async fn owned_workspace(&self, name: &str) -> coral_workspace::WorkspaceId {
-        self.tasks
+        let workspace = self
+            .tasks
             .workspaces
             .create(
                 &ChangeContext::new(self.user.clone(), 1, coral_test_support::trace('1')),
                 WorkspaceDisplayName::parse(name).unwrap(),
             )
             .await
-            .unwrap()
-            .id()
-            .clone()
+            .unwrap();
+        install_private_provider(
+            &self.tasks.database,
+            &self.tasks.workspaces,
+            &self.user,
+            workspace.id(),
+        )
+        .await;
+        workspace.id().clone()
     }
 
     async fn goal(&self) -> Task {
@@ -2243,4 +2251,28 @@ fn function_context(call: &AttributedCommand) -> coral_functions::SavedFunctionC
         wall_time(),
         coral_test_support::trace('f'),
     )
+}
+
+/// Gives `workspace` its Private Provider, as creating one in production does.
+async fn install_private_provider(
+    database: &std::sync::Arc<coral_db::Database>,
+    workspaces: &WorkspaceModule,
+    owner: &coral_workspace::AuthenticatedUser,
+    workspace: &coral_workspace::WorkspaceId,
+) {
+    let providers = coral_provider::ProviderModule::with_running_catalog(
+        coral_outbound::DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+    );
+    let mut transaction = database.begin().await.unwrap();
+    providers
+        .install_private_in_transaction(
+            &mut transaction,
+            &ChangeContext::new(owner.clone(), 10, coral_test_support::trace('1')),
+            workspace,
+        )
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
 }

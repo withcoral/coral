@@ -243,7 +243,8 @@ fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
             "provider must be a Provider namespace, such as `{}`",
             namespace.as_str()
         ))),
-        Err(_not_a_call_root) => ProviderNamespace::parse(value)
+        // The Private Provider's catalog holds no Tool for a filter to keep.
+        Ok(ProviderCallRoot::Private) | Err(_) => ProviderNamespace::parse(value)
             .map(ProviderCallRoot::Owner)
             .map_err(|_invalid_namespace| Error::InvalidInput("invalid Provider namespace".into())),
     }
@@ -539,24 +540,38 @@ impl ToolAuthoringDescription {
     }
 }
 
-/// Complete TypeScript authoring contract for one current Saved Function.
+/// Complete Tool Description of one of the caller's own Private Tools: its
+/// TypeScript authoring contract, its Private Provider, its current revision
+/// and whether a person must approve each call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionAuthoringDescription {
+pub struct PrivateToolAuthoringDescription {
     call_path: CallPath,
     description: String,
     typescript_declaration: String,
+    provider_id: ProviderId,
+    provider_display_name: String,
+    revision: u64,
+    approval_requirement: ApprovalRequirement,
 }
 
-impl SavedFunctionAuthoringDescription {
+impl PrivateToolAuthoringDescription {
     pub(crate) const fn new(
         call_path: CallPath,
         description: String,
         typescript_declaration: String,
+        provider_id: ProviderId,
+        provider_display_name: String,
+        revision: u64,
+        approval_requirement: ApprovalRequirement,
     ) -> Self {
         Self {
             call_path,
             description,
             typescript_declaration,
+            provider_id,
+            provider_display_name,
+            revision,
+            approval_requirement,
         }
     }
 
@@ -566,7 +581,7 @@ impl SavedFunctionAuthoringDescription {
         &self.call_path
     }
 
-    /// Returns the exact explicit Saved Function description.
+    /// Returns the exact explicit Private Tool description.
     #[must_use]
     pub fn description(&self) -> &str {
         &self.description
@@ -578,6 +593,30 @@ impl SavedFunctionAuthoringDescription {
     pub fn typescript_declaration(&self) -> &str {
         &self.typescript_declaration
     }
+
+    /// Returns the identity of the Workspace's Private Provider.
+    #[must_use]
+    pub const fn provider_id(&self) -> &ProviderId {
+        &self.provider_id
+    }
+
+    /// Returns the Private Provider's display name.
+    #[must_use]
+    pub fn provider_display_name(&self) -> &str {
+        &self.provider_display_name
+    }
+
+    /// Returns the current definition revision.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns whether current policy requires an Invocation Approval.
+    #[must_use]
+    pub const fn approval_requirement(&self) -> ApprovalRequirement {
+        self.approval_requirement
+    }
 }
 
 /// One complete current TypeScript Authoring Description.
@@ -585,8 +624,8 @@ impl SavedFunctionAuthoringDescription {
 pub enum AuthoringDescription {
     /// A visible Tool contract.
     Tool(ToolAuthoringDescription),
-    /// The authenticated Principal's current Saved Function contract.
-    SavedFunction(SavedFunctionAuthoringDescription),
+    /// The authenticated Principal's own current Private Tool.
+    PrivateTool(PrivateToolAuthoringDescription),
 }
 
 impl AuthoringDescription {
@@ -595,7 +634,7 @@ impl AuthoringDescription {
     pub const fn kind(&self) -> EntityKind {
         match self {
             Self::Tool(_) => EntityKind::ProviderTool,
-            Self::SavedFunction(_) => EntityKind::SavedFunction,
+            Self::PrivateTool(_) => EntityKind::SavedFunction,
         }
     }
 
@@ -604,7 +643,7 @@ impl AuthoringDescription {
     pub const fn call_path(&self) -> &CallPath {
         match self {
             Self::Tool(description) => description.call_path(),
-            Self::SavedFunction(description) => description.call_path(),
+            Self::PrivateTool(description) => description.call_path(),
         }
     }
 
@@ -613,7 +652,7 @@ impl AuthoringDescription {
     pub fn description(&self) -> &str {
         match self {
             Self::Tool(description) => description.description(),
-            Self::SavedFunction(description) => description.description(),
+            Self::PrivateTool(description) => description.description(),
         }
     }
 
@@ -622,7 +661,7 @@ impl AuthoringDescription {
     pub fn typescript_declaration(&self) -> &str {
         match self {
             Self::Tool(description) => description.typescript_declaration(),
-            Self::SavedFunction(description) => description.typescript_declaration(),
+            Self::PrivateTool(description) => description.typescript_declaration(),
         }
     }
 }
@@ -1038,12 +1077,12 @@ impl ExactAuthoringDescription {
         }
     }
 
-    pub(crate) const fn saved_function(
-        authoring: SavedFunctionAuthoringDescription,
+    pub(crate) const fn private_tool(
+        authoring: PrivateToolAuthoringDescription,
         detail: ExactSavedFunctionDetail,
     ) -> Self {
         Self {
-            authoring: AuthoringDescription::SavedFunction(authoring),
+            authoring: AuthoringDescription::PrivateTool(authoring),
             saved_function_detail: Some(detail),
         }
     }
@@ -1058,7 +1097,7 @@ impl ExactAuthoringDescription {
         let kind = self.authoring.kind();
         let declaration = match &mut self.authoring {
             AuthoringDescription::Tool(description) => &mut description.typescript_declaration,
-            AuthoringDescription::SavedFunction(description) => {
+            AuthoringDescription::PrivateTool(description) => {
                 &mut description.typescript_declaration
             }
         };
