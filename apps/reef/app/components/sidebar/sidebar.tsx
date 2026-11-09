@@ -68,8 +68,7 @@ interface Pending {
 }
 
 // The help menu's links open outside Coral; Desktop hands new-window links to
-// the browser. The Slack link signs the person in with Slack and invites them
-// to a shared channel with the Coral team.
+// the browser. The Slack link redirects to the community Slack's invite.
 const helpLinks: { href: string; icon: IconName; label: string }[] = [
   {
     href: 'https://withcoral.com/docs',
@@ -77,7 +76,7 @@ const helpLinks: { href: string; icon: IconName; label: string }[] = [
     label: 'Read the docs',
   },
   {
-    href: 'https://slack.withcoral.com/connect',
+    href: 'https://withcoral.com/slack',
     icon: 'Slack',
     label: 'Chat on Slack',
   },
