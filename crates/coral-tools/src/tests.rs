@@ -1758,6 +1758,7 @@ impl PrivateToolCompiler for GatedPrivateToolCompiler {
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             references: Vec::new(),
+            shared_references: Vec::new(),
             not_data: None,
         })
     }

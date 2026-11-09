@@ -19,6 +19,32 @@ pub enum Error {
     /// Source could not become one accepted callable definition.
     #[error("Private Tool authoring failed: {0}")]
     PrivateToolAdmission(String),
+    /// No live Shared Tool is at the path, or none is visible to this
+    /// Principal.
+    #[error("Shared Tool was not found")]
+    SharedToolNotFound,
+    /// A publish expected a current revision other than the one at its
+    /// path: zero when none is there.
+    #[error("the Shared Tool is at revision {current}")]
+    SharedToolRevisionConflict {
+        /// The current revision at the path, or zero when none is there.
+        current: u64,
+    },
+    /// The publish names a source the Owner cannot read: another User's
+    /// Private Tool, a Private Tool that is gone, or a revision that never
+    /// existed.
+    #[error("the source of this Shared Tool Publish cannot be read")]
+    SharedToolSourceUnreadable,
+    /// The path names a namespace that holds other live Shared Tools, or
+    /// lies under one of them.
+    #[error("Shared Tool Path conflicts with an existing Shared Tool namespace")]
+    SharedToolPathConflict,
+    /// Source could not become one accepted Shared Tool revision.
+    #[error("Shared Tool authoring failed: {0}")]
+    SharedToolAdmission(String),
+    /// The source's arguments or result cannot cross a Tool call as data.
+    #[error("a Shared Tool takes and returns only data: {0}")]
+    SharedToolNotData(String),
     /// The source's arguments or result cannot cross a Tool call as data:
     /// the reason names where the declaration holds a function, a class
     /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
@@ -81,6 +107,12 @@ impl Error {
             Self::PrivateToolExists => "private_tool_exists",
             Self::PrivateToolRevisionConflict { .. } => "private_tool_revision_conflict",
             Self::PrivateToolAdmission { .. } => "private_tool_admission",
+            Self::SharedToolNotFound => "shared_tool_not_found",
+            Self::SharedToolRevisionConflict { .. } => "shared_tool_revision_conflict",
+            Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
+            Self::SharedToolPathConflict => "shared_tool_path_conflict",
+            Self::SharedToolAdmission(_) => "shared_tool_admission",
+            Self::SharedToolNotData(_) => "shared_tool_not_data",
             Self::PrivateToolNotData(_) => "private_tool_not_data",
             Self::PrivateToolPathConflict => "private_tool_path_conflict",
             Self::PrivateToolCompilationTimedOut { .. } => "private_tool_compilation_timed_out",
@@ -114,6 +146,12 @@ impl Error {
                 "private_tool_admission_failed"
             }
             Self::PrivateToolNotData(_) => "private_tool_not_data",
+            Self::SharedToolNotFound => "shared_tool_not_found",
+            Self::SharedToolRevisionConflict { .. } => "shared_tool_revision_conflict",
+            Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
+            Self::SharedToolPathConflict => "shared_tool_path_conflict",
+            Self::SharedToolAdmission(_) => "shared_tool_admission_failed",
+            Self::SharedToolNotData(_) => "shared_tool_not_data",
             Self::PrivateToolCompilationTimedOut => "private_tool_compilation_timed_out",
             Self::CompilerBusy => "private_tool_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",

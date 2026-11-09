@@ -1164,7 +1164,10 @@ pub async fn hold_source_selection_in_transaction(
     Ok(transaction.execute(statement).await? == 1)
 }
 
-fn decode_diagnostics(json: &str, truncated: bool) -> Result<Vec<PrivateToolDiagnostic>, Error> {
+pub(crate) fn decode_diagnostics(
+    json: &str,
+    truncated: bool,
+) -> Result<Vec<PrivateToolDiagnostic>, Error> {
     let diagnostics: Vec<PrivateToolDiagnostic> = serde_json::from_str(json).map_err(|error| {
         Error::CorruptData(format!("Private Tool has invalid diagnostics: {error}"))
     })?;
@@ -1228,18 +1231,18 @@ fn principal_kind_from_storage(value: &str) -> Result<PrincipalKind, Error> {
     })
 }
 
-fn stored_revision(revision: u64) -> Result<i64, Error> {
+pub(crate) fn stored_revision(revision: u64) -> Result<i64, Error> {
     i64::try_from(revision)
         .map_err(|_error| Error::CorruptData("Private Tool revision overflowed".to_string()))
 }
 
-fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
+pub(crate) fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
     ToolAccessState::from_storage_str(value).ok_or_else(|| {
         Error::CorruptData("Private Tool has an invalid default Tool Access State".to_string())
     })
 }
 
-fn decode_revision(stored: i64) -> Result<u64, Error> {
+pub(crate) fn decode_revision(stored: i64) -> Result<u64, Error> {
     u64::try_from(stored)
         .ok()
         .filter(|revision| *revision > 0)

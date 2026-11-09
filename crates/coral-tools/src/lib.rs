@@ -12,6 +12,12 @@
 //! removal discards current definitions where Workspace access ends, with
 //! explicit deletion evidence in Administration's transaction.
 //!
+//! [`SharedToolModule`] owns the Workspace's Shared Tools: a Workspace Owner
+//! publishes immutable revisions from the exact content they reviewed, and
+//! every Principal in the Workspace reads them. Its admission facets select
+//! the current revision and hold that selection, with a shared row lock, at
+//! final acceptance.
+//!
 //! [`PrivateToolInspection`] reads the caller's own current definitions
 //! without a compiler, for read-only surfaces. [`PrivateToolDeletion`]
 //! deletes them without a compiler, for management surfaces.
@@ -29,6 +35,8 @@ mod error;
 mod inspection;
 mod private_tool;
 mod repository;
+mod shared_tool;
+mod shared_tool_repository;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures_repository;
 mod tool_typing;
@@ -46,6 +54,12 @@ pub use private_tool::{
     PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
 };
 pub use repository::{hold_source_selection_in_transaction, select_source_in_transaction};
+pub use shared_tool::{
+    SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDependency, SharedToolId, SharedToolModule,
+    SharedToolOrigin, SharedToolPage, SharedToolPath, SharedToolPublication, SharedToolPublish,
+    SharedToolReview, SharedToolRevision, SharedToolSelection, SharedToolSummary,
+    hold_shared_selection_in_transaction, select_shared_source_in_transaction,
+};
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{
     AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, ExactPrivateToolAuthoringMaterial,

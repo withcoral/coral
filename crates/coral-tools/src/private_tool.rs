@@ -23,9 +23,9 @@ use crate::types::{
 use crate::{Error, PrivateToolDeletion, PrivateToolInspection};
 
 pub(crate) struct PrivateToolReference {
-    path: PrivateToolPath,
-    line: u64,
-    column: u64,
+    pub(crate) path: PrivateToolPath,
+    pub(crate) line: u64,
+    pub(crate) column: u64,
 }
 
 pub(crate) fn now_unix_nanos() -> Result<i64, Error> {
@@ -42,6 +42,9 @@ pub(crate) struct PreparedPrivateTool {
     pub(crate) diagnostics: Vec<PrivateToolDiagnostic>,
     pub(crate) diagnostics_truncated: bool,
     pub(crate) references: Vec<PrivateToolReference>,
+    /// The Shared Tools the source names directly, relative to
+    /// `coral.shared`.
+    pub(crate) shared_references: Vec<PrivateToolReference>,
     /// Where the declaration's arguments or result hold something that is
     /// not data, as the compiler found it; `None` when they are all data.
     pub(crate) not_data: Option<String>,
@@ -107,29 +110,118 @@ impl PrivateToolCompiler for V8PrivateToolCompiler {
             .take(PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT)
             .map(PrivateToolDiagnostic::from_compiler)
             .collect();
-        let references = compiled
-            .references()
-            .iter()
-            .map(|reference| {
-                let path = PrivateToolPath::parse(reference.path()).map_err(|error| {
-                    format!("at {}:{}: {error}", reference.line(), reference.column())
-                })?;
-                Ok(PrivateToolReference {
-                    path,
-                    line: reference.line(),
-                    column: reference.column(),
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
         Ok(PreparedPrivateTool {
             declaration,
             declaration_field_projection,
             diagnostics,
             diagnostics_truncated,
-            references,
+            references: parsed_references(compiled.references())?,
+            shared_references: parsed_references(compiled.shared_references())?,
             not_data: compiled.not_data().map(ToOwned::to_owned),
         })
     }
+}
+
+fn parsed_references(
+    references: &[coral_v8::PrivateToolReference],
+) -> Result<Vec<PrivateToolReference>, String> {
+    references
+        .iter()
+        .map(|reference| {
+            let path = PrivateToolPath::parse(reference.path()).map_err(|error| {
+                format!("at {}:{}: {error}", reference.line(), reference.column())
+            })?;
+            Ok(PrivateToolReference {
+                path,
+                line: reference.line(),
+                column: reference.column(),
+            })
+        })
+        .collect()
+}
+
+/// The kind of Tool whose authored source one compilation prepares, which
+/// names it in messages and errors.
+#[derive(Clone, Copy)]
+pub(crate) enum AuthoredKind {
+    Private,
+    Shared,
+}
+
+impl AuthoredKind {
+    /// How a message names the source at `path`, such as
+    /// `Private Tool coral.private.lookup.one`.
+    pub(crate) fn source_name(self, path: &PrivateToolPath) -> String {
+        match self {
+            Self::Private => format!("Private Tool coral.private.{}", path.as_str()),
+            Self::Shared => format!("Shared Tool coral.shared.{}", path.as_str()),
+        }
+    }
+
+    fn rejected(self, message: String) -> Error {
+        match self {
+            Self::Private => Error::PrivateToolAdmission(message),
+            Self::Shared => Error::SharedToolAdmission(message),
+        }
+    }
+
+    fn not_data(self, message: String) -> Error {
+        match self {
+            Self::Private => Error::PrivateToolNotData(message),
+            Self::Shared => Error::SharedToolNotData(message),
+        }
+    }
+}
+
+/// Prepares `source`, typed by `declarations` when there are any, by
+/// `deadline`, and refuses a source whose arguments or result are not data.
+/// It never executes the source.
+pub(crate) async fn prepare_authored_source(
+    compiler: Arc<dyn PrivateToolCompiler>,
+    deadline: Instant,
+    kind: AuthoredKind,
+    path: &PrivateToolPath,
+    source: &str,
+    declarations: Option<CoralDeclarations>,
+) -> Result<PreparedPrivateTool, Error> {
+    let source_name = kind.source_name(path);
+    let compile = {
+        let source = source.to_string();
+        tokio::task::spawn_blocking(move || {
+            compiler.prepare(deadline, &source, declarations.as_ref())
+        })
+    };
+    let prepared = timeout_at(deadline.into(), compile)
+        .await
+        .map_err(|_elapsed| Error::PrivateToolCompilationTimedOut)?
+        .map_err(|_join_error| Error::CompilerWorkerStopped)?
+        .map_err(|failure| match failure {
+            CompileFailure::Rejected(message) => kind.rejected(format!("{source_name}: {message}")),
+            CompileFailure::Busy => Error::CompilerBusy,
+            CompileFailure::TimedOut => Error::PrivateToolCompilationTimedOut,
+            CompileFailure::Stopped => Error::CompilerWorkerStopped,
+            CompileFailure::Failed(failure_kind) => {
+                tracing::warn!(
+                    error.type = safe::kind(failure_kind),
+                    "Private Tool compiler failed; the caller sees an internal failure"
+                );
+                Error::CompilerUnavailable(failure_kind.to_string())
+            }
+        })?;
+    // Every call crosses to Coral and back, so only data can (ADR 0033).
+    if let Some(reason) = prepared.not_data {
+        return Err(kind.not_data(format!("{source_name}: {reason}")));
+    }
+    Ok(prepared)
+}
+
+/// The authoring compiler over the process's one warm `compiler`, which
+/// types `coral` with this Coral version's Built-in Tools.
+pub(crate) fn v8_compiler(compiler: Arc<dyn CompilerClient>) -> Arc<dyn PrivateToolCompiler> {
+    Arc::new(V8PrivateToolCompiler {
+        compiler,
+        builtin_tools: coral_run_executor::BuiltinTools::new(coral_catalog::BuiltinTool::keys()),
+    })
 }
 
 /// Opaque compiled save with its exact authenticated scope and authoring evidence.
@@ -198,12 +290,7 @@ impl PrivateToolModule {
             deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
-            compiler: Arc::new(V8PrivateToolCompiler {
-                compiler,
-                builtin_tools: coral_run_executor::BuiltinTools::new(
-                    coral_catalog::BuiltinTool::keys(),
-                ),
-            }),
+            compiler: v8_compiler(compiler),
             compilation_timeout,
         }
     }
@@ -647,45 +734,24 @@ impl PrivateToolModule {
         source: &str,
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedPrivateTool, Error> {
-        let source_name = format!("Private Tool coral.private.{}", path.as_str());
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
                 .declarations(actor, workspace_id, source, tools, deadline)
                 .await?;
-            let compiler = self.compiler.clone();
-            let source = source.to_string();
-            tokio::task::spawn_blocking(move || {
-                compiler.prepare(deadline, &source, declarations.as_ref())
-            })
+            prepare_authored_source(
+                self.compiler.clone(),
+                deadline,
+                AuthoredKind::Private,
+                path,
+                source,
+                declarations,
+            )
             .await
-            .map_err(|_join_error| Error::CompilerWorkerStopped)?
-            .map_err(|failure| match failure {
-                CompileFailure::Rejected(message) => {
-                    Error::PrivateToolAdmission(format!("{source_name}: {message}"))
-                }
-                CompileFailure::Busy => Error::CompilerBusy,
-                CompileFailure::TimedOut => Error::PrivateToolCompilationTimedOut,
-                CompileFailure::Stopped => Error::CompilerWorkerStopped,
-                CompileFailure::Failed(kind) => {
-                    tracing::warn!(
-                        error.type = safe::kind(kind),
-                        "Private Tool compiler failed; the caller sees an internal failure"
-                    );
-                    Error::CompilerUnavailable(kind.to_string())
-                }
-            })
         };
-        let prepared = timeout_at(deadline.into(), preparation)
+        timeout_at(deadline.into(), preparation)
             .await
-            .map_err(|_elapsed| Error::PrivateToolCompilationTimedOut)??;
-        // Every call crosses to Coral and back, so only data can (ADR 0033).
-        if let Some(reason) = prepared.not_data {
-            return Err(Error::PrivateToolNotData(format!(
-                "{source_name}: {reason}"
-            )));
-        }
-        Ok(prepared)
+            .map_err(|_elapsed| Error::PrivateToolCompilationTimedOut)?
     }
 
     /// The declarations that type `source`: the current ones of the Private
@@ -857,7 +923,10 @@ fn missing_private_tool_dependency(
     ))
 }
 
-fn private_tool_paths_overlap(current: &PrivateToolPath, requested: &PrivateToolPath) -> bool {
+pub(crate) fn private_tool_paths_overlap(
+    current: &PrivateToolPath,
+    requested: &PrivateToolPath,
+) -> bool {
     current != requested
         && (requested
             .as_str()
