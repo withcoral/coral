@@ -25,9 +25,13 @@ const DESCRIPTION_DESCRIPTION: &str = "One line, one or two sentences: what the 
                                        restate input or return types; the declaration is shown \
                                        beside it.";
 
-const SAVE_NOTES: &str = "Coral saves the function with the top-level declarations it uses. \
-                          Call it before saving, and call the saved tool by its path in later \
-                          Programs.";
+const SAVE_NOTES: &str = "Pass source as the name of a function declared at the top level of \
+                          this Program, with function or const: not a string, an inline \
+                          function or any other expression. Coral saves the function with the \
+                          top-level declarations it uses. Call it before saving, and call the \
+                          saved tool by its path in later Programs. Type errors do not stop the \
+                          save: read diagnostics in the result, and fix an error with \
+                          coral.updateTool.";
 
 pub(super) fn add_definition() -> Definition {
     Definition {
