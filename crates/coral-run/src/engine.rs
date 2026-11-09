@@ -49,7 +49,7 @@ pub(crate) struct PrivateToolReference {
 /// What one Program body names: the Private Tools admission links and,
 /// from an engine that finds them, the Tool chains admission checks.
 pub(crate) struct ProgramReferences {
-    pub(crate) functions: Vec<PrivateToolReference>,
+    pub(crate) private_tools: Vec<PrivateToolReference>,
     pub(crate) tools: Option<coral_v8::ToolReferences>,
 }
 
@@ -71,7 +71,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         Ok(ProgramReferences {
-            functions: self.program_private_tool_references(deadline, source)?,
+            private_tools: self.program_private_tool_references(deadline, source)?,
             tools: None,
         })
     }
@@ -106,7 +106,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         Ok(ProgramReferences {
-            functions: self.private_tool_dependency_references(deadline, path, source)?,
+            private_tools: self.private_tool_dependency_references(deadline, path, source)?,
             tools: None,
         })
     }
@@ -194,7 +194,10 @@ impl ProgramEngine for V8ProgramEngine {
             .program_references(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, source_name))?;
         Ok(ProgramReferences {
-            functions: parse_private_tool_references(named.functions().to_vec(), source_name)?,
+            private_tools: parse_private_tool_references(
+                named.private_tools().to_vec(),
+                source_name,
+            )?,
             tools: Some(named.tools().clone()),
         })
     }
@@ -222,7 +225,10 @@ impl ProgramEngine for V8ProgramEngine {
             .call_paths(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, &source_name))?;
         Ok(ProgramReferences {
-            functions: parse_private_tool_references(named.functions().to_vec(), &source_name)?,
+            private_tools: parse_private_tool_references(
+                named.private_tools().to_vec(),
+                &source_name,
+            )?,
             tools: Some(named.tools().clone()),
         })
     }

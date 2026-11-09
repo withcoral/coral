@@ -718,7 +718,7 @@ impl PrivateToolModule {
                 return Ok(None);
             };
             let Some(private_tool_paths) = named
-                .functions()
+                .private_tools()
                 .iter()
                 .map(|reference| PrivateToolPath::parse(reference.path()).ok())
                 .collect::<Option<Vec<_>>>()

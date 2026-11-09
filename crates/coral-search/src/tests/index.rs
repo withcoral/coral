@@ -1286,7 +1286,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
             "coral.search.reconcile.remove_superseded",
             "coral.search.reconcile.remove_orphaned",
             "coral.search.reconcile.generations",
-            "coral.search.reconcile.functions",
+            "coral.search.reconcile.private_tools",
             "coral.search.reconcile.statistics",
         ]
     );
@@ -1371,7 +1371,7 @@ async fn a_failed_step_marks_its_span_and_the_pass() {
     for name in [
         "coral.search.reconcile",
         "coral.search.reconcile.generations",
-        "coral.search.reconcile.functions",
+        "coral.search.reconcile.private_tools",
     ] {
         let span = pass
             .iter()

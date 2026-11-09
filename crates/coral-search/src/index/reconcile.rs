@@ -210,11 +210,11 @@ impl SearchIndex {
         );
         pass.record(
             "coral.search.reconcile.private_tools_indexed",
-            safe::number(work.functions.indexed),
+            safe::number(work.private_tools.indexed),
         );
         pass.record(
             "coral.search.reconcile.private_tools_failed",
-            safe::number(work.functions.failed),
+            safe::number(work.private_tools.failed),
         );
         if work.failed() {
             coral_telemetry::record_failure(&pass, "reconcile_failed");
@@ -257,12 +257,12 @@ impl SearchIndex {
             Err(()) => work.step_failed = true,
         }
         match step(
-            step_span!("coral.search.reconcile.functions"),
+            step_span!("coral.search.reconcile.private_tools"),
             self.reconcile_private_tools(now),
         )
         .await
         {
-            Ok(functions) => work.functions = functions,
+            Ok(private_tools) => work.private_tools = private_tools,
             Err(()) => work.step_failed = true,
         }
         let span = step_span!(
@@ -590,7 +590,7 @@ impl ItemWork {
 #[derive(Debug, Default, Clone, Copy)]
 struct PassWork {
     generations: ItemWork,
-    functions: ItemWork,
+    private_tools: ItemWork,
     /// The statistics step's work, when it could read the watermarks.
     statistics: Option<StatisticsWork>,
     /// Whether a step failed before it reached its items.
@@ -602,7 +602,7 @@ impl PassWork {
     fn failed(&self) -> bool {
         self.step_failed
             || self.generations.failed > 0
-            || self.functions.failed > 0
+            || self.private_tools.failed > 0
             || self.statistics.is_some_and(|statistics| statistics.failed)
     }
 }

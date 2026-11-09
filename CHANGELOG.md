@@ -80,7 +80,7 @@
 * **mcp:** let wait batch output until the Run needs attention ([#2784](https://github.com/withcoral/coral/issues/2784)) ([8b87252](https://github.com/withcoral/coral/commit/8b87252ce5fa35da4d458620939f63f4341311b7))
 * **run:** name the declared arguments when a Tool argument is unknown ([#2783](https://github.com/withcoral/coral/issues/2783)) ([92e4b55](https://github.com/withcoral/coral/commit/92e4b55626f7377a26614e0dbe2a8f7a539906a1))
 * **run:** report a busy or timed-out compiler accurately ([#2764](https://github.com/withcoral/coral/issues/2764)) ([1979efd](https://github.com/withcoral/coral/commit/1979efdc3136d1a7ae7eb8f8e1a219936faa6c4f))
-* **search:** stop Private Tool deletes waiting on the search index ([#2781](https://github.com/withcoral/coral/issues/2781)) ([5cee835](https://github.com/withcoral/coral/commit/5cee83511f0bb2ea619c016a2f80cd2ce7c1d3ff))
+* **search:** stop Saved Function deletes waiting on the search index ([#2781](https://github.com/withcoral/coral/issues/2781)) ([5cee835](https://github.com/withcoral/coral/commit/5cee83511f0bb2ea619c016a2f80cd2ce7c1d3ff))
 * **server:** set TCP_NODELAY on accepted gRPC, MCP and auth connections ([#2767](https://github.com/withcoral/coral/issues/2767)) ([e66b24e](https://github.com/withcoral/coral/commit/e66b24e2a958bdd61aca8b6025df09c197252382))
 * **telemetry:** keep caller text out of exports and protocol errors ([#2762](https://github.com/withcoral/coral/issues/2762)) ([aef6bf5](https://github.com/withcoral/coral/commit/aef6bf536aecad129a14809e42d125d9f4dd5564))
 * **ui:** block every lucide-react dynamic entry point in Wax ([#2789](https://github.com/withcoral/coral/issues/2789)) ([3e7b876](https://github.com/withcoral/coral/commit/3e7b8766d5f5d77fc1964aa245717599a2d4b02d))
@@ -190,7 +190,7 @@
 * add the Claude recipe and read gzipped OpenAPI documents ([#2513](https://github.com/withcoral/coral/issues/2513)) ([07c27a2](https://github.com/withcoral/coral/commit/07c27a29b961e5927174ff876da0c510dd160473))
 * **catalog:** share named TypeScript types across a Provider ([#2482](https://github.com/withcoral/coral/issues/2482)) ([256e37d](https://github.com/withcoral/coral/commit/256e37d892d6aef0a4a8518984e5f1748ba1fbad))
 * **desktop:** run the runtime on a Postgres database named in desktop.json ([#2485](https://github.com/withcoral/coral/issues/2485)) ([96465a0](https://github.com/withcoral/coral/commit/96465a0864a204d61819edcbbf58fa0373f9837f))
-* **functions:** type coral.providers, coral.workspace and coral.functions at Private Tool save ([#2526](https://github.com/withcoral/coral/issues/2526)) ([a465850](https://github.com/withcoral/coral/commit/a4658503d0e9eee8cbdb10476195509f410b3a81))
+* **functions:** type coral.providers, coral.workspace and coral.functions at Saved Function save ([#2526](https://github.com/withcoral/coral/issues/2526)) ([a465850](https://github.com/withcoral/coral/commit/a4658503d0e9eee8cbdb10476195509f410b3a81))
 * **provider:** create the Coral Built-in Provider at coral.workspace in every new Workspace ([#2349](https://github.com/withcoral/coral/issues/2349)) ([06e65ca](https://github.com/withcoral/coral/commit/06e65ca4d7b071a32c4767c0e6cc19c0c5290ece))
 * **provider:** store an agent's createProvider request on its Setup ([#2593](https://github.com/withcoral/coral/issues/2593)) ([92847d2](https://github.com/withcoral/coral/commit/92847d2a5304224b2d23a425d77cb838d19ce4fd))
 * **provider:** update every Workspace's Built-in Provider catalog at boot ([#2355](https://github.com/withcoral/coral/issues/2355)) ([24615d9](https://github.com/withcoral/coral/commit/24615d980f849b1c8fcd107e3dee79de7a312f1c))
@@ -220,7 +220,7 @@
 * **run:** reshape the Dispatch Fence into one batched check per chunk commit ([#2550](https://github.com/withcoral/coral/issues/2550)) ([120c9d3](https://github.com/withcoral/coral/commit/120c9d30f8ed1c2020132d9c9711aefc0421b372))
 * **run:** route approval decisions and cancellation through the Run Owner ([#2577](https://github.com/withcoral/coral/issues/2577)) ([77bcbf5](https://github.com/withcoral/coral/commit/77bcbf5811fada931c9f312f497aed84e85bc677))
 * **run:** summarize your recent activity in a Workspace ([#2573](https://github.com/withcoral/coral/issues/2573)) ([bf4c75e](https://github.com/withcoral/coral/commit/bf4c75e63941a13e730910a41ce6553bca409116))
-* **search:** show a Private Tool's result fields in its signature line ([#2522](https://github.com/withcoral/coral/issues/2522)) ([41365f6](https://github.com/withcoral/coral/commit/41365f6fe65b75da28f90c365c0ec04c84aa7c1e))
+* **search:** show a Saved Function's result fields in its signature line ([#2522](https://github.com/withcoral/coral/issues/2522)) ([41365f6](https://github.com/withcoral/coral/commit/41365f6fe65b75da28f90c365c0ec04c84aa7c1e))
 * **search:** trace each reconcile pass and its steps ([#2456](https://github.com/withcoral/coral/issues/2456)) ([0594094](https://github.com/withcoral/coral/commit/05940948d06b774d33df89afe258996f9c302209))
 * **ui:** add option to create a correctly-configured Slack app during Slack provider setup ([#2585](https://github.com/withcoral/coral/issues/2585)) ([8c3a883](https://github.com/withcoral/coral/commit/8c3a8836dce307a953b50f73fda4394d3585dd35))
 * **ui:** move Add provider to the providers toolbar ([#2591](https://github.com/withcoral/coral/issues/2591)) ([e1ee4cb](https://github.com/withcoral/coral/commit/e1ee4cbe70ade525468a9404f04aacacafdcfe33))
@@ -249,7 +249,7 @@
 * **run:** reject a credential beside createProvider's bearer method and report unreachable sources as upstream_incomplete ([#2542](https://github.com/withcoral/coral/issues/2542)) ([590eab7](https://github.com/withcoral/coral/commit/590eab758efac10f36ab57444dc54e8052d158b5))
 * **run:** report an MCP JSON-RPC rejection as invalid_input or upstream_rejected ([#2402](https://github.com/withcoral/coral/issues/2402)) ([749770b](https://github.com/withcoral/coral/commit/749770b4ccb41d58d7cb9eb633f0035be94a26f7))
 * **search:** load each Generation's schema graph once per search ([#2448](https://github.com/withcoral/coral/issues/2448)) ([445d945](https://github.com/withcoral/coral/commit/445d94569105087c42586756c12be1019883c63e))
-* **search:** retry a failed Private Tool only after one interval ([#2460](https://github.com/withcoral/coral/issues/2460)) ([a61ab3a](https://github.com/withcoral/coral/commit/a61ab3aa0ed6073a810d46de33dd68ace382a546))
+* **search:** retry a failed Saved Function only after one interval ([#2460](https://github.com/withcoral/coral/issues/2460)) ([a61ab3a](https://github.com/withcoral/coral/commit/a61ab3aa0ed6073a810d46de33dd68ace382a546))
 * **search:** return no hits for a query without a letter or digit ([#2561](https://github.com/withcoral/coral/issues/2561)) ([bb0a4f0](https://github.com/withcoral/coral/commit/bb0a4f0e96599089a349f47e02f70760858d25ad))
 * **search:** start the write limit at the lock and build rows before the write ([#2575](https://github.com/withcoral/coral/issues/2575)) ([06ad55d](https://github.com/withcoral/coral/commit/06ad55df2bbe98814088ab8bad65c9e6b9593b8d))
 * **search:** stop a self-referential Promise result from overflowing the stack ([#2543](https://github.com/withcoral/coral/issues/2543)) ([1d4f257](https://github.com/withcoral/coral/commit/1d4f2573ac67caa3d0a17314984a09edd9dcd6a0))
@@ -275,7 +275,7 @@
 * **policy:** enable safe HTTP methods by default ([#2439](https://github.com/withcoral/coral/issues/2439)) ([4f9ea9c](https://github.com/withcoral/coral/commit/4f9ea9c897dcb5db20b9031146cda8aff36810f7))
 * **reef:** archive and restore workspaces from the sidebar ([#2403](https://github.com/withcoral/coral/issues/2403)) ([5e02944](https://github.com/withcoral/coral/commit/5e02944a6f4ea373cca918ece1a71abb47f58013))
 * **reef:** connect your account from a provider's settings ([#2364](https://github.com/withcoral/coral/issues/2364)) ([3d9ca44](https://github.com/withcoral/coral/commit/3d9ca44879bd8f385b0d8fbf9f984fc148457bb8))
-* **reef:** delete a private tool from its drawer ([#2367](https://github.com/withcoral/coral/issues/2367)) ([c8ebee5](https://github.com/withcoral/coral/commit/c8ebee51ef5bbd4afd8bd65d747b6e6f91062481))
+* **reef:** delete a saved function from its drawer ([#2367](https://github.com/withcoral/coral/issues/2367)) ([c8ebee5](https://github.com/withcoral/coral/commit/c8ebee51ef5bbd4afd8bd65d747b6e6f91062481))
 * **reef:** drive Activity records and their detail from the keyboard ([#2376](https://github.com/withcoral/coral/issues/2376)) ([e6d9d7f](https://github.com/withcoral/coral/commit/e6d9d7f95594a57ccd98edeea99c3cb2ec484d48))
 * **reef:** filter the Agents and Members tables with one shared filter menu ([#2331](https://github.com/withcoral/coral/issues/2331)) ([db09bbc](https://github.com/withcoral/coral/commit/db09bbc4d1015e3afa61e93d37c23af3f65cbe10))
 * **reef:** filter the organization workspaces table and assign several owners at once ([#2405](https://github.com/withcoral/coral/issues/2405)) ([9738fd7](https://github.com/withcoral/coral/commit/9738fd7e6046077dd5138faf2871a212cb24594c))
@@ -368,7 +368,7 @@
 
 ### Features
 
-* **mcp:** tell agents to save multi-Operation Programs as Private Tools
+* **mcp:** tell agents to save multi-Operation Programs as Saved Functions
 * **reef:** add several workspace members at once from an organization picker
 * **reef:** always show the overview's MCP setup
 
@@ -393,7 +393,7 @@
 
 * **reef:** restore the green alpha scales so light success text is readable
 * **reef:** set light GreenAlpha step 6 to Radix's 32.16% opacity
-* **v8:** type the coral host root during Private Tool authoring
+* **v8:** type the coral host root during Saved Function authoring
 
 ## 1.0.0-beta.6 (2026-10-04)
 

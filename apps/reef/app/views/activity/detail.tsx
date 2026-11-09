@@ -479,7 +479,7 @@ function RecordDetail({ page }: { page: ActivityPage }) {
               {intent}
               {/* The call retains only the function's ID. No route opens a function by ID, so
                   a delete shows the ID without a link, and a save states no target. */}
-              {deleted && save.evidence.kind === 'function' && (
+              {deleted && save.evidence.kind === 'private_tool' && (
                 <DescriptionList.Row label="Deleted">
                   <CodeChip>{privateToolId(save.evidence.reference)}</CodeChip>
                 </DescriptionList.Row>
@@ -685,7 +685,7 @@ function CallEvidence({
   switch (evidence.kind) {
     case 'run':
       return null
-    case 'function':
+    case 'private_tool':
       return null
     case 'rejection':
       return evidence.message.trim() ? (

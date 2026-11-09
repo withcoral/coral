@@ -157,7 +157,7 @@ impl UniversalSearchModule {
     fn with_retrievers(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        functions: PrivateToolRetriever,
+        private_tools: PrivateToolRetriever,
         tools: ToolRetriever,
     ) -> Self {
         Self {
@@ -165,7 +165,7 @@ impl UniversalSearchModule {
             workspaces,
             retrievers: Arc::new([
                 Arc::new(tools) as Arc<dyn EntityRetriever>,
-                Arc::new(functions),
+                Arc::new(private_tools),
             ]),
         }
     }

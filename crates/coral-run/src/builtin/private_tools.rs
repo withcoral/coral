@@ -197,7 +197,7 @@ impl RemoveTool {
 
 /// The authoring wiring; a Run without it cannot author.
 fn authoring<'a>(host: &BuiltinHost<'a>) -> Result<&'a PrivateTools, Error> {
-    host.functions
+    host.private_tools
         .ok_or_else(|| Error::InvocationRejected(CoralFailure::ToolUnavailable.into()))
 }
 

@@ -1438,7 +1438,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(within(privateTool).getByText('private tool')).toBeVisible()
     // An icon beside the call path opens today's function, named with its path.
     const current = within(privateTool).getByRole('link', {
-      name: /^Open current function coral\.private\./,
+      name: /^Open current private tool coral\.private\./,
     })
     await expect(current).toBeVisible()
     await expect(current.getAttribute('href')).toMatch(/\/functions\//)

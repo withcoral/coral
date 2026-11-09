@@ -200,7 +200,7 @@ pub(crate) struct ToolInvoker {
     /// What `coral.search` discovers through.
     search: coral_search::UniversalSearchModule,
     /// What `coral.addTool`, `updateTool` and `removeTool` author through.
-    functions: Option<crate::builtin::PrivateTools>,
+    private_tools: Option<crate::builtin::PrivateTools>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -253,7 +253,7 @@ impl ToolInvoker {
             policies,
             provider_renamer,
             search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
-            functions,
+            private_tools: functions,
             human_interface,
             database,
             workspaces,
@@ -943,7 +943,7 @@ impl ToolInvoker {
             accounts: self.accounts.as_ref(),
             renamer: self.provider_renamer.as_deref(),
             search: &self.search,
-            functions: self.functions.as_ref(),
+            private_tools: self.private_tools.as_ref(),
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,

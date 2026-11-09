@@ -375,7 +375,7 @@ function CurrentIconLink({
   target: Pick<SearchHit, 'kind' | 'callPath' | 'currentHref'>
 }) {
   if (target.currentHref === null) return null
-  const subject = target.kind === 'provider_tool' ? 'tool' : 'function'
+  const subject = target.kind === 'provider_tool' ? 'tool' : 'private tool'
   return (
     <Button.IconLink
       name="ExternalLink"

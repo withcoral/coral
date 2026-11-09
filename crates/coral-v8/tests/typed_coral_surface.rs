@@ -415,7 +415,7 @@ fn call_path_analysis_names_every_candidate_tool_call_path() {
     );
     assert_eq!(
         named
-            .functions()
+            .private_tools()
             .iter()
             .map(coral_v8::PrivateToolReference::path)
             .collect::<Vec<_>>(),

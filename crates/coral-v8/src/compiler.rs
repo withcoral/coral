@@ -713,7 +713,7 @@ impl CompilerIsolate {
         match (output.validation_error, output.tools) {
             (Some(error), _) => Err(invalid_private_tool_reference(error)),
             (None, Some(tools)) => Ok(PrivateToolCallPaths {
-                functions: output.references,
+                private_tools: output.references,
                 tools,
             }),
             (None, None) => Err(Error::CompilerProtocol(

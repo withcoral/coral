@@ -754,7 +754,7 @@ it.each<[string, Detail, string]>([
     'a private tool without an intent by its tool, not its ID',
     tool(
       { tool: 'save_function', intent: '' },
-      { kind: 'function', reference: `${workspace}/privateTools/reminders` },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
     'Save function',
   ],
@@ -762,7 +762,7 @@ it.each<[string, Detail, string]>([
     'a deleted function without an intent by its tool, not its ID',
     tool(
       { tool: 'delete_function', intent: '' },
-      { kind: 'function', reference: `${workspace}/privateTools/reminders` },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
     'Delete function',
   ],
@@ -1544,7 +1544,7 @@ const functionCases = functionCalls.flatMap((call) =>
       {
         case: `a ${call.noun} that succeeded`,
         overrides: { outcome: 'succeeded' },
-        evidence: { kind: 'function', reference: privateTool },
+        evidence: { kind: 'private_tool', reference: privateTool },
       },
       {
         case: `a rejected ${call.noun}`,
@@ -1597,7 +1597,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
   expect(lists).toHaveLength(1)
   expect(lists[0].closest('section')!.querySelector('h4')).toBeNull()
   const completed = row.overrides.completedAt !== null
-  const changed = row.evidence.kind === 'function' && call.done !== null
+  const changed = row.evidence.kind === 'private_tool' && call.done !== null
   // The title is the intent, so no Intent row repeats it.
   expect(terms(lists[0])).toEqual([
     ...(changed ? [call.done!] : []),
@@ -3020,12 +3020,12 @@ describe('each record states only what helps, once', () => {
     [
       'a save',
       { tool: 'save_function' },
-      { kind: 'function', reference: `${workspace}/privateTools/id` },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/id` },
     ],
     [
       'a delete',
       { tool: 'delete_function' },
-      { kind: 'function', reference: `${workspace}/privateTools/id` },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/id` },
     ],
     ['another tool', { tool: 'inspect' }, { kind: 'unknown' }],
   ])('does not repeat the title of %s as its Intent', (_, overrides, evidence) => {

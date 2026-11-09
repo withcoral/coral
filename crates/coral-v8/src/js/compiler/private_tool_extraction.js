@@ -5,7 +5,7 @@
 // replaces the `source` value with a private carrier of that text. Only the Program host reads a carrier, so no
 // authored value reaches the Tool as a source.
 
-const SAVE_FUNCTION_SOURCE_GLOBAL = '__coralPrivateToolSource';
+const PRIVATE_TOOL_SOURCE_GLOBAL = '__coralPrivateToolSource';
 
 // The Built-in Tools that take a function as `source`. The Program host
 // in runtime/program_host_bootstrap.js lists them too; change both.
@@ -330,7 +330,7 @@ function privateToolExtraction({
 function privateToolCarrierName(sourceFiles) {
   const used = new Set(sourceFiles.flatMap((sourceFile) => [...identifierNames(sourceFile)]));
   for (let suffix = 1; ; suffix += 1) {
-    const name = `${SAVE_FUNCTION_SOURCE_GLOBAL}_${suffix}`;
+    const name = `${PRIVATE_TOOL_SOURCE_GLOBAL}_${suffix}`;
     if (!used.has(name)) return name;
   }
 }
@@ -338,7 +338,7 @@ function privateToolCarrierName(sourceFiles) {
 // Private source that takes the host's carrier constructor before any
 // authored code runs, so no Program can reach it.
 function privateToolCarrierDeclaration(carrier) {
-  return `const ${carrier} = globalThis.${SAVE_FUNCTION_SOURCE_GLOBAL}; Reflect.deleteProperty(globalThis, "${SAVE_FUNCTION_SOURCE_GLOBAL}");`;
+  return `const ${carrier} = globalThis.${PRIVATE_TOOL_SOURCE_GLOBAL}; Reflect.deleteProperty(globalThis, "${PRIVATE_TOOL_SOURCE_GLOBAL}");`;
 }
 
 function programExtraction(sourceFile, program, authoredMappings, carrier) {

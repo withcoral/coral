@@ -269,7 +269,7 @@ async function evidenceView(
     case 'run':
       return { kind: 'run', reference: evidence.value }
     case 'privateTool':
-      return { kind: 'function', reference: evidence.value }
+      return { kind: 'private_tool', reference: evidence.value }
     default:
       return { kind: 'unknown' }
   }

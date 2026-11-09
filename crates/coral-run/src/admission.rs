@@ -341,7 +341,12 @@ impl RunModule {
                 .await?;
         }
         let (linked, linked_tools) = self
-            .read_source_closure(actor, workspace_id, named.functions, compilation_deadline)
+            .read_source_closure(
+                actor,
+                workspace_id,
+                named.private_tools,
+                compilation_deadline,
+            )
             .await?;
         // A stored source is checked as the Program is, at every admission
         // that links it: an old root fails here, not when called.
@@ -438,7 +443,7 @@ impl RunModule {
                     .await);
             };
             let ProgramReferences {
-                functions: referenced,
+                private_tools: referenced,
                 tools: named_tools,
             } = self
                 .analyze_private_tool(

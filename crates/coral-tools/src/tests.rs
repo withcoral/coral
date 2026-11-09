@@ -759,15 +759,15 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     );
 }
 
-/// The Saved Function rows an earlier Coral wrote, for one User and one
-/// Agent, read back after the upgrade as each owner's Private Tools, with
-/// every part of the definition kept.
+/// The Saved Function rows the release before Private Tools wrote, at step
+/// 59, for one User and one Agent, read back after the upgrade as each
+/// owner's Private Tools, with every part of the definition kept.
 // Catches: an upgrade that loses or rewrites part of a definition, gives a
 // Private Tool another owner, or leaves it without the default Tool Access
 // State, the binding to the definition Coral performs, or its renamed table.
 #[tokio::test]
 async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
-    let before_upgrade = coral_test_support::migration_plan_before(62);
+    let before_upgrade = coral_test_support::migration_plan_before(60);
     let fixture = PrivateToolTestModules::on_plan(&before_upgrade).await;
     let (workspace_id, owner) = fixture.user_workspace("user:upgrade-owner").await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;

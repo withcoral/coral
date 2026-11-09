@@ -197,7 +197,7 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) search: &'a coral_search::UniversalSearchModule,
     /// Where the authoring Tools author; without it, they
     /// fail as `tool_unavailable`.
-    pub(crate) functions: Option<&'a PrivateTools>,
+    pub(crate) private_tools: Option<&'a PrivateTools>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.

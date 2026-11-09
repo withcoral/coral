@@ -592,15 +592,15 @@ impl LinkedPrivateToolSource {
 /// directly, as typed preparation and Program Admission need them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrivateToolCallPaths {
-    functions: Vec<PrivateToolReference>,
+    private_tools: Vec<PrivateToolReference>,
     tools: ToolReferences,
 }
 
 impl PrivateToolCallPaths {
     /// Returns the directly named `coral.private` paths.
     #[must_use]
-    pub fn functions(&self) -> &[PrivateToolReference] {
-        &self.functions
+    pub fn private_tools(&self) -> &[PrivateToolReference] {
+        &self.private_tools
     }
 
     /// Returns the literal Tool chains under `coral`.

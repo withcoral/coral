@@ -523,6 +523,6 @@ export type DiscoveryView =
   | { kind: 'raw' }
 export type InteractionEvidence =
   | { kind: 'discovery'; context: DiscoveryContext; response: string; view: DiscoveryView }
-  | { kind: 'run' | 'function'; reference: string }
+  | { kind: 'run' | 'private_tool'; reference: string }
   | { kind: 'rejection'; code: string; message: string }
   | { kind: 'unknown' }

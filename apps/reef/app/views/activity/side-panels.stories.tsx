@@ -823,10 +823,10 @@ const toolEvidence = {
     ),
     { times: ['Started', 'Completed'], outcome: 'succeeded' },
   ),
-  function: functionStory(
+  private_tool: functionStory(
     panel(
       'Save function · saved',
-      toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+      toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
       { evidence: 'Save the reminder batch' },
     ),
     { times: ['Started', 'Completed'], outcome: 'succeeded' },
@@ -903,12 +903,12 @@ export const ExecEvidenceUnavailable = execStory(
     notice: 'The submission evidence is unavailable.',
   },
 )
-export const SaveFunctionSaved = toolEvidence.function
+export const SaveFunctionSaved = toolEvidence.private_tool
 /** A save on a phone: its intent and times, nothing wider than the screen. */
 export const SaveFunctionNarrow = functionStory(
   panel(
     'Save function · saved, narrow screen',
-    toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+    toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: 'Save the reminder batch', narrow: true },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', fits: true },
@@ -918,7 +918,7 @@ export const SaveFunctionNarrow = functionStory(
 const unnamedSave = functionStory(
   panel(
     'Save function · saved, no intent retained',
-    toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+    toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: 'Save function' },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded' },
@@ -927,7 +927,7 @@ export const SaveFunctionWithoutIntent: Story = {
   ...unnamedSave,
   args: {
     page: toolPage(interaction('save_function', 'succeeded', { intent: '' }), {
-      kind: 'function',
+      kind: 'private_tool',
       reference: savedReference,
     }),
   },
@@ -990,7 +990,7 @@ export const SaveFunctionEvidenceUnavailable = functionStory(
 export const DeleteFunctionDeleted = functionStory(
   panel(
     'Delete function · deleted',
-    toolPage(deleteCall('succeeded'), { kind: 'function', reference: savedReference }),
+    toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted' },
@@ -998,7 +998,7 @@ export const DeleteFunctionDeleted = functionStory(
 export const DeleteFunctionNarrow = functionStory(
   panel(
     'Delete function · deleted, narrow screen',
-    toolPage(deleteCall('succeeded'), { kind: 'function', reference: savedReference }),
+    toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId, narrow: true },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted', fits: true },
