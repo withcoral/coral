@@ -638,7 +638,7 @@ impl ToolInvoker {
             }
             Err(UpstreamSendError::Unauthorized) => {
                 return Err(self
-                    .finish_failure(admitted, progress, CoralFailure::UpstreamRejected)
+                    .finish_failure(admitted, progress, CoralFailure::UpstreamUnauthorized)
                     .await?);
             }
             Err(UpstreamSendError::Rejected(rejection)) => {

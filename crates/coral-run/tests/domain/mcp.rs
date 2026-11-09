@@ -364,7 +364,7 @@ async fn an_mcp_authentication_refusal_is_a_catchable_tool_error() {
         };
         assert_eq!(
             code.as_json(),
-            &json!("upstream_rejected"),
+            &json!("upstream_unauthorized"),
             "{status} {challenge:?}"
         );
         assert!(
