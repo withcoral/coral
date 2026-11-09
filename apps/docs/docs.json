@@ -65,7 +65,6 @@
       {
         "header": "Product",
         "items": [
-          { "label": "Benchmarks", "href": "https://withcoral.com/#benchmarks" },
           { "label": "Blog", "href": "https://withcoral.com/blog" },
           { "label": "Download", "href": "https://withcoral.com/download" },
           { "label": "Pricing", "href": "https://withcoral.com/pricing" }
