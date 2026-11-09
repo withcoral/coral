@@ -56,7 +56,7 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
     let named = compiler
         .program_call_paths(
             compilation_deadline(),
-            "let key = 'x'; await coral.providers.demo[key](); return [await coral.shared.mail.remind(1), await coral.private.lookup.one(), await coral.providers.demo.get()];",
+            "let key = 'x'; await coral.providers.demo[key](); await coral.providers[key].send(); return [await coral.shared.mail.remind(1), await coral.private.lookup.one(), await coral.providers.demo.get()];",
         )
         .expect("analyze a Program that names both roots");
     assert_eq!(reference_paths(named.shared_tools()), ["mail.remind"]);
@@ -64,7 +64,7 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
     assert_eq!(named.tools().called_paths(), ["coral.providers.demo.get"]);
     assert_eq!(
         named.tools().runtime_built_paths(),
-        ["coral.providers.demo"]
+        ["coral.providers", "coral.providers.demo"]
     );
     assert!(
         named

@@ -432,6 +432,10 @@ async fn a_publish_whose_expected_revision_moved_is_refused_and_changes_nothing(
 // Catches: a restore that rewrites or drops an earlier revision, that does
 // not become current, or that loses which revision it copied.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey restores a revision and refuses the two restores that copy nothing"
+)]
 async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     let fixture = SharedToolFixture::new().await;
     let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
@@ -496,6 +500,27 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     );
     // Revisions 1 and 2 are exactly as they were.
     assert_eq!(after.get(1..), Some(before.as_slice()));
+
+    // A restore carries the content of the revision it names, and no other.
+    let altered = fixture
+        .shared_tools
+        .publish(
+            &change(fixture.owner.clone(), 41, 'd'),
+            &fixture.workspace,
+            SharedToolPublish::new(
+                path.clone(),
+                SharedToolOrigin::Revision(1),
+                first.description().clone(),
+                PrivateToolSource::parse(REVIEWED).expect("source"),
+                first.default_access_state(),
+                3,
+            ),
+        )
+        .await;
+    assert!(
+        matches!(altered, Err(Error::InvalidInput(_))),
+        "{altered:?}"
+    );
 
     // A revision that never existed restores nothing.
     let missing = fixture

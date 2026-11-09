@@ -905,10 +905,13 @@ impl SharedToolModule {
         let shared_tools = self
             .dependencies(workspace_id, publish.path(), &compiled)
             .await?;
-        let mut called_tools = named
-            .as_ref()
-            .map(|named| named.tools().called_paths())
-            .unwrap_or_default();
+        // A source that compiles but could not be analyzed has no review:
+        // an Owner must not approve a list of calls that Coral could not
+        // read. The analysis shares the compiler's queue, so it is retried.
+        let Some(named) = named else {
+            return Err(Error::CompilerBusy);
+        };
+        let mut called_tools = named.tools().called_paths();
         called_tools.extend(
             compiled
                 .references
@@ -930,10 +933,7 @@ impl SharedToolModule {
             diagnostics_truncated: compiled.diagnostics_truncated,
             called_tools,
             shared_tools,
-            runtime_built_paths: named
-                .as_ref()
-                .map(|named| named.tools().runtime_built_paths())
-                .unwrap_or_default(),
+            runtime_built_paths: named.tools().runtime_built_paths(),
         };
         Ok(PreparedPublish { review, compiled })
     }
@@ -1255,9 +1255,22 @@ async fn read_origin(
             )
             .await?
             .ok_or(Error::SharedToolSourceUnreadable)?;
-            shared_tool_repository::find_revision(transaction, workspace_id, &record.id, *revision)
-                .await?
-                .ok_or(Error::SharedToolSourceUnreadable)?;
+            let restored = shared_tool_repository::find_revision(
+                transaction,
+                workspace_id,
+                &record.id,
+                *revision,
+            )
+            .await?
+            .ok_or(Error::SharedToolSourceUnreadable)?;
+            // A restore publishes that revision's content again, so the
+            // revision it names is the content the Owner reviewed.
+            if restored.source != publish.source || restored.description != publish.description {
+                return Err(Error::InvalidInput(
+                    "a restore publishes the exact source and description of the revision it names"
+                        .to_string(),
+                ));
+            }
             Ok(ReadOrigin {
                 private_tool: None,
                 revision: Some(*revision),
@@ -1283,7 +1296,10 @@ async fn require_free_namespace(
 }
 
 /// The live Shared Tools `compiled` names, other than `own_path`, at their
-/// current revisions; held shared through the write when `hold` is set. A
+/// current revisions; held shared through the write when `hold` is set. The
+/// write records the revisions current in its own transaction, which a
+/// publish since the review may have moved: every Run links the current
+/// revision of each Shared Tool, so no revision here is a pin. A
 /// name that no live Shared Tool has fails as any path that names no Tool.
 async fn held_dependencies(
     transaction: &mut Transaction<'_>,

@@ -296,6 +296,13 @@ async fn admission_refuses_a_linked_tool_that_is_missing_and_names_it() {
             vec!["Program:1:", "coral.shared.mail.absent"],
         ),
     ];
+    let before = shared
+        .scope
+        .fixture
+        .runs
+        .count_runs()
+        .await
+        .expect("count Runs");
     for (case, source, named) in cases {
         let refused = shared
             .scope
@@ -313,6 +320,17 @@ async fn admission_refuses_a_linked_tool_that_is_missing_and_names_it() {
         for expected in named {
             assert!(message.contains(expected), "{case}: {message}");
         }
+        assert_eq!(
+            shared
+                .scope
+                .fixture
+                .runs
+                .count_runs()
+                .await
+                .expect("count Runs"),
+            before,
+            "{case}: the refused admission created no Run"
+        );
     }
 }
 

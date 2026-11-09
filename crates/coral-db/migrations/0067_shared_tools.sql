@@ -91,7 +91,9 @@ CREATE TABLE shared_tool_revisions (
     CONSTRAINT shared_tool_revisions_one_source
         CHECK (
             (source_private_tool_id IS NOT NULL AND restored_from_revision IS NULL)
-            OR (source_private_tool_id IS NULL AND restored_from_revision > 0)
+            OR (source_private_tool_id IS NULL
+                AND restored_from_revision IS NOT NULL
+                AND restored_from_revision > 0)
         )
 );
 
@@ -108,6 +110,10 @@ CREATE TABLE shared_tool_revision_dependencies (
     CONSTRAINT shared_tool_revision_dependencies_revision_fk
         FOREIGN KEY (shared_tool_id, revision)
         REFERENCES shared_tool_revisions(shared_tool_id, revision)
+        ON DELETE CASCADE,
+    CONSTRAINT shared_tool_revision_dependencies_tool_fk
+        FOREIGN KEY (workspace_id, shared_tool_id)
+        REFERENCES shared_tool_records(workspace_id, id)
         ON DELETE CASCADE,
     CONSTRAINT shared_tool_revision_dependencies_dependency_fk
         FOREIGN KEY (workspace_id, dependency_shared_tool_id)

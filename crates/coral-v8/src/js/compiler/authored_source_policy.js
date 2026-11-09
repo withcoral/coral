@@ -616,7 +616,10 @@ function toolReferenceChains(sourceFile, program, authoredMappings) {
         const segments = access.segments.slice(0, computed === -1 ? undefined : computed);
         const called =
           computed === -1 && ts.isCallExpression(node.parent) && node.parent.expression === node;
-        if (segments.length >= shortestToolChain(rootLength)) {
+        // A chain cut inside its Call Root, as in `coral.providers[name]`,
+        // names no candidate path, and is kept so that a reader learns the
+        // source builds a Tool path at runtime.
+        if (computed !== -1 || segments.length >= shortestToolChain(rootLength)) {
           chains.push({
             segments,
             start: node.getStart(sourceFile),

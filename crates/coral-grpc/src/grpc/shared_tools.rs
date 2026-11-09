@@ -161,7 +161,7 @@ fn origin(
 
 #[tonic::async_trait]
 impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
-    #[tracing::instrument(skip_all, name = "coral.shared.list_shared_tools")]
+    #[tracing::instrument(skip_all, name = "coral.private.list_shared_tools")]
     async fn list_shared_tools(
         &self,
         request: Request<wire::ListSharedToolsRequest>,
@@ -203,7 +203,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         }))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.shared.get_shared_tool")]
+    #[tracing::instrument(skip_all, name = "coral.private.get_shared_tool")]
     async fn get_shared_tool(
         &self,
         request: Request<wire::GetSharedToolRequest>,
@@ -220,7 +220,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         Ok(Response::new(shared_tool(&tool)))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.shared.list_shared_tool_revisions")]
+    #[tracing::instrument(skip_all, name = "coral.private.list_shared_tool_revisions")]
     async fn list_shared_tool_revisions(
         &self,
         request: Request<wire::ListSharedToolRevisionsRequest>,
@@ -239,7 +239,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         }))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.shared.get_shared_tool_revision")]
+    #[tracing::instrument(skip_all, name = "coral.private.get_shared_tool_revision")]
     async fn get_shared_tool_revision(
         &self,
         request: Request<wire::GetSharedToolRevisionRequest>,
@@ -261,7 +261,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         Ok(Response::new(revision(&found)))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.shared.publish_shared_tool")]
+    #[tracing::instrument(skip_all, name = "coral.private.publish_shared_tool")]
     async fn publish_shared_tool(
         &self,
         request: Request<wire::PublishSharedToolRequest>,
