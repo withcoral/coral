@@ -74,6 +74,8 @@ coral_failures! {
     UpstreamIncomplete => "upstream_incomplete",
     /// The upstream peer received the request and answered with a protocol error.
     UpstreamRejected => "upstream_rejected",
+    /// The upstream peer refused the request's credentials or access (HTTP 401 or 403).
+    UpstreamUnauthorized => "upstream_unauthorized",
     // Per-result and cumulative output limits share one durable code; this one decodes.
     /// The upstream result exceeds its accepted bound.
     ResultTooLarge => "upstream_result_too_large",
@@ -133,6 +135,7 @@ impl CoralFailure {
             Self::OutboundDestinationRejected => "Provider destination is not permitted",
             Self::UpstreamIncomplete => "Upstream result is incomplete",
             Self::UpstreamRejected => "Upstream rejected the request",
+            Self::UpstreamUnauthorized => "Upstream refused the request's credentials or access",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
         }

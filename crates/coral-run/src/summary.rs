@@ -189,7 +189,8 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 | F::CredentialRouteChanged
                 | F::ProviderUnavailable
                 | F::ProviderNamespaceConflict
-                | F::ToolUnavailable,
+                | F::ToolUnavailable
+                | F::UpstreamUnauthorized,
             ),
         ) => CallOutcome::NeedsSetup,
         (
@@ -499,6 +500,7 @@ mod tests {
             (failure(F::ProviderUnavailable), O::NeedsSetup),
             (failure(F::ProviderNamespaceConflict), O::NeedsSetup),
             (failure(F::ToolUnavailable), O::NeedsSetup),
+            (failure(F::UpstreamUnauthorized), O::NeedsSetup),
             (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
             (failure(F::SavedFunctionNotFound), O::Failed),
