@@ -39,25 +39,10 @@ pub(crate) async fn compose(
     let saved = activity::functions_saved(tx, window).await?;
     let called = activity::functions_called(tx, window).await?;
     let reuse_today = activity::reuse(tx, window).await?;
-    let reuse_ever = activity::reuse(
-        tx,
-        Window {
-            start: i64::MIN,
-            end: window.end,
-        },
-    )
-    .await?;
     let totals = activity::totals(tx).await?;
 
-    let first_successful_run = earliest(
-        install.first_successful_run_day.as_deref(),
-        activity::first_successful_run(tx).await?,
-    );
-    let first_saved_function = earliest(
-        install.first_saved_function_day.as_deref(),
-        activity::first_saved_function(tx).await?,
-    );
-    let function_reused = earliest(install.function_reused_day.as_deref(), reuse_ever.first_at);
+    let (first_successful_run, first_saved_function, function_reused) =
+        milestones(tx, install, day, window.end).await?;
 
     let report = UsageReport {
         v: 1,
@@ -132,8 +117,42 @@ pub(crate) async fn compose(
     })
 }
 
-/// The earlier of a kept day and a found time, as a UTC day.
-fn earliest(kept: Option<&str>, found: Option<i64>) -> Option<String> {
+/// Each milestone's first day as of the end of the report's day: the
+/// collector rejects a milestone after `day.date`.
+async fn milestones(
+    tx: &mut Transaction<'_>,
+    install: &InstallRow,
+    day: NaiveDate,
+    end: i64,
+) -> Result<(Option<String>, Option<String>, Option<String>), Error> {
+    let reuse = activity::reuse(
+        tx,
+        Window {
+            start: i64::MIN,
+            end,
+        },
+    )
+    .await?;
+    Ok((
+        earliest(
+            day,
+            install.first_successful_run_day.as_deref(),
+            activity::first_successful_run(tx, end).await?,
+        ),
+        earliest(
+            day,
+            install.first_saved_function_day.as_deref(),
+            activity::first_saved_function(tx, end).await?,
+        ),
+        earliest(day, install.function_reused_day.as_deref(), reuse.first_at),
+    ))
+}
+
+/// The earlier of a kept day and a found time, as a UTC day no later than
+/// `day`.
+fn earliest(day: NaiveDate, kept: Option<&str>, found: Option<i64>) -> Option<String> {
+    let last = day_string(day);
+    let kept = kept.filter(|kept| *kept <= last.as_str());
     let found = found.map(|at| day_string(day_of(at)));
     match (kept, found) {
         (Some(kept), Some(found)) => Some(kept.min(found.as_str()).to_owned()),

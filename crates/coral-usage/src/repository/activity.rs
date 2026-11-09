@@ -231,22 +231,30 @@ pub(crate) async fn reuse(tx: &mut Transaction<'_>, window: Window) -> Result<Re
     .await
 }
 
-/// When the first Run that Coral still keeps succeeded.
-pub(crate) async fn first_successful_run(tx: &mut Transaction<'_>) -> Result<Option<i64>, Error> {
+/// When the first Run that Coral still keeps succeeded, before `end`.
+pub(crate) async fn first_successful_run(
+    tx: &mut Transaction<'_>,
+    end: i64,
+) -> Result<Option<i64>, Error> {
     first(
         tx,
         "SELECT MIN(terminal_at_unix_nanos) AS value FROM program_run_records \
-         WHERE state = 'succeeded'",
+         WHERE state = 'succeeded' AND terminal_at_unix_nanos < ?",
+        end,
     )
     .await
 }
 
-/// When the first Saved Function was created.
-pub(crate) async fn first_saved_function(tx: &mut Transaction<'_>) -> Result<Option<i64>, Error> {
+/// When the first Saved Function was created, before `end`.
+pub(crate) async fn first_saved_function(
+    tx: &mut Transaction<'_>,
+    end: i64,
+) -> Result<Option<i64>, Error> {
     first(
         tx,
         "SELECT MIN(occurred_at_unix_nanos) AS value FROM saved_function_lifecycle_events \
-         WHERE action = 'saved_function.created'",
+         WHERE action = 'saved_function.created' AND occurred_at_unix_nanos < ?",
+        end,
     )
     .await
 }
@@ -305,9 +313,10 @@ async fn count(tx: &mut Transaction<'_>, sql: &str, window: Window) -> Result<i6
         .map_or(0, |row| row.value))
 }
 
-async fn first(tx: &mut Transaction<'_>, sql: &str) -> Result<Option<i64>, Error> {
+async fn first(tx: &mut Transaction<'_>, sql: &str, end: i64) -> Result<Option<i64>, Error> {
+    let sql = numbered(sql, tx.system());
     Ok(tx
-        .fetch_all_sql::<FirstAt>(sql, Values(Vec::new()))
+        .fetch_all_sql::<FirstAt>(&sql, Values(vec![end.into()]))
         .await?
         .pop()
         .and_then(|row| row.value))

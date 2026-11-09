@@ -60,7 +60,7 @@ impl UsageData {
                 self.record_sent(&report.day, now()).await?;
             } else if status.is_client_error() {
                 tracing::warn!(
-                    http.response.status_code = status.as_u16(),
+                    http.response.status_code = safe::number(status.as_u16()),
                     "the usage data collector refused a report; it is dropped"
                 );
                 self.record_rejected(&report.day).await?;

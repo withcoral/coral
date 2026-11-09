@@ -189,107 +189,44 @@ async fn each_finished_day_gets_one_report_from_the_first_workspace_on() {
     assert_eq!(view.next_report_json, stored[0].0);
 }
 
-fn keys(value: &Value) -> Vec<&str> {
-    let mut keys: Vec<&str> = value
-        .as_object()
-        .expect("object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    keys
+/// The same members at every level as the collector's own example report.
+/// Only the recipe map's keys vary from install to install.
+fn same_shape(ours: &Value, theirs: &Value, at: &str) {
+    match (ours, theirs) {
+        (Value::Object(ours), Value::Object(theirs)) => {
+            if at == "/totals/providers/recipe" {
+                return;
+            }
+            let mut our_keys: Vec<&String> = ours.keys().collect();
+            let mut their_keys: Vec<&String> = theirs.keys().collect();
+            our_keys.sort_unstable();
+            their_keys.sort_unstable();
+            assert_eq!(our_keys, their_keys, "members of {at}");
+            for (key, value) in ours {
+                same_shape(value, &theirs[key], &format!("{at}/{key}"));
+            }
+        }
+        (Value::Null | Value::String(_), Value::Null | Value::String(_))
+        | (Value::Number(_), Value::Number(_)) => {}
+        _ => panic!("{at}: {ours} is not the kind of {theirs}"),
+    }
 }
 
 #[tokio::test]
-async fn a_report_has_exactly_the_collectors_fields() {
+async fn a_report_matches_the_collectors_example() {
+    let collector: Value =
+        serde_json::from_str(include_str!("collector-report.json")).expect("collector example");
     let fixture = Fixture::new().await;
     fixture
         .sending()
         .make_due_reports(at(7, 12))
         .await
         .expect("reports");
-    let report = fixture.report("2026-11-06").await;
-    assert_eq!(
-        keys(&report),
-        [
-            "build",
-            "coral",
-            "day",
-            "install",
-            "milestones",
-            "totals",
-            "v"
-        ]
-    );
-    assert_eq!(
-        keys(&report["coral"]),
-        ["arch", "auth", "database", "kind", "os", "version"]
-    );
-    assert_eq!(
-        keys(&report["milestones"]),
-        [
-            "first_saved_function",
-            "first_successful_run",
-            "function_reused_in_later_task"
-        ]
-    );
-    assert_eq!(
-        keys(&report["day"]),
-        [
-            "approvals",
-            "clients",
-            "date",
-            "run_failures",
-            "runs",
-            "saved_functions",
-            "tasks",
-            "tool_invocations"
-        ]
-    );
-    assert_eq!(
-        keys(&report["day"]["runs"]),
-        ["canceled", "failed", "succeeded", "timed_out"]
-    );
-    assert_eq!(
-        keys(&report["day"]["run_failures"]),
-        [
-            "compile",
-            "cpu_budget",
-            "interrupted",
-            "timeout",
-            "tool_error"
-        ]
-    );
-    assert_eq!(
-        keys(&report["day"]["tool_invocations"]),
-        ["approval_required", "failed", "succeeded"]
-    );
-    assert_eq!(
-        keys(&report["day"]["approvals"]),
-        ["approved", "denied", "expired"]
-    );
-    assert_eq!(
-        keys(&report["day"]["saved_functions"]),
-        ["called", "saved", "tasks_reusing_one"]
-    );
-    assert_eq!(keys(&report["day"]["tasks"]), ["started"]);
-    assert_eq!(
-        keys(&report["totals"]),
-        [
-            "accounts",
-            "agents",
-            "providers",
-            "saved_functions",
-            "users",
-            "workspaces"
-        ]
-    );
-    assert_eq!(
-        keys(&report["totals"]["providers"]),
-        ["custom_mcp", "custom_openapi", "recipe"]
-    );
-    assert_eq!(keys(&report["totals"]["accounts"]), ["oauth", "secret"]);
-    assert_eq!(report["v"], 1);
+    let mut report = fixture.report("2026-11-06").await;
+    // The collector's example lists every client; Coral records none yet,
+    // and a left-out client is 0.
+    report["day"]["clients"] = collector["day"]["clients"].clone();
+    same_shape(&report, &collector, "");
 }
 
 /// One Run of `task`, ended at `ended`, as Run history keeps it.
