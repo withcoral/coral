@@ -445,7 +445,7 @@ impl AccountModule {
         .await;
         let elapsed =
             i64::try_from(started.elapsed().as_nanos()).map_err(|_error| Error::AccountInput)?;
-        let application_failed = super::oauth_client::application_failed(&result);
+        let shown = super::oauth_client::ApplicationEvidence::of(&result);
         let context = ChangeContext::new(
             context.actor().clone(),
             context.occurred_at_unix_nanos().saturating_add(elapsed),
@@ -472,7 +472,7 @@ impl AccountModule {
             &row.provider_id,
             &row.contract,
             client_secret.as_ref(),
-            application_failed,
+            shown,
         )
         .await;
         completion

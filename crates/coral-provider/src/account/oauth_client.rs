@@ -11,14 +11,24 @@ use coral_credentials::Secret;
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
-/// What a finished token exchange shows about the application: a success shows
-/// that it works, a refused client shows that it fails, and any other failure
-/// shows nothing.
-pub(super) const fn application_failed<T>(exchange: &Result<T, Error>) -> Option<bool> {
-    match exchange {
-        Ok(_) => Some(false),
-        Err(Error::OAuthClientConfiguration) => Some(true),
-        Err(_) => None,
+/// What a finished token exchange shows about the application.
+#[derive(Clone, Copy)]
+pub(super) enum ApplicationEvidence {
+    /// The exchange succeeded, so the application works.
+    Works,
+    /// The client was refused, so the application fails.
+    Refused,
+    /// Any other failure shows nothing about the application.
+    Nothing,
+}
+
+impl ApplicationEvidence {
+    pub(super) const fn of<T>(exchange: &Result<T, Error>) -> Self {
+        match exchange {
+            Ok(_) => Self::Works,
+            Err(Error::OAuthClientConfiguration) => Self::Refused,
+            Err(_) => Self::Nothing,
+        }
     }
 }
 
@@ -157,14 +167,17 @@ impl AccountModule {
         provider: &crate::ProviderId,
         contract: &coral_catalog::ProviderCredentialContract,
         used: Option<&Secret>,
-        failed: Option<bool>,
+        shown: ApplicationEvidence,
     ) {
-        if let Some(failed) = failed {
-            drop(
-                self.record_client_result(account_workspace, provider, contract, used, failed)
-                    .await,
-            );
-        }
+        let failed = match shown {
+            ApplicationEvidence::Works => false,
+            ApplicationEvidence::Refused => true,
+            ApplicationEvidence::Nothing => return,
+        };
+        drop(
+            self.record_client_result(account_workspace, provider, contract, used, failed)
+                .await,
+        );
     }
 
     async fn record_client_result(

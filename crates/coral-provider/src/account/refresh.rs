@@ -221,7 +221,7 @@ impl AccountModule {
         )
         .await;
         let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
-        let application_failed = super::oauth_client::application_failed(&result);
+        let shown = super::oauth_client::ApplicationEvidence::of(&result);
         let completed_at = now.saturating_add(elapsed);
         // The renewed token is stored and the claim released before diagnostics
         // run: a claim left held requires reconnection once its deadline passes.
@@ -233,7 +233,7 @@ impl AccountModule {
             provider,
             &evidence.contract,
             client_secret.as_ref(),
-            application_failed,
+            shown,
         )
         .await;
         completion

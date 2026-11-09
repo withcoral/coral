@@ -348,8 +348,9 @@ pub(crate) fn accounts_for(providers: &ProviderModule, dir: &std::path::Path) ->
 }
 
 /// Fixture SQL that fails every write of a Provider's OAuth application status,
-/// and the SQL that removes the fault. No other write touches that column, so
-/// only the application diagnostics that follow a token exchange fail.
+/// and the SQL that removes the fault. Secret rotation and Provider publication
+/// write that column too: install the fault only around a token exchange, where
+/// the application diagnostics are its one writer.
 pub(crate) fn application_status_write_fault() -> (&'static str, &'static str) {
     match coral_test_support::selected_database().expect("selected test database") {
         coral_db::DatabaseSystem::Sqlite => (
