@@ -80,8 +80,8 @@ impl BodyScope {
                 &self.tool.workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("a path"),
-                    PrivateToolDescription::parse("A tool body").expect("a description"),
-                    PrivateToolSource::parse(source).expect("a source"),
+                    AuthoredToolDescription::parse("A tool body").expect("a description"),
+                    AuthoredToolSource::parse(source).expect("a source"),
                 ),
             )
             .await

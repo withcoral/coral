@@ -462,12 +462,12 @@ impl CompiledProgram {
 /// One callable-rooted field projected from an emitted Private Tool declaration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PrivateToolDeclarationField {
+pub struct AuthoredToolDeclarationField {
     path: String,
     text: String,
 }
 
-impl PrivateToolDeclarationField {
+impl AuthoredToolDeclarationField {
     /// Returns the readable JavaScript path rooted at `input` or `result`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -483,22 +483,22 @@ impl PrivateToolDeclarationField {
 
 /// Authoring output retained for one accepted Private Tool source.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PrivateToolCompilation {
+pub struct AuthoredToolCompilation {
     declaration: String,
-    declaration_field_projection: Result<Vec<PrivateToolDeclarationField>, String>,
+    declaration_field_projection: Result<Vec<AuthoredToolDeclarationField>, String>,
     diagnostics: Vec<CompilerDiagnostic>,
-    references: Vec<PrivateToolReference>,
-    shared_references: Vec<PrivateToolReference>,
+    references: Vec<LinkedToolReference>,
+    shared_references: Vec<LinkedToolReference>,
     not_data: Option<String>,
 }
 
-impl PrivateToolCompilation {
+impl AuthoredToolCompilation {
     pub(crate) const fn new(
         declaration: String,
-        declaration_field_projection: Result<Vec<PrivateToolDeclarationField>, String>,
+        declaration_field_projection: Result<Vec<AuthoredToolDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
-        references: Vec<PrivateToolReference>,
-        shared_references: Vec<PrivateToolReference>,
+        references: Vec<LinkedToolReference>,
+        shared_references: Vec<LinkedToolReference>,
         not_data: Option<String>,
     ) -> Self {
         Self {
@@ -530,7 +530,7 @@ impl PrivateToolCompilation {
     /// # Errors
     ///
     /// Returns a stable private reason when traversal could not prepare fields.
-    pub fn declaration_fields(&self) -> Result<&[PrivateToolDeclarationField], &str> {
+    pub fn declaration_fields(&self) -> Result<&[AuthoredToolDeclarationField], &str> {
         self.declaration_field_projection
             .as_deref()
             .map_err(String::as_str)
@@ -544,14 +544,14 @@ impl PrivateToolCompilation {
 
     /// Returns directly named runtime Private Tool references in path order.
     #[must_use]
-    pub fn references(&self) -> &[PrivateToolReference] {
+    pub fn references(&self) -> &[LinkedToolReference] {
         &self.references
     }
 
     /// Returns directly named runtime Shared Tool references, relative to
     /// `coral.shared`, in path order.
     #[must_use]
-    pub fn shared_references(&self) -> &[PrivateToolReference] {
+    pub fn shared_references(&self) -> &[LinkedToolReference] {
         &self.shared_references
     }
 }
@@ -559,13 +559,13 @@ impl PrivateToolCompilation {
 /// One statically named runtime Private Tool reference.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PrivateToolReference {
+pub struct LinkedToolReference {
     path: String,
     line: u64,
     column: u64,
 }
 
-impl PrivateToolReference {
+impl LinkedToolReference {
     /// Returns the dotted path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -598,13 +598,13 @@ pub enum LinkedToolRoot {
 /// One exact Private or Shared Tool source supplied for linked compilation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LinkedPrivateToolSource {
+pub struct LinkedToolSource {
     root: LinkedToolRoot,
     path_segments: Vec<String>,
     source: String,
 }
 
-impl LinkedPrivateToolSource {
+impl LinkedToolSource {
     /// Builds one validated-domain Private Tool source input for the
     /// compiler Adapter.
     #[must_use]
@@ -631,22 +631,22 @@ impl LinkedPrivateToolSource {
 /// The Call Paths one Private Tool module or Program body names
 /// directly, as typed preparation and Program Admission need them.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PrivateToolCallPaths {
-    private_tools: Vec<PrivateToolReference>,
-    shared_tools: Vec<PrivateToolReference>,
+pub struct NamedCallPaths {
+    private_tools: Vec<LinkedToolReference>,
+    shared_tools: Vec<LinkedToolReference>,
     tools: ToolReferences,
 }
 
-impl PrivateToolCallPaths {
+impl NamedCallPaths {
     /// Returns the directly named `coral.private` paths.
     #[must_use]
-    pub fn private_tools(&self) -> &[PrivateToolReference] {
+    pub fn private_tools(&self) -> &[LinkedToolReference] {
         &self.private_tools
     }
 
     /// Returns the directly named `coral.shared` paths.
     #[must_use]
-    pub fn shared_tools(&self) -> &[PrivateToolReference] {
+    pub fn shared_tools(&self) -> &[LinkedToolReference] {
         &self.shared_tools
     }
 
@@ -964,7 +964,7 @@ pub enum Error {
     ForbiddenCapability(String),
     /// Program source did not directly name supported Private Tool paths.
     #[error("Private Tool reference analysis failed at {line}:{column}: {message}")]
-    InvalidPrivateToolReference {
+    InvalidLinkedToolReference {
         /// Clear safe reason.
         message: String,
         /// One-based authored source line.
@@ -1031,7 +1031,7 @@ impl Error {
             Self::InvalidPrivateTool { .. } => "invalid_private_tool",
             Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
-            Self::InvalidPrivateToolReference { .. } => "invalid_private_tool_reference",
+            Self::InvalidLinkedToolReference { .. } => "invalid_linked_tool_reference",
             Self::InvalidPrivateToolSave { .. } => "invalid_private_tool_save",
             Self::CompilerProtocol { .. } => "compiler_protocol",
             Self::InvalidSourceMap { .. } => "invalid_source_map",
@@ -1079,7 +1079,7 @@ impl From<Error> for CompileFailure {
             | Error::InvalidPrivateTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidPrivateToolReference { .. }
+            | Error::InvalidLinkedToolReference { .. }
             | Error::InvalidPrivateToolSave(_)
             | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
             other => Self::Failed(other.code()),

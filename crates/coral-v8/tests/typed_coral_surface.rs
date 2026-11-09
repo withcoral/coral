@@ -4,8 +4,8 @@
 use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    BuiltinTools, CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits,
-    PrivateToolCompilation, ProgramCompiler,
+    AuthoredToolCompilation, BuiltinTools, CallableDeclaration, CompilerDiagnostic,
+    CoralDeclarations, IsolateLimits, ProgramCompiler,
 };
 use coral_value as _;
 use deno_core_icudata as _;
@@ -88,7 +88,7 @@ fn prepare(
     source: &str,
     tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
-) -> Result<PrivateToolCompilation, coral_v8::Error> {
+) -> Result<AuthoredToolCompilation, coral_v8::Error> {
     let named = compiler.private_tool_call_paths(deadline(), source)?;
     compiler.prepare_typed_private_tool(
         deadline(),
@@ -417,7 +417,7 @@ fn call_path_analysis_names_every_candidate_tool_call_path() {
         named
             .private_tools()
             .iter()
-            .map(coral_v8::PrivateToolReference::path)
+            .map(coral_v8::LinkedToolReference::path)
             .collect::<Vec<_>>(),
         ["weather.forecast"]
     );

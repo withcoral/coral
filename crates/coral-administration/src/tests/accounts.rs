@@ -518,8 +518,8 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
     let administrator = change(&f.owner);
     let source = PrivateToolSave::new(
         PrivateToolPath::parse("late").unwrap(),
-        PrivateToolDescription::parse("Late save").unwrap(),
-        PrivateToolSource::parse("export default () => 7;").unwrap(),
+        AuthoredToolDescription::parse("Late save").unwrap(),
+        AuthoredToolSource::parse("export default () => 7;").unwrap(),
     );
     let authoring =
         PrivateToolChangeContext::new(principal.clone(), 101, context.trace_id().clone());

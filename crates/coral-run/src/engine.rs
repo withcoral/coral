@@ -29,6 +29,7 @@ pub(crate) use host::execute;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use coral_catalog::AuthoredToolKind;
 use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
 use coral_tools::{PrivateToolPath, PrivateToolSelection, SharedToolPath, SharedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
@@ -73,28 +74,30 @@ pub(crate) enum LinkedPath {
 }
 
 impl LinkedPath {
+    /// The kind of Tool the path names.
+    pub(crate) const fn kind(&self) -> AuthoredToolKind {
+        match self {
+            Self::Private(_) => AuthoredToolKind::Private,
+            Self::Shared(_) => AuthoredToolKind::Shared,
+        }
+    }
+
+    /// The path under the kind's Call Root.
+    fn relative(&self) -> &str {
+        match self {
+            Self::Private(path) => path.as_str(),
+            Self::Shared(path) => path.as_str(),
+        }
+    }
+
     /// The complete Call Path, such as `coral.shared.mail.remind`.
     pub(crate) fn call_path(&self) -> String {
-        match self {
-            Self::Private(path) => format!("coral.private.{}", path.as_str()),
-            Self::Shared(path) => format!("coral.shared.{}", path.as_str()),
-        }
+        self.kind().call_path(self.relative())
     }
 
     /// How a message names the Tool's source.
     pub(crate) fn source_name(&self) -> String {
-        match self {
-            Self::Private(_) => format!("Private Tool {}", self.call_path()),
-            Self::Shared(_) => format!("Shared Tool {}", self.call_path()),
-        }
-    }
-
-    /// The kind of Tool, as a message names it.
-    pub(crate) const fn kind_name(&self) -> &'static str {
-        match self {
-            Self::Private(_) => "Private Tool",
-            Self::Shared(_) => "Shared Tool",
-        }
+        self.kind().source_name(self.relative())
     }
 }
 
@@ -125,12 +128,12 @@ impl LinkedSource {
     pub(crate) fn linked_tool(&self) -> crate::types::LinkedTool {
         match self {
             Self::Private(selection) => crate::types::LinkedTool {
-                kind: crate::ToolKind::Private,
+                kind: AuthoredToolKind::Private,
                 binding: selection.execution_binding(),
                 declared_default: selection.default_access_state(),
             },
             Self::Shared(selection) => crate::types::LinkedTool {
-                kind: crate::ToolKind::Shared,
+                kind: AuthoredToolKind::Shared,
                 binding: selection.execution_binding(),
                 declared_default: selection.default_access_state(),
             },
@@ -216,44 +219,24 @@ pub(crate) trait ProgramEngine: Send + Sync {
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
-    /// Compiles `source` with the Private Tools it links and with
-    /// `builtin_tools`, the Workspace's Built-in Tools, on `coral`.
-    fn compile_with_private_tools(
+    /// Compiles `source` with the Private and Shared Tools it links, in
+    /// initialization order, and with `builtin_tools`, the Workspace's
+    /// Built-in Tools, on `coral`. An engine that compiles no linked source
+    /// refuses a Program that links any.
+    fn compile_linked(
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[PrivateToolSelection],
+        linked: &[LinkedSource],
         _builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
             self.compile(deadline, source)
         } else {
             Err(CompileFailure::Rejected(
-                "scripted Program compiler does not support Private Tools".to_string(),
+                "scripted Program compiler does not link Private or Shared Tools".to_string(),
             ))
         }
-    }
-
-    /// Compiles `source` with the Private and Shared Tools it links, in
-    /// initialization order, and with `builtin_tools`. An engine that links
-    /// only Private Tools refuses a Shared one.
-    fn compile_linked(
-        &self,
-        deadline: Instant,
-        source: &str,
-        linked: &[LinkedSource],
-        builtin_tools: &BuiltinTools,
-    ) -> Result<ProgramPackage, CompileFailure> {
-        let private_tools = linked
-            .iter()
-            .map(|linked| match linked {
-                LinkedSource::Private(selection) => Ok(selection.clone()),
-                LinkedSource::Shared(_) => Err(CompileFailure::Rejected(
-                    "scripted Program compiler does not support Shared Tools".to_string(),
-                )),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.compile_with_private_tools(deadline, source, &private_tools, builtin_tools)
     }
 
     fn execute(
@@ -351,22 +334,7 @@ impl ProgramEngine for V8ProgramEngine {
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        self.compile_with_private_tools(deadline, source, &[], &BuiltinTools::default())
-    }
-
-    fn compile_with_private_tools(
-        &self,
-        deadline: Instant,
-        source: &str,
-        linked: &[PrivateToolSelection],
-        builtin_tools: &BuiltinTools,
-    ) -> Result<ProgramPackage, CompileFailure> {
-        let linked = linked
-            .iter()
-            .cloned()
-            .map(LinkedSource::Private)
-            .collect::<Vec<_>>();
-        self.compile_linked(deadline, source, &linked, builtin_tools)
+        self.compile_linked(deadline, source, &[], &BuiltinTools::default())
     }
 
     fn compile_linked(
@@ -379,11 +347,11 @@ impl ProgramEngine for V8ProgramEngine {
         let sources = linked
             .iter()
             .map(|linked| match linked {
-                LinkedSource::Private(snapshot) => coral_v8::LinkedPrivateToolSource::new(
+                LinkedSource::Private(snapshot) => coral_v8::LinkedToolSource::new(
                     snapshot.path().segments(),
                     snapshot.source().as_str().to_string(),
                 ),
-                LinkedSource::Shared(snapshot) => coral_v8::LinkedPrivateToolSource::shared(
+                LinkedSource::Shared(snapshot) => coral_v8::LinkedToolSource::shared(
                     snapshot.path().segments(),
                     snapshot.source().as_str().to_string(),
                 ),
@@ -477,10 +445,10 @@ impl V8ProgramEngine {
 
 /// What the compiler found `source_name` to name, with each path parsed.
 fn named_references(
-    named: &coral_v8::PrivateToolCallPaths,
+    named: &coral_v8::NamedCallPaths,
     source_name: &str,
 ) -> Result<ProgramReferences, CompileFailure> {
-    let located = |reference: &coral_v8::PrivateToolReference, error: coral_tools::Error| {
+    let located = |reference: &coral_v8::LinkedToolReference, error: coral_tools::Error| {
         format!(
             "{source_name}:{}:{}: {error}",
             reference.line(),

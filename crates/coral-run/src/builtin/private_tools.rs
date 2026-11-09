@@ -10,8 +10,8 @@
 use coral_catalog::{RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments};
 use coral_search::SearchIndex;
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
-    PrivateToolSave, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
 };
 
 use super::BuiltinHost;
@@ -70,8 +70,8 @@ impl SaveTool {
     /// names every one to correct.
     fn checked(arguments: &ToolSaveArguments) -> Result<PrivateToolSave, Rejection> {
         let path = PrivateToolPath::parse(arguments.path());
-        let description = PrivateToolDescription::parse(arguments.description());
-        let source = PrivateToolSource::parse(arguments.source());
+        let description = AuthoredToolDescription::parse(arguments.description());
+        let source = AuthoredToolSource::parse(arguments.source());
         match (path, description, source) {
             (Ok(path), Ok(description), Ok(source)) => {
                 Ok(PrivateToolSave::new(path, description, source)

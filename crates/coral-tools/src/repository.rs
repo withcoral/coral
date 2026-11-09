@@ -7,13 +7,13 @@ use sqlx::FromRow;
 
 use crate::Error;
 use crate::types::{
-    AdministrativeLifecycleEvent, ExactPrivateToolAuthoringMaterial,
-    ExactPrivateToolDescriptionMaterial, LifecycleAction, LifecycleOutcome,
-    PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT, PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES, PrivateTool,
-    PrivateToolAuthoringMaterial, PrivateToolDeclaration, PrivateToolDeclarationFieldProjection,
-    PrivateToolDeclarationSearchMaterial, PrivateToolDescription, PrivateToolDiagnostic,
-    PrivateToolEntry, PrivateToolId, PrivateToolPage, PrivateToolPath, PrivateToolSearchMaterial,
-    PrivateToolSelection, PrivateToolSource, PrivateToolSummary,
+    AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT, AUTHORED_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
+    AdministrativeLifecycleEvent, AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection,
+    AuthoredToolDescription, AuthoredToolDiagnostic, AuthoredToolSource,
+    ExactPrivateToolAuthoringMaterial, ExactPrivateToolDescriptionMaterial, LifecycleAction,
+    LifecycleOutcome, PrivateTool, PrivateToolAuthoringMaterial,
+    PrivateToolDeclarationSearchMaterial, PrivateToolEntry, PrivateToolId, PrivateToolPage,
+    PrivateToolPath, PrivateToolSearchMaterial, PrivateToolSelection, PrivateToolSummary,
 };
 
 #[derive(Iden)]
@@ -93,13 +93,13 @@ impl PrivateToolRow {
         );
         let path = PrivateToolPath::parse(&self.path)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid path".to_string()))?;
-        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
+        let description = AuthoredToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool has invalid description".to_string())
         })?;
-        let source = PrivateToolSource::parse(&self.source)
+        let source = AuthoredToolSource::parse(&self.source)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
-        let declaration = PrivateToolDeclaration::from_persisted(&self.declaration)?;
-        let declaration_field_projection = PrivateToolDeclarationFieldProjection::from_storage(
+        let declaration = AuthoredToolDeclaration::from_persisted(&self.declaration)?;
+        let declaration_field_projection = AuthoredToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
             self.declaration_fields_json.as_deref(),
@@ -141,7 +141,7 @@ impl PrivateToolSearchRow {
         let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool search target has invalid path".to_string())
         })?;
-        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
+        let description = AuthoredToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool search target has invalid description".to_string())
         })?;
         Ok(PrivateToolSearchMaterial::new(
@@ -165,7 +165,7 @@ impl PrivateToolSummaryRow {
         let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool summary has invalid path".to_string())
         })?;
-        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
+        let description = AuthoredToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool summary has invalid description".to_string())
         })?;
         Ok(PrivateToolSummary::new(
@@ -190,7 +190,7 @@ impl PrivateToolDeclarationSearchRow {
         let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool search lane has invalid path".to_string())
         })?;
-        let declaration_fields = PrivateToolDeclarationFieldProjection::from_storage(
+        let declaration_fields = AuthoredToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
             self.declaration_fields_json.as_deref(),
@@ -239,13 +239,13 @@ impl PrivateToolEntryRow {
         let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool entry has invalid path".to_string())
         })?;
-        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
+        let description = AuthoredToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool entry has invalid description".to_string())
         })?;
-        let declaration = PrivateToolDeclaration::from_persisted(&self.declaration)?;
+        let declaration = AuthoredToolDeclaration::from_persisted(&self.declaration)?;
         // As in the relevance lane, an unreadable projection stays isolated to
         // its one function, which remains searchable by path and description.
-        let declaration_fields = PrivateToolDeclarationFieldProjection::from_storage(
+        let declaration_fields = AuthoredToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
             self.declaration_fields_json.as_deref(),
@@ -284,12 +284,12 @@ impl PrivateToolAuthoringRow {
         let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool authoring material has invalid path".to_string())
         })?;
-        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
+        let description = AuthoredToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData(
                 "Private Tool authoring material has invalid description".to_string(),
             )
         })?;
-        let declaration = PrivateToolDeclaration::from_persisted(&self.declaration)?;
+        let declaration = AuthoredToolDeclaration::from_persisted(&self.declaration)?;
         Ok(PrivateToolAuthoringMaterial::new(
             path,
             description,
@@ -319,7 +319,7 @@ impl ExactPrivateToolDescriptionRow {
             declaration: self.declaration,
         }
         .decode()?;
-        let source = PrivateToolSource::parse(&self.source)
+        let source = AuthoredToolSource::parse(&self.source)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
         let diagnostics = decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?;
         let id = PrivateToolId::parse(&self.id)
@@ -874,7 +874,7 @@ pub(crate) async fn insert_current(
             Expr::val(function.description().as_str()),
             Expr::val(function.source().as_str()),
             Expr::val(function.declaration().as_str()),
-            Expr::val(PrivateToolDeclarationFieldProjection::format()),
+            Expr::val(AuthoredToolDeclarationFieldProjection::format()),
             Expr::val(function.declaration_field_projection().status()),
             Expr::val(
                 function
@@ -920,7 +920,7 @@ pub(crate) async fn replace_current(
             ),
             (
                 PrivateToolRecords::DeclarationFieldsFormat,
-                Expr::val(PrivateToolDeclarationFieldProjection::format()),
+                Expr::val(AuthoredToolDeclarationFieldProjection::format()),
             ),
             (
                 PrivateToolRecords::DeclarationFieldsStatus,
@@ -1167,18 +1167,18 @@ pub async fn hold_source_selection_in_transaction(
 pub(crate) fn decode_diagnostics(
     json: &str,
     truncated: bool,
-) -> Result<Vec<PrivateToolDiagnostic>, Error> {
-    let diagnostics: Vec<PrivateToolDiagnostic> = serde_json::from_str(json).map_err(|error| {
-        Error::CorruptData(format!("Private Tool has invalid diagnostics: {error}"))
+) -> Result<Vec<AuthoredToolDiagnostic>, Error> {
+    let diagnostics: Vec<AuthoredToolDiagnostic> = serde_json::from_str(json).map_err(|error| {
+        Error::CorruptData(format!("authored Tool has invalid diagnostics: {error}"))
     })?;
-    if diagnostics.len() > PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT
+    if diagnostics.len() > AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT
         || diagnostics.iter().any(|diagnostic| {
-            diagnostic.message().len() > PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES
+            diagnostic.message().len() > AUTHORED_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES
         })
-        || (truncated && diagnostics.len() != PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT)
+        || (truncated && diagnostics.len() != AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT)
     {
         return Err(Error::CorruptData(
-            "Private Tool diagnostics exceed their stored bounds".to_string(),
+            "authored Tool diagnostics exceed their stored bounds".to_string(),
         ));
     }
     Ok(diagnostics)
@@ -1233,16 +1233,16 @@ fn principal_kind_from_storage(value: &str) -> Result<PrincipalKind, Error> {
 
 pub(crate) fn stored_revision(revision: u64) -> Result<i64, Error> {
     i64::try_from(revision)
-        .map_err(|_error| Error::CorruptData("Private Tool revision overflowed".to_string()))
+        .map_err(|_error| Error::CorruptData("authored Tool revision overflowed".to_string()))
 }
 
 pub(crate) fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
     ToolAccessState::from_storage_str(value).ok_or_else(|| {
-        Error::CorruptData("Private Tool has an invalid default Tool Access State".to_string())
+        Error::CorruptData("authored Tool has an invalid default Tool Access State".to_string())
     })
 }
 
-pub(crate) fn decode_revision(stored: i64) -> Result<u64, Error> {
+fn decode_revision(stored: i64) -> Result<u64, Error> {
     u64::try_from(stored)
         .ok()
         .filter(|revision| *revision > 0)

@@ -41,8 +41,9 @@ async fn admission_rejects_a_private_tool_change_during_one_source_closure_read(
             &workspace_id,
             PrivateToolSave::new(
                 dependency_path.clone(),
-                PrivateToolDescription::parse("Closure dependency").expect("description"),
-                PrivateToolSource::parse("export default () => 'old dependency';").expect("source"),
+                AuthoredToolDescription::parse("Closure dependency").expect("description"),
+                AuthoredToolSource::parse("export default () => 'old dependency';")
+                    .expect("source"),
             ),
         )
         .await
@@ -53,8 +54,8 @@ async fn admission_rejects_a_private_tool_change_during_one_source_closure_read(
             &workspace_id,
             PrivateToolSave::new(
                 root_path.clone(),
-                PrivateToolDescription::parse("Closure root").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Closure root").expect("description"),
+                AuthoredToolSource::parse(
                     "const marker = 'root-v1'; export default () => marker + coral.private.closure.dependency();",
                 )
                 .expect("source"),
@@ -83,8 +84,8 @@ async fn admission_rejects_a_private_tool_change_during_one_source_closure_read(
             &workspace_id,
             PrivateToolSave::new(
                 root_path,
-                PrivateToolDescription::parse("Changed closure root").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Changed closure root").expect("description"),
+                AuthoredToolSource::parse(
                     "const marker = 'root-v2'; export default () => marker + coral.private.closure.dependency();",
                 )
                 .expect("source"),
@@ -98,8 +99,9 @@ async fn admission_rejects_a_private_tool_change_during_one_source_closure_read(
             &workspace_id,
             PrivateToolSave::new(
                 dependency_path,
-                PrivateToolDescription::parse("Changed closure dependency").expect("description"),
-                PrivateToolSource::parse("export default () => 'new dependency';").expect("source"),
+                AuthoredToolDescription::parse("Changed closure dependency").expect("description"),
+                AuthoredToolSource::parse("export default () => 'new dependency';")
+                    .expect("source"),
             ),
         )
         .await
@@ -141,8 +143,8 @@ async fn type_only_private_tool_references_do_not_enter_the_runtime_closure() {
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("types.answer").expect("path"),
-                PrivateToolDescription::parse("Return an answer").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Return an answer").expect("description"),
+                AuthoredToolSource::parse(
                     "export default function answer(): number { type Missing = typeof coral.private.never.loaded; const value: number = 42; return value; }",
                 )
                 .expect("source"),
@@ -189,8 +191,8 @@ async fn program_calls_one_private_tool_repeatedly_after_top_level_initializatio
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("math.factorial").expect("path"),
-                PrivateToolDescription::parse("Calculate a factorial").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Calculate a factorial").expect("description"),
+                AuthoredToolSource::parse(
                     r"
                         function factorial(value: number): number {
                             return value <= 1 ? 1 : value * factorial(value - 1);
@@ -270,8 +272,8 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("path"),
-                    PrivateToolDescription::parse(description).expect("description"),
-                    PrivateToolSource::parse(source).expect("source"),
+                    AuthoredToolDescription::parse(description).expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
                 ),
             )
             .await
@@ -336,8 +338,8 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         .user_scope("user:closure-limit", "Bound the Private Tool closure")
         .await;
 
-    for index in (0..=crate::LINKED_PRIVATE_TOOL_MAX_COUNT).rev() {
-        let source = if index == crate::LINKED_PRIVATE_TOOL_MAX_COUNT {
+    for index in (0..=crate::LINKED_TOOL_MAX_COUNT).rev() {
+        let source = if index == crate::LINKED_TOOL_MAX_COUNT {
             "export default function end(): number { return 1; }".to_string()
         } else {
             format!(
@@ -351,8 +353,8 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(&format!("limit.function{index:02}")).expect("path"),
-                    PrivateToolDescription::parse("One closure member").expect("description"),
-                    PrivateToolSource::parse(&source).expect("source"),
+                    AuthoredToolDescription::parse("One closure member").expect("description"),
+                    AuthoredToolSource::parse(&source).expect("source"),
                 ),
             )
             .await
@@ -372,7 +374,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         boundary.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value)
-        }) if value.as_json() == &serde_json::json!(crate::LINKED_PRIVATE_TOOL_MAX_COUNT)
+        }) if value.as_json() == &serde_json::json!(crate::LINKED_TOOL_MAX_COUNT)
     ));
 
     assert!(matches!(
@@ -422,8 +424,9 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(&format!("bytes.function{index:02}")).expect("path"),
-                    PrivateToolDescription::parse("One large closure member").expect("description"),
-                    PrivateToolSource::parse(&source).expect("source"),
+                    AuthoredToolDescription::parse("One large closure member")
+                        .expect("description"),
+                    AuthoredToolSource::parse(&source).expect("source"),
                 ),
             )
             .await
@@ -480,9 +483,9 @@ async fn private_tool_initialization_uses_the_run_surface_once_before_the_progra
             &tool.workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("weather.initializedTemperature").expect("path"),
-                PrivateToolDescription::parse("Read the initialized temperature")
+                AuthoredToolDescription::parse("Read the initialized temperature")
                     .expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolSource::parse(
                     r#"
                         const forecast = await coral.providers.weather.getForecast();
                         await coral.emit({ phase: "initialization", temperature: forecast.data.temperature });
@@ -563,8 +566,8 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Original snapshot").expect("description"),
-                PrivateToolSource::parse(original_source).expect("source"),
+                AuthoredToolDescription::parse("Original snapshot").expect("description"),
+                AuthoredToolSource::parse(original_source).expect("source"),
             ),
         )
         .await
@@ -587,8 +590,8 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Replacement snapshot").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Replacement snapshot").expect("description"),
+                AuthoredToolSource::parse(
                     "export default function value() { return 'replacement'; }",
                 )
                 .expect("source"),
@@ -719,9 +722,9 @@ async fn direct_repeated_calls_follow_a_unicode_private_tool_live_binding() {
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("café.calculer").expect("Unicode path"),
-                PrivateToolDescription::parse("Follow the exported live binding")
+                AuthoredToolDescription::parse("Follow the exported live binding")
                     .expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolSource::parse(
                     "let calculer = () => { calculer = () => 2; return 1; }; export { calculer as default };",
                 )
                 .expect("source"),
@@ -785,9 +788,9 @@ async fn equivalent_callable_default_export_forms_execute() {
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse("forms.answer").expect("path"),
-                    PrivateToolDescription::parse("Return the supplied answer")
+                    AuthoredToolDescription::parse("Return the supplied answer")
                         .expect("description"),
-                    PrivateToolSource::parse(source).expect("source"),
+                    AuthoredToolSource::parse(source).expect("source"),
                 ),
             )
             .await

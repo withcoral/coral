@@ -11,7 +11,7 @@ use coral_catalog::{
     SavedDiagnostic, SavedDiagnosticCategory, SearchOutput, SearchResult, SearchRetriever,
     SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, ToolHints,
 };
-use coral_tools::{PrivateToolDiagnostic, PrivateToolDiagnosticCategory};
+use coral_tools::{AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory};
 use serde_json::{Value, json};
 
 #[cfg(test)]
@@ -189,13 +189,13 @@ fn authoring(description: &AuthoringDescription) -> DescriptionAuthoring {
 
 /// One saved diagnostic as a Program reads it.
 #[must_use]
-pub fn diagnostic(diagnostic: &PrivateToolDiagnostic) -> SavedDiagnostic {
+pub fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> SavedDiagnostic {
     SavedDiagnostic {
         category: match diagnostic.category() {
-            PrivateToolDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
-            PrivateToolDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
-            PrivateToolDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
-            PrivateToolDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
+            AuthoredToolDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
+            AuthoredToolDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
+            AuthoredToolDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
+            AuthoredToolDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
         },
         code: diagnostic.code(),
         message: diagnostic.message().to_owned(),

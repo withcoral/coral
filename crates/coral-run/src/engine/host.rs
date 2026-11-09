@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use coral_catalog::AuthoredToolKind;
 use tracing::Instrument as _;
 use tracing::instrument::WithSubscriber as _;
 
@@ -89,7 +90,7 @@ impl RunProgramHost {
             coral_v8::AuthoredSource::PrivateTool { path } => SourceDocument::PrivateTool {
                 private_tool_id: self
                     .linked_snapshots
-                    .get(&format!("coral.private.{path}"))?
+                    .get(&AuthoredToolKind::Private.call_path(&path))?
                     .binding
                     .definition()
                     .to_owned(),
@@ -97,7 +98,7 @@ impl RunProgramHost {
             coral_v8::AuthoredSource::SharedTool { path } => SourceDocument::SharedTool {
                 shared_tool_id: self
                     .linked_snapshots
-                    .get(&format!("coral.shared.{path}"))?
+                    .get(&AuthoredToolKind::Shared.call_path(&path))?
                     .binding
                     .definition()
                     .to_owned(),
@@ -295,10 +296,7 @@ impl RunProgramHost {
                 // Run linked.
                 let Some((relative_path, linked)) =
                     self.linked_snapshots.get(&call_path).and_then(|linked| {
-                        let relative = call_path
-                            .strip_prefix(linked.kind.linked_root()?)?
-                            .strip_prefix('.')?;
-                        Some((relative, linked.clone()))
+                        Some((linked.kind.relative_path(&call_path)?, linked.clone()))
                     })
                 else {
                     return Err(self.host_error(InvocationHostError::Rejected(

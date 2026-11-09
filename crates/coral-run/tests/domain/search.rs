@@ -225,8 +225,8 @@ async fn a_lookup_fails_rather_than_round_a_saved_diagnostic_integer() {
         &scope.workspace_id,
         PrivateToolSave::new(
             PrivateToolPath::parse("reports.weekly").expect("path"),
-            PrivateToolDescription::parse("The weekly report").expect("description"),
-            PrivateToolSource::parse("export default async function weekly() { return 1; }")
+            AuthoredToolDescription::parse("The weekly report").expect("description"),
+            AuthoredToolSource::parse("export default async function weekly() { return 1; }")
                 .expect("source"),
         ),
     )

@@ -1,4 +1,5 @@
 //! Scripted Program engines that gate or observe execution.
+use crate::engine::LinkedSource;
 use crate::tests::*;
 
 #[derive(Clone)]
@@ -55,11 +56,11 @@ impl ProgramEngine for ClosureReadGateEngine {
         Ok(ProgramPackage::scripted(source))
     }
 
-    fn compile_with_private_tools(
+    fn compile_linked(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[PrivateToolSelection],
+        _linked: &[LinkedSource],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -111,17 +112,17 @@ impl ProgramEngine for SnapshotEngine {
         Ok(ProgramPackage::scripted(source))
     }
 
-    fn compile_with_private_tools(
+    fn compile_linked(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-        linked: &[PrivateToolSelection],
+        linked: &[LinkedSource],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         let linked = linked
             .first()
             .ok_or_else(|| "Private Tool snapshot is missing".to_string())?;
-        Ok(ProgramPackage::scripted(linked.source().as_str()))
+        Ok(ProgramPackage::scripted(linked.source()))
     }
 
     fn execute(
@@ -588,11 +589,11 @@ impl ProgramEngine for ReferenceScanningEngine {
         Ok(ProgramPackage::scripted(source))
     }
 
-    fn compile_with_private_tools(
+    fn compile_linked(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-        linked: &[PrivateToolSelection],
+        linked: &[LinkedSource],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(&linked.len().to_string()))

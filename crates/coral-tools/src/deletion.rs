@@ -4,7 +4,8 @@ use coral_db::{Database, Transaction};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
 use crate::Error;
-use crate::private_tool::{delete_current_with_event, now_unix_nanos};
+use crate::authoring::now_unix_nanos;
+use crate::private_tool::delete_current_with_event;
 use crate::repository;
 use crate::types::{PrivateToolChangeContext, PrivateToolId, PrivateToolPath};
 

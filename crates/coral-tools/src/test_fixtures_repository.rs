@@ -7,7 +7,7 @@ use coral_db::Database;
 use coral_workspace::WorkspaceId;
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 
-use crate::{PRIVATE_TOOL_SOURCE_MAX_BYTES, PrivateToolId};
+use crate::{AUTHORED_TOOL_SOURCE_MAX_BYTES, PrivateToolId};
 
 /// Stores declaration fields whose path the projection decoder rejects.
 ///
@@ -44,7 +44,7 @@ pub async fn corrupt_source(
         workspace,
         function,
         "source",
-        "x".repeat(PRIVATE_TOOL_SOURCE_MAX_BYTES + 1),
+        "x".repeat(AUTHORED_TOOL_SOURCE_MAX_BYTES + 1),
     )
     .await;
 }

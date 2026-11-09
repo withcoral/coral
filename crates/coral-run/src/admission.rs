@@ -16,8 +16,8 @@ use crate::engine::{LinkedPath, LinkedSource, ProgramEngine, ProgramPackage, Pro
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
-    COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_PRIVATE_TOOL_MAX_COUNT, ProgramSource, RunCursor,
-    RunId, RunModule, RunState, RunSubmission, RunUpdate, run_repository,
+    COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_TOOL_MAX_COUNT, ProgramSource, RunCursor, RunId,
+    RunModule, RunState, RunSubmission, RunUpdate, run_repository,
 };
 
 /// The most candidate Call Paths admission checks, as Private Tool typing
@@ -429,9 +429,9 @@ impl RunModule {
             if snapshots.contains_key(path) {
                 continue;
             }
-            if snapshots.len() == LINKED_PRIVATE_TOOL_MAX_COUNT {
+            if snapshots.len() == LINKED_TOOL_MAX_COUNT {
                 return Err(Error::ProgramAdmission(format!(
-                    "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private and Shared Tools"
+                    "Program may link at most {LINKED_TOOL_MAX_COUNT} Private and Shared Tools"
                 )));
             }
             let snapshot = match path {
@@ -769,7 +769,7 @@ async fn hold_linked_sources(
         if !held {
             return Err(Error::ProgramAdmission(format!(
                 "{} changed during Program admission",
-                snapshot.path().kind_name()
+                snapshot.path().kind().name()
             )));
         }
     }
@@ -912,9 +912,9 @@ fn validate_source_closure<'a>(
         linked_count = linked_count.saturating_add(1);
         combined_bytes = combined_bytes.saturating_add(source.len());
     }
-    if linked_count > LINKED_PRIVATE_TOOL_MAX_COUNT {
+    if linked_count > LINKED_TOOL_MAX_COUNT {
         return Err(Error::ProgramAdmission(format!(
-            "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private and Shared Tools"
+            "Program may link at most {LINKED_TOOL_MAX_COUNT} Private and Shared Tools"
         )));
     }
     if combined_bytes > COMBINED_TYPESCRIPT_MAX_BYTES {

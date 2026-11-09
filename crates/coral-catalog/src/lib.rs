@@ -34,16 +34,16 @@ pub use configuration::{
     ProviderConfigurationReview, ServerGroup, ServerOption, ServerSelection, ServerVariable,
     normalize_display_name, normalize_request_headers,
 };
+mod authored;
 mod declaration_path;
 mod error;
 mod inspection;
 mod mcp;
 mod openapi;
 mod paths;
-mod private;
-pub use private::{
-    CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME, SHARED_PROVIDER_DISPLAY_NAME,
-    private_tool, shared_tool,
+pub use authored::{
+    AuthoredToolKind, CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME,
+    SHARED_PROVIDER_DISPLAY_NAME, private_tool, shared_tool,
 };
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors
@@ -291,7 +291,7 @@ pub async fn publish_private_generation_in_transaction(
 ) -> Result<ProviderGenerationId, Error> {
     publish_code_generation(
         transaction,
-        private::CodeCatalog::Private,
+        authored::AuthoredToolKind::Private,
         created_at_unix_nanos,
     )
     .await
@@ -311,7 +311,7 @@ pub async fn publish_shared_generation_in_transaction(
 ) -> Result<ProviderGenerationId, Error> {
     publish_code_generation(
         transaction,
-        private::CodeCatalog::Shared,
+        authored::AuthoredToolKind::Shared,
         created_at_unix_nanos,
     )
     .await
@@ -319,14 +319,14 @@ pub async fn publish_shared_generation_in_transaction(
 
 async fn publish_code_generation(
     transaction: &mut Transaction<'_>,
-    catalog: private::CodeCatalog,
+    catalog: authored::AuthoredToolKind,
     created_at_unix_nanos: i64,
 ) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
         repository::GenerationInput::Code(catalog),
-        &ProviderSetupInputDigest::of_bytes(catalog.identity().as_bytes()),
-        private::prepared(catalog)?,
+        &ProviderSetupInputDigest::of_bytes(catalog.call_root().as_bytes()),
+        authored::prepared(catalog)?,
         catalog.materializer_version(),
         created_at_unix_nanos,
     )

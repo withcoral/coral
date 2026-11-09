@@ -12,9 +12,9 @@ use crate::profile::TYPESCRIPT_PROFILE;
 use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map};
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
-    BuiltinTools, CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory,
-    Error, IsolateLimits, LinkedPrivateToolSource, PrivateToolCallPaths, PrivateToolCompilation,
-    PrivateToolDeclarationField, PrivateToolReference, ProgramExecutionControl, ToolReferences,
+    AuthoredToolCompilation, AuthoredToolDeclarationField, BuiltinTools, CompiledProgram,
+    CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error, IsolateLimits,
+    LinkedToolReference, LinkedToolSource, NamedCallPaths, ProgramExecutionControl, ToolReferences,
     UnknownToolCall,
 };
 
@@ -220,7 +220,7 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<PrivateToolCompilation, Error> {
+    ) -> Result<AuthoredToolCompilation, Error> {
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
@@ -244,7 +244,7 @@ impl ProgramCompiler {
         deadline: Instant,
         source: &str,
         declarations: &CoralDeclarations,
-    ) -> Result<PrivateToolCompilation, Error> {
+    ) -> Result<AuthoredToolCompilation, Error> {
         let declarations_json = serde_json::to_string(declarations)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
@@ -265,7 +265,7 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<PrivateToolCallPaths, Error> {
+    ) -> Result<NamedCallPaths, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.private_tool_call_paths(&source)
@@ -283,7 +283,7 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<PrivateToolCallPaths, Error> {
+    ) -> Result<NamedCallPaths, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.call_paths("__coralAnalyzePrivateToolPaths", PROGRAM_FILE_NAME, &source)
@@ -324,7 +324,7 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, Error> {
+    ) -> Result<Vec<LinkedToolReference>, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.private_tool_paths(&source)
@@ -340,7 +340,7 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, Error> {
+    ) -> Result<Vec<LinkedToolReference>, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.private_tool_dependency_paths(&source)
@@ -364,7 +364,7 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-        private_tools: &[LinkedPrivateToolSource],
+        private_tools: &[LinkedToolSource],
     ) -> Result<CompiledProgram, Error> {
         let private_tools_json = serde_json::to_string(private_tools)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
@@ -494,7 +494,7 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
             | Error::InvalidPrivateTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidPrivateToolReference { .. }
+            | Error::InvalidLinkedToolReference { .. }
             | Error::InvalidPrivateToolSave(_),
         ) => CompilerOutcome::Rejected,
         Err(_) => CompilerOutcome::Failed,
@@ -539,38 +539,38 @@ struct CompileOutput {
 #[serde(rename_all = "camelCase")]
 struct PrivateToolOutput {
     declaration_text: Option<String>,
-    declaration_fields: Option<Vec<PrivateToolDeclarationField>>,
+    declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
     declaration_projection_error: Option<String>,
     validation_error: Option<String>,
-    reference_error: Option<PrivateToolReferenceError>,
+    reference_error: Option<LinkedToolReferenceError>,
     blocking_diagnostics: Vec<CompilerDiagnostic>,
     diagnostics: Vec<CompilerDiagnostic>,
-    references: Vec<PrivateToolReference>,
+    references: Vec<LinkedToolReference>,
     #[serde(default)]
-    shared_references: Vec<PrivateToolReference>,
+    shared_references: Vec<LinkedToolReference>,
     not_data: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PrivateToolPathsOutput {
-    references: Vec<PrivateToolReference>,
-    validation_error: Option<PrivateToolReferenceError>,
+    references: Vec<LinkedToolReference>,
+    validation_error: Option<LinkedToolReferenceError>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PrivateToolCallPathsOutput {
-    references: Vec<PrivateToolReference>,
+    references: Vec<LinkedToolReference>,
     #[serde(default)]
-    shared_references: Vec<PrivateToolReference>,
-    validation_error: Option<PrivateToolReferenceError>,
+    shared_references: Vec<LinkedToolReference>,
+    validation_error: Option<LinkedToolReferenceError>,
     tools: Option<ToolReferences>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PrivateToolReferenceError {
+struct LinkedToolReferenceError {
     message: String,
     line: u64,
     column: u64,
@@ -646,7 +646,7 @@ impl CompilerIsolate {
         source: &str,
         builtin_tools: &str,
         declarations_json: &str,
-    ) -> Result<PrivateToolCompilation, Error> {
+    ) -> Result<AuthoredToolCompilation, Error> {
         let json = self.call(
             "__coralPreparePrivateTool",
             &[
@@ -665,7 +665,7 @@ impl CompilerIsolate {
             });
         }
         if let Some(error) = output.reference_error {
-            return Err(invalid_private_tool_reference(error));
+            return Err(invalid_linked_tool_reference(error));
         }
         if let Some(message) = output.validation_error {
             return Err(Error::InvalidPrivateTool(message));
@@ -685,7 +685,7 @@ impl CompilerIsolate {
                 ));
             }
         };
-        Ok(PrivateToolCompilation::new(
+        Ok(AuthoredToolCompilation::new(
             declaration,
             declaration_field_projection,
             output.diagnostics,
@@ -695,7 +695,7 @@ impl CompilerIsolate {
         ))
     }
 
-    fn private_tool_call_paths(&mut self, source: &str) -> Result<PrivateToolCallPaths, Error> {
+    fn private_tool_call_paths(&mut self, source: &str) -> Result<NamedCallPaths, Error> {
         self.call_paths(
             "__coralAnalyzePrivateToolCallPaths",
             PRIVATE_TOOL_FILE_NAME,
@@ -708,7 +708,7 @@ impl CompilerIsolate {
         function: &str,
         file_name: &str,
         source: &str,
-    ) -> Result<PrivateToolCallPaths, Error> {
+    ) -> Result<NamedCallPaths, Error> {
         let json = self.call(
             function,
             &[source, file_name, TYPESCRIPT_PROFILE.javascript_target()],
@@ -716,8 +716,8 @@ impl CompilerIsolate {
         let output: PrivateToolCallPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         match (output.validation_error, output.tools) {
-            (Some(error), _) => Err(invalid_private_tool_reference(error)),
-            (None, Some(tools)) => Ok(PrivateToolCallPaths {
+            (Some(error), _) => Err(invalid_linked_tool_reference(error)),
+            (None, Some(tools)) => Ok(NamedCallPaths {
                 private_tools: output.references,
                 shared_tools: output.shared_references,
                 tools,
@@ -728,14 +728,14 @@ impl CompilerIsolate {
         }
     }
 
-    fn private_tool_paths(&mut self, source: &str) -> Result<Vec<PrivateToolReference>, Error> {
+    fn private_tool_paths(&mut self, source: &str) -> Result<Vec<LinkedToolReference>, Error> {
         self.analyze_private_tool_paths("__coralAnalyzePrivateToolPaths", source)
     }
 
     fn private_tool_dependency_paths(
         &mut self,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, Error> {
+    ) -> Result<Vec<LinkedToolReference>, Error> {
         self.analyze_private_tool_paths("__coralAnalyzePrivateToolDependencies", source)
     }
 
@@ -743,7 +743,7 @@ impl CompilerIsolate {
         &mut self,
         function: &str,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, Error> {
+    ) -> Result<Vec<LinkedToolReference>, Error> {
         let json = self.call(
             function,
             &[
@@ -755,7 +755,7 @@ impl CompilerIsolate {
         let output: PrivateToolPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         if let Some(error) = output.validation_error {
-            Err(invalid_private_tool_reference(error))
+            Err(invalid_linked_tool_reference(error))
         } else {
             Ok(output.references)
         }
@@ -840,8 +840,8 @@ impl CompilerIsolate {
 /// What V8 throws when the compiler's recursion over source overflows its stack.
 const STACK_OVERFLOW: &str = "RangeError: Maximum call stack size exceeded";
 
-fn invalid_private_tool_reference(error: PrivateToolReferenceError) -> Error {
-    Error::InvalidPrivateToolReference {
+fn invalid_linked_tool_reference(error: LinkedToolReferenceError) -> Error {
+    Error::InvalidLinkedToolReference {
         message: error.message,
         line: error.line,
         column: error.column,

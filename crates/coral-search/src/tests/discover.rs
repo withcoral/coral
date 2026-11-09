@@ -10,8 +10,8 @@ use coral_catalog::{SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, ToolKey};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_test_support::{change, trace};
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolPath, PrivateToolSave,
-    PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
+    PrivateToolSave,
 };
 use coral_workspace::AuthenticatedPrincipal;
 
@@ -466,8 +466,8 @@ async fn a_missing_private_path_names_the_callers_own_nearest_private_tools() {
                     workspace,
                     PrivateToolSave::new(
                         PrivateToolPath::parse(&path).expect("a path"),
-                        PrivateToolDescription::parse("Format one value").expect("a description"),
-                        PrivateToolSource::parse(
+                        AuthoredToolDescription::parse("Format one value").expect("a description"),
+                        AuthoredToolSource::parse(
                             "export default async (value: number): Promise<string> => `${value}`;",
                         )
                         .expect("a source"),

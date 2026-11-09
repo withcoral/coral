@@ -14,7 +14,7 @@ use crate::Error;
 /// Maximum UTF-8 byte length of one submitted Program body.
 pub const PROGRAM_SOURCE_MAX_BYTES: usize = 64 * 1024;
 /// Maximum number of distinct Private Tools in one linked source closure.
-pub const LINKED_PRIVATE_TOOL_MAX_COUNT: usize = 64;
+pub const LINKED_TOOL_MAX_COUNT: usize = 64;
 /// Maximum combined UTF-8 bytes in submitted and linked TypeScript source.
 pub const COMBINED_TYPESCRIPT_MAX_BYTES: usize = 512 * 1024;
 /// Maximum UTF-8 byte length of emitted JavaScript in one accepted package.
@@ -1088,7 +1088,7 @@ pub(crate) struct AcceptedRun {
 /// chose, for that revision, which applies when no exact rule matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LinkedTool {
-    pub(crate) kind: crate::ToolKind,
+    pub(crate) kind: coral_catalog::AuthoredToolKind,
     pub(crate) binding: coral_catalog::CodeExecutionBinding,
     pub(crate) declared_default: coral_catalog::ToolAccessState,
 }

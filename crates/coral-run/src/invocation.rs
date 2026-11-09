@@ -365,10 +365,7 @@ impl ToolInvoker {
         source_location: Option<crate::SourceLocation>,
     ) -> Result<PerformedCall, InvocationHostError> {
         let arguments_json = self.arguments_json(&arguments)?;
-        let Some(root) = linked.kind.linked_root() else {
-            return Err(Error::CorruptData("a Run linked a Provider Tool".to_owned()).into());
-        };
-        let call_path = format!("{root}.{relative_path}");
+        let call_path = linked.kind.call_path(relative_path);
         let (target, policy) = self.resolve_linked(relative_path, linked).await?;
         let id = InvocationId::generate();
         let trace = OpenChild::in_parent_span(child.as_ref(), || {
@@ -478,7 +475,7 @@ impl ToolInvoker {
             authority.effective_user_role(),
         );
         let resolved = match linked.kind {
-            crate::ToolKind::Shared => {
+            coral_catalog::AuthoredToolKind::Shared => {
                 coral_provider::resolve_shared_tool_in_transaction(
                     &mut transaction,
                     &self.workspace_id,
@@ -488,7 +485,7 @@ impl ToolInvoker {
                 )
                 .await?
             }
-            crate::ToolKind::Private | crate::ToolKind::Provider => {
+            coral_catalog::AuthoredToolKind::Private => {
                 coral_provider::resolve_private_tool_in_transaction(
                     &mut transaction,
                     &self.workspace_id,

@@ -16,24 +16,79 @@ pub const PRIVATE_PROVIDER_DISPLAY_NAME: &str = "Private";
 /// The display name of every Workspace's Shared Provider.
 pub const SHARED_PROVIDER_DISPLAY_NAME: &str = "Shared";
 
-/// One of the catalogs whose Tools have code Execution Bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CodeCatalog {
-    /// The Private Provider's, at `coral.private`.
+/// The kind of a Tool that Coral performs from authored source: a Private
+/// Tool or a Shared Tool. Each kind has one Provider in every Workspace,
+/// whose catalog holds no materialized Tool and whose Tools have code
+/// Execution Bindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AuthoredToolKind {
+    /// A Principal's own Private Tool, under `coral.private`.
     Private,
-    /// The Shared Provider's, at `coral.shared`.
+    /// The Workspace's Shared Tool, under `coral.shared`.
     Shared,
 }
 
-impl CodeCatalog {
-    /// The catalog whose Generations store `input_kind`.
+impl AuthoredToolKind {
+    /// The Call Root of the kind's Provider, which every Call Path of the
+    /// kind starts with. Its Provider's Generations pin it as their input.
+    #[must_use]
+    pub const fn call_root(self) -> &'static str {
+        match self {
+            Self::Private => "coral.private",
+            Self::Shared => "coral.shared",
+        }
+    }
+
+    /// How a message names a Tool of this kind: `Private Tool` or `Shared
+    /// Tool`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Private => "Private Tool",
+            Self::Shared => "Shared Tool",
+        }
+    }
+
+    /// The complete Call Path of the Tool at `relative_path` under the
+    /// kind's Call Root, such as `coral.shared.mail.remind`.
+    #[must_use]
+    pub fn call_path(self, relative_path: &str) -> String {
+        format!("{}.{relative_path}", self.call_root())
+    }
+
+    /// How a message and a stack frame name the source of the Tool at
+    /// `relative_path`, such as `Shared Tool coral.shared.mail.remind`.
+    #[must_use]
+    pub fn source_name(self, relative_path: &str) -> String {
+        format!("{} {}", self.name(), self.call_path(relative_path))
+    }
+
+    /// The path under the kind's Call Root that `call_path` names; `None`
+    /// when the kind's Call Root does not own it.
+    #[must_use]
+    pub fn relative_path(self, call_path: &str) -> Option<&str> {
+        call_path
+            .strip_prefix(self.call_root())?
+            .strip_prefix('.')
+            .filter(|relative| !relative.is_empty())
+    }
+
+    /// The kind whose Call Root owns `call_path`, if either does.
+    #[must_use]
+    pub fn of_call_path(call_path: &str) -> Option<Self> {
+        [Self::Private, Self::Shared]
+            .into_iter()
+            .find(|kind| kind.relative_path(call_path).is_some())
+    }
+
+    /// The kind whose Provider's Generations store `input_kind`.
     pub(crate) fn from_input_kind(input_kind: &str) -> Option<Self> {
         [Self::Private, Self::Shared]
             .into_iter()
-            .find(|catalog| catalog.input_kind() == input_kind)
+            .find(|kind| kind.input_kind() == input_kind)
     }
 
-    /// The input kind its Generations store.
+    /// The input kind its Provider's Generations store.
     pub(crate) const fn input_kind(self) -> &'static str {
         match self {
             Self::Private => "private",
@@ -41,15 +96,7 @@ impl CodeCatalog {
         }
     }
 
-    /// The input every one of its Generations pins: its Call Root.
-    pub(crate) const fn identity(self) -> &'static str {
-        match self {
-            Self::Private => "coral.private",
-            Self::Shared => "coral.shared",
-        }
-    }
-
-    /// The materializer that wrote its Generations.
+    /// The materializer that wrote its Provider's Generations.
     pub(crate) const fn materializer_version(self) -> &'static str {
         match self {
             Self::Private => "coral-private-v1",
@@ -64,17 +111,9 @@ impl CodeCatalog {
         }
     }
 
-    /// How a Tool Description names one of its Tools.
-    const fn tool_kind(self) -> &'static str {
-        match self {
-            Self::Private => "Private Tool",
-            Self::Shared => "Shared Tool",
-        }
-    }
-
-    /// The source of the catalog's one schema, any JSON value.
+    /// The source of its catalog's one schema, any JSON value.
     fn json_value_schema_source(self) -> String {
-        format!("{}#/json", self.identity())
+        format!("{}#/json", self.call_root())
     }
 }
 
@@ -118,7 +157,7 @@ impl CodeExecutionBinding {
 
 /// A code catalog's schema graph and its one schema, which every one of its
 /// Tools' arguments and result meet: a JSON value.
-fn json_value_schema(catalog: CodeCatalog) -> Result<(SchemaGraph, SchemaId), Error> {
+fn json_value_schema(catalog: AuthoredToolKind) -> Result<(SchemaGraph, SchemaId), Error> {
     let invalid = |diagnostic: crate::CatalogDiagnostic| {
         Error::InvalidInput(diagnostic.message().to_string())
     };
@@ -144,7 +183,7 @@ pub fn private_tool(
     declared_default: crate::ToolAccessState,
 ) -> Result<MaterializedTool, Error> {
     code_tool(
-        CodeCatalog::Private,
+        AuthoredToolKind::Private,
         relative_path,
         binding,
         declared_default,
@@ -166,7 +205,7 @@ pub fn shared_tool(
     declared_default: crate::ToolAccessState,
 ) -> Result<MaterializedTool, Error> {
     code_tool(
-        CodeCatalog::Shared,
+        AuthoredToolKind::Shared,
         relative_path,
         binding,
         declared_default,
@@ -174,18 +213,14 @@ pub fn shared_tool(
 }
 
 fn code_tool(
-    catalog: CodeCatalog,
+    catalog: AuthoredToolKind,
     relative_path: &str,
     binding: CodeExecutionBinding,
     declared_default: crate::ToolAccessState,
 ) -> Result<MaterializedTool, Error> {
     let (_graph, input_schema) = json_value_schema(catalog)?;
     let key = ToolKey::parse(binding.definition())?;
-    let description = format!(
-        "The {} {}.{relative_path}.",
-        catalog.tool_kind(),
-        catalog.identity()
-    );
+    let description = format!("The {}.", catalog.source_name(relative_path));
     Ok(MaterializedTool::new(
         key,
         relative_path.to_owned(),
@@ -208,7 +243,7 @@ fn code_tool(
 
 /// A code catalog, with no Tools. Its schema graph holds the one schema
 /// every one of its Tools' arguments and result meet: a JSON value.
-pub(crate) fn prepared(catalog: CodeCatalog) -> Result<PreparedProviderCatalog, Error> {
+pub(crate) fn prepared(catalog: AuthoredToolKind) -> Result<PreparedProviderCatalog, Error> {
     let (schema_graph, _schema) = json_value_schema(catalog)?;
     let schema_graph_json = schema_graph.to_storage_json()?;
     Ok(PreparedProviderCatalog::without_tools(

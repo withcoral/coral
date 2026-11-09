@@ -1,4 +1,4 @@
-/// Current Private Tool authoring, inspection, and persistence failure.
+/// Private and Shared Tool authoring, inspection, and persistence failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Caller-supplied domain input was invalid.
@@ -45,6 +45,9 @@ pub enum Error {
     /// The source's arguments or result cannot cross a Tool call as data.
     #[error("a Shared Tool takes and returns only data: {0}")]
     SharedToolNotData(String),
+    /// Compiling a Shared Tool Publish exceeded the fixed authoring deadline.
+    #[error("Shared Tool compilation exceeded the two-second deadline")]
+    SharedToolCompilationTimedOut,
     /// The source's arguments or result cannot cross a Tool call as data:
     /// the reason names where the declaration holds a function, a class
     /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
@@ -60,7 +63,7 @@ pub enum Error {
     #[error("Private Tool compilation exceeded the two-second deadline")]
     PrivateToolCompilationTimedOut,
     /// The compiler queue was full, so the source was not judged. Retryable.
-    #[error("Private Tool compiler is busy; retry shortly")]
+    #[error("the authoring compiler is busy; retry shortly")]
     CompilerBusy,
     /// Current Principal authority does not permit the operation.
     #[error("permission denied: {0}")]
@@ -74,22 +77,22 @@ pub enum Error {
         maximum_bytes: usize,
     },
     /// The compiler-only isolate could not initialize.
-    #[error("Private Tool compiler is unavailable: {0}")]
+    #[error("the authoring compiler is unavailable: {0}")]
     CompilerUnavailable(String),
     /// A compiler worker stopped before returning its result.
-    #[error("Private Tool compiler worker stopped unexpectedly")]
+    #[error("the authoring compiler worker stopped unexpectedly")]
     CompilerWorkerStopped,
     /// The clock could not provide safe durable time evidence.
-    #[error("Private Tool clock failed: {0}")]
+    #[error("the authoring clock failed: {0}")]
     Clock(String),
     /// Diagnostics or lifecycle fields could not be encoded.
-    #[error("Private Tool evidence JSON was invalid: {0}")]
+    #[error("authored Tool evidence JSON was invalid: {0}")]
     Json(#[from] serde_json::Error),
     /// Workspace authority or lifecycle rejected the operation.
     #[error(transparent)]
     Workspace(#[from] coral_workspace::Error),
     /// A persisted row does not decode to the domain model.
-    #[error("database contains corrupt Private Tool data: {0}")]
+    #[error("database contains corrupt authored Tool data: {0}")]
     CorruptData(String),
     /// The persistence Adapter rejected the operation.
     #[error(transparent)]
@@ -113,6 +116,7 @@ impl Error {
             Self::SharedToolPathConflict => "shared_tool_path_conflict",
             Self::SharedToolAdmission(_) => "shared_tool_admission",
             Self::SharedToolNotData(_) => "shared_tool_not_data",
+            Self::SharedToolCompilationTimedOut => "shared_tool_compilation_timed_out",
             Self::PrivateToolNotData(_) => "private_tool_not_data",
             Self::PrivateToolPathConflict => "private_tool_path_conflict",
             Self::PrivateToolCompilationTimedOut { .. } => "private_tool_compilation_timed_out",
@@ -152,6 +156,7 @@ impl Error {
             Self::SharedToolPathConflict => "shared_tool_path_conflict",
             Self::SharedToolAdmission(_) => "shared_tool_admission_failed",
             Self::SharedToolNotData(_) => "shared_tool_not_data",
+            Self::SharedToolCompilationTimedOut => "shared_tool_compilation_timed_out",
             Self::PrivateToolCompilationTimedOut => "private_tool_compilation_timed_out",
             Self::CompilerBusy => "private_tool_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",

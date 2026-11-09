@@ -87,8 +87,8 @@ impl SharedScope {
                 &self.scope.workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("a path"),
-                    PrivateToolDescription::parse("A private tool").expect("a description"),
-                    PrivateToolSource::parse(source).expect("a source"),
+                    AuthoredToolDescription::parse("A private tool").expect("a description"),
+                    AuthoredToolSource::parse(source).expect("a source"),
                 ),
             )
             .await
@@ -108,8 +108,8 @@ impl SharedScope {
                         owner: self.scope.owner.principal().clone(),
                         path: PrivateToolPath::parse("draft").expect("a path"),
                     },
-                    PrivateToolDescription::parse("Remind someone").expect("a description"),
-                    PrivateToolSource::parse(source).expect("a source"),
+                    AuthoredToolDescription::parse("Remind someone").expect("a description"),
+                    AuthoredToolSource::parse(source).expect("a source"),
                     default,
                     expected_revision,
                 ),
@@ -241,14 +241,9 @@ async fn every_principal_calls_a_shared_tool_with_its_own_private_tools_and_gets
             calls.push((
                 summary.call_path,
                 summary.tool_kind,
-                summary.shared_tool_revision,
-                summary.parent.map(|parent| {
-                    (
-                        parent.call_path,
-                        parent.tool_kind,
-                        parent.shared_tool_revision,
-                    )
-                }),
+                summary
+                    .parent
+                    .map(|parent| (parent.call_path, parent.tool_kind)),
                 summary.source_location,
             ));
         }
@@ -279,14 +274,12 @@ async fn every_principal_calls_a_shared_tool_with_its_own_private_tools_and_gets
                 (
                     "coral.private.contacts.find".to_string(),
                     crate::ToolKind::Private,
-                    None,
-                    Some((REMIND.to_string(), crate::ToolKind::Shared, Some(1))),
+                    Some((REMIND.to_string(), crate::ToolKind::Shared { revision: 1 })),
                     Some(in_shared_tool),
                 ),
                 (
                     REMIND.to_string(),
-                    crate::ToolKind::Shared,
-                    Some(1),
+                    crate::ToolKind::Shared { revision: 1 },
                     None,
                     Some(in_program),
                 ),

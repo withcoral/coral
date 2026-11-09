@@ -1,8 +1,8 @@
 use crate::{AccessLifecycleModule, Error};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
-    PrivateToolSave, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole,
@@ -115,8 +115,8 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
             workspace.id(),
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Fresh work after rejoining").unwrap(),
-                PrivateToolSource::parse("export default () => 42;").unwrap(),
+                AuthoredToolDescription::parse("Fresh work after rejoining").unwrap(),
+                AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await

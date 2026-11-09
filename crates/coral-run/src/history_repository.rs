@@ -1,5 +1,6 @@
 //! Run-owned source-free projections. Only repositories compose the position facet.
 use crate::{Error, InvocationStatus, InvocationSummary, RunSummary};
+use coral_catalog::AuthoredToolKind;
 use coral_db::{Transaction, col};
 use coral_workspace::{HistoryAuthority, WorkspaceId};
 use sea_query::{
@@ -374,17 +375,12 @@ impl InvocationRow {
             run: crate::RunId::parse(&self.run_id)?,
             provider: coral_provider::ProviderId::parse(&self.provider_id)?,
             tool: self.tool_key,
-            tool_kind: crate::ToolKind::of_call_path(&self.call_path),
-            shared_tool_revision: linked_revision(&self.call_path, self.shared_tool_revision)?,
+            tool_kind: tool_kind(&self.call_path, self.shared_tool_revision)?,
             call_path: self.call_path,
             parent: match (self.parent_id, self.parent_call_path) {
                 (Some(id), Some(call_path)) => Some(crate::InvocationParent {
                     id: crate::InvocationId::parse(&id)?,
-                    tool_kind: crate::ToolKind::of_call_path(&call_path),
-                    shared_tool_revision: linked_revision(
-                        &call_path,
-                        self.parent_shared_tool_revision,
-                    )?,
+                    tool_kind: tool_kind(&call_path, self.parent_shared_tool_revision)?,
                     call_path,
                 }),
                 (None, None) => None,
@@ -410,16 +406,23 @@ impl InvocationRow {
         })
     }
 }
-/// The Shared Tool Revision a call at `call_path` ran: the one its Run
-/// linked. `None` for a call to any other kind of Tool.
-fn linked_revision(call_path: &str, linked: Option<i64>) -> Result<Option<u64>, Error> {
-    if crate::ToolKind::of_call_path(call_path) != crate::ToolKind::Shared {
-        return Ok(None);
-    }
-    linked
-        .map(u64::try_from)
-        .transpose()
-        .map_err(|_error| Error::CorruptData("invalid linked Shared Tool revision".into()))
+/// The kind of Tool that a call at `call_path` called: the Private
+/// Provider's Call Root holds only Private Tools, and the Shared Provider's
+/// only Shared Tools. An Invocation retains the Call Path it resolved, so
+/// its kind never changes after admission. `linked` is the Shared Tool
+/// Revision its Run linked under its Tool Key, which a Shared Tool call ran.
+fn tool_kind(call_path: &str, linked: Option<i64>) -> Result<crate::ToolKind, Error> {
+    Ok(match AuthoredToolKind::of_call_path(call_path) {
+        None => crate::ToolKind::Provider,
+        Some(AuthoredToolKind::Private) => crate::ToolKind::Private,
+        Some(AuthoredToolKind::Shared) => crate::ToolKind::Shared {
+            revision: linked
+                .and_then(|revision| u64::try_from(revision).ok())
+                .ok_or_else(|| {
+                    Error::CorruptData("a Shared Tool call has no linked revision".into())
+                })?,
+        },
+    })
 }
 
 /// The revision of the Shared Tool that the Run of the Invocation aliased

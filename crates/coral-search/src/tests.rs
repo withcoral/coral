@@ -22,8 +22,8 @@ use coral_provider::{
 use coral_test_support::TestDatabase;
 use coral_tools::test_fixtures_repository as tool_faults;
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
-    PrivateToolSave, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
 };
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
@@ -1999,8 +1999,8 @@ async fn private_tool_projection_bounds_do_not_become_authoring_limits() {
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("largeProjection").expect("path"),
-                PrivateToolDescription::parse("Large searchable metadata").expect("description"),
-                PrivateToolSource::parse(&format!(
+                AuthoredToolDescription::parse("Large searchable metadata").expect("description"),
+                AuthoredToolSource::parse(&format!(
                     "interface X{{{fields}}} export default function f(input:X):number{{return 1}}"
                 ))
                 .expect("bounded source"),
@@ -2010,7 +2010,7 @@ async fn private_tool_projection_bounds_do_not_become_authoring_limits() {
         .expect("private projection bound must not reject valid authoring");
     assert!(matches!(
         function.declaration_field_projection(),
-        coral_tools::PrivateToolDeclarationFieldProjection::Failed(_)
+        coral_tools::AuthoredToolDeclarationFieldProjection::Failed(_)
     ));
 
     fixture.converge().await;
@@ -2112,8 +2112,8 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
                 PrivateToolSave::new(
                     PrivateToolPath::parse(&format!("paged.function{index:02}"))
                         .expect("Private Tool path"),
-                    PrivateToolDescription::parse("Paged contract").expect("description"),
-                    PrivateToolSource::parse(&format!(
+                    AuthoredToolDescription::parse("Paged contract").expect("description"),
+                    AuthoredToolSource::parse(&format!(
                         "interface Wide {{\n{fields}\n}}\nexport default function wide(input: Wide): number {{ return 1; }}"
                     ))
                     .expect("wide source"),
@@ -3706,8 +3706,8 @@ async fn readiness_ignores_unreadable_private_tools_for_the_same_caller() {
                 &workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(&format!("helpers.function{index}")).unwrap(),
-                    PrivateToolDescription::parse("Return a number").unwrap(),
-                    PrivateToolSource::parse(
+                    AuthoredToolDescription::parse("Return a number").unwrap(),
+                    AuthoredToolSource::parse(
                         "export default function value(): number { return 1; }",
                     )
                     .unwrap(),
@@ -3916,8 +3916,8 @@ impl TestModules {
                 workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("Private Tool path"),
-                    PrivateToolDescription::parse(description).expect("description"),
-                    PrivateToolSource::parse(source).expect("source"),
+                    AuthoredToolDescription::parse(description).expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
                 ),
             )
             .await
@@ -4240,12 +4240,12 @@ impl TestModules {
                 PrivateToolSave::new(
                     PrivateToolPath::parse(&format!("large.function{index:02}"))
                         .expect("Private Tool path"),
-                    PrivateToolDescription::parse(&format!(
+                    AuthoredToolDescription::parse(&format!(
                         "{}Large paging contract",
                         "Filler words before the match. ".repeat(100)
                     ))
                     .expect("description"),
-                    PrivateToolSource::parse(&format!(
+                    AuthoredToolSource::parse(&format!(
                         "interface LargeType {{\n{fields}\n}}\nexport default function large(input: LargeType): LargeType {{ return input; }}"
                     ))
                     .expect("large source"),
@@ -4272,8 +4272,8 @@ impl TestModules {
                 workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse("internal.formatForecast").expect("Saved path"),
-                    PrivateToolDescription::parse(description).expect("description"),
-                    PrivateToolSource::parse(&format!(
+                    AuthoredToolDescription::parse(description).expect("description"),
+                    AuthoredToolSource::parse(&format!(
                         r#"interface Forecast {{ temperatureC: number }}
 const sourceEvidence = "{SAVED_SOURCE_CANARY}";
 export default function formatForecast(value: Forecast): string {{

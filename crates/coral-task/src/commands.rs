@@ -476,8 +476,8 @@ impl TaskCommands {
                 } => {
                     let save = coral_tools::PrivateToolSave::new(
                         coral_tools::PrivateToolPath::parse(path)?,
-                        coral_tools::PrivateToolDescription::parse(description)?,
-                        coral_tools::PrivateToolSource::parse(source)?,
+                        coral_tools::AuthoredToolDescription::parse(description)?,
+                        coral_tools::AuthoredToolSource::parse(source)?,
                     );
                     RetainedReady::Save(Box::new(
                         functions

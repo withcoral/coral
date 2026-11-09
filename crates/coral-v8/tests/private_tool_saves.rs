@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use coral_v8::{
     AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
-    IsolateLimits, LinkedPrivateToolSource, ProgramCompiler, ProgramExecutor, ProgramHost,
+    IsolateLimits, LinkedToolSource, ProgramCompiler, ProgramExecutor, ProgramHost,
     ProgramOutputHostError,
 };
 use deno_core_icudata as _;
@@ -40,8 +40,8 @@ fn deadline() -> std::time::Instant {
     std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT
 }
 
-fn linked(path: &str, source: &str) -> LinkedPrivateToolSource {
-    LinkedPrivateToolSource::new(
+fn linked(path: &str, source: &str) -> LinkedToolSource {
+    LinkedToolSource::new(
         path.split('.').map(str::to_string).collect(),
         source.to_string(),
     )
@@ -49,7 +49,7 @@ fn linked(path: &str, source: &str) -> LinkedPrivateToolSource {
 
 /// Admits `body` as Program Admission does: reference analysis, then the
 /// linked compile.
-fn admit(body: &str, modules: &[LinkedPrivateToolSource]) -> Result<CompiledProgram, Error> {
+fn admit(body: &str, modules: &[LinkedToolSource]) -> Result<CompiledProgram, Error> {
     compiler().program_call_paths(deadline(), body)?;
     if modules.is_empty() {
         compiler().compile(deadline(), body)
@@ -60,7 +60,7 @@ fn admit(body: &str, modules: &[LinkedPrivateToolSource]) -> Result<CompiledProg
 
 /// The message of the save refusal admitting `body` returns, or a panic
 /// naming what it returned instead.
-fn save_refusal(body: &str, modules: &[LinkedPrivateToolSource]) -> String {
+fn save_refusal(body: &str, modules: &[LinkedToolSource]) -> String {
     match admit(body, modules) {
         Err(Error::InvalidPrivateToolSave(message)) => message,
         other => panic!("a save refusal: {:?}", other.map(drop)),
@@ -140,7 +140,7 @@ fn run(program: &CompiledProgram) -> (Result<Option<String>, Error>, Arc<ToolCal
 }
 
 /// The sources each save in `body` sends, in call order.
-fn saved_sources(body: &str, modules: &[LinkedPrivateToolSource]) -> Vec<Value> {
+fn saved_sources(body: &str, modules: &[LinkedToolSource]) -> Vec<Value> {
     let program = admit(body, modules).unwrap_or_else(|error| panic!("{error}\n{body}"));
     let (output, host) = run(&program);
     output.unwrap_or_else(|error| panic!("{error}\n{body}"));
@@ -445,7 +445,7 @@ fn a_save_call_admission_cannot_read_is_refused() {
     assert!(
         matches!(
             admit(&aliased, &[]),
-            Err(Error::InvalidPrivateToolReference { ref message, line: 1, column: 11 })
+            Err(Error::InvalidLinkedToolReference { ref message, line: 1, column: 11 })
                 if message == "Coral namespace aliases are not supported"
         ),
         "{:?}",
@@ -474,7 +474,7 @@ const name = ["add", "Tool"].join("");
 const host = globalThis[["co", "ral"].join("")];
 await host[name]({ path: "a", description: "d", source: "export default () => 1" });
 await host[name]({ path: "b", description: "d", source: { text: "export default () => 1" } });
-const carrierless = typeof globalThis["__coral" + "PrivateToolSource"];
+const carrierless = typeof globalThis["__coral" + "AuthoredToolSource"];
 let refused;
 try {
   await host[name](["c", "d", "export default () => 1"]);

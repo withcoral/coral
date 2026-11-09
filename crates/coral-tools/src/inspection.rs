@@ -112,7 +112,7 @@ impl PrivateToolInspection {
                 transaction,
                 actor,
                 workspace_id,
-                crate::private_tool::now_unix_nanos()?,
+                crate::authoring::now_unix_nanos()?,
             )
             .await?;
         Ok(())

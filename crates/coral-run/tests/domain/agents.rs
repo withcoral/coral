@@ -21,8 +21,8 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
             &workspace,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Answer").unwrap(),
-                PrivateToolSource::parse("export default () => 42;").unwrap(),
+                AuthoredToolDescription::parse("Answer").unwrap(),
+                AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await

@@ -69,8 +69,8 @@ impl Fixture {
     ) -> Result<coral_tools::PrivateTool, Error> {
         let save = coral_tools::PrivateToolSave::new(
             coral_tools::PrivateToolPath::parse(path)?,
-            coral_tools::PrivateToolDescription::parse(description)?,
-            coral_tools::PrivateToolSource::parse(source)?,
+            coral_tools::AuthoredToolDescription::parse(description)?,
+            coral_tools::AuthoredToolSource::parse(source)?,
         );
         let search = coral_search::UniversalSearchModule::new(
             self.tasks.database.clone(),
@@ -456,8 +456,8 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
             &fixture.workspace,
             coral_tools::PrivateToolSave::new(
                 coral_tools::PrivateToolPath::parse("privateAnswer").unwrap(),
-                coral_tools::PrivateToolDescription::parse("Private answer").unwrap(),
-                coral_tools::PrivateToolSource::parse("export default () => 42;").unwrap(),
+                coral_tools::AuthoredToolDescription::parse("Private answer").unwrap(),
+                coral_tools::AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await

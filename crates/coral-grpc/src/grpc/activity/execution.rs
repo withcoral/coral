@@ -280,7 +280,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             .as_ref()
             .map(|location| source_location(&value.workspace, location)),
         tool_kind: tool_kind(value.tool_kind).into(),
-        shared_tool_revision: value.shared_tool_revision.unwrap_or_default(),
+        shared_tool_revision: shared_tool_revision(value.tool_kind),
         parent: value
             .parent
             .as_ref()
@@ -288,7 +288,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
                 invocation: format!("workspaces/{}/invocations/{}", value.workspace, parent.id),
                 call_path: parent.call_path.clone(),
                 tool_kind: tool_kind(parent.tool_kind).into(),
-                shared_tool_revision: parent.shared_tool_revision.unwrap_or_default(),
+                shared_tool_revision: shared_tool_revision(parent.tool_kind),
             }),
     }
 }
@@ -296,7 +296,14 @@ const fn tool_kind(value: coral_run::ToolKind) -> wire::ActivityToolKind {
     match value {
         coral_run::ToolKind::Provider => wire::ActivityToolKind::Provider,
         coral_run::ToolKind::Private => wire::ActivityToolKind::Private,
-        coral_run::ToolKind::Shared => wire::ActivityToolKind::Shared,
+        coral_run::ToolKind::Shared { .. } => wire::ActivityToolKind::Shared,
+    }
+}
+/// The Shared Tool Revision a call ran; zero for every other kind.
+const fn shared_tool_revision(value: coral_run::ToolKind) -> u64 {
+    match value {
+        coral_run::ToolKind::Shared { revision } => revision,
+        coral_run::ToolKind::Provider | coral_run::ToolKind::Private => 0,
     }
 }
 fn private_tool_snapshot(

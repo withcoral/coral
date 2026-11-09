@@ -89,9 +89,9 @@ pub(crate) async fn sources(
             Alias::new("source"),
         ])
         .order_by(Alias::new("path"), Order::Asc)
-        .limit(crate::LINKED_PRIVATE_TOOL_MAX_COUNT as u64 + 1);
+        .limit(crate::LINKED_TOOL_MAX_COUNT as u64 + 1);
     let rows: Vec<(String, String, String)> = tx.fetch_all(snapshots).await?;
-    if rows.len() > crate::LINKED_PRIVATE_TOOL_MAX_COUNT {
+    if rows.len() > crate::LINKED_TOOL_MAX_COUNT {
         return Err(Error::CorruptData(
             "accepted linked source exceeds its admission bound".into(),
         ));
@@ -127,9 +127,9 @@ pub(crate) async fn shared_sources(
             Alias::new("source"),
         ])
         .order_by(Alias::new("path"), Order::Asc)
-        .limit(crate::LINKED_PRIVATE_TOOL_MAX_COUNT as u64 + 1);
+        .limit(crate::LINKED_TOOL_MAX_COUNT as u64 + 1);
     let rows: Vec<(String, String, i64, String)> = tx.fetch_all(snapshots).await?;
-    if rows.len() > crate::LINKED_PRIVATE_TOOL_MAX_COUNT {
+    if rows.len() > crate::LINKED_TOOL_MAX_COUNT {
         return Err(Error::CorruptData(
             "accepted linked source exceeds its admission bound".into(),
         ));

@@ -11,11 +11,12 @@ use crate::Error;
 use crate::repository::{access_state_from_storage, decode_diagnostics, stored_revision};
 use crate::shared_tool::{
     SharedTool, SharedToolDependency, SharedToolId, SharedToolLifecycleAction, SharedToolPage,
-    SharedToolPath, SharedToolRevision, SharedToolSelection, SharedToolSummary,
+    SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSelection,
+    SharedToolSummary,
 };
 use crate::types::{
-    PrivateToolDeclaration, PrivateToolDeclarationFieldProjection, PrivateToolDescription,
-    PrivateToolId, PrivateToolSource,
+    AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDescription,
+    AuthoredToolSource, PrivateToolId,
 };
 
 #[derive(Iden)]
@@ -136,12 +137,12 @@ impl RevisionRow {
         Ok(SharedToolRevision {
             shared_tool_id: decode_id(&self.shared_tool_id)?,
             revision: decode_revision(self.revision)?,
-            description: PrivateToolDescription::parse(&self.description)
+            description: AuthoredToolDescription::parse(&self.description)
                 .map_err(|_error| corrupt("an invalid description"))?,
-            source: PrivateToolSource::parse(&self.source)
+            source: AuthoredToolSource::parse(&self.source)
                 .map_err(|_error| corrupt("an invalid source"))?,
-            declaration: PrivateToolDeclaration::from_persisted(&self.declaration)?,
-            declaration_field_projection: PrivateToolDeclarationFieldProjection::from_storage(
+            declaration: AuthoredToolDeclaration::from_persisted(&self.declaration)?,
+            declaration_field_projection: AuthoredToolDeclarationFieldProjection::from_storage(
                 &self.declaration_fields_format,
                 &self.declaration_fields_status,
                 self.declaration_fields_json.as_deref(),
@@ -152,16 +153,16 @@ impl RevisionRow {
             content_hash: self.content_hash,
             default_access_state: access_state_from_storage(&self.default_access_state)?,
             published_by: decode_user(&self.published_by_user_id)?,
-            source_private_tool_id: self
-                .source_private_tool_id
-                .as_deref()
-                .map(PrivateToolId::parse)
-                .transpose()
-                .map_err(|_error| corrupt("an invalid source Private Tool"))?,
-            restored_from_revision: self
-                .restored_from_revision
-                .map(decode_revision)
-                .transpose()?,
+            origin: match (self.source_private_tool_id, self.restored_from_revision) {
+                (Some(private_tool), None) => SharedToolRevisionOrigin::PrivateTool(
+                    PrivateToolId::parse(&private_tool)
+                        .map_err(|_error| corrupt("an invalid source Private Tool"))?,
+                ),
+                (None, Some(revision)) => {
+                    SharedToolRevisionOrigin::Revision(decode_revision(revision)?)
+                }
+                _ => return Err(corrupt("no one origin")),
+            },
             published_at_unix_nanos: self.published_at_unix_nanos,
         })
     }
@@ -221,6 +222,23 @@ fn revision_columns() -> [SharedToolRevisions; 17] {
     ]
 }
 
+/// Joins a record to its current revision, in the record's own Workspace.
+fn is_current_revision() -> sea_query::SimpleExpr {
+    Expr::col((
+        SharedToolRevisions::Table,
+        SharedToolRevisions::SharedToolId,
+    ))
+    .equals((SharedToolRecords::Table, SharedToolRecords::Id))
+    .and(
+        Expr::col((SharedToolRevisions::Table, SharedToolRevisions::Revision))
+            .equals((SharedToolRecords::Table, SharedToolRecords::CurrentRevision)),
+    )
+    .and(
+        Expr::col((SharedToolRevisions::Table, SharedToolRevisions::WorkspaceId))
+            .equals((SharedToolRecords::Table, SharedToolRecords::WorkspaceId)),
+    )
+}
+
 /// The live record at `path` in the Workspace.
 fn live_record_statement(workspace_id: &WorkspaceId, path: &SharedToolPath) -> SelectStatement {
     Query::select()
@@ -232,31 +250,37 @@ fn live_record_statement(workspace_id: &WorkspaceId, path: &SharedToolPath) -> S
         .to_owned()
 }
 
-/// The live record at `path`. With `hold`, the row is held exclusively for
-/// the write that follows, by a no-op `UPDATE`.
+/// The live record at `path`.
 pub(crate) async fn find_live_record(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
-    hold: bool,
 ) -> Result<Option<SharedToolRecord>, Error> {
-    if hold {
-        let statement = Query::update()
-            .table(SharedToolRecords::Table)
-            .value(
-                SharedToolRecords::CurrentRevision,
-                Expr::col(SharedToolRecords::CurrentRevision),
-            )
-            .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-            .and_where(Expr::col(SharedToolRecords::Path).eq(path.as_str()))
-            .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
-            .to_owned();
-        transaction.execute(statement).await?;
-    }
     let row: Option<RecordRow> = transaction
         .fetch_optional(live_record_statement(workspace_id, path))
         .await?;
     row.map(RecordRow::decode).transpose()
+}
+
+/// The live record at `path`, held exclusively for the write that follows
+/// by a no-op `UPDATE` before the read.
+pub(crate) async fn hold_live_record(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    path: &SharedToolPath,
+) -> Result<Option<SharedToolRecord>, Error> {
+    let statement = Query::update()
+        .table(SharedToolRecords::Table)
+        .value(
+            SharedToolRecords::CurrentRevision,
+            Expr::col(SharedToolRecords::CurrentRevision),
+        )
+        .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SharedToolRecords::Path).eq(path.as_str()))
+        .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
+        .to_owned();
+    transaction.execute(statement).await?;
+    find_live_record(transaction, workspace_id, path).await
 }
 
 /// The paths of every live Shared Tool in the Workspace.
@@ -315,7 +339,7 @@ pub(crate) async fn find_live_tool(
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
 ) -> Result<Option<SharedTool>, Error> {
-    let Some(record) = find_live_record(transaction, workspace_id, path, false).await? else {
+    let Some(record) = find_live_record(transaction, workspace_id, path).await? else {
         return Ok(None);
     };
     let current = find_revision(
@@ -372,22 +396,7 @@ pub(crate) async fn list_live_page(
             SharedToolRevisions::PublishedAtUnixNanos,
         ))
         .from(SharedToolRecords::Table)
-        .inner_join(
-            SharedToolRevisions::Table,
-            Expr::col((
-                SharedToolRevisions::Table,
-                SharedToolRevisions::SharedToolId,
-            ))
-            .equals((SharedToolRecords::Table, SharedToolRecords::Id))
-            .and(
-                Expr::col((SharedToolRevisions::Table, SharedToolRevisions::Revision))
-                    .equals((SharedToolRecords::Table, SharedToolRecords::CurrentRevision)),
-            )
-            .and(
-                Expr::col((SharedToolRevisions::Table, SharedToolRevisions::WorkspaceId))
-                    .equals((SharedToolRecords::Table, SharedToolRecords::WorkspaceId)),
-            ),
-        )
+        .inner_join(SharedToolRevisions::Table, is_current_revision())
         .and_where(
             Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
                 .eq(workspace_id.to_string()),
@@ -413,11 +422,13 @@ pub(crate) async fn list_live_page(
                 id: decode_id(&row.id)?,
                 path: decode_path(&row.path)?,
                 current_revision: decode_revision(row.current_revision)?,
-                description: PrivateToolDescription::parse(&row.description).map_err(|_error| {
-                    Error::CorruptData(
-                        "Shared Tool revision has an invalid description".to_string(),
-                    )
-                })?,
+                description: AuthoredToolDescription::parse(&row.description).map_err(
+                    |_error| {
+                        Error::CorruptData(
+                            "Shared Tool revision has an invalid description".to_string(),
+                        )
+                    },
+                )?,
                 published_at_unix_nanos: row.published_at_unix_nanos,
             })
         })
@@ -459,22 +470,7 @@ pub(crate) async fn select_current_source(
             SharedToolRevisions::DefaultAccessState,
         ))
         .from(SharedToolRecords::Table)
-        .inner_join(
-            SharedToolRevisions::Table,
-            Expr::col((
-                SharedToolRevisions::Table,
-                SharedToolRevisions::SharedToolId,
-            ))
-            .equals((SharedToolRecords::Table, SharedToolRecords::Id))
-            .and(
-                Expr::col((SharedToolRevisions::Table, SharedToolRevisions::Revision))
-                    .equals((SharedToolRecords::Table, SharedToolRecords::CurrentRevision)),
-            )
-            .and(
-                Expr::col((SharedToolRevisions::Table, SharedToolRevisions::WorkspaceId))
-                    .equals((SharedToolRecords::Table, SharedToolRecords::WorkspaceId)),
-            ),
-        )
+        .inner_join(SharedToolRevisions::Table, is_current_revision())
         .and_where(
             Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
                 .eq(workspace_id.to_string()),
@@ -494,7 +490,7 @@ pub(crate) async fn select_current_source(
             id: decode_id(&row.id)?,
             path: path.clone(),
             revision: decode_revision(row.current_revision)?,
-            source: PrivateToolSource::parse(&row.source).map_err(|_error| {
+            source: AuthoredToolSource::parse(&row.source).map_err(|_error| {
                 Error::CorruptData("Shared Tool revision has an invalid source".to_string())
             })?,
             default_access_state: access_state_from_storage(&row.default_access_state)?,
@@ -503,27 +499,29 @@ pub(crate) async fn select_current_source(
     .transpose()
 }
 
-/// Whether `selection` is still the live, current revision at its path,
-/// holding the record as `lock` says.
+/// Whether `revision` is still the current revision of the live Shared
+/// Tool `id` at `path`, holding the record shared for the rest of the
+/// transaction: concurrent readers hold it side by side, and a publish
+/// waits for them.
 pub(crate) async fn hold_current(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    selection: &SharedToolSelection,
-    lock: RowLock,
+    id: &SharedToolId,
+    path: &SharedToolPath,
+    revision: u64,
 ) -> Result<bool, Error> {
     let statement = Query::select()
         .column(SharedToolRecords::Id)
         .from(SharedToolRecords::Table)
         .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SharedToolRecords::Id).eq(selection.id().to_string()))
-        .and_where(Expr::col(SharedToolRecords::Path).eq(selection.path().as_str()))
-        .and_where(
-            Expr::col(SharedToolRecords::CurrentRevision)
-                .eq(stored_revision(selection.revision())?),
-        )
+        .and_where(Expr::col(SharedToolRecords::Id).eq(id.to_string()))
+        .and_where(Expr::col(SharedToolRecords::Path).eq(path.as_str()))
+        .and_where(Expr::col(SharedToolRecords::CurrentRevision).eq(stored_revision(revision)?))
         .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
         .to_owned();
-    let row: Option<(String,)> = transaction.fetch_optional_locked(statement, lock).await?;
+    let row: Option<(String,)> = transaction
+        .fetch_optional_locked(statement, RowLock::Shared)
+        .await?;
     Ok(row.is_some())
 }
 
@@ -586,6 +584,12 @@ pub(crate) async fn insert_revision(
     revision: &SharedToolRevision,
 ) -> Result<(), Error> {
     let projection = revision.declaration_field_projection();
+    let (source_private_tool_id, restored_from_revision) = match revision.origin() {
+        SharedToolRevisionOrigin::PrivateTool(private_tool) => {
+            (Some(private_tool.to_string()), None)
+        }
+        SharedToolRevisionOrigin::Revision(restored) => (None, Some(stored_revision(*restored)?)),
+    };
     let statement = Query::insert()
         .into_table(SharedToolRevisions::Table)
         .columns([
@@ -615,7 +619,7 @@ pub(crate) async fn insert_revision(
             Expr::val(revision.description().as_str()),
             Expr::val(revision.source().as_str()),
             Expr::val(revision.declaration().as_str()),
-            Expr::val(PrivateToolDeclarationFieldProjection::format()),
+            Expr::val(AuthoredToolDeclarationFieldProjection::format()),
             Expr::val(projection.status()),
             Expr::val(projection.fields().map(serde_json::to_string).transpose()?),
             Expr::val(projection.failure_reason()),
@@ -624,13 +628,8 @@ pub(crate) async fn insert_revision(
             Expr::val(revision.content_hash()),
             Expr::val(revision.default_access_state().as_storage_str()),
             Expr::val(revision.published_by().as_str()),
-            Expr::val(revision.source_private_tool_id().map(ToString::to_string)),
-            Expr::val(
-                revision
-                    .restored_from_revision()
-                    .map(stored_revision)
-                    .transpose()?,
-            ),
+            Expr::val(source_private_tool_id),
+            Expr::val(restored_from_revision),
             Expr::val(revision.published_at_unix_nanos()),
         ])
         .to_owned();

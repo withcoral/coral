@@ -1,9 +1,8 @@
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, LinkedPrivateToolSource,
-    PrivateToolCallPaths, PrivateToolCompilation, PrivateToolReference, ToolReferences,
-    UnknownToolCall,
+    AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations,
+    LinkedToolReference, LinkedToolSource, NamedCallPaths, ToolReferences, UnknownToolCall,
 };
 
 /// The calls Program Admission and Private Tool save make of one warm
@@ -24,7 +23,7 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<PrivateToolCallPaths, CompileError>;
+    ) -> Result<NamedCallPaths, CompileError>;
 
     /// The called chains of `tools` that name none of the `callable` Call
     /// Paths.
@@ -48,7 +47,7 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileError>;
+    ) -> Result<Vec<LinkedToolReference>, CompileError>;
 
     /// A Program body lowered with the Private Tools it links, which
     /// initialize in the given order, and with `builtin_tools` on `coral`.
@@ -61,7 +60,7 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-        private_tools: &[LinkedPrivateToolSource],
+        private_tools: &[LinkedToolSource],
         builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError>;
 
@@ -72,11 +71,8 @@ pub trait CompilerClient: Send + Sync {
     ///
     /// Rejects computed or aliased `coral.private` access and malformed
     /// module source.
-    fn call_paths(
-        &self,
-        time_left: Duration,
-        source: &str,
-    ) -> Result<PrivateToolCallPaths, CompileError>;
+    fn call_paths(&self, time_left: Duration, source: &str)
+    -> Result<NamedCallPaths, CompileError>;
 
     /// One Private Tool's declaration and advisory diagnostics, with
     /// `builtin_tools` on `coral` and typed by `declarations` when there are
@@ -92,7 +88,7 @@ pub trait CompilerClient: Send + Sync {
         source: &str,
         builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<PrivateToolCompilation, CompileError>;
+    ) -> Result<AuthoredToolCompilation, CompileError>;
 }
 
 /// The time left until `deadline`, which a call carries.
@@ -154,7 +150,7 @@ impl CompileError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::TimedOut => "compilation_timed_out",
-            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_private_tool_reference",
+            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_linked_tool_reference",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
             Self::Unavailable(Unavailable::Stopped) => "compiler_unavailable",
@@ -177,7 +173,7 @@ impl From<CompileError> for CompileFailure {
                 message,
                 line,
                 column,
-            }) => coral_v8::Error::InvalidPrivateToolReference {
+            }) => coral_v8::Error::InvalidLinkedToolReference {
                 message,
                 line,
                 column,

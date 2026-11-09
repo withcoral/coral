@@ -12,8 +12,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use coral_catalog::ToolAccessState;
-use coral_db::{Database, RowLock, Transaction};
+use coral_catalog::{AuthoredToolKind, ToolAccessState};
+use coral_db::{Database, Transaction};
 use coral_run_executor::CompilerClient;
 use coral_v8::{CallableDeclaration, CoralDeclarations};
 use coral_workspace::{
@@ -23,14 +23,14 @@ use coral_workspace::{
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
-use crate::private_tool::{
-    AuthoredKind, PreparedPrivateTool, PrivateToolCompiler, now_unix_nanos,
-    prepare_authored_source, private_tool_paths_overlap, v8_compiler,
+use crate::authoring::{
+    AuthoredToolCompiler, PreparedAuthoredTool, now_unix_nanos, prepare_authored_source,
+    tool_paths_overlap, v8_compiler,
 };
 use crate::types::{
-    PRIVATE_TOOL_DECLARATION_MAX_BYTES, PrivateToolDeclaration,
-    PrivateToolDeclarationFieldProjection, PrivateToolDescription, PrivateToolDiagnostic,
-    PrivateToolId, PrivateToolPath, PrivateToolSource,
+    AUTHORED_TOOL_DECLARATION_MAX_BYTES, AuthoredToolDeclaration,
+    AuthoredToolDeclarationFieldProjection, AuthoredToolDescription, AuthoredToolDiagnostic,
+    AuthoredToolSource, PrivateToolId, PrivateToolPath, authored_tool_path,
 };
 use crate::{Error, repository, shared_tool_repository};
 
@@ -87,42 +87,32 @@ impl fmt::Display for SharedToolId {
 impl coral_telemetry::safe::Identifier for SharedToolId {}
 
 /// The dotted JavaScript path relative to `coral.shared` that names one
-/// live Shared Tool in its Workspace. It follows the rules of a Private Tool
-/// Path.
+/// live Shared Tool in its Workspace. Its bounds and segments follow the
+/// rules of a Private Tool Path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SharedToolPath(PrivateToolPath);
+pub struct SharedToolPath(String);
 
 impl SharedToolPath {
     /// Validates the fixed path bounds and safe JavaScript segments.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] for a path a Private Tool could not
-    /// have.
+    /// Rejects empty paths, more than sixteen segments, more than 256 UTF-8
+    /// bytes, and invalid or reserved JavaScript identifier segments.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        PrivateToolPath::parse(value).map(Self).map_err(|_error| {
-            Error::InvalidInput(format!(
-                "Shared Tool Path must contain 1 through {} non-reserved safe JavaScript identifier segments and be at most {} UTF-8 bytes",
-                crate::PRIVATE_TOOL_PATH_MAX_SEGMENTS,
-                crate::PRIVATE_TOOL_PATH_MAX_BYTES,
-            ))
-        })
+        authored_tool_path(value, "Shared Tool Path").map(Self)
     }
 
     /// Returns the complete dotted path relative to `coral.shared`.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        &self.0
     }
 
     /// Returns validated segments for the compiler's linked source input.
     #[must_use]
     pub fn segments(&self) -> Vec<String> {
-        self.0.segments()
-    }
-
-    pub(crate) const fn as_private_tool_path(&self) -> &PrivateToolPath {
-        &self.0
+        self.0.split('.').map(ToString::to_string).collect()
     }
 }
 
@@ -141,14 +131,24 @@ pub enum SharedToolOrigin {
     Revision(u64),
 }
 
+/// What one Shared Tool Revision copied, as it recorded it: provenance
+/// only, since the revision keeps its own content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SharedToolRevisionOrigin {
+    /// The Private Tool it copied, which may since have changed or gone.
+    PrivateTool(PrivateToolId),
+    /// The earlier revision of the same Shared Tool that it restored.
+    Revision(u64),
+}
+
 /// One Workspace Owner's request to publish the exact content they
 /// reviewed as a new revision of the Shared Tool at `path`.
 #[derive(Debug, Clone)]
 pub struct SharedToolPublish {
     path: SharedToolPath,
     origin: SharedToolOrigin,
-    description: PrivateToolDescription,
-    source: PrivateToolSource,
+    description: AuthoredToolDescription,
+    source: AuthoredToolSource,
     default_access_state: ToolAccessState,
     expected_revision: u64,
     validate_only: bool,
@@ -163,8 +163,8 @@ impl SharedToolPublish {
     pub const fn new(
         path: SharedToolPath,
         origin: SharedToolOrigin,
-        description: PrivateToolDescription,
-        source: PrivateToolSource,
+        description: AuthoredToolDescription,
+        source: AuthoredToolSource,
         default_access_state: ToolAccessState,
         expected_revision: u64,
     ) -> Self {
@@ -206,17 +206,16 @@ impl SharedToolPublish {
 pub struct SharedToolRevision {
     pub(crate) shared_tool_id: SharedToolId,
     pub(crate) revision: u64,
-    pub(crate) description: PrivateToolDescription,
-    pub(crate) source: PrivateToolSource,
-    pub(crate) declaration: PrivateToolDeclaration,
-    pub(crate) declaration_field_projection: PrivateToolDeclarationFieldProjection,
-    pub(crate) diagnostics: Vec<PrivateToolDiagnostic>,
+    pub(crate) description: AuthoredToolDescription,
+    pub(crate) source: AuthoredToolSource,
+    pub(crate) declaration: AuthoredToolDeclaration,
+    pub(crate) declaration_field_projection: AuthoredToolDeclarationFieldProjection,
+    pub(crate) diagnostics: Vec<AuthoredToolDiagnostic>,
     pub(crate) diagnostics_truncated: bool,
     pub(crate) content_hash: String,
     pub(crate) default_access_state: ToolAccessState,
     pub(crate) published_by: UserId,
-    pub(crate) source_private_tool_id: Option<PrivateToolId>,
-    pub(crate) restored_from_revision: Option<u64>,
+    pub(crate) origin: SharedToolRevisionOrigin,
     pub(crate) published_at_unix_nanos: i64,
 }
 
@@ -235,31 +234,31 @@ impl SharedToolRevision {
 
     /// Returns the exact published description.
     #[must_use]
-    pub const fn description(&self) -> &PrivateToolDescription {
+    pub const fn description(&self) -> &AuthoredToolDescription {
         &self.description
     }
 
     /// Returns the exact published source.
     #[must_use]
-    pub const fn source(&self) -> &PrivateToolSource {
+    pub const fn source(&self) -> &AuthoredToolSource {
         &self.source
     }
 
     /// Returns the declaration emitted from the source.
     #[must_use]
-    pub const fn declaration(&self) -> &PrivateToolDeclaration {
+    pub const fn declaration(&self) -> &AuthoredToolDeclaration {
         &self.declaration
     }
 
     /// Returns the searchable declaration fields, or why they are missing.
     #[must_use]
-    pub const fn declaration_field_projection(&self) -> &PrivateToolDeclarationFieldProjection {
+    pub const fn declaration_field_projection(&self) -> &AuthoredToolDeclarationFieldProjection {
         &self.declaration_field_projection
     }
 
     /// Returns the advisory diagnostics retained with the revision.
     #[must_use]
-    pub fn diagnostics(&self) -> &[PrivateToolDiagnostic] {
+    pub fn diagnostics(&self) -> &[AuthoredToolDiagnostic] {
         &self.diagnostics
     }
 
@@ -287,17 +286,10 @@ impl SharedToolRevision {
         &self.published_by
     }
 
-    /// Returns the Private Tool it copied, which may since have changed or
-    /// gone; `None` for a restore.
+    /// Returns what it copied.
     #[must_use]
-    pub const fn source_private_tool_id(&self) -> Option<&PrivateToolId> {
-        self.source_private_tool_id.as_ref()
-    }
-
-    /// Returns the earlier revision a restore copied; `None` otherwise.
-    #[must_use]
-    pub const fn restored_from_revision(&self) -> Option<u64> {
-        self.restored_from_revision
+    pub const fn origin(&self) -> &SharedToolRevisionOrigin {
+        &self.origin
     }
 
     /// Returns when it was published.
@@ -390,8 +382,8 @@ impl SharedToolDependency {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedToolReview {
     previous: Option<SharedToolRevision>,
-    declaration: PrivateToolDeclaration,
-    diagnostics: Vec<PrivateToolDiagnostic>,
+    declaration: AuthoredToolDeclaration,
+    diagnostics: Vec<AuthoredToolDiagnostic>,
     diagnostics_truncated: bool,
     called_tools: Vec<String>,
     shared_tools: Vec<SharedToolDependency>,
@@ -409,13 +401,13 @@ impl SharedToolReview {
 
     /// Returns the declaration the publish would emit.
     #[must_use]
-    pub const fn declaration(&self) -> &PrivateToolDeclaration {
+    pub const fn declaration(&self) -> &AuthoredToolDeclaration {
         &self.declaration
     }
 
     /// Returns the advisory diagnostics of the reviewed source.
     #[must_use]
-    pub fn diagnostics(&self) -> &[PrivateToolDiagnostic] {
+    pub fn diagnostics(&self) -> &[AuthoredToolDiagnostic] {
         &self.diagnostics
     }
 
@@ -477,7 +469,7 @@ impl SharedToolPublication {
 pub struct SharedToolSummary {
     pub(crate) id: SharedToolId,
     pub(crate) path: SharedToolPath,
-    pub(crate) description: PrivateToolDescription,
+    pub(crate) description: AuthoredToolDescription,
     pub(crate) current_revision: u64,
     pub(crate) published_at_unix_nanos: i64,
 }
@@ -497,7 +489,7 @@ impl SharedToolSummary {
 
     /// Returns its current description.
     #[must_use]
-    pub const fn description(&self) -> &PrivateToolDescription {
+    pub const fn description(&self) -> &AuthoredToolDescription {
         &self.description
     }
 
@@ -542,7 +534,7 @@ pub struct SharedToolSelection {
     pub(crate) id: SharedToolId,
     pub(crate) path: SharedToolPath,
     pub(crate) revision: u64,
-    pub(crate) source: PrivateToolSource,
+    pub(crate) source: AuthoredToolSource,
     pub(crate) default_access_state: ToolAccessState,
 }
 
@@ -567,7 +559,7 @@ impl SharedToolSelection {
 
     /// Returns that revision's source.
     #[must_use]
-    pub const fn source(&self) -> &PrivateToolSource {
+    pub const fn source(&self) -> &AuthoredToolSource {
         &self.source
     }
 
@@ -615,8 +607,14 @@ pub async fn hold_shared_selection_in_transaction(
     workspace_id: &WorkspaceId,
     selection: &SharedToolSelection,
 ) -> Result<bool, Error> {
-    shared_tool_repository::hold_current(transaction, workspace_id, selection, RowLock::Shared)
-        .await
+    shared_tool_repository::hold_current(
+        transaction,
+        workspace_id,
+        selection.id(),
+        selection.path(),
+        selection.revision(),
+    )
+    .await
 }
 
 /// The Workspace's Shared Tools: Owner publishing, and reads for every
@@ -625,7 +623,7 @@ pub async fn hold_shared_selection_in_transaction(
 pub struct SharedToolModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    compiler: Arc<dyn PrivateToolCompiler>,
+    compiler: Arc<dyn AuthoredToolCompiler>,
     compilation_timeout: Duration,
 }
 
@@ -799,8 +797,7 @@ impl SharedToolModule {
         self.authorize_inspection(&mut transaction, actor, workspace_id)
             .await?;
         let Some(record) =
-            shared_tool_repository::find_live_record(&mut transaction, workspace_id, path, false)
-                .await?
+            shared_tool_repository::find_live_record(&mut transaction, workspace_id, path).await?
         else {
             return Err(Error::SharedToolNotFound);
         };
@@ -830,8 +827,7 @@ impl SharedToolModule {
         self.authorize_inspection(&mut transaction, actor, workspace_id)
             .await?;
         let Some(record) =
-            shared_tool_repository::find_live_record(&mut transaction, workspace_id, path, false)
-                .await?
+            shared_tool_repository::find_live_record(&mut transaction, workspace_id, path).await?
         else {
             return Err(Error::SharedToolNotFound);
         };
@@ -896,8 +892,8 @@ impl SharedToolModule {
         let compiled = prepare_authored_source(
             self.compiler.clone(),
             deadline,
-            AuthoredKind::Shared,
-            publish.path.as_private_tool_path(),
+            AuthoredToolKind::Shared,
+            publish.path.as_str(),
             source,
             declarations,
         )
@@ -914,15 +910,15 @@ impl SharedToolModule {
         let mut called_tools = named.tools().called_paths();
         called_tools.extend(
             compiled
-                .references
+                .private_references
                 .iter()
-                .map(|reference| format!("coral.private.{}", reference.path.as_str())),
+                .map(|reference| AuthoredToolKind::Private.call_path(reference.path.as_str())),
         );
         called_tools.extend(
             compiled
                 .shared_references
                 .iter()
-                .map(|reference| format!("coral.shared.{}", reference.path.as_str())),
+                .map(|reference| AuthoredToolKind::Shared.call_path(reference.path.as_str())),
         );
         called_tools.sort();
         called_tools.dedup();
@@ -946,17 +942,10 @@ impl SharedToolModule {
         workspace_id: &WorkspaceId,
         publish: &SharedToolPublish,
     ) -> Result<Option<SharedToolRevision>, Error> {
-        let record = shared_tool_repository::find_live_record(
-            transaction,
-            workspace_id,
-            &publish.path,
-            false,
-        )
-        .await?;
-        publish.admits(record.as_ref().map_or(0, |record| record.current_revision))?;
-        if record.is_none() {
-            require_free_namespace(transaction, workspace_id, &publish.path).await?;
-        }
+        let record =
+            shared_tool_repository::find_live_record(transaction, workspace_id, &publish.path)
+                .await?;
+        require_admitted(transaction, workspace_id, publish, record.as_ref()).await?;
         let Some(record) = record else {
             return Ok(None);
         };
@@ -996,7 +985,7 @@ impl SharedToolModule {
         }
         transaction.commit().await?;
         Ok(Some(
-            CoralDeclarations::new(PRIVATE_TOOL_DECLARATION_MAX_BYTES)
+            CoralDeclarations::new(AUTHORED_TOOL_DECLARATION_MAX_BYTES)
                 .with_shared_tools(declarations),
         ))
     }
@@ -1007,11 +996,11 @@ impl SharedToolModule {
         &self,
         workspace_id: &WorkspaceId,
         own_path: &SharedToolPath,
-        compiled: &PreparedPrivateTool,
+        compiled: &PreparedAuthoredTool,
     ) -> Result<Vec<SharedToolDependency>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let dependencies =
-            held_dependencies(&mut transaction, workspace_id, own_path, compiled, false).await?;
+            current_dependencies(&mut transaction, workspace_id, own_path, compiled).await?;
         transaction.commit().await?;
         Ok(dependencies)
     }
@@ -1022,7 +1011,7 @@ impl SharedToolModule {
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         publish: &SharedToolPublish,
-        compiled: PreparedPrivateTool,
+        compiled: PreparedAuthoredTool,
     ) -> Result<SharedTool, Error> {
         let evidence = self
             .workspaces
@@ -1038,19 +1027,30 @@ impl SharedToolModule {
         let origin = read_origin(transaction, context, workspace_id, publish).await?;
         // The Workspace hold acquired above serializes the path and
         // namespace decisions, for an absent path too.
-        let record = shared_tool_repository::find_live_record(
-            transaction,
-            workspace_id,
-            &publish.path,
-            true,
-        )
-        .await?;
-        publish.admits(record.as_ref().map_or(0, |record| record.current_revision))?;
-        if record.is_none() {
-            require_free_namespace(transaction, workspace_id, &publish.path).await?;
-        }
+        let record =
+            shared_tool_repository::hold_live_record(transaction, workspace_id, &publish.path)
+                .await?;
+        require_admitted(transaction, workspace_id, publish, record.as_ref()).await?;
+        // The revisions current in this transaction are the ones recorded.
+        // A publish since the review may have moved one: every Run links the
+        // current revision of each Shared Tool, so none is a pin.
         let dependencies =
-            held_dependencies(transaction, workspace_id, &publish.path, &compiled, true).await?;
+            current_dependencies(transaction, workspace_id, &publish.path, &compiled).await?;
+        for dependency in &dependencies {
+            if !shared_tool_repository::hold_current(
+                transaction,
+                workspace_id,
+                &dependency.id,
+                &dependency.path,
+                dependency.revision,
+            )
+            .await?
+            {
+                return Err(Error::CorruptData(
+                    "a Shared Tool moved inside the transaction that read it".to_string(),
+                ));
+            }
+        }
 
         let tool = next_revision(
             context,
@@ -1133,8 +1133,8 @@ fn next_revision(
     workspace_id: &WorkspaceId,
     publish: &SharedToolPublish,
     record: Option<&shared_tool_repository::SharedToolRecord>,
-    compiled: PreparedPrivateTool,
-    origin: ReadOrigin,
+    compiled: PreparedAuthoredTool,
+    origin: SharedToolRevisionOrigin,
 ) -> Result<SharedTool, Error> {
     let occurred_at = context.occurred_at_unix_nanos();
     let (id, revision, created_by, created_at) = match record {
@@ -1171,8 +1171,7 @@ fn next_revision(
             diagnostics_truncated: compiled.diagnostics_truncated,
             default_access_state: publish.default_access_state,
             published_by: context.actor().user_id().clone(),
-            source_private_tool_id: origin.private_tool,
-            restored_from_revision: origin.revision,
+            origin,
             published_at_unix_nanos: occurred_at,
         },
         id,
@@ -1182,13 +1181,7 @@ fn next_revision(
 /// A publish's review and its compiled source.
 struct PreparedPublish {
     review: SharedToolReview,
-    compiled: PreparedPrivateTool,
-}
-
-/// What a publish copies, as its revision records it.
-struct ReadOrigin {
-    private_tool: Option<PrivateToolId>,
-    revision: Option<u64>,
+    compiled: PreparedAuthoredTool,
 }
 
 /// A publish's lifecycle action.
@@ -1227,7 +1220,7 @@ async fn read_origin(
     context: &ChangeContext,
     workspace_id: &WorkspaceId,
     publish: &SharedToolPublish,
-) -> Result<ReadOrigin, Error> {
+) -> Result<SharedToolRevisionOrigin, Error> {
     match &publish.origin {
         SharedToolOrigin::PrivateTool { owner, path } => {
             let readable = match owner.kind() {
@@ -1241,20 +1234,15 @@ async fn read_origin(
                 repository::find_current_in_transaction(transaction, workspace_id, owner, path)
                     .await?
                     .ok_or(Error::SharedToolSourceUnreadable)?;
-            Ok(ReadOrigin {
-                private_tool: Some(private_tool.id().clone()),
-                revision: None,
-            })
+            Ok(SharedToolRevisionOrigin::PrivateTool(
+                private_tool.id().clone(),
+            ))
         }
         SharedToolOrigin::Revision(revision) => {
-            let record = shared_tool_repository::find_live_record(
-                transaction,
-                workspace_id,
-                &publish.path,
-                false,
-            )
-            .await?
-            .ok_or(Error::SharedToolSourceUnreadable)?;
+            let record =
+                shared_tool_repository::find_live_record(transaction, workspace_id, &publish.path)
+                    .await?
+                    .ok_or(Error::SharedToolSourceUnreadable)?;
             let restored = shared_tool_repository::find_revision(
                 transaction,
                 workspace_id,
@@ -1271,79 +1259,66 @@ async fn read_origin(
                         .to_string(),
                 ));
             }
-            Ok(ReadOrigin {
-                private_tool: None,
-                revision: Some(*revision),
-            })
+            Ok(SharedToolRevisionOrigin::Revision(*revision))
         }
     }
 }
 
-/// Refuses a new path that names a namespace of other live Shared Tools or
-/// lies under one of them.
-async fn require_free_namespace(
+/// Refuses a publish that does not expect the revision of `record`, the
+/// live Shared Tool at its path, or whose new path names a namespace of
+/// other live Shared Tools or lies under one of them.
+async fn require_admitted(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    path: &SharedToolPath,
+    publish: &SharedToolPublish,
+    record: Option<&shared_tool_repository::SharedToolRecord>,
 ) -> Result<(), Error> {
+    publish.admits(record.map_or(0, |record| record.current_revision))?;
+    if record.is_some() {
+        return Ok(());
+    }
     let live = shared_tool_repository::live_paths(transaction, workspace_id).await?;
-    if live.iter().any(|other| {
-        private_tool_paths_overlap(other.as_private_tool_path(), path.as_private_tool_path())
-    }) {
+    if live
+        .iter()
+        .any(|other| tool_paths_overlap(other.as_str(), publish.path.as_str()))
+    {
         return Err(Error::SharedToolPathConflict);
     }
     Ok(())
 }
 
 /// The live Shared Tools `compiled` names, other than `own_path`, at their
-/// current revisions; held shared through the write when `hold` is set. The
-/// write records the revisions current in its own transaction, which a
-/// publish since the review may have moved: every Run links the current
-/// revision of each Shared Tool, so no revision here is a pin. A
-/// name that no live Shared Tool has fails as any path that names no Tool.
-async fn held_dependencies(
+/// current revisions. A name that no live Shared Tool has fails as any path
+/// that names no Tool.
+async fn current_dependencies(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     own_path: &SharedToolPath,
-    compiled: &PreparedPrivateTool,
-    hold: bool,
+    compiled: &PreparedAuthoredTool,
 ) -> Result<Vec<SharedToolDependency>, Error> {
     let mut dependencies = Vec::new();
     for reference in &compiled.shared_references {
-        let path = SharedToolPath(reference.path.clone());
-        if &path == own_path {
+        let path = &reference.path;
+        if path == own_path {
             continue;
         }
         let Some(selection) =
-            shared_tool_repository::select_current_source(transaction, workspace_id, &path).await?
+            shared_tool_repository::select_current_source(transaction, workspace_id, path).await?
         else {
             return Err(Error::SharedToolAdmission(format!(
                 "{}:{}:{}: {}",
-                AuthoredKind::Shared.source_name(own_path.as_private_tool_path()),
+                AuthoredToolKind::Shared.source_name(own_path.as_str()),
                 reference.line,
                 reference.column,
                 coral_catalog::unknown_call_path_message(
-                    &format!("coral.shared.{}", path.as_str()),
+                    &AuthoredToolKind::Shared.call_path(path.as_str()),
                     &[],
                 )
             )));
         };
-        if hold
-            && !shared_tool_repository::hold_current(
-                transaction,
-                workspace_id,
-                &selection,
-                RowLock::Shared,
-            )
-            .await?
-        {
-            return Err(Error::CorruptData(
-                "a held Shared Tool moved inside its transaction".to_string(),
-            ));
-        }
         dependencies.push(SharedToolDependency {
             id: selection.id,
-            path,
+            path: path.clone(),
             revision: selection.revision,
         });
     }
@@ -1352,7 +1327,7 @@ async fn held_dependencies(
 
 /// The lowercase hex SHA-256 of one revision's content: the description's
 /// UTF-8 length as eight big-endian bytes, the description, then the source.
-fn content_hash(description: &PrivateToolDescription, source: &PrivateToolSource) -> String {
+fn content_hash(description: &AuthoredToolDescription, source: &AuthoredToolSource) -> String {
     let description = description.as_str().as_bytes();
     let mut hasher = Sha256::new();
     hasher.update(

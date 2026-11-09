@@ -6,8 +6,9 @@ use super::workspaces::{
 };
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{
-    PrivateToolDescription, PrivateToolPath, PrivateToolSource, SharedTool, SharedToolOrigin,
-    SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision, SharedToolSummary,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolOrigin,
+    SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision,
+    SharedToolRevisionOrigin, SharedToolSummary,
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalId,
@@ -31,9 +32,11 @@ fn error(error: coral_tools::Error) -> Status {
         E::SharedToolAdmission(_) | E::SharedToolNotData(_) | E::PackageTooLarge { .. } => {
             (tonic::Code::InvalidArgument, "SHARED_TOOL_SOURCE_REJECTED")
         }
-        // No Shared Tool call saves a Private Tool. Name every variant so a
-        // new one needs a wire decision.
-        E::PrivateToolNotFound
+        // The compiler did not judge the source in time; a retry may. No
+        // Shared Tool call saves a Private Tool. Name every variant so a new
+        // one needs a wire decision.
+        E::SharedToolCompilationTimedOut
+        | E::PrivateToolNotFound
         | E::PrivateToolExists
         | E::PrivateToolRevisionConflict { .. }
         | E::PrivateToolAdmission(_)
@@ -68,6 +71,15 @@ fn summary(summary: &SharedToolSummary) -> wire::SharedToolSummary {
     }
 }
 
+/// The earlier revision `revision` restored, or zero when it copied a
+/// Private Tool.
+const fn restored_from(revision: &SharedToolRevision) -> u64 {
+    match revision.origin() {
+        SharedToolRevisionOrigin::Revision(restored) => *restored,
+        SharedToolRevisionOrigin::PrivateTool(_) => 0,
+    }
+}
+
 fn revision(revision: &SharedToolRevision) -> wire::SharedToolRevision {
     wire::SharedToolRevision {
         revision: revision.revision(),
@@ -80,7 +92,7 @@ fn revision(revision: &SharedToolRevision) -> wire::SharedToolRevision {
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
         publish_time: Some(timestamp(revision.published_at_unix_nanos())),
-        restored_from_revision: revision.restored_from_revision().unwrap_or_default(),
+        restored_from_revision: restored_from(revision),
     }
 }
 
@@ -92,7 +104,7 @@ fn revision_summary(revision: &SharedToolRevision) -> wire::SharedToolRevisionSu
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
         publish_time: Some(timestamp(revision.published_at_unix_nanos())),
-        restored_from_revision: revision.restored_from_revision().unwrap_or_default(),
+        restored_from_revision: restored_from(revision),
     }
 }
 
@@ -272,9 +284,9 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let mut publish = SharedToolPublish::new(
             path(&input.path)?,
             origin(input.origin, &w, &user)?,
-            PrivateToolDescription::parse(&input.description)
+            AuthoredToolDescription::parse(&input.description)
                 .map_err(|_error| invalid("invalid description"))?,
-            PrivateToolSource::parse(&input.source).map_err(|_error| invalid("invalid source"))?,
+            AuthoredToolSource::parse(&input.source).map_err(|_error| invalid("invalid source"))?,
             access(input.default_access_state)?,
             input.expected_revision,
         );

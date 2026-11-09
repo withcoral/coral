@@ -47,8 +47,8 @@ async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
             &tool.workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("weather.forecast").expect("path"),
-                PrivateToolDescription::parse("Forecast one city").expect("description"),
-                PrivateToolSource::parse(ACCEPTED_PRIVATE_TOOL).expect("source"),
+                AuthoredToolDescription::parse("Forecast one city").expect("description"),
+                AuthoredToolSource::parse(ACCEPTED_PRIVATE_TOOL).expect("source"),
             ),
         )
         .await
@@ -189,8 +189,8 @@ async fn each_record_keeps_the_authored_location_of_its_own_call() {
             &tool.workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Replaced").expect("description"),
-                PrivateToolSource::parse("\n\nexport default () => console.info('replaced');")
+                AuthoredToolDescription::parse("Replaced").expect("description"),
+                AuthoredToolSource::parse("\n\nexport default () => console.info('replaced');")
                     .expect("source"),
             ),
         )

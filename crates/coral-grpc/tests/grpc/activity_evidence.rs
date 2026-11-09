@@ -1592,8 +1592,8 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
             f.workspace.id(),
             coral_tools::PrivateToolSave::new(
                 coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
-                coral_tools::PrivateToolDescription::parse("Forecast one city").unwrap(),
-                coral_tools::PrivateToolSource::parse(
+                coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
+                coral_tools::AuthoredToolSource::parse(
                     "export default async function forecast(city: string) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
                 )
                 .unwrap(),
@@ -1729,8 +1729,8 @@ async fn nested_call_run(f: &Fixture) -> (coral_run::RunId, Vec<wire::ActivityIn
             f.workspace.id(),
             coral_tools::PrivateToolSave::new(
                 coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
-                coral_tools::PrivateToolDescription::parse("Forecast one city").unwrap(),
-                coral_tools::PrivateToolSource::parse(
+                coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
+                coral_tools::AuthoredToolSource::parse(
                     "export default async () => (await coral.providers.evidence.read({ body: {} })).data;",
                 )
                 .unwrap(),

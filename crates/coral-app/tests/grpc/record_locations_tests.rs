@@ -51,8 +51,8 @@ async fn record_run(
         &workspace,
         coral_tools::PrivateToolSave::new(
             coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
-            coral_tools::PrivateToolDescription::parse("Forecast one city").unwrap(),
-            coral_tools::PrivateToolSource::parse(PRIVATE_TOOL).unwrap(),
+            coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
+            coral_tools::AuthoredToolSource::parse(PRIVATE_TOOL).unwrap(),
         ),
     )
     .await

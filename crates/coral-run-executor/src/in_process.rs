@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits,
-    LinkedPrivateToolSource, PrivateToolCallPaths, PrivateToolCompilation, PrivateToolReference,
-    ProgramCompiler, ToolReferences, UnknownToolCall,
+    AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations,
+    IsolateLimits, LinkedToolReference, LinkedToolSource, NamedCallPaths, ProgramCompiler,
+    ToolReferences, UnknownToolCall,
 };
 
 use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
@@ -37,7 +37,7 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<PrivateToolCallPaths, CompileError> {
+    ) -> Result<NamedCallPaths, CompileError> {
         self.run
             .program_call_paths(deadline(time_left), source)
             .map_err(compile_error)
@@ -58,7 +58,7 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileError> {
+    ) -> Result<Vec<LinkedToolReference>, CompileError> {
         self.run
             .private_tool_dependency_paths(deadline(time_left), source)
             .map_err(compile_error)
@@ -68,7 +68,7 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-        private_tools: &[LinkedPrivateToolSource],
+        private_tools: &[LinkedToolSource],
         builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError> {
         let deadline = deadline(time_left);
@@ -85,7 +85,7 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<PrivateToolCallPaths, CompileError> {
+    ) -> Result<NamedCallPaths, CompileError> {
         self.authoring
             .private_tool_call_paths(deadline(time_left), source)
             .map_err(compile_error)
@@ -97,7 +97,7 @@ impl CompilerClient for InProcessCompiler {
         source: &str,
         builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<PrivateToolCompilation, CompileError> {
+    ) -> Result<AuthoredToolCompilation, CompileError> {
         let deadline = deadline(time_left);
         let authoring = self.authoring.with_builtin_tools(builtin_tools);
         match declarations {
@@ -117,7 +117,7 @@ fn deadline(time_left: Duration) -> Instant {
 fn compile_error(error: coral_v8::Error) -> CompileError {
     match error {
         coral_v8::Error::MemoryLimitExceeded => CompileError::MemoryLimit,
-        coral_v8::Error::InvalidPrivateToolReference {
+        coral_v8::Error::InvalidLinkedToolReference {
             message,
             line,
             column,
@@ -191,12 +191,12 @@ mod tests {
                 "forbidden_capability",
             ),
             (
-                || coral_v8::Error::InvalidPrivateToolReference {
+                || coral_v8::Error::InvalidLinkedToolReference {
                     message: "computed access".into(),
                     line: 2,
                     column: 7,
                 },
-                "invalid_private_tool_reference",
+                "invalid_linked_tool_reference",
             ),
             (
                 || coral_v8::Error::MemoryLimitExceeded,

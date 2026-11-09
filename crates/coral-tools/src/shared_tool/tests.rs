@@ -9,11 +9,12 @@ use coral_workspace::{
 
 use super::{
     SharedToolModule, SharedToolOrigin, SharedToolPath, SharedToolPublication, SharedToolPublish,
-    hold_shared_selection_in_transaction, select_shared_source_in_transaction,
+    SharedToolRevisionOrigin, hold_shared_selection_in_transaction,
+    select_shared_source_in_transaction,
 };
 use crate::{
-    Error, PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
-    PrivateToolSave, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, Error, PrivateToolChangeContext,
+    PrivateToolModule, PrivateToolPath, PrivateToolSave,
 };
 
 /// One Workspace with an Owner, an ordinary Member and an Agent, each of
@@ -108,8 +109,8 @@ impl SharedToolFixture {
                 &self.workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("Private Tool Path"),
-                    PrivateToolDescription::parse("A private draft").expect("description"),
-                    PrivateToolSource::parse(source).expect("source"),
+                    AuthoredToolDescription::parse("A private draft").expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
                 ),
             )
             .await
@@ -195,8 +196,8 @@ fn publish(
     SharedToolPublish::new(
         shared_path(path),
         origin,
-        PrivateToolDescription::parse(description).expect("description"),
-        PrivateToolSource::parse(source).expect("source"),
+        AuthoredToolDescription::parse(description).expect("description"),
+        AuthoredToolSource::parse(source).expect("source"),
         ToolAccessState::Enabled,
         expected_revision,
     )
@@ -336,8 +337,8 @@ async fn a_publish_stores_exactly_the_reviewed_bytes_and_leaves_the_private_tool
             SharedToolPublish::new(
                 shared_path("mail.remind"),
                 own_draft(&fixture.owner),
-                PrivateToolDescription::parse("Remind someone, as reviewed").expect("description"),
-                PrivateToolSource::parse(&reviewed).expect("source"),
+                AuthoredToolDescription::parse("Remind someone, as reviewed").expect("description"),
+                AuthoredToolSource::parse(&reviewed).expect("source"),
                 ToolAccessState::ApprovalRequired,
                 0,
             ),
@@ -369,8 +370,8 @@ async fn a_publish_stores_exactly_the_reviewed_bytes_and_leaves_the_private_tool
         tool.current().content_hash()
     );
     assert_eq!(
-        stored.current().source_private_tool_id(),
-        Some(private_before.id())
+        stored.current().origin(),
+        &SharedToolRevisionOrigin::PrivateTool(private_before.id().clone())
     );
     assert_eq!(stored.created_by(), fixture.owner.user_id());
 
@@ -484,8 +485,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     assert_eq!(current.revision(), 3);
     assert_eq!(current.source(), first.source());
     assert_eq!(current.content_hash(), first.content_hash());
-    assert_eq!(current.restored_from_revision(), Some(1));
-    assert_eq!(current.source_private_tool_id(), None);
+    assert_eq!(current.origin(), &SharedToolRevisionOrigin::Revision(1));
     let after = fixture
         .shared_tools
         .list_revisions(&owner, &fixture.workspace, &path)
@@ -511,7 +511,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
                 path.clone(),
                 SharedToolOrigin::Revision(1),
                 first.description().clone(),
-                PrivateToolSource::parse(REVIEWED).expect("source"),
+                AuthoredToolSource::parse(REVIEWED).expect("source"),
                 first.default_access_state(),
                 3,
             ),

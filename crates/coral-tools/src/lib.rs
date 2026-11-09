@@ -30,6 +30,7 @@
 //!
 //! Errors distinguish input, concealment, authority, compilation, and persistence.
 
+mod authoring;
 mod deletion;
 mod error;
 mod inspection;
@@ -57,22 +58,22 @@ pub use repository::{hold_source_selection_in_transaction, select_source_in_tran
 pub use shared_tool::{
     SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDependency, SharedToolId, SharedToolModule,
     SharedToolOrigin, SharedToolPage, SharedToolPath, SharedToolPublication, SharedToolPublish,
-    SharedToolReview, SharedToolRevision, SharedToolSelection, SharedToolSummary,
-    hold_shared_selection_in_transaction, select_shared_source_in_transaction,
+    SharedToolReview, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSelection,
+    SharedToolSummary, hold_shared_selection_in_transaction, select_shared_source_in_transaction,
 };
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{
-    AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, ExactPrivateToolAuthoringMaterial,
-    ExactPrivateToolDescriptionMaterial, LifecycleAction, LifecycleOutcome,
-    PRIVATE_TOOL_DECLARATION_MAX_BYTES, PRIVATE_TOOL_DESCRIPTION_MAX_BYTES,
-    PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT, PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
-    PRIVATE_TOOL_PAGE_MAX_SIZE, PRIVATE_TOOL_PATH_MAX_BYTES, PRIVATE_TOOL_PATH_MAX_SEGMENTS,
-    PRIVATE_TOOL_SOURCE_MAX_BYTES, PrivateTool, PrivateToolAuthoringMaterial,
-    PrivateToolChangeContext, PrivateToolDeclaration, PrivateToolDeclarationField,
-    PrivateToolDeclarationFieldProjection, PrivateToolDeclarationSearchMaterial,
-    PrivateToolDescription, PrivateToolDiagnostic, PrivateToolDiagnosticCategory, PrivateToolEntry,
+    AUTHORED_TOOL_DECLARATION_MAX_BYTES, AUTHORED_TOOL_DESCRIPTION_MAX_BYTES,
+    AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT, AUTHORED_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
+    AUTHORED_TOOL_PATH_MAX_BYTES, AUTHORED_TOOL_PATH_MAX_SEGMENTS, AUTHORED_TOOL_SOURCE_MAX_BYTES,
+    AdministrativeLifecycleEvent, AuthoredToolDeclaration, AuthoredToolDeclarationField,
+    AuthoredToolDeclarationFieldProjection, AuthoredToolDescription, AuthoredToolDiagnostic,
+    AuthoredToolDiagnosticCategory, AuthoredToolSource, COMPILATION_TIMEOUT,
+    ExactPrivateToolAuthoringMaterial, ExactPrivateToolDescriptionMaterial, LifecycleAction,
+    LifecycleOutcome, PRIVATE_TOOL_PAGE_MAX_SIZE, PrivateTool, PrivateToolAuthoringMaterial,
+    PrivateToolChangeContext, PrivateToolDeclarationSearchMaterial, PrivateToolEntry,
     PrivateToolId, PrivateToolIndexRevision, PrivateToolPage, PrivateToolPath, PrivateToolSave,
-    PrivateToolSearchMaterial, PrivateToolSource, PrivateToolSummary,
+    PrivateToolSearchMaterial, PrivateToolSummary,
 };
 pub use types::{PrivateToolScope, PrivateToolSelection, ReadablePrivateTool};
 

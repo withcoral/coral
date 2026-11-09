@@ -10,9 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use coral_v8::{
     AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
-    IsolateLimits, LinkedPrivateToolSource, PrivateToolReference, ProgramCompiler,
-    ProgramExecutionControl, ProgramExecutor, ProgramHost, ProgramOutputHostError,
-    TYPESCRIPT_PROFILE, ToolHostError,
+    IsolateLimits, LinkedToolReference, LinkedToolSource, ProgramCompiler, ProgramExecutionControl,
+    ProgramExecutor, ProgramHost, ProgramOutputHostError, TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
 #[cfg(unix)]
@@ -28,19 +27,19 @@ fn compilation_deadline() -> std::time::Instant {
     std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT
 }
 
-fn linked_source(path: &[&str], source: &str) -> LinkedPrivateToolSource {
-    LinkedPrivateToolSource::new(
+fn linked_source(path: &[&str], source: &str) -> LinkedToolSource {
+    LinkedToolSource::new(
         path.iter().map(|segment| (*segment).to_string()).collect(),
         source.to_string(),
     )
 }
 
-fn reference_paths(references: &[PrivateToolReference]) -> Vec<&str> {
-    references.iter().map(PrivateToolReference::path).collect()
+fn reference_paths(references: &[LinkedToolReference]) -> Vec<&str> {
+    references.iter().map(LinkedToolReference::path).collect()
 }
 
-fn shared_source(path: &[&str], source: &str) -> LinkedPrivateToolSource {
-    LinkedPrivateToolSource::shared(
+fn shared_source(path: &[&str], source: &str) -> LinkedToolSource {
+    LinkedToolSource::shared(
         path.iter().map(|segment| (*segment).to_string()).collect(),
         source.to_string(),
     )
@@ -741,7 +740,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
         .expect("declaration projection is ready");
     let paths = fields
         .iter()
-        .map(coral_v8::PrivateToolDeclarationField::path)
+        .map(coral_v8::AuthoredToolDeclarationField::path)
         .collect::<Vec<_>>();
     assert!(paths.contains(&"input.value.label"));
     assert!(paths.contains(&"input.value.children"));
@@ -776,7 +775,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
         .declaration_fields()
         .expect("declaration projection is ready")
         .iter()
-        .map(coral_v8::PrivateToolDeclarationField::path)
+        .map(coral_v8::AuthoredToolDeclarationField::path)
         .collect::<Vec<_>>();
     assert!(nested_and_rest_paths.contains(&"input.options.callback"));
     assert!(nested_and_rest_paths.contains(&"input.items[].id"));
@@ -805,7 +804,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
             .declaration_fields()
             .unwrap_or_else(|error| panic!("project {case}: {error}"))
             .iter()
-            .map(coral_v8::PrivateToolDeclarationField::path)
+            .map(coral_v8::AuthoredToolDeclarationField::path)
             .collect::<Vec<_>>();
         assert!(paths.contains(&"input.items[].id"), "{case}: {paths:?}");
         assert!(
@@ -934,7 +933,7 @@ fn declaration_projection_uses_resolved_public_instance_types() {
     let fields = compilation.declaration_fields().expect("project fields");
     let paths = fields
         .iter()
-        .map(coral_v8::PrivateToolDeclarationField::path)
+        .map(coral_v8::AuthoredToolDeclarationField::path)
         .collect::<Vec<_>>();
     for path in [
         "input.picked.customerEmail",
@@ -1630,7 +1629,7 @@ fn failure_stacks_name_only_authored_locations() {
         "export default async function fetch() {\n    await coral.providers.weather.getForecast();\n}",
     );
     // (Program, its Private Tools, the failure's message, its authored frames)
-    let cases: [(&str, Vec<LinkedPrivateToolSource>, &str, &[&str]); 10] = [
+    let cases: [(&str, Vec<LinkedToolSource>, &str, &[&str]); 10] = [
         (
             "const meaning: number = 42;\nvoid meaning;\nthrow new Error(\"private rejection canary\");",
             vec![],
@@ -2397,7 +2396,7 @@ fn run_with_recording_host(source: &str) -> (Option<String>, Arc<RecordingHost>)
 
 fn run_linked_with_recording_host(
     source: &str,
-    functions: &[LinkedPrivateToolSource],
+    functions: &[LinkedToolSource],
 ) -> (Option<String>, Arc<RecordingHost>) {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
@@ -2466,7 +2465,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
     #[expect(clippy::type_complexity, reason = "one readable table of cases")]
     let cases: Vec<(
         &str,
-        Vec<LinkedPrivateToolSource>,
+        Vec<LinkedToolSource>,
         Vec<(&str, Option<AuthoredLocation>)>,
     )> = vec![
         // One call per line: the column is the called name, after type syntax

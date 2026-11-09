@@ -179,7 +179,7 @@ struct RemoveArguments {
 /// The opaque type of `source`: a Program passes a function, and admission
 /// replaces it with the module it extracts, which the Program host encodes
 /// as the string this schema describes.
-pub(super) const SOURCE_OPAQUE_TYPE: &str = "PrivateToolSource";
+pub(super) const SOURCE_OPAQUE_TYPE: &str = "AuthoredToolSource";
 
 /// Accepts any function a Program declares.
 pub(super) const SOURCE_TYPESCRIPT_TYPE: &str = "(...args: never[]) => unknown";

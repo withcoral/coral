@@ -2,8 +2,8 @@
 //! Publishing rules are tested at their owner, coral-tools.
 use super::{Fixture, change, error_reason, management, request};
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolPath, PrivateToolSave,
-    PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
+    PrivateToolSave,
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, OrganizationModule, OrganizationRole, TraceId,
@@ -26,8 +26,8 @@ async fn save_draft(f: &Fixture, user: &AuthenticatedUser) {
             f.workspace.id(),
             PrivateToolSave::new(
                 PrivateToolPath::parse("draft").unwrap(),
-                PrivateToolDescription::parse("A draft").unwrap(),
-                PrivateToolSource::parse(SOURCE).unwrap(),
+                AuthoredToolDescription::parse("A draft").unwrap(),
+                AuthoredToolSource::parse(SOURCE).unwrap(),
             ),
         )
         .await

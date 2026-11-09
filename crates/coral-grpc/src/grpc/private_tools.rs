@@ -4,7 +4,7 @@ use super::workspaces::{
 };
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{
-    PrivateTool, PrivateToolChangeContext, PrivateToolDiagnostic, PrivateToolDiagnosticCategory,
+    AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory, PrivateTool, PrivateToolChangeContext,
     PrivateToolPath, PrivateToolSummary,
 };
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
@@ -28,6 +28,7 @@ fn error(error: coral_tools::Error) -> Status {
         | E::SharedToolPathConflict
         | E::SharedToolAdmission(_)
         | E::SharedToolNotData(_)
+        | E::SharedToolCompilationTimedOut
         | E::PrivateToolAdmission(_)
         | E::PrivateToolNotData(_)
         | E::PrivateToolPathConflict
@@ -56,12 +57,12 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
     }
 }
 
-pub(super) fn diagnostic(diagnostic: &PrivateToolDiagnostic) -> wire::PrivateToolDiagnostic {
+pub(super) fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> wire::PrivateToolDiagnostic {
     let category = match diagnostic.category() {
-        PrivateToolDiagnosticCategory::Message => wire::PrivateToolDiagnosticCategory::Message,
-        PrivateToolDiagnosticCategory::Warning => wire::PrivateToolDiagnosticCategory::Warning,
-        PrivateToolDiagnosticCategory::Error => wire::PrivateToolDiagnosticCategory::Error,
-        PrivateToolDiagnosticCategory::Suggestion => {
+        AuthoredToolDiagnosticCategory::Message => wire::PrivateToolDiagnosticCategory::Message,
+        AuthoredToolDiagnosticCategory::Warning => wire::PrivateToolDiagnosticCategory::Warning,
+        AuthoredToolDiagnosticCategory::Error => wire::PrivateToolDiagnosticCategory::Error,
+        AuthoredToolDiagnosticCategory::Suggestion => {
             wire::PrivateToolDiagnosticCategory::Suggestion
         }
     };

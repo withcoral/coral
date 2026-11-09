@@ -1,7 +1,7 @@
 use super::{Fixture, error_reason, management, request};
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolPath, PrivateToolSave,
-    PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
+    PrivateToolSave,
 };
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, TraceId};
 
@@ -16,8 +16,8 @@ async fn save(f: &Fixture, user: &AuthenticatedUser, path: &str, source: &str) {
             f.workspace.id(),
             PrivateToolSave::new(
                 PrivateToolPath::parse(path).unwrap(),
-                PrivateToolDescription::parse(&format!("Describe {path}")).unwrap(),
-                PrivateToolSource::parse(source).unwrap(),
+                AuthoredToolDescription::parse(&format!("Describe {path}")).unwrap(),
+                AuthoredToolSource::parse(source).unwrap(),
             ),
         )
         .await
@@ -283,8 +283,8 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
             f.workspace.id(),
             PrivateToolSave::new(
                 PrivateToolPath::parse("people.greet").unwrap(),
-                PrivateToolDescription::parse("Describe the Agent's").unwrap(),
-                PrivateToolSource::parse("export default () => 3;").unwrap(),
+                AuthoredToolDescription::parse("Describe the Agent's").unwrap(),
+                AuthoredToolSource::parse("export default () => 3;").unwrap(),
             ),
         )
         .await

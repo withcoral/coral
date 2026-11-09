@@ -67,7 +67,7 @@ const UNKNOWN_TOOL: u64 = 100_001;
 /// `(code, line, column)` of each diagnostic.
 type Located = Vec<(u64, Option<u64>, Option<u64>)>;
 
-fn located(diagnostics: &[coral_tools::PrivateToolDiagnostic]) -> Located {
+fn located(diagnostics: &[coral_tools::AuthoredToolDiagnostic]) -> Located {
     diagnostics
         .iter()
         .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
@@ -91,7 +91,7 @@ async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_tools::Priva
 async fn save_diagnostics(
     fixture: &Fixture,
     body: &str,
-) -> Vec<coral_tools::PrivateToolDiagnostic> {
+) -> Vec<coral_tools::AuthoredToolDiagnostic> {
     save(
         fixture,
         "typed.check",

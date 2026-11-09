@@ -602,7 +602,7 @@ async fn a_function_without_projected_declaration_fields_is_indexed_by_path_and_
         .unwrap();
     assert!(matches!(
         saved.declaration_field_projection(),
-        coral_tools::PrivateToolDeclarationFieldProjection::Failed(_)
+        coral_tools::AuthoredToolDeclarationFieldProjection::Failed(_)
     ));
     index.settled().await;
 

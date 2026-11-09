@@ -2168,8 +2168,8 @@ impl PrivateTools {
         ] {
             let save = coral_tools::PrivateToolSave::new(
                 coral_tools::PrivateToolPath::parse("people.greet").expect("path"),
-                coral_tools::PrivateToolDescription::parse("Greet").expect("description"),
-                coral_tools::PrivateToolSource::parse("export default async () => 1;")
+                coral_tools::AuthoredToolDescription::parse("Greet").expect("description"),
+                coral_tools::AuthoredToolSource::parse("export default async () => 1;")
                     .expect("source"),
             )
             .declaring_default(declared);

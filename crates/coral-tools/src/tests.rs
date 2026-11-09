@@ -11,24 +11,25 @@ use coral_workspace::{
     WorkspaceRole,
 };
 
-use crate::private_tool::{PreparedPrivateTool, PrivateToolCompiler};
+use crate::authoring::{AuthoredToolCompiler, PreparedAuthoredTool};
 use crate::{
-    Error, LifecycleAction as PrivateToolLifecycleAction, PrivateToolChangeContext,
-    PrivateToolDescription, PrivateToolModule, PrivateToolPath, PrivateToolSave, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, Error,
+    LifecycleAction as PrivateToolLifecycleAction, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
 };
 
 #[test]
 fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
-    let maximum_private_tool = "f".repeat(crate::PRIVATE_TOOL_SOURCE_MAX_BYTES);
-    PrivateToolSource::parse(&maximum_private_tool).expect("maximum Private Tool source");
-    PrivateToolSource::parse(&format!("{maximum_private_tool}f"))
+    let maximum_private_tool = "f".repeat(crate::AUTHORED_TOOL_SOURCE_MAX_BYTES);
+    AuthoredToolSource::parse(&maximum_private_tool).expect("maximum Private Tool source");
+    AuthoredToolSource::parse(&format!("{maximum_private_tool}f"))
         .expect_err("oversized Private Tool source");
 
-    let maximum_declaration = "d".repeat(crate::PRIVATE_TOOL_DECLARATION_MAX_BYTES);
-    crate::PrivateToolDeclaration::from_compiler(&maximum_declaration)
+    let maximum_declaration = "d".repeat(crate::AUTHORED_TOOL_DECLARATION_MAX_BYTES);
+    crate::AuthoredToolDeclaration::from_compiler(&maximum_declaration)
         .expect("maximum Private Tool declaration");
     assert!(matches!(
-        crate::PrivateToolDeclaration::from_compiler(&format!("{maximum_declaration}d")),
+        crate::AuthoredToolDeclaration::from_compiler(&format!("{maximum_declaration}d")),
         Err(Error::PackageTooLarge {
             component: "Private Tool declaration",
             ..
@@ -55,9 +56,9 @@ async fn private_tool_save_publishes_exact_authoring_record_and_event() {
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("finance.calculate").expect("Private Tool Path"),
-                PrivateToolDescription::parse("Calculate a doubled finance value")
+                AuthoredToolDescription::parse("Calculate a doubled finance value")
                     .expect("description"),
-                PrivateToolSource::parse(source).expect("source"),
+                AuthoredToolSource::parse(source).expect("source"),
             ),
         )
         .await
@@ -65,7 +66,7 @@ async fn private_tool_save_publishes_exact_authoring_record_and_event() {
 
     assert!(saved.declaration().as_str().contains("interface Input"));
     assert!(saved.declaration().as_str().contains("export default"));
-    let crate::PrivateToolDeclarationFieldProjection::Ready(fields) =
+    let crate::AuthoredToolDeclarationFieldProjection::Ready(fields) =
         saved.declaration_field_projection()
     else {
         panic!("declaration fields must be ready");
@@ -159,8 +160,8 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
         let path = PrivateToolPath::parse(path).expect("path");
         let save = PrivateToolSave::new(
             path.clone(),
-            PrivateToolDescription::parse("Look up one value").expect("description"),
-            PrivateToolSource::parse(&format!("export default async () => {step};"))
+            AuthoredToolDescription::parse("Look up one value").expect("description"),
+            AuthoredToolSource::parse(&format!("export default async () => {step};"))
                 .expect("source"),
         )
         .declaring_default(policy);
@@ -222,8 +223,8 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Original total").expect("description"),
-                PrivateToolSource::parse(original_source).expect("source"),
+                AuthoredToolDescription::parse("Original total").expect("description"),
+                AuthoredToolSource::parse(original_source).expect("source"),
             ),
         )
         .await
@@ -236,8 +237,8 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Broken replacement").expect("description"),
-                PrivateToolSource::parse("export default function (").expect("source"),
+                AuthoredToolDescription::parse("Broken replacement").expect("description"),
+                AuthoredToolSource::parse("export default function (").expect("source"),
             ),
         )
         .await;
@@ -267,8 +268,8 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Replacement total").expect("description"),
-                PrivateToolSource::parse(replacement_source).expect("source"),
+                AuthoredToolDescription::parse("Replacement total").expect("description"),
+                AuthoredToolSource::parse(replacement_source).expect("source"),
             ),
         )
         .await
@@ -340,8 +341,8 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
         let workspace_id = workspace_id.clone();
         let save = PrivateToolSave::new(
             PrivateToolPath::parse(path).expect("path"),
-            PrivateToolDescription::parse(description).expect("description"),
-            PrivateToolSource::parse(
+            AuthoredToolDescription::parse(description).expect("description"),
+            AuthoredToolSource::parse(
                 "interface Input { value: number }\nexport default function run(input: Input): number { return input.value; }",
             )
             .expect("source"),
@@ -520,8 +521,8 @@ async fn agent_and_user_private_tool_paths_are_principal_owned() {
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Agent-private answer").expect("description"),
-                PrivateToolSource::parse("export default () => 42;").expect("source"),
+                AuthoredToolDescription::parse("Agent-private answer").expect("description"),
+                AuthoredToolSource::parse("export default () => 42;").expect("source"),
             ),
         )
         .await
@@ -584,8 +585,8 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Agent-owned answer").expect("description"),
-                PrivateToolSource::parse("export default () => 'agent';").expect("source"),
+                AuthoredToolDescription::parse("Agent-owned answer").expect("description"),
+                AuthoredToolSource::parse("export default () => 'agent';").expect("source"),
             ),
         )
         .await
@@ -617,8 +618,8 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Owner's private answer").expect("description"),
-                PrivateToolSource::parse("export default () => 'owner';").expect("source"),
+                AuthoredToolDescription::parse("Owner's private answer").expect("description"),
+                AuthoredToolSource::parse("export default () => 'owner';").expect("source"),
             ),
         )
         .await
@@ -871,8 +872,8 @@ async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("path"),
-                    PrivateToolDescription::parse("Current callable").expect("description"),
-                    PrivateToolSource::parse("export default () => 42;").expect("source"),
+                    AuthoredToolDescription::parse("Current callable").expect("description"),
+                    AuthoredToolSource::parse("export default () => 42;").expect("source"),
                 ),
             )
             .await
@@ -888,8 +889,9 @@ async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
                     &workspace_id,
                     PrivateToolSave::new(
                         PrivateToolPath::parse(path).expect("path"),
-                        PrivateToolDescription::parse("Conflicting callable").expect("description"),
-                        PrivateToolSource::parse("export default () => 0;").expect("source"),
+                        AuthoredToolDescription::parse("Conflicting callable")
+                            .expect("description"),
+                        AuthoredToolSource::parse("export default () => 0;").expect("source"),
                     ),
                 )
                 .await,
@@ -955,7 +957,7 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
         let module = PrivateToolModule::with_compiler(
             fixture.database.clone(),
             fixture.workspaces.clone(),
-            Arc::new(GatedPrivateToolCompiler::failing(failure)),
+            Arc::new(GatedAuthoredToolCompiler::failing(failure)),
         );
         let error = module
             .save(
@@ -963,8 +965,8 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
                 &workspace_id,
                 PrivateToolSave::new(
                     path.clone(),
-                    PrivateToolDescription::parse("Fails to compile").expect("description"),
-                    PrivateToolSource::parse("export default () => 1;").expect("source"),
+                    AuthoredToolDescription::parse("Fails to compile").expect("description"),
+                    AuthoredToolSource::parse("export default () => 1;").expect("source"),
                 ),
             )
             .await
@@ -1005,8 +1007,8 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
     let save = |path: &PrivateToolPath| {
         PrivateToolSave::new(
             path.clone(),
-            PrivateToolDescription::parse("Report the current value").expect("description"),
-            PrivateToolSource::parse("export default () => 42;").expect("source"),
+            AuthoredToolDescription::parse("Report the current value").expect("description"),
+            AuthoredToolSource::parse("export default () => 42;").expect("source"),
         )
     };
     fixture
@@ -1022,7 +1024,7 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
     let timing_out = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
-        Arc::new(GatedPrivateToolCompiler::failing(CompileFailure::TimedOut)),
+        Arc::new(GatedAuthoredToolCompiler::failing(CompileFailure::TimedOut)),
     );
     let missing = PrivateToolPath::parse("reports.missing").expect("path");
     let current = fixture
@@ -1122,7 +1124,7 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
     let private_tools = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
-        Arc::new(GatedPrivateToolCompiler::paired()),
+        Arc::new(GatedAuthoredToolCompiler::paired()),
     );
 
     let first_module = private_tools.clone();
@@ -1135,8 +1137,8 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
                 &first_workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse("concurrent.path").expect("path"),
-                    PrivateToolDescription::parse("Concurrent parent").expect("description"),
-                    PrivateToolSource::parse("export default () => 1;").expect("source"),
+                    AuthoredToolDescription::parse("Concurrent parent").expect("description"),
+                    AuthoredToolSource::parse("export default () => 1;").expect("source"),
                 ),
             )
             .await
@@ -1149,8 +1151,8 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse("concurrent.path.child").expect("path"),
-                    PrivateToolDescription::parse("Concurrent child").expect("description"),
-                    PrivateToolSource::parse("export default () => 2;").expect("source"),
+                    AuthoredToolDescription::parse("Concurrent child").expect("description"),
+                    AuthoredToolSource::parse("export default () => 2;").expect("source"),
                 ),
             )
             .await
@@ -1175,7 +1177,7 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
 async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active_workspace() {
     let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:authoring-race").await;
-    let (compiler, compiling, release) = GatedPrivateToolCompiler::held();
+    let (compiler, compiling, release) = GatedAuthoredToolCompiler::held();
     let blocked_private_tools = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -1191,9 +1193,9 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
                 &saving_workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse("races.compile").expect("path"),
-                    PrivateToolDescription::parse("Compile outside transaction")
+                    AuthoredToolDescription::parse("Compile outside transaction")
                         .expect("description"),
-                    PrivateToolSource::parse("export default () => 42;").expect("source"),
+                    AuthoredToolSource::parse("export default () => 42;").expect("source"),
                 ),
             )
             .await
@@ -1249,8 +1251,8 @@ async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_pub
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Keep strict semantic advice").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Keep strict semantic advice").expect("description"),
+                AuthoredToolSource::parse(
                     r"
                         interface Input { value: number }
                         export default function advise(input: Input): number {
@@ -1282,8 +1284,8 @@ async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_pub
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Unresolved public type").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Unresolved public type").expect("description"),
+                AuthoredToolSource::parse(
                     "export default function invalid(input: MissingPublicType): number { return 0; }",
                 )
                 .expect("source"),
@@ -1312,8 +1314,9 @@ async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_pub
                     &workspace_id,
                     PrivateToolSave::new(
                         path.clone(),
-                        PrivateToolDescription::parse("Invalid export shape").expect("description"),
-                        PrivateToolSource::parse(invalid_source).expect("source"),
+                        AuthoredToolDescription::parse("Invalid export shape")
+                            .expect("description"),
+                        AuthoredToolSource::parse(invalid_source).expect("source"),
                     ),
                 )
                 .await,
@@ -1349,8 +1352,8 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
     let save = |source: &str| {
         PrivateToolSave::new(
             path.clone(),
-            PrivateToolDescription::parse("Takes and returns data").expect("description"),
-            PrivateToolSource::parse(source).expect("source"),
+            AuthoredToolDescription::parse("Takes and returns data").expect("description"),
+            AuthoredToolSource::parse(source).expect("source"),
         )
     };
     for (source, reason) in [
@@ -1436,8 +1439,8 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
             &workspace_id,
             PrivateToolSave::new(
                 path.clone(),
-                PrivateToolDescription::parse("Compose one report").expect("description"),
-                PrivateToolSource::parse(
+                AuthoredToolDescription::parse("Compose one report").expect("description"),
+                AuthoredToolSource::parse(
                     "export default function compose() {\n  return coral.private.missing.value();\n}",
                 )
                 .expect("source"),
@@ -1468,8 +1471,8 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
                 &workspace_id,
                 PrivateToolSave::new(
                     path.clone(),
-                    PrivateToolDescription::parse("Compose one report").expect("description"),
-                    PrivateToolSource::parse(source).expect("source"),
+                    AuthoredToolDescription::parse("Compose one report").expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
                 ),
             )
             .await;
@@ -1502,7 +1505,7 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
 async fn accepted_private_tool_diagnostics_are_bounded() {
     let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:diagnostic-bound").await;
-    let mut source = (0..=crate::PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT)
+    let mut source = (0..=crate::AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT)
         .map(|index| format!("const invalid{index}: string = {index};"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -1515,8 +1518,8 @@ async fn accepted_private_tool_diagnostics_are_bounded() {
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("diagnostics.bounded").expect("path"),
-                PrivateToolDescription::parse("Bound compiler diagnostics").expect("description"),
-                PrivateToolSource::parse(&source).expect("source"),
+                AuthoredToolDescription::parse("Bound compiler diagnostics").expect("description"),
+                AuthoredToolSource::parse(&source).expect("source"),
             ),
         )
         .await
@@ -1524,7 +1527,7 @@ async fn accepted_private_tool_diagnostics_are_bounded() {
 
     assert_eq!(
         saved.diagnostics().len(),
-        crate::PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT
+        crate::AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT
     );
     assert!(saved.diagnostics_truncated());
 }
@@ -1583,8 +1586,8 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
                 &workspace_id,
                 PrivateToolSave::new(
                     PrivateToolPath::parse("typing.stalled").expect("path"),
-                    PrivateToolDescription::parse("Typed").expect("description"),
-                    PrivateToolSource::parse(
+                    AuthoredToolDescription::parse("Typed").expect("description"),
+                    AuthoredToolSource::parse(
                         "export default async function f() { return coral.providers.github.repos.get({ owner: \"a\", nope: 1 }); }",
                     )
                     .expect("source"),
@@ -1608,7 +1611,7 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
             saved
                 .diagnostics()
                 .iter()
-                .map(crate::PrivateToolDiagnostic::code)
+                .map(crate::AuthoredToolDiagnostic::code)
                 .collect::<Vec<_>>(),
             expected,
             "{name}"
@@ -1644,8 +1647,8 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
                     workspace,
                     PrivateToolSave::new(
                         path.clone(),
-                        PrivateToolDescription::parse("Total").unwrap(),
-                        PrivateToolSource::parse(source).unwrap(),
+                        AuthoredToolDescription::parse("Total").unwrap(),
+                        AuthoredToolSource::parse(source).unwrap(),
                     ),
                 )
                 .await
@@ -1687,11 +1690,11 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
 }
 
 /// Compiles every source to one fixed declaration once its gate opens.
-struct GatedPrivateToolCompiler {
+struct GatedAuthoredToolCompiler {
     gate: Box<dyn Fn() -> Result<(), CompileFailure> + Send + Sync>,
 }
 
-impl GatedPrivateToolCompiler {
+impl GatedAuthoredToolCompiler {
     /// Each compilation waits until a second one reaches the gate.
     fn paired() -> Self {
         let barrier = Barrier::new(2);
@@ -1731,12 +1734,12 @@ impl GatedPrivateToolCompiler {
     }
 }
 
-impl PrivateToolCompiler for GatedPrivateToolCompiler {
+impl AuthoredToolCompiler for GatedAuthoredToolCompiler {
     fn call_paths(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Option<coral_v8::PrivateToolCallPaths> {
+    ) -> Option<coral_v8::NamedCallPaths> {
         None
     }
 
@@ -1745,19 +1748,19 @@ impl PrivateToolCompiler for GatedPrivateToolCompiler {
         _deadline: std::time::Instant,
         _source: &str,
         _declarations: Option<&coral_v8::CoralDeclarations>,
-    ) -> Result<PreparedPrivateTool, CompileFailure> {
+    ) -> Result<PreparedAuthoredTool, CompileFailure> {
         (self.gate)()?;
-        Ok(PreparedPrivateTool {
-            declaration: crate::PrivateToolDeclaration::from_compiler(
+        Ok(PreparedAuthoredTool {
+            declaration: crate::AuthoredToolDeclaration::from_compiler(
                 "declare const _default: () => number;\nexport default _default;\n",
             )
             .map_err(|error| error.to_string())?,
-            declaration_field_projection: crate::PrivateToolDeclarationFieldProjection::Ready(
+            declaration_field_projection: crate::AuthoredToolDeclarationFieldProjection::Ready(
                 Vec::new(),
             ),
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
-            references: Vec::new(),
+            private_references: Vec::new(),
             shared_references: Vec::new(),
             not_data: None,
         })
@@ -1863,8 +1866,8 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
         let path = PrivateToolPath::parse("private.answer").unwrap();
         let save = PrivateToolSave::new(
             path.clone(),
-            PrivateToolDescription::parse("Answer").unwrap(),
-            PrivateToolSource::parse("export default () => 42;").unwrap(),
+            AuthoredToolDescription::parse("Answer").unwrap(),
+            AuthoredToolSource::parse("export default () => 42;").unwrap(),
         );
         let original = fixture
             .private_tools
@@ -1875,7 +1878,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
             )
             .await
             .unwrap();
-        let (compiler, compiling, release) = GatedPrivateToolCompiler::held();
+        let (compiler, compiling, release) = GatedAuthoredToolCompiler::held();
         let module = PrivateToolModule::with_compiler(
             fixture.database.clone(),
             fixture.workspaces.clone(),
@@ -2002,9 +2005,9 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
                     &workspace,
                     PrivateToolSave::new(
                         PrivateToolPath::parse(path).expect("path"),
-                        PrivateToolDescription::parse(&format!("Describe {path}"))
+                        AuthoredToolDescription::parse(&format!("Describe {path}"))
                             .expect("description"),
-                        PrivateToolSource::parse("export default () => 1;").expect("source"),
+                        AuthoredToolSource::parse("export default () => 1;").expect("source"),
                     ),
                 )
                 .await

@@ -855,8 +855,8 @@ async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
                 &scope.workspace_id,
                 coral_tools::PrivateToolSave::new(
                     coral_tools::PrivateToolPath::parse(path).unwrap(),
-                    coral_tools::PrivateToolDescription::parse("Call an old root").unwrap(),
-                    coral_tools::PrivateToolSource::parse(&format!(
+                    coral_tools::AuthoredToolDescription::parse("Call an old root").unwrap(),
+                    coral_tools::AuthoredToolSource::parse(&format!(
                         "export default async () => {body};"
                     ))
                     .unwrap(),

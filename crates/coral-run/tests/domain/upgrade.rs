@@ -121,8 +121,8 @@ async fn builtin_tools_a_rule_and_a_private_tool(
         &workspace_id,
         PrivateToolSave::new(
             PrivateToolPath::parse("people.greet").expect("path"),
-            PrivateToolDescription::parse("Greet one person by name.").expect("description"),
-            PrivateToolSource::parse(
+            AuthoredToolDescription::parse("Greet one person by name.").expect("description"),
+            AuthoredToolSource::parse(
                 "export default function greet(name: string): string { return `hello ${name}`; }",
             )
             .expect("source"),

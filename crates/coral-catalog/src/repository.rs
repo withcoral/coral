@@ -1,4 +1,4 @@
-use crate::private::CodeCatalog;
+use crate::authored::AuthoredToolKind;
 use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
@@ -70,7 +70,7 @@ const BUILTIN_INPUT_KIND: &str = "builtin";
 pub(super) enum GenerationInput<'a> {
     Setup(&'a ProviderSetupInput),
     Builtin(&'a BuiltinCatalogIdentity),
-    Code(CodeCatalog),
+    Code(AuthoredToolKind),
 }
 
 impl<'a> GenerationInput<'a> {
@@ -86,7 +86,7 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.as_str(),
             Self::Builtin(identity) => identity.as_str(),
-            Self::Code(catalog) => catalog.identity(),
+            Self::Code(catalog) => catalog.call_root(),
         }
     }
 
@@ -102,13 +102,13 @@ impl<'a> GenerationInput<'a> {
 enum StoredGenerationInput {
     Setup(ProviderSetupInput),
     Builtin(BuiltinCatalogIdentity),
-    Code(CodeCatalog),
+    Code(AuthoredToolKind),
 }
 
 impl StoredGenerationInput {
     fn from_storage(kind: &str, pinned: &str) -> Result<Self, Error> {
-        if let Some(catalog) = CodeCatalog::from_input_kind(kind) {
-            return if pinned == catalog.identity() {
+        if let Some(catalog) = AuthoredToolKind::from_input_kind(kind) {
+            return if pinned == catalog.call_root() {
                 Ok(Self::Code(catalog))
             } else {
                 Err(Error::CorruptData(format!(
@@ -136,7 +136,7 @@ impl StoredGenerationInput {
                 ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes())
             }
             Self::Code(catalog) => {
-                ProviderSetupInputDigest::of_bytes(catalog.identity().as_bytes())
+                ProviderSetupInputDigest::of_bytes(catalog.call_root().as_bytes())
             }
         }
     }
@@ -962,7 +962,7 @@ pub(super) async fn generation_binds_code(
         .await?;
     let (kind,) =
         row.ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))?;
-    Ok(CodeCatalog::from_input_kind(&kind).is_some())
+    Ok(AuthoredToolKind::from_input_kind(&kind).is_some())
 }
 
 /// Reads the catalog identity a built-in Generation pins, checked against

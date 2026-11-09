@@ -12,8 +12,8 @@ mod workspaces;
 use super::*;
 use coral_test_support::provision_user;
 use coral_tools::{
-    PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
-    PrivateToolSave, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, TraceId, WorkspaceDisplayName,
@@ -817,8 +817,8 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
                         owner: source_owner.principal().clone(),
                         path: PrivateToolPath::parse("answer").unwrap(),
                     },
-                    PrivateToolDescription::parse("Answer").unwrap(),
-                    PrivateToolSource::parse("export default () => 42;").unwrap(),
+                    AuthoredToolDescription::parse("Answer").unwrap(),
+                    AuthoredToolSource::parse("export default () => 42;").unwrap(),
                     coral_catalog::ToolAccessState::Enabled,
                     0,
                 ),
@@ -887,8 +887,8 @@ async fn save_answer(
             workspace,
             PrivateToolSave::new(
                 PrivateToolPath::parse("answer").unwrap(),
-                PrivateToolDescription::parse("Answer").unwrap(),
-                PrivateToolSource::parse("export default () => 42;").unwrap(),
+                AuthoredToolDescription::parse("Answer").unwrap(),
+                AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await

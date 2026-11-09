@@ -75,8 +75,8 @@ use crate::{
     RunTimeout,
 };
 use coral_tools::{
-    Error as ToolsError, PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule,
-    PrivateToolPath, PrivateToolSave, PrivateToolSelection, PrivateToolSource,
+    AuthoredToolDescription, AuthoredToolSource, Error as ToolsError, PrivateToolChangeContext,
+    PrivateToolModule, PrivateToolPath, PrivateToolSave,
 };
 use support::*;
 
