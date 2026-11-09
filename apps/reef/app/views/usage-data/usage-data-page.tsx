@@ -39,10 +39,12 @@ export function UsageDataPage({
             />
           }
         />
-        <Card.Card title="What Coral sends" description={nextDescription(v)}>
+        <Card.Card
+          title="What Coral sends"
+          description={`The next report Coral sends from ${place(v.kind)}.`}
+        >
           <div className={styles.report}>
-            {/* Text, not JSON: the JSON format re-indents the value, and this shows it byte for byte. */}
-            <CodeBlock value={v.next} framed wrap />
+            <CodeBlock value={v.next} format="json" framed />
           </div>
         </Card.Card>
         <Card.Card
@@ -54,7 +56,7 @@ export function UsageDataPage({
               <Typography.Body as="p" variant="tertiary">
                 Sent <SavedAt at={v.lastSent.at} />.
               </Typography.Body>
-              <CodeBlock value={v.lastSent.json} framed wrap />
+              <CodeBlock value={v.lastSent.json} format="json" framed />
             </div>
           )}
         </Card.Card>
@@ -68,12 +70,4 @@ function description(v: UsageDataView): string {
     ? 'This applies to the whole organization.'
     : 'Only organization owners can change this.'
   return `${contents} ${who}`
-}
-
-function nextDescription(v: UsageDataView): string {
-  const report = `The next report, exactly as it leaves ${place(v.kind)}.`
-  // The banner already says why a blocked process sends nothing.
-  return v.choice === 'off' && !v.block
-    ? `${report} Coral does not send it while sharing is off.`
-    : report
 }

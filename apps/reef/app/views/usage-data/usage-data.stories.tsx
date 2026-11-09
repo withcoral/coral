@@ -119,6 +119,18 @@ const earlier: UsageReport = {
     accounts: { oauth: 2, secret: 1 },
   },
 }
+// The same reports from a server: many users sign in, and it keeps its data in Postgres.
+const onServer = (r: UsageReport): UsageReport => ({
+  ...r,
+  coral: {
+    ...r.coral,
+    os: 'linux',
+    arch: 'x86_64',
+    kind: 'server',
+    auth: 'required',
+    database: 'postgres',
+  },
+})
 const sharing: UsageDataView = {
   choice: 'on',
   canChange: true,
@@ -160,7 +172,7 @@ export const Sharing: Story = {
     const toggle = canvas.getByRole('switch', { name: 'Share anonymous usage data' })
     await userEvent.click(toggle)
     await expect(toggle).not.toBeChecked()
-    await expect(canvas.getByText(/Coral does not send it while sharing is off/)).toBeVisible()
+    await expect(canvas.getByText(/Coral sends nothing while sharing is off/)).toBeVisible()
   },
 }
 
@@ -191,6 +203,8 @@ export const TurnedOffByCoralTelemetry: Story = {
     view: {
       ...sharing,
       kind: 'server',
+      next: JSON.stringify(onServer(report)),
+      lastSent: { ...sharing.lastSent!, json: JSON.stringify(onServer(earlier)) },
       block: { kind: 'environment', variable: 'CORAL_TELEMETRY' },
     },
   },
