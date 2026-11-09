@@ -1401,13 +1401,19 @@ async fn remove_membership_authority(
     workspace: &crate::WorkspaceId,
     user: &UserId,
 ) -> Result<(), Error> {
+    let target = crate::AccessRemovalTarget::WorkspaceMember(workspace, user);
+    remove_access(module, context, target).await
+}
+
+/// Prepares and applies one access removal in its own transaction.
+pub(crate) async fn remove_access(
+    module: &WorkspaceModule,
+    context: &ChangeContext,
+    target: crate::AccessRemovalTarget<'_>,
+) -> Result<(), Error> {
     let mut tx = module.database.begin().await?;
     let prepared = module
-        .prepare_access_removal_in_transaction(
-            &mut tx,
-            context,
-            crate::AccessRemovalTarget::WorkspaceMember(workspace, user),
-        )
+        .prepare_access_removal_in_transaction(&mut tx, context, target)
         .await?;
     module
         .apply_access_removal_in_transaction(&mut tx, context, prepared)
