@@ -93,45 +93,48 @@ impl UsageData {
     ///
     /// Denies a caller without an enabled Organization Membership.
     pub async fn view(&self, actor: &AuthenticatedUser, now: i64) -> Result<UsageDataView, Error> {
-        self.ensure_install(now).await?;
-        let mut tx = self.inner.database.begin_read_snapshot().await?;
-        let role = self
-            .inner
-            .organization
-            .check_inspection_in_transaction(&mut tx, actor)
-            .await?;
-        let install = install::install(&mut tx)
-            .await?
-            .ok_or_else(missing_install)?;
-        let waiting = if install.sharing {
-            install::unsent_reports(&mut tx).await?.into_iter().next()
-        } else {
-            None
-        };
-        let next_report_json = if let Some(report) = waiting {
-            report.json
-        } else {
-            let today = day_of(now);
-            let window = Window {
-                start: day_start(today),
-                end: now.saturating_add(1),
+        loop {
+            let mut tx = self.inner.database.begin_read_snapshot().await?;
+            // Authorize first, so a denied caller changes nothing.
+            let role = self
+                .inner
+                .organization
+                .check_inspection_in_transaction(&mut tx, actor)
+                .await?;
+            let Some(install) = install::install(&mut tx).await? else {
+                tx.commit().await?;
+                self.ensure_install(now).await?;
+                continue;
             };
-            self.compose(&mut tx, &install, today, window).await?.json
-        };
-        let last_sent = install::last_sent(&mut tx).await?;
-        tx.commit().await?;
-        Ok(UsageDataView {
-            sharing: install.sharing,
-            can_change: role == OrganizationRole::Owner,
-            block: self.inner.block,
-            kind: self.inner.host.kind,
-            next_report_json,
-            last_sent,
-        })
+            let waiting = if install.sharing {
+                install::oldest_unsent(&mut tx).await?
+            } else {
+                None
+            };
+            let next_report_json = match waiting {
+                Some(report) => report.json,
+                None => {
+                    self.compose(&mut tx, &install, day_of(now), now.saturating_add(1))
+                        .await?
+                        .json
+                }
+            };
+            let last_sent = install::last_sent(&mut tx).await?;
+            tx.commit().await?;
+            return Ok(UsageDataView {
+                sharing: install.sharing,
+                can_change: role == OrganizationRole::Owner,
+                block: self.inner.block,
+                kind: self.inner.host.kind,
+                next_report_json,
+                last_sent,
+            });
+        }
     }
 
     /// Turns sharing on or off for the deployment. Turning it off drops the
-    /// reports not yet sent; turning it on starts with today's report.
+    /// reports not yet sent. Turning it on starts with today's report, which
+    /// counts activity from that moment.
     ///
     /// # Errors
     ///
@@ -143,12 +146,12 @@ impl UsageData {
         sharing: bool,
         now: i64,
     ) -> Result<UsageDataView, Error> {
-        self.ensure_install(now).await?;
         let mut tx = self.inner.database.begin().await?;
         self.inner
             .organization
             .check_owner_in_transaction(&mut tx, actor)
             .await?;
+        install::insert_install(&mut tx, &new_install_id(), day_of(now), now).await?;
         install::set_sharing(&mut tx, sharing, day_of(now), now).await?;
         tx.commit().await?;
         self.view(actor, now).await
@@ -193,11 +196,9 @@ impl UsageData {
             let next = day
                 .checked_add_days(Days::new(1))
                 .ok_or(Error::CorruptData("a usage report day has no next day"))?;
-            let window = Window {
-                start: day_start(day),
-                end: day_start(next),
-            };
-            let composed = self.compose(&mut read, &install, day, window).await?;
+            let composed = self
+                .compose(&mut read, &install, day, day_start(next))
+                .await?;
             read.commit().await?;
             let mut tx = self.inner.database.begin().await?;
             if install::claim_day(&mut tx, day, next).await? {
@@ -214,23 +215,23 @@ impl UsageData {
         Ok(())
     }
 
-    /// The reports to send now, oldest first: none while sharing is off or
-    /// this process never sends.
-    pub(crate) async fn unsent(&self) -> Result<Vec<Unsent>, Error> {
+    /// The oldest report to send now: none while sharing is off or this
+    /// process never sends.
+    pub(crate) async fn next_unsent(&self) -> Result<Option<Unsent>, Error> {
         if self.inner.block.is_some() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let mut tx = self.inner.database.begin_read_snapshot().await?;
         let sharing = install::install(&mut tx)
             .await?
             .is_some_and(|install| install.sharing);
-        let reports = if sharing {
-            install::unsent_reports(&mut tx).await?
+        let report = if sharing {
+            install::oldest_unsent(&mut tx).await?
         } else {
-            Vec::new()
+            None
         };
         tx.commit().await?;
-        Ok(reports)
+        Ok(report)
     }
 
     /// Records that the collector stored `day`'s report.
@@ -249,14 +250,19 @@ impl UsageData {
         Ok(())
     }
 
-    /// The report for `day`, counting activity in `window`.
+    /// The report for `day`, counting activity until `end`: from the start
+    /// of the day, or from when sharing last turned on if that is later.
     async fn compose(
         &self,
         tx: &mut Transaction<'_>,
         install: &Install,
         day: NaiveDate,
-        window: Window,
+        end: i64,
     ) -> Result<Composed, Error> {
+        let window = Window {
+            start: day_start(day).max(install.sharing_since),
+            end,
+        };
         compose(tx, install, &self.inner.host, self.inner.build, day, window).await
     }
 
@@ -270,9 +276,13 @@ impl UsageData {
             return Ok(());
         }
         let mut tx = self.inner.database.begin().await?;
-        install::insert_install(&mut tx, &uuid::Uuid::new_v4().to_string(), day_of(now), now)
-            .await?;
+        install::insert_install(&mut tx, &new_install_id(), day_of(now), now).await?;
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// A random install ID: it identifies no person, organization or computer.
+fn new_install_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }

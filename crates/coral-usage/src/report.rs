@@ -1,7 +1,8 @@
 //! The Usage Report, field for field as the collector accepts it.
 //!
-//! The collector rejects any unknown field, enum value or map key, so every
-//! value here comes from a fixed list or is a count or a date. Serialization
+//! The collector rejects any unknown field, enum value or map key. Every
+//! value here is a count, a date, a value from a fixed list, the random
+//! install ID, or the release version. Serialization
 //! keeps the field order below, and the stored JSON is what Coral sends and
 //! what Reef shows, byte for byte.
 

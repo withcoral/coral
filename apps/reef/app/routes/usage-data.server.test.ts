@@ -27,7 +27,7 @@ beforeEach(() => {
   usage = {
     sharing: true,
     canChange: false,
-    block: UsageSendBlock.UNSPECIFIED,
+    block: UsageSendBlock.NONE,
     kind: UsageHostKind.SERVER,
     nextReportJson: next,
   }
@@ -76,12 +76,22 @@ it.each([
   [UsageSendBlock.CORAL_TELEMETRY, { kind: 'environment', variable: 'CORAL_TELEMETRY' }],
   [UsageSendBlock.CI, { kind: 'environment', variable: 'CI' }],
   [UsageSendBlock.SOURCE_BUILD, { kind: 'build' }],
+  [UsageSendBlock.UNSPECIFIED, { kind: 'unknown' }],
 ])('shows why this process never sends (%s)', async (block, expected) => {
   usage.block = block
   usage.kind = UsageHostKind.DESKTOP
   const view = (await load()).data.view
   expect(view.block).toEqual(expected)
   expect(view.kind).toBe('desktop')
+})
+
+// Catches: the page showing an owner's view as a member's, or "off" as "on".
+it('shows sharing off and lets an owner change it', async () => {
+  usage.sharing = false
+  usage.canChange = true
+  const view = (await load()).data.view
+  expect(view.choice).toBe('off')
+  expect(view.canChange).toBe(true)
 })
 
 // Catches: the switch sending Coral the opposite of what the owner chose.

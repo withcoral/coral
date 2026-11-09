@@ -94,6 +94,11 @@ fn env_var(name: &str) -> Result<Option<String>, VarError> {
     }
 }
 
+/// A variable's value, with a value that is not Unicode still counting as set.
+fn set_even_if_not_unicode(value: Result<Option<String>, VarError>) -> Option<String> {
+    value.unwrap_or_else(|_not_unicode| Some("set".to_owned()))
+}
+
 impl Launch {
     /// Reads what the launching process set for this launch.
     ///
@@ -122,15 +127,13 @@ impl Launch {
             stop_on_stdin_close: flag(CORAL_STOP_ON_STDIN_CLOSE),
             service_version: None,
             config_dir: None,
-            usage_environment: coral_usage::SendEnvironment {
-                do_not_track: env_var(DO_NOT_TRACK).ok().flatten(),
+            usage_environment: Some(coral_usage::SendEnvironment {
+                // A DO_NOT_TRACK or CI that is not Unicode is still set. A
+                // CORAL_TELEMETRY that is not Unicode is not `0` or `false`.
+                do_not_track: set_even_if_not_unicode(env_var(DO_NOT_TRACK)),
                 coral_telemetry: env_var(CORAL_TELEMETRY).ok().flatten(),
-                // A CI variable that is not Unicode is still set.
-                ci: match env_var(CI) {
-                    Ok(value) => value,
-                    Err(_not_unicode) => Some("set".to_owned()),
-                },
-            },
+                ci: set_even_if_not_unicode(env_var(CI)),
+            }),
         })
     }
 }

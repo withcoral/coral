@@ -39,6 +39,9 @@ pub(crate) struct Install {
     pub next_report_day: NaiveDate,
     /// The last day a process that may send checked for due reports.
     pub last_check_day: Option<NaiveDate>,
+    /// When the setting last changed, or the row was made. While sharing is
+    /// on, reports count activity from then.
+    pub sharing_since: i64,
     pub milestones: MilestoneDays,
 }
 
@@ -65,6 +68,7 @@ struct InstallRow {
     first_successful_run_day: Option<String>,
     first_saved_function_day: Option<String>,
     function_reused_day: Option<String>,
+    changed_at_unix_nanos: i64,
 }
 
 impl TryFrom<InstallRow> for Install {
@@ -77,6 +81,7 @@ impl TryFrom<InstallRow> for Install {
             sharing: row.sharing != 0,
             next_report_day: parse_day(&row.next_report_day)?,
             last_check_day: day(row.last_check_day)?,
+            sharing_since: row.changed_at_unix_nanos,
             milestones: MilestoneDays {
                 first_successful_run: day(row.first_successful_run_day)?,
                 first_saved_function: day(row.first_saved_function_day)?,
@@ -142,6 +147,7 @@ pub(crate) async fn install(tx: &mut Transaction<'_>) -> Result<Option<Install>,
                     UsageInstalls::FirstSuccessfulRunDay,
                     UsageInstalls::FirstSavedFunctionDay,
                     UsageInstalls::FunctionReusedDay,
+                    UsageInstalls::ChangedAtUnixNanos,
                 ])
                 .from(UsageInstalls::Table)
                 .to_owned(),
@@ -305,24 +311,24 @@ fn select_reports() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-/// The reports waiting to be sent, oldest day first.
-pub(crate) async fn unsent_reports(tx: &mut Transaction<'_>) -> Result<Vec<Unsent>, Error> {
-    let rows: Vec<ReportRow> = tx
-        .fetch_all(
+/// The oldest report waiting to be sent.
+pub(crate) async fn oldest_unsent(tx: &mut Transaction<'_>) -> Result<Option<Unsent>, Error> {
+    let row: Option<ReportRow> = tx
+        .fetch_optional(
             select_reports()
                 .and_where(Expr::col(UsageReports::SentAtUnixNanos).is_null())
                 .order_by(UsageReports::ReportDay, Order::Asc)
+                .limit(1)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(|row| {
-            Ok(Unsent {
-                day: parse_day(&row.report_day)?,
-                json: row.body,
-            })
+    row.map(|row| {
+        Ok(Unsent {
+            day: parse_day(&row.report_day)?,
+            json: row.body,
         })
-        .collect()
+    })
+    .transpose()
 }
 
 /// The last report the collector stored.

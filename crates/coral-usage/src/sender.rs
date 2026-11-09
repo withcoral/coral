@@ -44,7 +44,9 @@ impl UsageData {
         now: impl Fn() -> i64,
     ) -> Result<SendOutcome, crate::Error> {
         self.make_due_reports(now()).await?;
-        for report in self.unsent().await? {
+        // One report at a time: once an owner turns sharing off, the next
+        // send does not start.
+        while let Some(report) = self.next_unsent().await? {
             let Ok(request) = client.post(collector) else {
                 return Ok(SendOutcome::Retry);
             };

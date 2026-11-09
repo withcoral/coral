@@ -2,6 +2,8 @@
 export type SendBlock =
   | { kind: 'environment'; variable: 'DO_NOT_TRACK' | 'CORAL_TELEMETRY' | 'CI' }
   | { kind: 'build' }
+  /** A reason a newer Coral sends that this Reef does not know. */
+  | { kind: 'unknown' }
 
 export interface UsageDataView {
   /** The deployment's one setting. It is on until an organization owner turns it off. */

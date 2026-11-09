@@ -196,10 +196,10 @@ impl ServerBuilder {
     }
 
     /// Supplies the variables, read at process bootstrap, that stop this
-    /// process from sending usage data.
+    /// process from sending usage data. Without them, it sends nothing.
     #[must_use]
     pub fn with_usage_environment(mut self, environment: coral_usage::SendEnvironment) -> Self {
-        self.launcher.usage_environment = environment;
+        self.launcher.usage_environment = Some(environment);
         self
     }
 
@@ -428,7 +428,7 @@ impl PreparedServerBuilder {
             runtime_limits,
             reconcile_interval,
             releases,
-            Some(usage),
+            usage,
             readiness,
             state_lock,
             instance,
@@ -769,12 +769,18 @@ pub(crate) struct UsageReporting {
 }
 
 impl UsageReporting {
+    /// The usage data module, or none when the launch supplied no
+    /// environment: then nothing could honor `DO_NOT_TRACK`, so nothing
+    /// sends.
     fn new(
         database: &Arc<Database>,
         launcher: &Launcher,
         signs_in: bool,
         policy: coral_outbound::DestinationPolicy,
-    ) -> Result<Self, AppError> {
+    ) -> Result<Option<Self>, AppError> {
+        let Some(environment) = &launcher.usage_environment else {
+            return Ok(None);
+        };
         let host = coral_usage::Host {
             version: launcher
                 .service_version
@@ -792,19 +798,19 @@ impl UsageReporting {
             },
             database: database.system(),
         };
-        Ok(Self {
+        Ok(Some(Self {
             data: coral_usage::UsageData::new(
                 Arc::clone(database),
                 host,
                 coral_usage::Build::from_marker(option_env!("CORAL_RELEASE_BUILD")),
-                &launcher.usage_environment,
+                environment,
             ),
             client: coral_outbound::Client::new(policy, coral_usage::REQUEST_TIMEOUT).map_err(
                 |_error| {
                     AppError::FailedPrecondition("usage data client initialization failed".into())
                 },
             )?,
-        })
+        }))
     }
 }
 

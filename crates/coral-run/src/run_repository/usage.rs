@@ -2,12 +2,15 @@
 //! own storage decoders.
 
 use coral_db::Transaction;
-use sea_query::{Asterisk, Expr, ExprTrait as _, Query};
+use sea_query::{Asterisk, Expr, ExprTrait as _, Order, Query};
 
 use super::ProgramRunRecords;
 use super::run_row::decode_program_error;
 use crate::usage_repository::RunEndings;
 use crate::{Error, RunFailureCode, RunState};
+
+/// Failed Runs' Program errors read at once.
+const ERROR_PAGE: u64 = 500;
 
 /// Counts the Runs that ended in `[start, end)`, across every Workspace.
 pub(crate) async fn run_endings(
@@ -51,23 +54,35 @@ pub(crate) async fn run_endings(
         }
     }
     // The Program controls an error's name and message; only the private
-    // ToolError mark says Coral raised it.
-    let errors: Vec<(String,)> = tx
-        .fetch_all(
-            Query::select()
-                .column(ProgramRunRecords::FailureErrorJson)
-                .from(ProgramRunRecords::Table)
-                .and_where(ended)
-                .and_where(
-                    Expr::col(ProgramRunRecords::State).eq(RunState::Failed.as_storage_str()),
-                )
-                .and_where(Expr::col(ProgramRunRecords::FailureErrorJson).is_not_null())
-                .to_owned(),
-        )
-        .await?;
-    for (json,) in errors {
-        if decode_program_error(&json)?.tool.is_some() {
-            endings.tool_error += 1;
+    // ToolError mark says Coral raised it. Errors load a page at a time, so
+    // a busy day never holds them all at once.
+    let mut after = String::new();
+    loop {
+        let page: Vec<(String, String)> = tx
+            .fetch_all(
+                Query::select()
+                    .columns([ProgramRunRecords::Id, ProgramRunRecords::FailureErrorJson])
+                    .from(ProgramRunRecords::Table)
+                    .and_where(ended.clone())
+                    .and_where(
+                        Expr::col(ProgramRunRecords::State).eq(RunState::Failed.as_storage_str()),
+                    )
+                    .and_where(Expr::col(ProgramRunRecords::FailureErrorJson).is_not_null())
+                    .and_where(Expr::col(ProgramRunRecords::Id).gt(after.as_str()))
+                    .order_by(ProgramRunRecords::Id, Order::Asc)
+                    .limit(ERROR_PAGE)
+                    .to_owned(),
+            )
+            .await?;
+        let full = page.len() == usize::try_from(ERROR_PAGE).unwrap_or(usize::MAX);
+        for (id, json) in page {
+            if decode_program_error(&json)?.tool.is_some() {
+                endings.tool_error += 1;
+            }
+            after = id;
+        }
+        if !full {
+            break;
         }
     }
     Ok(endings)

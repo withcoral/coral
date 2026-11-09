@@ -8,7 +8,7 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
         sharing: view.sharing,
         can_change: view.can_change,
         block: match view.block {
-            None => wire::UsageSendBlock::Unspecified,
+            None => wire::UsageSendBlock::None,
             Some(SendBlock::Environment(BlockingVariable::DoNotTrack)) => {
                 wire::UsageSendBlock::DoNotTrack
             }

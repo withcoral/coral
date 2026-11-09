@@ -15190,16 +15190,19 @@ pub struct SentUsageReport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum UsageSendBlock {
-    /// Nothing: the process sends while sharing is on.
+    /// Unknown: a newer runtime may send a reason this client does not know.
+    /// The process does not send.
     Unspecified = 0,
+    /// Nothing: the process sends while sharing is on.
+    None = 1,
     /// `DO_NOT_TRACK` is set.
-    DoNotTrack = 1,
+    DoNotTrack = 2,
     /// `CORAL_TELEMETRY` is `0` or `false`.
-    CoralTelemetry = 2,
+    CoralTelemetry = 3,
     /// `CI` is set.
-    Ci = 3,
+    Ci = 4,
     /// A source or development build.
-    SourceBuild = 4,
+    SourceBuild = 5,
 }
 impl UsageSendBlock {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -15209,6 +15212,7 @@ impl UsageSendBlock {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USAGE_SEND_BLOCK_UNSPECIFIED",
+            Self::None => "USAGE_SEND_BLOCK_NONE",
             Self::DoNotTrack => "USAGE_SEND_BLOCK_DO_NOT_TRACK",
             Self::CoralTelemetry => "USAGE_SEND_BLOCK_CORAL_TELEMETRY",
             Self::Ci => "USAGE_SEND_BLOCK_CI",
@@ -15219,6 +15223,7 @@ impl UsageSendBlock {
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "USAGE_SEND_BLOCK_UNSPECIFIED" => Some(Self::Unspecified),
+            "USAGE_SEND_BLOCK_NONE" => Some(Self::None),
             "USAGE_SEND_BLOCK_DO_NOT_TRACK" => Some(Self::DoNotTrack),
             "USAGE_SEND_BLOCK_CORAL_TELEMETRY" => Some(Self::CoralTelemetry),
             "USAGE_SEND_BLOCK_CI" => Some(Self::Ci),

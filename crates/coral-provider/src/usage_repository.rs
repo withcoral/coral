@@ -22,9 +22,10 @@ pub struct ProviderTotals {
     pub secret_accounts: u64,
 }
 
-/// Counts the Providers and current Accounts in every Workspace. The
-/// Built-in Provider is not one a user made, and an Account with no
-/// credential counts as neither kind. The caller authorizes the read.
+/// Counts the Providers and connected Accounts in every Workspace. The
+/// Built-in Provider is not one a user made. An Account counts only while it
+/// holds a credential, and a contract with none counts as neither kind. The
+/// caller authorizes the read.
 ///
 /// # Errors
 ///
@@ -65,6 +66,9 @@ pub async fn provider_totals(tx: &mut Transaction<'_>) -> Result<ProviderTotals,
                 .column(Alias::new("contract"))
                 .from(Alias::new("provider_accounts"))
                 .and_where(Expr::col(Alias::new("retired")).eq(0_i64))
+                // A placeholder a Run made, or a disconnected Account, holds
+                // no credential.
+                .and_where(Expr::col(Alias::new("encrypted_credentials")).ne(""))
                 .to_owned(),
         )
         .await?;
@@ -180,9 +184,10 @@ mod tests {
             .to_string()
     }
 
-    /// A Provider counts by its active Generation's input. A current Account
-    /// counts by the method its contract names; one with no credential or a
-    /// retired one does not count.
+    /// A Provider counts by its active Generation's input. A connected
+    /// Account counts by the method its contract names. One whose contract
+    /// names no credential, one holding no credential, and a retired one do
+    /// not count.
     #[tokio::test]
     async fn totals_count_providers_by_input_and_accounts_by_method() {
         let (db, workspaces, providers) = test_modules().await;
@@ -237,6 +242,13 @@ mod tests {
             ),
             (
                 format!("contract = '{}'", none.to_storage().expect("none")),
+                providers_only,
+            ),
+            (
+                format!(
+                    "contract = '{}', encrypted_credentials = '', requires_authorization = 1",
+                    bearer.to_storage().expect("bearer")
+                ),
                 providers_only,
             ),
             (

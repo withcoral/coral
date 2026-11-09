@@ -13,11 +13,15 @@ export function place(kind: UsageDataView['kind']): string {
 
 /** Why Coral sends nothing whatever the switch shows. */
 export function blockReason(block: SendBlock, kind: UsageDataView['kind']): string {
-  const cause =
-    block.kind === 'build'
-      ? 'This is a source build.'
-      : block.variable === 'CORAL_TELEMETRY'
-        ? 'CORAL_TELEMETRY is off.'
-        : `${block.variable} is set.`
-  return `${cause} Coral sends no usage data from ${place(kind)}, even when sharing is on.`
+  const sends = `Coral sends no usage data from ${place(kind)}, even when sharing is on.`
+  switch (block.kind) {
+    case 'build':
+      return `This is a source build. ${sends}`
+    case 'unknown':
+      return sends
+    case 'environment':
+      return block.variable === 'CORAL_TELEMETRY'
+        ? `CORAL_TELEMETRY is off. ${sends}`
+        : `${block.variable} is set. ${sends}`
+  }
 }

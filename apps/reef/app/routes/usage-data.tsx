@@ -57,8 +57,11 @@ function usageView(usage: UsageData): UsageDataView {
   }
 }
 
+/** A reason this Reef does not know still stops sending. */
 function sendBlock(block: UsageSendBlock): SendBlock | undefined {
   switch (block) {
+    case UsageSendBlock.NONE:
+      return undefined
     case UsageSendBlock.DO_NOT_TRACK:
       return { kind: 'environment', variable: 'DO_NOT_TRACK' }
     case UsageSendBlock.CORAL_TELEMETRY:
@@ -68,11 +71,11 @@ function sendBlock(block: UsageSendBlock): SendBlock | undefined {
     case UsageSendBlock.SOURCE_BUILD:
       return { kind: 'build' }
     default:
-      return undefined
+      return { kind: 'unknown' }
   }
 }
 
-export default function UsageDataRoute({ loaderData }: Route.ComponentProps) {
+export default function UsageDataRoute({ loaderData, actionData }: Route.ComponentProps) {
   const submit = useSubmit()
   const navigation = useNavigation()
   // While the change is on its way, show the switch where the owner put it.
@@ -84,6 +87,7 @@ export default function UsageDataRoute({ loaderData }: Route.ComponentProps) {
   return (
     <UsageDataPage
       view={view}
+      error={navigation.state === 'idle' ? (actionData?.error ?? undefined) : undefined}
       onChoose={(share) =>
         submit({ csrf: loaderData.form.csrf, sharing: share ? 'on' : 'off' }, { method: 'post' })
       }

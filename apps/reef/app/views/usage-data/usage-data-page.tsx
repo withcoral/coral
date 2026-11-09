@@ -14,9 +14,12 @@ const REPORT_LINES = 20
 /** The deployment's usage data setting and the exact reports. Every member can read it. */
 export function UsageDataPage({
   view: v,
+  error,
   onChoose,
 }: {
   view: UsageDataView
+  /** Why Coral did not apply the owner's last change. */
+  error?: string
   onChoose: (share: boolean) => void
 }) {
   return (
@@ -30,6 +33,7 @@ export function UsageDataPage({
           </div>
         }
       >
+        {error && <Banner variant="error">{error}</Banner>}
         {v.block && <Banner variant="info">{blockReason(v.block, v.kind)}</Banner>}
         <Card.Card
           title="Share anonymous usage data"

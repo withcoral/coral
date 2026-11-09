@@ -74,6 +74,20 @@ impl Fixture {
         self.db.execute_fixture_sql(sql).await.expect(sql);
     }
 
+    async fn installs(&self) -> i64 {
+        let database = self.db.database();
+        let mut tx = database.begin_read_snapshot().await.expect("read");
+        let rows: Vec<(i64,)> = tx
+            .fetch_all_sql::<(i64,)>(
+                "SELECT COUNT(*) FROM usage_installs",
+                sea_query::Values(Vec::new()),
+            )
+            .await
+            .expect("installs");
+        tx.commit().await.expect("commit");
+        rows[0].0
+    }
+
     async fn reports(&self) -> Vec<(String, Option<i64>)> {
         let database = self.db.database();
         let mut tx = database.begin_read_snapshot().await.expect("read");
@@ -119,6 +133,11 @@ fn client() -> coral_outbound::Client {
 async fn sharing_is_on_until_an_owner_turns_it_off() {
     let fixture = Fixture::new().await;
     let usage = fixture.sending();
+
+    // A refused first change writes nothing, not even the install row.
+    let denied = usage.set_sharing(&fixture.member, false, at(9, 12)).await;
+    assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
+    assert_eq!(fixture.installs().await, 0);
 
     let member_view = usage.view(&fixture.member, at(9, 12)).await.expect("view");
     assert!(member_view.sharing);
@@ -520,9 +539,21 @@ async fn sending_follows_the_collectors_answer() {
 }
 
 #[tokio::test]
-async fn turning_sharing_off_drops_waiting_reports_and_on_starts_today() {
+async fn turning_sharing_off_drops_waiting_reports_and_on_counts_from_then() {
     let fixture = Fixture::new().await;
     let usage = fixture.sending();
+    // Day 12: one Run while sharing is off, one after it turns on at noon.
+    let runs = [
+        task("t1", at(12, 9)),
+        run("r-off", "t1", "succeeded", at(12, 10), at(12, 10), ""),
+        run("r-on", "t1", "succeeded", at(12, 14), at(12, 14), ""),
+    ]
+    .concat();
+    for statement in runs.split_terminator(';') {
+        if !statement.trim().is_empty() {
+            fixture.sql(statement).await;
+        }
+    }
     fixture.check_daily(&usage, 6..=9).await;
     usage
         .set_sharing(&fixture.owner, false, at(9, 12))
@@ -548,6 +579,48 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_starts_today() {
         .map(|(day, _)| day)
         .collect();
     assert_eq!(days, ["2026-11-12", "2026-11-13"]);
+    assert_eq!(
+        fixture.report("2026-11-12").await["day"]["runs"]["succeeded"],
+        1
+    );
+}
+
+/// An owner turns sharing off while a report is on its way. The reports
+/// still waiting do not go.
+#[tokio::test]
+async fn turning_sharing_off_stops_the_next_send() {
+    let fixture = Fixture::new().await;
+    let usage = fixture.sending();
+    fixture.check_daily(&usage, 6..=8).await;
+    assert_eq!(fixture.reports().await.len(), 2);
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_millis(500)))
+        .mount(&collector)
+        .await;
+    let url = format!("{}/v1/report", collector.uri());
+    let client = client();
+
+    let turn_off = async {
+        while collector
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        usage
+            .set_sharing(&fixture.owner, false, at(8, 13))
+            .await
+            .expect("off");
+    };
+    let (outcome, ()) = tokio::join!(usage.send_due(&client, &url, || at(8, 13)), turn_off);
+    assert_eq!(outcome.expect("send"), SendOutcome::Done);
+    assert_eq!(
+        collector.received_requests().await.expect("requests").len(),
+        1
+    );
 }
 
 /// Another Coral Instance composed day 6's report before an owner turned

@@ -13,9 +13,11 @@
 //! # Invariants
 //!
 //! - Sharing is on until an Organization Owner turns it off. Off drops the
-//!   reports not yet sent; on starts again with today.
-//! - A report holds counts, UTC dates and values from fixed lists. It never
-//!   holds a Program, an argument, a result, a credential or a name.
+//!   reports not yet sent, and stops the next send. On starts again with
+//!   today's report, which counts activity from that moment.
+//! - A report holds counts, UTC dates, values from fixed lists, the random
+//!   install ID and the release version. It never holds a Program, an
+//!   argument, a result, a credential or a name.
 //! - A report is stored as the JSON that is sent, and read back byte for
 //!   byte. The collector rejects any field it does not know, so the types in
 //!   `report` match its contract exactly.
@@ -23,7 +25,7 @@
 //!   environment variable bootstrap read, or a source build. A day gets a
 //!   report only when a process that may send checked on it, so a day that
 //!   only blocked processes saw is never reported.
-//! - Reports start on the day the install row is made.
+//! - Reports count activity from when the install row is made.
 //! - A missed day keeps its report until the collector answers. A 4xx but
 //!   408 or 429 drops it, since the same report can never succeed. Only the
 //!   last report sent is kept.

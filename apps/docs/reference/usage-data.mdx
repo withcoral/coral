@@ -4,11 +4,11 @@ sidebarTitle: "Usage data"
 description: "What Coral's daily usage report holds, what it never holds, and how to turn it off."
 ---
 
-Self-hosted Coral sends one anonymous usage report each day. The reports show us how people use Coral, so we can make it better. Sharing is on by default. You can see each report before it goes, and you can turn sharing off.
+Self-hosted Coral sends one anonymous usage report for each day it runs. The reports show us how people use Coral, so we can make it better. Sharing is on by default. You can see each report before it goes, and you can turn sharing off.
 
 ## Which Coral sends a report
 
-- Coral Desktop and shared servers send one report for each UTC day.
+- Coral Desktop and shared servers send one report for each UTC day on which they run.
 - Only official release builds send: the Coral Desktop downloads and the `ghcr.io/withcoral/coral` image. A build from source or a development build never sends. Its Usage data page shows the report and tells you why it does not send.
 - Coral Cloud never sends a report.
 
@@ -37,8 +37,8 @@ We do not store your IP address or the request headers. We keep the reports. Whe
 
 Open **Help and feedback**, then **Usage data**. Every member of the organization can read this page.
 
-- **What we send** shows the next report, word for word.
-- **What we sent last** shows the last report and its UTC send time.
+- **Today so far** shows the next report, word for word.
+- **What Coral sent last** shows the last report and its UTC send time.
 
 ## Turn off sharing
 
@@ -49,7 +49,7 @@ Only organization owners can change this setting. One setting applies to the ful
 1. Open **Help and feedback**, then **Usage data**.
 2. Turn off **Share anonymous usage data**.
 
-When sharing is off, Coral sends nothing. When you turn it on again, Coral sends from the next day. It does not send the days from when sharing was off.
+When sharing is off, Coral sends nothing. When you turn it on again, Coral counts from that moment. It never sends activity from while sharing was off.
 
 ### With an environment variable
 

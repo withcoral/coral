@@ -7,7 +7,7 @@
 -- Each milestone's first UTC day is kept here once found, because the Runs
 -- it comes from are deleted with Run history.
 CREATE TABLE usage_installs (
-    install_id TEXT PRIMARY KEY,
+    install_id TEXT NOT NULL PRIMARY KEY,
     singleton BIGINT NOT NULL
         CONSTRAINT usage_installs_singleton UNIQUE
         CONSTRAINT usage_installs_one_row CHECK (singleton = 1),
@@ -23,7 +23,7 @@ CREATE TABLE usage_installs (
 -- One Usage Report per UTC day, as the exact JSON Coral sends. A row with
 -- no `sent_at_unix_nanos` waits to be sent; only the last sent one is kept.
 CREATE TABLE usage_reports (
-    report_day TEXT PRIMARY KEY,
+    report_day TEXT NOT NULL PRIMARY KEY,
     body TEXT NOT NULL,
     sent_at_unix_nanos BIGINT
 );

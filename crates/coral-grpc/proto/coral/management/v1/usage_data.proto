@@ -39,16 +39,19 @@ message UsageData {
 
 // What stops this process from sending.
 enum UsageSendBlock {
-  // Nothing: the process sends while sharing is on.
+  // Unknown: a newer runtime may send a reason this client does not know.
+  // The process does not send.
   USAGE_SEND_BLOCK_UNSPECIFIED = 0;
+  // Nothing: the process sends while sharing is on.
+  USAGE_SEND_BLOCK_NONE = 1;
   // `DO_NOT_TRACK` is set.
-  USAGE_SEND_BLOCK_DO_NOT_TRACK = 1;
+  USAGE_SEND_BLOCK_DO_NOT_TRACK = 2;
   // `CORAL_TELEMETRY` is `0` or `false`.
-  USAGE_SEND_BLOCK_CORAL_TELEMETRY = 2;
+  USAGE_SEND_BLOCK_CORAL_TELEMETRY = 3;
   // `CI` is set.
-  USAGE_SEND_BLOCK_CI = 3;
+  USAGE_SEND_BLOCK_CI = 4;
   // A source or development build.
-  USAGE_SEND_BLOCK_SOURCE_BUILD = 4;
+  USAGE_SEND_BLOCK_SOURCE_BUILD = 5;
 }
 
 // Where Coral runs.
