@@ -39,14 +39,21 @@ export function UsageDataPage({
             />
           }
         />
-        <Card.Card
-          title="What Coral sends"
-          description={`The next report Coral sends from ${place(v.kind)}.`}
-        >
-          <div className={styles.report}>
-            <CodeBlock value={v.next} format="json" framed />
-          </div>
-        </Card.Card>
+        {v.choice === 'on' ? (
+          <Card.Card
+            title="What Coral sends"
+            description={`The next report Coral sends from ${place(v.kind)}.`}
+          >
+            <div className={styles.report}>
+              <CodeBlock value={v.next} format="json" framed />
+            </div>
+          </Card.Card>
+        ) : (
+          <Card.Card
+            title="What Coral sends"
+            description="Coral sends no usage data while sharing is off."
+          />
+        )}
         <Card.Card
           title="What Coral sent last"
           description={v.lastSent ? undefined : 'Coral has not sent a report.'}

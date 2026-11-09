@@ -172,7 +172,7 @@ export const Sharing: Story = {
     const toggle = canvas.getByRole('switch', { name: 'Share anonymous usage data' })
     await userEvent.click(toggle)
     await expect(toggle).not.toBeChecked()
-    await expect(canvas.getByText(/Coral sends nothing while sharing is off/)).toBeVisible()
+    await expect(canvas.getByText('Coral sends no usage data while sharing is off.')).toBeVisible()
   },
 }
 
