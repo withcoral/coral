@@ -59,8 +59,7 @@
     "socials": {
       "github": "https://github.com/withcoral/coral",
       "linkedin": "https://linkedin.com/company/withcoral",
-      "slack": "https://withcoral.com/slack",
-      "x": "https://x.com/WithCoral_com"
+      "slack": "https://withcoral.com/slack"
     },
     "links": [
       {
@@ -78,8 +77,7 @@
           { "label": "Contact us", "href": "https://withcoral.com/contact" },
           { "label": "GitHub", "href": "https://github.com/withcoral/coral" },
           { "label": "LinkedIn", "href": "https://linkedin.com/company/withcoral" },
-          { "label": "Slack", "href": "https://withcoral.com/slack" },
-          { "label": "X", "href": "https://x.com/WithCoral_com" }
+          { "label": "Slack", "href": "https://withcoral.com/slack" }
         ]
       },
       {
