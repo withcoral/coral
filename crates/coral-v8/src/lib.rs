@@ -130,6 +130,42 @@ impl ProgramExecutionControl {
 pub type ToolFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ToolHostError>> + Send>>;
 
+/// One call to a Tool that Coral performs by running its body in the
+/// Program, settled once the call is permitted: with what completes it, or
+/// with a rejection, after which the body never runs.
+pub type PermitFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Box<dyn ToolCompletion>, ToolHostError>> + Send>,
+>;
+
+/// How the body of a permitted Tool call ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolBodyOutcome {
+    /// It returned a value, here as native JSON. A body that returns
+    /// `undefined` returns `null`.
+    Returned(String),
+    /// It returned a value that native JSON cannot encode, such as a
+    /// `bigint`, a cycle, or a function.
+    NotData,
+    /// It threw. `message` is the thrown Error's message, or the thrown
+    /// value as text. `tool_error` holds the code of a Tool Error that a Tool
+    /// call gave the body, which reaches the caller unchanged.
+    Threw {
+        /// Bounded text the Program wrote.
+        message: String,
+        /// The thrown Tool Error's code, when the body threw one.
+        tool_error: Option<String>,
+    },
+}
+
+/// Completes one permitted Tool call that Coral performs in the Program.
+pub trait ToolCompletion: Send {
+    /// Records how the call's body ended and settles once that is durable:
+    /// with the native-JSON value its caller receives, or a rejection. A
+    /// body that threw a Tool Error rejects its caller with that error
+    /// whatever rejection this settles with.
+    fn complete(self: Box<Self>, outcome: ToolBodyOutcome) -> ToolFuture;
+}
+
 /// Host seam used by one fresh execution isolate.
 ///
 /// Tools start without blocking JavaScript and their Promises settle only
@@ -170,6 +206,35 @@ pub trait ProgramHost: Send + Sync {
         arguments_json: String,
         location: Option<AuthoredLocation>,
     ) -> ToolFuture;
+
+    /// Starts one call to a Tool that Coral performs by running its body in
+    /// this Program, by complete Call Path and native-JSON arguments: the
+    /// array of the values it was called with. It settles once the call is
+    /// permitted, and only then does the body run; its outcome completes the
+    /// call through the [`ToolCompletion`] this returns.
+    ///
+    /// A host that performs no such Tool refuses every call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catchable rejection only after any required terminal evidence
+    /// is durable. A fatal host failure terminates Program execution without
+    /// settling the Tool Promise.
+    fn perform(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> PermitFuture {
+        Box::pin(async {
+            Err(ToolHostError::Rejected {
+                code: "tool_unavailable",
+                message: "Tool is unavailable".into(),
+                trace_id: None,
+                suggestions: Vec::new(),
+            })
+        })
+    }
 
     /// Durably appends one native-JSON Program Emission made at `location`.
     ///

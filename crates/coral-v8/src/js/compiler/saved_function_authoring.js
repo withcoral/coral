@@ -135,8 +135,9 @@ function notDataBoundary(program, sourceFile) {
   const checker = program.getTypeChecker();
   const MAX_DEPTH = 64;
   const fromLibrary = (symbol) =>
-    symbol?.declarations?.some((node) => program.isSourceFileDefaultLibrary(node.getSourceFile())) ===
-    true;
+    symbol?.declarations?.some((node) =>
+      program.isSourceFileDefaultLibrary(node.getSourceFile()),
+    ) === true;
 
   function find(type, path, resolving, depth) {
     if (depth > MAX_DEPTH || resolving.has(type)) return undefined;
@@ -176,7 +177,12 @@ function notDataBoundary(program, sourceFile) {
     }
     // A named standard-library object, such as Date, Map, Set, RegExp or
     // Promise, is a class instance however the library declares it.
-    if (!mapped && symbol !== undefined && symbol.flags & ts.SymbolFlags.Interface && fromLibrary(symbol)) {
+    if (
+      !mapped &&
+      symbol !== undefined &&
+      symbol.flags & ts.SymbolFlags.Interface &&
+      fromLibrary(symbol)
+    ) {
       return `\`${path}\` is a ${symbol.getName()}`;
     }
     for (const property of checker.getPropertiesOfType(type)) {

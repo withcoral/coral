@@ -874,6 +874,41 @@ pub async fn resolve_invocation_tool_in_transaction(
     resolved(transaction, reached).await
 }
 
+/// Resolves one of the caller's Private Tools to the Tool its Invocation
+/// retains: the Tool at `relative_path` under `coral.private` that Coral
+/// performs by running the definition `binding` names, in the Workspace's
+/// Private Provider, which this holds shared as the Policy Enforcement
+/// Point does. The caller decides which Private Tools a Principal reaches:
+/// a Run links only its own, and binds each call to the definition it
+/// linked. `None` when the Private Provider is not active.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn resolve_private_tool_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    relative_path: &str,
+    binding: coral_catalog::CodeExecutionBinding,
+) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let Some(stored) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::Private),
+        coral_db::RowLock::Shared.into(),
+    )
+    .await?
+    .and_then(repository::ProviderWithActiveGeneration::into_active) else {
+        return Ok(None);
+    };
+    let tool = coral_catalog::private_tool(relative_path, binding)?;
+    resolved(
+        transaction,
+        Some((stored.provider.access().clone(), stored.generation_id, tool)),
+    )
+    .await
+}
+
 /// Whether [`resolve_invocation_tool_in_transaction`] would resolve
 /// `call_path` for `caller` now, read in a read snapshot without holding
 /// any row: Program Admission's check of the Call Paths a Program names
@@ -1066,6 +1101,14 @@ pub async fn verify_invocation_tool_in_transaction(
         access::RetainedProviderVerification::RouteChanged => {
             return Ok(InvocationToolVerification::CredentialRouteChanged);
         }
+    }
+    // The Run pinned the definition it performs when it linked it, and the
+    // Private Provider's catalog holds no Tool row to recheck.
+    if matches!(
+        retained.tool().execution_binding(),
+        coral_catalog::ExecutionBinding::Code(_)
+    ) {
+        return Ok(InvocationToolVerification::Current);
     }
     Ok(
         if coral_catalog::tool_exists_in_transaction(

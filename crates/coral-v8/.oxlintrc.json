@@ -20,6 +20,8 @@
           "__coralConfigureCompiler",
           "__coralForbiddenAmbientGlobals",
           "__coralToolInvoke",
+          "__coralToolPerform",
+          "__coralToolComplete",
           "__coralPrepareSavedFunction",
           "__coralProgramEmit",
           "__coralProgramLog",

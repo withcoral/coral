@@ -415,7 +415,7 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
             if sent {
                 trace.sending();
             }
-            trace.end(&ended);
+            trace.end(ended.as_ref().map(drop));
             id.to_string()
         })
         .collect::<Vec<_>>();

@@ -151,10 +151,13 @@ function savedFunctionRuntimeBody(source, target, extraEdits) {
 const COMPLETE_ROOT_GLOBAL = '__coralCompleteRoot';
 
 // Private source that runs before any authored code: it takes the host's
-// root completion, builds `coral.private` from the linked Private Tools, each
-// of which a getter reads once its module has initialized, and completes
-// `coral` with it and a member for each Built-in Tool in `builtinTools`.
-// Module code then sets `__coralSavedFunctionDefaults[index]`.
+// root completion and completes `coral` with a member for each Built-in Tool
+// in `builtinTools` and with `coral.private`, which it builds from the linked
+// Private Tools. The host makes each callable, outside this script, so the
+// innermost frame of this script at a call is the authored call site. A call
+// performs the Tool, whose body is the default export of its module once that
+// module has initialized. Module code then sets
+// `__coralSavedFunctionDefaults[index]`.
 function coralRootPrelude(builtinTools, savedFunctions) {
   if (
     !Array.isArray(builtinTools) ||
@@ -180,48 +183,59 @@ function coralRootPrelude(builtinTools, savedFunctions) {
       });
     }
     Object.preventExtensions(__coralSavedFunctionDefaults);
-    const __coralFunctionRoot = Object.create(null);
-    const __coralFunctionNamespaces = [__coralFunctionRoot];
-    for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
-      const __coralPath = __coralLinkedPaths[__coralIndex];
-      let __coralFunctionParent = __coralFunctionRoot;
-      for (const __coralSegment of __coralPath.slice(0, -1)) {
-        if (!Object.hasOwn(__coralFunctionParent, __coralSegment)) {
-          const __coralNext = Object.create(null);
-          Object.defineProperty(__coralFunctionParent, __coralSegment, {
-            value: __coralNext,
+    const __coralBuildPrivateTools = (__coralPrivateTool) => {
+      const __coralFunctionRoot = Object.create(null);
+      const __coralFunctionNamespaces = [__coralFunctionRoot];
+      for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
+        const __coralPath = __coralLinkedPaths[__coralIndex];
+        const __coralCallPath = "coral.private." + __coralPath.join(".");
+        let __coralFunctionParent = __coralFunctionRoot;
+        for (const __coralSegment of __coralPath.slice(0, -1)) {
+          if (!Object.hasOwn(__coralFunctionParent, __coralSegment)) {
+            const __coralNext = Object.create(null);
+            Object.defineProperty(__coralFunctionParent, __coralSegment, {
+              value: __coralNext,
+              enumerable: true,
+              writable: false,
+              configurable: false,
+            });
+            __coralFunctionNamespaces.push(__coralNext);
+          }
+          __coralFunctionParent = __coralFunctionParent[__coralSegment];
+        }
+        const __coralBody = () => {
+          const __coralDefault = __coralSavedFunctionDefaults[__coralIndex];
+          if (__coralDefault === undefined) {
+            throw new TypeError(__coralCallPath + " is called before its module initialized");
+          }
+          return __coralDefault();
+        };
+        Object.defineProperty(
+          __coralFunctionParent,
+          __coralPath[__coralPath.length - 1],
+          {
+            value: __coralPrivateTool(__coralCallPath, __coralBody),
             enumerable: true,
             writable: false,
             configurable: false,
-          });
-          __coralFunctionNamespaces.push(__coralNext);
-        }
-        __coralFunctionParent = __coralFunctionParent[__coralSegment];
-      }
-      Object.defineProperty(
-        __coralFunctionParent,
-        __coralPath[__coralPath.length - 1],
-        {
-          get() {
-            const __coralDefault = __coralSavedFunctionDefaults[__coralIndex];
-            return __coralDefault === undefined ? undefined : __coralDefault();
           },
-          enumerable: true,
-          configurable: false,
-        },
-      );
-    }
-    for (const __coralNamespace of __coralFunctionNamespaces.toReversed()) {
-      Object.freeze(__coralNamespace);
-    }
+        );
+      }
+      for (const __coralNamespace of __coralFunctionNamespaces.toReversed()) {
+        Object.freeze(__coralNamespace);
+      }
+      return __coralFunctionRoot;
+    };
     if (__coralCompleteRoot !== undefined) {
-      __coralCompleteRoot(${JSON.stringify(builtinTools)}, __coralFunctionRoot);
+      __coralCompleteRoot(${JSON.stringify(builtinTools)}, __coralBuildPrivateTools);
     } else {
       // An execution without the Program host calls no Tool, so its \`coral\`
-      // holds only the Private Tools it links.
+      // holds only the Private Tools it links, and calling one fails.
       Object.defineProperty(globalThis, "coral", {
         value: Object.freeze(Object.defineProperty(Object.create(null), "private", {
-          value: __coralFunctionRoot,
+          value: __coralBuildPrivateTools((__coralCallPath) => () =>
+            Promise.reject(new TypeError(__coralCallPath + " is called without the Program host")),
+          ),
           enumerable: true,
         })),
         enumerable: true,

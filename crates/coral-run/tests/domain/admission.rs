@@ -215,8 +215,8 @@ async fn program_calls_one_saved_function_repeatedly_after_top_level_initializat
             &workspace_id,
             submission(
                 r"
-                    const first = coral.private.math.factorial(4);
-                    const second = coral.private.math.factorial(3);
+                    const first = await coral.private.math.factorial(4);
+                    const second = await coral.private.math.factorial(3);
                     return { first, second };
                 ",
             ),
@@ -258,7 +258,7 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         (
             "math.incrementTwice",
             "Increment one number twice",
-            "const incremented = coral.private.math.increment(40); export default function incrementTwice(): number { return coral.private.math.increment(incremented); }",
+            "const incremented = await coral.private.math.increment(40); export default function incrementTwice(): Promise<number> { return coral.private.math.increment(incremented); }",
         ),
         (
             "math.triple",
@@ -284,7 +284,7 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         .start(
             &principal,
             &workspace_id,
-            submission("const triple = coral.private.math.triple; return [coral.private.math.incrementTwice(), triple(14)];",
+            submission("const triple = coral.private.math.triple; return [await coral.private.math.incrementTwice(), await triple(14)];",
             ),
         )
         .await
@@ -311,12 +311,12 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         runs.start(
             &principal,
             &workspace_id,
-            submission("const triple = coral.private.math.triple; return [coral.private.math.incrementTwice(), triple(14)];",
+            submission("const triple = coral.private.math.triple; return [await coral.private.math.incrementTwice(), await triple(14)];",
             ),
         )
         .await,
         Err(Error::ProgramAdmission(message))
-            if message == "Saved Function coral.private.math.incrementTwice:1:21 references missing Saved Function coral.private.math.increment"
+            if message == "Saved Function coral.private.math.incrementTwice:1:27 references missing Saved Function coral.private.math.increment"
     ));
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
@@ -506,8 +506,8 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
             &tool.workspace_id,
             submission(
                 r#"
-                    const first = coral.private.weather.initializedTemperature();
-                    const second = coral.private.weather.initializedTemperature();
+                    const first = await coral.private.weather.initializedTemperature();
+                    const second = await coral.private.weather.initializedTemperature();
                     await coral.emit({ phase: "body" });
                     console.log("Program body");
                     return [first, second];
@@ -737,7 +737,7 @@ async fn direct_repeated_calls_follow_a_unicode_saved_function_live_binding() {
         .start(
             &principal,
             &workspace_id,
-            submission("const first = coral.private.café.calculer(); const second = coral.private.café.calculer(); return [first, second];",
+            submission("const first = await coral.private.café.calculer(); const second = await coral.private.café.calculer(); return [first, second];",
             ),
         )
         .await

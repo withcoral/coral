@@ -212,7 +212,7 @@ impl RunModule {
                     .map(|snapshot| {
                         (
                             snapshot.path().as_str().to_string(),
-                            snapshot.id().to_string(),
+                            snapshot.execution_binding(),
                         )
                     })
                     .collect(),

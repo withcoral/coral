@@ -82,7 +82,7 @@ pub struct RunEventDetail {
     pub event: RunEvent,
 }
 /// Retained Invocation outcome, preserving upstream facts without success inference.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InvocationOutcome {
     /// Complete upstream-native Tool Result.
     UpstreamOutcome(serde_json::Value),

@@ -111,8 +111,9 @@ impl StoredDeclarationFields {
                 self.mcp_names
                     .get_or_init(|| crate::mcp::typescript_names(graph)),
             ),
-            // Every built-in Tool takes one `input` object.
-            ExecutionBinding::Builtin(_) => Ok(true),
+            // Every built-in Tool takes one `input` object, and a Private
+            // Tool's declaration is its own.
+            ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => Ok(true),
         };
         input_declared
             .map(|input_declared| {
@@ -243,6 +244,8 @@ fn walk_declarations(
                 .ok_or_else(invalid_index)?;
             walk.index_root(binding.output_schema(), &output_path, output_projection)?;
         }
+        // Universal Search finds Private Tools through coral-functions.
+        ExecutionBinding::Code(_) => {}
     }
     walk.drain()
 }

@@ -7,7 +7,8 @@ use crate::source_map::{authored_location, decode_authored};
 use crate::v8_support::{evaluate_script, run_script};
 use crate::{
     AuthoredLocation, CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits,
-    ProgramExecutionControl, ProgramHost, ProgramOutputHostError, ToolFuture, ToolHostError,
+    PermitFuture, ProgramExecutionControl, ProgramHost, ProgramOutputHostError, ToolBodyOutcome,
+    ToolCompletion, ToolFuture, ToolHostError,
 };
 
 const FORBIDDEN_AMBIENT_GLOBALS: &str = include_str!("js/forbidden_ambient_globals.js");
@@ -141,6 +142,8 @@ impl ProgramExecutor {
                 unhandled_tool_errors: Cell::new(0),
                 unhandled_tool_reasons: RefCell::new(HashMap::new()),
                 pending_tools: Vec::new(),
+                permitted: HashMap::new(),
+                next_permitted: 0,
                 tool_error_factory: None,
             });
         }
@@ -239,8 +242,41 @@ struct ProgramHostSlot {
     unhandled_output_limits: Cell<usize>,
     unhandled_tool_errors: Cell<usize>,
     unhandled_tool_reasons: RefCell<HashMap<v8::Global<v8::Object>, v8::Global<v8::Value>>>,
-    pending_tools: Vec<(v8::Global<v8::PromiseResolver>, ToolFuture, String)>,
+    pending_tools: Vec<PendingTool>,
+    /// The permitted calls whose bodies run, by the handle each body
+    /// completes through.
+    permitted: HashMap<u32, Permitted>,
+    next_permitted: u32,
     tool_error_factory: Option<v8::Global<v8::Function>>,
+}
+
+/// One Tool Promise the host has yet to settle, and the call site its Tool
+/// Error names.
+struct PendingTool {
+    resolver: v8::Global<v8::PromiseResolver>,
+    settles: Settles,
+    call_stack: String,
+}
+
+/// What settles a pending Tool Promise.
+enum Settles {
+    /// A Tool call's result.
+    Result(ToolFuture),
+    /// A permit for a call that the Program performs: it resolves with the
+    /// handle the body completes through.
+    Permit(PermitFuture),
+    /// A performed call's completion. A body that threw a Tool Error
+    /// rejects its caller with that error.
+    Completion {
+        completes: ToolFuture,
+        thrown_tool_error: Option<v8::Global<v8::Value>>,
+    },
+}
+
+/// A permitted call whose body runs, and the call site of the call.
+struct Permitted {
+    completion: Box<dyn ToolCompletion>,
+    call_stack: String,
 }
 
 #[derive(Clone, Copy)]
@@ -279,57 +315,47 @@ fn drain_program_work(
         // measured large-fanout workloads make this scan material.
         let pending = std::mem::take(&mut slot.pending_tools);
         let mut completed = false;
-        for (resolver, mut tool, call_stack) in pending {
-            match tool.as_mut().poll(&mut context) {
-                Poll::Pending => scope
+        for mut tool in pending {
+            let Some(settled) = tool.settles.poll(&mut context) else {
+                scope
                     .get_slot_mut::<ProgramHostSlot>()
                     .expect("host installed")
                     .pending_tools
-                    .push((resolver, tool, call_stack)),
-                Poll::Ready(result) => {
-                    completed = true;
-                    let resolver = v8::Local::new(scope, resolver);
-                    match result {
-                        Ok(json) => resolve_tool_promise(scope, resolver, &json),
-                        Err(ToolHostError::Rejected {
-                            code,
-                            message,
-                            trace_id,
-                            suggestions,
-                        }) => {
-                            reject_tool_error(
-                                scope,
-                                resolver,
-                                code,
-                                &message,
-                                trace_id.as_deref(),
-                                None,
-                                &suggestions,
-                                &call_stack,
-                            );
-                        }
-                        Err(ToolHostError::Upstream {
-                            code,
-                            message,
-                            outcome_json,
-                        }) => {
-                            reject_tool_error(
-                                scope,
-                                resolver,
-                                code,
-                                message,
-                                None,
-                                Some(&outcome_json),
-                                &[],
-                                &call_stack,
-                            );
-                        }
-                        Err(ToolHostError::Fatal) => terminate_program_host(scope),
-                    }
-                    if program_execution_terminated(scope, control) {
-                        return Err(Error::ProgramHostTerminated);
-                    }
+                    .push(tool);
+                continue;
+            };
+            completed = true;
+            let resolver = v8::Local::new(scope, &tool.resolver);
+            match settled {
+                Settled::Result(Ok(json)) => resolve_tool_promise(scope, resolver, &json),
+                Settled::Permitted(Ok(completion)) => {
+                    let slot = scope
+                        .get_slot_mut::<ProgramHostSlot>()
+                        .expect("host installed");
+                    let handle = slot.next_permitted;
+                    slot.next_permitted = handle.wrapping_add(1);
+                    slot.permitted.insert(
+                        handle,
+                        Permitted {
+                            completion,
+                            call_stack: tool.call_stack,
+                        },
+                    );
+                    let handle = v8::Integer::new_from_unsigned(scope, handle);
+                    let _settled = resolver.resolve(scope, handle.into());
                 }
+                Settled::Result(Err(ToolHostError::Fatal))
+                | Settled::Permitted(Err(ToolHostError::Fatal)) => terminate_program_host(scope),
+                Settled::Rethrow(thrown) => {
+                    let thrown = v8::Local::new(scope, thrown);
+                    let _settled = resolver.reject(scope, thrown);
+                }
+                Settled::Result(Err(error)) | Settled::Permitted(Err(error)) => {
+                    reject_host_error(scope, resolver, error, &tool.call_stack);
+                }
+            }
+            if program_execution_terminated(scope, control) {
+                return Err(Error::ProgramHostTerminated);
             }
         }
         if !completed && !program_execution_terminated(scope, control) {
@@ -337,6 +363,84 @@ fn drain_program_work(
             // Both Future wakeups and cross-thread termination unpark this thread.
             std::thread::park();
         }
+    }
+}
+
+/// How a pending Tool Promise settles.
+enum Settled {
+    Result(Result<String, ToolHostError>),
+    Permitted(Result<Box<dyn ToolCompletion>, ToolHostError>),
+    /// Reject the caller with the Tool Error its call's body threw.
+    Rethrow(v8::Global<v8::Value>),
+}
+
+impl Settles {
+    /// How the Promise settles, once the host has settled it.
+    fn poll(&mut self, context: &mut Context<'_>) -> Option<Settled> {
+        match self {
+            Self::Result(tool) => match tool.as_mut().poll(context) {
+                Poll::Pending => None,
+                Poll::Ready(result) => Some(Settled::Result(result)),
+            },
+            Self::Permit(permit) => match permit.as_mut().poll(context) {
+                Poll::Pending => None,
+                Poll::Ready(result) => Some(Settled::Permitted(result)),
+            },
+            Self::Completion {
+                completes,
+                thrown_tool_error,
+            } => match completes.as_mut().poll(context) {
+                Poll::Pending => None,
+                Poll::Ready(Err(error)) if error != ToolHostError::Fatal => Some(
+                    thrown_tool_error
+                        .take()
+                        .map_or(Settled::Result(Err(error)), Settled::Rethrow),
+                ),
+                Poll::Ready(result) => Some(Settled::Result(result)),
+            },
+        }
+    }
+}
+
+/// Rejects a Tool Promise with the Tool Error a catchable host rejection
+/// names.
+fn reject_host_error(
+    scope: &mut v8::PinScope<'_, '_>,
+    resolver: v8::Local<'_, v8::PromiseResolver>,
+    error: ToolHostError,
+    call_stack: &str,
+) {
+    match error {
+        ToolHostError::Rejected {
+            code,
+            message,
+            trace_id,
+            suggestions,
+        } => reject_tool_error(
+            scope,
+            resolver,
+            code,
+            &message,
+            trace_id.as_deref(),
+            None,
+            &suggestions,
+            call_stack,
+        ),
+        ToolHostError::Upstream {
+            code,
+            message,
+            outcome_json,
+        } => reject_tool_error(
+            scope,
+            resolver,
+            code,
+            message,
+            None,
+            Some(&outcome_json),
+            &[],
+            call_stack,
+        ),
+        ToolHostError::Fatal => terminate_program_host(scope),
     }
 }
 
@@ -438,6 +542,14 @@ fn install_program_host(
     for (name, function) in [
         ("__coralToolInvoke", v8::Function::new(scope, tool_callback)),
         (
+            "__coralToolPerform",
+            v8::Function::new(scope, perform_callback),
+        ),
+        (
+            "__coralToolComplete",
+            v8::Function::new(scope, complete_callback),
+        ),
+        (
             "__coralProgramEmit",
             v8::Function::new(scope, program_emission_callback),
         ),
@@ -482,7 +594,114 @@ fn install_program_host(
 fn tool_callback(
     scope: &mut v8::PinScope<'_, '_>,
     arguments: v8::FunctionCallbackArguments<'_>,
+    return_value: v8::ReturnValue,
+) {
+    start_tool_call(
+        scope,
+        &arguments,
+        return_value,
+        |host, path, arguments, location| Settles::Result(host.invoke(path, arguments, location)),
+    );
+}
+
+/// `__coralToolPerform(path, arguments)`: one call to a Tool the Program
+/// performs, whose Promise resolves with the handle its body completes
+/// through once the host permits it.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn perform_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    return_value: v8::ReturnValue,
+) {
+    start_tool_call(
+        scope,
+        &arguments,
+        return_value,
+        |host, path, arguments, location| Settles::Permit(host.perform(path, arguments, location)),
+    );
+}
+
+/// `__coralToolComplete(handle, returned, threw, thrown)`: how the body of
+/// the permitted call `handle` ended: `returned` is its native-JSON value,
+/// or undefined when it cannot be encoded, unless `threw` holds the message
+/// of what it threw, `thrown`. The Promise settles as the call's caller
+/// does.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn complete_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
     mut return_value: v8::ReturnValue,
+) {
+    let handle = arguments.get(0).uint32_value(scope);
+    let Some(Permitted {
+        completion,
+        call_stack,
+    }) = handle.and_then(|handle| {
+        scope
+            .get_slot_mut::<ProgramHostSlot>()
+            .and_then(|slot| slot.permitted.remove(&handle))
+    })
+    else {
+        // Only the bootstrap holds handles, and it completes each once.
+        terminate_program_host(scope);
+        return;
+    };
+    let threw = arguments.get(2);
+    let (outcome, thrown_tool_error) = if threw.is_string() {
+        let thrown = arguments.get(3);
+        let tool_error = v8::Local::<v8::Object>::try_from(thrown)
+            .ok()
+            .and_then(|object| tool_error_fields(scope, object));
+        let outcome = ToolBodyOutcome::Threw {
+            message: crate::bounded_diagnostic_message(&threw.to_rust_string_lossy(scope)),
+            tool_error: tool_error.as_ref().map(|fields| fields.code.clone()),
+        };
+        (
+            outcome,
+            tool_error.map(|_fields| v8::Global::new(scope, thrown)),
+        )
+    } else if let Ok(returned) = v8::Local::<v8::String>::try_from(arguments.get(1)) {
+        (
+            ToolBodyOutcome::Returned(returned.to_rust_string_lossy(scope)),
+            None,
+        )
+    } else {
+        (ToolBodyOutcome::NotData, None)
+    };
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    return_value.set(resolver.get_promise(scope).into());
+    let resolver = v8::Global::new(scope, resolver);
+    let completes = completion.complete(outcome);
+    scope
+        .get_slot_mut::<ProgramHostSlot>()
+        .expect("host installed")
+        .pending_tools
+        .push(PendingTool {
+            resolver,
+            settles: Settles::Completion {
+                completes,
+                thrown_tool_error,
+            },
+            call_stack,
+        });
+}
+
+/// Starts one Tool call by Call Path and encoded arguments, which `start`
+/// hands to the host, and returns its pending Promise.
+fn start_tool_call(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: &v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+    start: impl FnOnce(Arc<dyn ProgramHost>, String, String, Option<AuthoredLocation>) -> Settles,
 ) {
     let Some(path) = arguments.get(0).to_string(scope) else {
         reject_tool_promise(
@@ -541,12 +760,16 @@ fn tool_callback(
         );
         return;
     }
-    let tool = host.invoke(path, arguments_json, location);
+    let settles = start(host, path, arguments_json, location);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")
         .pending_tools
-        .push((resolver, tool, call_stack));
+        .push(PendingTool {
+            resolver,
+            settles,
+            call_stack,
+        });
 }
 
 /// Captures the private emitted script's frames, innermost first, while the

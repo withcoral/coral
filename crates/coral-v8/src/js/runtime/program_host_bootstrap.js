@@ -1,13 +1,19 @@
 'use strict';
 (() => {
   const invoke = globalThis.__coralToolInvoke;
+  const perform = globalThis.__coralToolPerform;
+  const complete = globalThis.__coralToolComplete;
   const appendEmission = globalThis.__coralProgramEmit;
   const appendLog = globalThis.__coralProgramLog;
   Reflect.deleteProperty(globalThis, '__coralToolInvoke');
+  Reflect.deleteProperty(globalThis, '__coralToolPerform');
+  Reflect.deleteProperty(globalThis, '__coralToolComplete');
   Reflect.deleteProperty(globalThis, '__coralProgramEmit');
   Reflect.deleteProperty(globalThis, '__coralProgramLog');
 
   const nativeStringify = JSON.stringify;
+  const nativeParse = JSON.parse;
+  const reflectApply = Reflect.apply;
   const nativeString = String;
   const NativeError = Error;
   const NativeTypeError = TypeError;
@@ -102,6 +108,49 @@
       },
     });
 
+  // The text a thrown value reaches the caller with: an Error's message, or
+  // the value itself. Reading either can run Program code, which may throw.
+  const thrownMessage = (thrown) => {
+    try {
+      if (typeof thrown === 'object' && thrown !== null && typeof thrown.message === 'string') {
+        return thrown.message;
+      }
+      return nativeString(thrown);
+    } catch {
+      return 'Tool failed';
+    }
+  };
+
+  // One call to a Private Tool, which Coral performs by running `body()`,
+  // the linked module's default export, in this Program: one Invocation.
+  // The call crosses to Coral and back, so its arguments and result are
+  // copied as JSON, and it settles only once its completion is durable.
+  // Admission and approval come first; the body runs only once permitted.
+  const performTool = async (callPath, body, args) => {
+    let encoded;
+    try {
+      encoded = nativeStringify(args);
+    } catch {
+      return perform(callPath);
+    }
+    if (typeof encoded !== 'string') return perform(callPath);
+    // Before any await, so the caller's frame names the call site.
+    const permitted = perform(callPath, encoded);
+    const handle = await permitted;
+    let returned;
+    try {
+      const value = await reflectApply(body(), undefined, nativeParse(encoded));
+      try {
+        returned = value === undefined ? 'null' : nativeStringify(value);
+      } catch {
+        returned = undefined;
+      }
+    } catch (thrown) {
+      return complete(handle, undefined, thrownMessage(thrown), thrown);
+    }
+    return complete(handle, typeof returned === 'string' ? returned : undefined);
+  };
+
   const emit = (value) => {
     let encoded;
     try {
@@ -146,8 +195,9 @@
   // The Program host's own members. The compiled Program completes `coral`
   // before any authored code runs: it adds a member for each Built-in Tool
   // it was compiled with, such as `coral.search`, and `private`, which holds
-  // the Private Tools it links. Then no member can be added, so a misspelled
-  // one is undefined and throws where the Program uses it.
+  // the Private Tools it links, built with the call that performs each. Then
+  // no member can be added, so a misspelled one is undefined and throws
+  // where the Program uses it.
   const coral = create(null);
   Object.defineProperties(coral, {
     ToolError: {
@@ -176,7 +226,12 @@
     configurable: false,
   });
   Object.defineProperty(globalThis, '__coralCompleteRoot', {
-    value: (builtinTools, privateTools) => {
+    value: (builtinTools, buildPrivateTools) => {
+      const privateTools = buildPrivateTools(
+        (callPath, body) =>
+          (...args) =>
+            performTool(callPath, body, args),
+      );
       for (const key of builtinTools) {
         Object.defineProperty(coral, key, {
           value: callablePath(`coral.${key}`),

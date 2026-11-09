@@ -676,3 +676,176 @@ async fn each_principal_adds_updates_and_removes_only_its_own_tools() {
         json!("hello Ada")
     );
 }
+
+/// The Invocations `run` recorded, oldest first, with their detail as the
+/// Run's reader inspects it.
+async fn invocation_details(
+    scope: &AdminScope,
+    principal: &AuthenticatedPrincipal,
+    run: &crate::RunId,
+) -> Vec<crate::InvocationDetail> {
+    let reader = reader(scope, principal);
+    let entries = scope
+        .fixture
+        .runs
+        .activity_entries(
+            reader,
+            &scope.workspace_id,
+            run,
+            &crate::RunEntryWindow::Start,
+            100,
+            None,
+        )
+        .await
+        .unwrap()
+        .entries;
+    let mut details = Vec::new();
+    for entry in entries {
+        if let crate::RunEntry::Invocation(summary) = entry {
+            details.push(
+                scope
+                    .fixture
+                    .runs
+                    .inspect_invocation(reader, &scope.workspace_id, &summary.id)
+                    .await
+                    .unwrap(),
+            );
+        }
+    }
+    details
+}
+
+// Catches: a Private Tool call that is not asynchronous, records no
+// Invocation or more than one, wraps its value as a Tool Result, or shares
+// a value with its caller instead of copying it as JSON, so that an
+// `undefined` array element arrives as anything but null or a change the
+// body makes reaches the caller's object.
+#[tokio::test]
+async fn each_private_tool_call_is_one_invocation_that_copies_data_and_returns_the_raw_value() {
+    let (scope, _index) = authoring_scope("user:functions-invocations").await;
+    let echo = "const saved = async (input: { values: (number | null)[] }) => {
+        const second = input.values[1];
+        input.values.push(4);
+        return { values: input.values, secondIsNull: second === null, missing: [undefined] };
+    };";
+    outcome(&scope, &scope.owner, add("data.echo", echo)).await;
+
+    let run = scope
+        .start(
+            &scope.owner,
+            submission(
+                "const input = { values: [1, undefined, 3] };
+                 const pending = coral.private.data.echo(input);
+                 const asynchronous = pending instanceof Promise;
+                 const result = await pending;
+                 const again = await coral.private.data.echo({ values: [] });
+                 return { asynchronous, callerLength: input.values.length, result, again };",
+            ),
+        )
+        .await;
+    assert_eq!(
+        final_value(&scope.terminal(&scope.owner, &run).await),
+        json!({
+            "asynchronous": true,
+            "callerLength": 3,
+            "result": { "values": [1, null, 3, 4], "secondIsNull": true, "missing": [null] },
+            "again": { "values": [4], "secondIsNull": false, "missing": [null] },
+        })
+    );
+    let details = invocation_details(&scope, &scope.owner, &run).await;
+    let recorded = details
+        .iter()
+        .map(|detail| {
+            (
+                detail.summary.call_path.as_str(),
+                detail.arguments.clone(),
+                detail.outcome.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded,
+        [
+            (
+                "coral.private.data.echo",
+                json!([{ "values": [1, null, 3] }]),
+                Some(crate::InvocationOutcome::UpstreamOutcome(
+                    json!({ "values": [1, null, 3, 4], "secondIsNull": true, "missing": [null] })
+                )),
+            ),
+            (
+                "coral.private.data.echo",
+                json!([{ "values": [] }]),
+                Some(crate::InvocationOutcome::UpstreamOutcome(
+                    json!({ "values": [4], "secondIsNull": false, "missing": [null] })
+                )),
+            ),
+        ]
+    );
+}
+
+// Catches: a throw in a Private Tool's body that reaches its caller as
+// anything but a Tool Error coded `tool_failed` with its message, a result
+// that is not JSON under any code but `invalid_tool_result`, a Tool Error
+// from a call the body makes that loses its own code, or an Invocation that
+// records any of them as anything but `tool_failed` or `invalid_tool_result`.
+#[tokio::test]
+async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_tool_error() {
+    let (scope, _index) = authoring_scope("user:functions-failures").await;
+    for (path, source, caller_code, caller_message, recorded_code) in [
+        (
+            "fails.error",
+            "const saved = async (): Promise<number> => { throw new Error('boom'); };",
+            "tool_failed",
+            "boom",
+            "tool_failed",
+        ),
+        (
+            "fails.text",
+            "const saved = async (): Promise<number> => { throw 'plain text'; };",
+            "tool_failed",
+            "plain text",
+            "tool_failed",
+        ),
+        (
+            "fails.result",
+            "const saved = async (): Promise<any> => 10n;",
+            "invalid_tool_result",
+            "Tool result is not a JSON value",
+            "invalid_tool_result",
+        ),
+        (
+            "fails.nested",
+            "const saved = async () => coral.removeTool({ path: 'nothing.here' });",
+            "private_tool_not_found",
+            "Private Tool was not found",
+            "tool_failed",
+        ),
+    ] {
+        outcome(&scope, &scope.owner, add(path, source)).await;
+        let run = scope
+            .start(
+                &scope.owner,
+                tool_call("", &format!("coral.private.{path}()")),
+            )
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            json!({ "code": caller_code, "message": caller_message }),
+            "{path}"
+        );
+        let outer = invocation_details(&scope, &scope.owner, &run)
+            .await
+            .into_iter()
+            .find(|detail| detail.summary.call_path == format!("coral.private.{path}"))
+            .expect("the call is an Invocation");
+        assert!(
+            matches!(
+                &outer.outcome,
+                Some(crate::InvocationOutcome::CoralFailure { code, .. }) if code == recorded_code
+            ),
+            "{path}: {:?}",
+            outer.outcome
+        );
+    }
+}

@@ -102,7 +102,8 @@ function renderCallableNode(node, open) {
 // an emitted Saved Function declaration inlines them or fails to name them.
 // A Call Path cannot contain `-`, so module resolution never finds the file
 // that declares it and loads it a second time.
-function typedRoot(sources, prefix, entries) {
+// `callable` types each callable from the type of its declared default.
+function typedRoot(sources, prefix, entries, callable = (declared) => declared) {
   if (entries == null) return undefined;
   const tree = callableNode();
   for (const { pathSegments, declaration } of entries) {
@@ -110,9 +111,15 @@ function typedRoot(sources, prefix, entries) {
     const module = JSON.stringify(callPath);
     sources[`declaration-${callPath}.d.ts`] =
       `declare module ${module} {\n${declaration}\nexport {};\n}\n`;
-    insertCallable(tree, pathSegments, `typeof import(${module}).default`);
+    insertCallable(tree, pathSegments, callable(`typeof import(${module}).default`));
   }
   return tree;
+}
+
+// A Private Tool call is a Tool Invocation, so it returns a Promise of what
+// the function it declares returns, whether or not that function is async.
+function privateToolCallable(declared) {
+  return `(${declared} extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never)`;
 }
 
 // The called chains whose first prefix past their Call Root is neither a
@@ -174,7 +181,12 @@ function coralSurface(builtinTools, declarations) {
   // Tool paths are relative to `coral`, so one tree holds both
   // `providers` and the Built-in Tools.
   const tools = typedRoot(sources, 'coral', declarations?.tools?.declarations);
-  const privateTools = typedRoot(sources, 'coral.private', declarations?.functions);
+  const privateTools = typedRoot(
+    sources,
+    'coral.private',
+    declarations?.functions,
+    privateToolCallable,
+  );
   const builtins = builtinTools.map((key) => {
     const declared = tools?.children.get(key);
     return `readonly ${JSON.stringify(key)}: ${declared === undefined ? 'any' : renderCallableNode(declared, true)};`;

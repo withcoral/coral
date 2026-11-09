@@ -1182,7 +1182,9 @@ impl MaterializedTool {
         };
         let hints = match execution_binding {
             ExecutionBinding::Http(_) => ToolHints::default(),
-            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => hints,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {
+                hints
+            }
         };
         Self {
             key,
@@ -1253,7 +1255,9 @@ impl MaterializedTool {
     pub const fn http_method(&self) -> Option<crate::HttpMethod> {
         match &self.execution_binding {
             ExecutionBinding::Http(binding) => Some(binding.method()),
-            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => None,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {
+                None
+            }
         }
     }
 
@@ -1300,7 +1304,7 @@ impl MaterializedTool {
                 binding.set_credential_contract(contract);
                 self.binding_json = binding.to_storage_json()?;
             }
-            ExecutionBinding::Builtin(_) => {}
+            ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {}
         }
         Ok(self)
     }
@@ -1677,7 +1681,7 @@ impl PreparedProviderCatalog {
                     .first()
                     .map(|slot| slot.contract().clone()),
                 ExecutionBinding::Mcp(binding) => Some(binding.credential_contract().clone()),
-                ExecutionBinding::Builtin(_) => None,
+                ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => None,
             })
             .unwrap_or(crate::ProviderCredentialContract::NONE)
     }

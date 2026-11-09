@@ -42,7 +42,7 @@ mod mcp;
 mod openapi;
 mod paths;
 mod private;
-pub use private::PRIVATE_PROVIDER_DISPLAY_NAME;
+pub use private::{CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME, private_tool};
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors
 /// Returns a persistence or corrupt-evidence error.
@@ -164,7 +164,7 @@ pub fn materialize(
                 .filter_map(|tool| match tool.execution_binding() {
                     ExecutionBinding::Http(binding) => binding.server_url(),
                     ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
-                    ExecutionBinding::Builtin(_) => None,
+                    ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => None,
                 });
         if let Err(diagnostic) =
             validate_provider_destinations(policy, destinations, &catalog.credential_contract())

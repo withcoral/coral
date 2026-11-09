@@ -745,7 +745,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
         assert_eq!(tool.saved_at_unix_nanos(), 15);
         assert_eq!(tool.revision(), revision);
         assert_eq!(tool.default_access_state(), ToolAccessState::Enabled);
-        assert_eq!(tool.execution_binding().definition(), tool.id());
+        assert_eq!(tool.execution_binding().definition(), tool.id().to_string());
         assert_eq!(tool.execution_binding().revision(), revision);
     }
     // A Workspace Owner still reads an Agent's Private Tool.

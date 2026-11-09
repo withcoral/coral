@@ -89,6 +89,11 @@ coral_failures! {
     ResultTooLarge => "upstream_result_too_large",
     /// The upstream result would exceed the Run's remaining output budget.
     RunOutputTooLarge => "upstream_result_too_large",
+    /// The body of a Tool that Coral performs in the Program threw.
+    ToolFailed => "tool_failed",
+    /// The body of a Tool that Coral performs in the Program returned a
+    /// value that is not JSON.
+    InvalidToolResult => "invalid_tool_result",
 }
 
 impl CoralFailure {
@@ -149,6 +154,8 @@ impl CoralFailure {
             Self::UpstreamUnauthorized => "Upstream refused the request's credentials or access",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
+            Self::ToolFailed => "Tool failed",
+            Self::InvalidToolResult => "Tool result is not a JSON value",
         }
     }
 }
@@ -210,6 +217,9 @@ pub struct Rejection {
     /// For `tool_not_found`, the Call Path the Program wrote and the nearest
     /// Discoverable Call Paths of its Call Root.
     not_found: Option<NotFound>,
+    /// For `tool_failed`, what the Tool's body threw: Program-written text,
+    /// already bounded.
+    thrown: Option<String>,
 }
 
 /// A Call Path that names no Tool the caller can call, and what it can call
@@ -259,6 +269,17 @@ impl Rejection {
             failure,
             problems,
             not_found: None,
+            thrown: None,
+        }
+    }
+
+    /// `tool_failed` for the body of a Tool that Coral performs in the
+    /// Program, which threw `message`: text the Program wrote, which reaches
+    /// it again unchanged but bounded.
+    pub(crate) fn tool_failed(message: &str) -> Self {
+        Self {
+            thrown: Some(coral_v8::bounded_diagnostic_message(message)),
+            ..Self::from(CoralFailure::ToolFailed)
         }
     }
 
@@ -273,6 +294,7 @@ impl Rejection {
                 call_path: call_path.to_owned(),
                 suggestions,
             }),
+            thrown: None,
         }
     }
 
@@ -300,6 +322,9 @@ impl Rejection {
     /// Safe, bounded message, naming each argument to correct when Coral knows it.
     #[must_use]
     pub fn message(&self) -> std::borrow::Cow<'static, str> {
+        if let Some(thrown) = &self.thrown {
+            return thrown.clone().into();
+        }
         if let Some(NotFound {
             call_path,
             suggestions,

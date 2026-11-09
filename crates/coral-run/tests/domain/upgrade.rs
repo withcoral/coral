@@ -186,7 +186,7 @@ async fn upgrade_moves_the_builtin_tools_and_saved_functions_to_the_new_roots() 
                  return { \
                  functions: await paths('greet person'), \
                  tools: await paths('list providers'), \
-                 greeting: coral.private.people.greet('Ada'), \
+                 greeting: await coral.private.people.greet('Ada'), \
                  disabled: await coral.getProvider({ namespace: 'absent' }).then( \
                  () => 'called', (error) => error.code) };",
             ),

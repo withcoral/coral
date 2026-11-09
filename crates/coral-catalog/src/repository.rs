@@ -305,6 +305,9 @@ fn verify_schema_index(
                 "built-in Tool binding disagrees with its index".to_string(),
             ))
         }
+        ExecutionBinding::Code(_) => Err(Error::CorruptData(
+            "a stored Tool has a code binding, which no catalog stores".to_string(),
+        )),
         ExecutionBinding::Http(_) | ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => {
             Ok(())
         }
@@ -615,6 +618,12 @@ impl ToolRow {
                     ));
                 }
                 self.definition_json
+            }
+            // `verify_schema_index` refused it above.
+            ExecutionBinding::Code(_) => {
+                return Err(Error::CorruptData(
+                    "a stored Tool has a code binding, which no catalog stores".to_string(),
+                ));
             }
         };
         Ok(MaterializedTool::new(

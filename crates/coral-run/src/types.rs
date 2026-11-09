@@ -1068,9 +1068,9 @@ pub(crate) struct AcceptedRun {
     pub(crate) claim_id: String,
     /// The first lease, which the owner renews with every chunk it commits.
     pub(crate) worker_claim_expires_at_unix_nanos: i64,
-    /// Linked Saved Function path to the identity of the snapshot that
-    /// acceptance retained for it.
-    pub(crate) linked_snapshots: HashMap<String, String>,
+    /// Each linked Private Tool's path, relative to `coral.private`, to the
+    /// definition that acceptance retained for it, which a call performs.
+    pub(crate) linked_snapshots: HashMap<String, coral_catalog::CodeExecutionBinding>,
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,

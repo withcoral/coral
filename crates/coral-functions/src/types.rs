@@ -707,34 +707,8 @@ impl SavedFunction {
     /// Returns the code Execution Binding of this Private Tool: the
     /// definition Coral performs when it is called.
     #[must_use]
-    pub fn execution_binding(&self) -> CodeExecutionBinding {
-        CodeExecutionBinding {
-            definition: self.id.clone(),
-            revision: self.revision,
-        }
-    }
-}
-
-/// A Private Tool's Execution Binding. Coral performs the Tool by running the
-/// definition it names, so it carries no destination, credential, or
-/// routing data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeExecutionBinding {
-    definition: SavedFunctionId,
-    revision: u64,
-}
-
-impl CodeExecutionBinding {
-    /// Returns the Private Tool whose definition Coral performs.
-    #[must_use]
-    pub const fn definition(&self) -> &SavedFunctionId {
-        &self.definition
-    }
-
-    /// Returns the revision of that definition.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
+    pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
+        coral_catalog::CodeExecutionBinding::new(self.id.to_string(), self.revision)
     }
 }
 
@@ -1340,6 +1314,13 @@ impl SavedFunctionSelection {
     #[must_use]
     pub const fn source(&self) -> &SavedFunctionSource {
         &self.source
+    }
+
+    /// Returns the code Execution Binding of the selected definition: the
+    /// one a Run that links it performs when the Program calls it.
+    #[must_use]
+    pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
+        coral_catalog::CodeExecutionBinding::new(self.id.to_string(), self.revision)
     }
 }
 

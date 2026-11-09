@@ -1,4 +1,7 @@
-use crate::{BuiltinExecutionBinding, Error, HttpExecutionBinding, McpExecutionBinding, SchemaId};
+use crate::{
+    BuiltinExecutionBinding, CodeExecutionBinding, Error, HttpExecutionBinding,
+    McpExecutionBinding, SchemaId,
+};
 
 /// Complete upstream-specific invocation recipe for one materialized Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +12,10 @@ pub enum ExecutionBinding {
     Mcp(McpExecutionBinding),
     /// A Built-in Provider Tool that Coral performs itself.
     Builtin(BuiltinExecutionBinding),
+    /// A Private Tool that Coral performs by running its definition in the
+    /// Run. No catalog stores one: the Private Provider's catalog holds no
+    /// Tool, and each Invocation retains the definition its Run linked.
+    Code(CodeExecutionBinding),
 }
 
 impl ExecutionBinding {
@@ -17,6 +24,7 @@ impl ExecutionBinding {
             Self::Http(_) => "http",
             Self::Mcp(_) => "mcp",
             Self::Builtin(_) => "builtin",
+            Self::Code(_) => "code",
         }
     }
 
@@ -48,7 +56,7 @@ impl ExecutionBinding {
                 Some(binding.path_template()),
                 binding.server_url(),
             ),
-            Self::Mcp(_) | Self::Builtin(_) => (None, None, None),
+            Self::Mcp(_) | Self::Builtin(_) | Self::Code(_) => (None, None, None),
         }
     }
 
@@ -57,6 +65,7 @@ impl ExecutionBinding {
             Self::Http(binding) => Box::new(binding.schema_ids()),
             Self::Mcp(binding) => Box::new(binding.schema_ids()),
             Self::Builtin(binding) => Box::new(binding.schema_ids()),
+            Self::Code(_) => Box::new(std::iter::empty()),
         }
     }
 }

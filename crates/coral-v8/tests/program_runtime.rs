@@ -4,6 +4,8 @@ use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_value as _;
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use coral_v8::{
@@ -636,7 +638,7 @@ fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
         )
         .expect("authored marker-like comments cannot alter source mappings");
     let output = ProgramExecutor::new(IsolateLimits::default())
-        .execute(&program)
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
         .expect("execute comment-collision probe");
     assert_eq!(output.final_value_json(), Some("42"));
 }
@@ -1286,6 +1288,15 @@ fn tool_call_passes_one_logical_argument_object_to_the_host() {
 struct RejectingToolHost;
 
 impl ProgramHost for RejectingToolHost {
+    fn perform(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        support::permit_at_once()
+    }
+
     fn invoke(
         self: Arc<Self>,
         call_path: String,
@@ -1578,24 +1589,21 @@ fn failure_stacks_name_only_authored_locations() {
             "Error: private serialization canary\n",
             &["at Program:3:"],
         ),
+        // A throw in a Private Tool reaches its caller as a Tool Error at
+        // the call site; the body's own frames stay inside the Tool.
         (
             "return coral.private.debug.fail();",
             vec![fail],
-            "Error: private linked canary\n",
-            &[
-                "at Saved Function coral.private.debug.fail:6:",
-                "at Program:1:",
-            ],
+            "ToolError: private linked canary\n",
+            &["at Program:1:"],
         ),
+        // A Tool Error from a call the body makes reaches the caller as it
+        // is, at that call's site.
         (
             "return coral.private.debug.caller();",
             vec![failure, caller],
-            "Error: authored dependency canary\n",
-            &[
-                "at Saved Function coral.private.debug.failure:1:",
-                "at Saved Function coral.private.debug.caller:1:",
-                "at Program:1:",
-            ],
+            "ToolError: authored dependency canary\n",
+            &["at Saved Function coral.private.debug.caller:1:"],
         ),
         // Tool rejections settle asynchronously but keep their call sites.
         (
@@ -1604,18 +1612,16 @@ fn failure_stacks_name_only_authored_locations() {
             "",
             &["at Program:2:"],
         ),
-        // Saved Function source without semicolons keeps its frames.
+        // Saved Function source without semicolons keeps its frames. Its
+        // module throws as it initializes, before the Program body runs.
         (
             "return coral.private.debug.asi();",
             vec![linked_source(
                 &["debug", "asi"],
-                "export default () => {\n  const reason = 'asi canary'\n  throw new Error(reason)\n}",
+                "export default () => {}\nconst reason = 'asi canary'\nthrow new Error(reason)",
             )],
             "Error: asi canary\n",
-            &[
-                "at Saved Function coral.private.debug.asi:3:",
-                "at Program:1:",
-            ],
+            &["at Saved Function coral.private.debug.asi:3:"],
         ),
         // An error frame inside a Saved Function statement with a trailing
         // comma keeps its line.
@@ -1623,13 +1629,10 @@ fn failure_stacks_name_only_authored_locations() {
             "return coral.private.debug.comma();",
             vec![linked_source(
                 &["debug", "comma"],
-                "export default function () {\n  throw new Error('comma canary', {\n    cause: 1,\n  },)\n}",
+                "export default function () {}\nthrow new Error('comma canary', {\n    cause: 1,\n  },)",
             )],
             "Error: comma canary\n",
-            &[
-                "at Saved Function coral.private.debug.comma:2:",
-                "at Program:1:",
-            ],
+            &["at Saved Function coral.private.debug.comma:2:"],
         ),
         // Frames count ECMAScript line terminators, not only LF.
         (
@@ -1648,10 +1651,7 @@ fn failure_stacks_name_only_authored_locations() {
             "return await coral.private.debug.fetch();",
             vec![fetch],
             "",
-            &[
-                "at Saved Function coral.private.debug.fetch:2:",
-                "at Program:1:",
-            ],
+            &["at Saved Function coral.private.debug.fetch:2:"],
         ),
     ];
     for (source, functions, message, frames) in cases {
@@ -2284,6 +2284,16 @@ impl ProgramHost for RecordingHost {
         self.limits
     }
 
+    fn perform(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        self.record("perform", location);
+        support::permit_at_once()
+    }
+
     fn invoke(
         self: Arc<Self>,
         _call_path: String,
@@ -2438,6 +2448,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![helpers],
             vec![
                 ("log", in_saved_function("debug.fetch", 1, 9)),
+                ("perform", at(2, 27)),
                 ("invoke", in_saved_function("debug.fetch", 4, 33)),
             ],
         ),
@@ -2469,10 +2480,13 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["debug", "mixed"],
                 "console.info(1);\rexport default function mixed() {\r\n    console.warn(\"a\u{2029}b\");\r}",
             )],
+            // The body runs once the call is permitted, after the Program's
+            // next line.
             vec![
                 ("log", in_saved_function("debug.mixed", 1, 9)),
-                ("log", in_saved_function("debug.mixed", 3, 13)),
+                ("perform", at(1, 21)),
                 ("log", at(2, 9)),
+                ("log", in_saved_function("debug.mixed", 3, 13)),
             ],
         ),
         // Saved Function lines follow the same terminators. A private line the
@@ -2486,6 +2500,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("log", in_saved_function("terminators.lone", 1, 9)),
+                ("perform", at(1, 27)),
                 ("log", in_saved_function("terminators.lone", 3, 11)),
             ],
         ),
@@ -2497,6 +2512,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("log", in_saved_function("terminators.clause", 2, 9)),
+                ("perform", at(1, 27)),
                 ("log", in_saved_function("terminators.clause", 4, 27)),
             ],
         ),
@@ -2520,6 +2536,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "export default async () => {\n  await coral.providers.locationFixture.lookup({})\n  console.warn('accepted-snapshot-notice')\n  return 1\n}",
             )],
             vec![
+                ("perform", at(1, 31)),
                 ("invoke", in_saved_function("locations.notify", 2, 41)),
                 ("log", in_saved_function("locations.notify", 3, 11)),
             ],
@@ -2531,6 +2548,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "const prefix = 'n'\nexport default function named() {\n  console.info(prefix)\n  coral.emit(prefix);;\n}",
             )],
             vec![
+                ("perform", at(1, 25)),
                 ("log", in_saved_function("locations.named", 3, 11)),
                 ("emit", in_saved_function("locations.named", 4, 9)),
             ],
@@ -2552,6 +2570,9 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ),
             ],
             vec![
+                ("perform", at(1, 25)),
+                ("perform", at(1, 61)),
+                ("perform", at(1, 100)),
                 ("log", in_saved_function("locations.implicit", 1, 30)),
                 ("log", in_saved_function("locations.guarded", 4, 23)),
                 ("log", in_saved_function("locations.boxed", 5, 32)),
@@ -2566,6 +2587,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "type Pair = { a: string, b: number }\nexport default () => {\n  foo(`${1}`,   coral.emit(1))\n  foo(/'/,   coral.emit(2))\n  ;[1].forEach(() => coral.emit(3))\n  console.log('after')\n}\nfunction foo(..._values: unknown[]) {}",
             )],
             vec![
+                ("perform", at(1, 25)),
                 ("emit", in_saved_function("locations.lexical", 3, 23)),
                 ("emit", in_saved_function("locations.lexical", 4, 20)),
                 ("emit", in_saved_function("locations.lexical", 5, 28)),
@@ -2578,7 +2600,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "documented"],
                 "/** Logs one value. */\nexport default function documented(value: string) {\n  console.log(`value ${value}`, /x/g.test(value))\n}",
             )],
-            vec![("log", in_saved_function("locations.documented", 3, 11))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.documented", 3, 11)),
+            ],
         ),
         // A trailing comma later in a Saved Function statement leaves every
         // earlier call in it mapped.
@@ -2588,7 +2613,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "reprinted"],
                 "export default async function () {\n  console.log('a', {\n    b: 1,\n  },)\n}",
             )],
-            vec![("log", in_saved_function("locations.reprinted", 2, 11))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.reprinted", 2, 11)),
+            ],
         ),
         // Export syntax spread over lines and comments leaves later lines in place.
         (
@@ -2597,15 +2625,21 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "multiline"],
                 "export /* keyword */ default\n  // the function\n  async () => {\n    console.log('multiline')\n  }",
             )],
-            vec![("log", in_saved_function("locations.multiline", 4, 13))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.multiline", 4, 13)),
+            ],
         ),
         (
-            "coral.private.locations.generated().next()",
+            "coral.private.locations.generated()",
             vec![linked_source(
                 &["locations", "generated"],
-                "export default function* () { console.log('gen'); yield 1 }",
+                "function* gen() { console.log('gen'); yield 1 }\nexport default () => gen().next().value",
             )],
-            vec![("log", in_saved_function("locations.generated", 1, 39))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.generated", 1, 27)),
+            ],
         ),
         // A call inside the default expression itself keeps its column.
         (
@@ -2614,7 +2648,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "initialized"],
                 "export default (console.log('init'), () => {})",
             )],
-            vec![("log", in_saved_function("locations.initialized", 1, 25))],
+            vec![
+                ("log", in_saved_function("locations.initialized", 1, 25)),
+                ("perform", at(1, 25)),
+            ],
         ),
         // A removed export clause still ends the statement before it.
         (
@@ -2626,6 +2663,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![
                 ("log", in_saved_function("locations.clause", 1, 9)),
                 ("log", in_saved_function("locations.clause", 3, 16)),
+                ("perform", at(1, 25)),
             ],
         ),
         (
@@ -2634,7 +2672,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "shebang"],
                 "#!/usr/bin/env coral\n'use strict'\nexport default () => console.log('shebang')",
             )],
-            vec![("log", in_saved_function("locations.shebang", 3, 30))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.shebang", 3, 30)),
+            ],
         ),
         // The private default name cannot collide with an authored binding,
         // even one spelled with an escape.
@@ -2644,15 +2685,21 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "hygiene"],
                 "const \\u005f_coralSavedFunctionDefaultExport_1 = 1\nexport default () => console.log(__coralSavedFunctionDefaultExport_1)",
             )],
-            vec![("log", in_saved_function("locations.hygiene", 2, 30))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.hygiene", 2, 30)),
+            ],
         ),
         (
-            "await coral.private.locations.agen().next()",
+            "await coral.private.locations.agen()",
             vec![linked_source(
                 &["locations", "agen"],
-                "export default async function* () { console.log('agen'); yield 1 }",
+                "async function* gen() { console.log('agen'); yield 1 }\nexport default async () => (await gen().next()).value",
             )],
-            vec![("log", in_saved_function("locations.agen", 1, 45))],
+            vec![
+                ("perform", at(1, 31)),
+                ("log", in_saved_function("locations.agen", 1, 33)),
+            ],
         ),
         // Several export removals on one line keep the rest of the line in place.
         (
@@ -2663,6 +2710,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("log", in_saved_function("locations.removals", 1, 85)),
+                ("perform", at(1, 25)),
                 ("log", in_saved_function("locations.removals", 1, 27)),
             ],
         ),
@@ -2672,7 +2720,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 &["locations", "template"],
                 "export default () => {\r\n  const s = `\u{1F600}\r\n${1}`; console.log(s)\r\n}",
             )],
-            vec![("log", in_saved_function("locations.template", 3, 16))],
+            vec![
+                ("perform", at(1, 25)),
+                ("log", in_saved_function("locations.template", 3, 16)),
+            ],
         ),
         // Repeated and parallel calls inside a Saved Function keep their own
         // call sites.
@@ -2683,6 +2734,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "export default async () => {\n  for (const id of [1, 2]) console.log(id)\n  await Promise.all([coral.providers.demo.getItem({}), coral.providers.demo.getItem({})])\n}",
             )],
             vec![
+                ("perform", at(1, 31)),
                 ("log", in_saved_function("locations.parallel", 2, 36)),
                 ("log", in_saved_function("locations.parallel", 2, 36)),
                 ("invoke", in_saved_function("locations.parallel", 3, 43)),
@@ -2706,6 +2758,8 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![
                 ("log", in_saved_function("locations.inline", 1, 25)),
                 ("emit", in_saved_function("locations.anonymous", 1, 7)),
+                ("perform", at(1, 25)),
+                ("perform", at(1, 59)),
             ],
         ),
         // A binding called with no authored frame on the stack has no location.

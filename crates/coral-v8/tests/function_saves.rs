@@ -6,6 +6,8 @@ use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_value as _;
 
+mod support;
+
 use std::sync::{Arc, Mutex, OnceLock};
 
 use coral_v8::{
@@ -100,6 +102,15 @@ impl ProgramHost for ToolCalls {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((call_path, arguments, location));
         Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"builtin"}}"#.to_string()) })
+    }
+
+    fn perform(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        support::permit_at_once()
     }
 
     fn emit(

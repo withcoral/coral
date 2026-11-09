@@ -228,6 +228,8 @@ async fn each_record_keeps_the_authored_location_of_its_own_call() {
         vec![
             ("output", program_at(3, 17)),
             ("output", program_at(3, 17)),
+            // The Private Tool call is an Invocation at its call site.
+            ("invocation", program_at(5, 29)),
             ("output", in_snapshot(2, 13)),
             ("invocation", in_snapshot(3, 36)),
             ("invocation", program_at(6, 64)),

@@ -280,6 +280,7 @@ impl InvocationTrace {
             ExecutionBinding::Http(_) => metric::ProviderProtocol::Http,
             ExecutionBinding::Mcp(_) => metric::ProviderProtocol::Mcp,
             ExecutionBinding::Builtin(_) => metric::ProviderProtocol::Builtin,
+            ExecutionBinding::Code(_) => metric::ProviderProtocol::Code,
         };
         let effect = if coral_policy::reads_only(tool.policy_facts()) {
             metric::ToolEffect::Read
@@ -301,10 +302,10 @@ impl InvocationTrace {
     /// Upstream Outcome is never an error, whatever its status; a Coral
     /// Failure, `indeterminate` and a host defect are. `run_terminated` is
     /// not.
-    pub(crate) fn end(self, ended: &Result<String, InvocationHostError>) {
+    pub(crate) fn end(self, ended: Result<(), &InvocationHostError>) {
         use crate::InvocationResultKind;
         let (kind, failure_code) = match ended {
-            Ok(_) | Err(InvocationHostError::Upstream { .. }) => {
+            Ok(()) | Err(InvocationHostError::Upstream { .. }) => {
                 (Some(InvocationResultKind::UpstreamOutcome), None)
             }
             Err(InvocationHostError::Rejected(rejection)) => (
