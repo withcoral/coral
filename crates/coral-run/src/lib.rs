@@ -129,7 +129,7 @@
 mod activity;
 mod activity_observation;
 mod admission;
-pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
+pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryLevel, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;

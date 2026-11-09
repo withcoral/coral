@@ -11,12 +11,3 @@ export function ParentInvocationName({ parent }: { parent: ParentInvocation }) {
     </>
   )
 }
-
-/** "Called from" and the tool call whose body made a call, as a line of its own. */
-export function CalledFrom({ parent }: { parent: ParentInvocation }) {
-  return (
-    <span>
-      Called from <ParentInvocationName parent={parent} />
-    </span>
-  )
-}

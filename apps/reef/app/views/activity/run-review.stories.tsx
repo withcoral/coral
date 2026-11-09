@@ -111,6 +111,7 @@ const accountCall = {
   outcome: 'unknown' as const,
   dispatchedAt: null,
   waitingNanos: '1',
+  toolKind: 'provider' as const,
   sourceLocation: programAt('coral.providers.linear.listIssues', linearProgram),
 }
 const page: ActivityPage = {
@@ -231,6 +232,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
       outcome: 'unknown' as const,
       dispatchedAt: null,
       waitingNanos: '1',
+      toolKind: 'provider' as const,
       // The approved call, where the Run's program makes it.
       sourceLocation: programAt(approval.callPath, context.source),
     }

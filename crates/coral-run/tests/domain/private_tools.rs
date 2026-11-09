@@ -118,6 +118,7 @@ async fn invocations(
             &scope.workspace_id,
             run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )
@@ -672,6 +673,7 @@ async fn invocation_details(
             &scope.workspace_id,
             run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )

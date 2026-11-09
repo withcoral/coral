@@ -75,6 +75,7 @@ import { connectionState } from './accounts.server'
 import { liveScopeOf, MAX_EXPANDED_RECORDS, type RunRow } from '@/views/activity/types'
 import {
   childWindow,
+  expandable,
   liveHold,
   recentTask,
   unfinishedRun,
@@ -385,6 +386,7 @@ function invocationView(value: ActivityInvocation): InvocationRow {
     tool: value.tool,
     callPath: value.callPath,
     outcome: enumLabel(invocationOutcomes, value.outcome),
+    toolKind: enumLabel(toolKinds, value.toolKind),
     sourceLocation: sourceLocationView(value.sourceLocation),
     parent: value.parent && parentView(value.parent),
   }
@@ -1036,7 +1038,37 @@ async function oldestRunAction(
   // The first action page, whichever page the review shows.
   const first = query.get('actionsAfter') ? undefined : actions
   const timed = await runActions(context.run.name, first, api, scope, signal)
-  return timed.toSorted(older)[0]?.action
+  return withCalls(timed.toSorted(older)[0], api, signal)
+}
+
+/** `timed`'s action, with the tool calls that hold its record, so live mode opens them. */
+async function withCalls(timed: TimedAction | undefined, api: ActivityApi, signal: AbortSignal) {
+  if (!timed?.parent) return timed?.action
+  return { ...timed.action, calls: await enclosingCalls(api, timed.parent, signal) }
+}
+
+/** Deepest tool-call nesting Reef reveals; Coral keeps no deeper limit on its own. */
+const MAX_CALL_DEPTH = 16
+
+/**
+ * The tool calls that enclose a call whose body `parent` made, outermost first, with
+ * `parent` last. It reads each enclosing call once. A call Reef cannot read ends the chain
+ * where it is.
+ */
+async function enclosingCalls(api: ActivityApi, parent: string, signal: AbortSignal) {
+  const calls = [parent]
+  while (calls.length < MAX_CALL_DEPTH) {
+    try {
+      const { invocation } = await api.activity.inspectInvocation({ name: calls[0]! }, { signal })
+      const next = invocation?.parent?.invocation
+      if (!next) break
+      calls.unshift(next)
+    } catch (error) {
+      if (!unavailable(error)) throw error
+      break
+    }
+  }
+  return calls
 }
 
 /**
@@ -1139,8 +1171,8 @@ async function liveLatestWork(
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
     )
-    const oldest = timed.flat().toSorted(older)[0]
-    if (oldest) found.action = { task: asking.get(oldest.action.run) ?? '', action: oldest.action }
+    const oldest = await withCalls(timed.flat().toSorted(older)[0], api, signal)
+    if (oldest) found.action = { task: asking.get(oldest.run) ?? '', action: oldest }
   }
   const listed = new Set(page.rows.map((row) => row.name))
   for (const row of roots)
@@ -1445,6 +1477,8 @@ interface TimedAction {
   startedAt: bigint
   tool: string
   action: LiveAction
+  /** The tool call whose body made the tool, if any. */
+  parent?: string
 }
 /** Earlier start first, then the lower tool identity, then the lower request. */
 const older = (a: TimedAction, b: TimedAction) =>
@@ -1474,6 +1508,7 @@ async function approvalAction(
       startedAt: invocation.startedAtUnixNanos,
       tool: invocation.name,
       action: { run, record: invocation.name, request: name },
+      parent: invocation.parent?.invocation,
     }
   } catch (error) {
     if (!unavailable(error)) throw error
@@ -1602,7 +1637,8 @@ export async function loadActivity(
   const expanded = [...new Set(query.getAll('expand'))]
   if (expanded.length > MAX_EXPANDED_RECORDS) invalid('Expand at most 20 records at a time')
   for (const name of expanded)
-    if (!['task', 'run'].includes(recordKind(name))) invalid('Invalid expanded record')
+    if (!['task', 'run', 'invocation'].includes(recordKind(name)))
+      invalid('Invalid expanded record')
   const rootAnchor = query.get('anchor')
   if (rootAnchor && !['task', 'run'].includes(recordKind(rootAnchor)))
     invalid('Invalid activity anchor')
@@ -1663,18 +1699,33 @@ export async function loadActivity(
       },
       { signal },
     )
-  const runPage = (name: string) =>
-    api.activity.browseRunEntries(
+  /** A window of `run`'s top level, or of the calls the body of the tool call `parent` made. */
+  const runPage = (run: string, parent?: string) => {
+    const name = parent ?? run
+    return api.activity.browseRunEntries(
       {
-        name,
+        name: run,
         after: viewport(name) ? 0n : eventCursor(query.getAll(`cursor.${name}`).at(-1) ?? null),
         pageSize: ACTIVITY_CHILD_WINDOW,
         scope,
         anchor: viewport(name) ? '' : anchor(name),
         viewport: viewport(name),
+        level: parent ? { case: 'parent', value: parent } : { case: 'topLevel', value: {} },
       },
       { signal },
     )
+  }
+  /** Opens the tool calls `calls`, outermost first, each at the call inside it, ending at
+   * `record`. The Run's own window opens at the outermost call. */
+  const revealCalls = (run: string, calls: string[], record: string) => {
+    const inside = [...calls.slice(1), record]
+    automaticAnchors.set(run, calls[0] ?? record)
+    calls.forEach((call, index) => {
+      automaticAnchors.set(call, inside[index]!)
+      if (!page.expanded.includes(call) && page.expanded.length < MAX_EXPANDED_RECORDS)
+        page.expanded.push(call)
+    })
+  }
   // Exact selection does not borrow authority from the surrounding list.
   await selectedDetail(page, query, api, signal, !options.reading)
   if (
@@ -1689,12 +1740,17 @@ export async function loadActivity(
     page.initialRequest = undefined
   }
   if (page.initialRecord && page.detail?.kind === 'invocation') {
-    const run = page.detail.invocation.run
-    automaticAnchors.set(run, page.initialRecord)
-    query.set(`anchor.${run}`, page.initialRecord)
-    for (const prefix of ['cursor', 'offset', 'preceding']) query.delete(`${prefix}.${run}`)
+    const { run, parent } = page.detail.invocation
+    const calls = parent ? await enclosingCalls(api, parent.invocation, signal) : []
+    // The Run and each call that holds the record open at the record inside them.
+    const inside = [...calls, page.initialRecord]
+    for (const [index, name] of [run, ...calls].entries()) {
+      query.set(`anchor.${name}`, inside[index]!)
+      for (const prefix of ['cursor', 'offset', 'preceding']) query.delete(`${prefix}.${name}`)
+    }
     if (!page.expanded.includes(run) && page.expanded.length < MAX_EXPANDED_RECORDS)
       page.expanded.push(run)
+    revealCalls(run, calls, page.initialRecord)
   }
   const liveAction = await oldestRunAction(page, query, api, scope, signal, Boolean(reading))
   if (liveAction) page.liveAction = liveAction
@@ -1707,6 +1763,9 @@ export async function loadActivity(
     if (run) automaticAnchors.set(run, row.name)
     for (const name of [task, run])
       if (name && !page.expanded.includes(name)) page.expanded.push(name)
+    // A call a tool's body made opens inside the calls that hold it.
+    if (row.kind === 'invocation' && row.parent)
+      revealCalls(row.run, await enclosingCalls(api, row.parent.invocation, signal), row.name)
   }
   try {
     const value = await api.activity.browseActivityRoots(
@@ -1736,9 +1795,10 @@ export async function loadActivity(
     page.rows = []
     page.listUnavailable = true
   }
+  /** A window of the records a Run, or a tool call of `run`, holds. */
   function executionBranch(
     value: Awaited<ReturnType<typeof runPage>>,
-    row: Extract<ActivityRow, { kind: 'run' }>,
+    row: Pick<ExecutionRow, 'task' | 'actor' | 'agent'> & { run: string },
   ): ActivityBranch {
     return {
       total: value.total.toString(),
@@ -1762,7 +1822,7 @@ export async function loadActivity(
         return [
           {
             ...outputRow(
-              row.name,
+              row.run,
               {
                 sequence: record.value.sequence.toString(),
                 kind: record.value.kind,
@@ -1842,10 +1902,28 @@ export async function loadActivity(
         parent.rows.push(row)
         parent.rows.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
       }
-      page.branches[name] = executionBranch(value, row)
+      page.branches[name] = executionBranch(value, { ...row, run: row.name })
     } catch (error) {
       if (!unavailable(error)) throw error
       if (row) page.branches[name] = missingBranch()
+    }
+  }
+  // An expanded tool call holds the calls its body made. It loads once the window that holds
+  // it has, so an outer call loads before the calls inside it.
+  const expandedCalls = page.expanded.filter((value) => recordKind(value) === 'invocation')
+  for (let loading = true; loading;) {
+    loading = false
+    const shown = [...page.rows, ...Object.values(page.branches).flatMap((branch) => branch.rows)]
+    for (const name of expandedCalls) {
+      const row = shown.find((item) => item.name === name)
+      if (page.branches[name] || !row || row.kind !== 'invocation' || !expandable(row)) continue
+      loading = true
+      try {
+        page.branches[name] = executionBranch(await runPage(row.run, name), row)
+      } catch (error) {
+        if (!unavailable(error)) throw error
+        page.branches[name] = missingBranch()
+      }
     }
   }
   // Emissions normalize the server request's tree state, not the browser URL. Preserve

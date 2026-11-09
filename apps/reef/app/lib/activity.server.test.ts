@@ -661,6 +661,121 @@ function revealLink(page: ActivityPage, location: string): URL {
   return new URL(href, 'http://reef')
 }
 
+/** A Run whose program calls `outer`, whose body calls `inner`, whose body calls `leaf`. */
+const nested = {
+  outer: `${workspace}/invocations/00000000-0000-4000-8000-000000000020`,
+  inner: `${workspace}/invocations/00000000-0000-4000-8000-000000000021`,
+  leaf: `${workspace}/invocations/00000000-0000-4000-8000-000000000022`,
+}
+function nestedCalls(): Handlers {
+  const call = (name: string, callPath: string, parent?: string) => ({
+    ...tool,
+    name,
+    callPath,
+    requiresAction: false,
+    state: ActivityInvocationState.ENDED,
+    outcome: ActivityInvocationOutcome.UPSTREAM_OUTCOME,
+    toolKind: callPath.startsWith('coral.private.')
+      ? ActivityToolKind.PRIVATE
+      : ActivityToolKind.PROVIDER,
+    parent: parent
+      ? {
+          invocation: parent,
+          callPath: parent === nested.outer ? 'coral.private.outer' : 'coral.private.inner',
+          toolKind: ActivityToolKind.PRIVATE,
+          sharedToolRevision: 0n,
+        }
+      : undefined,
+  })
+  const calls = {
+    [nested.outer]: call(nested.outer, 'coral.private.outer'),
+    [nested.inner]: call(nested.inner, 'coral.private.inner', nested.outer),
+    [nested.leaf]: call(nested.leaf, 'coral.providers.mail.send', nested.inner),
+  }
+  const inside = (parent?: string) =>
+    Object.values(calls).filter((value) => value.parent?.invocation === parent)
+  return {
+    activity: {
+      browseRunEntries: (input) => {
+        const level = input.level
+        const rows =
+          level?.case === 'parent'
+            ? inside(level.value)
+            : level?.case === 'topLevel'
+              ? inside(undefined)
+              : Object.values(calls)
+        return {
+          run: execution,
+          entries: rows.map((value) => ({ record: { case: 'invocation' as const, value } })),
+          total: BigInt(rows.length),
+          offset: 0n,
+          nextAfter: 0n,
+          hasMore: false,
+        }
+      },
+      inspectInvocation: (input) => ({
+        invocation: calls[input.name] ?? refuse('tool unavailable', Code.NotFound),
+        argumentsJson: '{}',
+        requests: [],
+      }),
+    },
+  }
+}
+/** Each window `loadActivity` read, by the record that holds it, with its anchor. */
+function windowsRead(calls: { method: string; input: unknown }[]) {
+  return calls.flatMap(({ method, input }) => {
+    if (method !== 'entries') return []
+    const { level, anchor } = input as {
+      level?: { case?: string; value?: unknown }
+      anchor: string
+    }
+    return [[level?.case === 'parent' ? level.value : 'run', anchor]]
+  })
+}
+
+describe('tool calls inside tool calls', () => {
+  // Catches: a Run that lists the calls a tool's body made beside the program's own, or an
+  // expanded call that lists none, or another call's.
+  it('lists each call inside the tool call whose body made it', async () => {
+    const { api, calls } = coral(list(), taskDetail(), nestedCalls())
+    // Listed inner first: a call loads once the call that holds it has.
+    const page = await loadActivity(
+      request({ expand: [task, run, nested.inner, nested.outer], tree: '1' }),
+      api,
+      { scope },
+    )
+    const names = (holder: string) => page.branches[holder]?.rows.map((row) => row.name)
+    expect(names(run)).toEqual([nested.outer])
+    expect(names(nested.outer)).toEqual([nested.inner])
+    expect(names(nested.inner)).toEqual([nested.leaf])
+    expect(windowsRead(calls).map(([holder]) => holder)).toEqual([
+      'run',
+      nested.outer,
+      nested.inner,
+    ])
+  })
+  // Catches: a collapsed tool call that still reads the calls inside it.
+  it('reads nothing inside a tool call you have not expanded', async () => {
+    const { api, calls } = coral(list(), taskDetail(), nestedCalls())
+    const page = await loadActivity(request({ expand: [task, run], tree: '1' }), api, { scope })
+    expect(page.branches[nested.outer]).toBeUndefined()
+    expect(windowsRead(calls).map(([holder]) => holder)).toEqual(['run'])
+  })
+  // Catches: a link to a nested call that opens its Run but not the calls that hold it, so the
+  // call it names does not show.
+  it('opens every tool call that holds a linked call, each at the call inside it', async () => {
+    const { api, calls } = coral(list(), taskDetail(), nestedCalls(), runDetail())
+    const page = await loadActivity(request({ record: nested.leaf }), api, { scope })
+    expect(page.expanded).toEqual(expect.arrayContaining([run, nested.outer, nested.inner]))
+    expect(windowsRead(calls)).toEqual([
+      ['run', nested.outer],
+      [nested.outer, nested.inner],
+      [nested.inner, nested.leaf],
+    ])
+    expect(page.branches[nested.inner]?.rows.map((row) => row.name)).toEqual([nested.leaf])
+  })
+})
+
 describe('hierarchical activity through the private server interface', () => {
   it('selects and loads the exact tool approval once, but never chooses another action during observation', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
@@ -1910,7 +2025,7 @@ describe('hierarchical activity through the private server interface', () => {
   it.each([
     { record: 'bad' },
     { anchor: invocation },
-    { expand: invocation },
+    { expand: `${run}/events/3` },
     { expand: [task, run], [`cursor.${run}`]: '-1' },
     { expand: [task, run], [`cursor.${run}`]: '18446744073709551616' },
     { expand: Array.from({ length: 21 }, (_, i) => `${workspace}/tasks/${i}`) },

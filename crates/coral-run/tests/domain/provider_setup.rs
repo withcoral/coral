@@ -235,6 +235,7 @@ impl AdminScope {
                 &self.workspace_id,
                 run,
                 &crate::RunEntryWindow::Start,
+                &crate::RunEntryLevel::Every,
                 100,
                 None,
             )

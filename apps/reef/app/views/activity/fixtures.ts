@@ -161,6 +161,7 @@ export function invocationRow(
     tool: 'send',
     callPath: 'mail.send',
     outcome: 'upstream_outcome',
+    toolKind: 'provider',
     dispatchedAt: at,
     waitingNanos: '0',
     ...overrides,

@@ -704,6 +704,7 @@ async fn run_real_forecast(
             &tool.workspace_id,
             accepted.run_id(),
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )

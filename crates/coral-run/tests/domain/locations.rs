@@ -136,6 +136,7 @@ async fn read_locations(
             &tool.workspace_id,
             run_id,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )

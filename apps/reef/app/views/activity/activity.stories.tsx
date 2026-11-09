@@ -16,6 +16,7 @@ import type {
   ActivityPage,
   ActivityRow,
   ParentInvocation,
+  ToolKind,
   DiscoveryContext,
   InvocationDetail,
   RunDetail,
@@ -186,6 +187,7 @@ const call: ActivityRow & { kind: 'invocation' } = {
   requiresAction: true,
   dispatchedAt: null,
   waitingNanos: '221000000000',
+  toolKind: 'provider',
   sourceLocation: programAt('coral.providers.mail.send', program),
 }
 const emission: ActivityRow = {
@@ -608,9 +610,8 @@ export const ProviderTools: Story = {
     await expect(within(table).getAllByRole('img', { name: 'tool' })).toHaveLength(1)
   },
 }
-/** A call a tool's body made sits one level under that call while it follows it, and always
- * names it. A call that another call parts from its caller sits at the top. A shared tool's
- * call names the revision that ran. */
+/** A private or shared tool's call holds the calls its body made, and opens and closes like a
+ * Run. A provider tool's call holds none. */
 const remind: ParentInvocation = {
   invocation: `${workspace}/invocations/remind`,
   callPath: 'coral.private.billing.remind',
@@ -625,6 +626,7 @@ const ownerLookup: ParentInvocation = {
 const nestedCall = (
   name: string,
   callPath: string,
+  toolKind: ToolKind,
   parent?: ParentInvocation,
 ): ActivityRow & { kind: 'invocation' } => ({
   ...call,
@@ -633,28 +635,31 @@ const nestedCall = (
   outcome: 'upstream_outcome',
   requiresAction: false,
   callPath,
+  toolKind,
   parent,
   // A list layout only; nothing opens it beside a program.
   sourceLocation: undefined,
 })
+const holding = (rows: ActivityRow[]) => ({ rows, next: '', unavailable: false })
 export const NestedCalls: Story = {
   args: {
     page: {
       ...StatusMarkers.args!.page!,
+      expanded: [...StatusMarkers.args!.page!.expanded, remind.invocation, ownerLookup.invocation],
       branches: {
         ...StatusMarkers.args!.page!.branches,
-        [run]: {
-          rows: [
-            nestedCall('remind', remind.callPath),
-            nestedCall('send', 'coral.providers.mail.send', remind),
-            nestedCall('owner', ownerLookup.callPath, remind),
-            nestedCall('lookup', 'coral.providers.crm.getOwner', ownerLookup),
-            nestedCall('issues', 'coral.providers.linear.listIssues'),
-            nestedCall('archive', 'coral.providers.mail.archive', remind),
-          ],
-          next: '',
-          unavailable: false,
-        },
+        [run]: holding([
+          nestedCall('remind', remind.callPath, 'private'),
+          nestedCall('issues', 'coral.providers.linear.listIssues', 'provider'),
+          nestedCall('draft', 'coral.private.billing.draft', 'private'),
+        ]),
+        [remind.invocation]: holding([
+          nestedCall('send', 'coral.providers.mail.send', 'provider', remind),
+          nestedCall('owner', ownerLookup.callPath, 'shared', remind),
+        ]),
+        [ownerLookup.invocation]: holding([
+          nestedCall('lookup', 'coral.providers.crm.getOwner', 'provider', ownerLookup),
+        ]),
       },
     },
   },
@@ -664,16 +669,16 @@ export const NestedCalls: Story = {
       within(table)
         .getAllByRole('row')
         .find((candidate) => within(candidate).queryByRole('link', { name: path }))!
-    // Each nested call names the call that made it; the program's own calls name none.
-    for (const [path, caller] of [
-      ['coral.providers.mail.send', 'Called from coral.private.billing.remind'],
-      [ownerLookup.callPath, 'Called from coral.private.billing.remind'],
-      ['coral.providers.crm.getOwner', 'Called from coral.shared.crm.owner, revision 4'],
-      ['coral.providers.mail.archive', 'Called from coral.private.billing.remind'],
-    ])
-      await expect(row(path)).toHaveTextContent(caller)
-    for (const path of [remind.callPath, 'coral.providers.linear.listIssues'])
-      await expect(row(path)).not.toHaveTextContent('Called from')
+    // An open tool call can close; a closed one can open; a provider tool's call holds none.
+    for (const path of [remind.callPath, ownerLookup.callPath])
+      await expect(within(row(path)).getByRole('button', { name: 'Collapse record' })).toBeVisible()
+    await expect(
+      within(row('coral.private.billing.draft')).getByRole('button', { name: 'Expand record' }),
+    ).toBeVisible()
+    await expect(within(row('coral.providers.linear.listIssues')).queryByRole('button')).toBeNull()
+    // The calls inside the open ones show.
+    for (const path of ['coral.providers.mail.send', 'coral.providers.crm.getOwner'])
+      await expect(within(table).getByRole('link', { name: path })).toBeVisible()
   },
 }
 export const Collapsed: Story = {
@@ -1283,6 +1288,7 @@ export const ExactNativeInteger: Story = {
           endedAt: at,
           dispatchedAt: at,
           waitingNanos: '0',
+          toolKind: 'provider',
           requiresAction: false,
         },
         requests: [],
@@ -1330,6 +1336,7 @@ export const Indeterminate: Story = {
           outcome: 'indeterminate',
           dispatchedAt: at,
           waitingNanos: '0',
+          toolKind: 'provider',
           requiresAction: false,
         },
         result: { kind: 'indeterminate' },
@@ -1885,6 +1892,7 @@ export const InvocationWithRunEvidence: Story = {
           endedAt: at,
           dispatchedAt: at,
           waitingNanos: '0',
+          toolKind: 'provider',
           requiresAction: false,
         },
         requests: [],

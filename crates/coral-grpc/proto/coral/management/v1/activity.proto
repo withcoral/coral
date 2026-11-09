@@ -1060,6 +1060,16 @@ message BrowseRunEntriesRequest {
   string anchor = 5;
   // Return the rows around a scroll position. Cannot be combined with after or anchor.
   ActivityViewport viewport = 6;
+  // Which children to list. Unset lists every child: each Event and every Tool call,
+  // whichever call made it. total, offset and positions count the listed children only.
+  oneof level {
+    // The Run's Events and the Tool calls no tool's body made: the Program's own, and
+    // those its modules' top-level code made.
+    ActivityEmpty top_level = 7;
+    // workspaces/{workspace}/invocations/{invocation}: only the Tool calls this call's
+    // body made. A call of another Run is not found.
+    string parent = 8;
+  }
 }
 // Summary of one Run Event. Contains no output or log text.
 message ActivityEventSummary {

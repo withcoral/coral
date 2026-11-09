@@ -81,6 +81,7 @@ function tool(
     requiresAction: false,
     dispatchedAt: at(position),
     waitingNanos: '0',
+    toolKind: 'provider',
     position,
     sourceLocation,
   }

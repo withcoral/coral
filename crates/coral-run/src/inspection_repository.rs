@@ -1,7 +1,7 @@
 use crate::{Error, InvocationDetail, InvocationId, RequiredActionRequest, RunId, SourceSnapshot};
 use coral_db::{Transaction, column};
 use coral_workspace::WorkspaceId;
-use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
+use sea_query::{Alias, Expr, ExprTrait as _, Order, Query, SimpleExpr};
 
 pub(crate) async fn approval_labels(
     tx: &mut Transaction<'_>,
@@ -331,11 +331,54 @@ pub(crate) struct EntryPage {
     pub anchor_unavailable: bool,
     pub after: u64,
 }
+/// Whether `invocation` is a call of `run`.
+pub(crate) async fn invocation_in_run(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    invocation: &InvocationId,
+) -> Result<bool, Error> {
+    let mut query = scoped("tool_invocations", workspace, "run_id", run.to_string());
+    query
+        .expr(Expr::val(1))
+        .and_where(Expr::col(Alias::new("id")).eq(invocation.to_string()));
+    Ok(tx.fetch_optional::<(i32,)>(query).await?.is_some())
+}
+/// Restricts `query`, over `run`'s Events, to the records `level` lists. A
+/// Tool call is listed by its `invocation.started` Event.
+fn restrict_to_level(
+    query: &mut sea_query::SelectStatement,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    level: &crate::RunEntryLevel,
+) {
+    let calls = |parent: SimpleExpr| {
+        let mut calls = scoped("tool_invocations", workspace, "run_id", run.to_string());
+        calls.column(Alias::new("id")).and_where(parent);
+        calls
+    };
+    let parent = || Expr::col(Alias::new("parent_invocation_id"));
+    let invocation = || Expr::col(Alias::new("invocation_id"));
+    match level {
+        crate::RunEntryLevel::Every => {}
+        crate::RunEntryLevel::Top => {
+            query.and_where(
+                invocation()
+                    .is_null()
+                    .or(invocation().not_in_subquery(calls(parent().is_not_null()))),
+            );
+        }
+        crate::RunEntryLevel::Within(id) => {
+            query.and_where(invocation().in_subquery(calls(parent().eq(id.to_string()))));
+        }
+    }
+}
 pub(crate) async fn entry_summaries(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     run: &RunId,
     window: &crate::RunEntryWindow,
+    level: &crate::RunEntryLevel,
     limit: u16,
 ) -> Result<EntryPage, Error> {
     use crate::RunEntryWindow as W;
@@ -375,6 +418,7 @@ pub(crate) async fn entry_summaries(
                 .or(Expr::val(include_anchor)
                     .and(Expr::col(Alias::new("sequence")).eq(after.saturating_add(1)))),
         );
+    restrict_to_level(&mut query, workspace, run, level);
     let mut count = query.clone();
     count
         .clear_selects()

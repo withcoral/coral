@@ -89,6 +89,9 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
   tool: string
   callPath: string
   outcome: InvocationOutcome
+  /** Which kind of tool the call called. A private or shared tool's call holds the calls its
+   * body made. */
+  toolKind: ToolKind
   dispatchedAt: string | null
   waitingNanos: string
   /** Where the author's code made this call; absent when Coral stored none. */
@@ -368,6 +371,9 @@ export interface LiveAction {
   run: string
   record: string
   request: string
+  /** The tool calls whose bodies made `record`, outermost first. Absent for a call the
+   * program made. */
+  calls?: string[]
 }
 
 export type RunRow = Extract<ActivityRow, { kind: 'run' }>

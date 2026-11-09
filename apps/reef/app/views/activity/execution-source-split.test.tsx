@@ -86,6 +86,7 @@ const invocationRow: Extract<ActivityRow, { kind: 'invocation' }> = {
   requiresAction: false,
   dispatchedAt: run.startedAt,
   waitingNanos: '0',
+  toolKind: 'provider',
 }
 
 function markup(props: Partial<React.ComponentProps<typeof ExecutionSourceSplit>> = {}) {

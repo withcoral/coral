@@ -67,6 +67,13 @@ export const windowAt = (parent: string, offset: number) => ({
 export function revealHref(row: ActivityRow, options: { request?: string } = {}) {
   const task = row.kind === 'task' ? row.name : 'task' in row ? (row.task ?? '') : ''
   const run = row.kind === 'run' ? row.name : 'run' in row ? row.run : ''
+  const path = row.agent ? `/${row.agent}` : `/${row.workspace}/activity`
+  // Only Coral knows every tool call that holds a nested call, so the page opens them.
+  if (row.kind === 'invocation' && row.parent) {
+    const next = new URLSearchParams({ anchor: task || run, record: row.name })
+    if (options.request) next.set('request', options.request)
+    return `${path}?${next}`
+  }
   const next = new URLSearchParams({
     anchor: task || run || row.name,
     record: row.name,
@@ -75,7 +82,6 @@ export function revealHref(row: ActivityRow, options: { request?: string } = {})
   for (const name of [task, run]) if (name) next.append('expand', name)
   if (task && task !== row.name) next.set(`anchor.${task}`, run || row.name)
   if (run && run !== row.name) next.set(`anchor.${run}`, row.name)
-  const path = row.agent ? `/${row.agent}` : `/${row.workspace}/activity`
   if (options.request) next.set('request', options.request)
   return `${path}?${next}`
 }
@@ -423,7 +429,8 @@ function latestTarget(page: ActivityPage, now: number, actionable: boolean): Liv
   const next = actionable ? page.liveLatest?.action : undefined
   if (next && !runEnded(page, next.action.run)) {
     const { task, action } = next
-    return { kind: 'run', run: action.run, chain: task ? [task, action.run] : [action.run], action }
+    const chain = [...(task ? [task] : []), action.run, ...(action.calls ?? [])]
+    return { kind: 'run', run: action.run, chain, action }
   }
   // Of the newest Run that runs in each, the one submitted last. At an equal time, the
   // earlier in the list. The loader names those of records past the loaded list.
@@ -633,7 +640,9 @@ export function liveStep(
     ? [page.liveAction, targeted].find((item) => item?.run === run)
     : undefined
   if (action) {
-    const row = page.branches[run]?.rows.find((item) => item.name === action.record)
+    // The record sits in the window of the call whose body made it, or of the Run.
+    const holder = action.calls?.at(-1) ?? run
+    const row = page.branches[holder]?.rows.find((item) => item.name === action.record)
     // A live update ended the wait first. The next read names the next action, if any.
     if (row?.kind === 'invocation' && !row.requiresAction) return { kind: 'wait' }
     return { kind: 'select', record: action.record, request: action.request }
@@ -650,6 +659,17 @@ export function liveStep(
   )
   if (!newest || newest.index + 1 < total) return { kind: 'load', total }
   return { kind: 'select', record: newest.row.name }
+}
+
+/** A record that holds other records: a Task, a Run, or a call of a tool whose body Coral
+ * runs, which holds the calls that body made. */
+export type ExpandableRow = Extract<ActivityRow, { kind: 'task' | 'run' | 'invocation' }>
+export function expandable(row: ActivityRow): row is ExpandableRow {
+  return (
+    row.kind === 'task' ||
+    row.kind === 'run' ||
+    (row.kind === 'invocation' && (row.toolKind === 'private' || row.toolKind === 'shared'))
+  )
 }
 
 /** Where ↑ and ↓ rest: a record the table shows, with its enclosing Tasks and Runs. */
@@ -675,11 +695,13 @@ export const stopPosition = (stop: RecordStop): StopPosition => ({
   parents: stop.parents,
 })
 
-/** The Tasks and Runs that enclose a record, nearest first. */
+/** The records that enclose a record, nearest first: the tool call whose body made it, if
+ * any, then its Run and Task. */
 export function recordParents(row: ActivityRow): string[] {
+  const call = row.kind === 'invocation' ? (row.parent?.invocation ?? '') : ''
   const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
   const task = row.kind === 'task' ? '' : (row.task ?? '')
-  return [run, task].filter(Boolean)
+  return [call, run, task].filter(Boolean)
 }
 
 /**
@@ -690,8 +712,7 @@ export function activityStops(page: ActivityPage, roots: ActivityRow[]): Activit
   const stops: ActivityStop[] = []
   const visit = (rows: ActivityRow[], parents: string[]) => {
     for (const row of rows) {
-      const expandable = row.kind === 'task' || row.kind === 'run'
-      const expanded = expandable && page.expanded.includes(row.name)
+      const expanded = expandable(row) && page.expanded.includes(row.name)
       stops.push({ kind: 'record', row, parents, expanded })
       if (!expanded) continue
       const branch = page.branches[row.name]

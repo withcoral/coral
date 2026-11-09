@@ -6933,6 +6933,26 @@ pub struct BrowseRunEntriesRequest {
     /// Return the rows around a scroll position. Cannot be combined with after or anchor.
     #[prost(message, optional, tag = "6")]
     pub viewport: ::core::option::Option<ActivityViewport>,
+    /// Which children to list. Unset lists every child: each Event and every Tool call,
+    /// whichever call made it. total, offset and positions count the listed children only.
+    #[prost(oneof = "browse_run_entries_request::Level", tags = "7, 8")]
+    pub level: ::core::option::Option<browse_run_entries_request::Level>,
+}
+/// Nested message and enum types in `BrowseRunEntriesRequest`.
+pub mod browse_run_entries_request {
+    /// Which children to list. Unset lists every child: each Event and every Tool call,
+    /// whichever call made it. total, offset and positions count the listed children only.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Level {
+        /// The Run's Events and the Tool calls no tool's body made: the Program's own, and
+        /// those its modules' top-level code made.
+        #[prost(message, tag = "7")]
+        TopLevel(super::ActivityEmpty),
+        /// workspaces/{workspace}/invocations/{invocation}: only the Tool calls this call's
+        /// body made. A call of another Run is not found.
+        #[prost(string, tag = "8")]
+        Parent(::prost::alloc::string::String),
+    }
 }
 /// Summary of one Run Event. Contains no output or log text.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

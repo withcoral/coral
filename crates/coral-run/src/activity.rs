@@ -41,6 +41,18 @@ pub enum RunEntryWindow {
         preceding: u16,
     },
 }
+/// Which of a Run's records a window lists.
+#[derive(Clone, Debug, Default)]
+pub enum RunEntryLevel {
+    /// Every record: each Event and every Tool call, whichever call made it.
+    #[default]
+    Every,
+    /// The Run's Events and the Tool calls that no tool's body made: the
+    /// Program's own, and those its modules' top-level code made.
+    Top,
+    /// Only the Tool calls that this call's body made.
+    Within(crate::InvocationId),
+}
 /// One child row; Invocation end Events do not duplicate Tool rows.
 pub enum RunEntry {
     /// Current Tool state, without arguments or result.
@@ -80,19 +92,24 @@ impl RunModule {
     /// Lists source/arguments/output-free execution children.
     /// # Errors
     /// Conceals inaccessible Runs and rejects invalid bounds.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a child read names its Run, window, level, page size and list scope"
+    )]
     pub async fn activity_entries(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace: &WorkspaceId,
         id: &RunId,
         window: &RunEntryWindow,
+        level: &RunEntryLevel,
         limit: u16,
         selection: Option<&coral_workspace::HistoryScope>,
     ) -> Result<RunEntries, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let page = self
             .activity_entries_in_transaction(
-                &mut tx, actor, workspace, id, window, limit, selection,
+                &mut tx, actor, workspace, id, window, level, limit, selection,
             )
             .await?;
         tx.commit().await?;
@@ -112,6 +129,7 @@ impl RunModule {
         workspace: &WorkspaceId,
         id: &RunId,
         window: &RunEntryWindow,
+        level: &RunEntryLevel,
         limit: u16,
         selection: Option<&coral_workspace::HistoryScope>,
     ) -> Result<RunEntries, Error> {
@@ -148,8 +166,15 @@ impl RunModule {
             now,
         )
         .await?;
+        // A call of another Run names no level of this one.
+        if let RunEntryLevel::Within(parent) = level
+            && !crate::inspection_repository::invocation_in_run(tx, workspace, id, parent).await?
+        {
+            return Err(Error::RunNotFound);
+        }
         let page =
-            crate::inspection_repository::entry_summaries(tx, workspace, id, window, limit).await?;
+            crate::inspection_repository::entry_summaries(tx, workspace, id, window, level, limit)
+                .await?;
         let has_more = page.rows.len() > usize::from(limit);
         let mut entries = Vec::new();
         let mut next_after = page.after;

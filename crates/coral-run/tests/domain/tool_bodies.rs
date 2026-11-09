@@ -638,6 +638,113 @@ async fn an_invocation_summary_names_its_tool_kind_and_the_call_that_made_it() {
     assert_eq!(summaries, expected);
 }
 
+// Catches: a level of a Run's records that lists a call under the wrong
+// call, drops one, counts the calls of another level, or reads a call of
+// another Run; and the full list losing the nested calls that every scan of
+// a Run reads.
+#[tokio::test]
+async fn each_level_of_a_runs_records_lists_the_calls_made_at_it() {
+    let scope = BodyScope::new("user:tool-bodies-levels").await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope
+        .save(
+            "weather.inner",
+            "async () => (await coral.providers.weather.getForecast()).data",
+        )
+        .await;
+    scope
+        .save(
+            "weather.outer",
+            "async () => { await coral.private.weather.inner(); return (await coral.providers.weather.getForecast()).data; }",
+        )
+        .await;
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission(
+                "await coral.private.weather.outer(); console.log('done'); return (await coral.providers.weather.getForecast()).data;",
+            ),
+        )
+        .await;
+    assert_eq!(scope.terminal(&run).await.state(), RunState::Succeeded);
+    let rows = scope.rows(&run).await;
+    let id_of = |path: &str| {
+        rows.iter()
+            .find(|row| row.call_path == path)
+            .expect("the call")
+            .id
+            .clone()
+    };
+    let (outer, inner) = (
+        id_of("coral.private.weather.outer"),
+        id_of("coral.private.weather.inner"),
+    );
+    let listed = async |run: &crate::RunId, level: crate::RunEntryLevel| {
+        let page = scope
+            .fixture
+            .runs
+            .activity_entries(
+                &scope.tool.principal,
+                &scope.tool.workspace_id,
+                run,
+                &crate::RunEntryWindow::Start,
+                &level,
+                100,
+                None,
+            )
+            .await?;
+        let entries: Vec<_> = page
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                crate::RunEntry::Invocation(call) => call.call_path.clone(),
+                crate::RunEntry::Event { kind, .. } => kind.clone(),
+            })
+            .collect();
+        assert_eq!(
+            page.total,
+            i64::try_from(entries.len()).unwrap(),
+            "{entries:?}"
+        );
+        Ok::<_, Error>(entries)
+    };
+    let level = async |level| listed(&run, level).await;
+
+    assert_eq!(
+        level(crate::RunEntryLevel::Top).await.unwrap(),
+        ["coral.private.weather.outer", "program.logged", WEATHER]
+    );
+    assert_eq!(
+        level(crate::RunEntryLevel::Within(outer.clone()))
+            .await
+            .unwrap(),
+        ["coral.private.weather.inner", WEATHER]
+    );
+    assert_eq!(
+        level(crate::RunEntryLevel::Within(inner)).await.unwrap(),
+        [WEATHER]
+    );
+    assert_eq!(
+        level(crate::RunEntryLevel::Every).await.unwrap(),
+        [
+            "coral.private.weather.outer",
+            "coral.private.weather.inner",
+            WEATHER,
+            WEATHER,
+            "program.logged",
+            WEATHER,
+        ]
+    );
+
+    // A call of another Run names no level of this one.
+    let other = scope
+        .start(&scope.fixture.runs, submission("return 1;"))
+        .await;
+    assert_eq!(scope.terminal(&other).await.state(), RunState::Succeeded);
+    let page = listed(&other, crate::RunEntryLevel::Within(outer)).await;
+    assert!(matches!(page, Err(Error::RunNotFound)), "{page:?}");
+}
+
 // Catches: a parent link that blocks deleting a retained Run, so that its
 // nested Invocations outlive it or the deletion fails.
 #[tokio::test]

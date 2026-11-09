@@ -1324,6 +1324,7 @@ pub(crate) async fn assert_run_not_found(
             workspace,
             run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             10,
             None,
         )
@@ -1399,6 +1400,7 @@ pub(crate) async fn run_history_text(
             workspace,
             run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )

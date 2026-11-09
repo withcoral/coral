@@ -31,6 +31,8 @@ import {
 import {
   activityStops,
   childWindow,
+  expandable,
+  type ExpandableRow,
   liveRun,
   liveStep,
   liveTarget,
@@ -61,8 +63,6 @@ import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { dayLabel, UtcTime } from './instant'
 import { CallTool, ProviderMarksContext, type ProviderMark } from './call-tool'
-import { CalledFrom } from './called-from'
-import { callDepths } from './nesting'
 import { toolOwner } from '@/lib/call-root'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
@@ -186,7 +186,9 @@ function rowDuration(row: ActivityRow) {
   const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
 }
-function emptyBranchMessage(row: Extract<ActivityRow, { kind: 'task' | 'run' }>) {
+function emptyBranchMessage(row: ExpandableRow) {
+  if (row.kind === 'invocation')
+    return row.state === 'ended' ? 'This tool made no calls.' : 'This tool has not made a call yet.'
   if (row.kind === 'task')
     return row.endedAt ? 'This task made no calls.' : 'This task has not made a call yet.'
   // Reef cannot tell whether a Run in an unknown state has ended.
@@ -331,7 +333,7 @@ const RecordRow = memo(function RecordRow({
 }) {
   const actions = useContext(RowActionsContext)
   const providers = useContext(ProviderMarksContext)
-  const expandable = !scope.glimpse && (row.kind === 'task' || row.kind === 'run')
+  const opens = !scope.glimpse && expandable(row)
   const branch = scope.glimpse ? undefined : branches?.[row.name]
   const expanded = scope.expanded.has(row.name)
   const recordRowProps = {
@@ -359,11 +361,8 @@ const RecordRow = memo(function RecordRow({
           icon={recordIcon(row, providers)}
           expanded={expanded}
           disabled={!expanded && scope.full}
-          onToggle={expandable ? () => actions.toggle(row.name) : undefined}
+          onToggle={opens ? () => actions.toggle(row.name) : undefined}
           marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
-          metadata={
-            row.kind === 'invocation' && row.parent ? <CalledFrom parent={row.parent} /> : undefined
-          }
         >
           <Link
             to={scope.href(row)}
@@ -387,12 +386,9 @@ const RecordRow = memo(function RecordRow({
       </Table.Cell>
     </>
   )
-  // Only a Task or Run expands; anything else stays a plain row.
-  if (!branch || (row.kind !== 'task' && row.kind !== 'run'))
-    return <Table.Row {...recordRowProps}>{cells}</Table.Row>
+  // Only a record that holds others expands; anything else stays a plain row.
+  if (!branch || !expandable(row)) return <Table.Row {...recordRowProps}>{cells}</Table.Row>
   const children = childWindow(branch)
-  // A call a tool's body made sits under the call that made it.
-  const nesting = callDepths(branch.rows)
   // The expanded record heads its children and pins while they scroll.
   return (
     <Table.Group label={rowLabel(row)} heading={cells} headingRow={recordRowProps}>
@@ -414,7 +410,7 @@ const RecordRow = memo(function RecordRow({
             content: (
               <RecordRow
                 row={child}
-                depth={depth + 1 + (nesting.get(child.name) ?? 0)}
+                depth={depth + 1}
                 branches={branches?.[child.name] ? branches : undefined}
                 scope={scope}
               />
@@ -435,7 +431,7 @@ function shownRecords(page: ActivityPage, roots: ActivityRow[], glimpse: boolean
     for (const row of rows) {
       shown.add(row.name)
       const branch = page.branches[row.name]
-      if (!glimpse && branch && (row.kind === 'task' || row.kind === 'run')) visit(branch.rows)
+      if (!glimpse && branch && expandable(row)) visit(branch.rows)
     }
   }
   visit(roots)
@@ -869,7 +865,7 @@ export function Activity({
       // The rail toggles only a Task or Run it shows itself, never a final value.
       if (!row || (owner === 'rail' && (!current.open || row.name !== current.selected)))
         return false
-      if (row.kind === 'task' || row.kind === 'run') {
+      if (expandable(row)) {
         if (!current.expanded.includes(row.name) && current.full) return false
         actions.toggle(row.name, true)
         return true

@@ -187,6 +187,7 @@ const invocationRow: Extract<ActivityRow, { kind: 'invocation' }> = {
   requiresAction: false,
   dispatchedAt: run.startedAt,
   waitingNanos: '0',
+  toolKind: 'provider',
 }
 const logRow: Extract<ActivityRow, { kind: 'output' }> = {
   kind: 'output',

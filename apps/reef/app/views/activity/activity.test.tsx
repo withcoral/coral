@@ -44,6 +44,7 @@ const invocation: ActivityRow & { kind: 'invocation' } = {
   outcome: 'upstream_outcome',
   dispatchedAt: startedAt,
   waitingNanos: '0',
+  toolKind: 'provider',
   provider: `${workspace}/providers/linear`,
   tool: 'listIssues',
   callPath: 'coral.providers.linear.listIssues',

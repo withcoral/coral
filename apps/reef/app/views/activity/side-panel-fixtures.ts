@@ -178,6 +178,7 @@ export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRo
     callPath,
     state: 'pending',
     outcome: 'unknown',
+    toolKind: 'provider',
     startedAt: at,
     endedAt: null,
     durationNanos: '221000000000',
