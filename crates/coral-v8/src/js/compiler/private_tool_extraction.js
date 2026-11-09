@@ -363,14 +363,17 @@ function programExtraction(sourceFile, program, authoredMappings, carrier) {
   };
 }
 
-function privateToolModuleExtraction(sourceFile, program, pathSegments, carrier) {
+// `root` is the member of `coral` that holds the module: 'private' or
+// 'shared'.
+function privateToolModuleExtraction(sourceFile, program, pathSegments, carrier, root) {
+  const kind = root === 'shared' ? 'Shared Tool' : 'Private Tool';
   return privateToolExtraction({
     sourceFile,
     program,
     container: sourceFile,
     authoredMappings: undefined,
-    sourceName: `Private Tool coral.private.${pathSegments.join('.')}`,
-    scope: 'this Private Tool',
+    sourceName: `${kind} coral.${root === 'shared' ? 'shared' : 'private'}.${pathSegments.join('.')}`,
+    scope: `this ${kind}`,
     carrier,
   });
 }

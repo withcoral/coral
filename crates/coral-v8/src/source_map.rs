@@ -7,6 +7,7 @@ const COMPILER_SOURCE_NAME: &str = "program.ts";
 const EMITTED_FILE_NAME: &str = "program.js";
 const PROGRAM_SOURCE_NAME: &str = "Program";
 const PRIVATE_TOOL_SOURCE_PREFIX: &str = "Private Tool coral.private.";
+const SHARED_TOOL_SOURCE_PREFIX: &str = "Shared Tool coral.shared.";
 // Keep one extra frame so the error representation can report truncation.
 const RUNTIME_STACK_MAX_FRAMES: usize = 17;
 
@@ -160,6 +161,10 @@ pub(crate) fn authored_location(
     )?;
     let source = if source == PROGRAM_SOURCE_NAME {
         crate::AuthoredSource::Program
+    } else if let Some(path) = source.strip_prefix(SHARED_TOOL_SOURCE_PREFIX) {
+        crate::AuthoredSource::SharedTool {
+            path: path.to_string(),
+        }
     } else {
         crate::AuthoredSource::PrivateTool {
             path: source.strip_prefix(PRIVATE_TOOL_SOURCE_PREFIX)?.to_string(),
@@ -229,6 +234,7 @@ fn validate_authored_source_name(source: &str) -> Result<(), Error> {
     let valid = source == PROGRAM_SOURCE_NAME
         || source
             .strip_prefix(PRIVATE_TOOL_SOURCE_PREFIX)
+            .or_else(|| source.strip_prefix(SHARED_TOOL_SOURCE_PREFIX))
             .is_some_and(|path| {
                 !path.is_empty()
                     && path.len() <= 256

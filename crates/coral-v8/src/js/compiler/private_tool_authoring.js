@@ -410,7 +410,7 @@ function typedDeclarationFailure(emitted, sourceFile, declarationMaxBytes) {
   return undefined;
 }
 
-function privateToolDeclarationResult(emitted, diagnostics, references) {
+function privateToolDeclarationResult(emitted, diagnostics, { references, sharedReferences }) {
   const { declarationText, blockingDiagnostics, analysis } = emitted;
   if (blockingDiagnostics.length > 0 || declarationText === undefined) {
     return {
@@ -420,6 +420,7 @@ function privateToolDeclarationResult(emitted, diagnostics, references) {
       blockingDiagnostics: blockingDiagnostics.map((diagnostic) => diagnosticPayload(diagnostic)),
       diagnostics,
       references,
+      sharedReferences,
     };
   }
   const unresolved = analysis.unresolvedDiagnostics;
@@ -435,6 +436,7 @@ function privateToolDeclarationResult(emitted, diagnostics, references) {
     blockingDiagnostics: unresolved.map((diagnostic) => diagnosticPayload(diagnostic)),
     diagnostics,
     references,
+    sharedReferences,
     notData: analysis.notData ?? null,
   };
 }
@@ -503,6 +505,7 @@ function preparePrivateTool(source, builtinTools, declarations, fileName, target
       blockingDiagnostics: [],
       diagnostics: checked.advisoryDiagnostics(),
       references: pathAnalysis.references,
+      sharedReferences: pathAnalysis.sharedReferences,
     };
   }
 
@@ -512,11 +515,7 @@ function preparePrivateTool(source, builtinTools, declarations, fileName, target
       ? undefined
       : typedDeclarationFailure(emitted, sourceFile, declarations.declarationMaxBytes);
   if (failure === undefined) {
-    return privateToolDeclarationResult(
-      emitted,
-      checked.advisoryDiagnostics(),
-      pathAnalysis.references,
-    );
+    return privateToolDeclarationResult(emitted, checked.advisoryDiagnostics(), pathAnalysis);
   }
   // Typing never fails a save. A typed declaration that cannot be saved is
   // emitted again untyped, as it was before callers supplied declarations,
@@ -525,6 +524,6 @@ function preparePrivateTool(source, builtinTools, declarations, fileName, target
   return privateToolDeclarationResult(
     emitPrivateToolDeclaration(untyped.program, fileName, compilerOptions),
     checked.advisoryDiagnostics(failure),
-    pathAnalysis.references,
+    pathAnalysis,
   );
 }

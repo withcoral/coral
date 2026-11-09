@@ -39,6 +39,64 @@ fn reference_paths(references: &[PrivateToolReference]) -> Vec<&str> {
     references.iter().map(PrivateToolReference::path).collect()
 }
 
+fn shared_source(path: &[&str], source: &str) -> LinkedPrivateToolSource {
+    LinkedPrivateToolSource::shared(
+        path.iter().map(|segment| (*segment).to_string()).collect(),
+        source.to_string(),
+    )
+}
+
+// Catches: `coral.shared` read as a Built-in Tool chain, a Shared Tool
+// reference lost or filed under `coral.private`, or a computed or aliased
+// Shared Tool path that admission cannot link.
+#[test]
+fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let named = compiler
+        .program_call_paths(
+            compilation_deadline(),
+            "let key = 'x'; await coral.providers.demo[key](); return [await coral.shared.mail.remind(1), await coral.private.lookup.one(), await coral.providers.demo.get()];",
+        )
+        .expect("analyze a Program that names both roots");
+    assert_eq!(reference_paths(named.shared_tools()), ["mail.remind"]);
+    assert_eq!(reference_paths(named.private_tools()), ["lookup.one"]);
+    assert_eq!(named.tools().called_paths(), ["coral.providers.demo.get"]);
+    assert_eq!(
+        named.tools().runtime_built_paths(),
+        ["coral.providers.demo"]
+    );
+    assert!(
+        named
+            .tools()
+            .call_paths()
+            .iter()
+            .all(|path| !path.starts_with("coral.shared")),
+        "{:?}",
+        named.tools().call_paths()
+    );
+
+    let module = compiler
+        .prepare_private_tool(
+            compilation_deadline(),
+            "export default async function remind(): Promise<number> { return coral.shared.mail.send(); }",
+        )
+        .expect("prepare a module that calls a Shared Tool");
+    assert_eq!(reference_paths(module.shared_references()), ["mail.send"]);
+    assert!(module.references().is_empty());
+
+    for source in [
+        "const key = 'remind'; return coral.shared.mail[key]();",
+        "const shared = coral.shared; return shared.mail.remind();",
+        "return globalThis.coral.shared.mail.remind();",
+        "const key = 'shared'; return coral[key].mail.remind();",
+    ] {
+        compiler
+            .program_call_paths(compilation_deadline(), source)
+            .expect_err("computed or aliased Shared Tool reference must be rejected");
+    }
+}
+
 #[test]
 fn typescript_program_executes_as_javascript_in_v8() {
     let compiler =
@@ -968,7 +1026,7 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
         outcome.final_value_json(),
         Some(
             "[\"function\",\"ToolError\",\
-             [\"ToolError\",\"addProvider\",\"emit\",\"listProviders\",\"private\",\"providers\"],\
+             [\"ToolError\",\"addProvider\",\"emit\",\"listProviders\",\"private\",\"providers\",\"shared\"],\
              null,\"undefined\",\"undefined\",\"TypeError\"]"
         )
     );
@@ -2370,6 +2428,20 @@ fn at(line: u32, column: u32) -> Option<AuthoredLocation> {
     clippy::unnecessary_wraps,
     reason = "table rows compare the optional location each host call receives"
 )]
+fn in_shared_tool(path: &str, line: u32, column: u32) -> Option<AuthoredLocation> {
+    Some(AuthoredLocation {
+        source: AuthoredSource::SharedTool {
+            path: path.to_string(),
+        },
+        line,
+        column,
+    })
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "table rows compare the optional location each host call receives"
+)]
 fn in_private_tool(path: &str, line: u32, column: u32) -> Option<AuthoredLocation> {
     Some(AuthoredLocation {
         source: AuthoredSource::PrivateTool {
@@ -2447,6 +2519,19 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ("log", in_private_tool("debug.fetch", 1, 9)),
                 ("perform", at(2, 27)),
                 ("invoke", in_private_tool("debug.fetch", 4, 33)),
+            ],
+        ),
+        // A call inside a Shared Tool names that Shared Tool's source, never
+        // the caller's.
+        (
+            "\nawait coral.shared.mail.remind(7);",
+            vec![shared_source(
+                &["mail", "remind"],
+                "export default async function remind(id: number) {\n    return coral.providers.demo.getItem({ id });\n}",
+            )],
+            vec![
+                ("perform", at(2, 25)),
+                ("invoke", in_shared_tool("mail.remind", 2, 33)),
             ],
         ),
         // Lines follow ECMAScript line terminators: CRLF counts once, and a lone

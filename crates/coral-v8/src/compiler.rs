@@ -546,6 +546,8 @@ struct PrivateToolOutput {
     blocking_diagnostics: Vec<CompilerDiagnostic>,
     diagnostics: Vec<CompilerDiagnostic>,
     references: Vec<PrivateToolReference>,
+    #[serde(default)]
+    shared_references: Vec<PrivateToolReference>,
     not_data: Option<String>,
 }
 
@@ -560,6 +562,8 @@ struct PrivateToolPathsOutput {
 #[serde(rename_all = "camelCase")]
 struct PrivateToolCallPathsOutput {
     references: Vec<PrivateToolReference>,
+    #[serde(default)]
+    shared_references: Vec<PrivateToolReference>,
     validation_error: Option<PrivateToolReferenceError>,
     tools: Option<ToolReferences>,
 }
@@ -686,6 +690,7 @@ impl CompilerIsolate {
             declaration_field_projection,
             output.diagnostics,
             output.references,
+            output.shared_references,
             output.not_data,
         ))
     }
@@ -714,6 +719,7 @@ impl CompilerIsolate {
             (Some(error), _) => Err(invalid_private_tool_reference(error)),
             (None, Some(tools)) => Ok(PrivateToolCallPaths {
                 private_tools: output.references,
+                shared_tools: output.shared_references,
                 tools,
             }),
             (None, None) => Err(Error::CompilerProtocol(

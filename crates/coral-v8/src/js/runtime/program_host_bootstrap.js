@@ -125,7 +125,7 @@
     }
   };
 
-  // One call to a Private Tool, which Coral performs by running `body()`,
+  // One call to a Private or Shared Tool, which Coral performs by running `body()`,
   // the linked module's default export, in this Program: one Invocation.
   // The call crosses to Coral and back, so its arguments and result are
   // copied as JSON, and it settles only once its completion is durable.
@@ -206,8 +206,9 @@
 
   // The Program host's own members. The compiled Program completes `coral`
   // before any authored code runs: it adds a member for each Built-in Tool
-  // it was compiled with, such as `coral.search`, and `private`, which holds
-  // the Private Tools it links, built with the call that performs each. Then
+  // it was compiled with, such as `coral.search`, and `private` and `shared`,
+  // which hold the Private and Shared Tools it links, built with the call
+  // that performs each. Then
   // no member can be added, so a misspelled one is undefined and throws
   // where the Program uses it.
   const coral = create(null);
@@ -238,8 +239,8 @@
     configurable: false,
   });
   Object.defineProperty(globalThis, '__coralCompleteRoot', {
-    value: (builtinTools, buildPrivateTools) => {
-      const privateTools = buildPrivateTools(
+    value: (builtinTools, buildLinkedTools) => {
+      const linked = buildLinkedTools(
         (callPath, body) =>
           (...args) =>
             performTool(callPath, body, args),
@@ -252,12 +253,14 @@
           configurable: false,
         });
       }
-      Object.defineProperty(coral, 'private', {
-        value: privateTools,
-        enumerable: true,
-        writable: false,
-        configurable: false,
-      });
+      for (const root of ['private', 'shared']) {
+        Object.defineProperty(coral, root, {
+          value: linked[root],
+          enumerable: true,
+          writable: false,
+          configurable: false,
+        });
+      }
       Object.preventExtensions(coral);
     },
     enumerable: false,

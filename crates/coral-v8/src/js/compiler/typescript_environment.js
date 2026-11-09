@@ -31,7 +31,7 @@ const DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE = 100002;
 // word. A namespace of types alone merges with it, so `coral.ToolError` also
 // names the error's type. Its members are exactly the Program host's: any
 // other member is an error where the source names it.
-function coralHostDeclaration({ builtins, providers, privateTools }) {
+function coralHostDeclaration({ builtins, providers, privateTools, sharedTools }) {
   return `
 declare namespace coral {
   /**
@@ -55,6 +55,7 @@ declare const coral: {
   ${builtins}
   readonly providers: ${providers};
   readonly private: ${privateTools};
+  readonly shared: ${sharedTools};
   readonly emit: (value: unknown) => Promise<void>;
   readonly ToolError: abstract new (...args: never) => coral.ToolError;
 };
@@ -187,6 +188,13 @@ function coralSurface(builtinTools, declarations) {
     declarations?.functions,
     privateToolCallable,
   );
+  // A Shared Tool call is a Tool Invocation too.
+  const sharedTools = typedRoot(
+    sources,
+    'coral.shared',
+    declarations?.sharedTools,
+    privateToolCallable,
+  );
   const builtins = builtinTools.map((key) => {
     const declared = tools?.children.get(key);
     return `readonly ${JSON.stringify(key)}: ${declared === undefined ? 'any' : renderCallableNode(declared, true)};`;
@@ -198,6 +206,7 @@ function coralSurface(builtinTools, declarations) {
         ? 'any'
         : renderCallableNode(tools.children.get('providers') ?? callableNode(), true),
     privateTools: privateTools === undefined ? 'any' : renderCallableNode(privateTools, false),
+    sharedTools: sharedTools === undefined ? 'any' : renderCallableNode(sharedTools, false),
   });
   // A member of `coral` that is no Built-in Tool is a TypeScript error
   // already, so it needs no Coral diagnostic too.

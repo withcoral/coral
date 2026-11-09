@@ -144,14 +144,18 @@ function privateToolRuntimeBody(source, target, extraEdits) {
 
 const COMPLETE_ROOT_GLOBAL = '__coralCompleteRoot';
 
+// The members of `coral` that hold linked Tools, and how a source names
+// each kind.
+const LINKED_ROOT_KINDS = Object.freeze({ private: 'Private Tool', shared: 'Shared Tool' });
+
 // Private source that runs before any authored code: it takes the host's
 // root completion and completes `coral` with a member for each Built-in Tool
-// in `builtinTools` and with `coral.private`, which it builds from the linked
-// Private Tools. The host makes each callable, outside this script, so the
-// innermost frame of this script at a call is the authored call site. A call
-// performs the Tool, whose body is the default export of its module once that
-// module has initialized. Module code then sets
-// `__coralPrivateToolDefaults[index]`.
+// in `builtinTools`, with `coral.private` and with `coral.shared`, which it
+// builds from the linked Private and Shared Tools. The host makes each
+// callable, outside this script, so the innermost frame of this script at a
+// call is the authored call site. A call performs the Tool, whose body is the
+// default export of its module once that module has initialized. Module code
+// then sets `__coralPrivateToolDefaults[index]`.
 function coralRootPrelude(builtinTools, privateTools) {
   if (
     !Array.isArray(builtinTools) ||
@@ -161,7 +165,12 @@ function coralRootPrelude(builtinTools, privateTools) {
   ) {
     throw new Error('Built-in Tools must be identifiers');
   }
-  const linkedPaths = JSON.stringify(privateTools.map((privateTool) => privateTool.pathSegments));
+  const linkedPaths = JSON.stringify(
+    privateTools.map((privateTool) => ({
+      root: privateTool.root,
+      path: privateTool.pathSegments,
+    })),
+  );
   return `    const __coralCompleteRoot = globalThis.${COMPLETE_ROOT_GLOBAL};
     Reflect.deleteProperty(globalThis, "${COMPLETE_ROOT_GLOBAL}");
     const __coralLinkedPaths = ${linkedPaths};
@@ -175,12 +184,13 @@ function coralRootPrelude(builtinTools, privateTools) {
       });
     }
     Object.preventExtensions(__coralPrivateToolDefaults);
-    const __coralBuildPrivateTools = (__coralPrivateTool) => {
+    const __coralBuildLinkedRoot = (__coralRoot, __coralPrivateTool) => {
       const __coralFunctionRoot = Object.create(null);
       const __coralFunctionNamespaces = [__coralFunctionRoot];
       for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
-        const __coralPath = __coralLinkedPaths[__coralIndex];
-        const __coralCallPath = "coral.private." + __coralPath.join(".");
+        if (__coralLinkedPaths[__coralIndex].root !== __coralRoot) continue;
+        const __coralPath = __coralLinkedPaths[__coralIndex].path;
+        const __coralCallPath = "coral." + __coralRoot + "." + __coralPath.join(".");
         let __coralFunctionParent = __coralFunctionRoot;
         for (const __coralSegment of __coralPath.slice(0, -1)) {
           if (!Object.hasOwn(__coralFunctionParent, __coralSegment)) {
@@ -218,17 +228,22 @@ function coralRootPrelude(builtinTools, privateTools) {
       }
       return __coralFunctionRoot;
     };
+    const __coralBuildLinkedTools = (__coralPrivateTool) => ({
+      private: __coralBuildLinkedRoot("private", __coralPrivateTool),
+      shared: __coralBuildLinkedRoot("shared", __coralPrivateTool),
+    });
     if (__coralCompleteRoot !== undefined) {
-      __coralCompleteRoot(${JSON.stringify(builtinTools)}, __coralBuildPrivateTools);
+      __coralCompleteRoot(${JSON.stringify(builtinTools)}, __coralBuildLinkedTools);
     } else {
       // An execution without the Program host calls no Tool, so its \`coral\`
-      // holds only the Private Tools it links, and calling one fails.
+      // holds only the Private and Shared Tools it links, and calling one fails.
+      const __coralLinked = __coralBuildLinkedTools((__coralCallPath) => () =>
+        Promise.reject(new TypeError(__coralCallPath + " is called without the Program host")),
+      );
       Object.defineProperty(globalThis, "coral", {
-        value: Object.freeze(Object.defineProperty(Object.create(null), "private", {
-          value: __coralBuildPrivateTools((__coralCallPath) => () =>
-            Promise.reject(new TypeError(__coralCallPath + " is called without the Program host")),
-          ),
-          enumerable: true,
+        value: Object.freeze(Object.defineProperties(Object.create(null), {
+          private: { value: __coralLinked.private, enumerable: true },
+          shared: { value: __coralLinked.shared, enumerable: true },
         })),
         enumerable: true,
       });
@@ -238,9 +253,10 @@ function coralRootPrelude(builtinTools, privateTools) {
 // `saves` names the private carrier and holds the edits that carry what the
 // Program body and each module save.
 function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
-  const pathKeys = new Set();
+  const pathKeys = { private: new Set(), shared: new Set() };
   for (const privateTool of privateTools) {
     if (
+      !Object.hasOwn(LINKED_ROOT_KINDS, privateTool.root) ||
       !Array.isArray(privateTool.pathSegments) ||
       privateTool.pathSegments.length === 0 ||
       privateTool.pathSegments.some((segment) => typeof segment !== 'string') ||
@@ -249,15 +265,17 @@ function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
       throw new Error('Private Tool closure contains an invalid source entry');
     }
     const key = privateTool.pathSegments.join('.');
-    if (pathKeys.has(key)) {
+    if (pathKeys[privateTool.root].has(key)) {
       throw new Error('Private Tool closure contains a duplicate path');
     }
-    pathKeys.add(key);
+    pathKeys[privateTool.root].add(key);
   }
-  for (const key of pathKeys) {
-    for (const other of pathKeys) {
-      if (key !== other && other.startsWith(`${key}.`)) {
-        throw new Error('Private Tool closure contains a callable namespace conflict');
+  for (const keys of Object.values(pathKeys)) {
+    for (const key of keys) {
+      for (const other of keys) {
+        if (key !== other && other.startsWith(`${key}.`)) {
+          throw new Error('Private Tool closure contains a callable namespace conflict');
+        }
       }
     }
   }
@@ -290,7 +308,7 @@ ${coralRootPrelude(builtinTools, privateTools)}
       authoredMappings.push({
         ...mapping,
         generatedLine: privateToolStart + mapping.generatedLine,
-        source: `Private Tool coral.private.${module.pathSegments.join('.')}`,
+        source: `${LINKED_ROOT_KINDS[module.root]} coral.${module.root}.${module.pathSegments.join('.')}`,
       });
     }
     append(`

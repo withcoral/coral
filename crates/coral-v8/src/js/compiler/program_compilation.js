@@ -118,7 +118,12 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
     if (!sourceFile) {
       throw new Error('Private Tool virtual source is missing');
     }
-    return { program: moduleProgram, sourceFile, pathSegments: privateTool.pathSegments };
+    return {
+      program: moduleProgram,
+      sourceFile,
+      pathSegments: privateTool.pathSegments,
+      root: privateTool.root,
+    };
   });
   let validationError = forbiddenCapabilityError(
     ordinaryProgram,
@@ -148,13 +153,14 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
     saveRefusal = extraction.refusal;
     saves.programEdits = extraction.edits ?? [];
     for (let index = 0; saveRefusal === undefined && index < modules.length; index += 1) {
-      const { sourceFile, program: moduleProgram, pathSegments } = modules[index];
+      const { sourceFile, program: moduleProgram, pathSegments, root } = modules[index];
       if (hasSyntaxErrors(sourceFile) || !Array.isArray(pathSegments)) continue;
       const moduleExtraction = privateToolModuleExtraction(
         sourceFile,
         moduleProgram,
         pathSegments,
         carrier,
+        root,
       );
       saveRefusal = moduleExtraction.refusal;
       saves.moduleEdits[index] = moduleExtraction.edits ?? [];

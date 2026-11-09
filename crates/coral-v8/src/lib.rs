@@ -302,6 +302,12 @@ pub enum AuthoredSource {
         /// Dotted path, such as `debug.fetch`.
         path: String,
     },
+    /// One Shared Tool linked into the package, by its path relative to
+    /// `coral.shared`.
+    SharedTool {
+        /// Dotted path, such as `mail.remind`.
+        path: String,
+    },
 }
 
 /// The innermost authored frame that called a Program host binding.
@@ -482,6 +488,7 @@ pub struct PrivateToolCompilation {
     declaration_field_projection: Result<Vec<PrivateToolDeclarationField>, String>,
     diagnostics: Vec<CompilerDiagnostic>,
     references: Vec<PrivateToolReference>,
+    shared_references: Vec<PrivateToolReference>,
     not_data: Option<String>,
 }
 
@@ -491,6 +498,7 @@ impl PrivateToolCompilation {
         declaration_field_projection: Result<Vec<PrivateToolDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
         references: Vec<PrivateToolReference>,
+        shared_references: Vec<PrivateToolReference>,
         not_data: Option<String>,
     ) -> Self {
         Self {
@@ -498,6 +506,7 @@ impl PrivateToolCompilation {
             declaration_field_projection,
             diagnostics,
             references,
+            shared_references,
             not_data,
         }
     }
@@ -538,6 +547,13 @@ impl PrivateToolCompilation {
     pub fn references(&self) -> &[PrivateToolReference] {
         &self.references
     }
+
+    /// Returns directly named runtime Shared Tool references, relative to
+    /// `coral.shared`, in path order.
+    #[must_use]
+    pub fn shared_references(&self) -> &[PrivateToolReference] {
+        &self.shared_references
+    }
 }
 
 /// One statically named runtime Private Tool reference.
@@ -569,19 +585,43 @@ impl PrivateToolReference {
     }
 }
 
-/// One exact Private Tool source supplied for linked compilation.
+/// The member of `coral` that holds one linked Tool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkedToolRoot {
+    /// `coral.private`: the caller's own Private Tools.
+    Private,
+    /// `coral.shared`: the Workspace's Shared Tools.
+    Shared,
+}
+
+/// One exact Private or Shared Tool source supplied for linked compilation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkedPrivateToolSource {
+    root: LinkedToolRoot,
     path_segments: Vec<String>,
     source: String,
 }
 
 impl LinkedPrivateToolSource {
-    /// Builds one validated-domain source input for the compiler Adapter.
+    /// Builds one validated-domain Private Tool source input for the
+    /// compiler Adapter.
     #[must_use]
     pub const fn new(path_segments: Vec<String>, source: String) -> Self {
         Self {
+            root: LinkedToolRoot::Private,
+            path_segments,
+            source,
+        }
+    }
+
+    /// Builds one validated-domain Shared Tool source input for the
+    /// compiler Adapter, at `path_segments` under `coral.shared`.
+    #[must_use]
+    pub const fn shared(path_segments: Vec<String>, source: String) -> Self {
+        Self {
+            root: LinkedToolRoot::Shared,
             path_segments,
             source,
         }
@@ -593,6 +633,7 @@ impl LinkedPrivateToolSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrivateToolCallPaths {
     private_tools: Vec<PrivateToolReference>,
+    shared_tools: Vec<PrivateToolReference>,
     tools: ToolReferences,
 }
 
@@ -601,6 +642,12 @@ impl PrivateToolCallPaths {
     #[must_use]
     pub fn private_tools(&self) -> &[PrivateToolReference] {
         &self.private_tools
+    }
+
+    /// Returns the directly named `coral.shared` paths.
+    #[must_use]
+    pub fn shared_tools(&self) -> &[PrivateToolReference] {
+        &self.shared_tools
     }
 
     /// Returns the literal Tool chains under `coral`.
@@ -628,6 +675,38 @@ impl ToolReferences {
         &self.call_paths
     }
 
+    /// Returns each Call Path a literal chain calls, such as
+    /// `coral.providers.github.repos.get`, once each, in path order.
+    #[must_use]
+    pub fn called_paths(&self) -> Vec<String> {
+        let mut called = self
+            .chains
+            .iter()
+            .filter(|chain| chain.called)
+            .map(|chain| format!("coral.{}", chain.segments.join(".")))
+            .collect::<Vec<_>>();
+        called.sort();
+        called.dedup();
+        called
+    }
+
+    /// Returns the literal start of each chain whose Tool path a computed
+    /// segment builds at runtime, such as `coral.providers.github` for
+    /// `coral.providers.github[name]()`, once each, in path order. The
+    /// Tools such a chain calls are known only when it runs.
+    #[must_use]
+    pub fn runtime_built_paths(&self) -> Vec<String> {
+        let mut built = self
+            .chains
+            .iter()
+            .filter(|chain| chain.computed)
+            .map(|chain| format!("coral.{}", chain.segments.join(".")))
+            .collect::<Vec<_>>();
+        built.sort();
+        built.dedup();
+        built
+    }
+
     fn chains_json(&self) -> Result<String, Error> {
         serde_json::to_string(&self.chains)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))
@@ -641,6 +720,9 @@ struct ToolChain {
     segments: Vec<String>,
     start: u64,
     called: bool,
+    /// Whether the chain was cut before a computed segment.
+    #[serde(default)]
+    computed: bool,
     /// The one-based authored line and column where it starts.
     line: u64,
     column: u64,
@@ -733,6 +815,7 @@ pub struct CoralDeclarations {
     declaration_max_bytes: usize,
     tools: Option<TypedTools>,
     functions: Option<Vec<CallableDeclaration>>,
+    shared_tools: Option<Vec<CallableDeclaration>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -750,6 +833,7 @@ impl CoralDeclarations {
             declaration_max_bytes,
             tools: None,
             functions: None,
+            shared_tools: None,
         }
     }
 
@@ -774,6 +858,14 @@ impl CoralDeclarations {
     #[must_use]
     pub fn with_private_tools(mut self, functions: Vec<CallableDeclaration>) -> Self {
         self.functions = Some(functions);
+        self
+    }
+
+    /// Types `coral.shared` from the current Shared Tool declarations,
+    /// each by its path relative to `coral.shared`.
+    #[must_use]
+    pub fn with_shared_tools(mut self, shared_tools: Vec<CallableDeclaration>) -> Self {
+        self.shared_tools = Some(shared_tools);
         self
     }
 }

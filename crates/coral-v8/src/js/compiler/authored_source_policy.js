@@ -336,24 +336,34 @@ function coralAccess(node, checker, sourceFile) {
     if (complete[0] === 'coral') {
       return { root: 'global', segments: complete.slice(1) };
     }
-    if (complete[0] === undefined && complete.includes('private')) {
+    if (complete[0] === undefined && complete.some((segment) => LINKED_TOOL_ROOTS.has(segment))) {
       return { root: 'computed_global', segments: complete };
     }
   }
   return undefined;
 }
 
-function propertyPath(node, checker, sourceFile) {
+// The members of `coral` whose Tools a Program links from their source:
+// `coral.private`, the caller's own Private Tools, and `coral.shared`, the
+// Workspace's Shared Tools.
+const LINKED_TOOL_ROOTS = new Set(['private', 'shared']);
+
+// The linked root and Tool path one literal access names, such as
+// `{ root: 'shared', path: ['mail', 'remind'] }` for `coral.shared.mail.remind`.
+function linkedToolPath(node, checker, sourceFile) {
   const access = coralAccess(node, checker, sourceFile);
   if (
     access?.root === 'lexical' &&
-    access.segments[0] === 'private' &&
+    LINKED_TOOL_ROOTS.has(access.segments[0]) &&
     access.segments.every((segment) => segment !== undefined)
   ) {
-    return access.segments.slice(1);
+    return { root: access.segments[0], path: access.segments.slice(1) };
   }
   return undefined;
 }
+
+// How a source names each linked root, in messages.
+const LINKED_TOOL_KINDS = Object.freeze({ private: 'Private Tool', shared: 'Shared Tool' });
 
 // The outermost expression that wraps `node` in transparent syntax only:
 // parentheses, `as`, `satisfies`, angle-bracket and non-null assertions.
@@ -414,9 +424,15 @@ function identifierIsReference(node) {
   );
 }
 
+function referencesByPath(found) {
+  return [...found.values()].toSorted((left, right) => left.path.localeCompare(right.path));
+}
+
+// The Private and Shared Tools one source names directly, each sorted by
+// path, or the first way it names one that admission cannot link.
 function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
-  const references = new Map();
+  const references = { private: new Map(), shared: new Map() };
   let validationError;
   function reject(message, node) {
     validationError = {
@@ -435,10 +451,17 @@ function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
     }
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       const access = coralAccess(node, checker, sourceFile);
+      if (access?.root === 'global' && LINKED_TOOL_ROOTS.has(access.segments[0])) {
+        const root = access.segments[0];
+        return reject(
+          `${LINKED_TOOL_KINDS[root]} paths must be directly named through coral.${root}`,
+          node,
+        );
+      }
       if (
         (access?.root === 'global' &&
-          (access.segments[0] === 'private' ||
-            (access.segments.length > 0 && access.segments[0] === undefined))) ||
+          access.segments.length > 0 &&
+          access.segments[0] === undefined) ||
         access?.root === 'computed_global'
       ) {
         return reject('Private Tool paths must be directly named through coral.private', node);
@@ -446,20 +469,24 @@ function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
       if (
         ts.isElementAccessExpression(node) &&
         access?.root === 'lexical' &&
-        (access.segments[0] === 'private' || access.segments[0] === undefined)
+        (LINKED_TOOL_ROOTS.has(access.segments[0]) || access.segments[0] === undefined)
       ) {
-        return reject('Private Tool paths must be directly named without computed access', node);
+        const kind = LINKED_TOOL_KINDS[access.segments[0]] ?? 'Private Tool';
+        return reject(`${kind} paths must be directly named without computed access`, node);
       }
     }
     if (ts.isPropertyAccessExpression(node)) {
-      const path = propertyPath(node, checker, sourceFile);
-      if (path !== undefined && !parentContinuesCoralPath(node)) {
-        if (path.length === 0) {
-          return reject('Private Tool namespace aliases are not supported', node);
+      const linked = linkedToolPath(node, checker, sourceFile);
+      if (linked !== undefined && !parentContinuesCoralPath(node)) {
+        if (linked.path.length === 0) {
+          return reject(
+            `${LINKED_TOOL_KINDS[linked.root]} namespace aliases are not supported`,
+            node,
+          );
         }
-        const joined = path.join('.');
-        if (!references.has(joined)) {
-          references.set(joined, {
+        const joined = linked.path.join('.');
+        if (!references[linked.root].has(joined)) {
+          references[linked.root].set(joined, {
             path: joined,
             ...authoredReferenceLocation(sourceFile, node, authoredMappings),
           });
@@ -469,9 +496,8 @@ function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
     return true;
   });
   return {
-    references: [...references.values()].toSorted((left, right) =>
-      left.path.localeCompare(right.path),
-    ),
+    references: referencesByPath(references.private),
+    sharedReferences: referencesByPath(references.shared),
     validationError,
   };
 }
@@ -551,9 +577,9 @@ function analyzePrivateToolDependencies(source, fileName, targetName) {
   return privateToolDependencyAnalysis(sourceFile, program);
 }
 
-// The members of `coral` that name no Tool: the Private Tools' root and the
+// The members of `coral` that name no Tool: the linked Tools' roots and the
 // Program host's own members.
-const NON_TOOL_MEMBERS = new Set(['private', 'emit', 'ToolError']);
+const NON_TOOL_MEMBERS = new Set([...LINKED_TOOL_ROOTS, 'emit', 'ToolError']);
 
 // The number of segments under `coral` that name a Tool's Call Root:
 // `providers.<namespace>` for an Owner's Provider, none for the Built-in
@@ -571,9 +597,9 @@ function shortestToolChain(rootLength) {
 }
 
 // Each maximal literal Tool chain, relative to `coral` and cut before its
-// first computed segment, where it starts, and whether it is called. A cut
-// chain is not called: its computed segment may name the Tool. Aliased roots
-// are not followed.
+// first computed segment, where it starts, whether it is called, and whether
+// it was cut. A cut chain is not called: its computed segment may name the
+// Tool. Aliased roots are not followed.
 function toolReferenceChains(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
   const chains = [];
@@ -595,6 +621,7 @@ function toolReferenceChains(sourceFile, program, authoredMappings) {
             segments,
             start: node.getStart(sourceFile),
             called,
+            computed: computed !== -1,
             ...authoredReferenceLocation(sourceFile, node, authoredMappings),
           });
         }
