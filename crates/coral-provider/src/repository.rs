@@ -396,6 +396,7 @@ impl LifecycleAction {
             Self::PublicationCompleted => "provider_publication.completed",
             Self::BuiltinProviderInstalled => "provider.builtin_installed",
             Self::PrivateProviderInstalled => "provider.private_installed",
+            Self::SharedProviderInstalled => "provider.shared_installed",
             Self::ProviderDisabled => "provider.disabled",
             Self::ProviderUpdated => "provider.updated",
             Self::ProviderRestored => "provider.restored",
@@ -426,6 +427,7 @@ impl LifecycleAction {
             "provider_publication.completed" => Ok(Self::PublicationCompleted),
             "provider.builtin_installed" => Ok(Self::BuiltinProviderInstalled),
             "provider.private_installed" => Ok(Self::PrivateProviderInstalled),
+            "provider.shared_installed" => Ok(Self::SharedProviderInstalled),
             "provider.disabled" => Ok(Self::ProviderDisabled),
             "provider.updated" => Ok(Self::ProviderUpdated),
             "provider.restored" => Ok(Self::ProviderRestored),
@@ -965,13 +967,15 @@ pub(super) async fn active_added_provider_names(
 }
 
 /// Reads every Provider's active Generation across Workspaces, in any state,
-/// except the Providers at `excluded`.
-pub(super) async fn active_generations_except(
+/// except the Private and Shared Providers', whose Generations hold no Tool.
+pub(super) async fn catalog_active_generations(
     transaction: &mut Transaction<'_>,
-    excluded: &crate::ProviderCallRoot,
 ) -> Result<Vec<crate::ActiveGeneration>, Error> {
     let mut query = active_generation_query();
-    query.and_where(Expr::col(ProviderRecords::Namespace).ne(excluded.as_str()));
+    query.and_where(Expr::col(ProviderRecords::Namespace).is_not_in([
+        crate::ProviderCallRoot::Private.as_str(),
+        crate::ProviderCallRoot::Shared.as_str(),
+    ]));
     fetch_active_generations(transaction, query).await
 }
 

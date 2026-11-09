@@ -33,6 +33,9 @@ pub enum ProviderCallRoot {
     /// `coral.private`: the Workspace's Private Provider, whose Tools are
     /// each Principal's own Private Tools.
     Private,
+    /// `coral.shared`: the Workspace's Shared Provider, whose Tools are
+    /// the Shared Tools its Owners published.
+    Shared,
 }
 
 /// The short name an Owner gives a Provider: a non-reserved safe ASCII
@@ -47,6 +50,8 @@ pub struct ProviderNamespace {
 const BUILTIN_ROOT: &str = "coral";
 /// The Call Root of every Workspace's Private Provider.
 const PRIVATE_ROOT: &str = "coral.private";
+/// The Call Root of every Workspace's Shared Provider.
+const SHARED_ROOT: &str = "coral.shared";
 /// The prefix of every Owner-added Provider's Call Root.
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
 
@@ -78,8 +83,8 @@ impl ProviderNamespace {
 }
 
 impl ProviderCallRoot {
-    /// Validates one Call Root: `coral.providers.<namespace>`, `coral` or
-    /// `coral.private`.
+    /// Validates one Call Root: `coral.providers.<namespace>`, `coral`,
+    /// `coral.private` or `coral.shared`.
     ///
     /// # Errors
     ///
@@ -88,6 +93,7 @@ impl ProviderCallRoot {
         match value {
             BUILTIN_ROOT => return Ok(Self::Builtin),
             PRIVATE_ROOT => return Ok(Self::Private),
+            SHARED_ROOT => return Ok(Self::Shared),
             _ => {}
         }
         value
@@ -96,7 +102,7 @@ impl ProviderCallRoot {
             .map(Self::Owner)
             .ok_or_else(|| {
                 Error::InvalidInput(
-                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, coral, or coral.private"
+                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, coral, coral.private, or coral.shared"
                         .to_string(),
                 )
             })
@@ -125,6 +131,7 @@ impl ProviderCallRoot {
             Self::Owner(namespace) => &namespace.call_root,
             Self::Builtin => BUILTIN_ROOT,
             Self::Private => PRIVATE_ROOT,
+            Self::Shared => SHARED_ROOT,
         }
     }
 
@@ -134,8 +141,16 @@ impl ProviderCallRoot {
     pub const fn namespace(&self) -> Option<&ProviderNamespace> {
         match self {
             Self::Owner(namespace) => Some(namespace),
-            Self::Builtin | Self::Private => None,
+            Self::Builtin | Self::Private | Self::Shared => None,
         }
+    }
+
+    /// Whether Coral performs the Provider's Tools from authored source
+    /// that coral-tools keeps: the Private and the Shared Provider. Such a
+    /// Provider's Generation holds no Tool, and it has no Accounts.
+    #[must_use]
+    pub const fn performs_code(&self) -> bool {
+        matches!(self, Self::Private | Self::Shared)
     }
 
     /// Returns the Call Root's last segment, such as `github` or `coral`, for

@@ -15,8 +15,9 @@ use crate::{ActiveProvider, Error, ProviderCallRoot};
 /// Built-in Tool declares the Workspace action it needs, and the role
 /// must permit that action. A Tool that another Coral version defines
 /// needs Owner authority, so a rollback shows a non-Owner nothing new.
-/// The Private Provider's catalog holds no Tool: coral-tools decides
-/// which Private Tools a Principal reaches, so this reaches none.
+/// The Private and Shared Providers' catalogs hold no Tool: coral-tools
+/// decides which Private and Shared Tools a Principal reaches, so this
+/// reaches none.
 #[must_use]
 pub fn reaches(call_root: &ProviderCallRoot, tool: &ToolKey, role: Option<WorkspaceRole>) -> bool {
     match call_root {
@@ -24,7 +25,7 @@ pub fn reaches(call_root: &ProviderCallRoot, tool: &ToolKey, role: Option<Worksp
         ProviderCallRoot::Builtin => BuiltinTool::from_key(tool.as_str())
             .map_or(WorkspaceAction::Configure, BuiltinTool::needs)
             .permitted_to(role),
-        ProviderCallRoot::Private => false,
+        ProviderCallRoot::Private | ProviderCallRoot::Shared => false,
     }
 }
 

@@ -243,10 +243,15 @@ fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
             "provider must be a Provider namespace, such as `{}`",
             namespace.as_str()
         ))),
-        // The Private Provider's catalog holds no Tool for a filter to keep.
-        Ok(ProviderCallRoot::Private) | Err(_) => ProviderNamespace::parse(value)
-            .map(ProviderCallRoot::Owner)
-            .map_err(|_invalid_namespace| Error::InvalidInput("invalid Provider namespace".into())),
+        // The Private and Shared Providers' catalogs hold no Tool for a
+        // filter to keep.
+        Ok(ProviderCallRoot::Private | ProviderCallRoot::Shared) | Err(_) => {
+            ProviderNamespace::parse(value)
+                .map(ProviderCallRoot::Owner)
+                .map_err(|_invalid_namespace| {
+                    Error::InvalidInput("invalid Provider namespace".into())
+                })
+        }
     }
 }
 

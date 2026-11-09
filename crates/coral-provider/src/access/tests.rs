@@ -187,6 +187,7 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_roots_coral_defines()
         Owner(&'a str),
         Builtin,
         Private,
+        Shared,
         Rejected,
     }
     let segment = "a".repeat(128);
@@ -198,10 +199,10 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_roots_coral_defines()
         (long.as_str(), Parsed::Owner(segment.as_str())),
         ("coral", Parsed::Builtin),
         ("coral.private", Parsed::Private),
+        ("coral.shared", Parsed::Shared),
         ("coral.workspace", Parsed::Rejected),
         // Coral defines no other root, so none parses.
         ("coral.billing", Parsed::Rejected),
-        ("coral.shared", Parsed::Rejected),
         ("coral.emit", Parsed::Rejected),
         ("coral.ToolError", Parsed::Rejected),
         (&format!("{long}a"), Parsed::Rejected),
@@ -221,6 +222,7 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_roots_coral_defines()
         ("coral.prototype.github", Parsed::Rejected),
         ("coral.providers.weather.v2", Parsed::Rejected),
         ("coral.private.github", Parsed::Rejected),
+        ("coral.shared.github", Parsed::Rejected),
     ] {
         let parsed = ProviderCallRoot::parse(value);
         match expected {
@@ -236,6 +238,10 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_roots_coral_defines()
             ),
             Parsed::Private => assert!(
                 matches!(parsed, Ok(ProviderCallRoot::Private)),
+                "{value}: {parsed:?}"
+            ),
+            Parsed::Shared => assert!(
+                matches!(parsed, Ok(ProviderCallRoot::Shared)),
                 "{value}: {parsed:?}"
             ),
             Parsed::Rejected => assert!(

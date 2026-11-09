@@ -138,7 +138,7 @@ impl ProviderModule {
         .ok_or(Error::ProviderNotFound)?;
         match stored.provider.call_root() {
             ProviderCallRoot::Owner(_) => {}
-            ProviderCallRoot::Builtin | ProviderCallRoot::Private => {
+            ProviderCallRoot::Builtin | ProviderCallRoot::Private | ProviderCallRoot::Shared => {
                 return Err(Error::BuiltinProviderManaged);
             }
         }

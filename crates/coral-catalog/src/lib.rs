@@ -41,7 +41,10 @@ mod mcp;
 mod openapi;
 mod paths;
 mod private;
-pub use private::{CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME, private_tool};
+pub use private::{
+    CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME, SHARED_PROVIDER_DISPLAY_NAME,
+    private_tool, shared_tool,
+};
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors
 /// Returns a persistence or corrupt-evidence error.
@@ -286,13 +289,45 @@ pub async fn publish_private_generation_in_transaction(
     transaction: &mut Transaction<'_>,
     created_at_unix_nanos: i64,
 ) -> Result<ProviderGenerationId, Error> {
-    let identity = private::PRIVATE_CATALOG_IDENTITY;
+    publish_code_generation(
+        transaction,
+        private::CodeCatalog::Private,
+        created_at_unix_nanos,
+    )
+    .await
+}
+
+/// Publishes one Workspace's Shared Provider Generation, which declares no
+/// Tool: a Shared Tool Publish adds each one as a row coral-tools keeps. The
+/// caller owns the transaction and commits the Provider that selects it
+/// atomically with this facet.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn publish_shared_generation_in_transaction(
+    transaction: &mut Transaction<'_>,
+    created_at_unix_nanos: i64,
+) -> Result<ProviderGenerationId, Error> {
+    publish_code_generation(
+        transaction,
+        private::CodeCatalog::Shared,
+        created_at_unix_nanos,
+    )
+    .await
+}
+
+async fn publish_code_generation(
+    transaction: &mut Transaction<'_>,
+    catalog: private::CodeCatalog,
+    created_at_unix_nanos: i64,
+) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
-        repository::GenerationInput::Private,
-        &ProviderSetupInputDigest::of_bytes(identity.as_bytes()),
-        private::prepared()?,
-        private::MATERIALIZER_VERSION,
+        repository::GenerationInput::Code(catalog),
+        &ProviderSetupInputDigest::of_bytes(catalog.identity().as_bytes()),
+        private::prepared(catalog)?,
+        catalog.materializer_version(),
         created_at_unix_nanos,
     )
     .await

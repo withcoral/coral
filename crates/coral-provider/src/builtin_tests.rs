@@ -980,6 +980,7 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
 enum CoralDefined {
     Builtin,
     Private,
+    Shared,
 }
 
 impl CoralDefined {
@@ -987,6 +988,7 @@ impl CoralDefined {
         let mut without = match self {
             Self::Builtin => providers.workspaces_without_builtin().await,
             Self::Private => providers.workspaces_without_private().await,
+            Self::Shared => providers.workspaces_without_shared().await,
         }
         .unwrap();
         without.sort();
@@ -1013,6 +1015,13 @@ impl CoralDefined {
                     .unwrap(),
                 crate::SearchChange::Unchanged,
             ),
+            Self::Shared => (
+                providers
+                    .install_missing_shared(workspace, at)
+                    .await
+                    .unwrap(),
+                crate::SearchChange::Unchanged,
+            ),
         }
     }
 
@@ -1020,6 +1029,7 @@ impl CoralDefined {
         match self {
             Self::Builtin => ProviderCallRoot::Builtin,
             Self::Private => ProviderCallRoot::Private,
+            Self::Shared => ProviderCallRoot::Shared,
         }
     }
 
@@ -1027,27 +1037,41 @@ impl CoralDefined {
         match self {
             Self::Builtin => LifecycleAction::BuiltinProviderInstalled,
             Self::Private => LifecycleAction::PrivateProviderInstalled,
+            Self::Shared => LifecycleAction::SharedProviderInstalled,
         }
     }
 }
 
-// Catches: a boot that misses a Workspace without the Built-in or Private
-// Provider (one created before Coral had it, or archived), installs a second
+// Catches: a boot that misses a Workspace without the Built-in, Private or
+// Shared Provider (one created before Coral had it, or archived), installs a second
 // one where it exists, records anyone but Coral as its actor, or leaves
 // Universal Search without the Built-in Provider's first Generation.
 #[tokio::test]
 async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_none() {
-    for kind in [CoralDefined::Builtin, CoralDefined::Private] {
+    for kind in [
+        CoralDefined::Builtin,
+        CoralDefined::Private,
+        CoralDefined::Shared,
+    ] {
         let arranged = BuiltinWorkspace::new().await;
         let context = change_context(arranged.owner.clone(), 15, '2');
-        if matches!(kind, CoralDefined::Private) {
+        if !matches!(kind, CoralDefined::Builtin) {
             let database = arranged.fixture.database();
+            let workspace = arranged.workspace.id();
             let mut transaction = database.begin().await.unwrap();
-            arranged
-                .providers
-                .install_private_in_transaction(&mut transaction, &context, arranged.workspace.id())
-                .await
-                .unwrap();
+            if matches!(kind, CoralDefined::Private) {
+                arranged
+                    .providers
+                    .install_private_in_transaction(&mut transaction, &context, workspace)
+                    .await
+                    .unwrap();
+            } else {
+                arranged
+                    .providers
+                    .install_shared_in_transaction(&mut transaction, &context, workspace)
+                    .await
+                    .unwrap();
+            }
             transaction.commit().await.unwrap();
         }
         let mut missing = Vec::new();
@@ -1083,7 +1107,7 @@ async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_
                 .await;
             let name = workspace.display_name().as_str();
             // Search reads the installed Built-in Provider's first Generation;
-            // the Private Provider's declares no Tool.
+            // the Private and Shared Providers' declare no Tool.
             match (kind, &installed, &search) {
                 (
                     CoralDefined::Builtin,
@@ -1095,7 +1119,11 @@ async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_
                     assert_eq!(activated.replaced(), None);
                 }
                 (CoralDefined::Builtin, None, crate::SearchChange::Unchanged)
-                | (CoralDefined::Private, _, crate::SearchChange::Unchanged) => {}
+                | (
+                    CoralDefined::Private | CoralDefined::Shared,
+                    _,
+                    crate::SearchChange::Unchanged,
+                ) => {}
                 other => panic!("{name}: an install names what it activated: {other:?}"),
             }
             assert_eq!(

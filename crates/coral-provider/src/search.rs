@@ -311,9 +311,9 @@ impl ActiveGeneration {
 /// Workspace, for the search index's reconcile task.
 ///
 /// Disabled Providers are included: disabling changes what a caller sees at
-/// query time, not what the index holds. The Private Provider is left out:
-/// its Generation holds no Tool, and search finds Private Tools through
-/// coral-tools. This facet reads no Tool catalog.
+/// query time, not what the index holds. The Private and Shared Providers
+/// are left out: their Generations hold no Tool, and search finds their
+/// Tools through coral-tools. This facet reads no Tool catalog.
 ///
 /// # Errors
 ///
@@ -321,7 +321,7 @@ impl ActiveGeneration {
 pub async fn active_generations_in_transaction(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<ActiveGeneration>, Error> {
-    repository::active_generations_except(transaction, &ProviderCallRoot::Private).await
+    repository::catalog_active_generations(transaction).await
 }
 
 /// Reads the active Generation of each of a Workspace's Providers, or of the

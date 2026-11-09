@@ -735,6 +735,8 @@ pub enum LifecycleAction {
     BuiltinProviderInstalled,
     /// Coral created the Workspace's Private Provider, which has no Publication.
     PrivateProviderInstalled,
+    /// Coral created the Workspace's Shared Provider, which has no Publication.
+    SharedProviderInstalled,
     /// A Provider owner revoked later admission and dispatch.
     ProviderDisabled,
     /// A Provider owner restored later admission and dispatch.

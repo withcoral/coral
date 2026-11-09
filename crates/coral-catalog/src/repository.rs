@@ -1,3 +1,4 @@
+use crate::private::CodeCatalog;
 use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
@@ -61,7 +62,6 @@ enum MaterializedTools {
 }
 
 const BUILTIN_INPUT_KIND: &str = "builtin";
-const PRIVATE_INPUT_KIND: &str = "private";
 
 /// The exact input one Generation pins: a Setup's input, the identity of
 /// the Built-in Provider's Coral-defined catalog, or the Private Provider's
@@ -70,7 +70,7 @@ const PRIVATE_INPUT_KIND: &str = "private";
 pub(super) enum GenerationInput<'a> {
     Setup(&'a ProviderSetupInput),
     Builtin(&'a BuiltinCatalogIdentity),
-    Private,
+    Code(CodeCatalog),
 }
 
 impl<'a> GenerationInput<'a> {
@@ -78,7 +78,7 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.kind().as_str(),
             Self::Builtin(_) => BUILTIN_INPUT_KIND,
-            Self::Private => PRIVATE_INPUT_KIND,
+            Self::Code(catalog) => catalog.input_kind(),
         }
     }
 
@@ -86,14 +86,14 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.as_str(),
             Self::Builtin(identity) => identity.as_str(),
-            Self::Private => crate::private::PRIVATE_CATALOG_IDENTITY,
+            Self::Code(catalog) => catalog.identity(),
         }
     }
 
     fn configuration(self) -> Option<&'a crate::ProviderConfiguration> {
         match self {
             Self::Setup(input) => input.configuration(),
-            Self::Builtin(_) | Self::Private => None,
+            Self::Builtin(_) | Self::Code(_) => None,
         }
     }
 }
@@ -102,18 +102,18 @@ impl<'a> GenerationInput<'a> {
 enum StoredGenerationInput {
     Setup(ProviderSetupInput),
     Builtin(BuiltinCatalogIdentity),
-    Private,
+    Code(CodeCatalog),
 }
 
 impl StoredGenerationInput {
     fn from_storage(kind: &str, pinned: &str) -> Result<Self, Error> {
-        if kind == PRIVATE_INPUT_KIND {
-            return if pinned == crate::private::PRIVATE_CATALOG_IDENTITY {
-                Ok(Self::Private)
+        if let Some(catalog) = CodeCatalog::from_input_kind(kind) {
+            return if pinned == catalog.identity() {
+                Ok(Self::Code(catalog))
             } else {
-                Err(Error::CorruptData(
-                    "private Generation pins an unknown catalog".to_string(),
-                ))
+                Err(Error::CorruptData(format!(
+                    "{kind} Generation pins an unknown catalog"
+                )))
             };
         }
         if kind == BUILTIN_INPUT_KIND {
@@ -135,9 +135,9 @@ impl StoredGenerationInput {
             Self::Builtin(identity) => {
                 ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes())
             }
-            Self::Private => ProviderSetupInputDigest::of_bytes(
-                crate::private::PRIVATE_CATALOG_IDENTITY.as_bytes(),
-            ),
+            Self::Code(catalog) => {
+                ProviderSetupInputDigest::of_bytes(catalog.identity().as_bytes())
+            }
         }
     }
 }
@@ -945,7 +945,8 @@ pub(super) async fn load_setup_input(
 }
 
 /// Reports whether a Generation's Tools have code Execution Bindings: it
-/// pins the Private Provider's catalog, the one whose Tools Coral performs.
+/// pins the Private or the Shared Provider's catalog, whose Tools Coral
+/// performs from their source.
 pub(super) async fn generation_binds_code(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
@@ -961,7 +962,7 @@ pub(super) async fn generation_binds_code(
         .await?;
     let (kind,) =
         row.ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))?;
-    Ok(kind == PRIVATE_INPUT_KIND)
+    Ok(CodeCatalog::from_input_kind(&kind).is_some())
 }
 
 /// Reads the catalog identity a built-in Generation pins, checked against
@@ -993,7 +994,7 @@ pub(super) async fn load_builtin_identity(
     }
     match pinned {
         StoredGenerationInput::Builtin(identity) => Ok(identity),
-        StoredGenerationInput::Setup(_) | StoredGenerationInput::Private => Err(
+        StoredGenerationInput::Setup(_) | StoredGenerationInput::Code(_) => Err(
             Error::CorruptData("the Built-in Provider's Generation pins another input".to_string()),
         ),
     }
