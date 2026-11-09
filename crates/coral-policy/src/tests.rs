@@ -1008,7 +1008,8 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         "only this Workspace's disabled rule"
     );
     let read_only = ToolHints::new(Some(true), None, None, None);
-    let enabled_by_default = ToolPolicyFacts::default().declaring_enabled_by_default(true);
+    let enabled_by_default =
+        ToolPolicyFacts::default().declaring_default(Some(ToolAccessState::Enabled));
     for (target, facts, expected) in [
         (
             &forecast,
@@ -1074,7 +1075,7 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         // A default the catalog declares holds whatever the hints say.
         (
             ToolPolicyFacts::new(ToolHints::new(Some(false), Some(true), None, None), None)
-                .declaring_enabled_by_default(true),
+                .declaring_default(Some(ToolAccessState::Enabled)),
             ToolAccessState::Enabled,
         ),
     ] {
@@ -2164,11 +2165,8 @@ impl PrivateTools {
                 coral_functions::SavedFunctionDescription::parse("Greet").expect("description"),
                 coral_functions::SavedFunctionSource::parse("export default async () => 1;")
                     .expect("source"),
-            );
-            let save = match declared {
-                Some(state) => save.declaring_default(state),
-                None => save,
-            };
+            )
+            .declaring_default(declared);
             let saved = functions
                 .save(
                     &coral_functions::SavedFunctionChangeContext::new(
@@ -2181,7 +2179,7 @@ impl PrivateTools {
                 )
                 .await
                 .expect("save the Private Tool");
-            keys.push(ToolKey::parse(&saved.id().to_string()).expect("Tool Key"));
+            keys.push(saved.id().tool_key());
         }
         let [owners_tool, members_tool, agents_tool] = keys.try_into().expect("three tools");
         Self {
@@ -2262,7 +2260,7 @@ async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_m
         }
     }
 
-    // A batch that names a Member's tool is refused whole.
+    // A batch that names a Member's Private Tool is refused whole.
     let before = tools.events().await;
     for refused in [
         vec![(tools.target(&tools.members_tool), ToolAccessState::Disabled)],
@@ -2318,7 +2316,7 @@ async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_m
             "{tool:?}"
         );
     }
-    // A Member sets no rule, even on their own tool.
+    // A Member sets no rule, even on their own Private Tool.
     assert!(matches!(
         tools
             .policies
@@ -2333,4 +2331,55 @@ async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_m
         ))
     ));
     assert_eq!(tools.events().await, before);
+}
+
+// Catches: an Owner's rule that still decides their Private Tool after they
+// become a Member, when no Owner can read or change it.
+#[tokio::test]
+async fn a_rule_on_an_owners_private_tool_stops_applying_once_they_are_a_member() {
+    let tools = PrivateTools::new().await;
+    tools
+        .policies
+        .set_access_state(
+            &change(tools.owner.clone(), 30, '6'),
+            tools.target(&tools.owners_tool),
+            ToolAccessState::Disabled,
+        )
+        .await
+        .expect("set the Owner's rule");
+    let workspaces = WorkspaceModule::new(tools.policies.database.clone());
+    for (actor, user, role, at) in [
+        (
+            &tools.owner,
+            &tools.member,
+            coral_workspace::WorkspaceRole::Owner,
+            31,
+        ),
+        (
+            &tools.member,
+            &tools.owner,
+            coral_workspace::WorkspaceRole::Member,
+            32,
+        ),
+    ] {
+        workspaces
+            .set_membership(
+                &change(actor.clone(), at, '7'),
+                &tools.workspace,
+                user,
+                role,
+            )
+            .await
+            .expect("change the role");
+    }
+    let decision = tools
+        .policies
+        .decision(&tools.owner, &tools.target(&tools.owners_tool))
+        .await
+        .expect("a Member reads their own Private Tool");
+    assert_eq!(
+        (decision.access_state(), decision.is_explicit()),
+        (ToolAccessState::ApprovalRequired, false),
+        "the declared default decides"
+    );
 }

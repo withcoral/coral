@@ -66,6 +66,7 @@ impl WorkspaceModule {
     /// Checks whether retained Invocation attribution still permits execution.
     /// This does not authenticate a caller or grant history/decision visibility.
     /// Mutating owners must already hold the Workspace; read-only owners use a snapshot.
+    /// Returns a User's current Workspace role; an Agent has none.
     /// # Errors
     /// Rejects lost Membership, archived Workspaces, and disabled/expired Agents.
     pub async fn check_invoking_principal_in_snapshot(
@@ -74,27 +75,27 @@ impl WorkspaceModule {
         workspace: &WorkspaceId,
         principal: &crate::Principal,
         now: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<crate::WorkspaceRole>, Error> {
         if principal.kind() == crate::PrincipalKind::User {
-            current_user_workspace_authority(
+            let evidence = current_user_workspace_authority(
                 tx,
                 &UserId::parse(principal.id().as_str())?,
                 workspace,
                 AuthorityAction::Public(WorkspaceAction::Dispatch),
             )
             .await?;
-        } else {
-            let registration =
-                agent_repository::registration(&mut *tx, workspace, principal.id()).await?;
-            let agent = agent_repository::find(&mut *tx, workspace, principal.id()).await?;
-            registration.require_active(&agent, now)?;
-            require_active_for_run(
-                repository::find_workspace(tx, workspace)
-                    .await?
-                    .ok_or(Error::WorkspaceNotFound)?,
-            )?;
+            return Ok(Some(evidence.effective_role()));
         }
-        Ok(())
+        let registration =
+            agent_repository::registration(&mut *tx, workspace, principal.id()).await?;
+        let agent = agent_repository::find(&mut *tx, workspace, principal.id()).await?;
+        registration.require_active(&agent, now)?;
+        require_active_for_run(
+            repository::find_workspace(tx, workspace)
+                .await?
+                .ok_or(Error::WorkspaceNotFound)?,
+        )?;
+        Ok(None)
     }
 
     /// Checks current Principal access without granting resource visibility.

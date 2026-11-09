@@ -335,8 +335,8 @@ impl SavedFunctionModule {
                 LifecycleAction::Replaced,
             ),
         };
-        // A new tool's default is `enabled` unless the save declares
-        // another, and a replacement keeps its tool's unless the save
+        // A new Private Tool's default is `enabled` unless the save
+        // declares another, and a replacement keeps its Private Tool's unless the save
         // declares another. The Event names the default only when it moves.
         let previous_default = previous.as_ref().map(SavedFunction::default_access_state);
         let default_access_state = save.default_access_state(previous_default);

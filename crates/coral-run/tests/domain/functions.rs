@@ -964,7 +964,13 @@ enum Author {
 #[derive(Debug, Clone, Copy)]
 enum Gate {
     Nothing,
+    /// An Owner's rule on the Private Tool.
     Rule(ToolAccessState),
+    /// An Owner's rule on the Private Tool, then its author, an Owner, is
+    /// made a Member by another Owner.
+    RuleThenDemote(ToolAccessState),
+    /// An Owner's rule on the call the body makes.
+    InnerRule(ToolAccessState),
     DisableProvider,
 }
 
@@ -980,10 +986,11 @@ struct PolicyRow {
 }
 
 // Catches: a Private Tool whose declared default, or an Owner's rule over
-// it, does not decide its call; a disabled Private Provider that leaves a
-// Private Tool callable; an outer call that needs approval whose body runs
-// before the decision, or at all once declined; or an Agent's call that its
-// Owner cannot approve.
+// it, does not decide its call; a rule that still decides it once its
+// author is a Member; a call its body makes that does not follow its own
+// rule; a disabled Private Provider that leaves a Private Tool callable; an
+// outer call that needs approval whose body runs before the decision, or at
+// all once declined; or an Agent's call that its Owner cannot approve.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -991,7 +998,7 @@ struct PolicyRow {
 )]
 async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_private_provider() {
     use crate::approval::ApprovalDecision::{Approve, Decline};
-    use Gate::{DisableProvider, Nothing, Rule};
+    use Gate::{DisableProvider, InnerRule, Nothing, Rule, RuleThenDemote};
     let hello = || json!("hello Ada");
     let code = |code: &str| json!({ "code": code });
     let rows = [
@@ -1040,14 +1047,14 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
         PolicyRow {
             author: Author::Owner,
             declared: None,
-            gate: Rule(ToolAccessState::ApprovalRequired),
-            decision: Some(Approve),
+            gate: RuleThenDemote(ToolAccessState::Disabled),
+            decision: None,
             outcome: hello(),
         },
         PolicyRow {
             author: Author::Owner,
             declared: None,
-            gate: Rule(ToolAccessState::Disabled),
+            gate: InnerRule(ToolAccessState::Disabled),
             decision: None,
             outcome: code("tool_disabled"),
         },
@@ -1064,13 +1071,6 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
             gate: Nothing,
             decision: Some(Approve),
             outcome: hello(),
-        },
-        PolicyRow {
-            author: Author::Agent,
-            declared: None,
-            gate: Rule(ToolAccessState::Disabled),
-            decision: None,
-            outcome: code("tool_disabled"),
         },
     ];
     for (index, row) in rows.into_iter().enumerate() {
@@ -1098,16 +1098,9 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
             saved.pointer("/data/revision").is_some(),
             "{label}: {saved}"
         );
-        let mut transaction = scope.fixture.database.begin().await.unwrap();
-        let private =
-            coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
-                .await
-                .unwrap()
-                .expect("the Private Provider");
-        transaction.rollback().await.unwrap();
         match row.gate {
             Nothing => {}
-            Rule(state) => {
+            Rule(state) | RuleThenDemote(state) => {
                 let tool = functions_module(&scope)
                     .get(
                         &author,
@@ -1123,28 +1116,19 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
                         &change(scope.owner_user(), 13, '4'),
                         ToolPolicyTarget::new(
                             scope.workspace_id.clone(),
-                            private.id().clone(),
-                            coral_catalog::ToolKey::parse(&tool.id().to_string()).unwrap(),
+                            private_provider(&scope).await.id().clone(),
+                            tool.id().tool_key(),
                         ),
                         state,
                     )
                     .await
                     .expect("set the Owner's rule");
+                if matches!(row.gate, RuleThenDemote(_)) {
+                    demote_the_owner(&scope, index).await;
+                }
             }
-            DisableProvider => {
-                scope
-                    .fixture
-                    .providers
-                    .disable_provider(
-                        &change(scope.owner_user(), 13, '4')
-                            .with_etag(&private.etag())
-                            .unwrap(),
-                        &scope.workspace_id,
-                        private.id(),
-                    )
-                    .await
-                    .expect("disable the Private Provider");
-            }
+            InnerRule(state) => scope.set_access_to("coral.listProviders", state).await,
+            DisableProvider => disable_private_provider(&scope).await,
         }
 
         let run = scope.start(&author, greet_or_code()).await;
@@ -1152,6 +1136,9 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
             let approver = reader(&scope, &author);
             let approvals = scope.fixture.approvals();
             let request = wait_for_approval(&approvals, approver, &scope.workspace_id, &run).await;
+            // The approver can decide it: the Invocation keeps the default
+            // the linked revision declared.
+            assert!(request.actionable, "{label}");
             // The call waits on its decision with its body not yet run.
             let paths = |rows: Vec<InvocationRow>| {
                 rows.into_iter()
@@ -1197,11 +1184,68 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
         called.sort();
         let expected = match (row.gate, row.outcome == hello()) {
             (DisableProvider, _) => Vec::new(),
-            (_, true) => vec!["coral.listProviders", "coral.private.people.greet"],
+            (InnerRule(_), _) | (_, true) => {
+                vec!["coral.listProviders", "coral.private.people.greet"]
+            }
             (_, false) => vec!["coral.private.people.greet"],
         };
         assert_eq!(called, expected, "{label}");
     }
+}
+
+/// The Workspace's Private Provider, in any state.
+async fn private_provider(scope: &AdminScope) -> coral_provider::Provider {
+    let mut transaction = scope.fixture.database.begin().await.unwrap();
+    let private =
+        coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
+            .await
+            .unwrap()
+            .expect("the Private Provider");
+    transaction.rollback().await.unwrap();
+    private
+}
+
+/// The Owner disables the Workspace's Private Provider.
+async fn disable_private_provider(scope: &AdminScope) {
+    let private = private_provider(scope).await;
+    scope
+        .fixture
+        .providers
+        .disable_provider(
+            &change(scope.owner_user(), 17, '8')
+                .with_etag(&private.etag())
+                .unwrap(),
+            &scope.workspace_id,
+            private.id(),
+        )
+        .await
+        .expect("disable the Private Provider");
+}
+
+/// Makes `scope`'s Owner a Member: another Owner, added for it, changes
+/// the role, since a Workspace keeps one Owner.
+async fn demote_the_owner(scope: &AdminScope, index: usize) {
+    let second = member(scope, &format!("user:private-policy-{index}-second")).await;
+    let second = second.authenticated_user().unwrap().clone();
+    let workspaces = &scope.fixture.workspaces;
+    workspaces
+        .set_membership(
+            &change(scope.owner_user(), 15, '6'),
+            &scope.workspace_id,
+            &second,
+            WorkspaceRole::Owner,
+        )
+        .await
+        .expect("make a second Owner");
+    workspaces
+        .set_membership(
+            &change(second, 16, '7'),
+            &scope.workspace_id,
+            &scope.owner_user(),
+            WorkspaceRole::Member,
+        )
+        .await
+        .expect("make the first Owner a Member");
 }
 
 /// `coral.addTool` or `coral.updateTool` saving `saved` from
@@ -1214,4 +1258,121 @@ fn author_with(verb: &str, declarations: &str, extra: &str) -> RunSubmission {
 /// and message.
 fn greet_or_code() -> RunSubmission {
     tool_call("", "coral.private.people.greet('Ada')")
+}
+
+/// One row of [`calls_inside_a_body_follow_their_own_policy_and_the_kill_switch`]:
+/// the policy `people.inner` declares, whether the Owner disables the
+/// Private Provider while the body waits on its first call, the outcome's
+/// code, and the Call Paths the Run records.
+struct NestedRow {
+    inner_declared: &'static str,
+    disable_mid_body: bool,
+    code: &'static str,
+    called: &'static [&'static str],
+}
+
+// Catches: a nested Private Tool call that its own declared default does
+// not decide, or a Private Provider disabled while a body runs that leaves
+// the body's next Private Tool call to run.
+#[tokio::test]
+async fn calls_inside_a_body_follow_their_own_policy_and_the_kill_switch() {
+    let rows = [
+        NestedRow {
+            inner_declared: "disabled",
+            disable_mid_body: false,
+            code: "tool_disabled",
+            called: &[
+                "coral.listProviders",
+                "coral.private.people.greet",
+                "coral.private.people.inner",
+            ],
+        },
+        NestedRow {
+            inner_declared: "enabled",
+            disable_mid_body: true,
+            code: "provider_unavailable",
+            called: &["coral.listProviders", "coral.private.people.greet"],
+        },
+    ];
+    for (index, row) in rows.into_iter().enumerate() {
+        let (scope, _index) = authoring_scope(&format!("user:private-nested-{index}")).await;
+        let inner = outcome(
+            &scope,
+            &scope.owner,
+            author(
+                "addTool",
+                "people.inner",
+                "const saved = async (name: string): Promise<string> => `inner ${name}`;",
+                &format!(", policy: {}", json!(row.inner_declared)),
+            ),
+        )
+        .await;
+        assert!(inner.pointer("/data/revision").is_some(), "{inner}");
+        let greet = outcome(
+            &scope,
+            &scope.owner,
+            author_with(
+                "addTool",
+                "const saved = async (name: string): Promise<string> => {
+                    await coral.listProviders();
+                    return await coral.private.people.inner(name);
+                };",
+                "",
+            ),
+        )
+        .await;
+        assert!(greet.pointer("/data/revision").is_some(), "{greet}");
+        if row.disable_mid_body {
+            scope
+                .set_access_to("coral.listProviders", ToolAccessState::ApprovalRequired)
+                .await;
+        }
+
+        let run = scope.start(&scope.owner, greet_or_code()).await;
+        if row.disable_mid_body {
+            let approvals = scope.fixture.approvals();
+            let request =
+                wait_for_approval(&approvals, &scope.owner, &scope.workspace_id, &run).await;
+            disable_private_provider(&scope).await;
+            approvals
+                .decide(
+                    &scope.owner,
+                    &scope.workspace_id,
+                    &request.id,
+                    crate::approval::ApprovalDecision::Approve,
+                    None,
+                    &TraceId::parse(&"d".repeat(32)).unwrap(),
+                )
+                .await
+                .expect("approve the body's first call");
+        }
+        let value = final_value(&scope.terminal(&scope.owner, &run).await);
+        assert_eq!(
+            value.get("code"),
+            Some(&json!(row.code)),
+            "row {index}: {value}"
+        );
+        let rows = scope
+            .fixture
+            .invocation_rows(&scope.workspace_id, &run)
+            .await;
+        let greet_id = rows
+            .iter()
+            .find(|row| row.call_path == "coral.private.people.greet")
+            .map(|row| row.id.clone());
+        // Each call the body made is a child of the call it ran for.
+        for child in rows
+            .iter()
+            .filter(|row| row.call_path != "coral.private.people.greet")
+        {
+            assert_eq!(
+                child.parent_id, greet_id,
+                "row {index}: {}",
+                child.call_path
+            );
+        }
+        let mut called: Vec<_> = rows.iter().map(|row| row.call_path.as_str()).collect();
+        called.sort_unstable();
+        assert_eq!(called, row.called, "row {index}");
+    }
 }

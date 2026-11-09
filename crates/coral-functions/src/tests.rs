@@ -103,10 +103,6 @@ async fn saved_function_save_publishes_exact_authoring_record_and_event() {
 // without a policy that resets it, or a change to it that its lifecycle
 // Event does not name.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table walks a tool's default through each kind of save"
-)]
 async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_change() {
     let fixture = SavedFunctionTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:function-policy").await;
@@ -167,11 +163,8 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
             SavedFunctionDescription::parse("Look up one value").expect("description"),
             SavedFunctionSource::parse(&format!("export default async () => {step};"))
                 .expect("source"),
-        );
-        let save = match policy {
-            Some(policy) => save.declaring_default(policy),
-            None => save,
-        };
+        )
+        .declaring_default(policy);
         let at = 20 + i64::try_from(step).expect("step");
         fixture
             .saved_functions

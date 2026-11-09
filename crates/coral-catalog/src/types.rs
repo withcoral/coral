@@ -923,27 +923,13 @@ impl ToolPolicyFacts {
         }
     }
 
-    /// The same facts, with the catalog declaring, or not, that the Tool is
-    /// `enabled` when no exact rule matches. Only Coral's own catalog
-    /// declares it.
+    /// The same facts, with the state, if any, declared for when no exact
+    /// rule matches. Coral's own catalog declares `enabled` for some Tools,
+    /// and a Private Tool's author declares any state.
     #[must_use]
-    pub const fn declaring_enabled_by_default(self, enabled: bool) -> Self {
+    pub const fn declaring_default(self, declared: Option<ToolAccessState>) -> Self {
         Self {
-            declared_default: if enabled {
-                Some(ToolAccessState::Enabled)
-            } else {
-                None
-            },
-            ..self
-        }
-    }
-
-    /// The same facts, with the Tool's author declaring `state` for when no
-    /// exact rule matches, as a Private Tool's does.
-    #[must_use]
-    pub const fn declaring_default(self, state: ToolAccessState) -> Self {
-        Self {
-            declared_default: Some(state),
+            declared_default: declared,
             ..self
         }
     }
@@ -1263,23 +1249,12 @@ impl MaterializedTool {
         }
     }
 
-    /// The same Tool, with its catalog declaring, or not, that it is
-    /// `enabled` when no exact rule matches. Only Coral's own catalog
-    /// declares it, and storage refuses it for any other Tool.
-    pub(crate) const fn declaring_enabled_by_default(mut self, enabled: bool) -> Self {
-        self.declared_default = if enabled {
-            Some(ToolAccessState::Enabled)
-        } else {
-            None
-        };
-        self
-    }
-
-    /// The same Tool, with its author declaring `state` for when no exact
-    /// rule matches. Only a Private Tool's author declares one, and no
-    /// catalog stores a Private Tool.
-    pub(crate) const fn declaring_default(mut self, state: ToolAccessState) -> Self {
-        self.declared_default = Some(state);
+    /// The same Tool, with the state, if any, declared for when no exact
+    /// rule matches. Coral's own catalog declares `enabled`, which storage
+    /// refuses for any other catalog. A Private Tool's author declares any
+    /// state, and no catalog stores a Private Tool.
+    pub(crate) const fn declaring_default(mut self, declared: Option<ToolAccessState>) -> Self {
+        self.declared_default = declared;
         self
     }
 
@@ -1333,11 +1308,8 @@ impl MaterializedTool {
     /// Returns what the Tool's default Tool Access State is decided from.
     #[must_use]
     pub const fn policy_facts(&self) -> ToolPolicyFacts {
-        let facts = ToolPolicyFacts::new(self.hints, self.http_method());
-        match self.declared_default {
-            Some(state) => facts.declaring_default(state),
-            None => facts,
-        }
+        ToolPolicyFacts::new(self.hints, self.http_method())
+            .declaring_default(self.declared_default)
     }
 
     pub(crate) fn binding_json(&self) -> &str {

@@ -358,7 +358,7 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
 }
 
 // Catches: a Private Tool's description that ignores an Owner's rule over
-// its declared default, or a search or describe that shows a tool a rule or
+// its declared default, or a search or describe that shows a Private Tool a rule or
 // a disabled Private Provider stops.
 #[tokio::test]
 async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state() {
@@ -374,7 +374,7 @@ async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state()
     let target = ToolPolicyTarget::new(
         scope.workspace_id.clone(),
         provider.id().clone(),
-        ToolKey::parse(&scope.saved.id().to_string()).unwrap(),
+        scope.saved.id().tool_key(),
     );
     let found = || async {
         scope

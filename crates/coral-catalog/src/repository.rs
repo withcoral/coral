@@ -244,7 +244,10 @@ impl PolicyColumns {
             self.hints.decode(),
             decode_http_method(self.method.as_deref())?,
         )
-        .declaring_enabled_by_default(self.enabled_by_default))
+        .declaring_default(
+            self.enabled_by_default
+                .then_some(crate::ToolAccessState::Enabled),
+        ))
     }
 }
 
@@ -642,7 +645,10 @@ impl ToolRow {
             diagnostics,
             diagnostics_json,
         )
-        .declaring_enabled_by_default(self.enabled_by_default))
+        .declaring_default(
+            self.enabled_by_default
+                .then_some(crate::ToolAccessState::Enabled),
+        ))
     }
 }
 

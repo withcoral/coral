@@ -105,7 +105,7 @@ pub fn private_tool(
         Vec::new(),
         "[]".to_owned(),
     )
-    .declaring_default(declared_default))
+    .declaring_default(Some(declared_default)))
 }
 
 /// The Private Provider's catalog, with no Tools. Its schema graph holds the

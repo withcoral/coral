@@ -201,9 +201,19 @@ impl SharedFacts {
                     .or_insert((&target.admitted.target, evidence));
             }
         }
+        // A Private Tool is the actor's own, so the actor's role decides
+        // whether an Owner's rule on it applies. Lost authority refuses
+        // every target, whatever the rule.
+        let owner = coral_policy::PrivateToolOwner::of(
+            scope.actor.principal().kind(),
+            authority
+                .as_ref()
+                .ok()
+                .and_then(PrincipalWorkspaceEvidence::effective_user_role),
+        );
         let mut tool_facts = BTreeMap::new();
         for (key, target) in tools {
-            let fact = tool_fact(transaction, lock, scope.workspace_id, target).await?;
+            let fact = tool_fact(transaction, lock, scope.workspace_id, target, owner).await?;
             tool_facts.insert(key, fact);
         }
         let mut account_facts = BTreeMap::new();
@@ -357,12 +367,14 @@ pub(crate) fn decide(
 }
 
 /// The policy one retained Tool runs under, once its Provider and the
-/// Tool row are current; the failure that refuses it otherwise.
+/// Tool row are current; the failure that refuses it otherwise. A Private
+/// Tool's is decided for `owner`, whose Tool it is.
 async fn tool_fact(
     transaction: &mut Transaction<'_>,
     lock: RowLock,
     workspace_id: &WorkspaceId,
     target: &ResolvedInvocationTool,
+    owner: coral_policy::PrivateToolOwner,
 ) -> Result<Result<ToolAccessState, CoralFailure>, Error> {
     match coral_provider::verify_invocation_tool_in_transaction(
         transaction,
@@ -380,17 +392,49 @@ async fn tool_fact(
             return Ok(Err(CoralFailure::AuthorityLost));
         }
     }
-    match coral_policy::invocation_decision_in_transaction(
-        transaction,
-        &policy_target(workspace_id, target),
-        target.tool().policy_facts(),
-        lock,
-    )
-    .await
-    {
+    match tool_decision_in_transaction(transaction, workspace_id, target, owner, lock).await {
         Ok(decision) => Ok(Ok(decision.access_state())),
         Err(coral_policy::Error::ToolNotFound) => Ok(Err(CoralFailure::AuthorityLost)),
         Err(error) => Err(error.into()),
+    }
+}
+
+/// The decision for `target` now, holding its exact rule as `lock` says: a
+/// Provider Tool's from its retained Generation's facts, and a Private
+/// Tool's from the default its author declared for the linked revision,
+/// for `owner`.
+pub(crate) async fn tool_decision_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    target: &ResolvedInvocationTool,
+    owner: coral_policy::PrivateToolOwner,
+    lock: RowLock,
+) -> Result<coral_policy::ToolPolicyDecision, coral_policy::Error> {
+    let policy_target = policy_target(workspace_id, target);
+    let facts = target.tool().policy_facts();
+    match (target.tool().execution_binding(), facts.declared_default()) {
+        (coral_catalog::ExecutionBinding::Code(_), Some(declared)) => {
+            coral_policy::private_tool_decision_in_transaction(
+                transaction,
+                &policy_target,
+                declared,
+                owner,
+                lock,
+            )
+            .await
+        }
+        (coral_catalog::ExecutionBinding::Code(_), None) => Err(coral_policy::Error::CorruptData(
+            "a Private Tool declares no default".to_owned(),
+        )),
+        _ => {
+            coral_policy::invocation_decision_in_transaction(
+                transaction,
+                &policy_target,
+                facts,
+                lock,
+            )
+            .await
+        }
     }
 }
 

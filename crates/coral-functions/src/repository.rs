@@ -429,14 +429,13 @@ pub(crate) async fn hold_current_path_in_transaction(
     Ok(transaction.execute(statement).await? == 1)
 }
 
-/// The default Tool Access State of each of `ids` that names a current
-/// Private Tool of the Workspace owned by `reader` or, when `agents`, by
-/// any Agent.
+/// The default Tool Access State of each of `tools` that names a current
+/// Private Tool of the Workspace within `scope` of `reader`.
 pub(crate) async fn readable_defaults_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     reader: &Principal,
-    agents: bool,
+    scope: crate::PrivateToolScope,
     tools: &[coral_catalog::ToolKey],
 ) -> Result<std::collections::BTreeMap<coral_catalog::ToolKey, ToolAccessState>, Error> {
     let mut owners = Cond::any().add(
@@ -444,7 +443,7 @@ pub(crate) async fn readable_defaults_in_transaction(
             .add(Expr::col(SavedFunctionRecords::PrincipalId).eq(reader.id().as_str()))
             .add(Expr::col(SavedFunctionRecords::PrincipalKind).eq(reader.kind().as_storage_str())),
     );
-    if agents {
+    if scope == crate::PrivateToolScope::OwnAndAgents {
         owners = owners.add(
             Expr::col(SavedFunctionRecords::PrincipalKind)
                 .eq(PrincipalKind::Agent.as_storage_str()),

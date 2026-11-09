@@ -49,6 +49,45 @@ impl ToolPolicyTarget {
     }
 }
 
+/// Who owns a Private Tool, which decides whether an Owner's exact rule on
+/// it applies (ADR 0033). An Owner sets rules on the Private Tools they can
+/// read: their own and every Agent's. No Owner can read a Member's, so a
+/// Member's Private Tool takes its declared default, even under a rule its
+/// author set while an Owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateToolOwner {
+    /// An Agent of the Workspace.
+    Agent,
+    /// A User who is a Workspace Owner now.
+    Owner,
+    /// A User who is not a Workspace Owner now.
+    Member,
+}
+
+impl PrivateToolOwner {
+    /// The owner of `kind` whose current Workspace role is `role`; an
+    /// Agent has none.
+    #[must_use]
+    pub fn of(
+        kind: coral_workspace::PrincipalKind,
+        role: Option<coral_workspace::WorkspaceRole>,
+    ) -> Self {
+        match (kind, role) {
+            (coral_workspace::PrincipalKind::Agent, _) => Self::Agent,
+            (coral_workspace::PrincipalKind::User, Some(coral_workspace::WorkspaceRole::Owner)) => {
+                Self::Owner
+            }
+            (coral_workspace::PrincipalKind::User, _) => Self::Member,
+        }
+    }
+
+    /// Whether an Owner's exact rule applies to this owner's Private Tools.
+    #[must_use]
+    pub const fn takes_rules(self) -> bool {
+        !matches!(self, Self::Member)
+    }
+}
+
 /// Every exact Tool rule of one Workspace, read once for discovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExactToolRules {
@@ -78,6 +117,25 @@ impl ExactToolRules {
             .unwrap_or_else(|| crate::default_access_state(facts))
     }
 
+    /// Returns the Workspace decision for the Private Tool `tool_key` of the
+    /// Private Provider `provider_id`, whose author declared `declared` and
+    /// which `owner` owns: an Owner's exact rule when it applies to that
+    /// owner, else `declared`.
+    #[must_use]
+    pub fn private_tool_access_state(
+        &self,
+        provider_id: &ProviderId,
+        tool_key: &ToolKey,
+        declared: ToolAccessState,
+        owner: PrivateToolOwner,
+    ) -> ToolAccessState {
+        owner
+            .takes_rules()
+            .then(|| self.rules.get(provider_id)?.get(tool_key).copied())
+            .flatten()
+            .unwrap_or(declared)
+    }
+
     /// Whether the Workspace disables `tool` of `provider_id`, so no
     /// Principal can call it, discovery leaves it out, and no count includes
     /// it.
@@ -86,8 +144,8 @@ impl ExactToolRules {
         self.access_state(provider_id, tool.key(), tool.policy_facts()) == ToolAccessState::Disabled
     }
 
-    /// Returns every Tool that an exact rule disables. No default is
-    /// `disabled`, so no other Tool is disabled.
+    /// Returns every Tool that an exact rule disables. No Provider Tool's
+    /// default is `disabled`, so no other Provider Tool is disabled.
     pub fn disabled(&self) -> impl Iterator<Item = (&ProviderId, &ToolKey)> {
         self.rules.iter().flat_map(|(provider_id, tools)| {
             tools

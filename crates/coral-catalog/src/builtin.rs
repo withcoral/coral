@@ -750,7 +750,11 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
                 Vec::new(),
                 "[]".to_string(),
             )
-            .declaring_enabled_by_default(definition.enabled_by_default),
+            .declaring_default(
+                definition
+                    .enabled_by_default
+                    .then_some(crate::ToolAccessState::Enabled),
+            ),
         );
     }
     Ok(PreparedProviderCatalog::new(

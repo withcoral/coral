@@ -25,16 +25,21 @@ const DESCRIPTION_DESCRIPTION: &str = "One line, one or two sentences: what the 
                                        restate input or return types; the declaration is shown \
                                        beside it.";
 
-const ADD_POLICY_DESCRIPTION: &str = "The tool's default policy: enabled runs each call, \
-                                      approval_required waits for a person to approve each \
-                                      call, and disabled refuses each call. An owner's rule \
-                                      overrides it. Omit it for enabled.";
+/// The description of `policy`, ending with what omitting it does.
+macro_rules! policy_description {
+    ($omitted:literal) => {
+        concat!(
+            "The tool's default policy: enabled runs each call, approval_required waits for a \
+             person to approve each call, and disabled refuses each call. An owner's rule \
+             overrides it. ",
+            $omitted
+        )
+    };
+}
 
-const UPDATE_POLICY_DESCRIPTION: &str = "The tool's default policy: enabled runs each call, \
-                                         approval_required waits for a person to approve \
-                                         each call, and disabled refuses each call. An \
-                                         owner's rule overrides it. Omit it to keep the \
-                                         current one.";
+const ADD_POLICY_DESCRIPTION: &str = policy_description!("Omit it for enabled.");
+
+const UPDATE_POLICY_DESCRIPTION: &str = policy_description!("Omit it to keep the current one.");
 
 const SAVE_NOTES: &str = "Pass source as the name of a function declared at the top level of \
                           this Program, with function or const: not a string, an inline \

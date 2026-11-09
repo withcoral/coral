@@ -36,6 +36,7 @@ enum ToolInvocations {
     FailureCode,
     FailureMessage,
     ParentInvocationId,
+    DeclaredDefaultAccessState,
 }
 
 impl InvocationState {
@@ -86,6 +87,7 @@ pub(super) async fn insert_admission(
                 ToolInvocations::State,
                 ToolInvocations::AdmittedAtUnixNanos,
                 ToolInvocations::ParentInvocationId,
+                ToolInvocations::DeclaredDefaultAccessState,
             ]
             .into_iter()
             .map(IntoIden::into_iden)
@@ -117,6 +119,10 @@ pub(super) async fn insert_admission(
                         .as_ref()
                         .map(ToString::to_string),
                 ),
+                Expr::val(
+                    private_tool_default(admitted.target.tool())
+                        .map(coral_catalog::ToolAccessState::as_storage_str),
+                ),
             ]
             .into_iter()
             .chain(location_values),
@@ -124,6 +130,19 @@ pub(super) async fn insert_admission(
         .to_owned();
     transaction.execute(statement).await?;
     Ok(())
+}
+
+/// The default a Private Tool's author declared for the revision the Run
+/// linked; `None` for every other Tool, whose catalog keeps its facts.
+fn private_tool_default(
+    tool: &coral_catalog::MaterializedTool,
+) -> Option<coral_catalog::ToolAccessState> {
+    matches!(
+        tool.execution_binding(),
+        coral_catalog::ExecutionBinding::Code(_)
+    )
+    .then(|| tool.policy_facts().declared_default())
+    .flatten()
 }
 
 pub(super) async fn connection_requests_for_run(
@@ -432,6 +451,9 @@ pub(super) async fn end_pending_with_failure(
 
 pub(super) struct ApprovalTarget {
     pub generation: coral_catalog::ProviderGenerationId,
+    /// The default the author of a Private Tool declared for the revision
+    /// the Run linked; `None` for any other Tool.
+    pub declared_default: Option<coral_catalog::ToolAccessState>,
     pub tool: coral_catalog::ToolKey,
     pub provider_id: coral_provider::ProviderId,
     pub provider_account_setting_version: i64,
@@ -457,6 +479,7 @@ pub(super) async fn approval_target(
         provider_account_id: Option<String>,
         call_path: String,
         arguments_json: String,
+        declared_default_access_state: Option<String>,
     }
     let row: Row = tx
         .fetch_optional(
@@ -470,6 +493,7 @@ pub(super) async fn approval_target(
                     ToolInvocations::ProviderAccountId,
                     ToolInvocations::CallPath,
                     ToolInvocations::ArgumentsJson,
+                    ToolInvocations::DeclaredDefaultAccessState,
                 ])
                 .from(ToolInvocations::Table)
                 .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
@@ -479,9 +503,18 @@ pub(super) async fn approval_target(
         )
         .await?
         .ok_or(Error::ApprovalNotFound)?;
+    let declared_default = row
+        .declared_default_access_state
+        .map(|state| {
+            coral_catalog::ToolAccessState::from_storage_str(&state).ok_or_else(|| {
+                Error::CorruptData("Invocation has an invalid declared default".to_owned())
+            })
+        })
+        .transpose()?;
     Ok(ApprovalTarget {
         generation: coral_catalog::ProviderGenerationId::parse(&row.provider_generation_id)
             .map_err(coral_provider::Error::from)?,
+        declared_default,
         tool: coral_catalog::ToolKey::parse(&row.tool_key).map_err(coral_provider::Error::from)?,
         provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
         provider_account_setting_version: row.provider_account_setting_version,

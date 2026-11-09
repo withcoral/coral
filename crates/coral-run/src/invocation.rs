@@ -447,6 +447,32 @@ impl ToolInvoker {
         linked: crate::types::LinkedPrivateTool,
     ) -> Result<(ResolvedInvocationTool, ToolAccessState), Error> {
         let mut transaction = self.database.begin().await?;
+        // Read the caller's authority before the Provider, the order the
+        // enforcement point holds them in. The Tool is the caller's own, so
+        // its role decides whether an Owner's rule on it applies.
+        let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
+        let authority = match self
+            .workspaces
+            .check_dispatch_in_transaction(
+                &mut transaction,
+                &self.actor,
+                &self.workspace_id,
+                resolved_at,
+                coral_db::RowLock::Shared,
+            )
+            .await
+        {
+            Ok(authority) => authority,
+            Err(error) => {
+                let failure = enforcement::authority_failure(error)?;
+                transaction.rollback().await?;
+                return Err(Error::InvocationRejected(failure.into()));
+            }
+        };
+        let owner = coral_policy::PrivateToolOwner::of(
+            self.actor.principal().kind(),
+            authority.effective_user_role(),
+        );
         let Some(target) = coral_provider::resolve_private_tool_in_transaction(
             &mut transaction,
             &self.workspace_id,
@@ -461,10 +487,11 @@ impl ToolInvoker {
                 CoralFailure::ProviderUnavailable.into(),
             ));
         };
-        let policy = coral_policy::invocation_decision_in_transaction(
+        let policy = enforcement::tool_decision_in_transaction(
             &mut transaction,
-            &enforcement::policy_target(&self.workspace_id, &target),
-            target.tool().policy_facts(),
+            &self.workspace_id,
+            &target,
+            owner,
             coral_db::RowLock::Shared,
         )
         .await?

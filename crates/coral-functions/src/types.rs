@@ -496,13 +496,13 @@ impl SavedFunctionSave {
         }
     }
 
-    /// Declares `state` as the tool's default Tool Access State, which
-    /// applies when no exact rule matches. A save that declares none
-    /// creates an `enabled` tool, or keeps the default of the tool it
-    /// replaces.
+    /// Declares `declared`, if any, as the Private Tool's default Tool
+    /// Access State, which applies when no exact rule matches. A save that
+    /// declares none creates an `enabled` Private Tool, or keeps the default
+    /// of the Private Tool it replaces.
     #[must_use]
-    pub const fn declaring_default(mut self, state: ToolAccessState) -> Self {
-        self.declared_default = Some(state);
+    pub const fn declaring_default(mut self, declared: Option<ToolAccessState>) -> Self {
+        self.declared_default = declared;
         self
     }
 
@@ -558,8 +558,8 @@ impl SavedFunctionSave {
         &self.source
     }
 
-    /// The default the saved tool takes: the declared one, or else
-    /// `previous`, the replaced tool's, or `enabled` for a new tool.
+    /// The default the saved Private Tool takes: the declared one, or else
+    /// `previous`, the replaced Private Tool's, or `enabled` for a new one.
     pub(crate) fn default_access_state(
         &self,
         previous: Option<ToolAccessState>,
@@ -569,7 +569,7 @@ impl SavedFunctionSave {
             .unwrap_or(Self::NEW_TOOL_DEFAULT)
     }
 
-    /// The default of a new tool whose save declares none.
+    /// The default of a new Private Tool whose save declares none.
     pub(crate) const NEW_TOOL_DEFAULT: ToolAccessState = ToolAccessState::Enabled;
 }
 
@@ -1010,6 +1010,15 @@ impl SavedFunctionPage {
     pub const fn next_after(&self) -> Option<&SavedFunctionPath> {
         self.next_after.as_ref()
     }
+}
+
+/// Whose Private Tools a reader of their policy sees, beside its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateToolScope {
+    /// Only the reader's own.
+    Own,
+    /// The reader's own and every Agent's, as a Workspace Owner reads them.
+    OwnAndAgents,
 }
 
 /// Metadata-only Saved Function target supplied before listing or ranking.

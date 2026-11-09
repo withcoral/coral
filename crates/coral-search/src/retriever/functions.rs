@@ -241,42 +241,23 @@ impl EntityRetriever for SavedFunctionRetriever {
         else {
             return Ok(None);
         };
-        // Coral installs it in every Workspace before it serves requests. A
-        // disabled Private Provider stops every Private Tool.
-        let Some(provider) =
-            coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
-                .await?
-                .filter(|provider| provider.state() == coral_provider::ProviderState::Active)
-        else {
+        let Some(policy) = PrivateToolPolicy::load(transaction, context).await? else {
             return Ok(None);
         };
-        // An Owner's exact rule decides, and the declared default without
-        // one. A disabled Tool leaves describe, as a disabled Provider Tool
-        // does.
-        let target = coral_policy::ToolPolicyTarget::new(
-            context.workspace_id.clone(),
-            provider.id().clone(),
-            exact.id().tool_key(),
-        );
-        let decision = coral_policy::discovery_decision_in_transaction(
-            transaction,
-            &target,
-            coral_catalog::ToolPolicyFacts::default()
-                .declaring_default(exact.default_access_state()),
-        )
-        .await?;
-        let approval_requirement = match decision.access_state() {
-            coral_policy::ToolAccessState::Enabled => ApprovalRequirement::NotRequired,
-            coral_policy::ToolAccessState::ApprovalRequired => ApprovalRequirement::Required,
-            coral_policy::ToolAccessState::Disabled => return Ok(None),
-        };
+        // A disabled Tool leaves describe, as a disabled Provider Tool does.
+        let approval_requirement =
+            match policy.access_state(exact.id(), exact.default_access_state()) {
+                coral_policy::ToolAccessState::Enabled => ApprovalRequirement::NotRequired,
+                coral_policy::ToolAccessState::ApprovalRequired => ApprovalRequirement::Required,
+                coral_policy::ToolAccessState::Disabled => return Ok(None),
+            };
         Ok(Some(ExactAuthoringDescription::private_tool(
             PrivateToolAuthoringDescription::new(
                 call_path.clone(),
                 exact.authoring().description().as_str().to_string(),
                 exact.authoring().declaration().as_str().to_string(),
-                provider.id().clone(),
-                provider.display_name().to_owned(),
+                policy.provider.id().clone(),
+                policy.provider.display_name().to_owned(),
                 exact.revision(),
                 approval_requirement,
             ),
@@ -293,40 +274,81 @@ fn strong_function(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
     matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
 }
 
+/// How the caller's own Private Tools are decided, read once per request:
+/// the Workspace's active Private Provider, the Owners' exact rules, and
+/// whether they apply to the caller's Private Tools.
+struct PrivateToolPolicy {
+    provider: coral_provider::Provider,
+    rules: coral_policy::ExactToolRules,
+    owner: coral_policy::PrivateToolOwner,
+}
+
+impl PrivateToolPolicy {
+    /// `None` while an Owner disables the Private Provider, which stops
+    /// every Private Tool. Coral installs it in every Workspace before it
+    /// serves requests.
+    async fn load(
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+    ) -> Result<Option<Self>, Error> {
+        let Some(provider) =
+            coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
+                .await?
+                .filter(|provider| provider.state() == coral_provider::ProviderState::Active)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            provider,
+            rules: coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id)
+                .await?,
+            owner: coral_policy::PrivateToolOwner::of(
+                context.actor.principal().kind(),
+                context.authority.effective_user_role(),
+            ),
+        }))
+    }
+
+    /// The decision for the caller's Private Tool `id`, whose author
+    /// declared `declared`.
+    fn access_state(
+        &self,
+        id: &coral_functions::SavedFunctionId,
+        declared: coral_policy::ToolAccessState,
+    ) -> coral_policy::ToolAccessState {
+        self.rules.private_tool_access_state(
+            self.provider.id(),
+            &id.tool_key(),
+            declared,
+            self.owner,
+        )
+    }
+}
+
 /// The Principal's current Private Tools that policy lets it call: none
-/// while the Private Provider is disabled, and none that an Owner's rule
-/// or, without one, the declared default disables. Reads no source or
-/// declaration.
+/// while the Private Provider is disabled, and none that policy disables.
+/// Reads no source or declaration.
 async fn current_functions(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
 ) -> Result<Vec<SavedFunctionSearchMaterial>, Error> {
-    let Some(provider) =
-        coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
-            .await?
-            .filter(|provider| provider.state() == coral_provider::ProviderState::Active)
-    else {
+    let Some(policy) = PrivateToolPolicy::load(transaction, context).await? else {
         return Ok(Vec::new());
     };
-    let rules =
-        coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id).await?;
-    let mut functions = Vec::new();
-    for function in coral_functions::saved_function_search_material_in_transaction(
-        transaction,
-        context.workspace_id,
-        context.actor.principal(),
+    Ok(
+        coral_functions::saved_function_search_material_in_transaction(
+            transaction,
+            context.workspace_id,
+            context.actor.principal(),
+        )
+        .await?
+        .into_iter()
+        .filter(|function| {
+            policy.access_state(function.id(), function.default_access_state())
+                != coral_policy::ToolAccessState::Disabled
+        })
+        .collect(),
     )
-    .await?
-    {
-        let key = function.id().tool_key();
-        let facts = coral_catalog::ToolPolicyFacts::default()
-            .declaring_default(function.default_access_state());
-        if rules.access_state(provider.id(), &key, facts) != coral_policy::ToolAccessState::Disabled
-        {
-            functions.push(function);
-        }
-    }
-    Ok(functions)
 }
 
 fn function_ref(material: SavedFunctionSearchMaterial) -> Result<EntityRef, Error> {

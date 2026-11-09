@@ -454,39 +454,43 @@ async fn decision_required(
     target: &invocation_repository::ApprovalTarget,
     now: i64,
 ) -> Result<bool, Error> {
-    if let Err(error) = workspaces
+    let role = match workspaces
         .check_invoking_principal_in_snapshot(tx, &run.workspace_id, &run.principal, now)
         .await
     {
-        // A lost authority makes the request moot; any other failure is the
-        // caller's to see.
-        crate::enforcement::authority_failure(error)?;
-        return Ok(false);
-    }
-    // A Private Tool's facts are the default its author declared for the
-    // revision the Run linked, which only the Run holds; no catalog stores
-    // it. The request exists because that default, or a rule, asked for
-    // approval, and a rule is never deleted while its Provider lives. So
-    // without a rule that default was `approval_required`.
-    let facts = if coral_catalog::generation_binds_code_in_transaction(tx, &target.generation)
-        .await
-        .map_err(coral_provider::Error::from)?
-    {
-        coral_catalog::ToolPolicyFacts::default()
-            .declaring_default(coral_policy::ToolAccessState::ApprovalRequired)
-    } else {
-        coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
-            .await
-            .map_err(coral_provider::Error::from)?
-            .ok_or(Error::ApprovalNotFound)?
-            .policy_facts()
+        Ok(role) => role,
+        Err(error) => {
+            // A lost authority makes the request moot; any other failure is
+            // the caller's to see.
+            crate::enforcement::authority_failure(error)?;
+            return Ok(false);
+        }
     };
     let policy_target = coral_policy::ToolPolicyTarget::new(
         run.workspace_id.clone(),
         target.provider_id.clone(),
         target.tool.clone(),
     );
-    let policy = coral_policy::discovery_decision_in_transaction(tx, &policy_target, facts).await?;
+    // A Private Tool is the invoking Principal's own, and its Invocation
+    // retains the default its author declared for the linked revision. No
+    // catalog stores a Private Tool.
+    let policy = if let Some(declared) = target.declared_default {
+        coral_policy::private_tool_decision_in_transaction(
+            tx,
+            &policy_target,
+            declared,
+            coral_policy::PrivateToolOwner::of(run.principal.kind(), role),
+            coral_db::RowLock::None,
+        )
+        .await?
+    } else {
+        let tool = coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
+            .await
+            .map_err(coral_provider::Error::from)?
+            .ok_or(Error::ApprovalNotFound)?;
+        coral_policy::discovery_decision_in_transaction(tx, &policy_target, tool.policy_facts())
+            .await?
+    };
     Ok(policy.access_state() == coral_policy::ToolAccessState::ApprovalRequired)
 }
 

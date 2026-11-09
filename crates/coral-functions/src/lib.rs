@@ -46,7 +46,6 @@ pub use saved_function::{
     PreparedSave, SavedFunctionModule, delete_current_for_access_removal_in_transaction,
 };
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
-pub use types::SavedFunctionSelection;
 pub use types::{
     AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, ExactSavedFunctionAuthoringMaterial,
     ExactSavedFunctionDescriptionMaterial, LifecycleAction, LifecycleOutcome,
@@ -61,12 +60,12 @@ pub use types::{
     SavedFunctionPath, SavedFunctionSave, SavedFunctionSearchMaterial, SavedFunctionSource,
     SavedFunctionSummary,
 };
+pub use types::{PrivateToolScope, SavedFunctionSelection};
 
 /// The declared default Tool Access State of each of `tools` that names a
-/// current Private Tool of the Workspace that `reader` may read a rule on:
-/// its own and, when `agents` (a Workspace Owner reads), every Agent's. A
-/// Member's Private Tool is never another Principal's to read, so its key
-/// is left out like any key that names no Private Tool.
+/// current Private Tool of the Workspace within `scope` of `reader`. No
+/// scope holds another User's Private Tool, so its key is left out like any
+/// key that names no Private Tool.
 ///
 /// The caller owns Workspace authority and the coherent read transaction.
 ///
@@ -77,11 +76,11 @@ pub async fn readable_defaults_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     reader: &Principal,
-    agents: bool,
+    scope: PrivateToolScope,
     tools: &[coral_catalog::ToolKey],
 ) -> Result<std::collections::BTreeMap<coral_catalog::ToolKey, coral_catalog::ToolAccessState>, Error>
 {
-    repository::readable_defaults_in_transaction(transaction, workspace_id, reader, agents, tools)
+    repository::readable_defaults_in_transaction(transaction, workspace_id, reader, scope, tools)
         .await
 }
 

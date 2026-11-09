@@ -60,7 +60,7 @@ pub use coral_catalog::ToolAccessState;
 pub use error::Error;
 pub use types::{
     AdministrativeLifecycleEvent, ExactToolRules, LifecycleAction, LifecycleOutcome,
-    ToolPolicyDecision, ToolPolicyTarget,
+    PrivateToolOwner, ToolPolicyDecision, ToolPolicyTarget,
 };
 
 /// Exact Workspace Tool-policy Module.
@@ -99,7 +99,9 @@ impl ToolPolicyModule {
     /// Returns 1–100 distinct current decisions from one Provider in request order.
     /// Authority, current catalog hints and explicit rules share one read snapshot.
     /// In the Private Provider, `actor` reads only the Private Tools it can
-    /// read: its own, and an Owner's every Agent's.
+    /// read: its own, and an Owner's every Agent's. A Member's own takes its
+    /// declared default. A Private Tool's default is its current
+    /// revision's; a Run that linked an earlier revision keeps that one's.
     /// # Errors
     /// Rejects invalid batches, absent targets, lost authority and persistence failures.
     pub async fn decisions(
@@ -132,7 +134,7 @@ impl ToolPolicyModule {
             .iter()
             .map(|target| target.tool_key().clone())
             .collect();
-        let policy_facts = ruled_tool_facts_in_transaction(
+        let ruled = ruled_tool_facts_in_transaction(
             &mut transaction,
             actor,
             &evidence,
@@ -140,17 +142,22 @@ impl ToolPolicyModule {
             &keys,
         )
         .await?;
-        let explicit = repository::access_states_in_transaction(
-            &mut transaction,
-            first.workspace_id(),
-            first.provider_id(),
-            &keys,
-        )
-        .await?;
+        let explicit = if ruled.rules_apply {
+            repository::access_states_in_transaction(
+                &mut transaction,
+                first.workspace_id(),
+                first.provider_id(),
+                &keys,
+            )
+            .await?
+        } else {
+            BTreeMap::new()
+        };
         let decisions = targets
             .iter()
             .map(|target| {
-                let facts = policy_facts
+                let facts = ruled
+                    .facts
                     .get(target.tool_key())
                     .ok_or(Error::ToolNotFound)?;
                 Ok(resolved_decision(
@@ -479,9 +486,17 @@ async fn require_tool_in_transaction(
         std::slice::from_ref(target.tool_key()),
     )
     .await?
+    .facts
     .contains_key(target.tool_key())
     .then_some(())
     .ok_or(Error::ToolNotFound)
+}
+
+/// The Tools of one Provider that a reader may read or set a rule on, with
+/// their policy facts, and whether an exact rule applies to them.
+struct RuledTools {
+    facts: BTreeMap<ToolKey, ToolPolicyFacts>,
+    rules_apply: bool,
 }
 
 /// The policy facts of each of `keys` that names a Tool of `provider` on
@@ -489,34 +504,43 @@ async fn require_tool_in_transaction(
 /// a Tool of the Provider's current catalog or, in the Workspace's Private
 /// Provider, a Private Tool `actor` can read. That is its own and, for an
 /// Owner, every Agent's, never another User's (ADR 0033). A Private Tool's
-/// facts are the default its author declared. Keys that name no such Tool
-/// are left out.
+/// facts are the default its author declared, and a rule applies to them
+/// only while `actor` is an Owner: no rule applies to a Member's. Keys that
+/// name no such Tool are left out.
 async fn ruled_tool_facts_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     actor: &AuthenticatedUser,
     evidence: &WorkspaceEvidence,
     provider: &coral_provider::ProviderId,
     keys: &[ToolKey],
-) -> Result<BTreeMap<ToolKey, ToolPolicyFacts>, Error> {
+) -> Result<RuledTools, Error> {
     let workspace_id = evidence.workspace().id();
     let private = coral_provider::private_provider_in_transaction(transaction, workspace_id)
         .await?
         .is_some_and(|private| private.id() == provider);
     if !private {
-        return Ok(coral_provider::tool_policy_facts_batch_in_transaction(
-            transaction,
-            workspace_id,
-            provider,
-            keys,
-        )
-        .await?);
+        return Ok(RuledTools {
+            facts: coral_provider::tool_policy_facts_batch_in_transaction(
+                transaction,
+                workspace_id,
+                provider,
+                keys,
+            )
+            .await?,
+            rules_apply: true,
+        });
     }
     let reader = AuthenticatedPrincipal::user(actor.clone());
-    Ok(coral_functions::readable_defaults_in_transaction(
+    let owner = evidence.effective_role() == WorkspaceRole::Owner;
+    let facts = coral_functions::readable_defaults_in_transaction(
         transaction,
         workspace_id,
         reader.principal(),
-        evidence.effective_role() == WorkspaceRole::Owner,
+        if owner {
+            coral_functions::PrivateToolScope::OwnAndAgents
+        } else {
+            coral_functions::PrivateToolScope::Own
+        },
         keys,
     )
     .await
@@ -525,8 +549,17 @@ async fn ruled_tool_facts_in_transaction(
         other => Error::CorruptData(other.to_string()),
     })?
     .into_iter()
-    .map(|(key, declared)| (key, ToolPolicyFacts::default().declaring_default(declared)))
-    .collect())
+    .map(|(key, declared)| {
+        (
+            key,
+            ToolPolicyFacts::default().declaring_default(Some(declared)),
+        )
+    })
+    .collect();
+    Ok(RuledTools {
+        facts,
+        rules_apply: owner,
+    })
 }
 
 /// Reads one exact current Tool decision without holding it.
@@ -589,6 +622,34 @@ pub async fn invocation_decision_in_transaction(
 ) -> Result<ToolPolicyDecision, Error> {
     let explicit = repository::access_state_in_transaction(transaction, target, lock).await?;
     Ok(resolved_decision(target, retained, explicit))
+}
+
+/// Rechecks the decision for one Private Tool Invocation, as
+/// [`invocation_decision_in_transaction`] does for a Provider Tool: the
+/// Owner's exact rule when it applies to `owner`, held as `lock` says, else
+/// `declared`, the default its author declared for the revision the Run
+/// linked. A rule on a Member's Private Tool is not read.
+///
+/// # Errors
+///
+/// Returns a corrupt-data or persistence failure.
+pub async fn private_tool_decision_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    target: &ToolPolicyTarget,
+    declared: ToolAccessState,
+    owner: PrivateToolOwner,
+    lock: coral_db::RowLock,
+) -> Result<ToolPolicyDecision, Error> {
+    let explicit = if owner.takes_rules() {
+        repository::access_state_in_transaction(transaction, target, lock).await?
+    } else {
+        None
+    };
+    Ok(ToolPolicyDecision::new(
+        target.clone(),
+        explicit.unwrap_or(declared),
+        explicit.is_some(),
+    ))
 }
 
 fn resolved_decision(
