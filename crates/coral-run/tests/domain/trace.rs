@@ -138,7 +138,7 @@ impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
 }
 
 /// Every finished span of the traces that hold a span of the Run `run_id`.
-fn of_run(run_id: &crate::RunId) -> Vec<SpanData> {
+pub(super) fn of_run(run_id: &crate::RunId) -> Vec<SpanData> {
     let spans = capture().finished();
     let traces = spans
         .iter()
@@ -152,7 +152,7 @@ fn of_run(run_id: &crate::RunId) -> Vec<SpanData> {
 }
 
 /// Every finished span named `name`.
-fn named<'a>(spans: &'a [SpanData], name: &str) -> Vec<&'a SpanData> {
+pub(super) fn named<'a>(spans: &'a [SpanData], name: &str) -> Vec<&'a SpanData> {
     spans.iter().filter(|span| span.name == name).collect()
 }
 

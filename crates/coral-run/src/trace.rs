@@ -322,6 +322,18 @@ impl InvocationTrace {
             ),
             Err(InvocationHostError::Fatal(_)) => (None, None),
         };
+        self.finish(kind, failure_code);
+    }
+
+    /// Records an Invocation that ended with its Program, before what Coral
+    /// performs in the Program completed: `run_terminated`, though its
+    /// dispatch started, since nothing it performed can still be in flight.
+    pub(crate) fn run_terminated(self) {
+        self.finish(Some(crate::InvocationResultKind::RunTerminated), None);
+    }
+
+    fn finish(self, kind: Option<crate::InvocationResultKind>, failure_code: Option<&'static str>) {
+        use crate::InvocationResultKind;
         let Self { span, measure, .. } = self;
         if let Some(measure) = measure.into_inner() {
             measure.end(

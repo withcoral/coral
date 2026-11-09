@@ -1535,14 +1535,16 @@ impl PerformedCall {
     /// chunk, which the Program's end reaches only after this. A Run that
     /// commits nothing more ends it with its termination instead.
     pub(crate) fn abandon(self) {
-        let (sender, _unwatched) = oneshot::channel();
-        let _queued = self.invoker.owner.work(Box::new(EndBeforeSendWork {
-            admitted: self.admitted,
-            reply: Replier::new(sender),
-        }));
-        self.trace.end(Err(&InvocationHostError::Fatal(
-            Error::ProgramHostTerminated,
-        )));
+        // Inside the Invocation's span, so that its end marks this one.
+        let span = self.admitted.span.clone();
+        span.in_scope(|| {
+            let (sender, _unwatched) = oneshot::channel();
+            let _queued = self.invoker.owner.work(Box::new(EndBeforeSendWork {
+                admitted: self.admitted,
+                reply: Replier::new(sender),
+            }));
+            self.trace.run_terminated();
+        });
     }
 }
 

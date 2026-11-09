@@ -383,3 +383,71 @@ async fn a_program_that_ends_before_a_tool_body_settles_ends_its_call_as_run_ter
         );
     }
 }
+
+// Catches: a call that ends with its Program, before its body did, traced
+// as `indeterminate` (an error) though its row records `run_terminated`, or
+// with a span that ends when the call was permitted instead of when it ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_that_ends_with_its_program_is_traced_as_run_terminated_when_it_ends() {
+    super::trace::capture();
+    let scope = BodyScope::new("user:tool-bodies-traced").await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope
+        .save(
+            "weather.spin",
+            "async () => { await coral.providers.weather.getForecast(); while (true) {} }",
+        )
+        .await;
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission("return await coral.private.weather.spin();"),
+        )
+        .await;
+    wait_until(|| scope.upstream.sends.load(Ordering::SeqCst) == 1).await;
+    let spinning = Duration::from_millis(300);
+    tokio::time::sleep(spinning).await;
+    let canceled = scope
+        .fixture
+        .runs
+        .cancel(
+            &scope.tool.principal,
+            &scope.tool.workspace_id,
+            &run,
+            &immediate(None, 100),
+        )
+        .await
+        .expect("cancel the Run");
+    assert_eq!(canceled.state(), RunState::Canceled);
+    wait_until(|| {
+        super::trace::named(&super::trace::of_run(&run), "coral.invocation")
+            .iter()
+            .any(|span| {
+                coral_telemetry::testing::attribute(span, "coral.tool.call_path").as_deref()
+                    == Some("coral.private.weather.spin")
+            })
+    })
+    .await;
+
+    let spans = super::trace::of_run(&run);
+    let call = super::trace::named(&spans, "coral.invocation")
+        .into_iter()
+        .find(|span| {
+            coral_telemetry::testing::attribute(span, "coral.tool.call_path").as_deref()
+                == Some("coral.private.weather.spin")
+        })
+        .expect("the call's span");
+    assert_eq!(
+        coral_telemetry::testing::attribute(call, "coral.invocation.result_kind").as_deref(),
+        Some("run_terminated")
+    );
+    assert_eq!(call.status, opentelemetry::trace::Status::Unset);
+    let traced = call
+        .end_time
+        .duration_since(call.start_time)
+        .expect("the span ends after it starts");
+    assert!(
+        traced >= spinning,
+        "the span ends when the call did, not when it was permitted: {traced:?}"
+    );
+}
