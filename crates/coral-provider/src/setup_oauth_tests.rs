@@ -2506,8 +2506,11 @@ async fn oauth_setup_negotiates_json_token_responses() {
 #[tokio::test]
 async fn oauth_setup_reports_safe_token_exchange_failures() {
     let api = OAuthApi::start().await;
+    // Over the 64 KiB a token response may take.
+    let oversized = format!(r#"{{"access_token":"{}"}}"#, "a".repeat(64 * 1024));
     for (status, body, expected) in [
         (200, "not-json", "oauth_token_response_invalid"),
+        (200, oversized.as_str(), "oauth_token_response_invalid"),
         (
             200,
             r#"{"error":"incorrect_client_credentials"}"#,
