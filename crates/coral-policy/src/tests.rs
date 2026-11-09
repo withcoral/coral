@@ -630,11 +630,11 @@ paths:
         .unwrap();
     let decisions = listed
         .iter()
-        .map(|(tool, decision)| {
+        .map(|listed| {
             (
-                tool.key.as_str(),
-                decision.access_state(),
-                decision.is_explicit(),
+                listed.listing.key.as_str(),
+                listed.decision.access_state(),
+                listed.decision.is_explicit(),
             )
         })
         .collect::<Vec<_>>();
@@ -648,7 +648,7 @@ paths:
     assert_eq!(
         listed
             .iter()
-            .map(|(_tool, decision)| decision.clone())
+            .map(|listed| listed.decision.clone())
             .collect::<Vec<_>>(),
         [
             policies.decision(&owner, &read).await.unwrap(),
@@ -662,17 +662,23 @@ paths:
         .listed_decisions(&owner, workspace.id(), &provider, None, 1)
         .await
         .unwrap();
-    let [(page, _decision), _lookahead] = first.as_slice() else {
+    let [page, _lookahead] = first.as_slice() else {
         panic!("a page of one and its lookahead row");
     };
     let last = policies
-        .listed_decisions(&owner, workspace.id(), &provider, Some(&page.key), 1)
+        .listed_decisions(
+            &owner,
+            workspace.id(),
+            &provider,
+            Some(&page.listing.key),
+            1,
+        )
         .await
         .unwrap();
-    let [(only, _decision)] = last.as_slice() else {
+    let [only] = last.as_slice() else {
         panic!("one Tool follows the first");
     };
-    assert_eq!(only.key.as_str(), "writeOne");
+    assert_eq!(only.listing.key.as_str(), "writeOne");
 
     assert!(matches!(
         policies
@@ -2381,5 +2387,82 @@ async fn a_rule_on_an_owners_private_tool_stops_applying_once_they_are_a_member(
         (decision.access_state(), decision.is_explicit()),
         (ToolAccessState::ApprovalRequired, false),
         "the declared default decides"
+    );
+}
+
+// Catches: a Private Provider listing that shows a Member's Private Tool to
+// an Owner, hides an Agent's from them or does not name its Agent, or shows
+// a Member an Owner's rule on their own Private Tool.
+#[tokio::test]
+async fn the_private_provider_lists_the_private_tools_whose_rules_each_reader_may_read() {
+    let tools = PrivateTools::new().await;
+    tools
+        .policies
+        .set_access_states(
+            &change(tools.owner.clone(), 30, '6'),
+            vec![
+                (tools.target(&tools.owners_tool), ToolAccessState::Disabled),
+                (
+                    tools.target(&tools.agents_tool),
+                    ToolAccessState::ApprovalRequired,
+                ),
+            ],
+        )
+        .await
+        .expect("set the Owner's rules");
+    let listed = |reader: AuthenticatedUser| {
+        let (policies, workspace, provider) = (
+            tools.policies.clone(),
+            tools.workspace.clone(),
+            tools.provider.clone(),
+        );
+        async move {
+            let mut rows = policies
+                .listed_decisions(&reader, &workspace, &provider, None, 1000)
+                .await
+                .expect("list the Private Provider")
+                .into_iter()
+                .map(|listed| {
+                    (
+                        listed.listing.key,
+                        listed.listing.relative_path,
+                        listed.agent.is_some(),
+                        listed.decision.access_state(),
+                        listed.decision.is_explicit(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+            rows
+        }
+    };
+    let row = |key: &ToolKey, agent, state, explicit| {
+        (
+            key.clone(),
+            "people.greet".to_owned(),
+            agent,
+            state,
+            explicit,
+        )
+    };
+    let mut owner = vec![
+        row(&tools.owners_tool, false, ToolAccessState::Disabled, true),
+        row(
+            &tools.agents_tool,
+            true,
+            ToolAccessState::ApprovalRequired,
+            true,
+        ),
+    ];
+    owner.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    assert_eq!(listed(tools.owner.clone()).await, owner);
+    assert_eq!(
+        listed(tools.member.clone()).await,
+        [row(
+            &tools.members_tool,
+            false,
+            ToolAccessState::Enabled,
+            false
+        )]
     );
 }

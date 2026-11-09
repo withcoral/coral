@@ -214,3 +214,211 @@ async fn delete_removes_only_the_callers_own_function() {
         (tonic::Code::NotFound, "NOT_FOUND")
     );
 }
+
+/// Each `ToolAccess` row of `provider` as `user` lists it: (relative path,
+/// agent, access state, explicit, tool name), in Tool Key order.
+async fn private_tool_access(
+    f: &Fixture,
+    user: &AuthenticatedUser,
+    provider: &str,
+) -> Vec<(String, String, i32, bool, String)> {
+    f.policies()
+        .list_tool_access(request(
+            management::ListToolAccessRequest {
+                parent: provider.to_owned(),
+                page_size: 0,
+                page_token: String::new(),
+            },
+            &f.token(user, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .tools
+        .into_iter()
+        .map(|tool| {
+            (
+                tool.relative_path,
+                tool.agent,
+                tool.access_state,
+                tool.explicit,
+                tool.tool,
+            )
+        })
+        .collect()
+}
+
+// Catches: a Functions listing that does not name the Private Provider; a
+// Private Tool policy route that refuses the Private Provider, does not name
+// an Agent's row, or maps a Member's Private Tool to anything but NOT_FOUND;
+// or a kill switch that answers anything but the Provider it changed.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey covers each route an Owner manages Private Tool policy through"
+)]
+async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
+    let f = Fixture::new().await;
+    save(&f, &f.owner, "people.greet", "export default () => 1;").await;
+    save(&f, &f.member, "people.greet", "export default () => 2;").await;
+    let issued = f
+        .workspaces
+        .create_agent(
+            &super::change(&f.owner),
+            f.workspace.id(),
+            coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = f
+        .workspaces
+        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .await
+        .unwrap();
+    f.saved_functions
+        .save(
+            &SavedFunctionChangeContext::new(agent.clone(), 3, TraceId::current_or_new()),
+            f.workspace.id(),
+            SavedFunctionSave::new(
+                SavedFunctionPath::parse("people.greet").unwrap(),
+                SavedFunctionDescription::parse("Describe the Agent's").unwrap(),
+                SavedFunctionSource::parse("export default () => 3;").unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let provider = f
+        .saved_functions()
+        .list_saved_functions(request(
+            management::ListSavedFunctionsRequest {
+                parent: format!("workspaces/{}", f.workspace.id()),
+                page_size: 0,
+                page_token: String::new(),
+            },
+            &f.token(&f.owner, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .private_provider;
+    assert!(
+        provider.starts_with(&format!("workspaces/{}/providers/", f.workspace.id())),
+        "{provider}"
+    );
+
+    let enabled = i32::from(management::ToolAccessState::Enabled);
+    let mut owner_rows = private_tool_access(&f, &f.owner, &provider).await;
+    owner_rows.sort_by(|a, b| a.1.cmp(&b.1));
+    let agent_name = format!(
+        "workspaces/{}/agents/{}",
+        f.workspace.id(),
+        agent.principal().id()
+    );
+    assert_eq!(
+        owner_rows
+            .iter()
+            .map(|(path, agent, state, explicit, _tool)| (
+                path.as_str(),
+                agent.as_str(),
+                *state,
+                *explicit
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("people.greet", "", enabled, false),
+            ("people.greet", agent_name.as_str(), enabled, false),
+        ]
+    );
+    let member_rows = private_tool_access(&f, &f.member, &provider).await;
+    let [(_, member_agent, _, _, member_tool)] = member_rows.as_slice() else {
+        panic!("a Member lists their own Private Tool: {member_rows:?}");
+    };
+    assert_eq!(member_agent, "");
+
+    let update =
+        async |user: &AuthenticatedUser, tool: &str, state: management::ToolAccessState| {
+            f.policies()
+                .update_tool_policies(request(
+                    management::UpdateToolPoliciesRequest {
+                        parent: provider.clone(),
+                        policies: vec![management::ToolPolicy {
+                            tool: tool.to_owned(),
+                            access_state: state.into(),
+                            explicit: false,
+                        }],
+                    },
+                    &f.token(user, "reef"),
+                    "reef",
+                ))
+                .await
+        };
+    let hidden = update(&f.owner, member_tool, management::ToolAccessState::Disabled)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (hidden.code(), error_reason(&hidden).as_str()),
+        (tonic::Code::NotFound, "NOT_FOUND")
+    );
+    let set = update(
+        &f.owner,
+        &owner_rows.get(1).expect("the Agent's row").4,
+        management::ToolAccessState::Disabled,
+    )
+    .await
+    .unwrap()
+    .into_inner();
+    assert_eq!(
+        set.policies
+            .iter()
+            .map(|policy| (policy.access_state, policy.explicit))
+            .collect::<Vec<_>>(),
+        [(i32::from(management::ToolAccessState::Disabled), true)]
+    );
+
+    let token = f.token(&f.owner, "reef");
+    let mut providers = f.providers();
+    let current = providers
+        .get_provider(request(
+            management::GetProviderRequest {
+                name: provider.clone(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let disabled = providers
+        .disable_provider(request(
+            management::DisableProviderRequest {
+                name: provider.clone(),
+                etag: current.etag,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (disabled.name.as_str(), disabled.state()),
+        (provider.as_str(), management::ProviderState::Disabled)
+    );
+    let restored = providers
+        .restore_provider(request(
+            management::RestoreProviderRequest {
+                name: provider.clone(),
+                etag: disabled.etag,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(restored.state(), management::ProviderState::Active);
+}

@@ -11,7 +11,7 @@ import classNames from 'classnames'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
-import { PolicyToggle } from '@/components/policy-toggle'
+import { PolicyToggle, type PolicyState } from '@/components/policy-toggle'
 import { Button, Table, Typography } from '@/wax/components'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { Icon } from '@/wax/components/icon'
@@ -87,18 +87,18 @@ function FunctionRow({ member: { summary, name }, query }: { member: Member; que
         </Table.RowLink>
       </span>
       <span role="cell" className={styles.policyCell}>
-        <PolicyPreview name={summary.path} />
+        {summary.policy && <PolicyPreview name={summary.path} policy={summary.policy} />}
       </span>
     </Table.Row>
   )
 }
 
-/** Every function is always allowed until Coral supports function policy. */
-function PolicyPreview({ name }: { name: string }) {
+/** The function's current policy, read-only until the Tools page edits it. */
+function PolicyPreview({ name, policy }: { name: string; policy: PolicyState }) {
   return (
-    <Tooltip content="Function policy is not available yet. Coral runs every function you save.">
+    <Tooltip content="This is the current policy of the tool. Set its default with the policy field of coral.updateTool.">
       <span className={styles.policy} tabIndex={0}>
-        <PolicyToggle size="small" disabled label={`Policy for ${name}`} value="enabled" />
+        <PolicyToggle size="small" disabled label={`Policy for ${name}`} value={policy} />
       </span>
     </Tooltip>
   )

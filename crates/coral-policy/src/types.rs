@@ -49,6 +49,19 @@ impl ToolPolicyTarget {
     }
 }
 
+/// One Tool's row in a Provider's policy listing: what the row shows, its
+/// decision and, in the Private Provider, the Agent whose Private Tool it is
+/// (`None` for the reader's own, and for every other Provider's Tools).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedTool {
+    /// What the row shows.
+    pub listing: coral_catalog::ToolListing,
+    /// The Tool's decision now.
+    pub decision: ToolPolicyDecision,
+    /// The Agent whose Private Tool this is.
+    pub agent: Option<coral_workspace::PrincipalId>,
+}
+
 /// Who owns a Private Tool, which decides whether an Owner's exact rule on
 /// it applies (ADR 0033). An Owner sets rules on the Private Tools they can
 /// read: their own and every Agent's. No Owner can read a Member's, so a

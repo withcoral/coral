@@ -429,6 +429,85 @@ pub(crate) async fn hold_current_path_in_transaction(
     Ok(transaction.execute(statement).await? == 1)
 }
 
+/// The rows of the Private Tools within `scope` of `reader`: its own and,
+/// for [`crate::PrivateToolScope::OwnAndAgents`], every Agent's.
+fn readable_owners(reader: &Principal, scope: crate::PrivateToolScope) -> Cond {
+    let owners = Cond::any().add(
+        Cond::all()
+            .add(Expr::col(SavedFunctionRecords::PrincipalId).eq(reader.id().as_str()))
+            .add(Expr::col(SavedFunctionRecords::PrincipalKind).eq(reader.kind().as_storage_str())),
+    );
+    if scope == crate::PrivateToolScope::OwnAndAgents {
+        owners.add(
+            Expr::col(SavedFunctionRecords::PrincipalKind)
+                .eq(PrincipalKind::Agent.as_storage_str()),
+        )
+    } else {
+        owners
+    }
+}
+
+/// One page of the Private Tools within `scope` of `reader`, in Tool Key
+/// order after `after`, with one row more than `page_size` when another
+/// page follows.
+pub(crate) async fn readable_page_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    reader: &Principal,
+    scope: crate::PrivateToolScope,
+    after: Option<&coral_catalog::ToolKey>,
+    page_size: u32,
+) -> Result<Vec<crate::ReadablePrivateTool>, Error> {
+    // Match Rust string ordering regardless of the Postgres locale, so the
+    // exclusive cursor predicate agrees with the page order.
+    let id = match transaction.system() {
+        coral_db::DatabaseSystem::Sqlite => Expr::col(SavedFunctionRecords::Id),
+        coral_db::DatabaseSystem::Postgres => Expr::cust("\"id\" COLLATE \"C\""),
+    };
+    let mut condition = Cond::all()
+        .add(Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .add(readable_owners(reader, scope));
+    if let Some(after) = after {
+        condition = condition.add(id.clone().gt(after.as_str()));
+    }
+    let rows: Vec<(String, String, String, String, String)> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    SavedFunctionRecords::Id,
+                    SavedFunctionRecords::Path,
+                    SavedFunctionRecords::PrincipalKind,
+                    SavedFunctionRecords::PrincipalId,
+                    SavedFunctionRecords::DefaultAccessState,
+                ])
+                .from(SavedFunctionRecords::Table)
+                .cond_where(condition)
+                .order_by_expr(id, Order::Asc)
+                .limit(u64::from(page_size) + 1)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(id, path, kind, principal, state)| {
+            let corrupt = || Error::CorruptData("Private Tool has an invalid row".to_string());
+            let id = SavedFunctionId::parse(&id).map_err(|_error| corrupt())?;
+            let path = SavedFunctionPath::parse(&path).map_err(|_error| corrupt())?;
+            let agent = match PrincipalKind::from_storage_str(&kind).map_err(|_error| corrupt())? {
+                PrincipalKind::Agent => {
+                    Some(PrincipalId::parse(&principal).map_err(|_error| corrupt())?)
+                }
+                PrincipalKind::User => None,
+            };
+            Ok(crate::ReadablePrivateTool::new(
+                id.tool_key(),
+                path,
+                agent,
+                access_state_from_storage(&state)?,
+            ))
+        })
+        .collect()
+}
+
 /// The default Tool Access State of each of `tools` that names a current
 /// Private Tool of the Workspace within `scope` of `reader`.
 pub(crate) async fn readable_defaults_in_transaction(
@@ -438,17 +517,7 @@ pub(crate) async fn readable_defaults_in_transaction(
     scope: crate::PrivateToolScope,
     tools: &[coral_catalog::ToolKey],
 ) -> Result<std::collections::BTreeMap<coral_catalog::ToolKey, ToolAccessState>, Error> {
-    let mut owners = Cond::any().add(
-        Cond::all()
-            .add(Expr::col(SavedFunctionRecords::PrincipalId).eq(reader.id().as_str()))
-            .add(Expr::col(SavedFunctionRecords::PrincipalKind).eq(reader.kind().as_storage_str())),
-    );
-    if scope == crate::PrivateToolScope::OwnAndAgents {
-        owners = owners.add(
-            Expr::col(SavedFunctionRecords::PrincipalKind)
-                .eq(PrincipalKind::Agent.as_storage_str()),
-        );
-    }
+    let owners = readable_owners(reader, scope);
     let rows: Vec<(String, String)> = transaction
         .fetch_all(
             Query::select()

@@ -36,6 +36,9 @@ message ListSavedFunctionsResponse {
   repeated SavedFunctionSummary saved_functions = 1;
   // Empty when no further page remains.
   string next_page_token = 2;
+  // The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
+  // ToolPolicyService lists and sets the policy of these functions under it.
+  string private_provider = 3;
 }
 
 // Source-free summary of one current Saved Function.

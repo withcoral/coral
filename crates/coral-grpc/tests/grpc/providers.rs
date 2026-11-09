@@ -1614,6 +1614,7 @@ async fn tool_reads_project_the_catalog_and_bound_their_pages() {
             hints: tool.hints,
             access_state: management::ToolAccessState::Enabled.into(),
             explicit: false,
+            agent: String::new(),
         }]
     );
     let oversized = f

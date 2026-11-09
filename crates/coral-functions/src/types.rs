@@ -1012,6 +1012,58 @@ impl SavedFunctionPage {
     }
 }
 
+/// A Private Tool whose policy a reader may read, as a policy listing shows
+/// it: its Tool Key, its path, the Agent whose it is (`None` for the
+/// reader's own), and its declared default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadablePrivateTool {
+    key: coral_catalog::ToolKey,
+    path: SavedFunctionPath,
+    agent: Option<coral_workspace::PrincipalId>,
+    default_access_state: ToolAccessState,
+}
+
+impl ReadablePrivateTool {
+    pub(crate) const fn new(
+        key: coral_catalog::ToolKey,
+        path: SavedFunctionPath,
+        agent: Option<coral_workspace::PrincipalId>,
+        default_access_state: ToolAccessState,
+    ) -> Self {
+        Self {
+            key,
+            path,
+            agent,
+            default_access_state,
+        }
+    }
+
+    /// Returns the Tool Key in the Private Provider.
+    #[must_use]
+    pub const fn key(&self) -> &coral_catalog::ToolKey {
+        &self.key
+    }
+
+    /// Returns the path relative to `coral.private`.
+    #[must_use]
+    pub const fn path(&self) -> &SavedFunctionPath {
+        &self.path
+    }
+
+    /// Returns the Agent whose Private Tool this is; `None` for the
+    /// reader's own.
+    #[must_use]
+    pub const fn agent(&self) -> Option<&coral_workspace::PrincipalId> {
+        self.agent.as_ref()
+    }
+
+    /// Returns the default its author declared.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
+    }
+}
+
 /// Whose Private Tools a reader of their policy sees, beside its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivateToolScope {

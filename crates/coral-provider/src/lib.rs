@@ -1185,13 +1185,32 @@ pub(crate) async fn listed_providers(
     )
 }
 
+/// The Providers that [`listed_providers`] reads, and also the Private
+/// Provider when `provider_filter` names it: inspection of one Provider by
+/// its identity, as when an Owner disables or restores it.
+pub(crate) async fn inspected_providers(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<Vec<repository::ProviderWithActiveGeneration>, Error> {
+    if provider_filter.is_none() {
+        return listed_providers(transaction, workspace_id, None).await;
+    }
+    repository::management_providers(transaction, workspace_id, provider_filter).await
+}
+
 /// Whether inspection under `evidence` shows `stored`: as in discovery, only
-/// when the User reaches one of its Tools.
+/// when the User reaches one of its Tools. Every User who inspects the
+/// Workspace inspects its Private Provider, which has no Tools or Accounts
+/// of its own: coral-functions decides which Private Tools each one sees.
 async fn inspects(
     transaction: &mut coral_db::Transaction<'_>,
     evidence: &WorkspaceEvidence,
     stored: &repository::ProviderWithActiveGeneration,
 ) -> Result<bool, Error> {
+    if stored.provider.call_root() == &ProviderCallRoot::Private {
+        return Ok(true);
+    }
     reach::reaches_provider_in_transaction(
         transaction,
         stored.provider.call_root(),

@@ -26,6 +26,7 @@ import type {
   SavedFunctionSummaryView,
   SavedFunctionView,
 } from '@/views/functions/types'
+import type { PolicyState } from '@/components/policy-toggle'
 import { resourcePath } from './management.server'
 
 export function workspaceView(w: Workspace) {
@@ -141,12 +142,14 @@ export function savedFunctionHref(workspacePath: string, path: string) {
 export function savedFunctionSummaryView(
   workspacePath: string,
   f: SavedFunctionSummary,
+  policy?: PolicyState,
 ): SavedFunctionSummaryView {
   return {
     path: f.path,
     description: f.description,
     savedAt: isoTime(f.updateTime),
     href: savedFunctionHref(workspacePath, f.path),
+    ...(policy ? { policy } : {}),
   }
 }
 export function savedFunctionView(f: SavedFunction): SavedFunctionView {

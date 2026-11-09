@@ -59,7 +59,7 @@ use coral_workspace::{
 pub use coral_catalog::ToolAccessState;
 pub use error::Error;
 pub use types::{
-    AdministrativeLifecycleEvent, ExactToolRules, LifecycleAction, LifecycleOutcome,
+    AdministrativeLifecycleEvent, ExactToolRules, LifecycleAction, LifecycleOutcome, ListedTool,
     PrivateToolOwner, ToolPolicyDecision, ToolPolicyTarget,
 };
 
@@ -174,7 +174,9 @@ impl ToolPolicyModule {
     /// Reads one catalog page of a Provider with each listed Tool's current
     /// decision, in Tool Key order. It leaves out each Tool `actor` does not
     /// reach. Authority, the catalog and explicit rules share one read
-    /// snapshot, and a full page carries one lookahead row.
+    /// snapshot, and a full page carries one lookahead row. In the Private
+    /// Provider the page holds the Private Tools whose rules `actor` may
+    /// read: its own and, for an Owner, every Agent's, each naming its Agent.
     ///
     /// # Errors
     /// Rejects lost authority, a Provider `actor` may not inspect, an invalid
@@ -186,22 +188,64 @@ impl ToolPolicyModule {
         provider: &coral_provider::ProviderId,
         after: Option<&ToolKey>,
         page_size: u32,
-    ) -> Result<Vec<(coral_catalog::ToolListing, ToolPolicyDecision)>, Error> {
+    ) -> Result<Vec<ListedTool>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let evidence = self
             .workspaces
             .check_in_transaction(&mut transaction, actor, workspace, WorkspaceAction::Inspect)
             .await?;
-        let listings = coral_provider::tool_listings_in_transaction(
-            &mut transaction,
-            &evidence,
-            provider,
-            after,
-            page_size,
-        )
-        .await?;
-        let keys: Vec<_> = listings.iter().map(|tool| tool.key.clone()).collect();
-        let explicit = if keys.is_empty() {
+        let private = coral_provider::private_provider_in_transaction(&mut transaction, workspace)
+            .await?
+            .is_some_and(|private| private.id() == provider);
+        let (listings, rules_apply) = if private {
+            if !(1..=coral_catalog::MAX_TOOL_LISTING_PAGE).contains(&page_size) {
+                return Err(coral_provider::Error::InvalidInput(
+                    "Tool page size is out of range".to_owned(),
+                )
+                .into());
+            }
+            let owner = evidence.effective_role() == WorkspaceRole::Owner;
+            let reader = AuthenticatedPrincipal::user(actor.clone());
+            let page = coral_functions::readable_page_in_transaction(
+                &mut transaction,
+                workspace,
+                reader.principal(),
+                if owner {
+                    coral_functions::PrivateToolScope::OwnAndAgents
+                } else {
+                    coral_functions::PrivateToolScope::Own
+                },
+                after,
+                page_size,
+            )
+            .await
+            .map_err(functions_error)?;
+            (
+                page.iter().map(private_tool_listing).collect::<Vec<_>>(),
+                owner,
+            )
+        } else {
+            let listings = coral_provider::tool_listings_in_transaction(
+                &mut transaction,
+                &evidence,
+                provider,
+                after,
+                page_size,
+            )
+            .await?;
+            (
+                listings
+                    .into_iter()
+                    .map(|listing| (listing, None))
+                    .collect(),
+                true,
+            )
+        };
+        let keys: Vec<_> = listings
+            .iter()
+            .map(|(tool, _agent)| tool.key.clone())
+            .collect();
+        let explicit = if keys.is_empty() || !rules_apply {
             BTreeMap::new()
         } else {
             repository::access_states_in_transaction(&mut transaction, workspace, provider, &keys)
@@ -210,12 +254,16 @@ impl ToolPolicyModule {
         transaction.rollback().await?;
         Ok(listings
             .into_iter()
-            .map(|tool| {
+            .map(|(listing, agent)| {
                 let target =
-                    ToolPolicyTarget::new(workspace.clone(), provider.clone(), tool.key.clone());
+                    ToolPolicyTarget::new(workspace.clone(), provider.clone(), listing.key.clone());
                 let decision =
-                    resolved_decision(&target, tool.policy, explicit.get(&tool.key).copied());
-                (tool, decision)
+                    resolved_decision(&target, listing.policy, explicit.get(&listing.key).copied());
+                ListedTool {
+                    listing,
+                    decision,
+                    agent,
+                }
             })
             .collect())
     }
@@ -436,6 +484,35 @@ impl ToolPolicyModule {
     }
 }
 
+/// A Private Tool's row, as a Provider Tool's would be: available, with no
+/// tags or diagnostics, and its declared default as its policy facts.
+fn private_tool_listing(
+    tool: &coral_functions::ReadablePrivateTool,
+) -> (
+    coral_catalog::ToolListing,
+    Option<coral_workspace::PrincipalId>,
+) {
+    (
+        coral_catalog::ToolListing {
+            key: tool.key().clone(),
+            relative_path: tool.path().as_str().to_owned(),
+            tags: Vec::new(),
+            policy: ToolPolicyFacts::default().declaring_default(Some(tool.default_access_state())),
+            availability: coral_catalog::ToolAvailability::Available,
+            diagnostics: Vec::new(),
+        },
+        tool.agent().cloned(),
+    )
+}
+
+/// A coral-functions read failure: only persistence or corrupt data.
+fn functions_error(error: coral_functions::Error) -> Error {
+    match error {
+        coral_functions::Error::Database(error) => Error::Database(error),
+        other => Error::CorruptData(other.to_string()),
+    }
+}
+
 /// Writes one exact rule and its lifecycle Event, unless the rule already
 /// holds `access_state`.
 async fn write_access_state_in_transaction(
@@ -544,10 +621,7 @@ async fn ruled_tool_facts_in_transaction(
         keys,
     )
     .await
-    .map_err(|error| match error {
-        coral_functions::Error::Database(error) => Error::Database(error),
-        other => Error::CorruptData(other.to_string()),
-    })?
+    .map_err(functions_error)?
     .into_iter()
     .map(|(key, declared)| {
         (

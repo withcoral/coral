@@ -1,3 +1,4 @@
+import type { PolicyState } from '@/components/policy-toggle'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub, useLocation, useParams } from 'react-router'
 import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
@@ -18,11 +19,17 @@ const workspace = {
   connectEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
   path: '/workspaces/demo',
 }
-const summary = (path: string, description: string, savedAt = '2026-09-24T14:05:11.000Z') => ({
+const summary = (
+  path: string,
+  description: string,
+  savedAt = '2026-09-24T14:05:11.000Z',
+  policy: PolicyState = 'enabled',
+) => ({
   path,
   description,
   savedAt,
   href: `/workspaces/demo/functions/${path}`,
+  policy,
 })
 const summaries = [
   summary(
@@ -35,7 +42,12 @@ const summaries = [
     'List Linear issues completed in the last N days, grouped by project, for standups and weekly updates. Optional input: { days?: number (default 7), assignee?: string, team?: string }.',
     '2026-09-25T15:28:00.000Z',
   ),
-  summary('linear.issueBrief', 'Build a compact brief of one Linear issue with its discussion.'),
+  summary(
+    'linear.issueBrief',
+    'Build a compact brief of one Linear issue with its discussion.',
+    '2026-09-24T14:05:11.000Z',
+    'disabled',
+  ),
   summary('linear.myOpenIssues', 'List open Linear issues assigned to the current user.'),
   summary(
     'linear.staleIssues',
@@ -140,9 +152,9 @@ export const Listing: Story = {
       'href',
       '/workspaces/demo/functions/linear.issueBrief',
     )
-    // Coral runs every function until function policy exists.
+    // A row shows the function's current policy, read-only.
     const policy = within(canvas.getByRole('radiogroup', { name: 'Policy for linear.issueBrief' }))
-    await expect(policy.getByRole('radio', { name: 'Allow' })).toBeChecked()
+    await expect(policy.getByRole('radio', { name: 'Block' })).toBeChecked()
     for (const radio of policy.getAllByRole('radio')) await expect(radio).toBeDisabled()
   },
 }

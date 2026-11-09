@@ -247,7 +247,7 @@ export function toolHints(hints: ToolHints | undefined): ToolHintsView {
   return view
 }
 
-function accessState(value: ToolAccessState): ToolView['policy'] {
+export function accessState(value: ToolAccessState): ToolView['policy'] {
   switch (value) {
     case ToolAccessState.ENABLED:
       return 'enabled'
@@ -293,7 +293,7 @@ export async function toolDetail(
 }
 
 // Coral bounds a page of tools with their decisions to this many.
-const TOOL_ACCESS_PAGE_SIZE = 1000
+export const TOOL_ACCESS_PAGE_SIZE = 1000
 
 function enabled(state: ProviderState) {
   switch (state) {

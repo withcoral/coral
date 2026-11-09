@@ -300,6 +300,26 @@ impl ProviderModule {
         tx.rollback().await?;
         Ok(stored.provider)
     }
+    /// Returns the Workspace's Private Provider, which every User who
+    /// inspects the Workspace inspects.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority or persistence failures, and
+    /// [`Error::ProviderNotFound`] for a Workspace Coral has not yet given one.
+    pub async fn inspect_private_provider(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+    ) -> Result<Provider, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.management_authority(&mut tx, actor, workspace).await?;
+        let provider = crate::private_provider_in_transaction(&mut tx, workspace)
+            .await?
+            .ok_or(Error::ProviderNotFound)?;
+        tx.rollback().await?;
+        Ok(provider)
+    }
+
     /// Reads the icon of one Provider that `actor` may inspect; none when
     /// it has no uploaded icon.
     ///

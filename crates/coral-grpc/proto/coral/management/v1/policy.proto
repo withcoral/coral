@@ -33,7 +33,9 @@ message ToolPolicy {
   bool explicit = 3;
 }
 
-// Reads one page of a Provider's current administrative catalog.
+// Reads one page of a Provider's current administrative catalog. In the
+// Private Provider, the page holds the Private Tools whose rules the caller
+// may read: their own and, for a Workspace Owner, every Agent's.
 message ListToolAccessRequest {
   // Exact Provider resource.
   string parent = 1;
@@ -62,6 +64,10 @@ message ToolAccess {
   ToolAccessState access_state = 7;
   // True when an exact stored rule, false when effect-based default.
   bool explicit = 8;
+  // In the Private Provider, workspaces/{workspace}/agents/{agent} when the
+  // Private Tool is that Agent's. Empty for the caller's own Private Tools
+  // and for every other Provider's Tools.
+  string agent = 9;
 }
 
 // One page of Tools and their decisions.

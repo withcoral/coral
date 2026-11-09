@@ -1,6 +1,7 @@
 import { ConnectError, Code } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { SavedFunctionDiagnosticCategory } from '@/generated/coral/management/v1/saved_function_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport, type ManagementHandlers } from '@/lib/management.test-support'
@@ -15,7 +16,12 @@ const workspace = '00000000-0000-4000-8000-000000000001'
 const parent = `workspaces/${workspace}`
 const savedAt = { seconds: 1_700_000_000n, nanos: 0 }
 
-function api(savedFunctions: ManagementHandlers['savedFunctions']) {
+const privateProvider = `${parent}/providers/00000000-0000-4000-8000-0000000000aa`
+
+function api(
+  savedFunctions: ManagementHandlers['savedFunctions'],
+  policies: ManagementHandlers['policies'] = { listToolAccess: () => ({ tools: [] }) },
+) {
   return fakeManagementTransport({
     workspaces: {
       getWorkspace: ({ name }) => ({
@@ -26,6 +32,7 @@ function api(savedFunctions: ManagementHandlers['savedFunctions']) {
       }),
     },
     savedFunctions,
+    policies,
   })
 }
 const listArgs = (query = '') =>
@@ -81,6 +88,63 @@ it('lists every page of a Member’s own functions as source-free summaries', as
       savedAt: '2023-11-14T22:13:20.000Z',
       href: `/workspaces/${workspace}/functions/zeta.last`,
     },
+  ])
+})
+
+// Catches: a function shown with a policy other than the one Coral applies
+// to it, or with an Agent's policy for a tool at the same path.
+it('shows each function with the policy of its own row in the private provider', async () => {
+  const requests: unknown[] = []
+  coral.transport = api(
+    {
+      listSavedFunctions: () => ({
+        savedFunctions: [
+          { path: 'people.blocked', description: 'Blocked', updateTime: savedAt },
+          { path: 'people.greet', description: 'Greet', updateTime: savedAt },
+        ],
+        privateProvider,
+      }),
+    },
+    {
+      listToolAccess: (request) => {
+        requests.push({ parent: request.parent, pageToken: request.pageToken })
+        return request.pageToken
+          ? {
+              tools: [
+                {
+                  relativePath: 'people.blocked',
+                  accessState: ToolAccessState.DISABLED,
+                  explicit: false,
+                },
+              ],
+            }
+          : {
+              tools: [
+                {
+                  relativePath: 'people.greet',
+                  accessState: ToolAccessState.APPROVAL_REQUIRED,
+                  explicit: true,
+                },
+                {
+                  relativePath: 'people.blocked',
+                  accessState: ToolAccessState.ENABLED,
+                  explicit: false,
+                  agent: `${parent}/agents/00000000-0000-4000-8000-0000000000bb`,
+                },
+              ],
+              nextPageToken: 'after-greet',
+            }
+      },
+    },
+  )
+  const result = await functionsLoader(listArgs())
+  expect(requests).toEqual([
+    { parent: privateProvider, pageToken: '' },
+    { parent: privateProvider, pageToken: 'after-greet' },
+  ])
+  expect(result.data.functions.map((f) => [f.path, f.policy])).toEqual([
+    ['people.blocked', 'disabled'],
+    ['people.greet', 'approval_required'],
   ])
 })
 

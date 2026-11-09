@@ -88,7 +88,8 @@ pub async fn inspect_provider_readiness_in_transaction(
 ) -> Result<Vec<ProviderReadiness>, Error> {
     let principal = AuthenticatedPrincipal::user(actor.clone());
     let mut result = Vec::new();
-    for stored in crate::listed_providers(tx, evidence.workspace().id(), provider_filter).await? {
+    for stored in crate::inspected_providers(tx, evidence.workspace().id(), provider_filter).await?
+    {
         if !crate::inspects(tx, evidence, &stored).await? {
             continue;
         }

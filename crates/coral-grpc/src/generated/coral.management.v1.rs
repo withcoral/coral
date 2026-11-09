@@ -13681,7 +13681,9 @@ pub struct ToolPolicy {
     #[prost(bool, tag = "3")]
     pub explicit: bool,
 }
-/// Reads one page of a Provider's current administrative catalog.
+/// Reads one page of a Provider's current administrative catalog. In the
+/// Private Provider, the page holds the Private Tools whose rules the caller
+/// may read: their own and, for a Workspace Owner, every Agent's.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListToolAccessRequest {
     /// Exact Provider resource.
@@ -13722,6 +13724,11 @@ pub struct ToolAccess {
     /// True when an exact stored rule, false when effect-based default.
     #[prost(bool, tag = "8")]
     pub explicit: bool,
+    /// In the Private Provider, workspaces/{workspace}/agents/{agent} when the
+    /// Private Tool is that Agent's. Empty for the caller's own Private Tools
+    /// and for every other Provider's Tools.
+    #[prost(string, tag = "9")]
+    pub agent: ::prost::alloc::string::String,
 }
 /// One page of Tools and their decisions.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -14537,6 +14544,10 @@ pub struct ListSavedFunctionsResponse {
     /// Empty when no further page remains.
     #[prost(string, tag = "2")]
     pub next_page_token: ::prost::alloc::string::String,
+    /// The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
+    /// ToolPolicyService lists and sets the policy of these functions under it.
+    #[prost(string, tag = "3")]
+    pub private_provider: ::prost::alloc::string::String,
 }
 /// Source-free summary of one current Saved Function.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

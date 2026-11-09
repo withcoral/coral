@@ -95,6 +95,11 @@ impl wire::saved_function_service_server::SavedFunctionService for GrpcServices 
         } else {
             Some(SavedFunctionPath::parse(&after).map_err(|_error| invalid("invalid page token"))?)
         };
+        let private_provider = self
+            .providers
+            .inspect_private_provider(&user, &w)
+            .await
+            .map_err(super::providers::error)?;
         let page = self
             .saved_functions
             .list(
@@ -113,6 +118,7 @@ impl wire::saved_function_service_server::SavedFunctionService for GrpcServices 
         Ok(Response::new(wire::ListSavedFunctionsResponse {
             saved_functions: page.summaries().iter().map(summary).collect(),
             next_page_token,
+            private_provider: super::providers::provider_name(&private_provider),
         }))
     }
 

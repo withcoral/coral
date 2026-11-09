@@ -60,7 +60,7 @@ pub use types::{
     SavedFunctionPath, SavedFunctionSave, SavedFunctionSearchMaterial, SavedFunctionSource,
     SavedFunctionSummary,
 };
-pub use types::{PrivateToolScope, SavedFunctionSelection};
+pub use types::{PrivateToolScope, ReadablePrivateTool, SavedFunctionSelection};
 
 /// The declared default Tool Access State of each of `tools` that names a
 /// current Private Tool of the Workspace within `scope` of `reader`. No
@@ -82,6 +82,34 @@ pub async fn readable_defaults_in_transaction(
 {
     repository::readable_defaults_in_transaction(transaction, workspace_id, reader, scope, tools)
         .await
+}
+
+/// One page of the current Private Tools within `scope` of `reader`, in
+/// Tool Key order after `after`, with one row more than `page_size` when
+/// another page follows.
+///
+/// The caller owns Workspace authority and the coherent read transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn readable_page_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    reader: &Principal,
+    scope: PrivateToolScope,
+    after: Option<&coral_catalog::ToolKey>,
+    page_size: u32,
+) -> Result<Vec<ReadablePrivateTool>, Error> {
+    repository::readable_page_in_transaction(
+        transaction,
+        workspace_id,
+        reader,
+        scope,
+        after,
+        page_size,
+    )
+    .await
 }
 
 /// Loads source-free metadata without consulting declaration relevance material.
