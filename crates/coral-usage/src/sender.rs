@@ -30,8 +30,9 @@ pub enum SendOutcome {
 
 impl UsageData {
     /// Makes each finished day's report, then sends every report waiting,
-    /// oldest first. A 2xx stores it; a 4xx can never succeed, so the report
-    /// is dropped; anything else keeps it and stops until the next check.
+    /// oldest first. A 2xx stores it; a 4xx but 408 or 429 can never
+    /// succeed, so the report is dropped; anything else keeps it and stops
+    /// until the next check.
     ///
     /// # Errors
     ///
@@ -57,13 +58,13 @@ impl UsageData {
                 Err(_error) => return Ok(SendOutcome::Retry),
             };
             if status.is_success() {
-                self.record_sent(&report.day, now()).await?;
-            } else if status.is_client_error() {
+                self.record_sent(report.day, now()).await?;
+            } else if refused_for_good(status) {
                 tracing::warn!(
                     http.response.status_code = safe::number(status.as_u16()),
                     "the usage data collector refused a report; it is dropped"
                 );
-                self.record_rejected(&report.day).await?;
+                self.record_rejected(report.day).await?;
             } else {
                 return Ok(SendOutcome::Retry);
             }
@@ -89,6 +90,14 @@ impl UsageData {
             }
         })
     }
+}
+
+/// Whether the collector will refuse the same report again: a 4xx, but a
+/// timeout or a rate limit, which pass.
+fn refused_for_good(status: reqwest::StatusCode) -> bool {
+    status.is_client_error()
+        && status != reqwest::StatusCode::REQUEST_TIMEOUT
+        && status != reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
 fn unix_nanos() -> i64 {

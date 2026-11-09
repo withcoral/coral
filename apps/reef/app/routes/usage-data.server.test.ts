@@ -1,4 +1,5 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
+import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
@@ -58,14 +59,14 @@ const post = (fields: Record<string, string>) => {
 
 // Catches: Reef re-serializing a report, so the page no longer shows what Coral sends.
 it('passes both reports through byte for byte', async () => {
-  usage.lastSent = { json: sent, sentAt: '2026-11-09T00:12:00Z' }
+  usage.lastSent = { json: sent, sentTime: timestampFromDate(new Date('2026-11-09T00:12:00Z')) }
   const result = await load()
   expect(result.data.view).toEqual({
     choice: 'on',
     canChange: false,
     kind: 'server',
     next,
-    lastSent: { at: '2026-11-09T00:12:00Z', json: sent },
+    lastSent: { at: '2026-11-09T00:12:00.000Z', json: sent },
   })
 })
 

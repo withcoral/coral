@@ -7,15 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
 use serde::Serialize;
-
-/// The first day a Coral release sent a report. The collector rejects an
-/// earlier `day.date`, so no report is made for one.
-pub const FIRST_REPORT_DAY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 11, 1) {
-    Some(day) => day,
-    None => panic!("2026-11-01 is a date"),
-};
 
 /// The largest count the collector accepts.
 pub(crate) const MAX_COUNT: u64 = (1 << 31) - 1;
@@ -77,14 +69,13 @@ impl<'a> CoralBlock<'a> {
     pub(crate) fn new(host: &'a Host) -> Self {
         Self {
             version: wire_version(&host.version),
-            os: match std::env::consts::OS {
-                "macos" => "macos",
-                "windows" => "windows",
-                _ => "linux",
-            },
+            // Rust's names, which the collector shares but for `aarch64`. A
+            // platform the collector does not list is sent as it is, so the
+            // collector refuses the report instead of storing a wrong one.
+            os: std::env::consts::OS,
             arch: match std::env::consts::ARCH {
                 "aarch64" => "arm64",
-                _ => "x86_64",
+                arch => arch,
             },
             kind: match host.kind {
                 HostKind::Desktop => "desktop",
@@ -202,8 +193,8 @@ pub(crate) struct Accounts {
 
 /// A count the collector accepts: negative becomes 0, and a count past its
 /// limit stops at the limit.
-pub(crate) fn count(value: i64) -> u64 {
-    u64::try_from(value).unwrap_or(0).min(MAX_COUNT)
+pub(crate) fn count(value: impl TryInto<u64>) -> u64 {
+    value.try_into().unwrap_or(0).min(MAX_COUNT)
 }
 
 #[cfg(test)]

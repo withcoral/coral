@@ -1,4 +1,4 @@
-use super::workspaces::annotate;
+use super::workspaces::{annotate, timestamp};
 use super::{GrpcServices, management as wire, now};
 use tonic::{Request, Response, Status};
 
@@ -25,7 +25,7 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
         }
         .into(),
         last_sent: view.last_sent.map(|sent| wire::SentUsageReport {
-            sent_at: sent.sent_at_rfc3339(),
+            sent_time: Some(timestamp(sent.sent_at_unix_nanos)),
             json: sent.json,
         }),
         next_report_json: view.next_report_json,

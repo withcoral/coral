@@ -3,6 +3,12 @@
 //! Every read here is a count, a date or a fixed kind. None returns a name,
 //! a Program, an argument or a result. The queries run in the caller's read
 //! snapshot, so one report sees one state.
+//!
+//! These reads match only values the schema pins with a CHECK constraint, so
+//! a renamed value fails the fixture inserts in this crate's tests. A fact
+//! inside another module's encoded value (a Run's Program error, a Task's
+//! evidence, an Account's contract) comes from that module's
+//! `usage_repository`, which decodes it with the module's own decoder.
 
 use coral_db::{DatabaseSystem, Transaction};
 use sea_query::Values;
@@ -14,17 +20,6 @@ use crate::Error;
 pub(crate) struct Window {
     pub start: i64,
     pub end: i64,
-}
-
-#[derive(sqlx::FromRow, Default)]
-pub(crate) struct RunRow {
-    pub succeeded: i64,
-    pub failed: i64,
-    pub timed_out: i64,
-    pub canceled: i64,
-    pub interrupted: i64,
-    pub tool_error: i64,
-    pub cpu_budget: i64,
 }
 
 #[derive(sqlx::FromRow, Default)]
@@ -52,10 +47,6 @@ pub(crate) struct TotalsRow {
     pub users: i64,
     pub agents: i64,
     pub saved_functions: i64,
-    pub openapi_providers: i64,
-    pub mcp_providers: i64,
-    pub oauth_accounts: i64,
-    pub secret_accounts: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -66,45 +57,6 @@ struct Count {
 #[derive(sqlx::FromRow)]
 struct FirstAt {
     value: Option<i64>,
-}
-
-/// Runs that ended in the window, by outcome. An interrupted Run counts as
-/// failed. A Coral failure reaches the Program as a `ToolError`, and a
-/// failed Run keeps the error's name at the start of its message.
-pub(crate) async fn runs(tx: &mut Transaction<'_>, window: Window) -> Result<RunRow, Error> {
-    one(
-        tx,
-        "SELECT \
-            COUNT(CASE WHEN state = 'succeeded' THEN 1 END) AS succeeded, \
-            COUNT(CASE WHEN state IN ('failed', 'interrupted') THEN 1 END) AS failed, \
-            COUNT(CASE WHEN state = 'timed_out' THEN 1 END) AS timed_out, \
-            COUNT(CASE WHEN state = 'canceled' THEN 1 END) AS canceled, \
-            COUNT(CASE WHEN state = 'interrupted' THEN 1 END) AS interrupted, \
-            COUNT(CASE WHEN state = 'failed' AND failure_message LIKE 'ToolError:%' THEN 1 END) AS tool_error, \
-            COUNT(CASE WHEN state = 'failed' AND failure_code = 'cpu_limit_exceeded' THEN 1 END) AS cpu_budget \
-         FROM program_run_records \
-         WHERE terminal_at_unix_nanos >= ? AND terminal_at_unix_nanos < ?",
-        window,
-    )
-    .await
-}
-
-/// Programs that did not compile, in the window. Such a Program never
-/// starts a Run: its Task keeps the rejected submission.
-pub(crate) async fn compile_failures(
-    tx: &mut Transaction<'_>,
-    window: Window,
-) -> Result<i64, Error> {
-    count(
-        tx,
-        "SELECT COUNT(*) AS value FROM task_interactions \
-         WHERE kind = 'submit' AND outcome = 'rejected' \
-            AND completed_at_unix_nanos >= ? AND completed_at_unix_nanos < ? \
-            AND (evidence_json LIKE '%\"code\":\"program_admission_failed\"%' \
-                OR evidence_json LIKE '%\"code\":\"program_compilation_timed_out\"%')",
-        window,
-    )
-    .await
 }
 
 /// Tool Invocations that ended in the window. An upstream answer succeeded;
@@ -259,34 +211,19 @@ pub(crate) async fn first_saved_function(
     .await
 }
 
-/// How much exists now. A provider counts by its active Generation's kind;
-/// the Built-in Provider is not one the user made. An Account counts by its
-/// authentication method; one with no credential counts as neither.
+/// How much exists now, but the Providers and Accounts.
 pub(crate) async fn totals(tx: &mut Transaction<'_>) -> Result<TotalsRow, Error> {
-    let sql = format!(
-        "SELECT \
+    let sql = "SELECT \
         (SELECT COUNT(*) FROM workspace_records WHERE state = 'active') AS workspaces, \
         (SELECT COUNT(*) FROM organization_authority_records WHERE removed = 0 AND enabled = 1) AS users, \
         (SELECT COUNT(*) FROM workspace_agents WHERE deleted = 0) AS agents, \
-        (SELECT COUNT(*) FROM saved_function_records) AS saved_functions, \
-        (SELECT COUNT(*) FROM provider_records p JOIN provider_generations g ON g.id = p.active_generation_id \
-            WHERE g.input_kind = 'openapi') AS openapi_providers, \
-        (SELECT COUNT(*) FROM provider_records p JOIN provider_generations g ON g.id = p.active_generation_id \
-            WHERE g.input_kind = 'mcp') AS mcp_providers, \
-        (SELECT COUNT(*) FROM provider_accounts WHERE retired = 0 AND ({OAUTH})) AS oauth_accounts, \
-        (SELECT COUNT(*) FROM provider_accounts WHERE retired = 0 AND contract <> 'none' \
-            AND NOT ({OAUTH})) AS secret_accounts"
-    );
+        (SELECT COUNT(*) FROM saved_function_records) AS saved_functions";
     Ok(tx
-        .fetch_all_sql::<TotalsRow>(&sql, Values(Vec::new()))
+        .fetch_all_sql::<TotalsRow>(sql, Values(Vec::new()))
         .await?
         .pop()
         .unwrap_or_default())
 }
-
-/// The OAuth authentication methods, as an Account's contract names them.
-const OAUTH: &str = "contract LIKE '%\"method\":\"o_auth_authorization_code\"%' \
-    OR contract LIKE '%\"method\":\"oauth_device_code\"%'";
 
 async fn one<T>(tx: &mut Transaction<'_>, sql: &str, window: Window) -> Result<T, Error>
 where

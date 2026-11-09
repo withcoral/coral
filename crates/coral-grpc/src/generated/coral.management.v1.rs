@@ -15182,9 +15182,9 @@ pub struct SentUsageReport {
     /// The exact JSON Coral sent.
     #[prost(string, tag = "1")]
     pub json: ::prost::alloc::string::String,
-    /// When the collector answered, in RFC 3339 UTC.
-    #[prost(string, tag = "2")]
-    pub sent_at: ::prost::alloc::string::String,
+    /// When the collector stored it.
+    #[prost(message, optional, tag = "2")]
+    pub sent_time: ::core::option::Option<::prost_types::Timestamp>,
 }
 /// What stops this process from sending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

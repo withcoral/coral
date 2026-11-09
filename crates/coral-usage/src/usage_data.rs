@@ -3,16 +3,17 @@
 
 use std::sync::Arc;
 
-use chrono::Days;
-use coral_db::Database;
+use chrono::{Days, NaiveDate};
+use coral_db::{Database, Transaction};
 use coral_workspace::{AuthenticatedUser, OrganizationModule, OrganizationRole};
 
 use crate::Error;
-use crate::compose::{compose, day_of, day_start, day_string, parse_day};
+use crate::compose::{Composed, compose};
+use crate::day::{day_of, day_start};
 use crate::environment::{Build, SendBlock, SendEnvironment};
-use crate::report::{FIRST_REPORT_DAY, Host, HostKind};
+use crate::report::{Host, HostKind};
 use crate::repository::activity::Window;
-use crate::repository::install::{self, MilestoneDays};
+use crate::repository::install::{self, Install, Unsent};
 
 /// What the Usage data page shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,21 +42,6 @@ pub struct SentReport {
     pub sent_at_unix_nanos: i64,
 }
 
-impl SentReport {
-    /// When the collector stored it, in RFC 3339 UTC to the second.
-    #[must_use]
-    pub fn sent_at_rfc3339(&self) -> String {
-        chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(self.sent_at_unix_nanos)
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-    }
-}
-
-/// A report waiting to be sent.
-pub(crate) struct Unsent {
-    pub day: String,
-    pub json: String,
-}
-
 /// The deployment's usage data.
 #[derive(Clone)]
 pub struct UsageData {
@@ -68,6 +54,10 @@ struct Inner {
     host: Host,
     build: Build,
     block: Option<SendBlock>,
+}
+
+fn missing_install() -> Error {
+    Error::CorruptData("the usage install row is missing")
 }
 
 impl UsageData {
@@ -112,41 +102,26 @@ impl UsageData {
             .await?;
         let install = install::install(&mut tx)
             .await?
-            .ok_or(Error::CorruptData("the usage install row is missing"))?;
-        let sharing = install.sharing != 0;
-        let waiting = if sharing {
+            .ok_or_else(missing_install)?;
+        let waiting = if install.sharing {
             install::unsent_reports(&mut tx).await?.into_iter().next()
         } else {
             None
         };
         let next_report_json = if let Some(report) = waiting {
-            report.body
+            report.json
         } else {
             let today = day_of(now);
             let window = Window {
                 start: day_start(today),
                 end: now.saturating_add(1),
             };
-            compose(
-                &mut tx,
-                &install,
-                &self.inner.host,
-                self.inner.build,
-                today,
-                window,
-            )
-            .await?
-            .json
+            self.compose(&mut tx, &install, today, window).await?.json
         };
-        let last_sent = install::last_sent(&mut tx).await?.and_then(|row| {
-            row.sent_at_unix_nanos.map(|sent_at_unix_nanos| SentReport {
-                json: row.body,
-                sent_at_unix_nanos,
-            })
-        });
+        let last_sent = install::last_sent(&mut tx).await?;
         tx.commit().await?;
         Ok(UsageDataView {
-            sharing,
+            sharing: install.sharing,
             can_change: role == OrganizationRole::Owner,
             block: self.inner.block,
             kind: self.inner.host.kind,
@@ -174,38 +149,46 @@ impl UsageData {
             .organization
             .check_owner_in_transaction(&mut tx, actor)
             .await?;
-        install::set_sharing(&mut tx, sharing, &day_string(day_of(now)), now).await?;
+        install::set_sharing(&mut tx, sharing, day_of(now), now).await?;
         tx.commit().await?;
         self.view(actor, now).await
     }
 
     /// Makes the report of each finished day not made yet, oldest first,
-    /// while sharing is on. A process that never sends skips those days
-    /// instead, so a later process does not send them.
+    /// then records that this process checked today. A day gets a report
+    /// only when sharing is on and a process that may send checked on it, so
+    /// a day that only blocked processes saw is skipped. A blocked process
+    /// changes nothing. A report is composed in a snapshot and stored only if
+    /// sharing is still on when its day is claimed.
     ///
     /// # Errors
     ///
     /// Returns a database failure; the days made before it stay made.
     pub async fn make_due_reports(&self, now: i64) -> Result<(), Error> {
+        if self.inner.block.is_some() {
+            return Ok(());
+        }
         self.ensure_install(now).await?;
         let today = day_of(now);
         loop {
             let mut read = self.inner.database.begin_read_snapshot().await?;
             let install = install::install(&mut read)
                 .await?
-                .ok_or(Error::CorruptData("the usage install row is missing"))?;
-            let day = parse_day(&install.next_report_day)?;
+                .ok_or_else(missing_install)?;
+            let day = install.next_report_day;
             if day >= today {
                 read.commit().await?;
-                return Ok(());
+                break;
             }
-            let from = install.next_report_day.clone();
-            if install.sharing == 0 || self.inner.block.is_some() {
+            // Checks run hourly, so a process that may send checks on every
+            // day it runs. Days after the last check had none.
+            let seen = install.last_check_day.is_some_and(|checked| day <= checked);
+            if !install.sharing || !seen {
                 read.commit().await?;
                 let mut tx = self.inner.database.begin().await?;
-                install::advance_day(&mut tx, &from, &day_string(today)).await?;
+                install::advance_day(&mut tx, day, today).await?;
                 tx.commit().await?;
-                return Ok(());
+                continue;
             }
             let next = day
                 .checked_add_days(Days::new(1))
@@ -214,33 +197,21 @@ impl UsageData {
                 start: day_start(day),
                 end: day_start(next),
             };
-            let composed = compose(
-                &mut read,
-                &install,
-                &self.inner.host,
-                self.inner.build,
-                day,
-                window,
-            )
-            .await?;
+            let composed = self.compose(&mut read, &install, day, window).await?;
             read.commit().await?;
             let mut tx = self.inner.database.begin().await?;
-            if install::advance_day(&mut tx, &from, &day_string(next)).await? {
-                install::insert_report(&mut tx, &from, &composed.json).await?;
-                install::keep_milestones(
-                    &mut tx,
-                    &MilestoneDays {
-                        first_successful_run: composed.first_successful_run.as_deref(),
-                        first_saved_function: composed.first_saved_function.as_deref(),
-                        function_reused: composed.function_reused.as_deref(),
-                    },
-                )
-                .await?;
+            if install::claim_day(&mut tx, day, next).await? {
+                install::insert_report(&mut tx, day, &composed.json).await?;
+                install::keep_milestones(&mut tx, composed.milestones).await?;
                 tx.commit().await?;
             } else {
                 tx.rollback().await?;
             }
         }
+        let mut tx = self.inner.database.begin().await?;
+        install::mark_checked(&mut tx, today).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// The reports to send now, oldest first: none while sharing is off or
@@ -252,24 +223,18 @@ impl UsageData {
         let mut tx = self.inner.database.begin_read_snapshot().await?;
         let sharing = install::install(&mut tx)
             .await?
-            .is_some_and(|install| install.sharing != 0);
+            .is_some_and(|install| install.sharing);
         let reports = if sharing {
             install::unsent_reports(&mut tx).await?
         } else {
             Vec::new()
         };
         tx.commit().await?;
-        Ok(reports
-            .into_iter()
-            .map(|row| Unsent {
-                day: row.report_day,
-                json: row.body,
-            })
-            .collect())
+        Ok(reports)
     }
 
     /// Records that the collector stored `day`'s report.
-    pub(crate) async fn record_sent(&self, day: &str, now: i64) -> Result<(), Error> {
+    pub(crate) async fn record_sent(&self, day: NaiveDate, now: i64) -> Result<(), Error> {
         let mut tx = self.inner.database.begin().await?;
         install::mark_sent(&mut tx, day, now).await?;
         tx.commit().await?;
@@ -277,15 +242,26 @@ impl UsageData {
     }
 
     /// Drops `day`'s report, which the collector will never accept.
-    pub(crate) async fn record_rejected(&self, day: &str) -> Result<(), Error> {
+    pub(crate) async fn record_rejected(&self, day: NaiveDate) -> Result<(), Error> {
         let mut tx = self.inner.database.begin().await?;
         install::delete_unsent(&mut tx, day).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    /// Mints the install row on first use. Reports start on the day the
-    /// first Workspace was created, and never before 2026-11-01.
+    /// The report for `day`, counting activity in `window`.
+    async fn compose(
+        &self,
+        tx: &mut Transaction<'_>,
+        install: &Install,
+        day: NaiveDate,
+        window: Window,
+    ) -> Result<Composed, Error> {
+        compose(tx, install, &self.inner.host, self.inner.build, day, window).await
+    }
+
+    /// Mints the install row on first use. Reports start today: an earlier
+    /// day's report would carry today's version and totals.
     async fn ensure_install(&self, now: i64) -> Result<(), Error> {
         let mut tx = self.inner.database.begin_read_snapshot().await?;
         let exists = install::install(&mut tx).await?.is_some();
@@ -293,18 +269,10 @@ impl UsageData {
         if exists {
             return Ok(());
         }
-        let today = day_of(now);
-        let first = install::first_workspace_created(&self.inner.database)
-            .await?
-            .map_or(today, day_of)
-            .min(today)
-            .max(FIRST_REPORT_DAY);
-        install::insert_install(
-            &self.inner.database,
-            &uuid::Uuid::new_v4().to_string(),
-            &day_string(first),
-            now,
-        )
-        .await
+        let mut tx = self.inner.database.begin().await?;
+        install::insert_install(&mut tx, &uuid::Uuid::new_v4().to_string(), day_of(now), now)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 }

@@ -1,6 +1,8 @@
 syntax = "proto3";
 package coral.management.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // The deployment's anonymous usage data: the one sharing setting, and the
 // Usage Reports Coral sends.
 service UsageDataService {
@@ -63,6 +65,6 @@ enum UsageHostKind {
 message SentUsageReport {
   // The exact JSON Coral sent.
   string json = 1;
-  // When the collector answered, in RFC 3339 UTC.
-  string sent_at = 2;
+  // When the collector stored it.
+  google.protobuf.Timestamp sent_time = 2;
 }

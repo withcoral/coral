@@ -578,6 +578,13 @@ impl Error {
         }
     }
 
+    /// Whether a [`Self::safe_rejection`] code says the Program did not
+    /// compile in time or at all.
+    #[must_use]
+    pub fn is_compile_rejection(code: &str) -> bool {
+        code == PROGRAM_ADMISSION_FAILED || code == PROGRAM_COMPILATION_TIMED_OUT
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
@@ -588,8 +595,8 @@ impl Error {
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
-            Self::ProgramAdmission(_) => "program_admission_failed",
-            Self::CompilationTimedOut => "program_compilation_timed_out",
+            Self::ProgramAdmission(_) => PROGRAM_ADMISSION_FAILED,
+            Self::CompilationTimedOut => PROGRAM_COMPILATION_TIMED_OUT,
             Self::CompilerBusy => "program_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::Functions(error) => return error.safe_rejection(),
@@ -604,9 +611,25 @@ impl Error {
     }
 }
 
+const PROGRAM_ADMISSION_FAILED: &str = "program_admission_failed";
+const PROGRAM_COMPILATION_TIMED_OUT: &str = "program_compilation_timed_out";
+
 #[cfg(test)]
 mod tests {
     use super::{CoralFailure, Error};
+
+    #[test]
+    fn only_a_program_that_did_not_compile_is_a_compile_rejection() {
+        let code = |error: Error| error.safe_rejection().expect("a safe rejection").0;
+        assert!(Error::is_compile_rejection(code(Error::ProgramAdmission(
+            "does not compile".into()
+        ))));
+        assert!(Error::is_compile_rejection(code(
+            Error::CompilationTimedOut
+        )));
+        assert!(!Error::is_compile_rejection(code(Error::CompilerBusy)));
+        assert!(!Error::is_compile_rejection(code(Error::ShuttingDown)));
+    }
 
     #[test]
     fn an_unanswered_database_error_is_operational_through_every_module_wrapper() {

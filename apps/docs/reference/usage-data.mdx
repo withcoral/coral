@@ -21,7 +21,7 @@ A report holds only dates, counts and values from fixed lists:
 - **Install ID.** A random ID that Coral makes once for each deployment. It does not identify you, your organization or your computer.
 - **Coral.** The version, the operating system and the processor type. Also the deployment type (desktop or server), the sign-in mode (off or required) and the database (SQLite or Postgres).
 - **Milestones.** The date of the first successful run, the first saved function, and the first time a later task uses a saved function.
-- **One day of counts.** Runs by result, and failed runs by failure type. Tool calls, approvals, saved functions saved and called, and tasks started. Runs by MCP client, from a fixed list of clients, with all other clients as "other". This release does not record the client yet, so it sends an empty list.
+- **One day of counts.** Runs by result, and failed runs by failure type. Tool calls, approvals, saved functions saved and called, and tasks started. Runs by MCP client, from a fixed list of clients, with all other clients as "other". This release does not record the client yet, so it sends no clients.
 - **Totals.** The number of workspaces, users, agents and saved functions. Providers by type (OpenAPI or MCP). Coral never sends their names. This release does not record which Coral recipe made a provider, so it counts those providers by type too. Accounts by connection type (OAuth or secret).
 
 ## What a report never holds
@@ -59,8 +59,10 @@ Each of these variables stops sending for the Coral process that reads it:
 | ----------------- | ------------------------------------------ |
 | `DO_NOT_TRACK`    | Set to a value other than `0` or `false`   |
 | `CORAL_TELEMETRY` | `0` or `false`                             |
-| `CI`              | Set to a value that is not empty           |
+| `CI`              | Set, to any value                          |
 
 Coral ignores spaces around a value and ignores letter case. Coral reads these variables only when it starts. Restart Coral after you change one.
 
 Set the variable in the environment of each Coral server, or of Coral Desktop. While a variable applies, the Usage data page still shows the report. A banner names the variable that stops sending.
+
+Coral makes no report for a day on which only such processes run. When you remove the variable, Coral does not send those days.

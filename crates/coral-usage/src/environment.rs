@@ -16,7 +16,7 @@ pub enum BlockingVariable {
     DoNotTrack,
     /// `CORAL_TELEMETRY` set to `0` or `false`.
     CoralTelemetry,
-    /// `CI` with any non-empty value.
+    /// `CI` set, even to an empty value.
     Ci,
 }
 
@@ -74,7 +74,7 @@ pub struct SendEnvironment {
 
 impl SendEnvironment {
     /// The first rule that stops this process from sending, if any. Values
-    /// are trimmed and compared without case.
+    /// are trimmed and compared without case; `CI` stops it when set at all.
     #[must_use]
     pub fn block(&self, build: Build) -> Option<SendBlock> {
         let value = |value: &Option<String>| {
@@ -91,7 +91,7 @@ impl SendEnvironment {
         if value(&self.coral_telemetry).is_some_and(|value| off(&value)) {
             return Some(SendBlock::Environment(BlockingVariable::CoralTelemetry));
         }
-        if value(&self.ci).is_some() {
+        if self.ci.is_some() {
             return Some(SendBlock::Environment(BlockingVariable::Ci));
         }
         (build == Build::Source).then_some(SendBlock::SourceBuild)
@@ -157,7 +157,11 @@ mod tests {
                 Build::Release,
                 blocked(BlockingVariable::Ci),
             ),
-            (env(None, None, Some(" ")), Build::Release, None),
+            (
+                env(None, None, Some("")),
+                Build::Release,
+                blocked(BlockingVariable::Ci),
+            ),
             (
                 env(None, Some("0"), Some("1")),
                 Build::Source,

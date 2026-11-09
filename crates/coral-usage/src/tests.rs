@@ -63,6 +63,13 @@ impl Fixture {
         self.usage(&SendEnvironment::default(), Build::Release)
     }
 
+    /// `usage` checks once a day at noon, as a running process does.
+    async fn check_daily(&self, usage: &UsageData, days: std::ops::RangeInclusive<u32>) {
+        for day in days {
+            usage.make_due_reports(at(day, 12)).await.expect("reports");
+        }
+    }
+
     async fn sql(&self, sql: &str) {
         self.db.execute_fixture_sql(sql).await.expect(sql);
     }
@@ -142,10 +149,11 @@ async fn sharing_is_on_until_an_owner_turns_it_off() {
 }
 
 #[tokio::test]
-async fn each_finished_day_gets_one_report_from_the_first_workspace_on() {
+async fn each_checked_day_gets_one_report() {
     let fixture = Fixture::new().await;
     let usage = fixture.sending();
     let peer = fixture.sending();
+    fixture.check_daily(&usage, 6..=8).await;
 
     let (first, second) = tokio::join!(
         usage.make_due_reports(at(9, 12)),
@@ -217,11 +225,7 @@ async fn a_report_matches_the_collectors_example() {
     let collector: Value =
         serde_json::from_str(include_str!("collector-report.json")).expect("collector example");
     let fixture = Fixture::new().await;
-    fixture
-        .sending()
-        .make_due_reports(at(7, 12))
-        .await
-        .expect("reports");
+    fixture.check_daily(&fixture.sending(), 6..=7).await;
     let mut report = fixture.report("2026-11-06").await;
     // The collector's example lists every client; Coral records none yet,
     // and a left-out client is 0.
@@ -229,14 +233,48 @@ async fn a_report_matches_the_collectors_example() {
     same_shape(&report, &collector, "");
 }
 
-/// One Run of `task`, ended at `ended`, as Run history keeps it.
+/// A Program error that coral-run marks as a Coral `ToolError`.
+fn tool_error_json() -> String {
+    serde_json::to_string(&coral_run::ProgramError {
+        name: "ToolError".into(),
+        message: "the upstream failed".into(),
+        frames: Vec::new(),
+        tool: Some(coral_run::ProgramToolError {
+            code: "upstream_failed".into(),
+            trace_id: None,
+            status: None,
+            body: None,
+            body_truncated: false,
+        }),
+        cause: None,
+        errors: Vec::new(),
+        truncated: false,
+        cause_omitted: false,
+        omitted_errors: 0,
+        circular: false,
+    })
+    .expect("Program error JSON")
+}
+
+/// One Run of `task`, ended at `ended`, as Run history keeps it. A failure
+/// is written with coral-run's public code and Program error: if either
+/// changes, coral-run refuses the row instead of miscounting it.
 fn run(id: &str, task: &str, state: &str, accepted: i64, ended: i64, failure: &str) -> String {
-    let (code, message) = match failure {
-        "tool" => ("'program_rejected'", "'ToolError: the upstream failed'"),
-        "cpu" => ("'cpu_limit_exceeded'", "'CPU budget exceeded'"),
-        "program" => ("'program_rejected'", "'Error: boom'"),
-        _ => ("NULL", "NULL"),
+    use coral_run::RunFailureCode;
+    let (code, error) = match failure {
+        "tool" => (
+            Some(RunFailureCode::ProgramRejected),
+            Some(tool_error_json()),
+        ),
+        "cpu" => (Some(RunFailureCode::CpuLimitExceeded), None),
+        "program" => (Some(RunFailureCode::ProgramRejected), None),
+        _ => (None, None),
     };
+    let (code, message) = code.map_or_else(
+        || ("NULL".to_owned(), "NULL"),
+        |code| (format!("'{}'", code.code()), "'it failed'"),
+    );
+    let error = error.map_or_else(|| "NULL".to_owned(), |json| format!("'{json}'"));
     let cancel = if state == "canceled" {
         format!("{accepted}, 'usage-owner', 'user'")
     } else {
@@ -246,14 +284,32 @@ fn run(id: &str, task: &str, state: &str, accepted: i64, ended: i64, failure: &s
         "INSERT INTO program_run_records (id, workspace_id, principal_id, principal_kind, state, \
             accepted_at_unix_nanos, deadline_at_unix_nanos, cancellation_requested_at_unix_nanos, \
             cancellation_principal_id, cancellation_principal_kind, terminal_at_unix_nanos, \
-            failure_code, failure_message, next_event_sequence, accumulated_output_bytes, \
-            shutdown_grace_nanos, value_limits_json) \
+            failure_code, failure_message, failure_error_json, next_event_sequence, \
+            accumulated_output_bytes, shutdown_grace_nanos, value_limits_json) \
          VALUES ('{id}', 'ws1', 'usage-owner', 'user', '{state}', {accepted}, {ended}, {cancel}, \
-            {ended}, {code}, {message}, 2, 0, 0, '{{}}'); \
+            {ended}, {code}, {message}, {error}, 2, 0, 0, '{{}}'); \
          INSERT INTO task_interactions (id, workspace_id, task_id, principal_id, principal_kind, kind, \
             intent, started_at_unix_nanos, completed_at_unix_nanos, outcome, evidence_json, run_id) \
          VALUES ('i-{id}', 'ws1', '{task}', 'usage-owner', 'user', 'submit', 'go', {accepted}, \
             {accepted}, 'succeeded', '{{\"kind\":\"run\"}}', '{id}');"
+    )
+}
+
+/// One Tool Invocation of `run` that ended at `ended` with `result`.
+fn invocation(id: &str, run: &str, ended: i64, result: &str) -> String {
+    let (dispatched, result_json, failure) = match result {
+        "upstream_outcome" => (ended.to_string(), "'{}'", "NULL, NULL"),
+        "coral_failure" => ("NULL".to_owned(), "NULL", "'invalid_input', 'refused'"),
+        _ => ("NULL".to_owned(), "NULL", "NULL, NULL"),
+    };
+    format!(
+        "INSERT INTO tool_invocations (id, workspace_id, run_id, provider_account_setting_version, \
+            credential_route, provider_id, provider_generation_id, tool_key, call_path, arguments_json, \
+            state, admitted_at_unix_nanos, dispatch_started_at_unix_nanos, ended_at_unix_nanos, \
+            result_kind, result_json, failure_code, failure_message) \
+         VALUES ('{id}', 'ws1', '{run}', 1, 'none', 'p1', 'g1', 'getForecast', \
+            'coral.providers.weather.getForecast', '{{}}', 'ended', {ended}, {dispatched}, {ended}, \
+            '{result}', {result_json}, {failure});"
     )
 }
 
@@ -263,6 +319,36 @@ fn task(id: &str, started: i64) -> String {
             started_at_unix_nanos, last_activity_at_unix_nanos) \
          VALUES ('{id}', 'ws1', 'usage-owner', 'user', 'go', {started}, {started});"
     )
+}
+
+/// `run`'s Tool Invocations at `at`: an upstream answer, a Coral failure, an
+/// unknown result, and one the Run's end cut short. Two needed approval, and
+/// one request settled each way it can. A closed one is not a decision.
+fn tool_calls(run: &str, at: i64) -> String {
+    let mut sql: Vec<String> = [
+        ("v1", "upstream_outcome"),
+        ("v2", "coral_failure"),
+        ("v3", "indeterminate"),
+        ("v4", "run_terminated"),
+    ]
+    .into_iter()
+    .map(|(id, result)| invocation(id, run, at, result))
+    .collect();
+    sql.push(format!(
+        "INSERT INTO invocation_approvals (id, workspace_id, invocation_id, run_id, \
+            deadline_at_unix_nanos, created_at_unix_nanos, state, decided_at_unix_nanos, approver_id) \
+         VALUES ('a1', 'ws1', 'v1', '{run}', {deadline}, {at}, 'approved', {at}, 'usage-owner'), \
+            ('a2', 'ws1', 'v2', '{run}', {deadline}, {at}, 'pending', NULL, NULL);",
+        deadline = at + 1,
+    ));
+    for state in ["approved", "declined", "expired", "closed"] {
+        sql.push(format!(
+            "INSERT INTO approval_lifecycle_events (id, workspace_id, request_id, state, \
+                occurred_at_unix_nanos, trace_id) VALUES ('e-{state}', 'ws1', 'a1', '{state}', {at}, '{trace}');",
+            trace = "0".repeat(31) + "1",
+        ));
+    }
+    sql.concat()
 }
 
 #[tokio::test]
@@ -297,24 +383,15 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
              VALUES ('{run_id}', 'ws1', 'f1', 'triage', 'return 1');"
         ));
     }
-    sql.push(format!(
-        "INSERT INTO task_interactions (id, workspace_id, task_id, principal_id, principal_kind, kind, \
-            intent, started_at_unix_nanos, completed_at_unix_nanos, outcome, evidence_json) \
-         VALUES ('i-reject', 'ws1', 't1', 'usage-owner', 'user', 'submit', 'go', {at}, {at}, 'rejected', \
-            '{{\"kind\":\"rejected\",\"failure\":{{\"code\":\"program_admission_failed\",\"message\":\"x\"}}}}');",
-        at = d7(12)
-    ));
+    sql.push(tool_calls("r1", d7(3)));
+    sql.push(invocation("v5", "r9", d8(2), "upstream_outcome"));
     for statement in sql.concat().split_terminator(';') {
         if !statement.trim().is_empty() {
             fixture.sql(statement).await;
         }
     }
 
-    fixture
-        .sending()
-        .make_due_reports(at(9, 12))
-        .await
-        .expect("reports");
+    fixture.check_daily(&fixture.sending(), 6..=9).await;
 
     let day7 = fixture.report("2026-11-07").await;
     assert_eq!(
@@ -323,7 +400,15 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     );
     assert_eq!(
         day7["day"]["run_failures"],
-        json!({"compile": 1, "tool_error": 1, "timeout": 1, "cpu_budget": 1, "interrupted": 1})
+        json!({"compile": 0, "tool_error": 1, "timeout": 1, "cpu_budget": 1, "interrupted": 1})
+    );
+    assert_eq!(
+        day7["day"]["tool_invocations"],
+        json!({"succeeded": 1, "failed": 2, "approval_required": 2})
+    );
+    assert_eq!(
+        day7["day"]["approvals"],
+        json!({"approved": 1, "denied": 1, "expired": 1})
     );
     assert_eq!(day7["day"]["tasks"]["started"], 1);
     assert_eq!(
@@ -331,6 +416,7 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
         json!({"saved": 1, "called": 1, "tasks_reusing_one": 0})
     );
     let day8 = fixture.report("2026-11-08").await;
+    assert_eq!(day8["day"]["tool_invocations"]["succeeded"], 1);
     assert_eq!(
         day8["day"]["saved_functions"],
         json!({"saved": 0, "called": 1, "tasks_reusing_one": 1})
@@ -347,6 +433,8 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     );
 
     // Run history goes; the milestones stay.
+    fixture.sql("DELETE FROM invocation_approvals").await;
+    fixture.sql("DELETE FROM tool_invocations").await;
     fixture.sql("DELETE FROM task_interactions").await;
     fixture
         .sql("DELETE FROM program_run_saved_function_snapshots")
@@ -364,34 +452,33 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
 async fn sending_follows_the_collectors_answer() {
     let fixture = Fixture::new().await;
     let usage = fixture.sending();
-    usage.make_due_reports(at(9, 12)).await.expect("reports");
+    fixture.check_daily(&usage, 6..=9).await;
     let day6 = fixture.report("2026-11-06").await.to_string();
     let collector = MockServer::start().await;
     let url = format!("{}/v1/report", collector.uri());
 
-    // A 5xx keeps every report and stops.
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(503))
-        .mount(&collector)
-        .await;
-    let outcome = usage
-        .send_due(&client(), &url, || at(9, 13))
-        .await
-        .expect("send");
-    assert_eq!(outcome, SendOutcome::Retry);
-    assert_eq!(
-        collector.received_requests().await.expect("requests").len(),
-        1
-    );
-    assert!(
-        fixture
-            .reports()
+    // A 5xx, a timeout or a rate limit keeps every report and stops.
+    let waiting = fixture.reports().await;
+    for status in [503, 408, 429] {
+        collector.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&collector)
+            .await;
+        let outcome = usage
+            .send_due(&client(), &url, || at(9, 13))
             .await
-            .iter()
-            .all(|(_, sent)| sent.is_none())
-    );
+            .expect("send");
+        assert_eq!(outcome, SendOutcome::Retry, "{status}");
+        assert_eq!(
+            collector.received_requests().await.expect("requests").len(),
+            1,
+            "{status}"
+        );
+        assert_eq!(fixture.reports().await, waiting, "{status}");
+    }
 
-    // A 4xx drops that report; a 204 stores the others; only the last stays.
+    // Any other 4xx drops that report; a 204 stores the others; only the last stays.
     collector.reset().await;
     Mock::given(method("POST"))
         .and(path("/v1/report"))
@@ -436,7 +523,7 @@ async fn sending_follows_the_collectors_answer() {
 async fn turning_sharing_off_drops_waiting_reports_and_on_starts_today() {
     let fixture = Fixture::new().await;
     let usage = fixture.sending();
-    usage.make_due_reports(at(9, 12)).await.expect("reports");
+    fixture.check_daily(&usage, 6..=9).await;
     usage
         .set_sharing(&fixture.owner, false, at(9, 12))
         .await
@@ -453,7 +540,7 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_starts_today() {
         .set_sharing(&fixture.owner, true, at(12, 12))
         .await
         .expect("on");
-    usage.make_due_reports(at(14, 12)).await.expect("reports");
+    fixture.check_daily(&usage, 13..=14).await;
     let days: Vec<String> = fixture
         .reports()
         .await
@@ -463,9 +550,33 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_starts_today() {
     assert_eq!(days, ["2026-11-12", "2026-11-13"]);
 }
 
+/// Another Coral Instance composed day 6's report before an owner turned
+/// sharing off. Its claim then fails, so the report never lands after the
+/// off dropped the waiting ones.
 #[tokio::test]
-async fn a_process_that_never_sends_skips_its_days() {
+async fn a_report_composed_before_sharing_turned_off_is_not_stored() {
     let fixture = Fixture::new().await;
+    let usage = fixture.sending();
+    fixture.check_daily(&usage, 6..=6).await;
+    usage
+        .set_sharing(&fixture.owner, false, at(7, 1))
+        .await
+        .expect("off");
+
+    let day = |day| chrono::NaiveDate::from_ymd_opt(2026, 11, day).expect("day");
+    let database = fixture.db.database();
+    let mut tx = database.begin().await.expect("write");
+    let claimed = crate::repository::install::claim_day(&mut tx, day(6), day(7))
+        .await
+        .expect("claim");
+    tx.commit().await.expect("commit");
+    assert!(!claimed);
+}
+
+#[tokio::test]
+async fn a_blocked_process_makes_no_report_and_skips_no_day() {
+    let fixture = Fixture::new().await;
+    let usage = fixture.sending();
     let blocked = fixture.usage(
         &SendEnvironment {
             do_not_track: Some("1".into()),
@@ -479,8 +590,21 @@ async fn a_process_that_never_sends_skips_its_days() {
     );
     let collector = MockServer::start().await;
     let url = format!("{}/v1/report", collector.uri());
+    let days = || async {
+        fixture
+            .reports()
+            .await
+            .into_iter()
+            .map(|(day, _)| day)
+            .collect::<Vec<String>>()
+    };
+
+    // Beside a sending process, a blocked one skips nothing.
+    fixture.check_daily(&usage, 6..=7).await;
+    fixture.check_daily(&blocked, 8..=8).await;
+    fixture.check_daily(&usage, 8..=8).await;
     blocked
-        .send_due(&client(), &url, || at(9, 12))
+        .send_due(&client(), &url, || at(9, 1))
         .await
         .expect("send");
     assert!(
@@ -490,25 +614,16 @@ async fn a_process_that_never_sends_skips_its_days() {
             .expect("requests")
             .is_empty()
     );
-    assert!(fixture.reports().await.is_empty());
+    assert_eq!(days().await, ["2026-11-06", "2026-11-07"]);
 
-    // A later release process starts from today.
-    fixture
-        .sending()
-        .make_due_reports(at(10, 12))
-        .await
-        .expect("reports");
-    let days: Vec<String> = fixture
-        .reports()
-        .await
-        .into_iter()
-        .map(|(day, _)| day)
-        .collect();
-    assert_eq!(days, ["2026-11-09"]);
+    // Days only blocked processes saw get no report.
+    fixture.check_daily(&blocked, 9..=11).await;
+    fixture.check_daily(&usage, 12..=12).await;
+    assert_eq!(days().await, ["2026-11-06", "2026-11-07", "2026-11-08"]);
 
     let source = fixture.usage(&SendEnvironment::default(), Build::Source);
     let view = source
-        .view(&fixture.member, at(10, 12))
+        .view(&fixture.member, at(12, 13))
         .await
         .expect("view");
     assert_eq!(view.block, Some(SendBlock::SourceBuild));

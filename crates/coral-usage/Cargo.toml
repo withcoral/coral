@@ -13,6 +13,9 @@ workspace = true
 chrono.workspace = true
 coral-db.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
+coral-provider.workspace = true
+coral-run.workspace = true
+coral-task.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true
 reqwest.workspace = true

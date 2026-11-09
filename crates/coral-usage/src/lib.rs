@@ -19,18 +19,21 @@
 //! - A report is stored as the JSON that is sent, and read back byte for
 //!   byte. The collector rejects any field it does not know, so the types in
 //!   `report` match its contract exactly.
-//! - A process with a [`SendBlock`] never sends: an environment variable
-//!   bootstrap read, or a source build. It skips the days that end while it
-//!   runs, so a later process does not send them.
-//! - A missed day keeps its report until the collector answers. A 4xx drops
-//!   it, since the same report can never succeed. Only the last report sent
-//!   is kept.
+//! - A process with a [`SendBlock`] never makes or sends a report: an
+//!   environment variable bootstrap read, or a source build. A day gets a
+//!   report only when a process that may send checked on it, so a day that
+//!   only blocked processes saw is never reported.
+//! - Reports start on the day the install row is made.
+//! - A missed day keeps its report until the collector answers. A 4xx but
+//!   408 or 429 drops it, since the same report can never succeed. Only the
+//!   last report sent is kept.
 //! - Each milestone's first day is kept once found, because Run history is
 //!   deleted.
 //! - Several Coral Instances may check at once: a day's report is made once,
 //!   and the collector stores a repeated report once.
 
 mod compose;
+mod day;
 mod environment;
 mod report;
 mod repository;
@@ -41,7 +44,7 @@ mod usage_data;
 mod tests;
 
 pub use environment::{BlockingVariable, Build, SendBlock, SendEnvironment};
-pub use report::{FIRST_REPORT_DAY, Host, HostAuth, HostKind};
+pub use report::{Host, HostAuth, HostKind};
 pub use sender::{CHECK_INTERVAL, COLLECTOR_URL, REQUEST_TIMEOUT, SendOutcome};
 pub use usage_data::{SentReport, UsageData, UsageDataView};
 
@@ -71,6 +74,33 @@ impl Error {
             Self::Database(_) => "database",
             Self::CorruptData(_) => "corrupt_data",
             Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl From<coral_run::Error> for Error {
+    fn from(error: coral_run::Error) -> Self {
+        match error {
+            coral_run::Error::Database(error) => Self::Database(error),
+            _ => Self::CorruptData("a Run is not what Coral writes"),
+        }
+    }
+}
+
+impl From<coral_task::Error> for Error {
+    fn from(error: coral_task::Error) -> Self {
+        match error {
+            coral_task::Error::Database(error) => Self::Database(error),
+            _ => Self::CorruptData("a Task interaction is not what Coral writes"),
+        }
+    }
+}
+
+impl From<coral_provider::Error> for Error {
+    fn from(error: coral_provider::Error) -> Self {
+        match error {
+            coral_provider::Error::Database(error) => Self::Database(error),
+            _ => Self::CorruptData("an Account is not what Coral writes"),
         }
     }
 }

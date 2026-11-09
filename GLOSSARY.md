@@ -33,6 +33,11 @@ Membership removal, cannot be undone by signing in again, and does not disable W
 the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
 reactivation, Agent disablement
 
+**Usage Report**: The anonymous JSON that a self-hosted Coral deployment sends once for each UTC day, while sharing
+is on. It holds only dates, counts and values from fixed lists. A process that an environment variable or a source
+build blocks never makes or sends one, and a day that only blocked processes saw gets none. _Avoid_: telemetry
+(Coral's traces and metrics), analytics event, ping
+
 **OAuth Client**: Client software that a User signs in to Coral through, identified by a DCR client ID or a CIMD URL.
 A public client proves only that it holds the PKCE verifier for a code issued to its redirect. A confidential client
 also proves that it holds the secret issued when it registered. A client grants no authority, and its secret is never a Coral credential.

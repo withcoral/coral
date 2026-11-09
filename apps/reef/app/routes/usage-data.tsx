@@ -14,6 +14,7 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
+import { isoTime } from '@/lib/management-views.server'
 import type { SendBlock, UsageDataView } from '@/views/usage-data/types'
 import { UsageDataPage } from '@/views/usage-data/usage-data-page'
 
@@ -50,7 +51,9 @@ function usageView(usage: UsageData): UsageDataView {
     ...(block && { block }),
     kind: usage.kind === UsageHostKind.DESKTOP ? 'desktop' : 'server',
     next: usage.nextReportJson,
-    ...(usage.lastSent && { lastSent: { at: usage.lastSent.sentAt, json: usage.lastSent.json } }),
+    ...(usage.lastSent && {
+      lastSent: { at: isoTime(usage.lastSent.sentTime), json: usage.lastSent.json },
+    }),
   }
 }
 
