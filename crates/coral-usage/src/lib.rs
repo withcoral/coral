@@ -14,7 +14,8 @@
 //!
 //! - Sharing is on until an Organization Owner turns it off. Off drops the
 //!   reports not yet sent, and stops the next send. On starts again with
-//!   today's report, which counts activity from that moment.
+//!   today's report, whose counts start at that moment. A milestone is
+//!   always its first date in history, even from while sharing was off.
 //! - A report holds counts, UTC dates, values from fixed lists, the random
 //!   install ID and the release version. It never holds a Program, an
 //!   argument, a result, a credential or a name.

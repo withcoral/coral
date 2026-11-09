@@ -133,8 +133,8 @@ impl UsageData {
     }
 
     /// Turns sharing on or off for the deployment. Turning it off drops the
-    /// reports not yet sent. Turning it on starts with today's report, which
-    /// counts activity from that moment.
+    /// reports not yet sent. Turning it on starts with today's report, whose
+    /// counts start at that moment.
     ///
     /// # Errors
     ///

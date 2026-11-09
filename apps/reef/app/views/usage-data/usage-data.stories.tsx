@@ -230,13 +230,25 @@ export const TurnedOffByCi: Story = {
 /** A reason from a newer Coral that this Reef cannot name still shows a banner. */
 export const TurnedOffForAnUnknownReason: Story = {
   args: { view: { ...sharing, block: { kind: 'unknown' } } },
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText(
+        'Coral sends no usage data from your computer, even when sharing is on.',
+      ),
+    ).toBeVisible()
+  },
 }
+
+const refused =
+  'Coral could not change usage data sharing. You do not have permission for this action.'
 
 /** The owner's change failed; the switch shows what Coral still has. */
 export const ChangeFailed: Story = {
-  args: {
-    view: sharing,
-    error: 'Coral could not change usage data sharing. You do not have permission for this action.',
+  args: { view: sharing, error: refused },
+  // Coral refused the change, so a click changes nothing here either.
+  render: ({ view, error }) => <UsageDataPage view={view} error={error} onChoose={() => {}} />,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole('alert')).toHaveTextContent(refused)
   },
 }
 

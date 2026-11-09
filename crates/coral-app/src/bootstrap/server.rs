@@ -196,7 +196,8 @@ impl ServerBuilder {
     }
 
     /// Supplies the variables, read at process bootstrap, that stop this
-    /// process from sending usage data. Without them, it sends nothing.
+    /// process from sending usage data. A process that never calls this
+    /// sends nothing.
     #[must_use]
     pub fn with_usage_environment(mut self, environment: coral_usage::SendEnvironment) -> Self {
         self.launcher.usage_environment = Some(environment);
