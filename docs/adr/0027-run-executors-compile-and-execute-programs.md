@@ -338,7 +338,8 @@ Coral exports and amends this ADR.
 - **Request work shares the pool with Run Ledger work.** Reconsider reserved permits if the sign-in or readiness probes
   exceed their budgets while every Run transaction is short.
 - **Migrations are expand-only across one release**, because a new process migrates at boot while the old one still
-  serves.
+  serves. ADR 0024's rename of Operations to Provider Tools and ADR 0032's single stored credential contract are the
+  exceptions: each release needs a stop-then-start upgrade.
 - **A local child shares Coral's OS user and, in one container, its memory limit.** Children are on by default and
   bounded by a count, so a container sized for Coral alone can be killed for memory with its children's Runs; the
   guides size Coral's container for Coral and the children's heaps. To scale or to isolate access, the guides run Run

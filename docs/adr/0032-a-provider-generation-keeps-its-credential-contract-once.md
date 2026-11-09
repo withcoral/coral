@@ -25,8 +25,9 @@ so an unchanged Provider still reuses its Generation.
 
 ## Consequences
 
-- **This upgrade stops, then starts.** A Coral before this release cannot read a Tool definition without its contract.
-  Stop every process on the previous release before the first process on this release boots. A rolling update would
-  fail the old process's Tool loads for every Provider the new process publishes. For the same reason, a rollback to an
-  earlier release cannot load the Tools of a Provider this release published.
+- **This upgrade stops, then starts.** A Coral before this release cannot read an HTTP Tool definition without its
+  contract. Stop every process on the previous release before the first process on this release boots. A rolling
+  update would fail the old process's Tool loads for every OpenAPI Provider with a credential that the new process
+  publishes. For the same reason, a rollback to an earlier release cannot load that Provider's Tools. MCP and Built-in
+  Providers, and OpenAPI Providers without a credential, stay readable both ways.
 - **MCP Tools are unchanged.** Each still carries its contract. Discovery metadata bounds its size.
