@@ -242,6 +242,29 @@ describe('an update', () => {
     expect(stops).toHaveLength(1)
   })
 
+  // Catches: an update that arrives during a Quit's stop handing off while
+  // Coral still runs, so the installer replaces files that are in use.
+  it.each([
+    ['stops cleanly', (stop: Pending) => stop.resolve()],
+    ['fails to stop', (stop: Pending) => stop.reject(new Error('reef did not exit'))],
+  ] as const)(
+    'waits for a Quit that is stopping Coral before the installer runs, when Coral %s',
+    async (_name, end) => {
+      const { quit, quitApp, stops } = setup('linux')
+      quitApp()
+      let handedOff = false
+      const stopping = quit.stopForUpdate().then(() => (handedOff = true))
+      await settle()
+
+      expect(handedOff).toBe(false)
+      expect(stops).toHaveLength(1)
+
+      end(stops[0])
+      await stopping
+      expect(handedOff).toBe(true)
+    },
+  )
+
   it('starts Coral again when the hand-off fails', async () => {
     const { quit, quitApp, app, stops, starts, calls } = setup('darwin')
     const stopping = quit.stopForUpdate()

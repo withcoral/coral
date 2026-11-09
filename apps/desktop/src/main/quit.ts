@@ -32,8 +32,8 @@ export type QuitLifecycle = {
  * - `running`: Coral may run. Only here does anything start Coral.
  * - `quitting`: Quit stops Coral, then ends the app.
  * - `updating`: the updater stops Coral before its installer runs.
- * - `handingOff`: Coral is stopped, and the installer's quit may pass.
- * - `stopped`: Coral is stopped, and the app ends.
+ * - `handingOff`: the update's stop ended, and the installer's quit may pass.
+ * - `stopped`: the stop ended, cleanly or not, and the app ends.
  *
  * `quitPending` keeps a Quit that arrives during an update, so a failed
  * hand-off ends the app instead of starting Coral again.
@@ -64,6 +64,9 @@ export function createQuitLifecycle(deps: {
   // Set when macOS logs the person out, restarts or shuts down. This relies
   // on macOS posting that notice before it asks the apps to quit.
   let sessionEnding = false
+  // The stop under way, settled when it ends either way. A later stop for an
+  // update waits for it, so the installer never runs beside Coral.
+  let stopping: Promise<void> = Promise.resolve()
 
   const startCoral = (options?: StartOptions) =>
     void deps.startCoral(options).catch(deps.onStartFailure)
@@ -74,7 +77,7 @@ export function createQuitLifecycle(deps: {
       case 'running':
         moveTo({ name: 'quitting' })
         // The app ends even when a process does not stop cleanly.
-        void deps
+        stopping = deps
           .stopCoral()
           .catch((error: unknown) => deps.log(`quit: ${String(error)}`))
           .then(() => {
@@ -87,7 +90,7 @@ export function createQuitLifecycle(deps: {
         return moveTo({ name: 'updating', quitPending: true })
       case 'handingOff':
       case 'stopped':
-        // Coral is stopped, so the app can end now.
+        // The stop ended, so the app can end now.
         return deps.exit()
       case 'quitting':
         return
@@ -138,10 +141,13 @@ export function createQuitLifecycle(deps: {
     // The installer replaces the app only after both processes stop. Its own
     // quit then passes before-quit.
     async stopForUpdate() {
-      if (phase.name !== 'running') return
+      // A Quit or an earlier update already stops Coral: wait for that stop.
+      if (phase.name !== 'running') return stopping
       moveTo({ name: 'updating', quitPending: false })
+      const stop = deps.stopCoral()
+      stopping = stop.catch(() => undefined)
       try {
-        await deps.stopCoral()
+        await stop
       } catch (error) {
         // The installer does not run, so leave the update and let Quit work again.
         stopEnded()
