@@ -1346,9 +1346,14 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         }),
     )
     .await;
+    // The throw reaches the caller as a Tool Error at its call site.
     assert_eq!(
         structured(&linked_failure).pointer("/failure/error/frames/0/source"),
-        Some(&json!("Saved Function coral.private.diagnostics.fail"))
+        Some(&json!("Program"))
+    );
+    assert_eq!(
+        structured(&linked_failure).pointer("/failure/error/tool/code"),
+        Some(&json!("tool_failed"))
     );
     assert_eq!(
         structured(&linked_failure).pointer("/failure/error/message"),

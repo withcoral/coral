@@ -20,8 +20,7 @@ use tempfile::TempDir;
 
 const SAVED_FUNCTION: &str =
     "export default function forecast(city: string) {\n    console.info(city);\n}";
-const PROGRAM: &str =
-    "console.log(\"l\");\nawait coral.emit({ step: 1 });\ncoral.private.report.forecast(\"Oslo\");";
+const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast(\"Oslo\");";
 
 /// Accepts one Run in the server's database and waits for it to succeed.
 async fn record_run(
@@ -64,6 +63,13 @@ async fn record_run(
         workspaces.clone(),
         coral_catalog::BuiltinCatalog::running().unwrap(),
     );
+    // Every Workspace Coral serves has its Private Provider.
+    let mut transaction = database.begin().await.unwrap();
+    providers
+        .install_private_in_transaction(&mut transaction, &context, &workspace)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
     let runs = coral_run::RunModule::new(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),

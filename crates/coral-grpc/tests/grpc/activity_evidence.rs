@@ -1701,7 +1701,10 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
             None => panic!("unknown entry"),
         }
     }
+    // The Private Tool call is an Invocation at its call site, admitted
+    // before its body runs.
     let mut expected_rows = outputs;
+    expected_rows.insert(2, program(3, 28));
     expected_rows.extend([in_snapshot(3, 37), program(4, 32)]);
     assert_eq!(row_locations, expected_rows);
 }

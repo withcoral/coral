@@ -125,8 +125,13 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
         ),
         (
             "a wrong Saved Function argument",
-            "export default function hot() {\n  return coral.private.weather.forecast(42).temperatureC > 30;\n}",
-            &[(2345, Some(2), Some(41))],
+            "export default async function hot() {\n  return (await coral.private.weather.forecast(42)).temperatureC > 30;\n}",
+            &[(2345, Some(2), Some(48))],
+        ),
+        (
+            "a Private Tool result read before its call settles",
+            "export default function hot() {\n  return coral.private.weather.forecast(\"Oslo\").temperatureC > 30;\n}",
+            &[(2339, Some(2), Some(49))],
         ),
         (
             "a reserved-word Tool segment",
