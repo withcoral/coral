@@ -21,6 +21,7 @@ fn error(error: coral_functions::Error) -> Status {
         E::PrivateToolRevisionConflict { .. } => (tonic::Code::Aborted, "ABORTED"),
         // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
         E::SavedFunctionAdmission(_)
+        | E::PrivateToolNotData(_)
         | E::SavedFunctionPathConflict
         | E::SavedFunctionCompilationTimedOut
         | E::CompilerBusy

@@ -556,6 +556,7 @@ struct SavedFunctionOutput {
     blocking_diagnostics: Vec<CompilerDiagnostic>,
     diagnostics: Vec<CompilerDiagnostic>,
     references: Vec<SavedFunctionReference>,
+    not_data: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -695,6 +696,7 @@ impl CompilerIsolate {
             declaration_field_projection,
             output.diagnostics,
             output.references,
+            output.not_data,
         ))
     }
 

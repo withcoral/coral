@@ -247,7 +247,7 @@ fn failure(field: &str, error: coral_functions::Error) -> Error {
         E::SavedFunctionPathConflict => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem("path", &error)]))
         }
-        E::InvalidInput(_) | E::SavedFunctionAdmission(_) => {
+        E::InvalidInput(_) | E::SavedFunctionAdmission(_) | E::PrivateToolNotData(_) => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem(field, &error)]))
         }
         E::PackageTooLarge { .. } => Error::InvocationRejected(Rejection::naming(

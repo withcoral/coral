@@ -43,6 +43,9 @@ pub(crate) struct PreparedSavedFunction {
     pub(crate) diagnostics: Vec<SavedFunctionDiagnostic>,
     pub(crate) diagnostics_truncated: bool,
     pub(crate) references: Vec<SavedFunctionReference>,
+    /// Where the declaration's arguments or result hold something that is
+    /// not data, as the compiler found it; `None` when they are all data.
+    pub(crate) not_data: Option<String>,
 }
 
 pub(crate) trait SavedFunctionCompiler: Send + Sync {
@@ -125,6 +128,7 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
             diagnostics,
             diagnostics_truncated,
             references,
+            not_data: compiled.not_data().map(ToOwned::to_owned),
         })
     }
 }
@@ -672,9 +676,16 @@ impl SavedFunctionModule {
                 }
             })
         };
-        timeout_at(deadline.into(), preparation)
+        let prepared = timeout_at(deadline.into(), preparation)
             .await
-            .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)?
+            .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)??;
+        // Every call crosses to Coral and back, so only data can (ADR 0032).
+        if let Some(reason) = prepared.not_data {
+            return Err(Error::PrivateToolNotData(format!(
+                "{source_name}: {reason}"
+            )));
+        }
+        Ok(prepared)
     }
 
     /// The declarations that type `source`: the current ones of the Saved

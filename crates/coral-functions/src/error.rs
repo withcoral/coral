@@ -19,6 +19,11 @@ pub enum Error {
     /// Source could not become one accepted callable definition.
     #[error("Saved Function authoring failed: {0}")]
     SavedFunctionAdmission(String),
+    /// The source's arguments or result cannot cross a Tool call as data:
+    /// the reason names where the declaration holds a function, a class
+    /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
+    #[error("a Private Tool takes and returns only data: {0}")]
+    PrivateToolNotData(String),
     /// The path names a namespace that holds the caller's other functions,
     /// or lies under one of them.
     #[error(
@@ -76,6 +81,7 @@ impl Error {
             Self::PrivateToolExists => "private_tool_exists",
             Self::PrivateToolRevisionConflict { .. } => "private_tool_revision_conflict",
             Self::SavedFunctionAdmission { .. } => "saved_function_admission",
+            Self::PrivateToolNotData(_) => "private_tool_not_data",
             Self::SavedFunctionPathConflict => "saved_function_path_conflict",
             Self::SavedFunctionCompilationTimedOut { .. } => "saved_function_compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
@@ -107,6 +113,7 @@ impl Error {
             Self::SavedFunctionAdmission(_) | Self::SavedFunctionPathConflict => {
                 "saved_function_admission_failed"
             }
+            Self::PrivateToolNotData(_) => "private_tool_not_data",
             Self::SavedFunctionCompilationTimedOut => "saved_function_compilation_timed_out",
             Self::CompilerBusy => "saved_function_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",

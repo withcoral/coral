@@ -389,6 +389,7 @@ pub struct SavedFunctionCompilation {
     declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
     diagnostics: Vec<CompilerDiagnostic>,
     references: Vec<SavedFunctionReference>,
+    not_data: Option<String>,
 }
 
 impl SavedFunctionCompilation {
@@ -397,13 +398,23 @@ impl SavedFunctionCompilation {
         declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
         references: Vec<SavedFunctionReference>,
+        not_data: Option<String>,
     ) -> Self {
         Self {
             declaration,
             declaration_field_projection,
             diagnostics,
             references,
+            not_data,
         }
+    }
+
+    /// Where the declaration's arguments or result hold something other
+    /// than data, such as "`input.callback` is a function"; `None` when
+    /// they are all data. `any` and `unknown` say nothing, so they pass.
+    #[must_use]
+    pub fn not_data(&self) -> Option<&str> {
+        self.not_data.as_deref()
     }
 
     /// Returns the exact self-contained emitted declaration.

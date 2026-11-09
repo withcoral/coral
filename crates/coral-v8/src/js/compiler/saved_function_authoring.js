@@ -93,28 +93,25 @@ function analyzeDeclaration(declaration, fileName, compilerOptions) {
   if (unresolvedDiagnostics.length > 0) {
     return { unresolvedDiagnostics, declarationFields: [] };
   }
+  const notData = notDataBoundary(program, sourceFile);
   try {
     return {
       unresolvedDiagnostics,
       declarationFields: projectDeclarationFields(program, sourceFile),
+      notData,
     };
   } catch {
     return {
       unresolvedDiagnostics,
       declarationFields: undefined,
+      notData,
     };
   }
 }
 
-function declarationFieldPath(parent, name) {
-  if (ts.isIdentifier(name)) return `${parent}.${name.text}`;
-  if (ts.isStringLiteral(name)) return `${parent}[${JSON.stringify(name.text)}]`;
-  if (ts.isNumericLiteral(name)) return `${parent}[${name.text}]`;
-  return undefined;
-}
-
-function projectDeclarationFields(program, sourceFile) {
-  const checker = program.getTypeChecker();
+// The callable a declaration's module exports by default, and its call
+// signatures.
+function defaultExportSignatures(checker, sourceFile) {
   const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
   if (!moduleSymbol) throw new Error('declaration module symbol is missing');
   const exported = checker
@@ -126,7 +123,102 @@ function projectDeclarationFields(program, sourceFile) {
   const declaration = defaultSymbol.valueDeclaration || defaultSymbol.declarations?.[0];
   if (!declaration) throw new Error('declaration default export has no declaration');
   const callable = checker.getTypeOfSymbolAtLocation(defaultSymbol, declaration);
-  const signatures = checker.getSignaturesOfType(callable, ts.SignatureKind.Call);
+  return checker.getSignaturesOfType(callable, ts.SignatureKind.Call);
+}
+
+// Where a Private Tool's arguments or its awaited result hold something that
+// cannot cross a Tool call as JSON data, such as "`input.callback` is a
+// function", or undefined when they hold only data. `any`, `unknown` and a
+// type parameter without a constraint say nothing about the value, so they
+// pass, and so does `void`, which crosses as null.
+function notDataBoundary(program, sourceFile) {
+  const checker = program.getTypeChecker();
+  const MAX_DEPTH = 64;
+  const fromLibrary = (symbol) =>
+    symbol?.declarations?.some((node) => program.isSourceFileDefaultLibrary(node.getSourceFile())) ===
+    true;
+
+  function find(type, path, resolving, depth) {
+    if (depth > MAX_DEPTH || resolving.has(type)) return undefined;
+    const nextResolving = new Set(resolving).add(type);
+    const visit = (child, childPath) => find(child, childPath, nextResolving, depth + 1);
+    if (type.flags & ts.TypeFlags.BigIntLike) return `\`${path}\` is a bigint`;
+    if (type.flags & ts.TypeFlags.ESSymbolLike) return `\`${path}\` is a symbol`;
+    if (type.flags & ts.TypeFlags.TypeParameter) {
+      const constraint = checker.getBaseConstraintOfType(type);
+      return constraint && constraint !== type ? visit(constraint, path) : undefined;
+    }
+    if (type.isUnionOrIntersection()) {
+      for (const branch of type.types) {
+        const found = visit(branch, path);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    }
+    if (!(type.flags & ts.TypeFlags.Object)) return undefined;
+    if (checker.isArrayType(type) || checker.isTupleType(type)) {
+      for (const element of checker.getTypeArguments(type)) {
+        const found = visit(element, `${path}[]`);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    }
+    if (
+      checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0 ||
+      checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0
+    ) {
+      return `\`${path}\` is a function`;
+    }
+    const symbol = type.symbol;
+    const mapped = (type.objectFlags & ts.ObjectFlags.Mapped) !== 0;
+    if (!mapped && symbol !== undefined && symbol.flags & ts.SymbolFlags.Class) {
+      return `\`${path}\` is an instance of class ${symbol.getName()}`;
+    }
+    // A named standard-library object, such as Date, Map, Set, RegExp or
+    // Promise, is a class instance however the library declares it.
+    if (!mapped && symbol !== undefined && symbol.flags & ts.SymbolFlags.Interface && fromLibrary(symbol)) {
+      return `\`${path}\` is a ${symbol.getName()}`;
+    }
+    for (const property of checker.getPropertiesOfType(type)) {
+      const name = property.getName();
+      const childPath = ts.isIdentifierText(name, sourceFile.languageVersion)
+        ? `${path}.${name}`
+        : `${path}[${JSON.stringify(name)}]`;
+      const found = visit(checker.getTypeOfSymbolAtLocation(property, sourceFile), childPath);
+      if (found !== undefined) return found;
+    }
+    for (const info of checker.getIndexInfosOfType(type)) {
+      const found = visit(info.type, `${path}[key]`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  for (const signature of defaultExportSignatures(checker, sourceFile)) {
+    for (const [index, parameter] of signature.getParameters().entries()) {
+      const node = parameter.valueDeclaration || parameter.declarations?.[0];
+      if (!node) continue;
+      const path = ts.isIdentifier(node.name) ? `input.${node.name.text}` : `input[${index}]`;
+      const found = find(checker.getTypeOfSymbolAtLocation(parameter, node), path, new Set(), 0);
+      if (found !== undefined) return found;
+    }
+    const result = checker.getReturnTypeOfSignature(signature);
+    const found = find(checker.getAwaitedType(result) || result, 'result', new Set(), 0);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function declarationFieldPath(parent, name) {
+  if (ts.isIdentifier(name)) return `${parent}.${name.text}`;
+  if (ts.isStringLiteral(name)) return `${parent}[${JSON.stringify(name.text)}]`;
+  if (ts.isNumericLiteral(name)) return `${parent}[${name.text}]`;
+  return undefined;
+}
+
+function projectDeclarationFields(program, sourceFile) {
+  const checker = program.getTypeChecker();
+  const signatures = defaultExportSignatures(checker, sourceFile);
   if (signatures.length === 0) throw new Error('declaration default export is not callable');
 
   const fields = new Map();
@@ -337,6 +429,7 @@ function savedFunctionDeclarationResult(emitted, diagnostics, references) {
     blockingDiagnostics: unresolved.map((diagnostic) => diagnosticPayload(diagnostic)),
     diagnostics,
     references,
+    notData: analysis.notData ?? null,
   };
 }
 

@@ -1180,6 +1180,91 @@ async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_p
     );
 }
 
+// Catches: a save that accepts a Private Tool whose arguments or result
+// cannot cross a Tool call as data, anywhere in its declaration, or that
+// refuses one whose types say nothing about the data (`any`, `unknown`).
+#[tokio::test]
+async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
+    let fixture = SavedFunctionTestModules::new().await;
+    let (workspace_id, principal) = fixture.user_workspace("user:data-only-author").await;
+    let path = SavedFunctionPath::parse("data.only").expect("path");
+    let save = |source: &str| {
+        SavedFunctionSave::new(
+            path.clone(),
+            SavedFunctionDescription::parse("Takes and returns data").expect("description"),
+            SavedFunctionSource::parse(source).expect("source"),
+        )
+    };
+    for (source, reason) in [
+        (
+            "export default (callback: () => number) => callback();",
+            "`input.callback` is a function",
+        ),
+        ("export default () => () => 1;", "`result` is a function"),
+        (
+            "class Box { constructor(public value: number) {} } export default (): Box => new Box(1);",
+            "`result` is an instance of class Box",
+        ),
+        (
+            "export default async (): Promise<{ when: Date }> => ({ when: new Date() });",
+            "`result.when` is a Date",
+        ),
+        (
+            "export default (): Map<string, number> => new Map();",
+            "`result` is a Map",
+        ),
+        (
+            "export default (values: Set<string>[]) => values.length;",
+            "`input.values[]` is a Set",
+        ),
+        (
+            "export default (value: bigint) => Number(value);",
+            "`input.value` is a bigint",
+        ),
+        (
+            "export default (): { id: symbol } => ({ id: Symbol() });",
+            "`result.id` is a symbol",
+        ),
+    ] {
+        let refused = fixture
+            .saved_functions
+            .save(
+                &saved_function_change(principal.clone(), 20, 'd'),
+                &workspace_id,
+                save(source),
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(Error::PrivateToolNotData(message)) if message.contains(reason)),
+            "{source}: {refused:?}"
+        );
+    }
+    assert!(matches!(
+        fixture
+            .saved_functions
+            .get(&principal, &workspace_id, &path)
+            .await,
+        Err(Error::SavedFunctionNotFound)
+    ));
+
+    for source in [
+        "export default async (input: any): Promise<any> => input;",
+        "export default (input: unknown): unknown => input;",
+        "export default async (input: { name: string; tags: readonly string[]; at?: [number, string | null] }): Promise<Record<string, boolean>> => ({ [input.name]: true });",
+        "export default async (): Promise<void> => {};",
+    ] {
+        fixture
+            .saved_functions
+            .save(
+                &saved_function_change(principal.clone(), 30, 'e'),
+                &workspace_id,
+                save(source),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+    }
+}
+
 #[tokio::test]
 async fn saved_function_save_rejects_missing_and_computed_dependencies_atomically() {
     let fixture = SavedFunctionTestModules::new().await;
@@ -1515,6 +1600,7 @@ impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             references: Vec::new(),
+            not_data: None,
         })
     }
 }
