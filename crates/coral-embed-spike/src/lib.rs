@@ -40,6 +40,7 @@ struct Args {
     model_dir: PathBuf,
     out: PathBuf,
     threads: usize,
+    ep: String,
     docs: Option<PathBuf>,
     timing_queries: Option<PathBuf>,
     queries: Option<PathBuf>,
@@ -49,6 +50,7 @@ fn parse(args: &[String]) -> anyhow::Result<Args> {
     let mut model_dir = None;
     let mut out = None;
     let mut threads = 1;
+    let mut ep = String::from("prefer-cpu");
     let mut docs = None;
     let mut timing_queries = None;
     let mut queries = None;
@@ -59,6 +61,7 @@ fn parse(args: &[String]) -> anyhow::Result<Args> {
             "--model-dir" => model_dir = Some(PathBuf::from(value)),
             "--out" => out = Some(PathBuf::from(value)),
             "--threads" => threads = value.parse().context("--threads")?,
+            "--ep" => ep.clone_from(value),
             "--docs" => docs = Some(PathBuf::from(value)),
             "--timing-queries" => timing_queries = Some(PathBuf::from(value)),
             "--queries" => queries = Some(PathBuf::from(value)),
@@ -69,6 +72,7 @@ fn parse(args: &[String]) -> anyhow::Result<Args> {
         model_dir: model_dir.context("--model-dir is required")?,
         out: out.context("--out is required")?,
         threads,
+        ep,
         docs,
         timing_queries,
         queries,
@@ -111,7 +115,7 @@ struct Embedder {
 }
 
 impl Embedder {
-    fn load(model_dir: &Path, threads: usize) -> anyhow::Result<Self> {
+    fn load(model_dir: &Path, threads: usize, ep: &str) -> anyhow::Result<Self> {
         let mut tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
         tokenizer
@@ -124,7 +128,20 @@ impl Embedder {
             .map_err(|e| anyhow::anyhow!("truncation: {e}"))?;
         tokenizer.with_padding(None);
         let environment = ort::init().with_name("embed-spike").build()?;
-        let session = Session::builder(&environment)?
+        // `ort` rc.15 sets the automatic EP policy MaxEfficiency on every new
+        // builder; "cpu" registers the CPU EP explicitly, as fastembed does.
+        let builder = Session::builder(&environment)?;
+        let builder = match ep {
+            "cpu" => builder
+                .with_execution_providers([ort::ep::CPU::default().build()])
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            "prefer-cpu" => builder
+                .with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            "max-efficiency" => builder,
+            other => bail!("unknown --ep {other}"),
+        };
+        let session = builder
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .with_intra_threads(threads)
@@ -270,6 +287,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     fs::create_dir_all(&args.out)?;
     let mut report = serde_json::Map::new();
     report.insert("threads".into(), json!(args.threads));
+    report.insert("ep".into(), json!(args.ep));
     report.insert("os".into(), json!(std::env::consts::OS));
     report.insert("arch".into(), json!(std::env::consts::ARCH));
     report.insert("ort_crate".into(), json!("2.0.0-rc.15"));
@@ -277,7 +295,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     report.insert("peak_rss_before_model_mb".into(), json!(peak_rss_mb()));
 
     let started = Instant::now();
-    let mut embedder = Embedder::load(&args.model_dir, args.threads)?;
+    let mut embedder = Embedder::load(&args.model_dir, args.threads, &args.ep)?;
     let load = started.elapsed();
     report.insert("load_s".into(), json!(load.as_secs_f64()));
     report.insert("ort_build_info".into(), json!(ort::info()));

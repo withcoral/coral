@@ -10,6 +10,17 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 libc = "0.2"
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "api-24"] }
 serde_json.workspace = true
 tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+
+[features]
+default = ["static"]
+# The pyke prebuilt ONNX Runtime, linked statically (what Coral would ship).
+static = ["ort/download-binaries", "ort/tls-native"]
+# Any ONNX Runtime shared library at run time, from ORT_DYLIB_PATH.
+dynamic = ["ort/load-dynamic"]
+
+[[bin]]
+name = "embed-spike"
+path = "src/bin/embed-spike.rs"
