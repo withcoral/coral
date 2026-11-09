@@ -677,7 +677,7 @@ impl CompilerIsolate {
             return Err(Error::InvalidSavedFunction(message));
         }
         let declaration = output.declaration_text.ok_or_else(|| {
-            Error::CompilerProtocol("compiler emitted no Saved Function declaration".to_string())
+            Error::CompilerProtocol("compiler emitted no Private Tool declaration".to_string())
         })?;
         let declaration_field_projection = match (
             output.declaration_fields,

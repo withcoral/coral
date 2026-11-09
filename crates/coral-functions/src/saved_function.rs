@@ -338,7 +338,7 @@ impl SavedFunctionModule {
             Some(previous) => (
                 previous.id().clone(),
                 previous.revision.checked_add(1).ok_or_else(|| {
-                    Error::CorruptData("Saved Function revision overflowed".to_string())
+                    Error::CorruptData("Private Tool revision overflowed".to_string())
                 })?,
                 LifecycleAction::Replaced,
                 previous.default_access_state(),
@@ -424,7 +424,7 @@ impl SavedFunctionModule {
         agent_id: &PrincipalId,
     ) -> Result<Vec<SavedFunction>, Error> {
         let user = actor.authenticated_user().ok_or(Error::PermissionDenied(
-            "only a Workspace Owner can inspect Agent Saved Functions",
+            "only a Workspace Owner can inspect Agent Private Tools",
         ))?;
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize_agent_inspection_in_transaction(&mut transaction, user, workspace_id)
@@ -547,7 +547,7 @@ impl SavedFunctionModule {
     ) -> Result<Vec<AdministrativeLifecycleEvent>, Error> {
         let Some(user) = actor.authenticated_user() else {
             return Err(Error::PermissionDenied(
-                "Agents cannot inspect Saved Function lifecycle history",
+                "Agents cannot inspect Private Tool lifecycle history",
             ));
         };
         let mut transaction = self.database.begin_read_snapshot().await?;
@@ -633,7 +633,7 @@ impl SavedFunctionModule {
             .await?;
         if evidence.effective_role() != WorkspaceRole::Owner {
             return Err(Error::PermissionDenied(
-                "only a Workspace Owner can inspect Agent Saved Functions",
+                "only a Workspace Owner can inspect Agent Private Tools",
             ));
         }
         Ok(())
@@ -647,7 +647,7 @@ impl SavedFunctionModule {
         source: &str,
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
-        let source_name = format!("Saved Function coral.private.{}", path.as_str());
+        let source_name = format!("Private Tool coral.private.{}", path.as_str());
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
@@ -670,7 +670,7 @@ impl SavedFunctionModule {
                 CompileFailure::Failed(kind) => {
                     tracing::warn!(
                         error.type = safe::kind(kind),
-                        "Saved Function compiler failed; the caller sees an internal failure"
+                        "Private Tool compiler failed; the caller sees an internal failure"
                     );
                     Error::CompilerUnavailable(kind.to_string())
                 }
@@ -733,7 +733,7 @@ impl SavedFunctionModule {
                     .inspect_err(|error| {
                         tracing::warn!(
                             error.type = safe::kind(error.code()),
-                            "Saved Function declarations are unavailable; they are checked untyped"
+                            "Private Tool declarations are unavailable; they are checked untyped"
                         );
                     })
                     .ok()
@@ -844,7 +844,7 @@ fn missing_saved_function_dependency(
     reference: &SavedFunctionReference,
 ) -> Error {
     Error::SavedFunctionAdmission(format!(
-        "Saved Function coral.private.{}:{}:{} references missing Saved Function coral.private.{}",
+        "Private Tool coral.private.{}:{}:{} references missing Private Tool coral.private.{}",
         source_path.as_str(),
         reference.line,
         reference.column,

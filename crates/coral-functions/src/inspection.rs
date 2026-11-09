@@ -80,7 +80,7 @@ impl SavedFunctionInspection {
     ) -> Result<SavedFunctionPage, Error> {
         if !(1..=SAVED_FUNCTION_PAGE_MAX_SIZE).contains(&page_size) {
             return Err(Error::InvalidInput(
-                "Saved Function page size is out of range".to_string(),
+                "Private Tool page size is out of range".to_string(),
             ));
         }
         let mut transaction = self.database.begin_read_snapshot().await?;

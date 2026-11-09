@@ -96,6 +96,21 @@ pub(crate) trait ProgramEngine: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// The Private Tools and Tools one linked module at `path` names, from
+    /// one analysis. An engine that finds no Tool chains names its Private
+    /// Tools alone, and admission checks no Call Path in it.
+    fn saved_function_references(
+        &self,
+        deadline: Instant,
+        path: &SavedFunctionPath,
+        source: &str,
+    ) -> Result<ProgramReferences, CompileFailure> {
+        Ok(ProgramReferences {
+            functions: self.saved_function_dependency_references(deadline, path, source)?,
+            tools: None,
+        })
+    }
+
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
     /// Compiles `source` with the Saved Functions it links and with
@@ -111,7 +126,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
             self.compile(deadline, source)
         } else {
             Err(CompileFailure::Rejected(
-                "scripted Program compiler does not support Saved Functions".to_string(),
+                "scripted Program compiler does not support Private Tools".to_string(),
             ))
         }
     }
@@ -195,18 +210,21 @@ impl ProgramEngine for V8ProgramEngine {
             .unknown_tool_calls(time_left(deadline), tools, callable)?)
     }
 
-    fn saved_function_dependency_references(
+    fn saved_function_references(
         &self,
         deadline: Instant,
         path: &SavedFunctionPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        let source_name = format!("Saved Function coral.private.{}", path.as_str());
-        let references = self
+    ) -> Result<ProgramReferences, CompileFailure> {
+        let source_name = format!("Private Tool coral.private.{}", path.as_str());
+        let named = self
             .compiler
-            .dependency_references(time_left(deadline), source)
+            .call_paths(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, &source_name))?;
-        Ok(parse_saved_function_references(references, &source_name)?)
+        Ok(ProgramReferences {
+            functions: parse_saved_function_references(named.functions().to_vec(), &source_name)?,
+            tools: Some(named.tools().clone()),
+        })
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {

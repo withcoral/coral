@@ -316,7 +316,7 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         )
         .await,
         Err(Error::ProgramAdmission(message))
-            if message == "Saved Function coral.private.math.incrementTwice:1:27 references missing Saved Function coral.private.math.increment"
+            if message == "Private Tool coral.private.math.incrementTwice:1:27 references missing Private Tool coral.private.math.increment"
     ));
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
@@ -385,7 +385,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         )
         .await,
         Err(Error::ProgramAdmission(message))
-            if message.contains("may link at most 64 Saved Functions")
+            if message.contains("may link at most 64 Private Tools")
     ));
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
@@ -645,7 +645,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
             )
             .await,
         Err(Error::ProgramAdmission(message))
-            if message == "Program:1:1 references missing Saved Function coral.private.snapshots.value"
+            if message == "Program:1:1 references missing Private Tool coral.private.snapshots.value"
     ));
     assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), 1);
 }
@@ -669,7 +669,7 @@ async fn admission_rejects_missing_or_computed_saved_function_paths_without_a_ru
     assert!(matches!(
         missing,
         Err(Error::ProgramAdmission(message))
-            if message == "Program:2:8 references missing Saved Function coral.private.missing.call"
+            if message == "Program:2:8 references missing Private Tool coral.private.missing.call"
     ));
 
     let computed = runs
@@ -682,7 +682,7 @@ async fn admission_rejects_missing_or_computed_saved_function_paths_without_a_ru
     assert!(matches!(
         computed,
         Err(Error::ProgramAdmission(message))
-            if message == "Program:2:8: Saved Function paths must be directly named without computed access"
+            if message == "Program:2:8: Private Tool paths must be directly named without computed access"
     ));
 
     for source in [

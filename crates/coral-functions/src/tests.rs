@@ -31,7 +31,7 @@ fn fixed_saved_function_source_and_declaration_limits_accept_the_boundary_only()
     assert!(matches!(
         crate::SavedFunctionDeclaration::from_compiler(&format!("{maximum_declaration}d")),
         Err(Error::PackageTooLarge {
-            component: "Saved Function declaration",
+            component: "Private Tool declaration",
             ..
         })
     ));
@@ -889,11 +889,21 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
     }
 }
 
+/// One refused authoring call: what it asked, what it returned, and whether
+/// that is its own variant.
+type Refusal = (&'static str, Result<(), Error>, fn(&Error) -> bool);
+
 // Catches: a create-only or replace-only save that compiles before it finds
 // its path taken or missing, so it costs a compile and can report the
-// compile's failure instead of its own.
+// compile's failure instead of its own; a refusal under any variant but its
+// own; or a refused save or delete that changes the tool, creates one, or
+// records an Event.
 #[tokio::test]
-async fn a_save_whose_intent_the_path_refuses_never_compiles() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table checks each refusal's variant and that it changed nothing"
+)]
+async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing() {
     let fixture = SavedFunctionTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:intent-before-compile").await;
     let path = SavedFunctionPath::parse("reports.current").expect("path");
@@ -922,26 +932,83 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles() {
         )),
     );
     let missing = SavedFunctionPath::parse("reports.missing").expect("path");
-    for (refused, expected) in [
-        (save(&path).create_only(), "private_tool_exists"),
+    let current = fixture
+        .saved_functions
+        .get(&principal, &workspace_id, &path)
+        .await
+        .expect("the first save is current");
+    let events = fixture
+        .saved_functions
+        .list_lifecycle_events(&principal, &workspace_id)
+        .await
+        .expect("Events")
+        .len();
+    let context = saved_function_change(principal.clone(), 20, 'b');
+    let refusals: [Refusal; 4] = [
         (
-            save(&missing).replace_only(None),
-            "saved_function_not_found",
+            "create-only at a taken path",
+            timing_out
+                .save(&context, &workspace_id, save(&path).create_only())
+                .await
+                .map(drop),
+            |error| matches!(error, Error::PrivateToolExists),
         ),
         (
-            save(&path).replace_only(Some(2)),
-            "private_tool_revision_conflict",
+            "replace-only at a missing path",
+            timing_out
+                .save(&context, &workspace_id, save(&missing).replace_only(None))
+                .await
+                .map(drop),
+            |error| matches!(error, Error::SavedFunctionNotFound),
         ),
-    ] {
-        let error = timing_out
-            .save(
-                &saved_function_change(principal.clone(), 20, 'b'),
-                &workspace_id,
-                refused,
-            )
-            .await
-            .expect_err("the path refuses the intent");
-        assert_eq!(error.code(), expected, "{error}");
+        (
+            "replace-only at a moved revision",
+            timing_out
+                .save(&context, &workspace_id, save(&path).replace_only(Some(2)))
+                .await
+                .map(drop),
+            |error| matches!(error, Error::PrivateToolRevisionConflict { current: 1 }),
+        ),
+        (
+            "delete at a missing path",
+            timing_out
+                .delete(&context, &workspace_id, &missing)
+                .await
+                .map(drop),
+            |error| matches!(error, Error::SavedFunctionNotFound),
+        ),
+    ];
+    for (name, refused, expected) in refusals {
+        assert!(refused.as_ref().is_err_and(expected), "{name}: {refused:?}");
+        assert_eq!(
+            fixture
+                .saved_functions
+                .get(&principal, &workspace_id, &path)
+                .await
+                .expect("still current"),
+            current,
+            "{name}: the tool is unchanged"
+        );
+        assert!(
+            matches!(
+                fixture
+                    .saved_functions
+                    .get(&principal, &workspace_id, &missing)
+                    .await,
+                Err(Error::SavedFunctionNotFound)
+            ),
+            "{name}: nothing was created"
+        );
+        assert_eq!(
+            fixture
+                .saved_functions
+                .list_lifecycle_events(&principal, &workspace_id)
+                .await
+                .expect("Events")
+                .len(),
+            events,
+            "{name}: no Event"
+        );
     }
     assert!(matches!(
         timing_out
@@ -1314,7 +1381,7 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
         assert!(matches!(
             rejected,
             Err(Error::SavedFunctionAdmission(message))
-                if message.contains("Saved Function coral.private.reports.compose")
+                if message.contains("Private Tool coral.private.reports.compose")
                     && (message.contains(" at 1:") || message.contains(":1:"))
         ));
     }

@@ -456,9 +456,9 @@ fn a_save_call_admission_cannot_read_is_refused() {
     assert_eq!(
         save_refusal("await coral.private.x.save();", &[linked("x.save", module)]),
         format!(
-            "Saved Function coral.private.x.save:{}: {}, not a string",
+            "Private Tool coral.private.x.save:{}: {}, not a string",
             location(module, "\"text\""),
-            NAME_REFUSAL.replace("this Program", "this Saved Function"),
+            NAME_REFUSAL.replace("this Program", "this Private Tool"),
         ),
     );
 }

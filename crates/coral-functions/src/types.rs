@@ -47,15 +47,22 @@ impl SavedFunctionId {
     ///
     /// Returns [`Error::InvalidInput`] unless the value is a canonical UUID.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let id = Uuid::parse_str(value).map_err(|_error| {
-            Error::InvalidInput("Saved Function id must be a UUID".to_string())
-        })?;
+        let id = Uuid::parse_str(value)
+            .map_err(|_error| Error::InvalidInput("Private Tool id must be a UUID".to_string()))?;
         if id.hyphenated().to_string() != value {
             return Err(Error::InvalidInput(
-                "Saved Function id must use canonical lowercase UUID form".to_string(),
+                "Private Tool id must use canonical lowercase UUID form".to_string(),
             ));
         }
         Ok(Self(id))
+    }
+}
+
+impl SavedFunctionId {
+    /// The code Execution Binding of this Private Tool's definition at
+    /// `revision`.
+    fn execution_binding(&self, revision: u64) -> coral_catalog::CodeExecutionBinding {
+        coral_catalog::CodeExecutionBinding::new(self.to_string(), revision)
     }
 }
 
@@ -88,7 +95,7 @@ impl SavedFunctionPath {
             || segments.iter().any(|segment| !safe_path_segment(segment))
         {
             return Err(Error::InvalidInput(format!(
-                "Saved Function Path must contain 1 through {SAVED_FUNCTION_PATH_MAX_SEGMENTS} non-reserved safe JavaScript identifier segments and be at most {SAVED_FUNCTION_PATH_MAX_BYTES} UTF-8 bytes"
+                "Private Tool Path must contain 1 through {SAVED_FUNCTION_PATH_MAX_SEGMENTS} non-reserved safe JavaScript identifier segments and be at most {SAVED_FUNCTION_PATH_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -138,7 +145,7 @@ impl SavedFunctionDescription {
             || value.chars().any(char::is_control)
         {
             return Err(Error::InvalidInput(format!(
-                "Saved Function description must be non-blank, have no surrounding whitespace or control characters, and be at most {SAVED_FUNCTION_DESCRIPTION_MAX_BYTES} UTF-8 bytes"
+                "Private Tool description must be non-blank, have no surrounding whitespace or control characters, and be at most {SAVED_FUNCTION_DESCRIPTION_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -165,7 +172,7 @@ impl SavedFunctionSource {
         if value.is_empty() || value.contains('\0') || value.len() > SAVED_FUNCTION_SOURCE_MAX_BYTES
         {
             return Err(Error::InvalidInput(format!(
-                "Saved Function source must be non-empty, contain no null byte, and be at most {SAVED_FUNCTION_SOURCE_MAX_BYTES} UTF-8 bytes"
+                "Private Tool source must be non-empty, contain no null byte, and be at most {SAVED_FUNCTION_SOURCE_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -186,12 +193,12 @@ impl SavedFunctionDeclaration {
     pub(crate) fn from_compiler(value: &str) -> Result<Self, Error> {
         if value.is_empty() {
             return Err(Error::SavedFunctionAdmission(
-                "TypeScript emitted no Saved Function declaration".to_string(),
+                "TypeScript emitted no Private Tool declaration".to_string(),
             ));
         }
         if value.len() > SAVED_FUNCTION_DECLARATION_MAX_BYTES {
             return Err(Error::PackageTooLarge {
-                component: "Saved Function declaration",
+                component: "Private Tool declaration",
                 maximum_bytes: SAVED_FUNCTION_DECLARATION_MAX_BYTES,
             });
         }
@@ -200,7 +207,7 @@ impl SavedFunctionDeclaration {
 
     pub(crate) fn from_persisted(value: &str) -> Result<Self, Error> {
         Self::from_compiler(value).map_err(|error| {
-            Error::CorruptData(format!("Saved Function has invalid declaration: {error}"))
+            Error::CorruptData(format!("Private Tool has invalid declaration: {error}"))
         })
     }
 
@@ -302,7 +309,7 @@ impl SavedFunctionDeclarationFieldProjection {
     ) -> Result<Self, Error> {
         if format != SAVED_FUNCTION_DECLARATION_FIELDS_FORMAT {
             return Err(Error::CorruptData(
-                "Saved Function declaration fields have an incompatible format".to_string(),
+                "Private Tool declaration fields have an incompatible format".to_string(),
             ));
         }
         match (status, fields_json, failure_reason) {
@@ -310,12 +317,12 @@ impl SavedFunctionDeclarationFieldProjection {
                 let fields: Vec<SavedFunctionDeclarationField> = serde_json::from_str(json)
                     .map_err(|_error| {
                         Error::CorruptData(
-                            "Saved Function declaration fields are not valid JSON".to_string(),
+                            "Private Tool declaration fields are not valid JSON".to_string(),
                         )
                     })?;
                 if !valid_declaration_fields(&fields) {
                     return Err(Error::CorruptData(
-                        "Saved Function declaration fields exceed their bounds".to_string(),
+                        "Private Tool declaration fields exceed their bounds".to_string(),
                     ));
                 }
                 Ok(Self::Ready(fields))
@@ -330,7 +337,7 @@ impl SavedFunctionDeclarationFieldProjection {
                 Ok(Self::Failed(reason.to_string()))
             }
             _ => Err(Error::CorruptData(
-                "Saved Function has an invalid declaration-field projection outcome".to_string(),
+                "Private Tool has an invalid declaration-field projection outcome".to_string(),
             )),
         }
     }
@@ -708,7 +715,7 @@ impl SavedFunction {
     /// definition Coral performs when it is called.
     #[must_use]
     pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
-        coral_catalog::CodeExecutionBinding::new(self.id.to_string(), self.revision)
+        self.id.execution_binding(self.revision)
     }
 }
 
@@ -1157,7 +1164,7 @@ impl LifecycleAction {
             "saved_function.replaced" => Ok(Self::Replaced),
             "saved_function.deleted" => Ok(Self::Deleted),
             _ => Err(Error::CorruptData(format!(
-                "Saved Function lifecycle Event has unrecognized action '{value}'"
+                "Private Tool lifecycle Event has unrecognized action '{value}'"
             ))),
         }
     }
@@ -1181,7 +1188,7 @@ impl LifecycleOutcome {
         match value {
             "accepted" => Ok(Self::Accepted),
             _ => Err(Error::CorruptData(format!(
-                "Saved Function lifecycle Event has unrecognized outcome '{value}'"
+                "Private Tool lifecycle Event has unrecognized outcome '{value}'"
             ))),
         }
     }
@@ -1320,7 +1327,7 @@ impl SavedFunctionSelection {
     /// one a Run that links it performs when the Program calls it.
     #[must_use]
     pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
-        coral_catalog::CodeExecutionBinding::new(self.id.to_string(), self.revision)
+        self.id.execution_binding(self.revision)
     }
 }
 

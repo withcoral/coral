@@ -117,7 +117,7 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
             (
                 "const f = coral.private;\nreturn (await f.linear.inbox()).total;",
                 "program_admission_failed",
-                "Program:1:11: Saved Function namespace aliases are not supported",
+                "Program:1:11: Private Tool namespace aliases are not supported",
             ),
             // The Program from the 2026-09-28 report. Admission owns the
             // wording; the text must carry the code and authored location.

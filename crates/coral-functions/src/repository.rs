@@ -80,26 +80,25 @@ struct SavedFunctionRow {
 impl SavedFunctionRow {
     fn decode(self) -> Result<SavedFunction, Error> {
         let id = SavedFunctionId::parse(&self.id).map_err(|_error| {
-            Error::CorruptData("Saved Function has invalid identity".to_string())
+            Error::CorruptData("Private Tool has invalid identity".to_string())
         })?;
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_error| {
-            Error::CorruptData("Saved Function has invalid Workspace identity".to_string())
+            Error::CorruptData("Private Tool has invalid Workspace identity".to_string())
         })?;
         let principal_id = PrincipalId::parse(&self.principal_id).map_err(|_error| {
-            Error::CorruptData("Saved Function has invalid Principal identity".to_string())
+            Error::CorruptData("Private Tool has invalid Principal identity".to_string())
         })?;
         let principal = Principal::from_parts(
             principal_id,
             principal_kind_from_storage(&self.principal_kind)?,
         );
         let path = SavedFunctionPath::parse(&self.path)
-            .map_err(|_error| Error::CorruptData("Saved Function has invalid path".to_string()))?;
+            .map_err(|_error| Error::CorruptData("Private Tool has invalid path".to_string()))?;
         let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
-            Error::CorruptData("Saved Function has invalid description".to_string())
+            Error::CorruptData("Private Tool has invalid description".to_string())
         })?;
-        let source = SavedFunctionSource::parse(&self.source).map_err(|_error| {
-            Error::CorruptData("Saved Function has invalid source".to_string())
-        })?;
+        let source = SavedFunctionSource::parse(&self.source)
+            .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
         let declaration = SavedFunctionDeclaration::from_persisted(&self.declaration)?;
         let declaration_field_projection = SavedFunctionDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
@@ -137,13 +136,13 @@ struct SavedFunctionSearchRow {
 impl SavedFunctionSearchRow {
     fn decode(self) -> Result<SavedFunctionSearchMaterial, Error> {
         let id = SavedFunctionId::parse(&self.id).map_err(|_error| {
-            Error::CorruptData("Saved Function search target has invalid identity".to_string())
+            Error::CorruptData("Private Tool search target has invalid identity".to_string())
         })?;
         let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
-            Error::CorruptData("Saved Function search target has invalid path".to_string())
+            Error::CorruptData("Private Tool search target has invalid path".to_string())
         })?;
         let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
-            Error::CorruptData("Saved Function search target has invalid description".to_string())
+            Error::CorruptData("Private Tool search target has invalid description".to_string())
         })?;
         Ok(SavedFunctionSearchMaterial::new(id, path, description))
     }
@@ -159,10 +158,10 @@ struct SavedFunctionSummaryRow {
 impl SavedFunctionSummaryRow {
     fn decode(self) -> Result<SavedFunctionSummary, Error> {
         let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
-            Error::CorruptData("Saved Function summary has invalid path".to_string())
+            Error::CorruptData("Private Tool summary has invalid path".to_string())
         })?;
         let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
-            Error::CorruptData("Saved Function summary has invalid description".to_string())
+            Error::CorruptData("Private Tool summary has invalid description".to_string())
         })?;
         Ok(SavedFunctionSummary::new(
             path,
@@ -184,7 +183,7 @@ struct SavedFunctionDeclarationSearchRow {
 impl SavedFunctionDeclarationSearchRow {
     fn decode(self) -> Result<SavedFunctionDeclarationSearchMaterial, Error> {
         let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
-            Error::CorruptData("Saved Function search lane has invalid path".to_string())
+            Error::CorruptData("Private Tool search lane has invalid path".to_string())
         })?;
         let declaration_fields = SavedFunctionDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
@@ -220,23 +219,23 @@ struct SavedFunctionEntryRow {
 impl SavedFunctionEntryRow {
     fn decode(self) -> Result<SavedFunctionEntry, Error> {
         let id = SavedFunctionId::parse(&self.id).map_err(|_error| {
-            Error::CorruptData("Saved Function entry has invalid identity".to_string())
+            Error::CorruptData("Private Tool entry has invalid identity".to_string())
         })?;
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_error| {
-            Error::CorruptData("Saved Function entry has invalid Workspace identity".to_string())
+            Error::CorruptData("Private Tool entry has invalid Workspace identity".to_string())
         })?;
         let principal_id = PrincipalId::parse(&self.principal_id).map_err(|_error| {
-            Error::CorruptData("Saved Function entry has invalid Principal identity".to_string())
+            Error::CorruptData("Private Tool entry has invalid Principal identity".to_string())
         })?;
         let principal = Principal::from_parts(
             principal_id,
             principal_kind_from_storage(&self.principal_kind)?,
         );
         let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
-            Error::CorruptData("Saved Function entry has invalid path".to_string())
+            Error::CorruptData("Private Tool entry has invalid path".to_string())
         })?;
         let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
-            Error::CorruptData("Saved Function entry has invalid description".to_string())
+            Error::CorruptData("Private Tool entry has invalid description".to_string())
         })?;
         let declaration = SavedFunctionDeclaration::from_persisted(&self.declaration)?;
         // As in the relevance lane, an unreadable projection stays isolated to
@@ -253,9 +252,7 @@ impl SavedFunctionEntryRow {
             .ok()
             .filter(|revision| *revision > 0)
             .ok_or_else(|| {
-                Error::CorruptData(
-                    "Saved Function entry has invalid definition revision".to_string(),
-                )
+                Error::CorruptData("Private Tool entry has invalid definition revision".to_string())
             })?;
         Ok(SavedFunctionEntry::new(
             id,
@@ -280,11 +277,11 @@ struct SavedFunctionAuthoringRow {
 impl SavedFunctionAuthoringRow {
     fn decode(self) -> Result<SavedFunctionAuthoringMaterial, Error> {
         let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
-            Error::CorruptData("Saved Function authoring material has invalid path".to_string())
+            Error::CorruptData("Private Tool authoring material has invalid path".to_string())
         })?;
         let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData(
-                "Saved Function authoring material has invalid description".to_string(),
+                "Private Tool authoring material has invalid description".to_string(),
             )
         })?;
         let declaration = SavedFunctionDeclaration::from_persisted(&self.declaration)?;
@@ -316,9 +313,8 @@ impl ExactSavedFunctionDescriptionRow {
             declaration: self.declaration,
         }
         .decode()?;
-        let source = SavedFunctionSource::parse(&self.source).map_err(|_error| {
-            Error::CorruptData("Saved Function has invalid source".to_string())
-        })?;
+        let source = SavedFunctionSource::parse(&self.source)
+            .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
         let diagnostics = decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?;
         Ok(ExactSavedFunctionDescriptionMaterial::new(
             authoring,
@@ -350,10 +346,10 @@ struct LifecycleEventRow {
 impl LifecycleEventRow {
     fn decode(self) -> Result<AdministrativeLifecycleEvent, Error> {
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_error| {
-            Error::CorruptData("Saved Function lifecycle Event has invalid Workspace".to_string())
+            Error::CorruptData("Private Tool lifecycle Event has invalid Workspace".to_string())
         })?;
         let actor_id = PrincipalId::parse(&self.actor_principal_id).map_err(|_error| {
-            Error::CorruptData("Saved Function lifecycle Event has invalid actor".to_string())
+            Error::CorruptData("Private Tool lifecycle Event has invalid actor".to_string())
         })?;
         let actor = Principal::from_parts(
             actor_id,
@@ -361,19 +357,19 @@ impl LifecycleEventRow {
         );
         let target_id =
             SavedFunctionId::parse(&self.target_saved_function_id).map_err(|_error| {
-                Error::CorruptData("Saved Function lifecycle Event has invalid target".to_string())
+                Error::CorruptData("Private Tool lifecycle Event has invalid target".to_string())
             })?;
         let target_path = SavedFunctionPath::parse(&self.target_path).map_err(|_error| {
-            Error::CorruptData("Saved Function lifecycle Event has invalid target path".to_string())
+            Error::CorruptData("Private Tool lifecycle Event has invalid target path".to_string())
         })?;
         let changed_field_paths =
             serde_json::from_str(&self.changed_field_paths).map_err(|error| {
                 Error::CorruptData(format!(
-                    "Saved Function lifecycle Event has invalid changed fields: {error}"
+                    "Private Tool lifecycle Event has invalid changed fields: {error}"
                 ))
             })?;
         let trace_id = TraceId::parse(&self.trace_id).map_err(|message| {
-            Error::CorruptData(format!("Saved Function lifecycle Event {message}"))
+            Error::CorruptData(format!("Private Tool lifecycle Event {message}"))
         })?;
         Ok(AdministrativeLifecycleEvent::new(
             workspace_id,
@@ -625,13 +621,13 @@ pub(crate) async fn index_revisions(
         .map(|(id, workspace, revision)| {
             Ok(crate::SavedFunctionIndexRevision {
                 id: SavedFunctionId::parse(&id).map_err(|_error| {
-                    Error::CorruptData("invalid Saved Function index identity".to_string())
+                    Error::CorruptData("invalid Private Tool index identity".to_string())
                 })?,
                 workspace_id: WorkspaceId::parse(&workspace).map_err(|_error| {
-                    Error::CorruptData("invalid Saved Function index Workspace".to_string())
+                    Error::CorruptData("invalid Private Tool index Workspace".to_string())
                 })?,
                 revision: u64::try_from(revision).map_err(|_error| {
-                    Error::CorruptData("invalid Saved Function index revision".to_string())
+                    Error::CorruptData("invalid Private Tool index revision".to_string())
                 })?,
             })
         })
@@ -696,7 +692,7 @@ pub(crate) async fn hydrate_search_material_in_transaction(
         .is_some_and(|material| material.description() != target.description())
     {
         return Err(Error::CorruptData(
-            "Saved Function changed inside one search snapshot".to_string(),
+            "Private Tool changed inside one search snapshot".to_string(),
         ));
     }
     Ok(material)
@@ -873,7 +869,7 @@ pub(crate) async fn replace_current(
         .to_owned();
     if transaction.execute(statement).await? != 1 {
         return Err(Error::CorruptData(
-            "Saved Function replacement lost its held current definition".to_string(),
+            "Private Tool replacement lost its held current definition".to_string(),
         ));
     }
     Ok(())
@@ -904,7 +900,7 @@ pub(crate) async fn delete_current(
         .to_owned();
     if transaction.execute(statement).await? != 1 {
         return Err(Error::CorruptData(
-            "Saved Function deletion lost its held current definition".to_string(),
+            "Private Tool deletion lost its held current definition".to_string(),
         ));
     }
     Ok(())
@@ -1068,7 +1064,7 @@ pub async fn hold_source_selection_in_transaction(
 fn decode_diagnostics(json: &str, truncated: bool) -> Result<Vec<SavedFunctionDiagnostic>, Error> {
     let diagnostics: Vec<SavedFunctionDiagnostic> =
         serde_json::from_str(json).map_err(|error| {
-            Error::CorruptData(format!("Saved Function has invalid diagnostics: {error}"))
+            Error::CorruptData(format!("Private Tool has invalid diagnostics: {error}"))
         })?;
     if diagnostics.len() > SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT
         || diagnostics.iter().any(|diagnostic| {
@@ -1077,7 +1073,7 @@ fn decode_diagnostics(json: &str, truncated: bool) -> Result<Vec<SavedFunctionDi
         || (truncated && diagnostics.len() != SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT)
     {
         return Err(Error::CorruptData(
-            "Saved Function diagnostics exceed their stored bounds".to_string(),
+            "Private Tool diagnostics exceed their stored bounds".to_string(),
         ));
     }
     Ok(diagnostics)
@@ -1125,14 +1121,14 @@ fn saved_function_columns() -> [SavedFunctionRecords; 17] {
 fn principal_kind_from_storage(value: &str) -> Result<PrincipalKind, Error> {
     PrincipalKind::from_storage_str(value).map_err(|_error| {
         Error::CorruptData(format!(
-            "Saved Function has unrecognized Principal kind '{value}'"
+            "Private Tool has unrecognized Principal kind '{value}'"
         ))
     })
 }
 
 fn stored_revision(revision: u64) -> Result<i64, Error> {
     i64::try_from(revision)
-        .map_err(|_error| Error::CorruptData("Saved Function revision overflowed".to_string()))
+        .map_err(|_error| Error::CorruptData("Private Tool revision overflowed".to_string()))
 }
 
 const fn access_state_as_storage(state: ToolAccessState) -> &'static str {
@@ -1159,6 +1155,6 @@ fn decode_revision(stored: i64) -> Result<u64, Error> {
         .ok()
         .filter(|revision| *revision > 0)
         .ok_or_else(|| {
-            Error::CorruptData("Saved Function has invalid definition revision".to_string())
+            Error::CorruptData("Private Tool has invalid definition revision".to_string())
         })
 }

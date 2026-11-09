@@ -2109,7 +2109,6 @@ function usageTip(usage: ToolUsage, day: number) {
   )
 }
 
-/** One tool's calls over the window: the total, each day, and who called it. */
 /** The drawer's policy control, headed as its Usage section is. */
 function ToolPolicySection(props: {
   canChange: boolean
@@ -2128,6 +2127,7 @@ function ToolPolicySection(props: {
   )
 }
 
+/** One tool's calls over the window: the total, each day, and who called it. */
 function ToolUsageSection({ usage }: { usage: ToolUsage }) {
   const headingId = useId()
   const days = usage.daily.length

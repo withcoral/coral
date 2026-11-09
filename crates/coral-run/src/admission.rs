@@ -38,6 +38,13 @@ enum SavedFunctionReferenceSource {
     SavedFunction(SavedFunctionPath),
 }
 
+/// The Private Tools a Program links, in initialization order, and the
+/// literal Tool chains each one's source names.
+type LinkedClosure = (
+    Vec<SavedFunctionSelection>,
+    Vec<(SavedFunctionPath, coral_v8::ToolReferences)>,
+);
+
 struct PendingSavedFunctionReference {
     source: SavedFunctionReferenceSource,
     reference: SavedFunctionReference,
@@ -178,7 +185,7 @@ impl RunModule {
             .await?
             {
                 return Err(Error::ProgramAdmission(
-                    "Saved Function changed during Program admission".to_string(),
+                    "Private Tool changed during Program admission".to_string(),
                 ));
             }
         }
@@ -327,12 +334,25 @@ impl RunModule {
             .analyze_program(source.clone(), compilation_deadline)
             .await?;
         if let Some(tools) = &named.tools {
-            self.check_tool_calls(actor, workspace_id, tools, compilation_deadline)
+            self.check_tool_calls(actor, workspace_id, "Program", tools, compilation_deadline)
                 .await?;
         }
-        let linked = self
+        let (linked, linked_tools) = self
             .read_source_closure(actor, workspace_id, named.functions, compilation_deadline)
             .await?;
+        // A stored source is checked as the Program is, at every admission
+        // that links it: an old root fails here, not when called.
+        for (path, tools) in &linked_tools {
+            let source_name = format!("Private Tool coral.private.{}", path.as_str());
+            self.check_tool_calls(
+                actor,
+                workspace_id,
+                &source_name,
+                tools,
+                compilation_deadline,
+            )
+            .await?;
+        }
 
         validate_source_closure(
             &source,
@@ -365,9 +385,9 @@ impl RunModule {
         workspace_id: &WorkspaceId,
         roots: Vec<SavedFunctionReference>,
         compilation_deadline: Instant,
-    ) -> Result<Vec<SavedFunctionSelection>, Error> {
+    ) -> Result<LinkedClosure, Error> {
         if roots.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let root_paths = roots
@@ -384,6 +404,7 @@ impl RunModule {
             .collect::<VecDeque<_>>();
         let mut snapshots = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
+        let mut tools = Vec::new();
         while let Some(pending_reference) = pending.pop_front() {
             let path = &pending_reference.reference.path;
             if snapshots.contains_key(path) {
@@ -391,7 +412,7 @@ impl RunModule {
             }
             if snapshots.len() == LINKED_SAVED_FUNCTION_MAX_COUNT {
                 return Err(Error::ProgramAdmission(format!(
-                    "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Saved Functions"
+                    "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Private Tools"
                 )));
             }
             let snapshot = coral_functions::select_source_in_transaction(
@@ -402,13 +423,19 @@ impl RunModule {
             )
             .await?
             .ok_or_else(|| missing_saved_function(&pending_reference))?;
-            let referenced = self
-                .analyze_saved_function_paths(
+            let ProgramReferences {
+                functions: referenced,
+                tools: named_tools,
+            } = self
+                .analyze_saved_function(
                     snapshot.source().as_str().to_string(),
                     path.clone(),
                     compilation_deadline,
                 )
                 .await?;
+            if let Some(named_tools) = named_tools {
+                tools.push((path.clone(), named_tools));
+            }
             pending.extend(referenced.iter().cloned().map(|reference| {
                 PendingSavedFunctionReference {
                     source: SavedFunctionReferenceSource::SavedFunction(path.clone()),
@@ -426,7 +453,10 @@ impl RunModule {
         }
         transaction.commit().await?;
 
-        order_saved_function_closure(&root_paths, &dependencies, &snapshots)
+        Ok((
+            order_saved_function_closure(&root_paths, &dependencies, &snapshots)?,
+            tools,
+        ))
     }
 
     async fn analyze_program(
@@ -441,7 +471,8 @@ impl RunModule {
     }
 
     /// Refuses a Program whose literal `coral.providers` or
-    /// Built-in Tool call names no Tool the caller can call, naming
+    /// Built-in Tool call, in its body or in `source_name`, a Private Tool
+    /// it links, names no Tool the caller can call, naming
     /// each such path and the nearest ones it can discover. A computed path
     /// is checked only when called.
     ///
@@ -457,6 +488,7 @@ impl RunModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
+        source_name: &str,
         tools: &coral_v8::ToolReferences,
         compilation_deadline: Instant,
     ) -> Result<(), Error> {
@@ -529,7 +561,7 @@ impl RunModule {
             .iter()
             .map(|call| {
                 format!(
-                    "Program:{}:{}: {}",
+                    "{source_name}:{}:{}: {}",
                     call.line(),
                     call.column(),
                     crate::error::unknown_call_path_message(
@@ -588,14 +620,14 @@ impl RunModule {
         Ok(callable)
     }
 
-    async fn analyze_saved_function_paths(
+    async fn analyze_saved_function(
         &self,
         source: String,
         path: SavedFunctionPath,
         compilation_deadline: Instant,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
+    ) -> Result<ProgramReferences, Error> {
         self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.saved_function_dependency_references(deadline, &path, &source)
+            engine.saved_function_references(deadline, &path, &source)
         })
         .await
     }
@@ -692,11 +724,11 @@ fn missing_saved_function(pending: &PendingSavedFunctionReference) -> Error {
     let source_name = match &pending.source {
         SavedFunctionReferenceSource::SubmittedProgram => "Program".to_string(),
         SavedFunctionReferenceSource::SavedFunction(path) => {
-            format!("Saved Function coral.private.{}", path.as_str())
+            format!("Private Tool coral.private.{}", path.as_str())
         }
     };
     Error::ProgramAdmission(format!(
-        "{source_name}:{}:{} references missing Saved Function coral.private.{}",
+        "{source_name}:{}:{} references missing Private Tool coral.private.{}",
         pending.reference.line,
         pending.reference.column,
         pending.reference.path.as_str()
@@ -720,7 +752,7 @@ fn order_saved_function_closure(
             return Ok(());
         }
         let referenced = dependencies.get(path).ok_or_else(|| {
-            Error::CorruptData("Saved Function closure lost dependency evidence".to_string())
+            Error::CorruptData("Private Tool closure lost dependency evidence".to_string())
         })?;
         for dependency in referenced {
             visit(
@@ -738,7 +770,7 @@ fn order_saved_function_closure(
             snapshots
                 .get(path)
                 .ok_or_else(|| {
-                    Error::CorruptData("Saved Function closure lost source evidence".to_string())
+                    Error::CorruptData("Private Tool closure lost source evidence".to_string())
                 })?
                 .clone(),
         );
@@ -773,7 +805,7 @@ fn validate_source_closure<'a>(
     }
     if linked_count > LINKED_SAVED_FUNCTION_MAX_COUNT {
         return Err(Error::ProgramAdmission(format!(
-            "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Saved Functions"
+            "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Private Tools"
         )));
     }
     if combined_bytes > COMBINED_TYPESCRIPT_MAX_BYTES {

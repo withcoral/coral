@@ -834,7 +834,7 @@ pub enum Error {
     #[error("Program source is not one async-function body")]
     InvalidProgramBody,
     /// Saved Function source did not define one import-free default callable.
-    #[error("Saved Function authoring failed: {0}")]
+    #[error("Private Tool authoring failed: {0}")]
     InvalidSavedFunction(String),
     /// Source nesting overflowed the compiler's stack.
     #[error("TypeScript source is nested too deeply to compile")]
@@ -843,7 +843,7 @@ pub enum Error {
     #[error("TypeScript source uses a forbidden capability: {0}")]
     ForbiddenCapability(String),
     /// Program source did not directly name supported Saved Function paths.
-    #[error("Saved Function reference analysis failed at {line}:{column}: {message}")]
+    #[error("Private Tool reference analysis failed at {line}:{column}: {message}")]
     InvalidSavedFunctionReference {
         /// Clear safe reason.
         message: String,

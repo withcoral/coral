@@ -441,21 +441,21 @@ function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
             (access.segments.length > 0 && access.segments[0] === undefined))) ||
         access?.root === 'computed_global'
       ) {
-        return reject('Saved Function paths must be directly named through coral.private', node);
+        return reject('Private Tool paths must be directly named through coral.private', node);
       }
       if (
         ts.isElementAccessExpression(node) &&
         access?.root === 'lexical' &&
         (access.segments[0] === 'private' || access.segments[0] === undefined)
       ) {
-        return reject('Saved Function paths must be directly named without computed access', node);
+        return reject('Private Tool paths must be directly named without computed access', node);
       }
     }
     if (ts.isPropertyAccessExpression(node)) {
       const path = propertyPath(node, checker, sourceFile);
       if (path !== undefined && !parentContinuesCoralPath(node)) {
         if (path.length === 0) {
-          return reject('Saved Function namespace aliases are not supported', node);
+          return reject('Private Tool namespace aliases are not supported', node);
         }
         const joined = path.join('.');
         if (!references.has(joined)) {
@@ -484,7 +484,7 @@ function referenceAnalysisProgram(source, fileName, targetName) {
     types: [],
   };
   const { program, sourceFile } = virtualTypeScriptProgram(fileName, source, compilerOptions);
-  if (!sourceFile) throw new Error('Saved Function analysis source is missing');
+  if (!sourceFile) throw new Error('Private Tool analysis source is missing');
   return { program, sourceFile };
 }
 
@@ -537,7 +537,7 @@ function savedFunctionDependencyAnalysis(sourceFile, program) {
     return {
       references: [],
       validationError: {
-        message: 'Saved Function source has syntax errors under the current TypeScript Profile',
+        message: 'Private Tool source has syntax errors under the current TypeScript Profile',
         line: position.line + 1,
         column: position.character + 1,
       },

@@ -5,7 +5,7 @@ pub enum Error {
     #[error("invalid input: {0}")]
     InvalidInput(String),
     /// The Saved Function is absent or concealed from this Principal.
-    #[error("Saved Function was not found")]
+    #[error("Private Tool was not found")]
     SavedFunctionNotFound,
     /// A create-only save found a Private Tool at its path.
     #[error("a Private Tool is already at this path")]
@@ -17,7 +17,7 @@ pub enum Error {
         current: u64,
     },
     /// Source could not become one accepted callable definition.
-    #[error("Saved Function authoring failed: {0}")]
+    #[error("Private Tool authoring failed: {0}")]
     SavedFunctionAdmission(String),
     /// The source's arguments or result cannot cross a Tool call as data:
     /// the reason names where the declaration holds a function, a class
@@ -27,14 +27,14 @@ pub enum Error {
     /// The path names a namespace that holds the caller's other functions,
     /// or lies under one of them.
     #[error(
-        "Saved Function authoring failed: Saved Function Path conflicts with an existing virtual namespace"
+        "Private Tool authoring failed: Private Tool Path conflicts with an existing virtual namespace"
     )]
     SavedFunctionPathConflict,
     /// Compilation exceeded the fixed authoring deadline.
-    #[error("Saved Function compilation exceeded the two-second deadline")]
+    #[error("Private Tool compilation exceeded the two-second deadline")]
     SavedFunctionCompilationTimedOut,
     /// The compiler queue was full, so the source was not judged. Retryable.
-    #[error("Saved Function compiler is busy; retry shortly")]
+    #[error("Private Tool compiler is busy; retry shortly")]
     CompilerBusy,
     /// Current Principal authority does not permit the operation.
     #[error("permission denied: {0}")]
@@ -48,22 +48,22 @@ pub enum Error {
         maximum_bytes: usize,
     },
     /// The compiler-only isolate could not initialize.
-    #[error("Saved Function compiler is unavailable: {0}")]
+    #[error("Private Tool compiler is unavailable: {0}")]
     CompilerUnavailable(String),
     /// A compiler worker stopped before returning its result.
-    #[error("Saved Function compiler worker stopped unexpectedly")]
+    #[error("Private Tool compiler worker stopped unexpectedly")]
     CompilerWorkerStopped,
     /// The clock could not provide safe durable time evidence.
-    #[error("Saved Function clock failed: {0}")]
+    #[error("Private Tool clock failed: {0}")]
     Clock(String),
     /// Diagnostics or lifecycle fields could not be encoded.
-    #[error("Saved Function evidence JSON was invalid: {0}")]
+    #[error("Private Tool evidence JSON was invalid: {0}")]
     Json(#[from] serde_json::Error),
     /// Workspace authority or lifecycle rejected the operation.
     #[error(transparent)]
     Workspace(#[from] coral_workspace::Error),
     /// A persisted row does not decode to the domain model.
-    #[error("database contains corrupt Saved Function data: {0}")]
+    #[error("database contains corrupt Private Tool data: {0}")]
     CorruptData(String),
     /// The persistence Adapter rejected the operation.
     #[error(transparent)]

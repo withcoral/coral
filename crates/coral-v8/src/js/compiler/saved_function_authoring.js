@@ -24,16 +24,16 @@ function hasTypeOnlyDefaultExport(sourceFile) {
 
 function validateDefaultCallable(program, sourceFile) {
   if (hasTypeOnlyDefaultExport(sourceFile)) {
-    return 'Saved Function default export must be a runtime value';
+    return 'Private Tool default export must be a runtime value';
   }
   const checker = program.getTypeChecker();
   const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
   if (!moduleSymbol) {
-    return 'Saved Function source must be a TypeScript module with one default export';
+    return 'Private Tool source must be a TypeScript module with one default export';
   }
   const exports = checker.getExportsOfModule(moduleSymbol);
   if (exports.length !== 1 || exports[0].escapedName !== 'default') {
-    return 'Saved Function source must export exactly one default callable';
+    return 'Private Tool source must export exactly one default callable';
   }
   let defaultExport = exports[0];
   if (defaultExport.flags & ts.SymbolFlags.Alias) {
@@ -51,11 +51,11 @@ function validateDefaultCallable(program, sourceFile) {
     hasModifierInAncestors(declaration, ts.SyntaxKind.DeclareKeyword, sourceFile) ||
     (ts.isFunctionDeclaration(declaration) && !declaration.body)
   ) {
-    return 'Saved Function default export must have a runtime implementation';
+    return 'Private Tool default export must have a runtime implementation';
   }
   const type = checker.getTypeOfSymbolAtLocation(defaultExport, declaration);
   if (checker.getSignaturesOfType(type, ts.SignatureKind.Call).length === 0) {
-    return 'Saved Function default export must be callable';
+    return 'Private Tool default export must be callable';
   }
   return undefined;
 }
@@ -416,7 +416,7 @@ function savedFunctionDeclarationResult(emitted, diagnostics, references) {
     return {
       declarationText: null,
       validationError:
-        declarationText === undefined ? 'TypeScript emitted no Saved Function declaration' : null,
+        declarationText === undefined ? 'TypeScript emitted no Private Tool declaration' : null,
       blockingDiagnostics: blockingDiagnostics.map((diagnostic) => diagnosticPayload(diagnostic)),
       diagnostics,
       references,
@@ -431,7 +431,7 @@ function savedFunctionDeclarationResult(emitted, diagnostics, references) {
     validationError:
       unresolved.length === 0
         ? null
-        : 'Saved Function declaration contains unresolved public type names',
+        : 'Private Tool declaration contains unresolved public type names',
     blockingDiagnostics: unresolved.map((diagnostic) => diagnosticPayload(diagnostic)),
     diagnostics,
     references,

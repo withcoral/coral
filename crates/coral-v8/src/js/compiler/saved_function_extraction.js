@@ -369,8 +369,8 @@ function savedFunctionModuleExtraction(sourceFile, program, pathSegments, carrie
     program,
     container: sourceFile,
     authoredMappings: undefined,
-    sourceName: `Saved Function coral.private.${pathSegments.join('.')}`,
-    scope: 'this Saved Function',
+    sourceName: `Private Tool coral.private.${pathSegments.join('.')}`,
+    scope: 'this Private Tool',
     carrier,
   });
 }

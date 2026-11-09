@@ -86,7 +86,7 @@ function compileProgram(body, builtinTools, fileName, targetName) {
 function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   if (!Array.isArray(savedFunctions)) {
-    throw new Error('Saved Function closure must be an array');
+    throw new Error('Private Tool closure must be an array');
   }
   const wrapped = wrapProgramBody(body);
   const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
@@ -108,7 +108,7 @@ function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targ
   }
   const modules = savedFunctions.map((savedFunction, index) => {
     if (typeof savedFunction?.source !== 'string') {
-      throw new Error('Saved Function closure contains an invalid source entry');
+      throw new Error('Private Tool closure contains an invalid source entry');
     }
     const { program: moduleProgram, sourceFile } = virtualTypeScriptProgram(
       `saved_function_${index}.ts`,
@@ -116,7 +116,7 @@ function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targ
       compilerOptions,
     );
     if (!sourceFile) {
-      throw new Error('Saved Function virtual source is missing');
+      throw new Error('Private Tool virtual source is missing');
     }
     return { program: moduleProgram, sourceFile, pathSegments: savedFunction.pathSegments };
   });

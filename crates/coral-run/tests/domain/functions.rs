@@ -517,12 +517,11 @@ async fn lifecycle_actions(
         .collect()
 }
 
-// Catches: an addTool that replaces an existing tool, an updateTool that
-// creates a missing one or overwrites a revision that moved, a removeTool
-// of a missing path that reports success, a refusal under any code but its
-// own, or a refused call that changes the tool or records an Event.
+// Catches: an authoring Tool whose refusal reaches the Program under any
+// code but its own, or whose result reports the wrong path or revision.
+// coral-functions tests that a refusal changes nothing.
 #[tokio::test]
-async fn create_only_replace_only_and_revision_conflicts_are_refused_and_change_nothing() {
+async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_their_codes() {
     use coral_functions::LifecycleAction::{Created, Deleted, Replaced};
     let (scope, _index) = authoring_scope("user:tools-intents").await;
     let functions = functions_module(&scope);
@@ -562,28 +561,8 @@ async fn create_only_replace_only_and_revision_conflicts_are_refused_and_change_
         ),
         (remove("people.missing"), "private_tool_not_found"),
     ] {
-        let events = lifecycle_actions(&scope, &functions, &scope.owner).await;
         let refused = outcome(&scope, &scope.owner, run).await;
         assert_eq!(refused.get("code"), Some(&json!(code)), "{refused}");
-        assert_eq!(
-            outcome(&scope, &scope.owner, greet()).await,
-            json!("hello Ada"),
-            "{code}: the tool is unchanged"
-        );
-        assert!(
-            admission_refuses(
-                &scope,
-                &scope.owner,
-                submission("return coral.private.people.missing('Ada');"),
-            )
-            .await,
-            "{code}: nothing was created"
-        );
-        assert_eq!(
-            lifecycle_actions(&scope, &functions, &scope.owner).await,
-            events,
-            "{code}: no Event"
-        );
     }
 
     for (run, revision) in [
@@ -846,6 +825,81 @@ async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_t
             ),
             "{path}: {:?}",
             outer.outcome
+        );
+    }
+}
+
+// Catches: an old root (`coral.workspace`, `coral.functions`, or
+// `saveFunction` on `coral`) that admission lets through, in a Program or in
+// a stored Private Tool's source, so the Program fails only when it calls
+// it; or a refused admission that creates a Run.
+#[tokio::test]
+async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
+    let (scope, _index) = authoring_scope("user:functions-old-roots").await;
+    let module = functions_module(&scope);
+    for (path, body) in [
+        ("old.workspace", "coral.workspace.search({ query: 'x' })"),
+        ("old.functions", "coral.functions.people.greet('Ada')"),
+    ] {
+        // Coral never rewrites a stored source, so one saved before the old
+        // roots went can still name them.
+        module
+            .save(
+                &coral_functions::SavedFunctionChangeContext::new(
+                    scope.owner.clone(),
+                    60,
+                    coral_workspace::TraceId::current_or_new(),
+                ),
+                &scope.workspace_id,
+                coral_functions::SavedFunctionSave::new(
+                    coral_functions::SavedFunctionPath::parse(path).unwrap(),
+                    coral_functions::SavedFunctionDescription::parse("Call an old root").unwrap(),
+                    coral_functions::SavedFunctionSource::parse(&format!(
+                        "export default async () => {body};"
+                    ))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    for (source, refusal) in [
+        (
+            "return await coral.workspace.search({ query: 'x' });",
+            "Program:1:14: coral.workspace.search names no Tool that you can call.",
+        ),
+        (
+            "return await coral.saveFunction({ path: 'a' });",
+            "Program:1:14: coral.saveFunction names no Tool that you can call.",
+        ),
+        (
+            "return await coral.functions.people.greet('Ada');",
+            "Program:1:14: coral.functions.people.greet names no Tool that you can call.",
+        ),
+        (
+            "return await coral.private.old.workspace();",
+            "Private Tool coral.private.old.workspace:1:28: coral.workspace.search names no Tool that you can call.",
+        ),
+        (
+            "return await coral.private.old.functions();",
+            "Private Tool coral.private.old.functions:1:28: coral.functions.people.greet names no Tool that you can call.",
+        ),
+    ] {
+        let before = scope.fixture.runs.count_runs().await.unwrap();
+        let refused = scope
+            .fixture
+            .runs
+            .start(&scope.owner, &scope.workspace_id, submission(source))
+            .await;
+        assert!(
+            matches!(&refused, Err(crate::Error::ProgramAdmission(message)) if message.starts_with(refusal)),
+            "{source}: {:?}",
+            refused.err()
+        );
+        assert_eq!(
+            scope.fixture.runs.count_runs().await.unwrap(),
+            before,
+            "{source}"
         );
     }
 }

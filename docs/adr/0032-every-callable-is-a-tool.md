@@ -104,7 +104,7 @@ a call.
   Add these messages to the Run stream design before it ships.
 - **Run history grows.** Every Private Tool call is now a recorded Invocation, including calls in loops.
 - **Saved Function rows become Private Tools of the Private Provider.** Sources that still name `coral.functions` or
-  `coral.workspace` fail at their next admission, with the new path in the error.
+  `coral.workspace` fail at their next admission, like any path that names no Tool.
 - **Block keeps its meaning until grants ship.** When grants ship, Reef's wording for `disabled` must change in the
   same release. It will mean "blocked for direct calls".
 - This ADR amends [ADR 0020](0020-saved-functions-are-typed-from-the-callers-declarations.md) (the roots that
