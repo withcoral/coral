@@ -75,6 +75,17 @@ it.each([
   expect(result.data).toEqual({ error: message, credential: null })
 })
 
+// Catches: a lapsed sign-in during a provider change reading as an outage
+// (503, "Reload the page"). Only a 401 makes the protected layout sign you in again.
+it('fails a provider change for a lapsed sign-in with 401', () => {
+  const result = providerFailure(new ConnectError('expired', Code.Unauthenticated))
+  expect(result.init?.status).toBe(401)
+  expect(result.data).toEqual({
+    error: 'Coral could not apply this change. Sign in again to continue.',
+    credential: null,
+  })
+})
+
 // Catches: a provider that search indexed showing a notice, a pending
 // provider showing none, or a failure showing no reason because its kind is
 // missing from the map.
