@@ -518,6 +518,7 @@ describe('live mode', () => {
                 kind: 'run',
                 run: ended,
                 source: '',
+                linkedSharedTools: [],
                 linkedPrivateTools: [],
                 terminal: { kind: 'unavailable' },
               },
@@ -736,6 +737,7 @@ describe('live scopes', () => {
     kind: 'run',
     run: { ...running, state, endedAt: state === 'running' ? null : first.endedAt },
     source: '',
+    linkedSharedTools: [],
     linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
   })

@@ -6014,6 +6014,10 @@ pub struct ActivitySharedToolSnapshot {
     /// TypeScript source as accepted.
     #[prost(string, tag = "3")]
     pub source: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/sharedTools/{shared_tool} at the time. Unique among
+    /// the Run's snapshots.
+    #[prost(string, tag = "4")]
+    pub shared_tool: ::prost::alloc::string::String,
 }
 /// Where the Run's accepted source made one record: a Tool call, an
 /// emitted value or a log message. Absent when Coral did not record one,
@@ -6031,7 +6035,7 @@ pub struct ActivitySourceLocation {
     pub column: u32,
     /// The accepted source that holds the call. Absent for a kind unknown to this
     /// client: treat the location as unavailable.
-    #[prost(oneof = "activity_source_location::Document", tags = "1, 2")]
+    #[prost(oneof = "activity_source_location::Document", tags = "1, 2, 5")]
     pub document: ::core::option::Option<activity_source_location::Document>,
 }
 /// Nested message and enum types in `ActivitySourceLocation`.
@@ -6047,6 +6051,10 @@ pub mod activity_source_location {
         /// exactly one of the Run's linked_private_tools snapshots.
         #[prost(string, tag = "2")]
         PrivateTool(::prost::alloc::string::String),
+        /// workspaces/{workspace}/sharedTools/{shared_tool}: the shared_tool of
+        /// exactly one of the Run's linked_shared_tools snapshots.
+        #[prost(string, tag = "5")]
+        SharedTool(::prost::alloc::string::String),
     }
 }
 /// One stack frame in code the author wrote.

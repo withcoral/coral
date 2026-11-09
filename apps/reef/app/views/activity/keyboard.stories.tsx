@@ -55,6 +55,7 @@ function pageFor(url: URL): ActivityPage {
                 kind: 'run',
                 run: selectedRow,
                 source: Array.from({ length: 120 }, (_, line) => `// line ${line}`).join('\n'),
+                linkedSharedTools: [],
                 linkedPrivateTools: [],
                 // A tall final value: the Run panel shows it open, unlike its source.
                 terminal: {

@@ -78,6 +78,7 @@ function pageFor(url: URL): ActivityPage {
             run: selectedRow,
             request: review ? approvalRequest : null,
             source: '',
+            linkedSharedTools: [],
             linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           }

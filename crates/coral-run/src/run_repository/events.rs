@@ -31,6 +31,7 @@ enum ProgramRunEvents {
     OutputBytes,
     SourceDocument,
     SourcePrivateToolId,
+    SourceSharedToolId,
     SourceLine,
     SourceColumn,
 }
@@ -337,7 +338,7 @@ pub(super) fn last_event_sequence() -> Expr {
 
 /// The Event columns, in the order the insert and its value rows use. The
 /// `Sequence` entry carries the row's offset within its statement.
-const EVENT_COLUMNS: [ProgramRunEvents; 18] = [
+const EVENT_COLUMNS: [ProgramRunEvents; 19] = [
     ProgramRunEvents::WorkspaceId,
     ProgramRunEvents::RunId,
     ProgramRunEvents::Sequence,
@@ -354,6 +355,7 @@ const EVENT_COLUMNS: [ProgramRunEvents; 18] = [
     ProgramRunEvents::OutputBytes,
     ProgramRunEvents::SourceDocument,
     ProgramRunEvents::SourcePrivateToolId,
+    ProgramRunEvents::SourceSharedToolId,
     ProgramRunEvents::SourceLine,
     ProgramRunEvents::SourceColumn,
 ];
@@ -376,14 +378,14 @@ fn event_row(
     offset: i64,
     event: &NewEvent<'_>,
     occurred_at_unix_nanos: i64,
-) -> Result<[sea_query::Value; 18], Error> {
+) -> Result<[sea_query::Value; 19], Error> {
     let output_bytes = i64::try_from(event.output_bytes())
         .map_err(|_overflow| Error::CorruptData("Event byte count overflow".into()))?;
     let source_location = match event {
         NewEvent::Emitted(_, location) | NewEvent::Logged(_, _, location) => *location,
         _ => None,
     };
-    let [document, private_tool_id, line, column] =
+    let [document, private_tool_id, shared_tool_id, line, column] =
         source_location_repository::row_values(source_location);
     let (event_type, payload) = match event {
         NewEvent::Started => ("run.started", EventPayload::default()),
@@ -453,6 +455,7 @@ fn event_row(
         output_bytes.into(),
         document,
         private_tool_id,
+        shared_tool_id,
         line,
         column,
     ])

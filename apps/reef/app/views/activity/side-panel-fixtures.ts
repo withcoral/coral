@@ -156,6 +156,7 @@ export function runDetail(row: RunRow, overrides: Partial<RunDetail> = {}): RunD
     run: row,
     submission: row.submission,
     source,
+    linkedSharedTools: [],
     linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,

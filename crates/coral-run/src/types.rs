@@ -521,6 +521,11 @@ pub enum SourceDocument {
         /// Private Tool identity of the snapshot, unique within the Run.
         private_tool_id: String,
     },
+    /// The Run's retained snapshot of one linked Shared Tool Revision.
+    SharedTool {
+        /// Shared Tool identity of the snapshot, unique within the Run.
+        shared_tool_id: String,
+    },
 }
 
 /// Where the Run's accepted source made one Tool call, Emission, or Log.

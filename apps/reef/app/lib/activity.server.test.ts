@@ -469,6 +469,7 @@ function runDetail(
           accountConnection:
             options.retainedConnection && input.accountConnection === connection ? connection : '',
           submittedSource: 'return secretSource;',
+          linkedSharedTools: [],
           linkedPrivateTools: [
             {
               privateTool: 'saved-before-deletion',
@@ -1757,6 +1758,7 @@ describe('hierarchical activity through the private server interface', () => {
     expect(present.detail).toMatchObject({
       kind: 'run',
       terminal: { kind: 'succeeded', finalValue: 'null' },
+      linkedSharedTools: [],
       linkedPrivateTools: [{ source: 'export default () => 41' }],
     })
     expect(present.selected).toBe(run)
@@ -3117,6 +3119,7 @@ function pagedRun(
             actionPage: { actions: page.actions, total, nextAction: page.next },
           },
           submittedSource: 'return null;',
+          linkedSharedTools: [],
           linkedPrivateTools: [],
           events: [],
         }

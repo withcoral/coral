@@ -7,6 +7,8 @@
 const BUILTIN_ROOT = 'coral'
 /** The root of every Private Tool's Call Path. */
 const PRIVATE_ROOT = 'coral.private.'
+/** The root of every Shared Tool's Call Path. */
+const SHARED_ROOT = 'coral.shared.'
 /** The members of `coral` that name no Built-in Tool. */
 const NON_TOOL_MEMBERS = new Set(['providers', 'private', 'shared', 'emit', 'ToolError'])
 /** Each old root that a retained Run may have recorded, and the root that replaced it. */
@@ -58,5 +60,12 @@ export function privateToolPath(callPath: string) {
   const path = currentCallPath(callPath)
   return path.startsWith(PRIVATE_ROOT) && path.length > PRIVATE_ROOT.length
     ? path.slice(PRIVATE_ROOT.length)
+    : null
+}
+
+/** The path under `coral.shared` of a Shared Tool's complete Call Path, or null. */
+export function sharedToolPath(callPath: string) {
+  return callPath.startsWith(SHARED_ROOT) && callPath.length > SHARED_ROOT.length
+    ? callPath.slice(SHARED_ROOT.length)
     : null
 }

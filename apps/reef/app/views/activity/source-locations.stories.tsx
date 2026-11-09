@@ -161,6 +161,7 @@ const context: RunDetail = {
   request: null,
   requestUnavailable: false,
   source,
+  linkedSharedTools: [],
   linkedPrivateTools: [{ privateTool, path: 'billing.notify', source: snapshot }],
   terminal: {
     kind: 'failed',

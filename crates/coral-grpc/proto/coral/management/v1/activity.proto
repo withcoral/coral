@@ -336,6 +336,9 @@ message ActivitySharedToolSnapshot {
   uint64 revision = 2;
   // TypeScript source as accepted.
   string source = 3;
+  // workspaces/{workspace}/sharedTools/{shared_tool} at the time. Unique among
+  // the Run's snapshots.
+  string shared_tool = 4;
 }
 // Where the Run's accepted source made one record: a Tool call, an
 // emitted value or a log message. Absent when Coral did not record one,
@@ -349,6 +352,9 @@ message ActivitySourceLocation {
     // workspaces/{workspace}/privateTools/{private_tool}: the private_tool of
     // exactly one of the Run's linked_private_tools snapshots.
     string private_tool = 2;
+    // workspaces/{workspace}/sharedTools/{shared_tool}: the shared_tool of
+    // exactly one of the Run's linked_shared_tools snapshots.
+    string shared_tool = 5;
   }
   // Line number, starting at 1. Lines end at every ECMAScript line terminator:
   // CRLF, CR, LF, U+2028 and U+2029, also inside strings and comments.

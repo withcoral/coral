@@ -3,8 +3,8 @@
 // for a tool call, emission or log.
 
 import { sourceLines } from '@/wax/components/code-block'
-import { privateToolPath } from '@/lib/call-root'
-import type { ActivityRow, RunDetail } from './types'
+import { privateToolPath, sharedToolPath } from '@/lib/call-root'
+import type { ActivityRow, RecordSourceLocation, RunDetail } from './types'
 
 export interface SourceDocument {
   id: string
@@ -25,12 +25,18 @@ export interface SourceLocation {
 
 export const ACCEPTED_PROGRAM_DOCUMENT_ID = 'accepted-program'
 const privateToolDocumentId = (privateTool: string) => `private-tool:${privateTool}`
+const sharedToolDocumentId = (sharedTool: string) => `shared-tool:${sharedTool}`
 
 const PROGRAM_FRAME_SOURCE = 'Program'
 /** A Private Tool's frames name it by its Call Path after this prefix. */
 const PRIVATE_TOOL_FRAME_SOURCE_PREFIX = 'Private Tool '
+/** A Shared Tool's frames name it by its Call Path after this prefix. */
+const SHARED_TOOL_FRAME_SOURCE_PREFIX = 'Shared Tool '
 
-/** The accepted program, then every Private Tool the Run linked, as accepted. */
+/**
+ * The accepted program, then every Private Tool and every Shared Tool Revision
+ * the Run linked, as accepted.
+ */
 export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
   return [
     {
@@ -41,6 +47,12 @@ export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
     ...context.linkedPrivateTools.map((linked) => ({
       id: privateToolDocumentId(linked.privateTool),
       label: `Private tool snapshot: ${linked.path}`,
+      code: linked.source,
+      fileName: `${linked.path}.ts`,
+    })),
+    ...context.linkedSharedTools.map((linked) => ({
+      id: sharedToolDocumentId(linked.sharedTool),
+      label: `Shared tool snapshot: ${linked.path}, revision ${linked.revision}`,
       code: linked.source,
       fileName: `${linked.path}.ts`,
     })),
@@ -63,7 +75,7 @@ function shownAt(code: string, line: number, column: number) {
 /**
  * Where a failed Run's Program error was thrown. Null for any Run that has
  * not failed, a failed Run with no retained error, a frame whose source names
- * neither the accepted program nor one of this Run's linked Private Tools,
+ * neither the accepted program nor one of this Run's linked Private or Shared Tools,
  * or a frame whose line and column are not a place the source pane shows
  * (see `shownAt`). Coral's retained evidence is always
  * well-formed; these checks exist so a malformed or stale frame fails honest
@@ -93,7 +105,7 @@ export function madeByCall(
 
 /**
  * The location Coral stored for a tool call, emission or log, in this
- * Run's accepted program or one of its linked Private Tool snapshots. Null
+ * Run's accepted program or one of its linked Private or Shared Tool snapshots. Null
  * for any other record, a record with no stored location, a record of another Run, a snapshot
  * this Run did not link, or a line or column outside the document. A column
  * counts UTF-16 code units and may sit one past the end of its line. A call a
@@ -106,20 +118,41 @@ export function recordedLocationFor(context: RunDetail, row: ActivityRow): Sourc
   if (!location) return null
   const { document: source } = location
   if (row.kind === 'invocation' && row.parent && source.kind === 'program') return null
-  const documentId =
-    source.kind === 'program'
-      ? ACCEPTED_PROGRAM_DOCUMENT_ID
-      : context.linkedPrivateTools.some((linked) => linked.privateTool === source.privateTool)
-        ? privateToolDocumentId(source.privateTool)
-        : null
+  const documentId = documentIdForRecordedSource(source, context)
   if (documentId === null) return null
   const document = sourceDocumentsFor(context).find((candidate) => candidate.id === documentId)!
   if (!shownAt(document.code, location.line, location.column)) return null
   return { documentId, highlight: { startLine: location.line, endLine: location.line } }
 }
 
+/** The document a stored location names, when this Run linked it. */
+function documentIdForRecordedSource(
+  source: RecordSourceLocation['document'],
+  context: RunDetail,
+): string | null {
+  switch (source.kind) {
+    case 'program':
+      return ACCEPTED_PROGRAM_DOCUMENT_ID
+    case 'private_tool':
+      return context.linkedPrivateTools.some((linked) => linked.privateTool === source.privateTool)
+        ? privateToolDocumentId(source.privateTool)
+        : null
+    case 'shared_tool':
+      return context.linkedSharedTools.some((linked) => linked.sharedTool === source.sharedTool)
+        ? sharedToolDocumentId(source.sharedTool)
+        : null
+    default:
+      return null
+  }
+}
+
 function documentIdForFrameSource(frameSource: string, context: RunDetail): string | null {
   if (frameSource === PROGRAM_FRAME_SOURCE) return ACCEPTED_PROGRAM_DOCUMENT_ID
+  if (frameSource.startsWith(SHARED_TOOL_FRAME_SOURCE_PREFIX)) {
+    const path = sharedToolPath(frameSource.slice(SHARED_TOOL_FRAME_SOURCE_PREFIX.length))
+    const linked = context.linkedSharedTools.find((candidate) => candidate.path === path)
+    return linked ? sharedToolDocumentId(linked.sharedTool) : null
+  }
   const path = frameSource.startsWith(PRIVATE_TOOL_FRAME_SOURCE_PREFIX)
     ? privateToolPath(frameSource.slice(PRIVATE_TOOL_FRAME_SOURCE_PREFIX.length))
     : null

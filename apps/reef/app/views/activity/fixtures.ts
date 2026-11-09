@@ -61,6 +61,7 @@ export const approvalContext: RunDetail = {
   kind: 'run',
   run,
   source: 'return await coral.providers.mail.send({ to: "exact-recipient" })',
+  linkedSharedTools: [],
   linkedPrivateTools: [],
   terminal: { kind: 'unavailable' },
 }

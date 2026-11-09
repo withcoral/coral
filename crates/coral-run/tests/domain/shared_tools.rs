@@ -4,6 +4,7 @@
 //! that admission. Publishing rules are tested at their owner, coral-tools.
 use super::provider_setup::{AdminScope, final_value};
 use super::*;
+use crate::{SourceDocument, SourceLocation};
 use coral_tools::{SharedToolModule, SharedToolOrigin, SharedToolPath, SharedToolPublish};
 use serde_json::{Value, json};
 
@@ -133,6 +134,19 @@ impl SharedScope {
         principal: &AuthenticatedPrincipal,
         run: &crate::RunId,
     ) -> Vec<(String, u64)> {
+        self.snapshots(principal, run)
+            .await
+            .into_iter()
+            .map(|snapshot| (snapshot.path, snapshot.revision))
+            .collect()
+    }
+
+    /// The Shared Tool snapshots `run` recorded.
+    async fn snapshots(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        run: &crate::RunId,
+    ) -> Vec<crate::SharedSourceSnapshot> {
         self.scope
             .fixture
             .runs
@@ -145,9 +159,6 @@ impl SharedScope {
             .await
             .expect("inspect the Run")
             .linked_shared_tools
-            .into_iter()
-            .map(|snapshot| (snapshot.path, snapshot.revision))
-            .collect()
     }
 
     /// Runs `source` as `principal` and returns its Final Value with the
@@ -238,11 +249,30 @@ async fn every_principal_calls_a_shared_tool_with_its_own_private_tools_and_gets
                         parent.shared_tool_revision,
                     )
                 }),
-                // Code inside a Shared Tool is never the caller's own source.
-                row.source_private_tool_id,
+                summary.source_location,
             ));
         }
-        calls.sort();
+        calls.sort_by(|left, right| left.0.cmp(&right.0));
+        // A call the Shared Tool's body made is located in the snapshot of
+        // the revision the Run linked, never in the caller's own source.
+        let [snapshot] = shared
+            .snapshots(caller, &run)
+            .await
+            .try_into()
+            .expect("one snapshot");
+        assert_eq!(snapshot.source, REMIND_SOURCE, "{name}");
+        let in_shared_tool = SourceLocation {
+            document: SourceDocument::SharedTool {
+                shared_tool_id: snapshot.shared_tool_id,
+            },
+            line: 2,
+            column: 45,
+        };
+        let in_program = SourceLocation {
+            document: SourceDocument::Program,
+            line: 1,
+            column: 32,
+        };
         assert_eq!(
             calls,
             [
@@ -251,14 +281,14 @@ async fn every_principal_calls_a_shared_tool_with_its_own_private_tools_and_gets
                     crate::ToolKind::Private,
                     None,
                     Some((REMIND.to_string(), crate::ToolKind::Shared, Some(1))),
-                    None,
+                    Some(in_shared_tool),
                 ),
                 (
                     REMIND.to_string(),
                     crate::ToolKind::Shared,
                     Some(1),
                     None,
-                    None,
+                    Some(in_program),
                 ),
             ],
             "{name}"

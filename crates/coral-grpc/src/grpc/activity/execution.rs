@@ -309,10 +309,16 @@ fn private_tool_snapshot(
         source: snapshot.source,
     }
 }
+/// Names a snapshot exactly as `InspectRunResponse.linked_shared_tools` does.
+fn shared_tool_name(workspace: &WorkspaceId, shared_tool_id: &str) -> String {
+    format!("workspaces/{workspace}/sharedTools/{shared_tool_id}")
+}
 fn shared_tool_snapshot(
+    workspace: &WorkspaceId,
     snapshot: coral_run::SharedSourceSnapshot,
 ) -> wire::ActivitySharedToolSnapshot {
     wire::ActivitySharedToolSnapshot {
+        shared_tool: shared_tool_name(workspace, &snapshot.shared_tool_id),
         path: snapshot.path,
         revision: snapshot.revision,
         source: snapshot.source,
@@ -332,6 +338,9 @@ pub(super) fn source_location(
             coral_run::SourceDocument::Program => Document::Program(wire::ActivityEmpty {}),
             coral_run::SourceDocument::PrivateTool { private_tool_id } => {
                 Document::PrivateTool(private_tool_name(workspace, private_tool_id))
+            }
+            coral_run::SourceDocument::SharedTool { shared_tool_id } => {
+                Document::SharedTool(shared_tool_name(workspace, shared_tool_id))
             }
         }),
         line: value.line,
@@ -521,7 +530,7 @@ pub(super) async fn inspect_run(
         linked_shared_tools: detail
             .linked_shared_tools
             .into_iter()
-            .map(shared_tool_snapshot)
+            .map(|snapshot| shared_tool_snapshot(&workspace, snapshot))
             .collect(),
         next_event_after: detail
             .events

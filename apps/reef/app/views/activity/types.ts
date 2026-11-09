@@ -114,8 +114,14 @@ export interface ParentInvocation {
  * column start at 1; the column counts UTF-16 code units.
  */
 export interface RecordSourceLocation {
-  /** The accepted program, or the linked snapshot of this Private Tool resource. */
-  document: { kind: 'program' } | { kind: 'private_tool'; privateTool: string }
+  /**
+   * The accepted program, or the linked snapshot of this Private Tool or Shared
+   * Tool resource.
+   */
+  document:
+    | { kind: 'program' }
+    | { kind: 'private_tool'; privateTool: string }
+    | { kind: 'shared_tool'; sharedTool: string }
   line: number
   column: number
 }
@@ -180,6 +186,8 @@ export interface RunDetail {
   submission?: InteractionRow
   source: string
   linkedPrivateTools: { privateTool: string; path: string; source: string }[]
+  /** Each Shared Tool Revision the Run linked, with its source as accepted. */
+  linkedSharedTools: { sharedTool: string; path: string; revision: string; source: string }[]
   terminal: RunTerminal
   /** The parts of the Run's context impact, in exact bytes. Absent while the total is. */
   contextImpact?: RunContextImpact

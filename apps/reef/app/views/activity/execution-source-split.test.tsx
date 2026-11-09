@@ -27,6 +27,7 @@ function context(overrides: Partial<RunDetail> = {}): RunDetail {
     kind: 'run',
     run,
     source: 'export default async function program() {\n  return 1\n}',
+    linkedSharedTools: [],
     linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
@@ -212,6 +213,7 @@ it('highlights the line Coral stored for the selected record, in the snapshot it
   const privateTool = 'workspaces/finance/privateTools/notify'
   markup({
     context: matchableContext({
+      linkedSharedTools: [],
       linkedPrivateTools: [
         {
           privateTool,

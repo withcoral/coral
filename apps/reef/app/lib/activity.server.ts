@@ -414,6 +414,8 @@ function sourceLocationView(
       return { document: { kind: 'program' }, line, column }
     case 'privateTool':
       return { document: { kind: 'private_tool', privateTool: document.value }, line, column }
+    case 'sharedTool':
+      return { document: { kind: 'shared_tool', sharedTool: document.value }, line, column }
     default:
       return undefined
   }
@@ -671,6 +673,12 @@ function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail 
     linkedPrivateTools: value.linkedPrivateTools.map(({ privateTool, path, source }) => ({
       privateTool,
       path,
+      source,
+    })),
+    linkedSharedTools: value.linkedSharedTools.map(({ sharedTool, path, revision, source }) => ({
+      sharedTool,
+      path,
+      revision: revision.toString(),
       source,
     })),
     terminal: runTerminalView(value),

@@ -235,6 +235,7 @@ const approvalContext: RunDetail = {
   run: execution,
   submission: execution.submission,
   source: program,
+  linkedSharedTools: [],
   linkedPrivateTools: [],
   terminal: { kind: 'unavailable' },
 }
@@ -1096,6 +1097,7 @@ export const StandaloneExecution: Story = {
         kind: 'run',
         run: standalone,
         source: 'return await coral.providers.billing.listInvoices({});',
+        linkedSharedTools: [],
         linkedPrivateTools: [],
         terminal: {
           kind: 'failed',
@@ -1121,6 +1123,7 @@ export const UpstreamToolError: Story = {
         kind: 'run',
         run: standalone,
         source: 'return await coral.providers.billing.listInvoices({});',
+        linkedSharedTools: [],
         linkedPrivateTools: [],
         terminal: {
           kind: 'failed',
@@ -1166,6 +1169,7 @@ export const RetainedSource: Story = {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
         source: 'return coral.private.billing.calculate();',
+        linkedSharedTools: [],
         linkedPrivateTools: [
           {
             privateTool: 'old-function-id',
@@ -1214,6 +1218,7 @@ export const FinalValueOnExec: Story = {
         contextImpact: { finalValueBytes: '15', outputBytes: '4', toolResultBytes: '2000' },
         // The program that made the emission listed above and returned this value.
         source: program,
+        linkedSharedTools: [],
         linkedPrivateTools: [],
         terminal: { kind: 'succeeded', finalValue: '{"invoices":24}' },
       },
@@ -1255,6 +1260,7 @@ export const NoFinalValue: Story = {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
         source: 'console.info("done");',
+        linkedSharedTools: [],
         linkedPrivateTools: [],
         terminal: { kind: 'succeeded', finalValue: null },
       },
@@ -1858,6 +1864,7 @@ export const PendingConnectionFooter: Story = {
         },
         // The program whose call waits on this connection.
         source: "return await coral.providers.linear.listIssues({ assignee: 'me' })",
+        linkedSharedTools: [],
         linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
       },
@@ -1900,6 +1907,7 @@ export const InvocationWithRunEvidence: Story = {
         context: {
           ...approvalContext,
           run: { ...execution, state: 'failed', endedAt: at, requiresAction: false },
+          linkedSharedTools: [],
           linkedPrivateTools: [
             {
               privateTool: 'old-function-id',

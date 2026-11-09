@@ -76,11 +76,9 @@ struct RunProgramHost {
 }
 
 impl RunProgramHost {
-    /// Names the Run's retained source for one V8 call site. A Private Tool
-    /// path without a retained snapshot gives no location rather than a
-    /// guess. A call site inside a Shared Tool gives none either: its source
-    /// is the Workspace's, never the caller's own, and no record names a
-    /// Shared Tool's source yet.
+    /// Names the Run's retained source for one V8 call site. A Private or
+    /// Shared Tool path without a retained snapshot gives no location rather
+    /// than a guess.
     fn source_location(
         &self,
         location: Option<coral_v8::AuthoredLocation>,
@@ -96,7 +94,14 @@ impl RunProgramHost {
                     .definition()
                     .to_owned(),
             },
-            coral_v8::AuthoredSource::SharedTool { .. } => return None,
+            coral_v8::AuthoredSource::SharedTool { path } => SourceDocument::SharedTool {
+                shared_tool_id: self
+                    .linked_snapshots
+                    .get(&format!("coral.shared.{path}"))?
+                    .binding
+                    .definition()
+                    .to_owned(),
+            },
         };
         Some(SourceLocation {
             document,

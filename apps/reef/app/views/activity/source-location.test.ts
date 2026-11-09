@@ -30,6 +30,7 @@ function context(overrides: Partial<RunDetail> = {}): RunDetail {
     kind: 'run',
     run,
     source: acceptedSource,
+    linkedSharedTools: [],
     linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
@@ -68,6 +69,7 @@ function failed(frame: { source: string; line: number; column: number }, overrid
 it('lists the accepted program and every linked Private Tool as its own document', () => {
   const documents = sourceDocumentsFor(
     context({
+      linkedSharedTools: [],
       linkedPrivateTools: [
         {
           privateTool: 'functions/abc',
@@ -106,6 +108,38 @@ it('maps the topmost Program frame to the accepted program document', () => {
   })
 })
 
+// Catches: a failure inside a Shared Tool shown with no highlighted line, or a
+// Shared Tool snapshot missing from the documents the source pane offers.
+it('maps a Shared Tool frame to the linked revision, and lists it as its own document', () => {
+  const linked = {
+    linkedSharedTools: [
+      {
+        sharedTool: 'sharedTools/abc',
+        path: 'mail.remind',
+        revision: '3',
+        source: 'export default () => 1',
+      },
+    ],
+  }
+  expect(
+    sourceLocationFor(
+      failed({ source: 'Shared Tool coral.shared.mail.remind', line: 1, column: 8 }, linked),
+    ),
+  ).toEqual({
+    documentId: 'shared-tool:sharedTools/abc',
+    highlight: { startLine: 1, endLine: 1 },
+  })
+  expect(sourceDocumentsFor(context(linked)).at(-1)).toMatchObject({
+    id: 'shared-tool:sharedTools/abc',
+    label: 'Shared tool snapshot: mail.remind, revision 3',
+  })
+  expect(
+    sourceLocationFor(
+      failed({ source: 'Shared Tool coral.shared.mail.other', line: 1, column: 8 }, linked),
+    ),
+  ).toBeNull()
+})
+
 // A retained Run keeps the frame sources it recorded under the old root.
 it.each(['coral.private', 'coral.functions'])(
   'maps a Private Tool frame under %s to that linked function, by the path the Program called it with',
@@ -114,6 +148,7 @@ it.each(['coral.private', 'coral.functions'])(
       failed(
         { source: `Private Tool ${root}.billing.calculate`, line: 1, column: 8 },
         {
+          linkedSharedTools: [],
           linkedPrivateTools: [
             {
               privateTool: 'functions/abc',
@@ -206,8 +241,17 @@ const program = [
   '  await coral.providers.mail.send({ id }) // é😀',
   '}',
 ].join('\n')
+const sharedTool = 'workspaces/finance/sharedTools/remind'
 const retained = context({
   source: program,
+  linkedSharedTools: [
+    {
+      sharedTool,
+      path: 'mail.remind',
+      revision: '2',
+      source: 'export default async () => {\n  console.log("reminded")\n}',
+    },
+  ],
   linkedPrivateTools: [
     {
       privateTool,
@@ -233,6 +277,24 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     'a log located in the Private Tool snapshot it names',
     { ...logRow, sourceLocation: at({ kind: 'private_tool', privateTool }, 2, 11) },
     { documentId: `private-tool:${privateTool}`, highlight: { startLine: 2, endLine: 2 } },
+  ],
+  // Catches: a call a Shared Tool's body made shown with no location, or in the caller's program.
+  [
+    'a log located in the Shared Tool snapshot it names',
+    { ...logRow, sourceLocation: at({ kind: 'shared_tool', sharedTool }, 2, 11) },
+    { documentId: `shared-tool:${sharedTool}`, highlight: { startLine: 2, endLine: 2 } },
+  ],
+  [
+    'a Shared Tool snapshot this Run did not link',
+    {
+      ...logRow,
+      sourceLocation: at(
+        { kind: 'shared_tool', sharedTool: 'workspaces/finance/sharedTools/other' },
+        2,
+        11,
+      ),
+    },
+    null,
   ],
   [
     'a column one past the end of its line, counted in UTF-16 units',
