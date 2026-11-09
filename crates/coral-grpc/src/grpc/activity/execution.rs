@@ -282,8 +282,8 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
     }
 }
 /// Names a snapshot exactly as `InspectRunResponse.linked_functions` does.
-fn saved_function_name(workspace: &WorkspaceId, saved_function_id: &str) -> String {
-    format!("workspaces/{workspace}/savedFunctions/{saved_function_id}")
+fn private_tool_name(workspace: &WorkspaceId, private_tool_id: &str) -> String {
+    format!("workspaces/{workspace}/privateTools/{private_tool_id}")
 }
 pub(super) fn source_location(
     workspace: &WorkspaceId,
@@ -293,8 +293,8 @@ pub(super) fn source_location(
     wire::ActivitySourceLocation {
         document: Some(match &value.document {
             coral_run::SourceDocument::Program => Document::Program(wire::ActivityEmpty {}),
-            coral_run::SourceDocument::SavedFunction { saved_function_id } => {
-                Document::SavedFunction(saved_function_name(workspace, saved_function_id))
+            coral_run::SourceDocument::PrivateTool { private_tool_id } => {
+                Document::PrivateTool(private_tool_name(workspace, private_tool_id))
             }
         }),
         line: value.line,
@@ -480,7 +480,7 @@ pub(super) async fn inspect_run(
             .linked_functions
             .into_iter()
             .map(|s| wire::ActivitySourceSnapshot {
-                saved_function: saved_function_name(&workspace, &s.saved_function_id),
+                private_tool: private_tool_name(&workspace, &s.private_tool_id),
                 path: s.path,
                 source: s.source,
             })

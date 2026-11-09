@@ -23,7 +23,7 @@ globalThis.__coralCompile = function compileVirtualProgram(
     compileProgram(body, JSON.parse(builtinToolsJson), fileName, targetName),
   );
 };
-globalThis.__coralPrepareSavedFunction = function prepareVirtualSavedFunction(
+globalThis.__coralPreparePrivateTool = function prepareVirtualPrivateTool(
   source,
   builtinToolsJson,
   declarationsJson,
@@ -31,7 +31,7 @@ globalThis.__coralPrepareSavedFunction = function prepareVirtualSavedFunction(
   targetName,
 ) {
   return compilerResultJson(
-    prepareSavedFunction(
+    preparePrivateTool(
       source,
       JSON.parse(builtinToolsJson),
       JSON.parse(declarationsJson),
@@ -40,30 +40,30 @@ globalThis.__coralPrepareSavedFunction = function prepareVirtualSavedFunction(
     ),
   );
 };
-globalThis.__coralAnalyzeSavedFunctionCallPaths = function analyzeVirtualSavedFunctionCallPaths(
+globalThis.__coralAnalyzePrivateToolCallPaths = function analyzeVirtualPrivateToolCallPaths(
   source,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(analyzeSavedFunctionCallPaths(source, fileName, targetName));
+  return compilerResultJson(analyzePrivateToolCallPaths(source, fileName, targetName));
 };
-globalThis.__coralAnalyzeSavedFunctionPaths = function analyzeVirtualProgramPaths(
+globalThis.__coralAnalyzePrivateToolPaths = function analyzeVirtualProgramPaths(
   source,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(analyzeSavedFunctionPaths(source, fileName, targetName));
+  return compilerResultJson(analyzePrivateToolPaths(source, fileName, targetName));
 };
 globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(chainsJson, callPathsJson) {
   return compilerResultJson(unknownToolCalls(JSON.parse(chainsJson), JSON.parse(callPathsJson)));
 };
-globalThis.__coralAnalyzeSavedFunctionDependencies =
-  function analyzeVirtualSavedFunctionDependencies(source, fileName, targetName) {
-    return compilerResultJson(analyzeSavedFunctionDependencies(source, fileName, targetName));
+globalThis.__coralAnalyzePrivateToolDependencies =
+  function analyzeVirtualPrivateToolDependencies(source, fileName, targetName) {
+    return compilerResultJson(analyzePrivateToolDependencies(source, fileName, targetName));
   };
 globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   body,
-  savedFunctionsJson,
+  privateToolsJson,
   builtinToolsJson,
   fileName,
   targetName,
@@ -71,7 +71,7 @@ globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   return compilerResultJson(
     compileLinkedProgram(
       body,
-      JSON.parse(savedFunctionsJson),
+      JSON.parse(privateToolsJson),
       JSON.parse(builtinToolsJson),
       fileName,
       targetName,

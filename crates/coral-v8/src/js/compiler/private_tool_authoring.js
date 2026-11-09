@@ -354,7 +354,7 @@ function utf8Length(text) {
 }
 
 // Emits one declaration and checks that it names nothing outside itself.
-function emitSavedFunctionDeclaration(program, fileName, compilerOptions) {
+function emitPrivateToolDeclaration(program, fileName, compilerOptions) {
   const outputs = new Map();
   const emitResult = program.emit(
     undefined,
@@ -410,7 +410,7 @@ function typedDeclarationFailure(emitted, sourceFile, declarationMaxBytes) {
   return undefined;
 }
 
-function savedFunctionDeclarationResult(emitted, diagnostics, references) {
+function privateToolDeclarationResult(emitted, diagnostics, references) {
   const { declarationText, blockingDiagnostics, analysis } = emitted;
   if (blockingDiagnostics.length > 0 || declarationText === undefined) {
     return {
@@ -439,9 +439,9 @@ function savedFunctionDeclarationResult(emitted, diagnostics, references) {
   };
 }
 
-// Prepares one Saved Function, typed by `declarations` when they are given.
+// Prepares one Private Tool, typed by `declarations` when they are given.
 // `builtinTools` are the keys of the Built-in Tools it can call on `coral`.
-function prepareSavedFunction(source, builtinTools, declarations, fileName, targetName) {
+function preparePrivateTool(source, builtinTools, declarations, fileName, targetName) {
   const compilerOptions = {
     ...PROGRAM_COMPILER_OPTIONS,
     target: resolveTypeScriptTarget(targetName),
@@ -484,7 +484,7 @@ function prepareSavedFunction(source, builtinTools, declarations, fileName, targ
       references: [],
     };
   }
-  const pathAnalysis = savedFunctionPathAnalysis(sourceFile, program);
+  const pathAnalysis = privateToolPathAnalysis(sourceFile, program);
   if (pathAnalysis.validationError !== undefined) {
     return {
       declarationText: null,
@@ -506,13 +506,13 @@ function prepareSavedFunction(source, builtinTools, declarations, fileName, targ
     };
   }
 
-  const emitted = emitSavedFunctionDeclaration(program, fileName, compilerOptions);
+  const emitted = emitPrivateToolDeclaration(program, fileName, compilerOptions);
   const failure =
     declarations === null
       ? undefined
       : typedDeclarationFailure(emitted, sourceFile, declarations.declarationMaxBytes);
   if (failure === undefined) {
-    return savedFunctionDeclarationResult(
+    return privateToolDeclarationResult(
       emitted,
       checked.advisoryDiagnostics(),
       pathAnalysis.references,
@@ -522,8 +522,8 @@ function prepareSavedFunction(source, builtinTools, declarations, fileName, targ
   // emitted again untyped, as it was before callers supplied declarations,
   // and the diagnostics say why.
   const untyped = typedVirtualProgram(fileName, source, compilerOptions, builtinTools, null);
-  return savedFunctionDeclarationResult(
-    emitSavedFunctionDeclaration(untyped.program, fileName, compilerOptions),
+  return privateToolDeclarationResult(
+    emitPrivateToolDeclaration(untyped.program, fileName, compilerOptions),
     checked.advisoryDiagnostics(failure),
     pathAnalysis.references,
   );

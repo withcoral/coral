@@ -91,7 +91,7 @@ impl SearchIndex {
             let observed_at = crate::unix_now_nanos().ok_or(crate::indexer::IndexError::Clock)?;
             let generations = coral_provider::active_generations_in_transaction(&mut tx).await?;
             let functions =
-                coral_functions::saved_function_index_revisions_in_transaction(&mut tx).await?;
+                coral_tools::private_tool_index_revisions_in_transaction(&mut tx).await?;
             let backlog =
                 crate::indexer::projection_backlog(&mut tx, &generations, &functions).await?;
             let first_visibility = if let Some(missing) = &backlog.first_visibility {

@@ -81,7 +81,7 @@ export function AgentSettingsPage({
           active && (
             <SettingsRemoval
               title="Delete agent"
-              description="Delete this agent, its API key, connected accounts and saved functions. Coral keeps its run history."
+              description="Delete this agent, its API key, connected accounts and private tools. Coral keeps its run history."
               action={
                 <ActionDialog
                   title="Delete agent"
@@ -90,7 +90,7 @@ export function AgentSettingsPage({
                   intent="delete"
                   etag={a.etag}
                   destructive
-                  description="Deleting this agent removes its API key, connected accounts and saved functions. Coral keeps its run history. You cannot undo this."
+                  description="Deleting this agent removes its API key, connected accounts and private tools. Coral keeps its run history. You cannot undo this."
                 />
               }
             />

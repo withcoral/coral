@@ -1094,7 +1094,7 @@ export const RetainedSource: Story = {
         source: 'return coral.private.billing.calculate();',
         linkedFunctions: [
           {
-            savedFunction: 'old-function-id',
+            privateTool: 'old-function-id',
             path: 'billing.calculate',
             source: 'export default () => 41;',
           },
@@ -1434,10 +1434,10 @@ export const HistoricalSearchMixedResults: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     const results = opened.getByRole('list', { name: 'Results in rank order' })
-    const [savedFunction, merge] = within(results).getAllByRole('listitem')
-    await expect(within(savedFunction).getByText('saved function')).toBeVisible()
+    const [privateTool, merge] = within(results).getAllByRole('listitem')
+    await expect(within(privateTool).getByText('private tool')).toBeVisible()
     // An icon beside the call path opens today's function, named with its path.
-    const current = within(savedFunction).getByRole('link', {
+    const current = within(privateTool).getByRole('link', {
       name: /^Open current function coral\.private\./,
     })
     await expect(current).toBeVisible()
@@ -1450,7 +1450,7 @@ export const HistoricalSearchMixedResults: Story = {
     // Each card folds its own retained guidance, description and signature into Details.
     const detailsIn = (row: HTMLElement) =>
       within(row).getByText('Details', { selector: 'summary' }).closest('details')!
-    const [functionDetails, mergeDetails] = [detailsIn(savedFunction), detailsIn(merge)]
+    const [functionDetails, mergeDetails] = [detailsIn(privateTool), detailsIn(merge)]
     const signature = within(mergeDetails).getByText(codeContaining('merge(input: { body?'), {
       selector: 'pre',
     })
@@ -1467,7 +1467,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(
       within(functionDetails).getByText(/^Lists the open issues of one repository/),
     ).not.toBeVisible()
-    await userEvent.click(within(savedFunction).getByText('Details'))
+    await userEvent.click(within(privateTool).getByText('Details'))
     await waitFor(() => expect(functionDetails).toHaveAttribute('open'))
     await expect(mergeDetails).toHaveAttribute('open')
     await userEvent.click(within(merge).getByText('Details'))
@@ -1481,7 +1481,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(functionDetails).not.toContainElement(current)
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.
     await expect(opened.getByRole('region', { name: 'Results (6+)' })).not.toHaveTextContent(
-      /retriever|saved_function|results_found/,
+      /retriever|private_tool|results_found/,
     )
   },
 }
@@ -1527,7 +1527,7 @@ export const HistoricalDescribeTool: Story = {
     await expect(declaration).not.toBeVisible()
   },
 }
-export const HistoricalDescribeSavedFunction: Story = {
+export const HistoricalDescribePrivateTool: Story = {
   args: discovery(
     {
       kind: 'describe',
@@ -1786,7 +1786,7 @@ export const InvocationWithRunEvidence: Story = {
           run: { ...execution, state: 'failed', endedAt: at, requiresAction: false },
           linkedFunctions: [
             {
-              savedFunction: 'old-function-id',
+              privateTool: 'old-function-id',
               path: 'billing.remind',
               source: 'export default () => "snapshot"',
             },

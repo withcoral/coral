@@ -1,4 +1,4 @@
-//! Advisory typing of the Tools and Saved Functions a source names.
+//! Advisory typing of the Tools and Private Tools a source names.
 //!
 //! The composing caller supplies an [`ToolDeclarationReader`] bound to
 //! its own discovery authority, so this crate never decides which Tools

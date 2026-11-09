@@ -41,7 +41,7 @@ impl BodyScope {
         fixture.runs = fixture
             .runs
             .clone()
-            .with_saved_functions(crate::SavedFunctions::new(Self::functions(&fixture), index));
+            .with_private_tools(crate::PrivateTools::new(Self::functions(&fixture), index));
         let tool = fixture.user_tool(user, "Tool bodies").await;
         assert_eq!(tool.call_path, WEATHER);
         Self {
@@ -51,8 +51,8 @@ impl BodyScope {
         }
     }
 
-    fn functions(fixture: &TestModules) -> SavedFunctionModule {
-        SavedFunctionModule::new(
+    fn functions(fixture: &TestModules) -> PrivateToolModule {
+        PrivateToolModule::new(
             fixture.database.clone(),
             fixture.workspaces.clone(),
             crate::IsolateLimits::default(),
@@ -72,16 +72,16 @@ impl BodyScope {
     async fn save_module(&self, path: &str, source: &str) {
         Self::functions(&self.fixture)
             .save(
-                &SavedFunctionChangeContext::new(
+                &PrivateToolChangeContext::new(
                     self.tool.principal.clone(),
                     60,
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &self.tool.workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(path).expect("a path"),
-                    SavedFunctionDescription::parse("A tool body").expect("a description"),
-                    SavedFunctionSource::parse(source).expect("a source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("a path"),
+                    PrivateToolDescription::parse("A tool body").expect("a description"),
+                    PrivateToolSource::parse(source).expect("a source"),
                 ),
             )
             .await
@@ -560,7 +560,7 @@ async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
         let sources: std::collections::BTreeSet<_> = rows
             .iter()
             .filter(|row| row.call_path == WEATHER && parent_path(&rows, row) == parent)
-            .map(|row| row.source_saved_function_id.clone())
+            .map(|row| row.source_private_tool_id.clone())
             .collect();
         assert_eq!(sources.len(), 1, "{parent:?}: {sources:?}");
         sources.into_iter().next().flatten().expect("a module")

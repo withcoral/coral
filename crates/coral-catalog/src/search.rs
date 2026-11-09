@@ -244,7 +244,7 @@ fn walk_declarations(
                 .ok_or_else(invalid_index)?;
             walk.index_root(binding.output_schema(), &output_path, output_projection)?;
         }
-        // Universal Search finds Private Tools through coral-functions.
+        // Universal Search finds Private Tools through coral-tools.
         ExecutionBinding::Code(_) => {}
     }
     walk.drain()

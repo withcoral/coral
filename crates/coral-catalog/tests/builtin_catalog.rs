@@ -142,7 +142,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#""missing": Array<MissingPath>"#,
                 r#""suggestions": Array<string>"#,
                 r#""kind": "provider_tool""#,
-                r#""kind": "saved_function""#,
+                r#""kind": "private_tool""#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),

@@ -50,7 +50,7 @@ pub(crate) enum BuiltinCall {
     RemoveTool(functions::RemoveTool),
 }
 
-pub use functions::SavedFunctions;
+pub use functions::PrivateTools;
 
 impl BuiltinCall {
     /// The Built-in Tool an admitted target names, with its input checked
@@ -146,7 +146,7 @@ pub(crate) async fn recover(
         Some(BuiltinTool::UpdateProvider) => update_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
-        // A read leaves nothing behind, a policy change and a Saved Function
+        // A read leaves nothing behind, a policy change and a Private Tool
         // change record no call to read, and this version cannot read a Tool
         // it does not perform.
         Some(
@@ -195,7 +195,7 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) search: &'a coral_search::UniversalSearchModule,
     /// Where the authoring Tools author; without it, they
     /// fail as `tool_unavailable`.
-    pub(crate) functions: Option<&'a SavedFunctions>,
+    pub(crate) functions: Option<&'a PrivateTools>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.

@@ -732,7 +732,7 @@ pub async fn provider_tool_paths_in_transaction(
 }
 
 /// The Workspace's Private Provider, in any state; `None` when the Workspace
-/// has none yet. Its Tools are the Private Tools coral-functions keeps, so
+/// has none yet. Its Tools are the Private Tools coral-tools keeps, so
 /// the caller owns authority and decides which of them a Principal reaches.
 ///
 /// # Errors
@@ -961,7 +961,7 @@ async fn reached_tool(
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
         },
-        // No Call Path splits to it: coral-functions resolves Private Tools.
+        // No Call Path splits to it: coral-tools resolves Private Tools.
         ProviderCallRoot::Private => return Ok(None),
     };
     Ok(
@@ -1170,7 +1170,7 @@ async fn inspected_provider_in_transaction(
 /// The Workspace's Providers, optionally narrowed to one identity, that
 /// Provider listings, readiness and search read. The Private Provider is
 /// left out: its Generation holds no Tool and it has no Accounts, and
-/// coral-functions keeps each Principal's Private Tools.
+/// coral-tools keeps each Principal's Private Tools.
 pub(crate) async fn listed_providers(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -1202,7 +1202,7 @@ pub(crate) async fn inspected_providers(
 /// Whether inspection under `evidence` shows `stored`: as in discovery, only
 /// when the User reaches one of its Tools. Every User who inspects the
 /// Workspace inspects its Private Provider, which has no Tools or Accounts
-/// of its own: coral-functions decides which Private Tools each one sees.
+/// of its own: coral-tools decides which Private Tools each one sees.
 async fn inspects(
     transaction: &mut coral_db::Transaction<'_>,
     evidence: &WorkspaceEvidence,

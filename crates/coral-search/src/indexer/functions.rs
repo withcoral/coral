@@ -1,17 +1,17 @@
-//! The Saved Function indexer: one saved function's entry in, one row out.
+//! The Private Tool indexer: one private tool's entry in, one row out.
 //!
 //! A function's delete never touches these rows (ADR 0017). [`sync`] removes
 //! them once it finds the function gone, and a reconcile pass finds the rows
 //! whose notification never came, such as those of a removed Principal.
 //!
-//! [`sync`]: SavedFunctionIndexer::sync
+//! [`sync`]: PrivateToolIndexer::sync
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_functions::{SavedFunctionEntry, SavedFunctionId, SavedFunctionIndexRevision};
+use coral_tools::{PrivateToolEntry, PrivateToolId, PrivateToolIndexRevision};
 use coral_workspace::WorkspaceId;
 
 use super::repository::{
@@ -21,22 +21,22 @@ use super::retry::RetryRule;
 use super::{DistinctWords, EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
 use crate::CallPath;
 
-/// Indexes Saved Functions.
+/// Indexes Private Tools.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct SavedFunctionIndexer;
+pub(crate) struct PrivateToolIndexer;
 
-/// The search rows of one Saved Function that no longer exists.
+/// The search rows of one Private Tool that no longer exists.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FunctionRemoval {
     pub(crate) workspace_id: WorkspaceId,
-    pub(crate) function_id: SavedFunctionId,
+    pub(crate) function_id: PrivateToolId,
 }
 
-/// What it takes to bring the index in line with one Saved Function.
+/// What it takes to bring the index in line with one Private Tool.
 pub(crate) enum FunctionSync {
     /// The function exists and the index lacks it, holds another revision of
     /// it, or holds a failure of it that is due again.
-    Index(Box<SavedFunctionEntry>),
+    Index(Box<PrivateToolEntry>),
     /// The function is gone and the index still holds rows of it.
     Remove(FunctionRemoval),
     /// The index already agrees with the function.
@@ -44,24 +44,24 @@ pub(crate) enum FunctionSync {
 }
 
 #[async_trait]
-impl EntityIndexer for SavedFunctionIndexer {
-    type Entry = SavedFunctionEntry;
+impl EntityIndexer for PrivateToolIndexer {
+    type Entry = PrivateToolEntry;
     type Rows<'e> = FunctionRow<'e>;
     type Removal = FunctionRemoval;
-    type Expected = SavedFunctionEntry;
+    type Expected = PrivateToolEntry;
 
-    fn workspace_id<'e>(&self, entry: &'e SavedFunctionEntry) -> &'e WorkspaceId {
+    fn workspace_id<'e>(&self, entry: &'e PrivateToolEntry) -> &'e WorkspaceId {
         entry.workspace_id()
     }
 
-    fn rows<'e>(&self, entry: &'e SavedFunctionEntry) -> Result<FunctionRow<'e>, IndexError> {
+    fn rows<'e>(&self, entry: &'e PrivateToolEntry) -> Result<FunctionRow<'e>, IndexError> {
         function_row(entry)
     }
 
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
-        entry: &SavedFunctionEntry,
+        entry: &PrivateToolEntry,
         row: &FunctionRow<'_>,
     ) -> Result<super::IndexEffect, IndexError> {
         repository::upsert_function_row(transaction, row, now_unix_nanos()?).await?;
@@ -103,9 +103,9 @@ impl EntityIndexer for SavedFunctionIndexer {
     async fn reconcile<'e>(
         &self,
         transaction: &mut Transaction<'_>,
-        expected: &'e [SavedFunctionEntry],
+        expected: &'e [PrivateToolEntry],
         now_unix_nanos: i64,
-    ) -> Result<Vec<&'e SavedFunctionEntry>, IndexError> {
+    ) -> Result<Vec<&'e PrivateToolEntry>, IndexError> {
         let fingerprints = repository::recorded_functions(transaction)
             .await?
             .into_iter()
@@ -134,12 +134,12 @@ impl EntityIndexer for SavedFunctionIndexer {
     }
 }
 
-/// The rule of [`SavedFunctionIndexer::reconcile`] for one function, its
+/// The rule of [`PrivateToolIndexer::reconcile`] for one function, its
 /// failure, if any, and its row's fingerprint, if it has a row.
 fn needs_indexing(
     failure: Option<&FunctionFailure>,
     fingerprint: Option<&str>,
-    entry: &SavedFunctionEntry,
+    entry: &PrivateToolEntry,
     now_unix_nanos: i64,
 ) -> bool {
     match failure {
@@ -150,7 +150,7 @@ fn needs_indexing(
     }
 }
 
-impl SavedFunctionIndexer {
+impl PrivateToolIndexer {
     /// What it takes, read now, to bring the index in line with the function:
     /// the one rule for a save, a delete and a reconcile pass, so each may
     /// run late, twice or out of order. A notification names an id alone, so
@@ -159,15 +159,12 @@ impl SavedFunctionIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         workspace_id: &WorkspaceId,
-        function_id: &SavedFunctionId,
+        function_id: &PrivateToolId,
         now_unix_nanos: i64,
     ) -> Result<FunctionSync, IndexError> {
-        let entry = coral_functions::saved_function_entry_in_transaction(
-            transaction,
-            workspace_id,
-            function_id,
-        )
-        .await?;
+        let entry =
+            coral_tools::private_tool_entry_in_transaction(transaction, workspace_id, function_id)
+                .await?;
         let failure = repository::failed_function(transaction, workspace_id, function_id).await?;
         let fingerprint =
             repository::recorded_function_fingerprint(transaction, workspace_id, function_id)
@@ -203,7 +200,7 @@ impl SavedFunctionIndexer {
     pub(crate) async fn orphaned(
         &self,
         transaction: &mut Transaction<'_>,
-        current: &[SavedFunctionIndexRevision],
+        current: &[PrivateToolIndexRevision],
     ) -> Result<Vec<FunctionRemoval>, IndexError> {
         let current = current
             .iter()
@@ -235,7 +232,7 @@ impl SavedFunctionIndexer {
 /// text. Answers whether that row went.
 pub(crate) async fn record_failed_attempt(
     transaction: &mut Transaction<'_>,
-    entry: &SavedFunctionEntry,
+    entry: &PrivateToolEntry,
     error: &IndexError,
     reconcile_interval: Duration,
 ) -> Result<bool, IndexError> {
@@ -268,9 +265,9 @@ pub(crate) async fn record_failed_attempt(
     Ok(removed > 0)
 }
 
-fn function_row(entry: &SavedFunctionEntry) -> Result<FunctionRow<'_>, IndexError> {
+fn function_row(entry: &PrivateToolEntry) -> Result<FunctionRow<'_>, IndexError> {
     let qualified_name = entry.path().as_str();
-    let call_path = CallPath::saved_function(qualified_name)
+    let call_path = CallPath::private_tool(qualified_name)
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
     Ok(FunctionRow {
         workspace_id: entry.workspace_id(),
@@ -289,7 +286,7 @@ fn function_row(entry: &SavedFunctionEntry) -> Result<FunctionRow<'_>, IndexErro
 /// [`DistinctWords`] keeps them. A function whose declaration fields did not
 /// project is searchable by path and description. Raise
 /// [`super::INDEXER_REVISION`] when this text changes.
-fn searchable_text(entry: &SavedFunctionEntry) -> String {
+fn searchable_text(entry: &PrivateToolEntry) -> String {
     let variant = compact_identifier_variant(entry.path().as_str());
     let mut words = DistinctWords::default();
     for field in entry.declaration_fields().unwrap_or_default() {

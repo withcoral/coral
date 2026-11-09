@@ -9,21 +9,21 @@ import { Section } from '@/views/management/layout'
 import type { FormContext } from '@/views/management/types'
 import { useTabPath } from './functions-page'
 import { SavedAt } from './saved-at'
-import type { SavedFunctionDiagnosticView, SavedFunctionView } from './types'
+import type { PrivateToolDiagnosticView, PrivateToolView } from './types'
 import * as styles from './functions.css'
 
 // The drawer caps the source and diagnostics; the rest scroll in place.
 const SOURCE_LINES = 20
 const DIAGNOSTIC_ROWS = 8
 
-const categories: Record<SavedFunctionDiagnosticView['category'], string> = {
+const categories: Record<PrivateToolDiagnosticView['category'], string> = {
   error: 'Error',
   warning: 'Warning',
   suggestion: 'Suggestion',
   message: 'Message',
 }
 
-function location(d: SavedFunctionDiagnosticView) {
+function location(d: PrivateToolDiagnosticView) {
   if (d.line === null) return 'Whole source'
   return d.column === null ? `Line ${d.line}` : `Line ${d.line}, column ${d.column}`
 }
@@ -60,16 +60,16 @@ function Drawer({
 
 export interface FunctionDrawerProps {
   listPath: string
-  savedFunction: SavedFunctionView
+  privateTool: PrivateToolView
   form: FormContext
   /** False in an archived workspace, which accepts no changes. */
   canDelete: boolean
 }
 
-/** One of the current User's Saved Functions, as Coral saved it. You can read or delete it. */
+/** One of the current User's Private Tools, as Coral saved it. You can read or delete it. */
 export function FunctionDrawer({
   listPath,
-  savedFunction: f,
+  privateTool: f,
   form,
   canDelete,
 }: FunctionDrawerProps) {

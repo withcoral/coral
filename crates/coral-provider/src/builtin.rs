@@ -6,7 +6,7 @@
 //! Generation. It has no Setup, no Publication and no Accounts. The Built-in
 //! Provider's Generation holds the Coral-defined catalog. The Private
 //! Provider's holds no Tool: its Tools are each Principal's Private Tools,
-//! which coral-functions keeps. When Coral boots, it installs each in every
+//! which coral-tools keeps. When Coral boots, it installs each in every
 //! Workspace that has none, such as a Workspace created before Coral had it,
 //! and updates every Workspace's Built-in Provider to the catalog it serves.
 use coral_catalog::ProviderGenerationId;

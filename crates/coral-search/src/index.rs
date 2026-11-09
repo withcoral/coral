@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
-use coral_functions::{SavedFunctionEntry, SavedFunctionId};
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::{metric, safe};
+use coral_tools::{PrivateToolEntry, PrivateToolId};
 use coral_workspace::WorkspaceId;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use crate::indexer::functions::{self, FunctionSync, SavedFunctionIndexer};
+use crate::indexer::functions::{self, FunctionSync, PrivateToolIndexer};
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
@@ -39,7 +39,7 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// Universal Search's write side.
 ///
 /// Every notify method spawns the write and returns at once. It never fails
-/// the caller: a failed write is logged, a failed Generation or Saved Function
+/// the caller: a failed write is logged, a failed Generation or Private Tool
 /// attempt leaves a `failed` state row, and the reconcile task converges what a notification
 /// missed. Each notified write is the root of a trace of its own, linked to
 /// the span that notified it, such as the request that saved a Saved
@@ -121,7 +121,7 @@ impl SearchIndex {
 
     /// Builds the write side over migrated domain persistence. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
-    /// Generation or Saved Function by the retry module's rule, whose waits
+    /// Generation or Private Tool by the retry module's rule, whose waits
     /// start at that interval.
     #[must_use]
     pub fn new(database: Arc<Database>, reconcile_interval: Duration) -> Self {
@@ -381,7 +381,7 @@ impl SearchIndex {
         });
     }
 
-    /// A Saved Function was saved, saved over or deleted: brings the index in
+    /// A Private Tool was saved, saved over or deleted: brings the index in
     /// line with the function as it stands when the write runs. The committing
     /// workflow sends ids alone, so a notification may run late, twice or out
     /// of order, and may be lost: a reconcile pass finds the same difference.
@@ -390,7 +390,7 @@ impl SearchIndex {
     /// row an earlier attempt left, or removes both when the function is gone.
     /// A failed attempt rolls back, removes the function's row, and leaves a
     /// `failed` state row.
-    pub fn sync_function(&self, workspace_id: WorkspaceId, function_id: SavedFunctionId) {
+    pub fn sync_function(&self, workspace_id: WorkspaceId, function_id: PrivateToolId) {
         let span = function_span(&workspace_id, &function_id);
         let index = self.clone();
         self.spawn(span, async move {
@@ -402,17 +402,17 @@ impl SearchIndex {
         });
     }
 
-    /// Brings the index in line with one Saved Function. The caller holds the
+    /// Brings the index in line with one Private Tool. The caller holds the
     /// mutex. Answers whether it indexed the function.
     async fn sync_function_held(
         &self,
         workspace_id: &WorkspaceId,
-        function_id: &SavedFunctionId,
+        function_id: &PrivateToolId,
     ) -> Result<bool, IndexError> {
         let now = crate::unix_now_nanos().ok_or(IndexError::Clock)?;
         let sync = self
             .read_snapshot(async |transaction| {
-                SavedFunctionIndexer
+                PrivateToolIndexer
                     .sync(transaction, workspace_id, function_id, now)
                     .await
             })
@@ -421,23 +421,23 @@ impl SearchIndex {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
                 coral.workspace.id = safe::id(&workspace_id),
-                coral.saved_function.id = safe::id(&function_id),
+                coral.private_tool.id = safe::id(&function_id),
                 error.type = safe::kind(error.code()),
-                "failed to read a Saved Function before syncing it"
+                "failed to read a Private Tool before syncing it"
             );
         })?;
         match sync {
             FunctionSync::Index(entry) => self.write_function(&entry).await.map(|()| true),
             FunctionSync::Remove(removal) => {
-                self.erase(&SavedFunctionIndexer, &removal)
+                self.erase(&PrivateToolIndexer, &removal)
                     .await
                     .inspect_err(|error| {
                         // TODO: an error monitor for failed index writes is still to be set up.
                         tracing::error!(
                             coral.workspace.id = safe::id(&workspace_id),
-                            coral.saved_function.id = safe::id(&function_id),
+                            coral.private_tool.id = safe::id(&function_id),
                             error.type = safe::kind(error.code()),
-                            "failed to remove a Saved Function from the search index"
+                            "failed to remove a Private Tool from the search index"
                         );
                     })?;
                 Ok(false)
@@ -578,25 +578,25 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// Writes one Saved Function's entry. A failure is logged and recorded,
+    /// Writes one Private Tool's entry. A failure is logged and recorded,
     /// then returned. The caller holds the mutex.
-    async fn write_function(&self, entry: &SavedFunctionEntry) -> Result<(), IndexError> {
-        let Err(error) = self.write(&SavedFunctionIndexer, entry).await else {
+    async fn write_function(&self, entry: &PrivateToolEntry) -> Result<(), IndexError> {
+        let Err(error) = self.write(&PrivateToolIndexer, entry).await else {
             return Ok(());
         };
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
             coral.workspace.id = safe::id(&entry.workspace_id()),
-            coral.saved_function.id = safe::id(&entry.id()),
+            coral.private_tool.id = safe::id(&entry.id()),
             error.type = safe::kind(error.code()),
-            "failed to index a Saved Function"
+            "failed to index a Private Tool"
         );
         if let Err(record_error) = self.record_failed_function(entry, &error).await {
             tracing::error!(
                 coral.workspace.id = safe::id(&entry.workspace_id()),
-                coral.saved_function.id = safe::id(&entry.id()),
+                coral.private_tool.id = safe::id(&entry.id()),
                 error.type = safe::kind(record_error.code()),
-                "failed to record a failed Saved Function index attempt"
+                "failed to record a failed Private Tool index attempt"
             );
         }
         Err(error)
@@ -865,7 +865,7 @@ impl SearchIndex {
     }
     async fn record_failed_function(
         &self,
-        entry: &SavedFunctionEntry,
+        entry: &PrivateToolEntry,
         error: &IndexError,
     ) -> Result<(), IndexError> {
         let removed = self
@@ -912,15 +912,15 @@ fn generation_span(
     )
 }
 
-/// The span of one Saved Function's sync, notified or made by a reconcile
+/// The span of one Private Tool's sync, notified or made by a reconcile
 /// pass. The sync records how long it waited for the writer and wrote, or why
 /// it wrote nothing.
-fn function_span(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> tracing::Span {
+fn function_span(workspace_id: &WorkspaceId, function_id: &PrivateToolId) -> tracing::Span {
     tracing::info_span!(
         parent: None,
         "coral.search.sync_function",
         coral.workspace.id = safe::id(&workspace_id),
-        coral.saved_function.id = safe::id(&function_id),
+        coral.private_tool.id = safe::id(&function_id),
         coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,

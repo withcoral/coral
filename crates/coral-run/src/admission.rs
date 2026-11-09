@@ -6,22 +6,22 @@ use std::time::{Duration, Instant};
 
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
-use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_telemetry::safe;
+use coral_tools::{PrivateToolPath, PrivateToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
 use uuid::Uuid;
 
-use crate::engine::{ProgramEngine, ProgramPackage, ProgramReferences, SavedFunctionReference};
+use crate::engine::{PrivateToolReference, ProgramEngine, ProgramPackage, ProgramReferences};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
-    COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_SAVED_FUNCTION_MAX_COUNT, ProgramSource,
-    RunCursor, RunId, RunModule, RunState, RunSubmission, RunUpdate, run_repository,
+    COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_PRIVATE_TOOL_MAX_COUNT, ProgramSource, RunCursor,
+    RunId, RunModule, RunState, RunSubmission, RunUpdate, run_repository,
 };
 
-/// The most candidate Call Paths admission checks, as Saved Function typing
+/// The most candidate Call Paths admission checks, as Private Tool typing
 /// bounds them. A Program that names more has its paths checked when called.
 const TOOL_CHECK_MAX_PATHS: usize = 128;
 
@@ -33,21 +33,21 @@ const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
 const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
-enum SavedFunctionReferenceSource {
+enum PrivateToolReferenceSource {
     SubmittedProgram,
-    SavedFunction(SavedFunctionPath),
+    PrivateTool(PrivateToolPath),
 }
 
 /// The Private Tools a Program links, in initialization order, and the
 /// literal Tool chains each one's source names.
 type LinkedClosure = (
-    Vec<SavedFunctionSelection>,
-    Vec<(SavedFunctionPath, coral_v8::ToolReferences)>,
+    Vec<PrivateToolSelection>,
+    Vec<(PrivateToolPath, coral_v8::ToolReferences)>,
 );
 
-struct PendingSavedFunctionReference {
-    source: SavedFunctionReferenceSource,
-    reference: SavedFunctionReference,
+struct PendingPrivateToolReference {
+    source: PrivateToolReferenceSource,
+    reference: PrivateToolReference,
 }
 
 /// Opaque compiled submission, bound to the exact submitting scope.
@@ -56,7 +56,7 @@ pub struct PreparedRun {
     workspace_id: WorkspaceId,
     submission: RunSubmission,
     package: ProgramPackage,
-    linked: Vec<SavedFunctionSelection>,
+    linked: Vec<PrivateToolSelection>,
 }
 
 /// Scope-bound evidence of staged acceptance, not proof that its transaction committed.
@@ -176,7 +176,7 @@ impl RunModule {
         let mut snapshots_by_path = linked.iter().collect::<Vec<_>>();
         snapshots_by_path.sort_by(|left, right| left.path().cmp(right.path()));
         for snapshot in snapshots_by_path {
-            if !coral_functions::hold_source_selection_in_transaction(
+            if !coral_tools::hold_source_selection_in_transaction(
                 transaction,
                 workspace_id,
                 actor.principal(),
@@ -298,7 +298,7 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
-    ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
+    ) -> Result<(ProgramPackage, Vec<PrivateToolSelection>), Error> {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
         let compiled = self
@@ -331,7 +331,7 @@ impl RunModule {
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
         compilation_deadline: Instant,
-    ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
+    ) -> Result<(ProgramPackage, Vec<PrivateToolSelection>), Error> {
         let source = submitted_source.as_str().to_string();
         let named = self
             .analyze_program(source.clone(), compilation_deadline)
@@ -365,7 +365,7 @@ impl RunModule {
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
-            engine.compile_with_saved_functions(
+            engine.compile_with_private_tools(
                 compilation_deadline,
                 &source,
                 &compile_linked,
@@ -386,7 +386,7 @@ impl RunModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        roots: Vec<SavedFunctionReference>,
+        roots: Vec<PrivateToolReference>,
         compilation_deadline: Instant,
     ) -> Result<LinkedClosure, Error> {
         if roots.is_empty() {
@@ -400,8 +400,8 @@ impl RunModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let mut pending = roots
             .into_iter()
-            .map(|reference| PendingSavedFunctionReference {
-                source: SavedFunctionReferenceSource::SubmittedProgram,
+            .map(|reference| PendingPrivateToolReference {
+                source: PrivateToolReferenceSource::SubmittedProgram,
                 reference,
             })
             .collect::<VecDeque<_>>();
@@ -413,12 +413,12 @@ impl RunModule {
             if snapshots.contains_key(path) {
                 continue;
             }
-            if snapshots.len() == LINKED_SAVED_FUNCTION_MAX_COUNT {
+            if snapshots.len() == LINKED_PRIVATE_TOOL_MAX_COUNT {
                 return Err(Error::ProgramAdmission(format!(
-                    "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Private Tools"
+                    "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private Tools"
                 )));
             }
-            let snapshot = coral_functions::select_source_in_transaction(
+            let snapshot = coral_tools::select_source_in_transaction(
                 &mut transaction,
                 workspace_id,
                 actor.principal(),
@@ -441,7 +441,7 @@ impl RunModule {
                 functions: referenced,
                 tools: named_tools,
             } = self
-                .analyze_saved_function(
+                .analyze_private_tool(
                     snapshot.source().as_str().to_string(),
                     path.clone(),
                     compilation_deadline,
@@ -451,8 +451,8 @@ impl RunModule {
                 tools.push((path.clone(), named_tools));
             }
             pending.extend(referenced.iter().cloned().map(|reference| {
-                PendingSavedFunctionReference {
-                    source: SavedFunctionReferenceSource::SavedFunction(path.clone()),
+                PendingPrivateToolReference {
+                    source: PrivateToolReferenceSource::PrivateTool(path.clone()),
                     reference,
                 }
             }));
@@ -468,7 +468,7 @@ impl RunModule {
         transaction.commit().await?;
 
         Ok((
-            order_saved_function_closure(&root_paths, &dependencies, &snapshots)?,
+            order_private_tool_closure(&root_paths, &dependencies, &snapshots)?,
             tools,
         ))
     }
@@ -495,7 +495,7 @@ impl RunModule {
     /// `tool_not_found`, and a call to a disabled Tool still runs to be
     /// recorded and refused. The unknown-Tool diagnostic's rule decides
     /// which chains those paths leave unknown. Neither reads the search
-    /// index. The check is bounded like Saved Function typing: a Program
+    /// index. The check is bounded like Private Tool typing: a Program
     /// that names more candidate paths, or a check that fails or runs out of
     /// its time, leaves the paths to be checked when called.
     async fn check_tool_calls(
@@ -606,12 +606,12 @@ impl RunModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        pending: &PendingSavedFunctionReference,
+        pending: &PendingPrivateToolReference,
         compilation_deadline: Instant,
     ) -> Error {
         let source_name = match &pending.source {
-            SavedFunctionReferenceSource::SubmittedProgram => "Program".to_string(),
-            SavedFunctionReferenceSource::SavedFunction(path) => {
+            PrivateToolReferenceSource::SubmittedProgram => "Program".to_string(),
+            PrivateToolReferenceSource::PrivateTool(path) => {
                 format!("Private Tool coral.private.{}", path.as_str())
             }
         };
@@ -683,14 +683,14 @@ impl RunModule {
         Ok(callable)
     }
 
-    async fn analyze_saved_function(
+    async fn analyze_private_tool(
         &self,
         source: String,
-        path: SavedFunctionPath,
+        path: PrivateToolPath,
         compilation_deadline: Instant,
     ) -> Result<ProgramReferences, Error> {
         self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.saved_function_references(deadline, &path, &source)
+            engine.private_tool_references(deadline, &path, &source)
         })
         .await
     }
@@ -781,18 +781,18 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
     )
 }
 
-fn order_saved_function_closure(
-    roots: &[SavedFunctionPath],
-    dependencies: &BTreeMap<SavedFunctionPath, Vec<SavedFunctionPath>>,
-    snapshots: &BTreeMap<SavedFunctionPath, SavedFunctionSelection>,
-) -> Result<Vec<SavedFunctionSelection>, Error> {
+fn order_private_tool_closure(
+    roots: &[PrivateToolPath],
+    dependencies: &BTreeMap<PrivateToolPath, Vec<PrivateToolPath>>,
+    snapshots: &BTreeMap<PrivateToolPath, PrivateToolSelection>,
+) -> Result<Vec<PrivateToolSelection>, Error> {
     fn visit(
-        path: &SavedFunctionPath,
-        dependencies: &BTreeMap<SavedFunctionPath, Vec<SavedFunctionPath>>,
-        snapshots: &BTreeMap<SavedFunctionPath, SavedFunctionSelection>,
-        visiting: &mut BTreeSet<SavedFunctionPath>,
-        visited: &mut BTreeSet<SavedFunctionPath>,
-        ordered: &mut Vec<SavedFunctionSelection>,
+        path: &PrivateToolPath,
+        dependencies: &BTreeMap<PrivateToolPath, Vec<PrivateToolPath>>,
+        snapshots: &BTreeMap<PrivateToolPath, PrivateToolSelection>,
+        visiting: &mut BTreeSet<PrivateToolPath>,
+        visited: &mut BTreeSet<PrivateToolPath>,
+        ordered: &mut Vec<PrivateToolSelection>,
     ) -> Result<(), Error> {
         if visited.contains(path) || !visiting.insert(path.clone()) {
             return Ok(());
@@ -849,9 +849,9 @@ fn validate_source_closure<'a>(
         linked_count = linked_count.saturating_add(1);
         combined_bytes = combined_bytes.saturating_add(source.len());
     }
-    if linked_count > LINKED_SAVED_FUNCTION_MAX_COUNT {
+    if linked_count > LINKED_PRIVATE_TOOL_MAX_COUNT {
         return Err(Error::ProgramAdmission(format!(
-            "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Private Tools"
+            "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private Tools"
         )));
     }
     if combined_bytes > COMBINED_TYPESCRIPT_MAX_BYTES {

@@ -3,27 +3,27 @@ use super::workspaces::{
     workspace_id,
 };
 use super::{GrpcServices, management as wire, now};
-use coral_functions::{
-    SavedFunction, SavedFunctionChangeContext, SavedFunctionDiagnostic,
-    SavedFunctionDiagnosticCategory, SavedFunctionPath, SavedFunctionSummary,
+use coral_tools::{
+    PrivateTool, PrivateToolChangeContext, PrivateToolDiagnostic, PrivateToolDiagnosticCategory,
+    PrivateToolPath, PrivateToolSummary,
 };
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
 use tonic::{Request, Response, Status};
 
-fn error(error: coral_functions::Error) -> Status {
-    use coral_functions::Error as E;
+fn error(error: coral_tools::Error) -> Status {
+    use coral_tools::Error as E;
     let (code, reason) = match error {
         E::Workspace(error) => return workspace_error(error),
         E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        E::SavedFunctionNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
+        E::PrivateToolNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
         E::PrivateToolExists => (tonic::Code::AlreadyExists, "ALREADY_EXISTS"),
         E::PrivateToolRevisionConflict { .. } => (tonic::Code::Aborted, "ABORTED"),
         // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
-        E::SavedFunctionAdmission(_)
+        E::PrivateToolAdmission(_)
         | E::PrivateToolNotData(_)
-        | E::SavedFunctionPathConflict
-        | E::SavedFunctionCompilationTimedOut
+        | E::PrivateToolPathConflict
+        | E::PrivateToolCompilationTimedOut
         | E::CompilerBusy
         | E::PackageTooLarge { .. }
         | E::CompilerUnavailable(_)
@@ -36,28 +36,28 @@ fn error(error: coral_functions::Error) -> Status {
     safe_status(code, reason)
 }
 
-fn path(value: &str) -> Result<SavedFunctionPath, Status> {
-    SavedFunctionPath::parse(value).map_err(|_error| invalid("invalid Saved Function Path"))
+fn path(value: &str) -> Result<PrivateToolPath, Status> {
+    PrivateToolPath::parse(value).map_err(|_error| invalid("invalid Private Tool Path"))
 }
 
-fn summary(summary: &SavedFunctionSummary) -> wire::SavedFunctionSummary {
-    wire::SavedFunctionSummary {
+fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
+    wire::PrivateToolSummary {
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
         update_time: Some(timestamp(summary.saved_at_unix_nanos())),
     }
 }
 
-fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> wire::SavedFunctionDiagnostic {
+fn diagnostic(diagnostic: &PrivateToolDiagnostic) -> wire::PrivateToolDiagnostic {
     let category = match diagnostic.category() {
-        SavedFunctionDiagnosticCategory::Message => wire::SavedFunctionDiagnosticCategory::Message,
-        SavedFunctionDiagnosticCategory::Warning => wire::SavedFunctionDiagnosticCategory::Warning,
-        SavedFunctionDiagnosticCategory::Error => wire::SavedFunctionDiagnosticCategory::Error,
-        SavedFunctionDiagnosticCategory::Suggestion => {
-            wire::SavedFunctionDiagnosticCategory::Suggestion
+        PrivateToolDiagnosticCategory::Message => wire::PrivateToolDiagnosticCategory::Message,
+        PrivateToolDiagnosticCategory::Warning => wire::PrivateToolDiagnosticCategory::Warning,
+        PrivateToolDiagnosticCategory::Error => wire::PrivateToolDiagnosticCategory::Error,
+        PrivateToolDiagnosticCategory::Suggestion => {
+            wire::PrivateToolDiagnosticCategory::Suggestion
         }
     };
-    wire::SavedFunctionDiagnostic {
+    wire::PrivateToolDiagnostic {
         category: category.into(),
         code: diagnostic.code(),
         message: diagnostic.message().to_owned(),
@@ -66,8 +66,8 @@ fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> wire::SavedFunctionDiagno
     }
 }
 
-fn saved_function(function: &SavedFunction) -> wire::SavedFunction {
-    wire::SavedFunction {
+fn private_tool(function: &PrivateTool) -> wire::PrivateTool {
+    wire::PrivateTool {
         path: function.path().as_str().to_owned(),
         description: function.description().as_str().to_owned(),
         declaration: function.declaration().as_str().to_owned(),
@@ -79,21 +79,21 @@ fn saved_function(function: &SavedFunction) -> wire::SavedFunction {
 }
 
 #[tonic::async_trait]
-impl wire::saved_function_service_server::SavedFunctionService for GrpcServices {
-    #[tracing::instrument(skip_all, name = "coral.private.list_saved_functions")]
-    async fn list_saved_functions(
+impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
+    #[tracing::instrument(skip_all, name = "coral.private.list_private_tools")]
+    async fn list_private_tools(
         &self,
-        request: Request<wire::ListSavedFunctionsRequest>,
-    ) -> Result<Response<wire::ListSavedFunctionsResponse>, Status> {
+        request: Request<wire::ListPrivateToolsRequest>,
+    ) -> Result<Response<wire::ListPrivateToolsResponse>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let scope = format!("{}:{w}:savedFunctions", user.user_id());
+        let scope = format!("{}:{w}:privateTools", user.user_id());
         let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
         let after = if after.is_empty() {
             None
         } else {
-            Some(SavedFunctionPath::parse(&after).map_err(|_error| invalid("invalid page token"))?)
+            Some(PrivateToolPath::parse(&after).map_err(|_error| invalid("invalid page token"))?)
         };
         let private_provider = self
             .providers
@@ -101,7 +101,7 @@ impl wire::saved_function_service_server::SavedFunctionService for GrpcServices 
             .await
             .map_err(super::providers::error)?;
         let page = self
-            .saved_functions
+            .private_tools
             .list(
                 &AuthenticatedPrincipal::user(user),
                 &w,
@@ -115,45 +115,45 @@ impl wire::saved_function_service_server::SavedFunctionService for GrpcServices 
             .map(|after| page_token(&scope, after.as_str()))
             .transpose()?
             .unwrap_or_default();
-        Ok(Response::new(wire::ListSavedFunctionsResponse {
-            saved_functions: page.summaries().iter().map(summary).collect(),
+        Ok(Response::new(wire::ListPrivateToolsResponse {
+            private_tools: page.summaries().iter().map(summary).collect(),
             next_page_token,
             private_provider: super::providers::provider_name(&private_provider),
         }))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.private.get_saved_function")]
-    async fn get_saved_function(
+    #[tracing::instrument(skip_all, name = "coral.private.get_private_tool")]
+    async fn get_private_tool(
         &self,
-        request: Request<wire::GetSavedFunctionRequest>,
-    ) -> Result<Response<wire::SavedFunction>, Status> {
+        request: Request<wire::GetPrivateToolRequest>,
+    ) -> Result<Response<wire::PrivateTool>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
         let function = self
-            .saved_functions
+            .private_tools
             .get(&AuthenticatedPrincipal::user(user), &w, &path)
             .await
             .map_err(error)?;
-        Ok(Response::new(saved_function(&function)))
+        Ok(Response::new(private_tool(&function)))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.private.delete_saved_function")]
-    async fn delete_saved_function(
+    #[tracing::instrument(skip_all, name = "coral.private.delete_private_tool")]
+    async fn delete_private_tool(
         &self,
-        request: Request<wire::DeleteSavedFunctionRequest>,
+        request: Request<wire::DeletePrivateToolRequest>,
     ) -> Result<Response<()>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let context = SavedFunctionChangeContext::new(
+        let context = PrivateToolChangeContext::new(
             AuthenticatedPrincipal::user(user),
             now().map_err(annotate)?,
             TraceId::current_or_new(),
         );
-        self.saved_function_deletion
+        self.private_tool_deletion
             .delete(&context, &w, &path)
             .await
             .map_err(error)?;

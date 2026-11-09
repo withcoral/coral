@@ -518,9 +518,9 @@ export const providerFilteredSearch = JSON.stringify({
   ...JSON.parse(stored.untrimmed),
   retriever_statuses: JSON.parse(stored.untrimmed).retriever_statuses.map(
     (status: { retriever: string }) =>
-      status.retriever === 'saved_function'
+      status.retriever === 'private_tool'
         ? {
-            retriever: 'saved_function',
+            retriever: 'private_tool',
             state: 'skipped',
             coverage: {
               eligible_units: 0,

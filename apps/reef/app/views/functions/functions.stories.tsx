@@ -5,7 +5,7 @@ import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 import { FunctionDrawer, FunctionDrawerError } from './function-drawer'
 import { dismissAllToasts, ToastContainer } from '@/wax/components/toast'
 import { FunctionsPage } from './functions-page'
-import type { SavedFunctionView } from './types'
+import type { PrivateToolView } from './types'
 
 const workspace = {
   name: 'workspaces/demo',
@@ -59,7 +59,7 @@ const summaries = [
     'A long path that truncates.',
   ),
 ]
-const savedFunction: SavedFunctionView = {
+const privateTool: PrivateToolView = {
   path: 'finance.monthlyTotals',
   description: 'Sum paid invoices for each calendar month.',
   declaration: `interface Input {
@@ -114,7 +114,7 @@ const diagnostics = [
 ]
 
 const meta = {
-  title: 'Functions/Saved functions',
+  title: 'Functions/Private tools',
   parameters: { layout: 'fullscreen' },
   decorators: [
     (Story, context) => {
@@ -137,9 +137,9 @@ type Story = StoryObj<typeof meta>
 
 const listPath = '/workspaces/demo/functions'
 const form = { csrf: 'csrf', requestId: 'request' }
-const detail = (f: SavedFunctionView, canDelete = true) => (
+const detail = (f: PrivateToolView, canDelete = true) => (
   <FunctionsPage workspace={workspace} functions={summaries}>
-    <FunctionDrawer listPath={listPath} savedFunction={f} form={form} canDelete={canDelete} />
+    <FunctionDrawer listPath={listPath} privateTool={f} form={form} canDelete={canDelete} />
   </FunctionsPage>
 )
 
@@ -271,7 +271,7 @@ export const Empty: Story = {
   render: () => <FunctionsPage workspace={workspace} functions={[]} />,
 }
 export const Detail: Story = {
-  render: () => detail(savedFunction),
+  render: () => detail(privateTool),
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
   play: async ({ canvasElement }) => {
     await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
@@ -282,7 +282,7 @@ export const Detail: Story = {
         .getAllByRole('link', { current: 'page', hidden: true })
         .map((link) => link.textContent),
     ).toEqual(['finance2'])
-    // Reef reads and deletes Saved Functions, but cannot author or run them.
+    // Reef reads and deletes Private Tools, but cannot author or run them.
     await expect(screen.queryByRole('button', { name: /save|replace|run/i })).toBeNull()
     // Delete asks first, and names what breaks.
     await userEvent.click(screen.getByRole('button', { name: 'Delete function' }))
@@ -299,11 +299,11 @@ export const Detail: Story = {
 function RoutedDrawer() {
   const { path } = useParams()
   const address = <output aria-label="Address">{useLocation().pathname}</output>
-  if (path !== savedFunction.path) return address
+  if (path !== privateTool.path) return address
   return (
     <>
       {address}
-      <FunctionDrawer listPath={listPath} savedFunction={savedFunction} form={form} canDelete />
+      <FunctionDrawer listPath={listPath} privateTool={privateTool} form={form} canDelete />
     </>
   )
 }
@@ -336,7 +336,7 @@ export const CloseToTab: Story = {
   },
 }
 export const ArchivedWorkspace: Story = {
-  render: () => detail(savedFunction, false),
+  render: () => detail(privateTool, false),
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
   play: async () => {
     await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
@@ -345,11 +345,11 @@ export const ArchivedWorkspace: Story = {
   },
 }
 export const Diagnostics: Story = {
-  render: () => detail({ ...savedFunction, diagnostics }),
+  render: () => detail({ ...privateTool, diagnostics }),
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
 }
 export const TruncatedDiagnostics: Story = {
-  render: () => detail({ ...savedFunction, diagnostics, diagnosticsTruncated: true }),
+  render: () => detail({ ...privateTool, diagnostics, diagnosticsTruncated: true }),
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
   play: async () => {
     await expect(

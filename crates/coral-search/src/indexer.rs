@@ -26,7 +26,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 /// The revision of the indexed text that this indexer writes. Raise it with
-/// each change to the text or columns of a Tool or Saved Function row.
+/// each change to the text or columns of a Tool or Private Tool row.
 /// A reconcile pass then indexes again what an older indexer revision wrote.
 ///
 /// 1: schema text holds each word once.
@@ -66,9 +66,9 @@ pub(crate) enum IndexError {
     /// Reading the Providers' active Generations or preparing one failed.
     #[error(transparent)]
     Provider(#[from] coral_provider::Error),
-    /// Reading the current Saved Functions failed.
+    /// Reading the current Private Tools failed.
     #[error(transparent)]
-    SavedFunctions(#[from] coral_functions::Error),
+    PrivateTools(#[from] coral_tools::Error),
     /// Database access failed.
     #[error(transparent)]
     Database(#[from] coral_db::Error),
@@ -85,12 +85,12 @@ impl IndexError {
             Self::Clock => "clock",
             Self::Corrupt(_) => "corrupt",
             Self::Provider(_) => "provider",
-            Self::SavedFunctions(_) => "saved_functions",
+            Self::PrivateTools(_) => "private_tools",
             Self::Database(_) => "database",
         }
     }
 
-    /// The kind a failed Generation attempt records. A Saved Function error
+    /// The kind a failed Generation attempt records. A Private Tool error
     /// never fails a Generation.
     pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
         match self {
@@ -102,7 +102,7 @@ impl IndexError {
             Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
             Self::Provider(_) => Some(SearchIndexFailure::Provider),
             Self::Database(_) => Some(SearchIndexFailure::Database),
-            Self::SavedFunctions(_) => None,
+            Self::PrivateTools(_) => None,
         }
     }
 
@@ -373,7 +373,7 @@ pub(crate) struct ProjectionBacklog {
 pub(crate) async fn projection_backlog(
     transaction: &mut Transaction<'_>,
     providers: &[coral_provider::ActiveGeneration],
-    functions: &[coral_functions::SavedFunctionIndexRevision],
+    functions: &[coral_tools::PrivateToolIndexRevision],
 ) -> Result<ProjectionBacklog, IndexError> {
     let generations = repository::recorded_generations(transaction)
         .await?

@@ -65,12 +65,12 @@ function failed(frame: { source: string; line: number; column: number }, overrid
   })
 }
 
-it('lists the accepted program and every linked Saved Function as its own document', () => {
+it('lists the accepted program and every linked Private Tool as its own document', () => {
   const documents = sourceDocumentsFor(
     context({
       linkedFunctions: [
         {
-          savedFunction: 'functions/abc',
+          privateTool: 'functions/abc',
           path: 'billing.calculate',
           source: 'export default () => 1',
         },
@@ -79,9 +79,9 @@ it('lists the accepted program and every linked Saved Function as its own docume
   )
   expect(documents.map((document) => document.id)).toEqual([
     ACCEPTED_PROGRAM_DOCUMENT_ID,
-    'saved-function:functions/abc',
+    'private-tool:functions/abc',
   ])
-  expect(documents[1]!.label).toBe('Saved-function snapshot: billing.calculate')
+  expect(documents[1]!.label).toBe('Private tool snapshot: billing.calculate')
 })
 
 it('has no location for a Run that has not failed', () => {
@@ -108,15 +108,15 @@ it('maps the topmost Program frame to the accepted program document', () => {
 
 // A retained Run keeps the frame sources it recorded under the old root.
 it.each(['coral.private', 'coral.functions'])(
-  'maps a Saved Function frame under %s to that linked function, by the path the Program called it with',
+  'maps a Private Tool frame under %s to that linked function, by the path the Program called it with',
   (root) => {
     const location = sourceLocationFor(
       failed(
-        { source: `Saved Function ${root}.billing.calculate`, line: 1, column: 8 },
+        { source: `Private Tool ${root}.billing.calculate`, line: 1, column: 8 },
         {
           linkedFunctions: [
             {
-              savedFunction: 'functions/abc',
+              privateTool: 'functions/abc',
               path: 'billing.calculate',
               source: 'export default () => 1',
             },
@@ -125,7 +125,7 @@ it.each(['coral.private', 'coral.functions'])(
       ),
     )
     expect(location).toEqual({
-      documentId: 'saved-function:functions/abc',
+      documentId: 'private-tool:functions/abc',
       highlight: { startLine: 1, endLine: 1 },
     })
   },
@@ -136,7 +136,7 @@ it('never guesses a document for an unrecognized frame source', () => {
   // retained no matching source, so this must not fall back to the accepted program.
   const location = sourceLocationFor(
     failed(
-      { source: 'Saved Function coral.private.billing.calculate', line: 1, column: 1 },
+      { source: 'Private Tool coral.private.billing.calculate', line: 1, column: 1 },
       { linkedFunctions: [] },
     ),
   )
@@ -198,7 +198,7 @@ const logRow: Extract<ActivityRow, { kind: 'output' }> = {
   eventKind: 'program.logged',
   agent: '',
 }
-const savedFunction = 'workspaces/finance/savedFunctions/notify-v2'
+const privateTool = 'workspaces/finance/privateTools/notify-v2'
 // Line 2 holds the only call; 'é' and the astral '😀' make UTF-16 length differ from characters.
 const program = [
   'for (const id of [1, 2]) {',
@@ -209,7 +209,7 @@ const retained = context({
   source: program,
   linkedFunctions: [
     {
-      savedFunction,
+      privateTool,
       path: 'billing.notify',
       source: 'export default async () => {\n  console.log("sent")\n}',
     },
@@ -229,9 +229,9 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     { documentId: ACCEPTED_PROGRAM_DOCUMENT_ID, highlight: { startLine: 2, endLine: 2 } },
   ],
   [
-    'a log located in the Saved Function snapshot it names',
-    { ...logRow, sourceLocation: at({ kind: 'saved_function', savedFunction }, 2, 11) },
-    { documentId: `saved-function:${savedFunction}`, highlight: { startLine: 2, endLine: 2 } },
+    'a log located in the Private Tool snapshot it names',
+    { ...logRow, sourceLocation: at({ kind: 'private_tool', privateTool }, 2, 11) },
+    { documentId: `private-tool:${privateTool}`, highlight: { startLine: 2, endLine: 2 } },
   ],
   [
     'a column one past the end of its line, counted in UTF-16 units',
@@ -245,7 +245,7 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     {
       ...logRow,
       sourceLocation: at(
-        { kind: 'saved_function', savedFunction: 'workspaces/finance/savedFunctions/notify-v1' },
+        { kind: 'private_tool', privateTool: 'workspaces/finance/privateTools/notify-v1' },
         2,
         11,
       ),

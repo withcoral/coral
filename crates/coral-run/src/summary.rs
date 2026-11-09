@@ -199,7 +199,6 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 F::ToolNotFound
                 | F::ProviderNotFound
                 | F::ProviderPublicationFailed
-                | F::SavedFunctionNotFound
                 | F::PrivateToolExists
                 | F::PrivateToolNotFound
                 | F::PrivateToolRevisionConflict
@@ -509,7 +508,6 @@ mod tests {
             (failure(F::UpstreamUnauthorized), O::NeedsSetup),
             (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
-            (failure(F::SavedFunctionNotFound), O::Failed),
             (failure(F::PrivateToolExists), O::Failed),
             (failure(F::PrivateToolNotFound), O::Failed),
             (failure(F::PrivateToolRevisionConflict), O::Failed),

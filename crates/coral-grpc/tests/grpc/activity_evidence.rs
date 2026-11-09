@@ -528,10 +528,10 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         goal.id().clone(),
         coral_task::TaskIntent::parse("Retain exact description").unwrap(),
     );
-    let functions = coral_functions::SavedFunctionModule::new(
+    let functions = coral_tools::PrivateToolModule::new(
         f.database.database(),
         f.workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
@@ -1582,18 +1582,18 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .await;
     let provider = publish_http(&f, &server.uri()).await;
     policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
-    f.saved_functions
+    f.private_tools
         .save(
-            &coral_functions::SavedFunctionChangeContext::new(
+            &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(f.member.clone()),
                 1_700_000_000_000_000_007,
                 coral_workspace::TraceId::current_or_new(),
             ),
             f.workspace.id(),
-            coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse("report.forecast").unwrap(),
-                coral_functions::SavedFunctionDescription::parse("Forecast one city").unwrap(),
-                coral_functions::SavedFunctionSource::parse(
+            coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
+                coral_tools::PrivateToolDescription::parse("Forecast one city").unwrap(),
+                coral_tools::PrivateToolSource::parse(
                     "export default async function forecast(city: string) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
                 )
                 .unwrap(),
@@ -1613,7 +1613,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
     let program = |line, column| located(Document::Program(wire::ActivityEmpty {}), line, column);
     let in_snapshot = |line, column| {
         located(
-            Document::SavedFunction(snapshot.saved_function.clone()),
+            Document::PrivateTool(snapshot.private_tool.clone()),
             line,
             column,
         )

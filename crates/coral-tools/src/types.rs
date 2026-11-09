@@ -8,40 +8,40 @@ use uuid::Uuid;
 
 use crate::Error;
 
-/// Maximum UTF-8 byte length of one Saved Function Path.
-pub const SAVED_FUNCTION_PATH_MAX_BYTES: usize = 256;
-/// Maximum number of segments in one Saved Function Path.
-pub const SAVED_FUNCTION_PATH_MAX_SEGMENTS: usize = 16;
-/// Maximum UTF-8 byte length of one explicit Saved Function description.
-pub const SAVED_FUNCTION_DESCRIPTION_MAX_BYTES: usize = 4 * 1024;
+/// Maximum UTF-8 byte length of one Private Tool Path.
+pub const PRIVATE_TOOL_PATH_MAX_BYTES: usize = 256;
+/// Maximum number of segments in one Private Tool Path.
+pub const PRIVATE_TOOL_PATH_MAX_SEGMENTS: usize = 16;
+/// Maximum UTF-8 byte length of one explicit Private Tool description.
+pub const PRIVATE_TOOL_DESCRIPTION_MAX_BYTES: usize = 4 * 1024;
 /// The deadline for one save or Run compilation, the Program Authoring Limit
 /// production composes. Each authoring Module receives its own value, so tests
 /// can relax it.
 pub const COMPILATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-/// Maximum UTF-8 byte length of one current Saved Function source.
-pub const SAVED_FUNCTION_SOURCE_MAX_BYTES: usize = 64 * 1024;
-/// Maximum UTF-8 byte length of one emitted Saved Function declaration.
-pub const SAVED_FUNCTION_DECLARATION_MAX_BYTES: usize = 256 * 1024;
+/// Maximum UTF-8 byte length of one current Private Tool source.
+pub const PRIVATE_TOOL_SOURCE_MAX_BYTES: usize = 64 * 1024;
+/// Maximum UTF-8 byte length of one emitted Private Tool declaration.
+pub const PRIVATE_TOOL_DECLARATION_MAX_BYTES: usize = 256 * 1024;
 /// Maximum number of advisory diagnostics retained by one accepted save.
-pub const SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT: usize = 100;
+pub const PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT: usize = 100;
 /// Maximum UTF-8 byte length retained for one advisory diagnostic message.
-pub const SAVED_FUNCTION_DIAGNOSTIC_MESSAGE_MAX_BYTES: usize = 4 * 1024;
+pub const PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES: usize = 4 * 1024;
 
-const SAVED_FUNCTION_DECLARATION_FIELDS_FORMAT: &str = "saved-function-declaration-fields-v1";
-const SAVED_FUNCTION_DECLARATION_FIELD_MAX_COUNT: usize = 4_096;
-const SAVED_FUNCTION_DECLARATION_FIELD_TEXT_MAX_BYTES: usize = 16 * 1_024;
-const SAVED_FUNCTION_DECLARATION_FIELDS_MAX_BYTES: usize = 2 * 1_024 * 1_024;
+const PRIVATE_TOOL_DECLARATION_FIELDS_FORMAT: &str = "private-tool-declaration-fields-v1";
+const PRIVATE_TOOL_DECLARATION_FIELD_MAX_COUNT: usize = 4_096;
+const PRIVATE_TOOL_DECLARATION_FIELD_TEXT_MAX_BYTES: usize = 16 * 1_024;
+const PRIVATE_TOOL_DECLARATION_FIELDS_MAX_BYTES: usize = 2 * 1_024 * 1_024;
 
 /// Stable Coral-generated identity retained across replacements at one current path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SavedFunctionId(Uuid);
+pub struct PrivateToolId(Uuid);
 
-impl SavedFunctionId {
+impl PrivateToolId {
     pub(crate) fn generate() -> Self {
         Self(Uuid::new_v4())
     }
 
-    /// Parses a Saved Function identity at an Adapter boundary.
+    /// Parses a Private Tool identity at an Adapter boundary.
     ///
     /// # Errors
     ///
@@ -58,7 +58,7 @@ impl SavedFunctionId {
     }
 }
 
-impl SavedFunctionId {
+impl PrivateToolId {
     /// The code Execution Binding of this Private Tool's definition at
     /// `revision`.
     fn execution_binding(&self, revision: u64) -> coral_catalog::CodeExecutionBinding {
@@ -78,7 +78,7 @@ impl SavedFunctionId {
     }
 }
 
-impl fmt::Display for SavedFunctionId {
+impl fmt::Display for PrivateToolId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.0.hyphenated())
     }
@@ -86,13 +86,13 @@ impl fmt::Display for SavedFunctionId {
 
 /// A UUID Coral generated, or one parsed in its canonical form: it holds
 /// no text.
-impl coral_telemetry::safe::Identifier for SavedFunctionId {}
+impl coral_telemetry::safe::Identifier for PrivateToolId {}
 
 /// Principal-owned dotted JavaScript path relative to `coral.private`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SavedFunctionPath(String);
+pub struct PrivateToolPath(String);
 
-impl SavedFunctionPath {
+impl PrivateToolPath {
     /// Validates the fixed path bounds and safe JavaScript segments.
     ///
     /// # Errors
@@ -102,12 +102,12 @@ impl SavedFunctionPath {
     pub fn parse(value: &str) -> Result<Self, Error> {
         let segments = value.split('.').collect::<Vec<_>>();
         if value.is_empty()
-            || value.len() > SAVED_FUNCTION_PATH_MAX_BYTES
-            || segments.len() > SAVED_FUNCTION_PATH_MAX_SEGMENTS
+            || value.len() > PRIVATE_TOOL_PATH_MAX_BYTES
+            || segments.len() > PRIVATE_TOOL_PATH_MAX_SEGMENTS
             || segments.iter().any(|segment| !safe_path_segment(segment))
         {
             return Err(Error::InvalidInput(format!(
-                "Private Tool Path must contain 1 through {SAVED_FUNCTION_PATH_MAX_SEGMENTS} non-reserved safe JavaScript identifier segments and be at most {SAVED_FUNCTION_PATH_MAX_BYTES} UTF-8 bytes"
+                "Private Tool Path must contain 1 through {PRIVATE_TOOL_PATH_MAX_SEGMENTS} non-reserved safe JavaScript identifier segments and be at most {PRIVATE_TOOL_PATH_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -139,11 +139,11 @@ fn safe_path_segment(value: &str) -> bool {
         && !coral_catalog::call_path_segment_is_reserved(value)
 }
 
-/// Explicit safe human-facing description of one Saved Function.
+/// Explicit safe human-facing description of one Private Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionDescription(String);
+pub struct PrivateToolDescription(String);
 
-impl SavedFunctionDescription {
+impl PrivateToolDescription {
     /// Validates an explicit bounded description.
     ///
     /// # Errors
@@ -153,11 +153,11 @@ impl SavedFunctionDescription {
     pub fn parse(value: &str) -> Result<Self, Error> {
         if value.is_empty()
             || value.trim() != value
-            || value.len() > SAVED_FUNCTION_DESCRIPTION_MAX_BYTES
+            || value.len() > PRIVATE_TOOL_DESCRIPTION_MAX_BYTES
             || value.chars().any(char::is_control)
         {
             return Err(Error::InvalidInput(format!(
-                "Private Tool description must be non-blank, have no surrounding whitespace or control characters, and be at most {SAVED_FUNCTION_DESCRIPTION_MAX_BYTES} UTF-8 bytes"
+                "Private Tool description must be non-blank, have no surrounding whitespace or control characters, and be at most {PRIVATE_TOOL_DESCRIPTION_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -172,19 +172,18 @@ impl SavedFunctionDescription {
 
 /// Exact authored no-import TypeScript module source.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionSource(String);
+pub struct PrivateToolSource(String);
 
-impl SavedFunctionSource {
+impl PrivateToolSource {
     /// Applies the fixed source limit before authoring compilation.
     ///
     /// # Errors
     ///
     /// Rejects empty source, null bytes, and source larger than 64 KiB.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        if value.is_empty() || value.contains('\0') || value.len() > SAVED_FUNCTION_SOURCE_MAX_BYTES
-        {
+        if value.is_empty() || value.contains('\0') || value.len() > PRIVATE_TOOL_SOURCE_MAX_BYTES {
             return Err(Error::InvalidInput(format!(
-                "Private Tool source must be non-empty, contain no null byte, and be at most {SAVED_FUNCTION_SOURCE_MAX_BYTES} UTF-8 bytes"
+                "Private Tool source must be non-empty, contain no null byte, and be at most {PRIVATE_TOOL_SOURCE_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -199,19 +198,19 @@ impl SavedFunctionSource {
 
 /// Exact self-contained declaration emitted by the pinned compiler profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionDeclaration(String);
+pub struct PrivateToolDeclaration(String);
 
-impl SavedFunctionDeclaration {
+impl PrivateToolDeclaration {
     pub(crate) fn from_compiler(value: &str) -> Result<Self, Error> {
         if value.is_empty() {
-            return Err(Error::SavedFunctionAdmission(
+            return Err(Error::PrivateToolAdmission(
                 "TypeScript emitted no Private Tool declaration".to_string(),
             ));
         }
-        if value.len() > SAVED_FUNCTION_DECLARATION_MAX_BYTES {
+        if value.len() > PRIVATE_TOOL_DECLARATION_MAX_BYTES {
             return Err(Error::PackageTooLarge {
                 component: "Private Tool declaration",
-                maximum_bytes: SAVED_FUNCTION_DECLARATION_MAX_BYTES,
+                maximum_bytes: PRIVATE_TOOL_DECLARATION_MAX_BYTES,
             });
         }
         Ok(Self(value.to_string()))
@@ -232,13 +231,13 @@ impl SavedFunctionDeclaration {
 
 /// One callable-rooted declaration field prepared for Universal Search.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SavedFunctionDeclarationField {
+pub struct PrivateToolDeclarationField {
     path: coral_catalog::DeclarationPath,
     text: String,
 }
 
-impl SavedFunctionDeclarationField {
-    fn from_compiler(field: &coral_v8::SavedFunctionDeclarationField) -> Result<Self, ()> {
+impl PrivateToolDeclarationField {
+    fn from_compiler(field: &coral_v8::PrivateToolDeclarationField) -> Result<Self, ()> {
         Ok(Self {
             path: coral_catalog::DeclarationPath::parse(field.path()).map_err(|_error| ())?,
             text: field.text().to_string(),
@@ -260,23 +259,23 @@ impl SavedFunctionDeclarationField {
 
 /// Non-blocking declaration-field projection retained with one accepted save.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SavedFunctionDeclarationFieldProjection {
+pub enum PrivateToolDeclarationFieldProjection {
     /// Searchable declaration fields were prepared successfully.
-    Ready(Vec<SavedFunctionDeclarationField>),
+    Ready(Vec<PrivateToolDeclarationField>),
     /// A stable private failure reason was retained without rejecting authoring.
     Failed(String),
 }
 
-impl SavedFunctionDeclarationFieldProjection {
+impl PrivateToolDeclarationFieldProjection {
     pub(crate) fn from_compiler(
-        projection: Result<&[coral_v8::SavedFunctionDeclarationField], &str>,
+        projection: Result<&[coral_v8::PrivateToolDeclarationField], &str>,
     ) -> Self {
         let Ok(fields) = projection else {
             return Self::Failed("declaration_field_projection_failed".to_string());
         };
         let Ok(mut fields) = fields
             .iter()
-            .map(SavedFunctionDeclarationField::from_compiler)
+            .map(PrivateToolDeclarationField::from_compiler)
             .collect::<Result<Vec<_>, _>>()
         else {
             return Self::Failed("declaration_field_projection_failed".to_string());
@@ -295,7 +294,7 @@ impl SavedFunctionDeclarationFieldProjection {
         }
     }
 
-    pub(crate) fn fields(&self) -> Option<&[SavedFunctionDeclarationField]> {
+    pub(crate) fn fields(&self) -> Option<&[PrivateToolDeclarationField]> {
         match self {
             Self::Ready(fields) => Some(fields),
             Self::Failed(_) => None,
@@ -310,7 +309,7 @@ impl SavedFunctionDeclarationFieldProjection {
     }
 
     pub(crate) const fn format() -> &'static str {
-        SAVED_FUNCTION_DECLARATION_FIELDS_FORMAT
+        PRIVATE_TOOL_DECLARATION_FIELDS_FORMAT
     }
 
     pub(crate) fn from_storage(
@@ -319,15 +318,15 @@ impl SavedFunctionDeclarationFieldProjection {
         fields_json: Option<&str>,
         failure_reason: Option<&str>,
     ) -> Result<Self, Error> {
-        if format != SAVED_FUNCTION_DECLARATION_FIELDS_FORMAT {
+        if format != PRIVATE_TOOL_DECLARATION_FIELDS_FORMAT {
             return Err(Error::CorruptData(
                 "Private Tool declaration fields have an incompatible format".to_string(),
             ));
         }
         match (status, fields_json, failure_reason) {
             ("ready", Some(json), None) => {
-                let fields: Vec<SavedFunctionDeclarationField> = serde_json::from_str(json)
-                    .map_err(|_error| {
+                let fields: Vec<PrivateToolDeclarationField> =
+                    serde_json::from_str(json).map_err(|_error| {
                         Error::CorruptData(
                             "Private Tool declaration fields are not valid JSON".to_string(),
                         )
@@ -355,15 +354,15 @@ impl SavedFunctionDeclarationFieldProjection {
     }
 }
 
-fn valid_declaration_fields(fields: &[SavedFunctionDeclarationField]) -> bool {
-    if fields.len() > SAVED_FUNCTION_DECLARATION_FIELD_MAX_COUNT {
+fn valid_declaration_fields(fields: &[PrivateToolDeclarationField]) -> bool {
+    if fields.len() > PRIVATE_TOOL_DECLARATION_FIELD_MAX_COUNT {
         return false;
     }
     let mut previous = None;
     let mut total = 2usize;
     for field in fields {
         if field.text.is_empty()
-            || field.text.len() > SAVED_FUNCTION_DECLARATION_FIELD_TEXT_MAX_BYTES
+            || field.text.len() > PRIVATE_TOOL_DECLARATION_FIELD_TEXT_MAX_BYTES
             || previous.is_some_and(|value: &coral_catalog::DeclarationPath| value >= &field.path)
         {
             return false;
@@ -374,13 +373,13 @@ fn valid_declaration_fields(fields: &[SavedFunctionDeclarationField]) -> bool {
             .saturating_add(32);
         previous = Some(&field.path);
     }
-    total <= SAVED_FUNCTION_DECLARATION_FIELDS_MAX_BYTES
+    total <= PRIVATE_TOOL_DECLARATION_FIELDS_MAX_BYTES
 }
 
 /// Stable category of one advisory TypeScript authoring diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SavedFunctionDiagnosticCategory {
+pub enum PrivateToolDiagnosticCategory {
     /// Informational compiler message.
     Message,
     /// Non-blocking warning.
@@ -391,30 +390,30 @@ pub enum SavedFunctionDiagnosticCategory {
     Suggestion,
 }
 
-/// One bounded advisory diagnostic retained with an accepted Saved Function.
+/// One bounded advisory diagnostic retained with an accepted Private Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SavedFunctionDiagnostic {
-    category: SavedFunctionDiagnosticCategory,
+pub struct PrivateToolDiagnostic {
+    category: PrivateToolDiagnosticCategory,
     code: u64,
     message: String,
     line: Option<u64>,
     column: Option<u64>,
 }
 
-impl SavedFunctionDiagnostic {
+impl PrivateToolDiagnostic {
     pub(crate) fn from_compiler(diagnostic: &coral_v8::CompilerDiagnostic) -> Self {
         let category = match diagnostic.category() {
-            coral_v8::DiagnosticCategory::Message => SavedFunctionDiagnosticCategory::Message,
-            coral_v8::DiagnosticCategory::Warning => SavedFunctionDiagnosticCategory::Warning,
-            coral_v8::DiagnosticCategory::Error => SavedFunctionDiagnosticCategory::Error,
-            coral_v8::DiagnosticCategory::Suggestion => SavedFunctionDiagnosticCategory::Suggestion,
+            coral_v8::DiagnosticCategory::Message => PrivateToolDiagnosticCategory::Message,
+            coral_v8::DiagnosticCategory::Warning => PrivateToolDiagnosticCategory::Warning,
+            coral_v8::DiagnosticCategory::Error => PrivateToolDiagnosticCategory::Error,
+            coral_v8::DiagnosticCategory::Suggestion => PrivateToolDiagnosticCategory::Suggestion,
         };
         Self {
             category,
             code: diagnostic.code(),
             message: truncate_utf8(
                 diagnostic.message(),
-                SAVED_FUNCTION_DIAGNOSTIC_MESSAGE_MAX_BYTES,
+                PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
             ),
             line: diagnostic.line(),
             column: diagnostic.column(),
@@ -423,7 +422,7 @@ impl SavedFunctionDiagnostic {
 
     /// Returns the diagnostic category.
     #[must_use]
-    pub const fn category(&self) -> SavedFunctionDiagnosticCategory {
+    pub const fn category(&self) -> PrivateToolDiagnosticCategory {
         self.category
     }
 
@@ -463,10 +462,10 @@ fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
 /// default, or only one of them through [`Self::create_only`] and
 /// [`Self::replace_only`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionSave {
-    path: SavedFunctionPath,
-    description: SavedFunctionDescription,
-    source: SavedFunctionSource,
+pub struct PrivateToolSave {
+    path: PrivateToolPath,
+    description: PrivateToolDescription,
+    source: PrivateToolSource,
     intent: SaveIntent,
     declared_default: Option<ToolAccessState>,
 }
@@ -479,13 +478,13 @@ enum SaveIntent {
     Replace { expected_revision: Option<u64> },
 }
 
-impl SavedFunctionSave {
+impl PrivateToolSave {
     /// Builds already-validated authoring input that creates or replaces.
     #[must_use]
     pub const fn new(
-        path: SavedFunctionPath,
-        description: SavedFunctionDescription,
-        source: SavedFunctionSource,
+        path: PrivateToolPath,
+        description: PrivateToolDescription,
+        source: PrivateToolSource,
     ) -> Self {
         Self {
             path,
@@ -516,7 +515,7 @@ impl SavedFunctionSave {
 
     /// Saves only over a function at the path, and, with
     /// `expected_revision`, only while that function is at that revision.
-    /// Otherwise the save fails with [`Error::SavedFunctionNotFound`] or
+    /// Otherwise the save fails with [`Error::PrivateToolNotFound`] or
     /// [`Error::PrivateToolRevisionConflict`].
     #[must_use]
     pub const fn replace_only(mut self, expected_revision: Option<u64>) -> Self {
@@ -535,7 +534,7 @@ impl SavedFunctionSave {
     pub(crate) const fn admits(&self, current_revision: Option<u64>) -> Result<(), Error> {
         match (self.intent, current_revision) {
             (SaveIntent::Create, Some(_)) => Err(Error::PrivateToolExists),
-            (SaveIntent::Replace { .. }, None) => Err(Error::SavedFunctionNotFound),
+            (SaveIntent::Replace { .. }, None) => Err(Error::PrivateToolNotFound),
             (
                 SaveIntent::Replace {
                     expected_revision: Some(expected),
@@ -546,15 +545,15 @@ impl SavedFunctionSave {
         }
     }
 
-    pub(crate) const fn path(&self) -> &SavedFunctionPath {
+    pub(crate) const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
-    pub(crate) const fn description(&self) -> &SavedFunctionDescription {
+    pub(crate) const fn description(&self) -> &PrivateToolDescription {
         &self.description
     }
 
-    pub(crate) const fn source(&self) -> &SavedFunctionSource {
+    pub(crate) const fn source(&self) -> &PrivateToolSource {
         &self.source
     }
 
@@ -575,13 +574,13 @@ impl SavedFunctionSave {
 
 /// Authenticated, correlated occurrence evidence for one authoring change.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionChangeContext {
+pub struct PrivateToolChangeContext {
     actor: AuthenticatedPrincipal,
     occurred_at_unix_nanos: i64,
     trace_id: TraceId,
 }
 
-impl SavedFunctionChangeContext {
+impl PrivateToolChangeContext {
     /// Builds Adapter-supplied authoring context.
     #[must_use]
     pub const fn new(
@@ -615,39 +614,39 @@ impl SavedFunctionChangeContext {
     }
 }
 
-/// One Principal's current accepted Saved Function definition.
+/// One Principal's current accepted Private Tool definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunction {
-    id: SavedFunctionId,
+pub struct PrivateTool {
+    id: PrivateToolId,
     workspace_id: WorkspaceId,
     principal: Principal,
-    path: SavedFunctionPath,
-    description: SavedFunctionDescription,
-    source: SavedFunctionSource,
-    declaration: SavedFunctionDeclaration,
-    declaration_field_projection: SavedFunctionDeclarationFieldProjection,
-    diagnostics: Vec<SavedFunctionDiagnostic>,
+    path: PrivateToolPath,
+    description: PrivateToolDescription,
+    source: PrivateToolSource,
+    declaration: PrivateToolDeclaration,
+    declaration_field_projection: PrivateToolDeclarationFieldProjection,
+    diagnostics: Vec<PrivateToolDiagnostic>,
     diagnostics_truncated: bool,
     saved_at_unix_nanos: i64,
     pub(crate) revision: u64,
     default_access_state: ToolAccessState,
 }
 
-impl SavedFunction {
+impl PrivateTool {
     #[expect(
         clippy::too_many_arguments,
         reason = "the accepted current definition is assembled once at its persistence boundary"
     )]
     pub(crate) const fn new(
-        id: SavedFunctionId,
+        id: PrivateToolId,
         workspace_id: WorkspaceId,
         principal: Principal,
-        path: SavedFunctionPath,
-        description: SavedFunctionDescription,
-        source: SavedFunctionSource,
-        declaration: SavedFunctionDeclaration,
-        declaration_field_projection: SavedFunctionDeclarationFieldProjection,
-        diagnostics: Vec<SavedFunctionDiagnostic>,
+        path: PrivateToolPath,
+        description: PrivateToolDescription,
+        source: PrivateToolSource,
+        declaration: PrivateToolDeclaration,
+        declaration_field_projection: PrivateToolDeclarationFieldProjection,
+        diagnostics: Vec<PrivateToolDiagnostic>,
         diagnostics_truncated: bool,
         saved_at_unix_nanos: i64,
         revision: u64,
@@ -672,7 +671,7 @@ impl SavedFunction {
 
     /// Returns the stable identity retained across replacements at this path.
     #[must_use]
-    pub const fn id(&self) -> &SavedFunctionId {
+    pub const fn id(&self) -> &PrivateToolId {
         &self.id
     }
 
@@ -690,37 +689,37 @@ impl SavedFunction {
 
     /// Returns the stable current path.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns the exact explicit description.
     #[must_use]
-    pub const fn description(&self) -> &SavedFunctionDescription {
+    pub const fn description(&self) -> &PrivateToolDescription {
         &self.description
     }
 
     /// Returns the exact authored source.
     #[must_use]
-    pub const fn source(&self) -> &SavedFunctionSource {
+    pub const fn source(&self) -> &PrivateToolSource {
         &self.source
     }
 
     /// Returns the exact self-contained declaration.
     #[must_use]
-    pub const fn declaration(&self) -> &SavedFunctionDeclaration {
+    pub const fn declaration(&self) -> &PrivateToolDeclaration {
         &self.declaration
     }
 
     /// Returns the non-blocking declaration-field projection outcome.
     #[must_use]
-    pub const fn declaration_field_projection(&self) -> &SavedFunctionDeclarationFieldProjection {
+    pub const fn declaration_field_projection(&self) -> &PrivateToolDeclarationFieldProjection {
         &self.declaration_field_projection
     }
 
     /// Returns bounded strict semantic diagnostics.
     #[must_use]
-    pub fn diagnostics(&self) -> &[SavedFunctionDiagnostic] {
+    pub fn diagnostics(&self) -> &[PrivateToolDiagnostic] {
         &self.diagnostics
     }
 
@@ -757,18 +756,18 @@ impl SavedFunction {
     }
 }
 
-/// Minimal owner evidence for comparing a Saved Function's search projection;
+/// Minimal owner evidence for comparing a Private Tool's search projection;
 /// contains no source, declaration, description, or caller visibility decision.
 #[derive(Debug, Clone)]
-pub struct SavedFunctionIndexRevision {
-    pub(crate) id: SavedFunctionId,
+pub struct PrivateToolIndexRevision {
+    pub(crate) id: PrivateToolId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) revision: u64,
 }
-impl SavedFunctionIndexRevision {
-    /// The Saved Function's stable identity.
+impl PrivateToolIndexRevision {
+    /// The Private Tool's stable identity.
     #[must_use]
-    pub const fn id(&self) -> &SavedFunctionId {
+    pub const fn id(&self) -> &PrivateToolId {
         &self.id
     }
     /// Its owning Workspace.
@@ -783,23 +782,23 @@ impl SavedFunctionIndexRevision {
     }
 }
 
-/// What Universal Search indexes about one current Saved Function. Never the source.
+/// What Universal Search indexes about one current Private Tool. Never the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionEntry {
-    id: SavedFunctionId,
+pub struct PrivateToolEntry {
+    id: PrivateToolId,
     workspace_id: WorkspaceId,
     principal: Principal,
-    path: SavedFunctionPath,
-    description: SavedFunctionDescription,
-    declaration: SavedFunctionDeclaration,
-    declaration_fields: Option<Vec<SavedFunctionDeclarationField>>,
+    path: PrivateToolPath,
+    description: PrivateToolDescription,
+    declaration: PrivateToolDeclaration,
+    declaration_fields: Option<Vec<PrivateToolDeclarationField>>,
     revision: u64,
 }
 
-impl SavedFunctionEntry {
+impl PrivateToolEntry {
     /// Returns what an accepted save hands to search after its commit.
     #[must_use]
-    pub fn from_saved(function: &SavedFunction) -> Self {
+    pub fn from_saved(function: &PrivateTool) -> Self {
         Self {
             id: function.id.clone(),
             workspace_id: function.workspace_id.clone(),
@@ -820,13 +819,13 @@ impl SavedFunctionEntry {
         reason = "one entry is decoded once at its persistence boundary"
     )]
     pub(crate) const fn new(
-        id: SavedFunctionId,
+        id: PrivateToolId,
         workspace_id: WorkspaceId,
         principal: Principal,
-        path: SavedFunctionPath,
-        description: SavedFunctionDescription,
-        declaration: SavedFunctionDeclaration,
-        declaration_fields: Option<Vec<SavedFunctionDeclarationField>>,
+        path: PrivateToolPath,
+        description: PrivateToolDescription,
+        declaration: PrivateToolDeclaration,
+        declaration_fields: Option<Vec<PrivateToolDeclarationField>>,
         revision: u64,
     ) -> Self {
         Self {
@@ -843,7 +842,7 @@ impl SavedFunctionEntry {
 
     /// Returns the stable identity retained across replacements at this path.
     #[must_use]
-    pub const fn id(&self) -> &SavedFunctionId {
+    pub const fn id(&self) -> &PrivateToolId {
         &self.id
     }
 
@@ -861,19 +860,19 @@ impl SavedFunctionEntry {
 
     /// Returns the path below `coral.private`, the rest of the Call Path.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns the exact explicit description.
     #[must_use]
-    pub const fn description(&self) -> &SavedFunctionDescription {
+    pub const fn description(&self) -> &PrivateToolDescription {
         &self.description
     }
 
     /// Returns the exact self-contained compiler-emitted declaration.
     #[must_use]
-    pub const fn declaration(&self) -> &SavedFunctionDeclaration {
+    pub const fn declaration(&self) -> &PrivateToolDeclaration {
         &self.declaration
     }
 
@@ -881,7 +880,7 @@ impl SavedFunctionEntry {
     /// the save projected none or the stored projection is unreadable. The
     /// function is still searchable by path and description.
     #[must_use]
-    pub fn declaration_fields(&self) -> Option<&[SavedFunctionDeclarationField]> {
+    pub fn declaration_fields(&self) -> Option<&[PrivateToolDeclarationField]> {
         self.declaration_fields.as_deref()
     }
 
@@ -895,20 +894,20 @@ impl SavedFunctionEntry {
 /// Current Principal-owned material supplied to ordinary Universal Search.
 ///
 /// This projection contains only secret-free authoring contract fields. It
-/// carries no source, diagnostics, Saved Function identity, revision,
+/// carries no source, diagnostics, Private Tool identity, revision,
 /// Membership, Run, or accepted executable evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionAuthoringMaterial {
-    path: SavedFunctionPath,
-    description: SavedFunctionDescription,
-    declaration: SavedFunctionDeclaration,
+pub struct PrivateToolAuthoringMaterial {
+    path: PrivateToolPath,
+    description: PrivateToolDescription,
+    declaration: PrivateToolDeclaration,
 }
 
-impl SavedFunctionAuthoringMaterial {
+impl PrivateToolAuthoringMaterial {
     pub(crate) const fn new(
-        path: SavedFunctionPath,
-        description: SavedFunctionDescription,
-        declaration: SavedFunctionDeclaration,
+        path: PrivateToolPath,
+        description: PrivateToolDescription,
+        declaration: PrivateToolDeclaration,
     ) -> Self {
         Self {
             path,
@@ -919,40 +918,40 @@ impl SavedFunctionAuthoringMaterial {
 
     /// Returns the path relative to `coral.private`.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns the exact explicit authoring description.
     #[must_use]
-    pub const fn description(&self) -> &SavedFunctionDescription {
+    pub const fn description(&self) -> &PrivateToolDescription {
         &self.description
     }
 
     /// Returns the exact self-contained compiler-emitted declaration.
     #[must_use]
-    pub const fn declaration(&self) -> &SavedFunctionDeclaration {
+    pub const fn declaration(&self) -> &PrivateToolDeclaration {
         &self.declaration
     }
 }
 
 /// Most summaries one list page returns.
-pub const SAVED_FUNCTION_PAGE_MAX_SIZE: u32 = 100;
+pub const PRIVATE_TOOL_PAGE_MAX_SIZE: u32 = 100;
 
-/// Source-free summary of one current Saved Function for browsing.
+/// Source-free summary of one current Private Tool for browsing.
 ///
 /// It contains no source, declaration, or diagnostics; exact reads load those.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionSummary {
-    path: SavedFunctionPath,
-    description: SavedFunctionDescription,
+pub struct PrivateToolSummary {
+    path: PrivateToolPath,
+    description: PrivateToolDescription,
     saved_at_unix_nanos: i64,
 }
 
-impl SavedFunctionSummary {
+impl PrivateToolSummary {
     pub(crate) const fn new(
-        path: SavedFunctionPath,
-        description: SavedFunctionDescription,
+        path: PrivateToolPath,
+        description: PrivateToolDescription,
         saved_at_unix_nanos: i64,
     ) -> Self {
         Self {
@@ -964,13 +963,13 @@ impl SavedFunctionSummary {
 
     /// Returns the path relative to `coral.private`.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns the exact explicit description.
     #[must_use]
-    pub const fn description(&self) -> &SavedFunctionDescription {
+    pub const fn description(&self) -> &PrivateToolDescription {
         &self.description
     }
 
@@ -983,15 +982,15 @@ impl SavedFunctionSummary {
 
 /// One bounded page of summaries in path order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionPage {
-    summaries: Vec<SavedFunctionSummary>,
-    next_after: Option<SavedFunctionPath>,
+pub struct PrivateToolPage {
+    summaries: Vec<PrivateToolSummary>,
+    next_after: Option<PrivateToolPath>,
 }
 
-impl SavedFunctionPage {
+impl PrivateToolPage {
     pub(crate) const fn new(
-        summaries: Vec<SavedFunctionSummary>,
-        next_after: Option<SavedFunctionPath>,
+        summaries: Vec<PrivateToolSummary>,
+        next_after: Option<PrivateToolPath>,
     ) -> Self {
         Self {
             summaries,
@@ -1001,13 +1000,13 @@ impl SavedFunctionPage {
 
     /// Returns this page's summaries in path order.
     #[must_use]
-    pub fn summaries(&self) -> &[SavedFunctionSummary] {
+    pub fn summaries(&self) -> &[PrivateToolSummary] {
         &self.summaries
     }
 
     /// Returns the path to pass as `after` for the next page, when one exists.
     #[must_use]
-    pub const fn next_after(&self) -> Option<&SavedFunctionPath> {
+    pub const fn next_after(&self) -> Option<&PrivateToolPath> {
         self.next_after.as_ref()
     }
 }
@@ -1018,7 +1017,7 @@ impl SavedFunctionPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadablePrivateTool {
     key: coral_catalog::ToolKey,
-    path: SavedFunctionPath,
+    path: PrivateToolPath,
     agent: Option<coral_workspace::PrincipalId>,
     default_access_state: ToolAccessState,
 }
@@ -1026,7 +1025,7 @@ pub struct ReadablePrivateTool {
 impl ReadablePrivateTool {
     pub(crate) const fn new(
         key: coral_catalog::ToolKey,
-        path: SavedFunctionPath,
+        path: PrivateToolPath,
         agent: Option<coral_workspace::PrincipalId>,
         default_access_state: ToolAccessState,
     ) -> Self {
@@ -1046,7 +1045,7 @@ impl ReadablePrivateTool {
 
     /// Returns the path relative to `coral.private`.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
@@ -1073,23 +1072,23 @@ pub enum PrivateToolScope {
     OwnAndAgents,
 }
 
-/// Metadata-only Saved Function target supplied before listing or ranking.
+/// Metadata-only Private Tool target supplied before listing or ranking.
 ///
 /// This projection contains no source, declaration, relevance material,
 /// diagnostics, revision, or accepted executable material.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionSearchMaterial {
-    id: SavedFunctionId,
-    path: SavedFunctionPath,
-    description: SavedFunctionDescription,
+pub struct PrivateToolSearchMaterial {
+    id: PrivateToolId,
+    path: PrivateToolPath,
+    description: PrivateToolDescription,
     default_access_state: ToolAccessState,
 }
 
-impl SavedFunctionSearchMaterial {
+impl PrivateToolSearchMaterial {
     pub(crate) const fn new(
-        id: SavedFunctionId,
-        path: SavedFunctionPath,
-        description: SavedFunctionDescription,
+        id: PrivateToolId,
+        path: PrivateToolPath,
+        description: PrivateToolDescription,
         default_access_state: ToolAccessState,
     ) -> Self {
         Self {
@@ -1107,36 +1106,36 @@ impl SavedFunctionSearchMaterial {
         self.default_access_state
     }
 
-    /// Returns the Saved Function's stable identity.
+    /// Returns the Private Tool's stable identity.
     #[must_use]
-    pub const fn id(&self) -> &SavedFunctionId {
+    pub const fn id(&self) -> &PrivateToolId {
         &self.id
     }
 
     /// Returns the path relative to `coral.private`.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns the exact explicit description.
     #[must_use]
-    pub const fn description(&self) -> &SavedFunctionDescription {
+    pub const fn description(&self) -> &PrivateToolDescription {
         &self.description
     }
 }
 
 /// Per-function declaration-lane material loaded only for relevance search.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedFunctionDeclarationSearchMaterial {
-    path: SavedFunctionPath,
-    declaration_fields: Option<Vec<SavedFunctionDeclarationField>>,
+pub struct PrivateToolDeclarationSearchMaterial {
+    path: PrivateToolPath,
+    declaration_fields: Option<Vec<PrivateToolDeclarationField>>,
 }
 
-impl SavedFunctionDeclarationSearchMaterial {
+impl PrivateToolDeclarationSearchMaterial {
     pub(crate) const fn new(
-        path: SavedFunctionPath,
-        declaration_fields: Option<Vec<SavedFunctionDeclarationField>>,
+        path: PrivateToolPath,
+        declaration_fields: Option<Vec<PrivateToolDeclarationField>>,
     ) -> Self {
         Self {
             path,
@@ -1146,29 +1145,29 @@ impl SavedFunctionDeclarationSearchMaterial {
 
     /// Returns the path relative to `coral.private`.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns fields when this function's declaration lane is healthy.
     #[must_use]
-    pub fn declaration_fields(&self) -> Option<&[SavedFunctionDeclarationField]> {
+    pub fn declaration_fields(&self) -> Option<&[PrivateToolDeclarationField]> {
         self.declaration_fields.as_deref()
     }
 }
 
 /// Exact owner-editing material supplied only to exact description.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactSavedFunctionAuthoringMaterial {
-    source: SavedFunctionSource,
-    diagnostics: Vec<SavedFunctionDiagnostic>,
+pub struct ExactPrivateToolAuthoringMaterial {
+    source: PrivateToolSource,
+    diagnostics: Vec<PrivateToolDiagnostic>,
     diagnostics_truncated: bool,
 }
 
-impl ExactSavedFunctionAuthoringMaterial {
+impl ExactPrivateToolAuthoringMaterial {
     pub(crate) const fn new(
-        source: SavedFunctionSource,
-        diagnostics: Vec<SavedFunctionDiagnostic>,
+        source: PrivateToolSource,
+        diagnostics: Vec<PrivateToolDiagnostic>,
         diagnostics_truncated: bool,
     ) -> Self {
         Self {
@@ -1180,13 +1179,13 @@ impl ExactSavedFunctionAuthoringMaterial {
 
     /// Returns the exact current source for authorized exact description.
     #[must_use]
-    pub const fn source(&self) -> &SavedFunctionSource {
+    pub const fn source(&self) -> &PrivateToolSource {
         &self.source
     }
 
     /// Returns bounded advisory authoring diagnostics.
     #[must_use]
-    pub fn diagnostics(&self) -> &[SavedFunctionDiagnostic] {
+    pub fn diagnostics(&self) -> &[PrivateToolDiagnostic] {
         &self.diagnostics
     }
 
@@ -1197,21 +1196,21 @@ impl ExactSavedFunctionAuthoringMaterial {
     }
 }
 
-/// Complete relevance-independent exact Saved Function description material.
+/// Complete relevance-independent exact Private Tool description material.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactSavedFunctionDescriptionMaterial {
-    id: SavedFunctionId,
-    authoring: SavedFunctionAuthoringMaterial,
-    detail: ExactSavedFunctionAuthoringMaterial,
+pub struct ExactPrivateToolDescriptionMaterial {
+    id: PrivateToolId,
+    authoring: PrivateToolAuthoringMaterial,
+    detail: ExactPrivateToolAuthoringMaterial,
     revision: u64,
     default_access_state: ToolAccessState,
 }
 
-impl ExactSavedFunctionDescriptionMaterial {
+impl ExactPrivateToolDescriptionMaterial {
     pub(crate) const fn new(
-        id: SavedFunctionId,
-        authoring: SavedFunctionAuthoringMaterial,
-        detail: ExactSavedFunctionAuthoringMaterial,
+        id: PrivateToolId,
+        authoring: PrivateToolAuthoringMaterial,
+        detail: ExactPrivateToolAuthoringMaterial,
         revision: u64,
         default_access_state: ToolAccessState,
     ) -> Self {
@@ -1226,7 +1225,7 @@ impl ExactSavedFunctionDescriptionMaterial {
 
     /// Returns the Private Tool's stable identity, its Tool Key.
     #[must_use]
-    pub const fn id(&self) -> &SavedFunctionId {
+    pub const fn id(&self) -> &PrivateToolId {
         &self.id
     }
 
@@ -1245,18 +1244,18 @@ impl ExactSavedFunctionDescriptionMaterial {
 
     /// Returns source-free public authoring material.
     #[must_use]
-    pub const fn authoring(&self) -> &SavedFunctionAuthoringMaterial {
+    pub const fn authoring(&self) -> &PrivateToolAuthoringMaterial {
         &self.authoring
     }
 
     /// Returns source and diagnostics for exact owner editing.
     #[must_use]
-    pub const fn detail(&self) -> &ExactSavedFunctionAuthoringMaterial {
+    pub const fn detail(&self) -> &ExactPrivateToolAuthoringMaterial {
         &self.detail
     }
 }
 
-/// Accepted Saved Function lifecycle action.
+/// Accepted Private Tool lifecycle action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleAction {
     /// A previously absent current path was created.
@@ -1270,17 +1269,17 @@ pub enum LifecycleAction {
 impl LifecycleAction {
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
-            Self::Created => "saved_function.created",
-            Self::Replaced => "saved_function.replaced",
-            Self::Deleted => "saved_function.deleted",
+            Self::Created => "private_tool.created",
+            Self::Replaced => "private_tool.replaced",
+            Self::Deleted => "private_tool.deleted",
         }
     }
 
     pub(crate) fn from_storage_str(value: &str) -> Result<Self, Error> {
         match value {
-            "saved_function.created" => Ok(Self::Created),
-            "saved_function.replaced" => Ok(Self::Replaced),
-            "saved_function.deleted" => Ok(Self::Deleted),
+            "private_tool.created" => Ok(Self::Created),
+            "private_tool.replaced" => Ok(Self::Replaced),
+            "private_tool.deleted" => Ok(Self::Deleted),
             _ => Err(Error::CorruptData(format!(
                 "Private Tool lifecycle Event has unrecognized action '{value}'"
             ))),
@@ -1288,7 +1287,7 @@ impl LifecycleAction {
     }
 }
 
-/// Accepted result carried by a Saved Function lifecycle Event.
+/// Accepted result carried by a Private Tool lifecycle Event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleOutcome {
     /// The authoring change and Event committed together.
@@ -1312,15 +1311,15 @@ impl LifecycleOutcome {
     }
 }
 
-/// Safe immutable evidence of one accepted Saved Function authoring change.
+/// Safe immutable evidence of one accepted Private Tool authoring change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdministrativeLifecycleEvent {
     workspace_id: WorkspaceId,
     actor: Principal,
     action: LifecycleAction,
     outcome: LifecycleOutcome,
-    target_id: SavedFunctionId,
-    target_path: SavedFunctionPath,
+    target_id: PrivateToolId,
+    target_path: PrivateToolPath,
     changed_field_paths: Vec<String>,
     occurred_at_unix_nanos: i64,
     trace_id: TraceId,
@@ -1336,8 +1335,8 @@ impl AdministrativeLifecycleEvent {
         actor: Principal,
         action: LifecycleAction,
         outcome: LifecycleOutcome,
-        target_id: SavedFunctionId,
-        target_path: SavedFunctionPath,
+        target_id: PrivateToolId,
+        target_path: PrivateToolPath,
         changed_field_paths: Vec<String>,
         occurred_at_unix_nanos: i64,
         trace_id: TraceId,
@@ -1379,15 +1378,15 @@ impl AdministrativeLifecycleEvent {
         self.outcome
     }
 
-    /// Returns the stable Saved Function target identity.
+    /// Returns the stable Private Tool target identity.
     #[must_use]
-    pub const fn target_id(&self) -> &SavedFunctionId {
+    pub const fn target_id(&self) -> &PrivateToolId {
         &self.target_id
     }
 
     /// Returns the safe target path without source or description.
     #[must_use]
-    pub const fn target_path(&self) -> &SavedFunctionPath {
+    pub const fn target_path(&self) -> &PrivateToolPath {
         &self.target_path
     }
 
@@ -1415,30 +1414,30 @@ impl AdministrativeLifecycleEvent {
 /// Its private revision is only acceptance evidence, not a public version or edit
 /// token. Run retains the identity and source in its own durable accepted package.
 #[derive(Debug, Clone)]
-pub struct SavedFunctionSelection {
-    pub(crate) id: SavedFunctionId,
-    pub(crate) path: SavedFunctionPath,
-    pub(crate) source: SavedFunctionSource,
+pub struct PrivateToolSelection {
+    pub(crate) id: PrivateToolId,
+    pub(crate) path: PrivateToolPath,
+    pub(crate) source: PrivateToolSource,
     pub(crate) revision: u64,
     pub(crate) default_access_state: ToolAccessState,
 }
 
-impl SavedFunctionSelection {
+impl PrivateToolSelection {
     /// Returns the selected stable identity for retained Run attribution.
     #[must_use]
-    pub const fn id(&self) -> &SavedFunctionId {
+    pub const fn id(&self) -> &PrivateToolId {
         &self.id
     }
 
     /// Returns the selected path for static linking.
     #[must_use]
-    pub const fn path(&self) -> &SavedFunctionPath {
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 
     /// Returns the exact selected authored source.
     #[must_use]
-    pub const fn source(&self) -> &SavedFunctionSource {
+    pub const fn source(&self) -> &PrivateToolSource {
         &self.source
     }
 
@@ -1457,8 +1456,8 @@ impl SavedFunctionSelection {
     }
 }
 
-impl SavedFunctionSelection {
-    pub(crate) fn from_current(function: &SavedFunction) -> Self {
+impl PrivateToolSelection {
+    pub(crate) fn from_current(function: &PrivateTool) -> Self {
         Self {
             id: function.id.clone(),
             path: function.path.clone(),

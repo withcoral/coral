@@ -378,7 +378,7 @@ export const SearchResultsNarrow: Story = {
   },
 }
 export const SearchProviderFiltered = panel(
-  'Search · one provider, saved functions skipped',
+  'Search · one provider, private tools skipped',
   toolPage(searchCall, discovery({ ...searched, provider: 'github' }, providerFilteredSearch)),
   { evidence: ['github pulls', 'Results (5+)', 'skipped by the provider filter'] },
 )
@@ -399,7 +399,7 @@ export const SearchLaterPageEmpty = panel(
   { evidence: ['from result 21, up to 5 results', 'Results (0)', 'This page has no results.'] },
 )
 export const SearchMixedResults = panel(
-  'Search · tools and saved functions',
+  'Search · tools and private tools',
   toolPage(searchCall, discovery({ ...searched, query: 'github issues by label' }, stored.mixed)),
   { evidence: ['github issues by label', 'Results (6+)'] },
 )
@@ -528,9 +528,9 @@ export const DescribeTool = describeStory(
   ['Declaration', 'API method documentation'],
   { terms: ['Call path', 'Provider', 'Intent', 'Started', 'Completed'], carded: true },
 )
-export const DescribeSavedFunction = describeStory(
+export const DescribePrivateTool = describeStory(
   panel(
-    'Describe · saved function, with diagnostics',
+    'Describe · private tool, with diagnostics',
     toolPage(
       describeCall('openIssuesByLabel'),
       discovery(describedFunction, stored.describeFunction),
@@ -727,9 +727,9 @@ const deleteCall = (outcome: InteractionOutcome) =>
   interaction('delete_function', outcome, { intent: 'Remove the old reminder batch' })
 /** A save or a delete retains only the function's identity, a Coral-generated ID. */
 const savedId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
-const savedReference = `${workspace}/savedFunctions/${savedId}`
+const savedReference = `${workspace}/privateTools/${savedId}`
 const saveError = 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^'
-const deleteError = "Saved function 'billing.oldReminders' does not exist."
+const deleteError = "Private tool 'billing.oldReminders' does not exist."
 /**
  * A save or a delete states its intent, the function it changed (its ID, with no link: no route
  * opens a function by ID), then its times, in one evenly spaced list. Its outcome shows only in
@@ -937,7 +937,7 @@ export const SaveFunctionRejected = functionStory(
     'Save function · rejected',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
-      code: 'saved_function_admission_failed',
+      code: 'private_tool_admission_failed',
       message: saveError,
     }),
     { evidence: 'Declaration or statement expected.' },
@@ -950,7 +950,7 @@ export const SaveFunctionRejectedNarrow = functionStory(
     'Save function · rejected, long diagnostic, narrow screen',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
-      code: 'saved_function_admission_failed',
+      code: 'private_tool_admission_failed',
       message: longAdmissionError,
     }),
     { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
@@ -962,7 +962,7 @@ export const SaveFunctionRejectedWithoutMessage = functionStory(
     'Save function · rejected, no message',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
-      code: 'saved_function_admission_failed',
+      code: 'private_tool_admission_failed',
       message: '',
     }),
     { evidence: 'Save the reminder batch' },
@@ -970,7 +970,7 @@ export const SaveFunctionRejectedWithoutMessage = functionStory(
   {
     times: ['Started', 'Completed'],
     outcome: 'rejected',
-    silent: ['Rejected with no message', 'saved_function_admission_failed'],
+    silent: ['Rejected with no message', 'private_tool_admission_failed'],
   },
 )
 export const SaveFunctionCompletionUnknown = functionStory(

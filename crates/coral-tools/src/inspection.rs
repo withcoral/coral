@@ -4,24 +4,22 @@ use coral_db::{Database, Transaction};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 
 use crate::Error;
+use crate::private_tool::conceal_inspection_error;
 use crate::repository;
-use crate::saved_function::conceal_inspection_error;
-use crate::types::{
-    SAVED_FUNCTION_PAGE_MAX_SIZE, SavedFunction, SavedFunctionPage, SavedFunctionPath,
-};
+use crate::types::{PRIVATE_TOOL_PAGE_MAX_SIZE, PrivateTool, PrivateToolPage, PrivateToolPath};
 
-/// Read-only inspection of the authenticated Principal's own current Saved Functions.
+/// Read-only inspection of the authenticated Principal's own current Private Tools.
 ///
 /// Every read targets one exact Workspace and Principal inside one read
 /// snapshot. It starts no compiler, so read-only surfaces can hold it without
-/// the authoring cost of [`crate::SavedFunctionModule`].
+/// the authoring cost of [`crate::PrivateToolModule`].
 #[derive(Clone)]
-pub struct SavedFunctionInspection {
+pub struct PrivateToolInspection {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
 }
 
-impl SavedFunctionInspection {
+impl PrivateToolInspection {
     /// Builds inspection over the application's shared database and Workspace authority.
     #[must_use]
     pub const fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
@@ -36,13 +34,13 @@ impl SavedFunctionInspection {
     /// # Errors
     ///
     /// An absent, inaccessible, or differently owned path returns
-    /// [`Error::SavedFunctionNotFound`].
+    /// [`Error::PrivateToolNotFound`].
     pub async fn get(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
-    ) -> Result<SavedFunction, Error> {
+        path: &PrivateToolPath,
+    ) -> Result<PrivateTool, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize_in_transaction(&mut transaction, actor, workspace_id)
             .await
@@ -54,7 +52,7 @@ impl SavedFunctionInspection {
             path,
         )
         .await?
-        .ok_or(Error::SavedFunctionNotFound)?;
+        .ok_or(Error::PrivateToolNotFound)?;
         transaction.commit().await?;
         Ok(function)
     }
@@ -69,16 +67,16 @@ impl SavedFunctionInspection {
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] unless `page_size` is between one and
-    /// [`SAVED_FUNCTION_PAGE_MAX_SIZE`], the Workspace authority failure when
+    /// [`PRIVATE_TOOL_PAGE_MAX_SIZE`], the Workspace authority failure when
     /// the caller cannot inspect the Workspace, or a persistence failure.
     pub async fn list(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        after: Option<&SavedFunctionPath>,
+        after: Option<&PrivateToolPath>,
         page_size: u32,
-    ) -> Result<SavedFunctionPage, Error> {
-        if !(1..=SAVED_FUNCTION_PAGE_MAX_SIZE).contains(&page_size) {
+    ) -> Result<PrivateToolPage, Error> {
+        if !(1..=PRIVATE_TOOL_PAGE_MAX_SIZE).contains(&page_size) {
             return Err(Error::InvalidInput(
                 "Private Tool page size is out of range".to_string(),
             ));
@@ -114,7 +112,7 @@ impl SavedFunctionInspection {
                 transaction,
                 actor,
                 workspace_id,
-                crate::saved_function::now_unix_nanos()?,
+                crate::private_tool::now_unix_nanos()?,
             )
             .await?;
         Ok(())

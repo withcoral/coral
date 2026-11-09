@@ -88,7 +88,7 @@ function forbiddenAmbientReference(program, sourceFile) {
   return found;
 }
 
-// Private compiler-binding checks and Saved Function analysis must agree about
+// Private compiler-binding checks and Private Tool analysis must agree about
 // which AST nodes can produce runtime references. Returning false stops the walk.
 function walkRuntimeNodes(root, inspectNode) {
   let stopped = false;
@@ -414,7 +414,7 @@ function identifierIsReference(node) {
   );
 }
 
-function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
+function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
   const references = new Map();
   let validationError;
@@ -488,9 +488,9 @@ function referenceAnalysisProgram(source, fileName, targetName) {
   return { program, sourceFile };
 }
 
-// The Saved Functions and Tools one Program body names, from one analysis:
+// The Private Tools and Tools one Program body names, from one analysis:
 // what Program Admission links and checks.
-function analyzeSavedFunctionPaths(body, fileName, targetName) {
+function analyzePrivateToolPaths(body, fileName, targetName) {
   const wrapped = wrapProgramBody(body);
   const { program, sourceFile } = referenceAnalysisProgram(wrapped.source, fileName, targetName);
   if (!hasExpectedProgramShape(sourceFile)) {
@@ -504,7 +504,7 @@ function analyzeSavedFunctionPaths(body, fileName, targetName) {
     };
   }
 
-  const functions = savedFunctionPathAnalysis(sourceFile, program, wrapped.authoredMappings);
+  const functions = privateToolPathAnalysis(sourceFile, program, wrapped.authoredMappings);
   if (functions.validationError !== undefined) return functions;
   const chains = calledPathChains(
     toolReferenceChains(sourceFile, program, wrapped.authoredMappings),
@@ -525,7 +525,7 @@ function calledPathChains(chains) {
   }));
 }
 
-function savedFunctionDependencyAnalysis(sourceFile, program) {
+function privateToolDependencyAnalysis(sourceFile, program) {
   const syntaxError = sourceFile.parseDiagnostics.find(
     (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
   );
@@ -543,12 +543,12 @@ function savedFunctionDependencyAnalysis(sourceFile, program) {
       },
     };
   }
-  return savedFunctionPathAnalysis(sourceFile, program);
+  return privateToolPathAnalysis(sourceFile, program);
 }
 
-function analyzeSavedFunctionDependencies(source, fileName, targetName) {
+function analyzePrivateToolDependencies(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  return savedFunctionDependencyAnalysis(sourceFile, program);
+  return privateToolDependencyAnalysis(sourceFile, program);
 }
 
 // The members of `coral` that name no Tool: the Private Tools' root and the
@@ -621,11 +621,11 @@ function candidateToolPaths(chains) {
   return [...paths].toSorted();
 }
 
-// The Saved Functions and Tools one Saved Function module names, from
+// The Private Tools and Tools one Private Tool module names, from
 // one analysis: what its typed preparation needs.
-function analyzeSavedFunctionCallPaths(source, fileName, targetName) {
+function analyzePrivateToolCallPaths(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  const dependencies = savedFunctionDependencyAnalysis(sourceFile, program);
+  const dependencies = privateToolDependencyAnalysis(sourceFile, program);
   if (dependencies.validationError !== undefined) return dependencies;
   const chains = toolReferenceChains(sourceFile, program);
   return {

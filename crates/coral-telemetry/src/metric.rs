@@ -347,7 +347,7 @@ impl Metrics {
             ),
             compiler_request_duration: seconds(
                 "coral.compiler.request.duration",
-                "One compiler request from enqueue attempt to caller answer, including Saved Function authoring.",
+                "One compiler request from enqueue attempt to caller answer, including Private Tool authoring.",
             ),
             compiler_queue_duration: seconds(
                 "coral.compiler.queue.duration",
@@ -498,7 +498,7 @@ impl Metrics {
                         let snapshots = search_snapshots(&sources);
                         if !snapshots.is_empty() {
                             gauge.observe(snapshots.iter().map(|s| s.generations).sum(), &[KeyValue::new("search.projection.kind", "provider_catalog")]);
-                            gauge.observe(snapshots.iter().map(|s| s.functions).sum(), &[KeyValue::new("search.projection.kind", "saved_function")]);
+                            gauge.observe(snapshots.iter().map(|s| s.functions).sum(), &[KeyValue::new("search.projection.kind", "private_tool")]);
                         }
                     }).build()
             },
@@ -792,7 +792,7 @@ pub struct FirstVisibilityBacklog {
 pub struct SearchBacklog {
     /// Active Provider Generations without a current projection.
     pub generations: u64,
-    /// Current Saved Function revisions without a current projection.
+    /// Current Private Tool revisions without a current projection.
     pub functions: u64,
     /// None when a legacy failed projection has unknown visibility history.
     pub first_visibility: Option<FirstVisibilityBacklog>,

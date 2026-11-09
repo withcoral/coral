@@ -2,34 +2,34 @@ use super::*;
 
 /// A database from before Operations were Provider Tools: the upgrade renames
 /// the Coral failure a Run and its Invocation retained, and the error class a
-/// Saved Function catches, so each reads the way new ones do.
+/// Private Tool catches, so each reads the way new ones do.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one upgrade covers what a Run, its Invocation and a Saved Function stored"
+    reason = "one upgrade covers what a Run, its Invocation and a Private Tool stored"
 )]
-async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
+async fn upgrade_renames_the_tool_failures_runs_and_private_tools_stored() {
     let fixture = TestModules::without_migration(46, Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let tool = fixture
         .user_tool("user:upgrade", "Upgrade stored tool names")
         .await;
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(tool.principal.clone(), 20, '2'),
+            &private_tool_change(tool.principal.clone(), 20, '2'),
             &tool.workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("upgrade.code").expect("path"),
-                SavedFunctionDescription::parse("Return the forecast's failure code")
+            PrivateToolSave::new(
+                PrivateToolPath::parse("upgrade.code").expect("path"),
+                PrivateToolDescription::parse("Return the forecast's failure code")
                     .expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolSource::parse(
                     "export default async function code(): Promise<string> { try { await coral.providers.weather.getForecast({}); return 'ok'; } catch (error) { return error instanceof coral.ToolError ? error.code : 'other'; } }",
                 )
                 .expect("source"),
@@ -70,7 +70,7 @@ async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
          SET failure_code = 'operation_disabled', \
          failure_message = REPLACE(failure_message, 'Tool ', 'Operation ') \
          WHERE failure_code = 'tool_disabled'",
-        "UPDATE saved_function_records \
+        "UPDATE private_tool_records \
          SET source = REPLACE(source, 'coral.ToolError', 'coral.OperationError')",
     ] {
         fixture
@@ -80,9 +80,13 @@ async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
             .expect("write the earlier names");
     }
 
+    // Step 65 renamed the table that step 46 rewrites, and step 46 now runs
+    // after it, so step 46 meets the table by its new name.
     fixture
         .database
-        .migrate(coral_db::migration_plan())
+        .migrate(&coral_test_support::migration_plan_rewriting(46, |sql| {
+            sql.replace("saved_function_records", "private_tool_records")
+        }))
         .await
         .expect("apply the upgrade");
 
@@ -126,7 +130,7 @@ async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
             submission("return await coral.private.upgrade.code();"),
         )
         .await
-        .expect("accept a call to the upgraded Saved Function");
+        .expect("accept a call to the upgraded Private Tool");
     let caught =
         wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, caught.run_id()).await;
     assert!(
@@ -144,7 +148,7 @@ async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
 /// Call Root and every indexed Call Path to the new roots, so search returns
 /// each callable where a Program calls it.
 #[tokio::test]
-async fn upgrade_moves_the_builtin_tools_and_saved_functions_to_the_new_roots() {
+async fn upgrade_moves_the_builtin_tools_and_private_tools_to_the_new_roots() {
     let fixture = TestModules::without_migration(
         60,
         Arc::new(
@@ -153,7 +157,7 @@ async fn upgrade_moves_the_builtin_tools_and_saved_functions_to_the_new_roots() 
         ),
     )
     .await;
-    let (workspace_id, owner) = builtin_tools_a_rule_and_a_saved_function(&fixture).await;
+    let (workspace_id, owner) = builtin_tools_a_rule_and_a_private_tool(&fixture).await;
     // What Coral stored before the move.
     for downgrade in [
         "UPDATE provider_records SET namespace = 'coral.workspace' WHERE namespace = 'coral'",
@@ -228,9 +232,9 @@ async fn upgrade_moves_the_builtin_tools_and_saved_functions_to_the_new_roots() 
 }
 
 /// A Workspace with its Built-in Provider, an Owner's rule that disables
-/// `getProvider`, and one Saved Function, `people.greet`, all indexed, and its
+/// `getProvider`, and one Private Tool, `people.greet`, all indexed, and its
 /// Owner.
-async fn builtin_tools_a_rule_and_a_saved_function(
+async fn builtin_tools_a_rule_and_a_private_tool(
     fixture: &TestModules,
 ) -> (coral_workspace::WorkspaceId, AuthenticatedPrincipal) {
     let (workspace_id, owner) = fixture
@@ -248,20 +252,20 @@ async fn builtin_tools_a_rule_and_a_saved_function(
         .expect("install the Built-in Provider")
         .skip_search();
     transaction.commit().await.unwrap();
-    SavedFunctionModule::new(
+    PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler")
+    .expect("start Private Tool compiler")
     .save(
-        &saved_function_change(owner.clone(), 20, '2'),
+        &private_tool_change(owner.clone(), 20, '2'),
         &workspace_id,
-        SavedFunctionSave::new(
-            SavedFunctionPath::parse("people.greet").expect("path"),
-            SavedFunctionDescription::parse("Greet one person by name.").expect("description"),
-            SavedFunctionSource::parse(
+        PrivateToolSave::new(
+            PrivateToolPath::parse("people.greet").expect("path"),
+            PrivateToolDescription::parse("Greet one person by name.").expect("description"),
+            PrivateToolSource::parse(
                 "export default function greet(name: string): string { return `hello ${name}`; }",
             )
             .expect("source"),

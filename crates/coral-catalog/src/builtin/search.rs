@@ -548,8 +548,8 @@ pub struct SearchRetrieverStatus {
 pub enum SearchRetriever {
     /// Provider tools.
     ProviderTool,
-    /// Saved Functions.
-    SavedFunction,
+    /// Private Tools.
+    PrivateTool,
 }
 
 impl JsonSchema for SearchRetriever {
@@ -558,7 +558,7 @@ impl JsonSchema for SearchRetriever {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        words_schema(&["provider_tool", "saved_function"])
+        words_schema(&["provider_tool", "private_tool"])
     }
 }
 
@@ -690,7 +690,7 @@ pub enum Description {
     /// One of the caller's own Private Tools. Its kind keeps the name Task
     /// history retained, so earlier descriptions still read.
     #[schemars(description = "")]
-    SavedFunction {
+    PrivateTool {
         /// What every kind has.
         #[serde(flatten)]
         authoring: DescriptionAuthoring,
@@ -728,7 +728,7 @@ impl Description {
     pub fn is_exact_in_json(&self) -> bool {
         match self {
             Self::ProviderTool { .. } => true,
-            Self::SavedFunction {
+            Self::PrivateTool {
                 revision, detail, ..
             } => {
                 *revision <= JSON_SAFE_INTEGER_MAX
@@ -758,7 +758,7 @@ pub struct DescriptionAuthoring {
     pub typescript_declaration: String,
 }
 
-/// A Saved Function's current source and the diagnostics saved with it.
+/// A Private Tool's current source and the diagnostics saved with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(description = "")]
 pub struct SavedDetail {
@@ -776,7 +776,7 @@ pub struct SavedDetail {
 /// The largest integer a JSON reader holds exactly.
 const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-/// One advisory TypeScript diagnostic saved with a Saved Function.
+/// One advisory TypeScript diagnostic saved with a Private Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(rename = "Diagnostic", deny_unknown_fields, description = "")]
 pub struct SavedDiagnostic {
@@ -922,7 +922,7 @@ pub(super) mod tests {
                 next_offset: Some(20),
                 retriever_statuses: vec![
                     status(SearchRetriever::ProviderTool, SearchRetrieverState::Partial),
-                    status(SearchRetriever::SavedFunction, SearchRetrieverState::Error),
+                    status(SearchRetriever::PrivateTool, SearchRetrieverState::Error),
                 ],
             }),
             SearchOutput::Page(SearchResult {
@@ -944,7 +944,7 @@ pub(super) mod tests {
                         hints: DeclaredHints::from(crate::ToolHints::default()),
                         approval_required: false,
                     },
-                    Description::SavedFunction {
+                    Description::PrivateTool {
                         authoring: authoring("coral.private.weekly"),
                         provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
                         provider_display_name: "Private".to_owned(),
@@ -963,7 +963,7 @@ pub(super) mod tests {
                             diagnostics_truncated: false,
                         }),
                     },
-                    Description::SavedFunction {
+                    Description::PrivateTool {
                         authoring: authoring("coral.private.daily"),
                         provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
                         provider_display_name: "Private".to_owned(),
@@ -1068,7 +1068,7 @@ pub(super) mod tests {
                 hits: Vec::new(),
                 next_offset: None,
                 retriever_statuses: vec![SearchRetrieverStatus {
-                    retriever: SearchRetriever::SavedFunction,
+                    retriever: SearchRetriever::PrivateTool,
                     state: SearchRetrieverState::Partial,
                     coverage: SearchRetrieverCoverage {
                         eligible_units: units,
@@ -1082,7 +1082,7 @@ pub(super) mod tests {
         };
         let paths = |code, line, column| {
             SearchOutput::Paths(PathsResult {
-                descriptions: vec![Description::SavedFunction {
+                descriptions: vec![Description::PrivateTool {
                     authoring: authoring("coral.private.weekly"),
                     provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
                     provider_display_name: "Private".to_owned(),

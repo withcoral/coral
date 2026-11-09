@@ -2150,10 +2150,10 @@ impl PrivateTools {
             .authenticate_agent(&workspace, issued.credential.expose(), 14)
             .await
             .expect("authenticate Agent");
-        let functions = coral_functions::SavedFunctionModule::new(
+        let functions = coral_tools::PrivateToolModule::new(
             database,
             workspaces,
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .expect("the Private Tool module");
@@ -2166,16 +2166,16 @@ impl PrivateTools {
             (AuthenticatedPrincipal::user(member.clone()), None),
             (agent, None),
         ] {
-            let save = coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse("people.greet").expect("path"),
-                coral_functions::SavedFunctionDescription::parse("Greet").expect("description"),
-                coral_functions::SavedFunctionSource::parse("export default async () => 1;")
+            let save = coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("people.greet").expect("path"),
+                coral_tools::PrivateToolDescription::parse("Greet").expect("description"),
+                coral_tools::PrivateToolSource::parse("export default async () => 1;")
                     .expect("source"),
             )
             .declaring_default(declared);
             let saved = functions
                 .save(
-                    &coral_functions::SavedFunctionChangeContext::new(
+                    &coral_tools::PrivateToolChangeContext::new(
                         principal,
                         20,
                         coral_workspace::TraceId::parse(&"5".repeat(32)).expect("trace"),

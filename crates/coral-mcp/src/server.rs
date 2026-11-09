@@ -571,8 +571,8 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
     DispatchError::Tool(failure)
 }
 
-fn functions_failure(error: coral_functions::Error) -> DispatchError {
-    use coral_functions::Error;
+fn functions_failure(error: coral_tools::Error) -> DispatchError {
+    use coral_tools::Error;
     if let Some((code, message)) = error.safe_rejection() {
         return DispatchError::Tool(ToolFailure::safe(code, message));
     }

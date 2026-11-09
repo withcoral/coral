@@ -143,7 +143,7 @@
       "type": "string",
       "enum": [
         "provider_tool",
-        "saved_function"
+        "private_tool"
       ]
     },
     "RetrieverState": {

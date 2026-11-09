@@ -18,7 +18,7 @@ use coral_workspace::{
 };
 use tempfile::TempDir;
 
-const SAVED_FUNCTION: &str =
+const PRIVATE_TOOL: &str =
     "export default function forecast(city: string) {\n    console.info(city);\n}";
 const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast(\"Oslo\");";
 
@@ -35,7 +35,7 @@ async fn record_run(
         .unwrap();
     let workspace = workspace.id().clone();
     let principal = AuthenticatedPrincipal::user(owner);
-    coral_functions::SavedFunctionModule::new(
+    coral_tools::PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
         coral_run::IsolateLimits::default(),
@@ -43,16 +43,16 @@ async fn record_run(
     )
     .unwrap()
     .save(
-        &coral_functions::SavedFunctionChangeContext::new(
+        &coral_tools::PrivateToolChangeContext::new(
             principal.clone(),
             1,
             TraceId::current_or_new(),
         ),
         &workspace,
-        coral_functions::SavedFunctionSave::new(
-            coral_functions::SavedFunctionPath::parse("report.forecast").unwrap(),
-            coral_functions::SavedFunctionDescription::parse("Forecast one city").unwrap(),
-            coral_functions::SavedFunctionSource::parse(SAVED_FUNCTION).unwrap(),
+        coral_tools::PrivateToolSave::new(
+            coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
+            coral_tools::PrivateToolDescription::parse("Forecast one city").unwrap(),
+            coral_tools::PrivateToolSource::parse(PRIVATE_TOOL).unwrap(),
         ),
     )
     .await
@@ -163,7 +163,7 @@ async fn recorded_locations_survive_a_restart_on_the_private_listener() {
     let program = |line, column| at(Document::Program(wire::ActivityEmpty {}), line, column);
     let in_snapshot = |line, column| {
         at(
-            Document::SavedFunction(snapshot.saved_function.clone()),
+            Document::PrivateTool(snapshot.private_tool.clone()),
             line,
             column,
         )

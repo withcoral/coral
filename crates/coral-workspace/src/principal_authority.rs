@@ -191,7 +191,7 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Checks a Principal's live authority before preparing a Saved Function.
+    /// Checks a Principal's live authority before preparing a Private Tool.
     ///
     /// # Errors
     ///

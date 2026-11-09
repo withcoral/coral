@@ -108,9 +108,9 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             }),
         ),
         (
-            "a Saved Function that matched in its declaration",
-            SearchHit::from_saved_function(
-                CallPath::saved_function("github.openPulls").expect("Call Path"),
+            "a Private Tool that matched in its declaration",
+            SearchHit::from_private_tool(
+                CallPath::private_tool("github.openPulls").expect("Call Path"),
                 text(None, &[]),
                 SearchEvidence::new(vec!["title".into()], vec!["input.repo".into()]),
             ),
@@ -140,7 +140,7 @@ fn a_page_states_its_next_offset_and_retriever_statuses_only_when_they_matter() 
                 None,
                 vec![
                     status(EntityKind::ProviderTool, RetrieverState::ResultsFound),
-                    status(EntityKind::SavedFunction, RetrieverState::Empty),
+                    status(EntityKind::PrivateTool, RetrieverState::Empty),
                 ],
             ),
             json!({ "hits": [] }),
@@ -152,7 +152,7 @@ fn a_page_states_its_next_offset_and_retriever_statuses_only_when_they_matter() 
                 Some(20),
                 vec![
                     status(EntityKind::ProviderTool, RetrieverState::Partial),
-                    status(EntityKind::SavedFunction, RetrieverState::ResultsFound),
+                    status(EntityKind::PrivateTool, RetrieverState::ResultsFound),
                 ],
             ),
             json!({

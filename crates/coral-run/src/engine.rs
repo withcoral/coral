@@ -29,8 +29,8 @@ pub(crate) use host::execute;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
+use coral_tools::{PrivateToolPath, PrivateToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 
 use crate::execution::ExecutionStop;
@@ -40,29 +40,29 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub(crate) struct SavedFunctionReference {
-    pub(crate) path: SavedFunctionPath,
+pub(crate) struct PrivateToolReference {
+    pub(crate) path: PrivateToolPath,
     pub(crate) line: u64,
     pub(crate) column: u64,
 }
 
-/// What one Program body names: the Saved Functions admission links and,
+/// What one Program body names: the Private Tools admission links and,
 /// from an engine that finds them, the Tool chains admission checks.
 pub(crate) struct ProgramReferences {
-    pub(crate) functions: Vec<SavedFunctionReference>,
+    pub(crate) functions: Vec<PrivateToolReference>,
     pub(crate) tools: Option<coral_v8::ToolReferences>,
 }
 
 pub(crate) trait ProgramEngine: Send + Sync {
-    fn program_saved_function_references(
+    fn program_private_tool_references(
         &self,
         _deadline: Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         Ok(Vec::new())
     }
 
-    /// The Saved Functions and Tools one Program body names, from one
+    /// The Private Tools and Tools one Program body names, from one
     /// analysis. An engine that finds no Tool chains names its Saved
     /// Functions alone, and admission checks no Call Path.
     fn program_references(
@@ -71,7 +71,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         Ok(ProgramReferences {
-            functions: self.program_saved_function_references(deadline, source)?,
+            functions: self.program_private_tool_references(deadline, source)?,
             tools: None,
         })
     }
@@ -87,39 +87,39 @@ pub(crate) trait ProgramEngine: Send + Sync {
         Ok(Vec::new())
     }
 
-    fn saved_function_dependency_references(
+    fn private_tool_dependency_references(
         &self,
         _deadline: Instant,
-        _path: &SavedFunctionPath,
+        _path: &PrivateToolPath,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         Ok(Vec::new())
     }
 
     /// The Private Tools and Tools one linked module at `path` names, from
     /// one analysis. An engine that finds no Tool chains names its Private
     /// Tools alone, and admission checks no Call Path in it.
-    fn saved_function_references(
+    fn private_tool_references(
         &self,
         deadline: Instant,
-        path: &SavedFunctionPath,
+        path: &PrivateToolPath,
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         Ok(ProgramReferences {
-            functions: self.saved_function_dependency_references(deadline, path, source)?,
+            functions: self.private_tool_dependency_references(deadline, path, source)?,
             tools: None,
         })
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
-    /// Compiles `source` with the Saved Functions it links and with
+    /// Compiles `source` with the Private Tools it links and with
     /// `builtin_tools`, the Workspace's Built-in Tools, on `coral`.
-    fn compile_with_saved_functions(
+    fn compile_with_private_tools(
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[PrivateToolSelection],
         _builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
@@ -194,7 +194,7 @@ impl ProgramEngine for V8ProgramEngine {
             .program_references(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, source_name))?;
         Ok(ProgramReferences {
-            functions: parse_saved_function_references(named.functions().to_vec(), source_name)?,
+            functions: parse_private_tool_references(named.functions().to_vec(), source_name)?,
             tools: Some(named.tools().clone()),
         })
     }
@@ -210,10 +210,10 @@ impl ProgramEngine for V8ProgramEngine {
             .unknown_tool_calls(time_left(deadline), tools, callable)?)
     }
 
-    fn saved_function_references(
+    fn private_tool_references(
         &self,
         deadline: Instant,
-        path: &SavedFunctionPath,
+        path: &PrivateToolPath,
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         let source_name = format!("Private Tool coral.private.{}", path.as_str());
@@ -222,26 +222,26 @@ impl ProgramEngine for V8ProgramEngine {
             .call_paths(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, &source_name))?;
         Ok(ProgramReferences {
-            functions: parse_saved_function_references(named.functions().to_vec(), &source_name)?,
+            functions: parse_private_tool_references(named.functions().to_vec(), &source_name)?,
             tools: Some(named.tools().clone()),
         })
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        self.compile_with_saved_functions(deadline, source, &[], &BuiltinTools::default())
+        self.compile_with_private_tools(deadline, source, &[], &BuiltinTools::default())
     }
 
-    fn compile_with_saved_functions(
+    fn compile_with_private_tools(
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[PrivateToolSelection],
         builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         let sources = linked
             .iter()
             .map(|snapshot| {
-                coral_v8::LinkedSavedFunctionSource::new(
+                coral_v8::LinkedPrivateToolSource::new(
                     snapshot.path().segments(),
                     snapshot.source().as_str().to_string(),
                 )
@@ -316,21 +316,21 @@ impl ProgramEngine for V8ProgramEngine {
     }
 }
 
-fn parse_saved_function_references(
-    references: Vec<coral_v8::SavedFunctionReference>,
+fn parse_private_tool_references(
+    references: Vec<coral_v8::PrivateToolReference>,
     source_name: &str,
-) -> Result<Vec<SavedFunctionReference>, String> {
+) -> Result<Vec<PrivateToolReference>, String> {
     references
         .into_iter()
         .map(|reference| {
-            let path = SavedFunctionPath::parse(reference.path()).map_err(|error| {
+            let path = PrivateToolPath::parse(reference.path()).map_err(|error| {
                 format!(
                     "{source_name}:{}:{}: {error}",
                     reference.line(),
                     reference.column()
                 )
             })?;
-            Ok(SavedFunctionReference {
+            Ok(PrivateToolReference {
                 path,
                 line: reference.line(),
                 column: reference.column(),

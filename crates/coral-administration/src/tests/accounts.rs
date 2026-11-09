@@ -490,10 +490,10 @@ async fn initial_connection_without_credentials_is_canceled_and_cannot_fill_a_re
 #[tokio::test(flavor = "multi_thread")]
 async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_connect() {
     let mut f = AccountFixture::new().await;
-    let functions = SavedFunctionModule::new(
+    let functions = PrivateToolModule::new(
         f.db.database(),
         f.workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
@@ -516,13 +516,13 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         .unwrap();
     let context = change(&f.member);
     let administrator = change(&f.owner);
-    let source = SavedFunctionSave::new(
-        SavedFunctionPath::parse("late").unwrap(),
-        SavedFunctionDescription::parse("Late save").unwrap(),
-        SavedFunctionSource::parse("export default () => 7;").unwrap(),
+    let source = PrivateToolSave::new(
+        PrivateToolPath::parse("late").unwrap(),
+        PrivateToolDescription::parse("Late save").unwrap(),
+        PrivateToolSource::parse("export default () => 7;").unwrap(),
     );
     let authoring =
-        SavedFunctionChangeContext::new(principal.clone(), 101, context.trace_id().clone());
+        PrivateToolChangeContext::new(principal.clone(), 101, context.trace_id().clone());
     // Poll every competing command while removal retains its preparation holds.
     // The release is the final branch, so no sleeps or scheduler guesses order it.
     let (save, grant, connect, ()) = tokio::join!(
@@ -552,10 +552,10 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
                 .get(
                     &principal,
                     f.workspace.id(),
-                    &SavedFunctionPath::parse(path).unwrap()
+                    &PrivateToolPath::parse(path).unwrap()
                 )
                 .await,
-            Err(coral_functions::Error::SavedFunctionNotFound)
+            Err(coral_tools::Error::PrivateToolNotFound)
         ));
     }
     assert!(

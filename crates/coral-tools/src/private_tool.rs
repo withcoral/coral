@@ -10,20 +10,20 @@ use coral_workspace::{
 use tokio::time::timeout_at;
 
 use coral_run_executor::{CompilerClient, time_left};
-use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, SavedFunctionCallPaths};
+use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, PrivateToolCallPaths};
 
 use crate::repository;
 use crate::tool_typing::{self, ToolDeclarationReader};
 use crate::types::{
-    AdministrativeLifecycleEvent, LifecycleAction, SAVED_FUNCTION_DECLARATION_MAX_BYTES,
-    SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT, SavedFunction, SavedFunctionChangeContext,
-    SavedFunctionDeclaration, SavedFunctionDeclarationFieldProjection, SavedFunctionDiagnostic,
-    SavedFunctionId, SavedFunctionPath, SavedFunctionSave,
+    AdministrativeLifecycleEvent, LifecycleAction, PRIVATE_TOOL_DECLARATION_MAX_BYTES,
+    PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT, PrivateTool, PrivateToolChangeContext,
+    PrivateToolDeclaration, PrivateToolDeclarationFieldProjection, PrivateToolDiagnostic,
+    PrivateToolId, PrivateToolPath, PrivateToolSave,
 };
-use crate::{Error, SavedFunctionDeletion, SavedFunctionInspection};
+use crate::{Error, PrivateToolDeletion, PrivateToolInspection};
 
-pub(crate) struct SavedFunctionReference {
-    path: SavedFunctionPath,
+pub(crate) struct PrivateToolReference {
+    path: PrivateToolPath,
     line: u64,
     column: u64,
 }
@@ -36,22 +36,22 @@ pub(crate) fn now_unix_nanos() -> Result<i64, Error> {
         .map_err(|_error| Error::Clock("current time exceeds durable nanosecond range".to_string()))
 }
 
-pub(crate) struct PreparedSavedFunction {
-    pub(crate) declaration: SavedFunctionDeclaration,
-    pub(crate) declaration_field_projection: SavedFunctionDeclarationFieldProjection,
-    pub(crate) diagnostics: Vec<SavedFunctionDiagnostic>,
+pub(crate) struct PreparedPrivateTool {
+    pub(crate) declaration: PrivateToolDeclaration,
+    pub(crate) declaration_field_projection: PrivateToolDeclarationFieldProjection,
+    pub(crate) diagnostics: Vec<PrivateToolDiagnostic>,
     pub(crate) diagnostics_truncated: bool,
-    pub(crate) references: Vec<SavedFunctionReference>,
+    pub(crate) references: Vec<PrivateToolReference>,
     /// Where the declaration's arguments or result hold something that is
     /// not data, as the compiler found it; `None` when they are all data.
     pub(crate) not_data: Option<String>,
 }
 
-pub(crate) trait SavedFunctionCompiler: Send + Sync {
+pub(crate) trait PrivateToolCompiler: Send + Sync {
     /// Finds the Call Paths to type by `deadline`. `None` leaves the source
     /// untyped, so `prepare` reports any failure of a source this cannot
     /// analyze.
-    fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths>;
+    fn call_paths(&self, deadline: Instant, source: &str) -> Option<PrivateToolCallPaths>;
 
     /// Prepares `source`, typed by `declarations` when there are any.
     fn prepare(
@@ -59,10 +59,10 @@ pub(crate) trait SavedFunctionCompiler: Send + Sync {
         deadline: Instant,
         source: &str,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<PreparedSavedFunction, CompileFailure>;
+    ) -> Result<PreparedPrivateTool, CompileFailure>;
 }
 
-struct V8SavedFunctionCompiler {
+struct V8PrivateToolCompiler {
     compiler: Arc<dyn CompilerClient>,
     /// The Built-in Tools of this Coral version, which type `coral`. Typing
     /// is advisory, so a Workspace whose Built-in catalog another Coral
@@ -70,8 +70,8 @@ struct V8SavedFunctionCompiler {
     builtin_tools: coral_run_executor::BuiltinTools,
 }
 
-impl SavedFunctionCompiler for V8SavedFunctionCompiler {
-    fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths> {
+impl PrivateToolCompiler for V8PrivateToolCompiler {
+    fn call_paths(&self, deadline: Instant, source: &str) -> Option<PrivateToolCallPaths> {
         self.compiler
             .call_paths(time_left(deadline), source)
             .inspect_err(|error| {
@@ -88,40 +88,40 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
         deadline: Instant,
         source: &str,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<PreparedSavedFunction, CompileFailure> {
+    ) -> Result<PreparedPrivateTool, CompileFailure> {
         let compiled = self.compiler.prepare(
             time_left(deadline),
             source,
             &self.builtin_tools,
             declarations,
         )?;
-        let declaration = SavedFunctionDeclaration::from_compiler(compiled.declaration())
+        let declaration = PrivateToolDeclaration::from_compiler(compiled.declaration())
             .map_err(|error| error.to_string())?;
         let declaration_field_projection =
-            SavedFunctionDeclarationFieldProjection::from_compiler(compiled.declaration_fields());
+            PrivateToolDeclarationFieldProjection::from_compiler(compiled.declaration_fields());
         let diagnostics_truncated =
-            compiled.diagnostics().len() > SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT;
+            compiled.diagnostics().len() > PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT;
         let diagnostics = compiled
             .diagnostics()
             .iter()
-            .take(SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT)
-            .map(SavedFunctionDiagnostic::from_compiler)
+            .take(PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT)
+            .map(PrivateToolDiagnostic::from_compiler)
             .collect();
         let references = compiled
             .references()
             .iter()
             .map(|reference| {
-                let path = SavedFunctionPath::parse(reference.path()).map_err(|error| {
+                let path = PrivateToolPath::parse(reference.path()).map_err(|error| {
                     format!("at {}:{}: {error}", reference.line(), reference.column())
                 })?;
-                Ok(SavedFunctionReference {
+                Ok(PrivateToolReference {
                     path,
                     line: reference.line(),
                     column: reference.column(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(PreparedSavedFunction {
+        Ok(PreparedPrivateTool {
             declaration,
             declaration_field_projection,
             diagnostics,
@@ -134,13 +134,13 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
 
 /// Opaque compiled save with its exact authenticated scope and authoring evidence.
 pub struct PreparedSave {
-    context: SavedFunctionChangeContext,
+    context: PrivateToolChangeContext,
     workspace_id: WorkspaceId,
-    save: SavedFunctionSave,
-    prepared: PreparedSavedFunction,
+    save: PrivateToolSave,
+    prepared: PreparedPrivateTool,
 }
 
-/// Atomic current Saved Function lifecycle Module.
+/// Atomic current Private Tool lifecycle Module.
 ///
 /// This transport-neutral Interface owns create-or-replace, Principal inspection,
 /// Owner inspection and deletion of Agent definitions, authoring
@@ -148,17 +148,17 @@ pub struct PreparedSave {
 /// successful authoring transaction; current authority, state, definition, and
 /// Event commit together at the final linearization point.
 #[derive(Clone)]
-pub struct SavedFunctionModule {
+pub struct PrivateToolModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    inspection: SavedFunctionInspection,
-    deletion: SavedFunctionDeletion,
-    compiler: Arc<dyn SavedFunctionCompiler>,
+    inspection: PrivateToolInspection,
+    deletion: PrivateToolDeletion,
+    compiler: Arc<dyn PrivateToolCompiler>,
     /// The deadline for preparing one save, including typing and queueing.
     compilation_timeout: Duration,
 }
 
-impl SavedFunctionModule {
+impl PrivateToolModule {
     /// Builds the Module with a warm compiler of its own, within the
     /// deployment's compiler heap budget. `compilation_timeout` bounds each
     /// save's preparation; production passes [`crate::COMPILATION_TIMEOUT`].
@@ -194,11 +194,11 @@ impl SavedFunctionModule {
         compilation_timeout: Duration,
     ) -> Self {
         Self {
-            inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
-            deletion: SavedFunctionDeletion::new(database.clone(), workspaces.clone()),
+            inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
+            deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
-            compiler: Arc::new(V8SavedFunctionCompiler {
+            compiler: Arc::new(V8PrivateToolCompiler {
                 compiler,
                 builtin_tools: coral_run_executor::BuiltinTools::new(
                     coral_catalog::BuiltinTool::keys(),
@@ -212,11 +212,11 @@ impl SavedFunctionModule {
     pub(crate) fn with_compiler(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        compiler: Arc<dyn SavedFunctionCompiler>,
+        compiler: Arc<dyn PrivateToolCompiler>,
     ) -> Self {
         Self {
-            inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
-            deletion: SavedFunctionDeletion::new(database.clone(), workspaces.clone()),
+            inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
+            deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
             compiler,
@@ -228,7 +228,7 @@ impl SavedFunctionModule {
     ///
     /// Source is compiled before a write transaction. A successful final
     /// transaction rechecks active Workspace authority and every directly named
-    /// Saved Function dependency, then commits source, description, declaration,
+    /// Private Tool dependency, then commits source, description, declaration,
     /// bounded diagnostics, and one lifecycle Event. Occurrence time is metadata
     /// and never a stale-write guard. Tools stay untyped; use
     /// [`Self::prepare_save`] with a reader to type them.
@@ -245,10 +245,10 @@ impl SavedFunctionModule {
     /// Failure leaves both the current definition and lifecycle evidence unchanged.
     pub async fn save(
         &self,
-        context: &SavedFunctionChangeContext,
+        context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
-        save: SavedFunctionSave,
-    ) -> Result<SavedFunction, Error> {
+        save: PrivateToolSave,
+    ) -> Result<PrivateTool, Error> {
         let prepared = self.prepare_save(context, workspace_id, save, None).await?;
         let mut transaction = self.database.begin().await?;
         let function = self.save_in_transaction(&mut transaction, prepared).await?;
@@ -269,9 +269,9 @@ impl SavedFunctionModule {
     /// Returns authority, compilation, or authoring-limit failures without changes.
     pub async fn prepare_save(
         &self,
-        context: &SavedFunctionChangeContext,
+        context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
-        save: SavedFunctionSave,
+        save: PrivateToolSave,
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSave, Error> {
         self.authorize_active(context.actor(), workspace_id).await?;
@@ -306,7 +306,7 @@ impl SavedFunctionModule {
         &self,
         transaction: &mut Transaction<'_>,
         prepared_save: PreparedSave,
-    ) -> Result<SavedFunction, Error> {
+    ) -> Result<PrivateTool, Error> {
         let PreparedSave {
             context,
             workspace_id,
@@ -324,9 +324,9 @@ impl SavedFunctionModule {
                 &prepared.references,
             )
             .await?;
-        save.admits(previous.as_ref().map(SavedFunction::revision))?;
+        save.admits(previous.as_ref().map(PrivateTool::revision))?;
         let (id, revision, action) = match previous.as_ref() {
-            None => (SavedFunctionId::generate(), 1, LifecycleAction::Created),
+            None => (PrivateToolId::generate(), 1, LifecycleAction::Created),
             Some(previous) => (
                 previous.id().clone(),
                 previous.revision.checked_add(1).ok_or_else(|| {
@@ -338,7 +338,7 @@ impl SavedFunctionModule {
         // A new Private Tool's default is `enabled` unless the save
         // declares another, and a replacement keeps its Private Tool's unless the save
         // declares another. The Event names the default only when it moves.
-        let previous_default = previous.as_ref().map(SavedFunction::default_access_state);
+        let previous_default = previous.as_ref().map(PrivateTool::default_access_state);
         let default_access_state = save.default_access_state(previous_default);
         let mut changed_field_paths = vec![
             "source",
@@ -347,10 +347,10 @@ impl SavedFunctionModule {
             "declaration_fields",
             "diagnostics",
         ];
-        if default_access_state != previous_default.unwrap_or(SavedFunctionSave::NEW_TOOL_DEFAULT) {
+        if default_access_state != previous_default.unwrap_or(PrivateToolSave::NEW_TOOL_DEFAULT) {
             changed_field_paths.push("default_access_state");
         }
-        let function = SavedFunction::new(
+        let function = PrivateTool::new(
             id,
             workspace_id.clone(),
             context.actor().principal().clone(),
@@ -397,17 +397,17 @@ impl SavedFunctionModule {
     /// # Errors
     ///
     /// An absent, inaccessible, or differently owned path returns
-    /// [`Error::SavedFunctionNotFound`].
+    /// [`Error::PrivateToolNotFound`].
     pub async fn get(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
-    ) -> Result<SavedFunction, Error> {
+        path: &PrivateToolPath,
+    ) -> Result<PrivateTool, Error> {
         self.inspection.get(actor, workspace_id, path).await
     }
 
-    /// Lists one Workspace-owned Agent's current Saved Functions for a Workspace Owner.
+    /// Lists one Workspace-owned Agent's current Private Tools for a Workspace Owner.
     ///
     /// User-owned functions remain private and cannot be selected through this Interface.
     /// The Agent's stable identity is an inspection target, never an authoring identity
@@ -422,7 +422,7 @@ impl SavedFunctionModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         agent_id: &PrincipalId,
-    ) -> Result<Vec<SavedFunction>, Error> {
+    ) -> Result<Vec<PrivateTool>, Error> {
         let user = actor.authenticated_user().ok_or(Error::PermissionDenied(
             "only a Workspace Owner can inspect Agent Private Tools",
         ))?;
@@ -436,22 +436,22 @@ impl SavedFunctionModule {
         Ok(functions)
     }
 
-    /// Returns one Workspace-owned Agent Saved Function to a Workspace Owner.
+    /// Returns one Workspace-owned Agent Private Tool to a Workspace Owner.
     ///
     /// # Errors
     ///
     /// Requires Workspace Owner authority. An absent path remains
-    /// [`Error::SavedFunctionNotFound`].
+    /// [`Error::PrivateToolNotFound`].
     pub async fn get_agent(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         agent_id: &PrincipalId,
-        path: &SavedFunctionPath,
-    ) -> Result<SavedFunction, Error> {
+        path: &PrivateToolPath,
+    ) -> Result<PrivateTool, Error> {
         let user = actor
             .authenticated_user()
-            .ok_or(Error::SavedFunctionNotFound)?;
+            .ok_or(Error::PrivateToolNotFound)?;
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize_agent_inspection_in_transaction(&mut transaction, user, workspace_id)
             .await
@@ -460,12 +460,12 @@ impl SavedFunctionModule {
         let function =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
                 .await?
-                .ok_or(Error::SavedFunctionNotFound)?;
+                .ok_or(Error::PrivateToolNotFound)?;
         transaction.commit().await?;
         Ok(function)
     }
 
-    /// Atomically deletes one Workspace-owned Agent Saved Function as a Workspace Owner.
+    /// Atomically deletes one Workspace-owned Agent Private Tool as a Workspace Owner.
     ///
     /// The accountable User remains the lifecycle actor and never authors or
     /// executes as the Agent.
@@ -473,18 +473,18 @@ impl SavedFunctionModule {
     /// # Errors
     ///
     /// Requires Workspace Owner authority in an active Workspace. Absence is
-    /// [`Error::SavedFunctionNotFound`].
+    /// [`Error::PrivateToolNotFound`].
     pub async fn delete_agent(
         &self,
-        context: &SavedFunctionChangeContext,
+        context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
         agent_id: &PrincipalId,
-        path: &SavedFunctionPath,
-    ) -> Result<SavedFunctionId, Error> {
+        path: &PrivateToolPath,
+    ) -> Result<PrivateToolId, Error> {
         let user = context
             .actor()
             .authenticated_user()
-            .ok_or(Error::SavedFunctionNotFound)?;
+            .ok_or(Error::PrivateToolNotFound)?;
         let mut transaction = self.database.begin().await?;
         self.workspaces
             .check_configuration_in_transaction(&mut transaction, user, workspace_id)
@@ -494,7 +494,7 @@ impl SavedFunctionModule {
         let function =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
                 .await?
-                .ok_or(Error::SavedFunctionNotFound)?;
+                .ok_or(Error::PrivateToolNotFound)?;
         let deleted_id =
             delete_current_with_event(&mut transaction, context, workspace_id, &function).await?;
         transaction.commit().await?;
@@ -506,13 +506,13 @@ impl SavedFunctionModule {
     /// # Errors
     ///
     /// Requires the owning Principal and an active Workspace. Absence or other
-    /// ownership is concealed as [`Error::SavedFunctionNotFound`].
+    /// ownership is concealed as [`Error::PrivateToolNotFound`].
     pub async fn delete(
         &self,
-        context: &SavedFunctionChangeContext,
+        context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
-    ) -> Result<SavedFunctionId, Error> {
+        path: &PrivateToolPath,
+    ) -> Result<PrivateToolId, Error> {
         self.deletion.delete(context, workspace_id, path).await
     }
 
@@ -523,16 +523,16 @@ impl SavedFunctionModule {
     pub async fn delete_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
-        context: &SavedFunctionChangeContext,
+        context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
-    ) -> Result<SavedFunctionId, Error> {
+        path: &PrivateToolPath,
+    ) -> Result<PrivateToolId, Error> {
         self.deletion
             .delete_in_transaction(transaction, context, workspace_id, path)
             .await
     }
 
-    /// Lists the current User's safe Saved Function lifecycle evidence.
+    /// Lists the current User's safe Private Tool lifecycle evidence.
     ///
     /// Agents cannot browse administrative history in this staged Interface.
     /// Source and description values never enter the returned evidence.
@@ -574,9 +574,9 @@ impl SavedFunctionModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
-        references: &[SavedFunctionReference],
-    ) -> Result<(PrincipalWorkspaceEvidence, Option<SavedFunction>), Error> {
+        path: &PrivateToolPath,
+        references: &[PrivateToolReference],
+    ) -> Result<(PrincipalWorkspaceEvidence, Option<PrivateTool>), Error> {
         let authority = self
             .authorize_active_in_transaction(transaction, actor, workspace_id)
             .await?;
@@ -587,9 +587,9 @@ impl SavedFunctionModule {
                 .await?;
         if current_functions
             .iter()
-            .any(|function| saved_function_paths_overlap(function.path(), path))
+            .any(|function| private_tool_paths_overlap(function.path(), path))
         {
-            return Err(Error::SavedFunctionPathConflict);
+            return Err(Error::PrivateToolPathConflict);
         }
 
         let mut held_paths = references
@@ -612,7 +612,7 @@ impl SavedFunctionModule {
                     .iter()
                     .find(|reference| &reference.path == held_path)
             {
-                return Err(missing_saved_function_dependency(path, reference));
+                return Err(missing_private_tool_dependency(path, reference));
             }
         }
         let previous = current_functions
@@ -643,10 +643,10 @@ impl SavedFunctionModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
+        path: &PrivateToolPath,
         source: &str,
         tools: Option<&dyn ToolDeclarationReader>,
-    ) -> Result<PreparedSavedFunction, Error> {
+    ) -> Result<PreparedPrivateTool, Error> {
         let source_name = format!("Private Tool coral.private.{}", path.as_str());
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
@@ -662,10 +662,10 @@ impl SavedFunctionModule {
             .map_err(|_join_error| Error::CompilerWorkerStopped)?
             .map_err(|failure| match failure {
                 CompileFailure::Rejected(message) => {
-                    Error::SavedFunctionAdmission(format!("{source_name}: {message}"))
+                    Error::PrivateToolAdmission(format!("{source_name}: {message}"))
                 }
                 CompileFailure::Busy => Error::CompilerBusy,
-                CompileFailure::TimedOut => Error::SavedFunctionCompilationTimedOut,
+                CompileFailure::TimedOut => Error::PrivateToolCompilationTimedOut,
                 CompileFailure::Stopped => Error::CompilerWorkerStopped,
                 CompileFailure::Failed(kind) => {
                     tracing::warn!(
@@ -678,7 +678,7 @@ impl SavedFunctionModule {
         };
         let prepared = timeout_at(deadline.into(), preparation)
             .await
-            .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)??;
+            .map_err(|_elapsed| Error::PrivateToolCompilationTimedOut)??;
         // Every call crosses to Coral and back, so only data can (ADR 0033).
         if let Some(reason) = prepared.not_data {
             return Err(Error::PrivateToolNotData(format!(
@@ -720,7 +720,7 @@ impl SavedFunctionModule {
             let Some(function_paths) = named
                 .functions()
                 .iter()
-                .map(|reference| SavedFunctionPath::parse(reference.path()).ok())
+                .map(|reference| PrivateToolPath::parse(reference.path()).ok())
                 .collect::<Option<Vec<_>>>()
             else {
                 return Ok(None);
@@ -747,7 +747,7 @@ impl SavedFunctionModule {
             if functions.is_none() && tools.is_none() {
                 return Ok(None);
             }
-            let mut declarations = CoralDeclarations::new(SAVED_FUNCTION_DECLARATION_MAX_BYTES);
+            let mut declarations = CoralDeclarations::new(PRIVATE_TOOL_DECLARATION_MAX_BYTES);
             if let Some(functions) = functions {
                 declarations = declarations.with_functions(functions);
             }
@@ -764,12 +764,12 @@ impl SavedFunctionModule {
             })
     }
 
-    /// The current declaration of each named Saved Function the caller owns.
+    /// The current declaration of each named Private Tool the caller owns.
     async fn function_declarations(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        paths: &[SavedFunctionPath],
+        paths: &[PrivateToolPath],
     ) -> Result<Vec<CallableDeclaration>, Error> {
         let mut functions = Vec::new();
         if paths.is_empty() {
@@ -801,7 +801,7 @@ impl SavedFunctionModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SavedFunctionPath,
+        path: &PrivateToolPath,
     ) -> Result<Option<u64>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let current = repository::find_current_in_transaction(
@@ -812,7 +812,7 @@ impl SavedFunctionModule {
         )
         .await?;
         transaction.commit().await?;
-        Ok(current.as_ref().map(SavedFunction::revision))
+        Ok(current.as_ref().map(PrivateTool::revision))
     }
 
     async fn authorize_active(
@@ -839,13 +839,13 @@ impl SavedFunctionModule {
     }
 }
 
-fn missing_saved_function_dependency(
-    source_path: &SavedFunctionPath,
-    reference: &SavedFunctionReference,
+fn missing_private_tool_dependency(
+    source_path: &PrivateToolPath,
+    reference: &PrivateToolReference,
 ) -> Error {
     // Worded as any path that names no Tool; a save looks up no
     // suggestions.
-    Error::SavedFunctionAdmission(format!(
+    Error::PrivateToolAdmission(format!(
         "Private Tool coral.private.{}:{}:{}: {}",
         source_path.as_str(),
         reference.line,
@@ -857,10 +857,7 @@ fn missing_saved_function_dependency(
     ))
 }
 
-fn saved_function_paths_overlap(
-    current: &SavedFunctionPath,
-    requested: &SavedFunctionPath,
-) -> bool {
+fn private_tool_paths_overlap(current: &PrivateToolPath, requested: &PrivateToolPath) -> bool {
     current != requested
         && (requested
             .as_str()
@@ -888,7 +885,7 @@ pub async fn delete_current_for_access_removal_in_transaction(
     prepared: &coral_workspace::PreparedAccessRemoval,
 ) -> Result<(), Error> {
     prepared.verify_transaction(transaction, context)?;
-    let change = SavedFunctionChangeContext::new(
+    let change = PrivateToolChangeContext::new(
         AuthenticatedPrincipal::user(context.actor().clone()),
         context.occurred_at_unix_nanos(),
         context.trace_id().clone(),
@@ -910,10 +907,10 @@ pub async fn delete_current_for_access_removal_in_transaction(
 
 pub(crate) async fn delete_current_with_event(
     transaction: &mut Transaction<'_>,
-    context: &SavedFunctionChangeContext,
+    context: &PrivateToolChangeContext,
     workspace_id: &WorkspaceId,
-    function: &SavedFunction,
-) -> Result<SavedFunctionId, Error> {
+    function: &PrivateTool,
+) -> Result<PrivateToolId, Error> {
     repository::delete_current(transaction, function).await?;
     repository::insert_lifecycle_event(
         transaction,
@@ -945,7 +942,7 @@ pub(crate) fn conceal_inspection_error(error: Error) -> Error {
         Error::PermissionDenied(_)
         | Error::Workspace(
             coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::SavedFunctionNotFound,
+        ) => Error::PrivateToolNotFound,
         other => other,
     }
 }
@@ -953,7 +950,7 @@ pub(crate) fn conceal_inspection_error(error: Error) -> Error {
 fn conceal_agent_function_error(error: coral_workspace::Error) -> Error {
     match error {
         coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_) => {
-            Error::SavedFunctionNotFound
+            Error::PrivateToolNotFound
         }
         other => Error::Workspace(other),
     }

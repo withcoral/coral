@@ -1,23 +1,23 @@
 use super::{Fixture, error_reason, management, request};
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionPath, SavedFunctionSave,
-    SavedFunctionSource,
+use coral_tools::{
+    PrivateToolChangeContext, PrivateToolDescription, PrivateToolPath, PrivateToolSave,
+    PrivateToolSource,
 };
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, TraceId};
 
 async fn save(f: &Fixture, user: &AuthenticatedUser, path: &str, source: &str) {
-    f.saved_functions
+    f.private_tools
         .save(
-            &SavedFunctionChangeContext::new(
+            &PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(user.clone()),
                 1_700_000_000_000_000_007,
                 TraceId::current_or_new(),
             ),
             f.workspace.id(),
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse(path).unwrap(),
-                SavedFunctionDescription::parse(&format!("Describe {path}")).unwrap(),
-                SavedFunctionSource::parse(source).unwrap(),
+            PrivateToolSave::new(
+                PrivateToolPath::parse(path).unwrap(),
+                PrivateToolDescription::parse(&format!("Describe {path}")).unwrap(),
+                PrivateToolSource::parse(source).unwrap(),
             ),
         )
         .await
@@ -32,9 +32,9 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
     }
     let parent = format!("workspaces/{}", f.workspace.id());
     let list = async |user: &AuthenticatedUser, page_token: String| {
-        f.saved_functions()
-            .list_saved_functions(request(
-                management::ListSavedFunctionsRequest {
+        f.private_tools()
+            .list_private_tools(request(
+                management::ListPrivateToolsRequest {
                     parent: parent.clone(),
                     page_size: 2,
                     page_token,
@@ -48,8 +48,8 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
 
     let first = list(&f.owner, String::new()).await.unwrap();
     assert_eq!(
-        first.saved_functions.first(),
-        Some(&management::SavedFunctionSummary {
+        first.private_tools.first(),
+        Some(&management::PrivateToolSummary {
             path: "alpha.first".into(),
             description: "Describe alpha.first".into(),
             update_time: Some(prost_types::Timestamp {
@@ -59,7 +59,7 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
         })
     );
     let second = list(&f.owner, first.next_page_token.clone()).await.unwrap();
-    let paths = [first.saved_functions, second.saved_functions]
+    let paths = [first.private_tools, second.private_tools]
         .concat()
         .into_iter()
         .map(|summary| summary.path)
@@ -85,9 +85,9 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
     )
     .await;
     let get = async |user: &AuthenticatedUser, path: &str, audience: &str| {
-        f.saved_functions()
-            .get_saved_function(request(
-                management::GetSavedFunctionRequest {
+        f.private_tools()
+            .get_private_tool(request(
+                management::GetPrivateToolRequest {
                     parent: format!("workspaces/{}", f.workspace.id()),
                     path: path.into(),
                 },
@@ -108,7 +108,7 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
     assert!(matches!(
         function.diagnostics.as_slice(),
         [diagnostic]
-            if diagnostic.category() == management::SavedFunctionDiagnosticCategory::Error
+            if diagnostic.category() == management::PrivateToolDiagnosticCategory::Error
                 && diagnostic.message.contains("missing")
                 && diagnostic.line == Some(1)
     ));
@@ -155,9 +155,9 @@ async fn delete_removes_only_the_callers_own_function() {
     save(&f, &f.owner, "reports.total", "export default () => 1;").await;
     let parent = format!("workspaces/{}", f.workspace.id());
     let delete = async |user: &AuthenticatedUser, path: &str, audience: &str| {
-        f.saved_functions()
-            .delete_saved_function(request(
-                management::DeleteSavedFunctionRequest {
+        f.private_tools()
+            .delete_private_tool(request(
+                management::DeletePrivateToolRequest {
                     parent: parent.clone(),
                     path: path.into(),
                 },
@@ -167,11 +167,11 @@ async fn delete_removes_only_the_callers_own_function() {
             .await
     };
     let exists = async || {
-        f.saved_functions
+        f.private_tools
             .get(
                 &AuthenticatedPrincipal::user(f.owner.clone()),
                 f.workspace.id(),
-                &SavedFunctionPath::parse("reports.total").unwrap(),
+                &PrivateToolPath::parse("reports.total").unwrap(),
             )
             .await
             .is_ok()
@@ -277,23 +277,23 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
         .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
         .await
         .unwrap();
-    f.saved_functions
+    f.private_tools
         .save(
-            &SavedFunctionChangeContext::new(agent.clone(), 3, TraceId::current_or_new()),
+            &PrivateToolChangeContext::new(agent.clone(), 3, TraceId::current_or_new()),
             f.workspace.id(),
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("people.greet").unwrap(),
-                SavedFunctionDescription::parse("Describe the Agent's").unwrap(),
-                SavedFunctionSource::parse("export default () => 3;").unwrap(),
+            PrivateToolSave::new(
+                PrivateToolPath::parse("people.greet").unwrap(),
+                PrivateToolDescription::parse("Describe the Agent's").unwrap(),
+                PrivateToolSource::parse("export default () => 3;").unwrap(),
             ),
         )
         .await
         .unwrap();
 
     let provider = f
-        .saved_functions()
-        .list_saved_functions(request(
-            management::ListSavedFunctionsRequest {
+        .private_tools()
+        .list_private_tools(request(
+            management::ListPrivateToolsRequest {
                 parent: format!("workspaces/{}", f.workspace.id()),
                 page_size: 0,
                 page_token: String::new(),

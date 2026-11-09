@@ -5961,13 +5961,13 @@ pub struct InspectRunRequest {
     #[prost(string, tag = "5")]
     pub account_connection: ::prost::alloc::string::String,
 }
-/// Source of a Saved Function as it was when the Run was accepted.
+/// Source of a Private Tool as it was when the Run was accepted.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivitySourceSnapshot {
-    /// workspaces/{workspace}/savedFunctions/{saved_function} at the time. Unique among
-    /// the Run's snapshots. The Saved Function may have changed or been deleted since.
+    /// workspaces/{workspace}/privateTools/{private_tool} at the time. Unique among
+    /// the Run's snapshots. The Private Tool may have changed or been deleted since.
     #[prost(string, tag = "1")]
-    pub saved_function: ::prost::alloc::string::String,
+    pub private_tool: ::prost::alloc::string::String,
     /// Path the Program called it by.
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
@@ -6003,17 +6003,17 @@ pub mod activity_source_location {
         /// The Run's submitted Program source.
         #[prost(message, tag = "1")]
         Program(super::ActivityEmpty),
-        /// workspaces/{workspace}/savedFunctions/{saved_function}: the saved_function of
+        /// workspaces/{workspace}/privateTools/{private_tool}: the private_tool of
         /// exactly one of the Run's linked_functions snapshots.
         #[prost(string, tag = "2")]
-        SavedFunction(::prost::alloc::string::String),
+        PrivateTool(::prost::alloc::string::String),
     }
 }
 /// One stack frame in code the author wrote.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityErrorFrame {
-    /// "Program" or "Saved Function coral.private.{path}". Unlike
-    /// ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
+    /// "Program" or "Private Tool coral.private.{path}". Unlike
+    /// ActivitySourceLocation, it names a Private Tool by path, not by snapshot.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
     /// Line number, starting at 1.
@@ -6228,7 +6228,7 @@ pub struct InspectRunResponse {
     /// TypeScript the caller submitted, as accepted.
     #[prost(string, tag = "2")]
     pub submitted_source: ::prost::alloc::string::String,
-    /// Source of each Saved Function the Run used, as accepted.
+    /// Source of each Private Tool the Run used, as accepted.
     #[prost(message, repeated, tag = "3")]
     pub linked_functions: ::prost::alloc::vec::Vec<ActivitySourceSnapshot>,
     /// A page of Events in order: output, logs, cancellation requests and so on.
@@ -6818,9 +6818,9 @@ pub mod inspect_task_interaction_response {
         /// workspaces/{workspace}/runs/{run} the call started.
         #[prost(string, tag = "3")]
         Run(::prost::alloc::string::String),
-        /// Saved Function the call saved or deleted. It may have changed or been deleted since.
+        /// Private Tool the call saved or deleted. It may have changed or been deleted since.
         #[prost(string, tag = "5")]
-        SavedFunction(::prost::alloc::string::String),
+        PrivateTool(::prost::alloc::string::String),
         /// Why the call was rejected.
         #[prost(message, tag = "6")]
         Rejection(super::ActivityRejection),
@@ -14191,6 +14191,635 @@ pub(crate) mod tool_policy_service_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+/// Lists the caller's own current Private Tools in one Workspace.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListPrivateToolsRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Maximum results, bounded to 100; zero selects the default.
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
+    /// Opaque continuation from the preceding page in this scope.
+    #[prost(string, tag = "3")]
+    pub page_token: ::prost::alloc::string::String,
+}
+/// One scoped page of source-free Private Tool summaries in path order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListPrivateToolsResponse {
+    /// The caller's own functions on this page.
+    #[prost(message, repeated, tag = "1")]
+    pub private_tools: ::prost::alloc::vec::Vec<PrivateToolSummary>,
+    /// Empty when no further page remains.
+    #[prost(string, tag = "2")]
+    pub next_page_token: ::prost::alloc::string::String,
+    /// The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
+    /// ToolPolicyService lists and sets the policy of these functions under it.
+    #[prost(string, tag = "3")]
+    pub private_provider: ::prost::alloc::string::String,
+}
+/// Source-free summary of one current Private Tool.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrivateToolSummary {
+    /// Private Tool Path relative to coral.private.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// Exact authored description.
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+    /// Occurrence time of the latest accepted save.
+    #[prost(message, optional, tag = "3")]
+    pub update_time: ::core::option::Option<::prost_types::Timestamp>,
+}
+/// Reads one of the caller's own current Private Tools.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetPrivateToolRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Private Tool Path relative to coral.private.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+}
+/// Deletes one of the caller's own current Private Tools.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeletePrivateToolRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Private Tool Path relative to coral.private.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+}
+/// One current Private Tool with its authoring material.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PrivateTool {
+    /// Private Tool Path relative to coral.private.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// Exact authored description.
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+    /// Self-contained TypeScript declaration emitted from the source.
+    #[prost(string, tag = "3")]
+    pub declaration: ::prost::alloc::string::String,
+    /// Exact authored TypeScript source.
+    #[prost(string, tag = "4")]
+    pub source: ::prost::alloc::string::String,
+    /// Advisory diagnostics retained from the latest accepted save.
+    #[prost(message, repeated, tag = "5")]
+    pub diagnostics: ::prost::alloc::vec::Vec<PrivateToolDiagnostic>,
+    /// True when Coral omitted diagnostics beyond its retention bound.
+    #[prost(bool, tag = "6")]
+    pub diagnostics_truncated: bool,
+    /// Occurrence time of the latest accepted save.
+    #[prost(message, optional, tag = "7")]
+    pub update_time: ::core::option::Option<::prost_types::Timestamp>,
+}
+/// One bounded advisory diagnostic retained with an accepted save.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrivateToolDiagnostic {
+    /// Diagnostic category.
+    #[prost(enumeration = "PrivateToolDiagnosticCategory", tag = "1")]
+    pub category: i32,
+    /// Official TypeScript diagnostic code.
+    #[prost(uint64, tag = "2")]
+    pub code: u64,
+    /// Bounded compiler message.
+    #[prost(string, tag = "3")]
+    pub message: ::prost::alloc::string::String,
+    /// One-based source line, when known.
+    #[prost(uint64, optional, tag = "4")]
+    pub line: ::core::option::Option<u64>,
+    /// One-based source column, when known.
+    #[prost(uint64, optional, tag = "5")]
+    pub column: ::core::option::Option<u64>,
+}
+/// Category of one advisory TypeScript diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PrivateToolDiagnosticCategory {
+    /// Not supplied or not recognized by this client.
+    Unspecified = 0,
+    /// Informational compiler message.
+    Message = 1,
+    /// Non-blocking warning.
+    Warning = 2,
+    /// Strict semantic error retained without rejecting the save.
+    Error = 3,
+    /// Non-blocking authoring suggestion.
+    Suggestion = 4,
+}
+impl PrivateToolDiagnosticCategory {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED",
+            Self::Message => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE",
+            Self::Warning => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_WARNING",
+            Self::Error => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_ERROR",
+            Self::Suggestion => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED" => Some(Self::Unspecified),
+            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE" => Some(Self::Message),
+            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_WARNING" => Some(Self::Warning),
+            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_ERROR" => Some(Self::Error),
+            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION" => Some(Self::Suggestion),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod private_tool_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Inspection and deletion of the calling User's own current Private Tools.
+    ///
+    /// A Private Tool Path names a definition only for its owning Principal in
+    /// one Workspace, so requests carry the Workspace and path rather than a
+    /// resource name. Another Principal's function and an absent path return the
+    /// same NOT_FOUND. Workspace-owned Agent functions never appear.
+    #[derive(Debug, Clone)]
+    pub struct PrivateToolServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl PrivateToolServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> PrivateToolServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> PrivateToolServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            PrivateToolServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Lists one page of the caller's own functions in path order, without source or diagnostics.
+        pub async fn list_private_tools(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListPrivateToolsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPrivateToolsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.PrivateToolService/ListPrivateTools",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.PrivateToolService",
+                        "ListPrivateTools",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Returns one of the caller's own functions with its source and saved diagnostics.
+        pub async fn get_private_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetPrivateToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::PrivateTool>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.PrivateToolService/GetPrivateTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.PrivateToolService",
+                        "GetPrivateTool",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Deletes one of the caller's own functions and records its lifecycle Event.
+        /// Coral keeps no reverse references: Programs that call the path fail at admission.
+        pub async fn delete_private_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeletePrivateToolRequest>,
+        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.PrivateToolService/DeletePrivateTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.PrivateToolService",
+                        "DeletePrivateTool",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod private_tool_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with PrivateToolServiceServer.
+    #[async_trait]
+    pub trait PrivateToolService: std::marker::Send + std::marker::Sync + 'static {
+        /// Lists one page of the caller's own functions in path order, without source or diagnostics.
+        async fn list_private_tools(
+            &self,
+            request: tonic::Request<super::ListPrivateToolsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPrivateToolsResponse>,
+            tonic::Status,
+        >;
+        /// Returns one of the caller's own functions with its source and saved diagnostics.
+        async fn get_private_tool(
+            &self,
+            request: tonic::Request<super::GetPrivateToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::PrivateTool>, tonic::Status>;
+        /// Deletes one of the caller's own functions and records its lifecycle Event.
+        /// Coral keeps no reverse references: Programs that call the path fail at admission.
+        async fn delete_private_tool(
+            &self,
+            request: tonic::Request<super::DeletePrivateToolRequest>,
+        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+    }
+    /// Inspection and deletion of the calling User's own current Private Tools.
+    ///
+    /// A Private Tool Path names a definition only for its owning Principal in
+    /// one Workspace, so requests carry the Workspace and path rather than a
+    /// resource name. Another Principal's function and an absent path return the
+    /// same NOT_FOUND. Workspace-owned Agent functions never appear.
+    #[derive(Debug)]
+    pub struct PrivateToolServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> PrivateToolServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for PrivateToolServiceServer<T>
+    where
+        T: PrivateToolService,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/coral.management.v1.PrivateToolService/ListPrivateTools" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListPrivateToolsSvc<T: PrivateToolService>(pub Arc<T>);
+                    impl<
+                        T: PrivateToolService,
+                    > tonic::server::UnaryService<super::ListPrivateToolsRequest>
+                    for ListPrivateToolsSvc<T> {
+                        type Response = super::ListPrivateToolsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListPrivateToolsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as PrivateToolService>::list_private_tools(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListPrivateToolsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.PrivateToolService/GetPrivateTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetPrivateToolSvc<T: PrivateToolService>(pub Arc<T>);
+                    impl<
+                        T: PrivateToolService,
+                    > tonic::server::UnaryService<super::GetPrivateToolRequest>
+                    for GetPrivateToolSvc<T> {
+                        type Response = super::PrivateTool;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetPrivateToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as PrivateToolService>::get_private_tool(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetPrivateToolSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.PrivateToolService/DeletePrivateTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeletePrivateToolSvc<T: PrivateToolService>(pub Arc<T>);
+                    impl<
+                        T: PrivateToolService,
+                    > tonic::server::UnaryService<super::DeletePrivateToolRequest>
+                    for DeletePrivateToolSvc<T> {
+                        type Response = ();
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeletePrivateToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as PrivateToolService>::delete_private_tool(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeletePrivateToolSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for PrivateToolServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "coral.management.v1.PrivateToolService";
+    impl<T> tonic::server::NamedService for PrivateToolServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
 /// Asks for a published release newer than this runtime.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNewerReleaseRequest {}
@@ -14519,1145 +15148,6 @@ pub(crate) mod release_service_server {
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "coral.management.v1.ReleaseService";
     impl<T> tonic::server::NamedService for ReleaseServiceServer<T> {
-        const NAME: &'static str = SERVICE_NAME;
-    }
-}
-/// Lists the caller's own current Saved Functions in one Workspace.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListSavedFunctionsRequest {
-    /// workspaces/{workspace}.
-    #[prost(string, tag = "1")]
-    pub parent: ::prost::alloc::string::String,
-    /// Maximum results, bounded to 100; zero selects the default.
-    #[prost(int32, tag = "2")]
-    pub page_size: i32,
-    /// Opaque continuation from the preceding page in this scope.
-    #[prost(string, tag = "3")]
-    pub page_token: ::prost::alloc::string::String,
-}
-/// One scoped page of source-free Saved Function summaries in path order.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListSavedFunctionsResponse {
-    /// The caller's own functions on this page.
-    #[prost(message, repeated, tag = "1")]
-    pub saved_functions: ::prost::alloc::vec::Vec<SavedFunctionSummary>,
-    /// Empty when no further page remains.
-    #[prost(string, tag = "2")]
-    pub next_page_token: ::prost::alloc::string::String,
-    /// The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
-    /// ToolPolicyService lists and sets the policy of these functions under it.
-    #[prost(string, tag = "3")]
-    pub private_provider: ::prost::alloc::string::String,
-}
-/// Source-free summary of one current Saved Function.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SavedFunctionSummary {
-    /// Saved Function Path relative to coral.private.
-    #[prost(string, tag = "1")]
-    pub path: ::prost::alloc::string::String,
-    /// Exact authored description.
-    #[prost(string, tag = "2")]
-    pub description: ::prost::alloc::string::String,
-    /// Occurrence time of the latest accepted save.
-    #[prost(message, optional, tag = "3")]
-    pub update_time: ::core::option::Option<::prost_types::Timestamp>,
-}
-/// Reads one of the caller's own current Saved Functions.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetSavedFunctionRequest {
-    /// workspaces/{workspace}.
-    #[prost(string, tag = "1")]
-    pub parent: ::prost::alloc::string::String,
-    /// Saved Function Path relative to coral.private.
-    #[prost(string, tag = "2")]
-    pub path: ::prost::alloc::string::String,
-}
-/// Deletes one of the caller's own current Saved Functions.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DeleteSavedFunctionRequest {
-    /// workspaces/{workspace}.
-    #[prost(string, tag = "1")]
-    pub parent: ::prost::alloc::string::String,
-    /// Saved Function Path relative to coral.private.
-    #[prost(string, tag = "2")]
-    pub path: ::prost::alloc::string::String,
-}
-/// One current Saved Function with its authoring material.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SavedFunction {
-    /// Saved Function Path relative to coral.private.
-    #[prost(string, tag = "1")]
-    pub path: ::prost::alloc::string::String,
-    /// Exact authored description.
-    #[prost(string, tag = "2")]
-    pub description: ::prost::alloc::string::String,
-    /// Self-contained TypeScript declaration emitted from the source.
-    #[prost(string, tag = "3")]
-    pub declaration: ::prost::alloc::string::String,
-    /// Exact authored TypeScript source.
-    #[prost(string, tag = "4")]
-    pub source: ::prost::alloc::string::String,
-    /// Advisory diagnostics retained from the latest accepted save.
-    #[prost(message, repeated, tag = "5")]
-    pub diagnostics: ::prost::alloc::vec::Vec<SavedFunctionDiagnostic>,
-    /// True when Coral omitted diagnostics beyond its retention bound.
-    #[prost(bool, tag = "6")]
-    pub diagnostics_truncated: bool,
-    /// Occurrence time of the latest accepted save.
-    #[prost(message, optional, tag = "7")]
-    pub update_time: ::core::option::Option<::prost_types::Timestamp>,
-}
-/// One bounded advisory diagnostic retained with an accepted save.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SavedFunctionDiagnostic {
-    /// Diagnostic category.
-    #[prost(enumeration = "SavedFunctionDiagnosticCategory", tag = "1")]
-    pub category: i32,
-    /// Official TypeScript diagnostic code.
-    #[prost(uint64, tag = "2")]
-    pub code: u64,
-    /// Bounded compiler message.
-    #[prost(string, tag = "3")]
-    pub message: ::prost::alloc::string::String,
-    /// One-based source line, when known.
-    #[prost(uint64, optional, tag = "4")]
-    pub line: ::core::option::Option<u64>,
-    /// One-based source column, when known.
-    #[prost(uint64, optional, tag = "5")]
-    pub column: ::core::option::Option<u64>,
-}
-/// Category of one advisory TypeScript diagnostic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum SavedFunctionDiagnosticCategory {
-    /// Not supplied or not recognized by this client.
-    Unspecified = 0,
-    /// Informational compiler message.
-    Message = 1,
-    /// Non-blocking warning.
-    Warning = 2,
-    /// Strict semantic error retained without rejecting the save.
-    Error = 3,
-    /// Non-blocking authoring suggestion.
-    Suggestion = 4,
-}
-impl SavedFunctionDiagnosticCategory {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_UNSPECIFIED",
-            Self::Message => "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_MESSAGE",
-            Self::Warning => "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_WARNING",
-            Self::Error => "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_ERROR",
-            Self::Suggestion => "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_SUGGESTION",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_UNSPECIFIED" => Some(Self::Unspecified),
-            "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_MESSAGE" => Some(Self::Message),
-            "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_WARNING" => Some(Self::Warning),
-            "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_ERROR" => Some(Self::Error),
-            "SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_SUGGESTION" => Some(Self::Suggestion),
-            _ => None,
-        }
-    }
-}
-/// Generated client implementations.
-pub mod saved_function_service_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// Inspection and deletion of the calling User's own current Saved Functions.
-    ///
-    /// A Saved Function Path names a definition only for its owning Principal in
-    /// one Workspace, so requests carry the Workspace and path rather than a
-    /// resource name. Another Principal's function and an absent path return the
-    /// same NOT_FOUND. Workspace-owned Agent functions never appear.
-    #[derive(Debug, Clone)]
-    pub struct SavedFunctionServiceClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl SavedFunctionServiceClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
-    impl<T> SavedFunctionServiceClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> SavedFunctionServiceClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            SavedFunctionServiceClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// Lists one page of the caller's own functions in path order, without source or diagnostics.
-        pub async fn list_saved_functions(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListSavedFunctionsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListSavedFunctionsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SavedFunctionService/ListSavedFunctions",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SavedFunctionService",
-                        "ListSavedFunctions",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Returns one of the caller's own functions with its source and saved diagnostics.
-        pub async fn get_saved_function(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetSavedFunctionRequest>,
-        ) -> std::result::Result<tonic::Response<super::SavedFunction>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SavedFunctionService/GetSavedFunction",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SavedFunctionService",
-                        "GetSavedFunction",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Deletes one of the caller's own functions and records its lifecycle Event.
-        /// Coral keeps no reverse references: Programs that call the path fail at admission.
-        pub async fn delete_saved_function(
-            &mut self,
-            request: impl tonic::IntoRequest<super::DeleteSavedFunctionRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SavedFunctionService/DeleteSavedFunction",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SavedFunctionService",
-                        "DeleteSavedFunction",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated server implementations.
-#[allow(dead_code, unreachable_pub)]
-pub(crate) mod saved_function_service_server {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with SavedFunctionServiceServer.
-    #[async_trait]
-    pub trait SavedFunctionService: std::marker::Send + std::marker::Sync + 'static {
-        /// Lists one page of the caller's own functions in path order, without source or diagnostics.
-        async fn list_saved_functions(
-            &self,
-            request: tonic::Request<super::ListSavedFunctionsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListSavedFunctionsResponse>,
-            tonic::Status,
-        >;
-        /// Returns one of the caller's own functions with its source and saved diagnostics.
-        async fn get_saved_function(
-            &self,
-            request: tonic::Request<super::GetSavedFunctionRequest>,
-        ) -> std::result::Result<tonic::Response<super::SavedFunction>, tonic::Status>;
-        /// Deletes one of the caller's own functions and records its lifecycle Event.
-        /// Coral keeps no reverse references: Programs that call the path fail at admission.
-        async fn delete_saved_function(
-            &self,
-            request: tonic::Request<super::DeleteSavedFunctionRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
-    }
-    /// Inspection and deletion of the calling User's own current Saved Functions.
-    ///
-    /// A Saved Function Path names a definition only for its owning Principal in
-    /// one Workspace, so requests carry the Workspace and path rather than a
-    /// resource name. Another Principal's function and an absent path return the
-    /// same NOT_FOUND. Workspace-owned Agent functions never appear.
-    #[derive(Debug)]
-    pub struct SavedFunctionServiceServer<T> {
-        inner: Arc<T>,
-        accept_compression_encodings: EnabledCompressionEncodings,
-        send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
-    }
-    impl<T> SavedFunctionServiceServer<T> {
-        pub fn new(inner: T) -> Self {
-            Self::from_arc(Arc::new(inner))
-        }
-        pub fn from_arc(inner: Arc<T>) -> Self {
-            Self {
-                inner,
-                accept_compression_encodings: Default::default(),
-                send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
-            }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
-        where
-            F: tonic::service::Interceptor,
-        {
-            InterceptedService::new(Self::new(inner), interceptor)
-        }
-        /// Enable decompressing requests with the given encoding.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.accept_compression_encodings.enable(encoding);
-            self
-        }
-        /// Compress responses with the given encoding, if the client supports it.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.send_compression_encodings.enable(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
-    }
-    impl<T, B> tonic::codegen::Service<http::Request<B>>
-    for SavedFunctionServiceServer<T>
-    where
-        T: SavedFunctionService,
-        B: Body + std::marker::Send + 'static,
-        B::Error: Into<StdError> + std::marker::Send + 'static,
-    {
-        type Response = http::Response<tonic::body::Body>;
-        type Error = std::convert::Infallible;
-        type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            match req.uri().path() {
-                "/coral.management.v1.SavedFunctionService/ListSavedFunctions" => {
-                    #[allow(non_camel_case_types)]
-                    struct ListSavedFunctionsSvc<T: SavedFunctionService>(pub Arc<T>);
-                    impl<
-                        T: SavedFunctionService,
-                    > tonic::server::UnaryService<super::ListSavedFunctionsRequest>
-                    for ListSavedFunctionsSvc<T> {
-                        type Response = super::ListSavedFunctionsResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ListSavedFunctionsRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SavedFunctionService>::list_saved_functions(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ListSavedFunctionsSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.SavedFunctionService/GetSavedFunction" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetSavedFunctionSvc<T: SavedFunctionService>(pub Arc<T>);
-                    impl<
-                        T: SavedFunctionService,
-                    > tonic::server::UnaryService<super::GetSavedFunctionRequest>
-                    for GetSavedFunctionSvc<T> {
-                        type Response = super::SavedFunction;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetSavedFunctionRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SavedFunctionService>::get_saved_function(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetSavedFunctionSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.SavedFunctionService/DeleteSavedFunction" => {
-                    #[allow(non_camel_case_types)]
-                    struct DeleteSavedFunctionSvc<T: SavedFunctionService>(pub Arc<T>);
-                    impl<
-                        T: SavedFunctionService,
-                    > tonic::server::UnaryService<super::DeleteSavedFunctionRequest>
-                    for DeleteSavedFunctionSvc<T> {
-                        type Response = ();
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::DeleteSavedFunctionRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SavedFunctionService>::delete_saved_function(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = DeleteSavedFunctionSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
-            }
-        }
-    }
-    impl<T> Clone for SavedFunctionServiceServer<T> {
-        fn clone(&self) -> Self {
-            let inner = self.inner.clone();
-            Self {
-                inner,
-                accept_compression_encodings: self.accept_compression_encodings,
-                send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
-            }
-        }
-    }
-    /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "coral.management.v1.SavedFunctionService";
-    impl<T> tonic::server::NamedService for SavedFunctionServiceServer<T> {
-        const NAME: &'static str = SERVICE_NAME;
-    }
-}
-/// Asks for the deployment's usage data.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetUsageDataRequest {}
-/// Turns sharing on or off for the whole deployment.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SetUsageDataSharingRequest {
-    /// True turns sharing on; false turns it off.
-    #[prost(bool, tag = "1")]
-    pub sharing: bool,
-}
-/// The deployment's usage data, as the Usage data page shows it.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UsageData {
-    /// On until an Organization Owner turns it off.
-    #[prost(bool, tag = "1")]
-    pub sharing: bool,
-    /// Whether the caller is an Organization Owner, who can change `sharing`.
-    #[prost(bool, tag = "2")]
-    pub can_change: bool,
-    /// What stops this process from sending, whatever `sharing` says.
-    #[prost(enumeration = "UsageSendBlock", tag = "3")]
-    pub block: i32,
-    /// Where Coral runs.
-    #[prost(enumeration = "UsageHostKind", tag = "4")]
-    pub kind: i32,
-    /// The next report, as the exact JSON Coral sends.
-    #[prost(string, tag = "5")]
-    pub next_report_json: ::prost::alloc::string::String,
-    /// The last report the collector stored, when there is one.
-    #[prost(message, optional, tag = "6")]
-    pub last_sent: ::core::option::Option<SentUsageReport>,
-}
-/// A report the collector stored.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SentUsageReport {
-    /// The exact JSON Coral sent.
-    #[prost(string, tag = "1")]
-    pub json: ::prost::alloc::string::String,
-    /// When the collector stored it.
-    #[prost(message, optional, tag = "2")]
-    pub sent_time: ::core::option::Option<::prost_types::Timestamp>,
-}
-/// What stops this process from sending.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum UsageSendBlock {
-    /// Unknown: a newer runtime may send a reason this client does not know.
-    /// The process does not send.
-    Unspecified = 0,
-    /// Nothing: the process sends while sharing is on.
-    None = 1,
-    /// `DO_NOT_TRACK` is set.
-    DoNotTrack = 2,
-    /// `CORAL_DISABLE_USAGE_DATA` is set.
-    CoralDisableUsageData = 3,
-    /// A source or development build.
-    SourceBuild = 4,
-}
-impl UsageSendBlock {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "USAGE_SEND_BLOCK_UNSPECIFIED",
-            Self::None => "USAGE_SEND_BLOCK_NONE",
-            Self::DoNotTrack => "USAGE_SEND_BLOCK_DO_NOT_TRACK",
-            Self::CoralDisableUsageData => "USAGE_SEND_BLOCK_CORAL_DISABLE_USAGE_DATA",
-            Self::SourceBuild => "USAGE_SEND_BLOCK_SOURCE_BUILD",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "USAGE_SEND_BLOCK_UNSPECIFIED" => Some(Self::Unspecified),
-            "USAGE_SEND_BLOCK_NONE" => Some(Self::None),
-            "USAGE_SEND_BLOCK_DO_NOT_TRACK" => Some(Self::DoNotTrack),
-            "USAGE_SEND_BLOCK_CORAL_DISABLE_USAGE_DATA" => {
-                Some(Self::CoralDisableUsageData)
-            }
-            "USAGE_SEND_BLOCK_SOURCE_BUILD" => Some(Self::SourceBuild),
-            _ => None,
-        }
-    }
-}
-/// Where Coral runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum UsageHostKind {
-    /// Unknown: a newer runtime may send a kind this client does not know.
-    Unspecified = 0,
-    /// Coral Desktop on one computer.
-    Desktop = 1,
-    /// A shared server.
-    Server = 2,
-}
-impl UsageHostKind {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "USAGE_HOST_KIND_UNSPECIFIED",
-            Self::Desktop => "USAGE_HOST_KIND_DESKTOP",
-            Self::Server => "USAGE_HOST_KIND_SERVER",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "USAGE_HOST_KIND_UNSPECIFIED" => Some(Self::Unspecified),
-            "USAGE_HOST_KIND_DESKTOP" => Some(Self::Desktop),
-            "USAGE_HOST_KIND_SERVER" => Some(Self::Server),
-            _ => None,
-        }
-    }
-}
-/// Generated client implementations.
-pub mod usage_data_service_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// The deployment's anonymous usage data: the one sharing setting, and the
-    /// Usage Reports Coral sends.
-    #[derive(Debug, Clone)]
-    pub struct UsageDataServiceClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl UsageDataServiceClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
-    impl<T> UsageDataServiceClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> UsageDataServiceClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            UsageDataServiceClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// Any Organization Member can read the setting and the reports.
-        pub async fn get_usage_data(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetUsageDataRequest>,
-        ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.UsageDataService/GetUsageData",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.UsageDataService",
-                        "GetUsageData",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Only an Organization Owner can change the setting.
-        pub async fn set_usage_data_sharing(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SetUsageDataSharingRequest>,
-        ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.UsageDataService/SetUsageDataSharing",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.UsageDataService",
-                        "SetUsageDataSharing",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated server implementations.
-#[allow(dead_code, unreachable_pub)]
-pub(crate) mod usage_data_service_server {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with UsageDataServiceServer.
-    #[async_trait]
-    pub trait UsageDataService: std::marker::Send + std::marker::Sync + 'static {
-        /// Any Organization Member can read the setting and the reports.
-        async fn get_usage_data(
-            &self,
-            request: tonic::Request<super::GetUsageDataRequest>,
-        ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status>;
-        /// Only an Organization Owner can change the setting.
-        async fn set_usage_data_sharing(
-            &self,
-            request: tonic::Request<super::SetUsageDataSharingRequest>,
-        ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status>;
-    }
-    /// The deployment's anonymous usage data: the one sharing setting, and the
-    /// Usage Reports Coral sends.
-    #[derive(Debug)]
-    pub struct UsageDataServiceServer<T> {
-        inner: Arc<T>,
-        accept_compression_encodings: EnabledCompressionEncodings,
-        send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
-    }
-    impl<T> UsageDataServiceServer<T> {
-        pub fn new(inner: T) -> Self {
-            Self::from_arc(Arc::new(inner))
-        }
-        pub fn from_arc(inner: Arc<T>) -> Self {
-            Self {
-                inner,
-                accept_compression_encodings: Default::default(),
-                send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
-            }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
-        where
-            F: tonic::service::Interceptor,
-        {
-            InterceptedService::new(Self::new(inner), interceptor)
-        }
-        /// Enable decompressing requests with the given encoding.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.accept_compression_encodings.enable(encoding);
-            self
-        }
-        /// Compress responses with the given encoding, if the client supports it.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.send_compression_encodings.enable(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
-    }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for UsageDataServiceServer<T>
-    where
-        T: UsageDataService,
-        B: Body + std::marker::Send + 'static,
-        B::Error: Into<StdError> + std::marker::Send + 'static,
-    {
-        type Response = http::Response<tonic::body::Body>;
-        type Error = std::convert::Infallible;
-        type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            match req.uri().path() {
-                "/coral.management.v1.UsageDataService/GetUsageData" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetUsageDataSvc<T: UsageDataService>(pub Arc<T>);
-                    impl<
-                        T: UsageDataService,
-                    > tonic::server::UnaryService<super::GetUsageDataRequest>
-                    for GetUsageDataSvc<T> {
-                        type Response = super::UsageData;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetUsageDataRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as UsageDataService>::get_usage_data(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetUsageDataSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.UsageDataService/SetUsageDataSharing" => {
-                    #[allow(non_camel_case_types)]
-                    struct SetUsageDataSharingSvc<T: UsageDataService>(pub Arc<T>);
-                    impl<
-                        T: UsageDataService,
-                    > tonic::server::UnaryService<super::SetUsageDataSharingRequest>
-                    for SetUsageDataSharingSvc<T> {
-                        type Response = super::UsageData;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::SetUsageDataSharingRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as UsageDataService>::set_usage_data_sharing(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = SetUsageDataSharingSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
-            }
-        }
-    }
-    impl<T> Clone for UsageDataServiceServer<T> {
-        fn clone(&self) -> Self {
-            let inner = self.inner.clone();
-            Self {
-                inner,
-                accept_compression_encodings: self.accept_compression_encodings,
-                send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
-            }
-        }
-    }
-    /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "coral.management.v1.UsageDataService";
-    impl<T> tonic::server::NamedService for UsageDataServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

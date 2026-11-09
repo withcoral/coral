@@ -50,10 +50,6 @@ coral_failures! {
     ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
-    /// No function of the caller's was at the path `deleteFunction` named.
-    /// Coral no longer performs that Tool; the code stays so retained
-    /// Invocations still read.
-    SavedFunctionNotFound => "saved_function_not_found",
     /// One of the caller's Private Tools is already at the path.
     PrivateToolExists => "private_tool_exists",
     /// None of the caller's Private Tools is at the path.
@@ -137,7 +133,6 @@ impl CoralFailure {
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not change the Provider",
-            Self::SavedFunctionNotFound => "Saved Function was not found",
             Self::PrivateToolExists => "A Private Tool is already at this path",
             Self::PrivateToolNotFound => "Private Tool was not found",
             Self::PrivateToolRevisionConflict => "Private Tool changed since the expected revision",
@@ -390,9 +385,9 @@ pub enum Error {
     /// Program source could not be lowered into an accepted package.
     #[error("Program admission failed: {0}")]
     ProgramAdmission(String),
-    /// Current Saved Function selection or cleanup failed.
+    /// Current Private Tool selection or cleanup failed.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Functions(#[from] coral_tools::Error),
     /// Current Principal authority does not permit this staged operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
@@ -546,7 +541,7 @@ impl Error {
 
     /// The database error behind this one, through the module errors that
     /// wrap it (a Provider's Catalog or Workspace error, a Policy's Provider
-    /// or Workspace error, a Saved Function's Workspace error).
+    /// or Workspace error, a Private Tool's Workspace error).
     #[must_use]
     pub(crate) fn database_error(&self) -> Option<&coral_db::Error> {
         fn workspace(error: &coral_workspace::Error) -> Option<&coral_db::Error> {
@@ -580,8 +575,8 @@ impl Error {
                 _ => None,
             },
             Self::Functions(error) => match error {
-                coral_functions::Error::Database(error) => Some(error),
-                coral_functions::Error::Workspace(error) => workspace(error),
+                coral_tools::Error::Database(error) => Some(error),
+                coral_tools::Error::Workspace(error) => workspace(error),
                 _ => None,
             },
             _ => None,
@@ -670,7 +665,7 @@ mod tests {
             ),
             (
                 |error| {
-                    Error::Functions(coral_functions::Error::Workspace(
+                    Error::Functions(coral_tools::Error::Workspace(
                         coral_workspace::Error::Database(error),
                     ))
                 },

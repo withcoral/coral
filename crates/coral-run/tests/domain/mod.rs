@@ -64,7 +64,7 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::engine::{
-    Clock, ExecutionCompletion, ProgramEngine, ProgramPackage, SavedFunctionReference,
+    Clock, ExecutionCompletion, PrivateToolReference, ProgramEngine, ProgramPackage,
 };
 use crate::execution::{ExecutionObserver, ExecutionStop, NoopExecutionObserver};
 use crate::invocation::{InvocationObserver, NoopInvocationObserver, UpstreamSender};
@@ -73,10 +73,9 @@ use crate::{
     RunFailureCode, RunModule, RunObservation, RunState, RunSubmission, RunTerminalOutcome,
     RunTimeout,
 };
-use coral_functions::{
-    Error as FunctionsError, SavedFunctionChangeContext, SavedFunctionDescription,
-    SavedFunctionModule, SavedFunctionPath, SavedFunctionSave, SavedFunctionSelection,
-    SavedFunctionSource,
+use coral_tools::{
+    Error as FunctionsError, PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave, PrivateToolSelection, PrivateToolSource,
 };
 use support::*;
 

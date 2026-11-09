@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
-    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference, ToolReferences,
+    BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, LinkedPrivateToolSource,
+    PrivateToolCallPaths, PrivateToolCompilation, PrivateToolReference, ToolReferences,
     UnknownToolCall,
 };
 
-/// The calls Program Admission and Saved Function save make of one warm
+/// The calls Program Admission and Private Tool save make of one warm
 /// Program Compiler, one for each compiler request.
 ///
 /// Each call carries `time_left`, the time left until its caller's
@@ -14,7 +14,7 @@ use coral_v8::{
 /// time runs out, while it waits or while it compiles. A call
 /// carries source and no authority.
 pub trait CompilerClient: Send + Sync {
-    /// The Saved Functions and Tools that a Program body names directly.
+    /// The Private Tools and Tools that a Program body names directly.
     ///
     /// # Errors
     ///
@@ -24,7 +24,7 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError>;
+    ) -> Result<PrivateToolCallPaths, CompileError>;
 
     /// The called chains of `tools` that name none of the `callable` Call
     /// Paths.
@@ -39,7 +39,7 @@ pub trait CompilerClient: Send + Sync {
         callable: &[String],
     ) -> Result<Vec<UnknownToolCall>, CompileError>;
 
-    /// The Saved Functions that one Saved Function module names directly.
+    /// The Private Tools that one Private Tool module names directly.
     ///
     /// # Errors
     ///
@@ -48,9 +48,9 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileError>;
+    ) -> Result<Vec<PrivateToolReference>, CompileError>;
 
-    /// A Program body lowered with the Saved Functions it links, which
+    /// A Program body lowered with the Private Tools it links, which
     /// initialize in the given order, and with `builtin_tools` on `coral`.
     ///
     /// # Errors
@@ -61,11 +61,11 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        private_tools: &[LinkedPrivateToolSource],
         builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError>;
 
-    /// The Saved Functions and Tools that one Saved Function module names
+    /// The Private Tools and Tools that one Private Tool module names
     /// directly, to type it.
     ///
     /// # Errors
@@ -76,9 +76,9 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError>;
+    ) -> Result<PrivateToolCallPaths, CompileError>;
 
-    /// One Saved Function's declaration and advisory diagnostics, with
+    /// One Private Tool's declaration and advisory diagnostics, with
     /// `builtin_tools` on `coral` and typed by `declarations` when there are
     /// any.
     ///
@@ -92,7 +92,7 @@ pub trait CompilerClient: Send + Sync {
         source: &str,
         builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError>;
+    ) -> Result<PrivateToolCompilation, CompileError>;
 }
 
 /// The time left until `deadline`, which a call carries.
@@ -117,7 +117,7 @@ pub enum CompileError {
 /// Safe diagnostics for a rejected source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Diagnostics {
-    /// A `coral.private` access that names no supported Saved Function
+    /// A `coral.private` access that names no supported Private Tool
     /// path, at its authored location.
     Reference {
         /// The safe reason.
@@ -154,7 +154,7 @@ impl CompileError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::TimedOut => "compilation_timed_out",
-            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_saved_function_reference",
+            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_private_tool_reference",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
             Self::Unavailable(Unavailable::Stopped) => "compiler_unavailable",
@@ -177,7 +177,7 @@ impl From<CompileError> for CompileFailure {
                 message,
                 line,
                 column,
-            }) => coral_v8::Error::InvalidSavedFunctionReference {
+            }) => coral_v8::Error::InvalidPrivateToolReference {
                 message,
                 line,
                 column,

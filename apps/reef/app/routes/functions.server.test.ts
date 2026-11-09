@@ -2,7 +2,7 @@ import { ConnectError, Code } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
-import { SavedFunctionDiagnosticCategory } from '@/generated/coral/management/v1/saved_function_pb'
+import { PrivateToolDiagnosticCategory } from '@/generated/coral/management/v1/private_tool_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport, type ManagementHandlers } from '@/lib/management.test-support'
 import { action as functionAction, loader as functionLoader } from './function'
@@ -19,7 +19,7 @@ const savedAt = { seconds: 1_700_000_000n, nanos: 0 }
 const privateProvider = `${parent}/providers/00000000-0000-4000-8000-0000000000aa`
 
 function api(
-  savedFunctions: ManagementHandlers['savedFunctions'],
+  privateTools: ManagementHandlers['privateTools'],
   policies: ManagementHandlers['policies'] = { listToolAccess: () => ({ tools: [] }) },
 ) {
   return fakeManagementTransport({
@@ -31,7 +31,7 @@ function api(
         state: WorkspaceState.ACTIVE,
       }),
     },
-    savedFunctions,
+    privateTools,
     policies,
   })
 }
@@ -51,16 +51,16 @@ const detailArgs = (path: string) =>
 it('lists every page of a Member’s own functions as source-free summaries', async () => {
   const requests: unknown[] = []
   coral.transport = api({
-    listSavedFunctions: (request) => {
+    listPrivateTools: (request) => {
       requests.push({
         parent: request.parent,
         pageSize: request.pageSize,
         pageToken: request.pageToken,
       })
       return request.pageToken
-        ? { savedFunctions: [{ path: 'zeta.last', description: 'Last', updateTime: savedAt }] }
+        ? { privateTools: [{ path: 'zeta.last', description: 'Last', updateTime: savedAt }] }
         : {
-            savedFunctions: [
+            privateTools: [
               { path: 'reports.total', description: 'Sum the report', updateTime: savedAt },
             ],
             nextPageToken: 'after-reports',
@@ -97,8 +97,8 @@ it('shows each function with the policy of its own row in the private provider',
   const requests: unknown[] = []
   coral.transport = api(
     {
-      listSavedFunctions: () => ({
-        savedFunctions: [
+      listPrivateTools: () => ({
+        privateTools: [
           { path: 'people.blocked', description: 'Blocked', updateTime: savedAt },
           { path: 'people.greet', description: 'Greet', updateTime: savedAt },
         ],
@@ -151,7 +151,7 @@ it('shows each function with the policy of its own row in the private provider',
 it('loads one function with its source, declaration, and saved diagnostics', async () => {
   let requested: unknown
   coral.transport = api({
-    getSavedFunction: (request) => {
+    getPrivateTool: (request) => {
       requested = { parent: request.parent, path: request.path }
       return {
         path: request.path,
@@ -160,14 +160,14 @@ it('loads one function with its source, declaration, and saved diagnostics', asy
         source: 'export default () => missing;',
         diagnostics: [
           {
-            category: SavedFunctionDiagnosticCategory.ERROR,
+            category: PrivateToolDiagnosticCategory.ERROR,
             code: 2304n,
             message: "Cannot find name 'missing'.",
             line: 1n,
             column: 22n,
           },
           {
-            category: SavedFunctionDiagnosticCategory.SUGGESTION,
+            category: PrivateToolDiagnosticCategory.SUGGESTION,
             code: 80004n,
             message: 'Consider a type annotation.',
           },
@@ -179,7 +179,7 @@ it('loads one function with its source, declaration, and saved diagnostics', asy
   })
   const result = await functionLoader(detailArgs('reports.total'))
   expect(requested).toEqual({ parent, path: 'reports.total' })
-  expect(result.data.savedFunction).toEqual({
+  expect(result.data.privateTool).toEqual({
     path: 'reports.total',
     description: 'Sum the report',
     declaration: 'declare const _default: () => number;',
@@ -210,7 +210,7 @@ it.each([
   ['a malformed path', Code.InvalidArgument],
 ])('reads %s as a missing page', async (_case, code) => {
   coral.transport = api({
-    getSavedFunction: () => {
+    getPrivateTool: () => {
       throw new ConnectError('concealed', code)
     },
   })
@@ -273,7 +273,7 @@ const remove = (path: string, intent = 'delete') => {
 it('deletes the open function and returns to the list', async () => {
   const deleted: unknown[] = []
   coral.transport = api({
-    deleteSavedFunction: (request) => {
+    deletePrivateTool: (request) => {
       deleted.push({ parent: request.parent, path: request.path })
       return {}
     },
@@ -290,7 +290,7 @@ it('deletes the open function and returns to the list', async () => {
 // Catches: a refused delete closing the dialog as if it worked.
 it('keeps a refused delete in the dialog with its reason', async () => {
   coral.transport = api({
-    deleteSavedFunction: () => {
+    deletePrivateTool: () => {
       throw new ConnectError('concealed', Code.NotFound)
     },
   })
@@ -303,8 +303,8 @@ it('keeps a refused delete in the dialog with its reason', async () => {
 
 // Catches: a forged intent reaching Coral as a delete.
 it('rejects an unknown intent without calling Coral', async () => {
-  const deleteSavedFunction = vi.fn(() => ({}))
-  coral.transport = api({ deleteSavedFunction })
+  const deletePrivateTool = vi.fn(() => ({}))
+  coral.transport = api({ deletePrivateTool })
   await expect(remove('reports.total', 'rename')).rejects.toMatchObject({ status: 400 })
-  expect(deleteSavedFunction).not.toHaveBeenCalled()
+  expect(deletePrivateTool).not.toHaveBeenCalled()
 })

@@ -11,7 +11,7 @@ use crate::access::CredentialRoute;
 use crate::account_tests::authorization_request;
 use crate::tests::{change_context, organization_user, publish_provider};
 
-/// Offboarding also retires Saved Functions, so the schema includes them.
+/// Offboarding also retires Private Tools, so the schema includes them.
 async fn test_modules() -> (
     coral_test_support::TestDatabase,
     coral_workspace::WorkspaceModule,

@@ -174,7 +174,7 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
 }
 
 /// A Program's byte bound and NUL check are domain-owned, as its schema
-/// leaves them. coral-functions owns a saved source's own rules.
+/// leaves them. coral-tools owns a saved source's own rules.
 async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
     let program = format!("//{}", "é".repeat(32767));
     assert_eq!(program.len(), 65536);

@@ -1,10 +1,10 @@
 //! Ranking regressions: queries whose first hits were wrong, each over a
 //! small invented catalog that reproduces the defect on both backends.
 //!
-//! The catalog has three Providers and two Saved Functions. GitHub holds
+//! The catalog has three Providers and two Private Tools. GitHub holds
 //! many Tools whose names hold `search`, `issues` and `list`; Slack and
 //! Linear hold few, which match a query mostly through their Provider's
-//! name. Each Saved Function shares one body word with a query that a Tool
+//! name. Each Private Tool shares one body word with a query that a Tool
 //! matches better.
 
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
@@ -76,7 +76,7 @@ const LINEAR: &str = r#"{
   }
 }"#;
 
-/// One User's Workspace with the three Providers and two Saved Functions,
+/// One User's Workspace with the three Providers and two Private Tools,
 /// converged.
 async fn catalog() -> (TestModules, AuthenticatedPrincipal, WorkspaceId) {
     let modules = TestModules::new().await;
@@ -123,7 +123,7 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
             "coral.providers.slack.conversations.history",
             0,
             "the query names Slack, so its Tool that holds `messages` outranks \
-             GitHub Tools whose names hold `search`, and a Saved Function that \
+             GitHub Tools whose names hold `search`, and a Private Tool that \
              holds only `messages`",
         ),
         (
@@ -145,7 +145,7 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
             "channel messages",
             "coral.private.digest.weekly",
             0,
-            "a Saved Function whose description holds the whole query outranks \
+            "a Private Tool whose description holds the whole query outranks \
              Tools that hold its words apart",
         ),
     ];
@@ -164,9 +164,9 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
 }
 
 #[tokio::test]
-async fn a_weak_saved_function_follows_every_strong_tool() {
+async fn a_weak_private_tool_follows_every_strong_tool() {
     let (modules, principal, workspace) = catalog().await;
-    // Each row: the query, a Saved Function that shares only a description
+    // Each row: the query, a Private Tool that shares only a description
     // word with it, and Tools that are strong matches: every Tool of the
     // Provider the query names, and a Tool whose name and title start words
     // with half of the query's content words.
@@ -227,15 +227,15 @@ const OPS: &str = r#"{
 }"#;
 
 /// Two Tools in one phrase tier whose statement order and whole-word counts
-/// disagree, and a Saved Function that holds both query words apart in its
+/// disagree, and a Private Tool that holds both query words apart in its
 /// description. `deployments.listStatuses` leads its window by its score:
 /// its name and title start words with both query words, though neither is
 /// a whole word there. `status.get` holds `status` whole in its name. A
 /// merge that compares whole-word counts across kinds puts the Saved
 /// Function first, since it holds more whole words than the window's head,
-/// and so above `status.get`, which holds more than the Saved Function.
+/// and so above `status.get`, which holds more than the Private Tool.
 #[tokio::test]
-async fn a_saved_function_between_two_tools_follows_both_when_it_is_weak() {
+async fn a_private_tool_between_two_tools_follows_both_when_it_is_weak() {
     let modules = TestModules::new().await;
     let user = organization_user(modules.search.database.clone(), USER).await;
     let principal = AuthenticatedPrincipal::user(user.clone());
@@ -262,7 +262,7 @@ async fn a_saved_function_between_two_tools_follows_both_when_it_is_weak() {
             "coral.private.alerts.notify",
         ],
         "both Tools are strong by the Tool rule and keep their statement's \
-         order; the Saved Function's path starts no query word, so it is weak \
+         order; the Private Tool's path starts no query word, so it is weak \
          and follows them"
     );
 }

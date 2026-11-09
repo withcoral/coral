@@ -75,7 +75,7 @@ struct RunProgramHost {
 }
 
 impl RunProgramHost {
-    /// Names the Run's retained source for one V8 call site. A Saved Function
+    /// Names the Run's retained source for one V8 call site. A Private Tool
     /// path without a retained snapshot gives no location rather than a guess.
     fn source_location(
         &self,
@@ -84,8 +84,8 @@ impl RunProgramHost {
         let location = location?;
         let document = match location.source {
             coral_v8::AuthoredSource::Program => SourceDocument::Program,
-            coral_v8::AuthoredSource::SavedFunction { path } => SourceDocument::SavedFunction {
-                saved_function_id: self
+            coral_v8::AuthoredSource::PrivateTool { path } => SourceDocument::PrivateTool {
+                private_tool_id: self
                     .linked_snapshots
                     .get(&path)?
                     .binding

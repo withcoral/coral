@@ -1,4 +1,4 @@
-//! Saved Function save types the Call Paths a source names from what the
+//! Private Tool save types the Call Paths a source names from what the
 //! caller can discover. The compiler's typing rules are tested at
 //! `coral-v8` and the visibility rules at `coral-search`; these tests cover
 //! that the save command composes them with the caller's authority.
@@ -67,14 +67,14 @@ const UNKNOWN_TOOL: u64 = 100_001;
 /// `(code, line, column)` of each diagnostic.
 type Located = Vec<(u64, Option<u64>, Option<u64>)>;
 
-fn located(diagnostics: &[coral_functions::SavedFunctionDiagnostic]) -> Located {
+fn located(diagnostics: &[coral_tools::PrivateToolDiagnostic]) -> Located {
     diagnostics
         .iter()
         .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
         .collect()
 }
 
-async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_functions::SavedFunction {
+async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_tools::PrivateTool {
     let goal = fixture.goal().await;
     fixture
         .save_function(
@@ -91,7 +91,7 @@ async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_functions::S
 async fn save_diagnostics(
     fixture: &Fixture,
     body: &str,
-) -> Vec<coral_functions::SavedFunctionDiagnostic> {
+) -> Vec<coral_tools::PrivateToolDiagnostic> {
     save(
         fixture,
         "typed.check",
@@ -122,7 +122,7 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
             vec![(2551, Some(2), Some(83))],
         ),
         (
-            "a Saved Function the caller owns",
+            "a Private Tool the caller owns",
             "  return coral.private.helpers.double(\"two\");",
             vec![(2345, Some(2), Some(39))],
         ),

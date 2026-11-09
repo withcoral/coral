@@ -22,7 +22,7 @@ import { useArrivalToast } from '@/lib/use-arrival-toast'
 import { countLabel } from '@/utils/count-label'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import type { WorkspaceView } from '@/views/management/types'
-import type { SavedFunctionSummaryView } from './types'
+import type { PrivateToolSummaryView } from './types'
 import * as styles from './functions.css'
 
 /** Deleting a function returns to the list with this flag in the query. */
@@ -30,7 +30,7 @@ export const FUNCTION_DELETED = ['functionDeleted'] as const
 
 export interface FunctionsPageProps {
   workspace: WorkspaceView
-  functions: SavedFunctionSummaryView[]
+  functions: PrivateToolSummaryView[]
   /** The open function's drawer, when the address names one. */
   children?: ReactNode
 }
@@ -44,7 +44,7 @@ interface Namespace {
 }
 
 interface Member {
-  summary: SavedFunctionSummaryView
+  summary: PrivateToolSummaryView
   /** The path after the namespace, or the whole path for a top-level function. */
   name: string
 }
@@ -56,7 +56,7 @@ function namespaceOf(path: string) {
 }
 
 /** Splits top-level functions from namespaced ones, keeping path order within each. */
-function catalog(functions: SavedFunctionSummaryView[]) {
+function catalog(functions: PrivateToolSummaryView[]) {
   const topLevel: Member[] = []
   const byName = new Map<string, Namespace>()
   for (const summary of functions) {
@@ -111,7 +111,7 @@ const TabPath = createContext<string | null>(null)
 /** The address of the tab the drawer opened over, or null outside the page. */
 export const useTabPath = () => useContext(TabPath)
 
-/** The current User's own Saved Functions in one Workspace. Reef only reads them. */
+/** The current User's own Private Tools in one Workspace. Reef only reads them. */
 export function FunctionsPage({ workspace: w, functions, children }: FunctionsPageProps) {
   useArrivalToast(FUNCTION_DELETED, () => ({ title: 'Function deleted' }))
   const [railFilterInput, setRailFilterInput] = useState('')

@@ -55,9 +55,9 @@ const CORAL: &[&str] = &[
     // state.
     "coral.tool.call_path",
     "coral.tool.effect",
-    // The Saved Function and its Call Path.
-    "coral.saved_function.id",
-    "coral.saved_function.call_path",
+    // The Private Tool and its Call Path.
+    "coral.private_tool.id",
+    "coral.private_tool.call_path",
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
     // A Run Executor's protocol level and its peer's, when a link refuses

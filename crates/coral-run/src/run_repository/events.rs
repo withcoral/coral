@@ -30,7 +30,7 @@ enum ProgramRunEvents {
     LogMessage,
     OutputBytes,
     SourceDocument,
-    SourceSavedFunctionId,
+    SourcePrivateToolId,
     SourceLine,
     SourceColumn,
 }
@@ -353,7 +353,7 @@ const EVENT_COLUMNS: [ProgramRunEvents; 18] = [
     ProgramRunEvents::LogMessage,
     ProgramRunEvents::OutputBytes,
     ProgramRunEvents::SourceDocument,
-    ProgramRunEvents::SourceSavedFunctionId,
+    ProgramRunEvents::SourcePrivateToolId,
     ProgramRunEvents::SourceLine,
     ProgramRunEvents::SourceColumn,
 ];
@@ -383,7 +383,7 @@ fn event_row(
         NewEvent::Emitted(_, location) | NewEvent::Logged(_, _, location) => *location,
         _ => None,
     };
-    let [document, saved_function_id, line, column] =
+    let [document, private_tool_id, line, column] =
         source_location_repository::row_values(source_location);
     let (event_type, payload) = match event {
         NewEvent::Started => ("run.started", EventPayload::default()),
@@ -452,7 +452,7 @@ fn event_row(
         text(payload.log.map(|(_, message)| message)),
         output_bytes.into(),
         document,
-        saved_function_id,
+        private_tool_id,
         line,
         column,
     ])

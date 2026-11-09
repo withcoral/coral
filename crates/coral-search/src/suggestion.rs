@@ -52,7 +52,7 @@ pub(crate) async fn suggestions(
     // The caller's own Private Tools are the Entities under its Private
     // root; every other root holds Provider Tools.
     let kind = if call_root == ProviderCallRoot::Private {
-        EntityKind::SavedFunction
+        EntityKind::PrivateTool
     } else {
         EntityKind::ProviderTool
     };

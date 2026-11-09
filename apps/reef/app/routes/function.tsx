@@ -19,7 +19,7 @@ import {
   resourcePath,
   workspaceName,
 } from '@/lib/management.server'
-import { savedFunctionView } from '@/lib/management-views.server'
+import { privateToolView } from '@/lib/management-views.server'
 import { FunctionDrawer, FunctionDrawerError } from '@/views/functions/function-drawer'
 import { FUNCTION_DELETED } from '@/views/functions/functions-page'
 import type { loader as functionsLoader } from './functions'
@@ -27,14 +27,14 @@ import type { loader as functionsLoader } from './functions'
 export async function loader({ context, params }: Route.LoaderArgs) {
   const parent = workspaceName(params.workspace)
   try {
-    const savedFunction = await management(context).savedFunctions.getSavedFunction({
+    const privateTool = await management(context).privateTools.getPrivateTool({
       parent,
       path: params.path,
     })
     return data(
       {
         listPath: `${resourcePath(parent)}/functions`,
-        savedFunction: savedFunctionView(savedFunction),
+        privateTool: privateToolView(privateTool),
         form: formContext(context),
       },
       { headers: privateHeaders },
@@ -52,7 +52,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (field(form, 'intent') !== 'delete') throw new Response('Invalid action', { status: 400 })
   const parent = workspaceName(params.workspace)
   try {
-    await management(context).savedFunctions.deleteSavedFunction({
+    await management(context).privateTools.deletePrivateTool({
       parent,
       path: params.path,
     })

@@ -1,7 +1,7 @@
 //! Relevance inside the database, one retriever per Search Entity kind.
 //!
 //! Every test builds its world through real Provider publication and real
-//! Saved Function saves, converges the index with one reconcile pass, and
+//! Private Tool saves, converges the index with one reconcile pass, and
 //! observes what an agent sees through `UniversalSearchModule::search`.
 
 use coral_catalog::ToolKey;
@@ -19,7 +19,7 @@ use crate::{
 
 const USER: &str = "user:search-retrieval";
 
-/// Two GitHub Tools and two Saved Functions that all match `issues`.
+/// Two GitHub Tools and two Private Tools that all match `issues`.
 const GITHUB: &str = r#"{
   "openapi": "3.1.0",
   "info": { "title": "GitHub", "version": "1.0.0" },
@@ -209,17 +209,17 @@ async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
         RetrieverState::ResultsFound
     );
     assert_eq!(
-        state(&page, EntityKind::SavedFunction),
+        state(&page, EntityKind::PrivateTool),
         RetrieverState::ResultsFound
     );
 
-    // The Provider filter narrows Tools only: Saved Functions stay, for
+    // The Provider filter narrows Tools only: Private Tools stay, for
     // a query and for a listing.
     let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
     let filtered = corpus.search(issues.with_provider(&github)).await;
     assert_eq!(paths(&filtered), paths(&page));
     assert_eq!(
-        state(&filtered, EntityKind::SavedFunction),
+        state(&filtered, EntityKind::PrivateTool),
         RetrieverState::ResultsFound
     );
     let listed = corpus
@@ -377,7 +377,7 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
             "coral.private.triage.openIssues",
             "coral.private.reports.weekly",
         ],
-        "neither a disabled Tool nor another Principal's Saved Function ranks"
+        "neither a disabled Tool nor another Principal's Private Tool ranks"
     );
 
     let weather = Corpus::query("forecast")
@@ -568,7 +568,7 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
     let page = search(&[EntityKind::ProviderTool])
         .search(&corpus.principal, &corpus.workspace, &issues)
         .await
-        .expect("the Saved Function retriever still ranks");
+        .expect("the Private Tool retriever still ranks");
     assert_eq!(
         paths(&page),
         [
@@ -581,12 +581,12 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
         RetrieverState::Error
     );
     assert_eq!(
-        state(&page, EntityKind::SavedFunction),
+        state(&page, EntityKind::PrivateTool),
         RetrieverState::ResultsFound
     );
 
     assert!(matches!(
-        search(&[EntityKind::ProviderTool, EntityKind::SavedFunction])
+        search(&[EntityKind::ProviderTool, EntityKind::PrivateTool])
             .search(&corpus.principal, &corpus.workspace, &issues)
             .await,
         Err(crate::Error::ServiceUnavailable)
@@ -595,9 +595,7 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
     corpus
         .modules
         .fixture
-        .execute_fixture_sql(
-            "ALTER TABLE saved_function_records RENAME TO saved_function_records_away",
-        )
+        .execute_fixture_sql("ALTER TABLE private_tool_records RENAME TO private_tool_records_away")
         .await
         .unwrap();
     assert!(
@@ -607,7 +605,7 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
                 .search
                 .search(&corpus.principal, &corpus.workspace, &issues)
                 .await,
-            Err(crate::Error::Functions(coral_functions::Error::Database(_)))
+            Err(crate::Error::Functions(coral_tools::Error::Database(_)))
         ),
         "a shared read failure fails the request, not one retriever"
     );
@@ -829,7 +827,7 @@ async fn a_query_without_a_searchable_term_is_empty_even_while_entities_wait() {
     for corpus in [Corpus::unconverged().await, Corpus::new().await] {
         for query in ["ab", "...", "___"] {
             let page = corpus.search(Corpus::query(query)).await;
-            for kind in [EntityKind::ProviderTool, EntityKind::SavedFunction] {
+            for kind in [EntityKind::ProviderTool, EntityKind::PrivateTool] {
                 let status = status(&page, kind);
                 assert_eq!(status.state(), RetrieverState::Empty, "{query:?}: {kind:?}");
                 assert_eq!(status.coverage().failed_units(), 0, "{query:?}: {kind:?}");
@@ -851,7 +849,7 @@ async fn a_query_of_the_largest_size_still_ranks_by_its_phrase_patterns() {
             query.push_str(filler);
         }
         let page = corpus.search(Corpus::query(&query)).await;
-        for kind in [EntityKind::ProviderTool, EntityKind::SavedFunction] {
+        for kind in [EntityKind::ProviderTool, EntityKind::PrivateTool] {
             assert_eq!(
                 status(&page, kind).coverage().failed_units(),
                 0,

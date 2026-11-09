@@ -13,8 +13,8 @@ use crate::Error;
 
 /// Maximum UTF-8 byte length of one submitted Program body.
 pub const PROGRAM_SOURCE_MAX_BYTES: usize = 64 * 1024;
-/// Maximum number of distinct Saved Functions in one linked source closure.
-pub const LINKED_SAVED_FUNCTION_MAX_COUNT: usize = 64;
+/// Maximum number of distinct Private Tools in one linked source closure.
+pub const LINKED_PRIVATE_TOOL_MAX_COUNT: usize = 64;
 /// Maximum combined UTF-8 bytes in submitted and linked TypeScript source.
 pub const COMBINED_TYPESCRIPT_MAX_BYTES: usize = 512 * 1024;
 /// Maximum UTF-8 byte length of emitted JavaScript in one accepted package.
@@ -22,7 +22,7 @@ pub const EMITTED_JAVASCRIPT_MAX_BYTES: usize = 1024 * 1024;
 /// Maximum UTF-8 byte length of one accepted source map.
 pub const SOURCE_MAP_MAX_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum wall-clock duration of one Program compilation in production.
-pub const COMPILATION_TIMEOUT: Duration = coral_functions::COMPILATION_TIMEOUT;
+pub const COMPILATION_TIMEOUT: Duration = coral_tools::COMPILATION_TIMEOUT;
 /// Fixed v1 maximum Run timeout, bounding how long one Program can occupy a worker.
 pub const RUN_TIMEOUT_MAX_MS: u64 = 900_000;
 /// Maximum number of authored Emissions/Logs returned by one observation.
@@ -516,10 +516,10 @@ impl InvocationResultKind {
 pub enum SourceDocument {
     /// The Run's exact submitted Program source.
     Program,
-    /// The Run's retained snapshot of one linked Saved Function.
-    SavedFunction {
-        /// Saved Function identity of the snapshot, unique within the Run.
-        saved_function_id: String,
+    /// The Run's retained snapshot of one linked Private Tool.
+    PrivateTool {
+        /// Private Tool identity of the snapshot, unique within the Run.
+        private_tool_id: String,
     },
 }
 
@@ -1343,7 +1343,7 @@ impl RuntimeLimits {
         self
     }
 
-    /// The deadline for one Program compilation or Saved Function save.
+    /// The deadline for one Program compilation or Private Tool save.
     #[must_use]
     pub const fn compilation_timeout(&self) -> Duration {
         self.compilation_timeout

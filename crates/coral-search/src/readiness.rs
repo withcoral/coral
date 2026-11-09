@@ -40,7 +40,7 @@ impl UniversalSearchModule {
     /// Returns everything Agent detail needs about Providers: exact-Agent Account
     /// status, permitted actions, and readiness. Resolves Owner/Agent authority
     /// once and composes Account, structural, and policy decisions in one snapshot.
-    /// The Owner's personal Account and all Saved Functions remain unread.
+    /// The Owner's personal Account and all Private Tools remain unread.
     /// Agent/Registration execution authority remains separate from Provider readiness.
     /// # Errors
     /// Conceals absent/cross-Workspace Agents and requires Workspace Owner authority.

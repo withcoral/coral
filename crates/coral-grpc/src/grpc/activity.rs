@@ -697,8 +697,8 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             AttemptEvidence::Run(id) => {
                 Evidence::Run(format!("workspaces/{}/runs/{id}", identity.workspace))
             }
-            AttemptEvidence::SavedFunction(id) => Evidence::SavedFunction(format!(
-                "workspaces/{}/savedFunctions/{id}",
+            AttemptEvidence::PrivateTool(id) => Evidence::PrivateTool(format!(
+                "workspaces/{}/privateTools/{id}",
                 identity.workspace
             )),
             AttemptEvidence::Rejected(failure) => Evidence::Rejection(wire::ActivityRejection {

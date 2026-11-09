@@ -192,7 +192,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             shadowed_record_input,
-            Callable::SavedFunction { leaf: "lookup" },
+            Callable::PrivateTool { leaf: "lookup" },
             "lookup(input: { q: string } & Record<string, unknown>): number",
             false,
         ),
@@ -216,19 +216,19 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             named_input,
-            Callable::SavedFunction { leaf: "run" },
+            Callable::PrivateTool { leaf: "run" },
             "run(input: { value: number; nested: {…}; tags?: string[] }): number",
             false,
         ),
         (
             anonymous,
-            Callable::SavedFunction { leaf: "count" },
+            Callable::PrivateTool { leaf: "count" },
             "count(input: { q: string }): { n: number }",
             true,
         ),
         (
             inferred,
-            Callable::SavedFunction {
+            Callable::PrivateTool {
                 leaf: "pullRequestDetails",
             },
             "pullRequestDetails(input: { repo: string; number: number }): Promise<{ title: string; merged_at: string | null; base: {…}; linked: string[] }>",
@@ -236,13 +236,13 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             listed,
-            Callable::SavedFunction { leaf: "openPrs" },
+            Callable::PrivateTool { leaf: "openPrs" },
             "openPrs(input: { repo: string }): Promise<{ number: number; author: {…} }[]>",
             true,
         ),
         (
             generic_array,
-            Callable::SavedFunction {
+            Callable::PrivateTool {
                 leaf: "openIssuesByLabel",
             },
             "openIssuesByLabel(input: { label: string }): Promise<Array<{ number: number; title: string }>>",
@@ -250,103 +250,103 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             readonly_array,
-            Callable::SavedFunction { leaf: "labels" },
+            Callable::PrivateTool { leaf: "labels" },
             "labels(): ReadonlyArray<{ name: string }>",
             true,
         ),
         (
             named_union,
-            Callable::SavedFunction { leaf: "find" },
+            Callable::PrivateTool { leaf: "find" },
             "find(input: { id: number }): Promise<{ id: number } | undefined>",
             true,
         ),
         (
             named_intersection,
-            Callable::SavedFunction { leaf: "tagged" },
+            Callable::PrivateTool { leaf: "tagged" },
             "tagged(): Promise<{ id: number } & { tag: string }>",
             true,
         ),
         (
             aliased_promise,
-            Callable::SavedFunction { leaf: "aliased" },
+            Callable::PrivateTool { leaf: "aliased" },
             "aliased(): Promise<{ title: string }>",
             true,
         ),
         (
             union_elements,
-            Callable::SavedFunction { leaf: "rows" },
+            Callable::PrivateTool { leaf: "rows" },
             "rows(): Promise<({ id: number } | undefined)[]>",
             true,
         ),
         (
             union_generic,
-            Callable::SavedFunction { leaf: "events" },
+            Callable::PrivateTool { leaf: "events" },
             r#"events(): Array<{ kind: "a" } | { kind: "b" }>"#,
             true,
         ),
         (
             mapped_result,
-            Callable::SavedFunction { leaf: "mapped" },
+            Callable::PrivateTool { leaf: "mapped" },
             "mapped(): Promise<…>",
             true,
         ),
         (
             arrow,
-            Callable::SavedFunction { leaf: "measure" },
+            Callable::PrivateTool { leaf: "measure" },
             "measure(input: { q: string }): number",
             true,
         ),
         (
             alias_union,
-            Callable::SavedFunction { leaf: "f" },
+            Callable::PrivateTool { leaf: "f" },
             r#"f(input: { mode: "a" | "b"; modes?: ("a" | "b")[]; limit?: number }): Promise<{ x: number }[]>"#,
             true,
         ),
         (
             promised_cycle,
-            Callable::SavedFunction { leaf: "loop" },
+            Callable::PrivateTool { leaf: "loop" },
             "loop(): Promise<…>",
             true,
         ),
         (
             promised_chain,
-            Callable::SavedFunction { leaf: "chain" },
+            Callable::PrivateTool { leaf: "chain" },
             "chain(): Promise<…>",
             true,
         ),
         (
             promised_through_alias,
-            Callable::SavedFunction { leaf: "relay" },
+            Callable::PrivateTool { leaf: "relay" },
             "relay(): Promise<…>",
             true,
         ),
         (
             recursive,
-            Callable::SavedFunction { leaf: "walk" },
+            Callable::PrivateTool { leaf: "walk" },
             "walk(input: { tree: Tree }): number",
             false,
         ),
         (
             unreadable,
-            Callable::SavedFunction { leaf: "strange" },
+            Callable::PrivateTool { leaf: "strange" },
             "strange(…)",
             false,
         ),
         (
             keyed_record,
-            Callable::SavedFunction { leaf: "keyed" },
+            Callable::PrivateTool { leaf: "keyed" },
             r#"keyed(input: { label?: string } & Record<"id", unknown>): number"#,
             true,
         ),
         (
             beyond_members,
-            Callable::SavedFunction { leaf: "beyond" },
+            Callable::PrivateTool { leaf: "beyond" },
             r#"beyond(input: { keys: …; pick: Pick<Input, "a">; kind: …; label: … }): number"#,
             false,
         ),
         (
             shadowed_global,
-            Callable::SavedFunction { leaf: "shadow" },
+            Callable::PrivateTool { leaf: "shadow" },
             "shadow(input: { list: Array }): number",
             false,
         ),
@@ -358,13 +358,13 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             lone_surrogate,
-            Callable::SavedFunction { leaf: "surrogate" },
+            Callable::PrivateTool { leaf: "surrogate" },
             r#"surrogate(input: { …; mode: … | "a" }): number"#,
             false,
         ),
         (
             markers,
-            Callable::SavedFunction { leaf: "markers" },
+            Callable::PrivateTool { leaf: "markers" },
             "markers(input: { pair: [number, number?]; sum: (...values: number[]) => number; cb?: ((value?: number) => number) | null }): number",
             true,
         ),
@@ -585,7 +585,7 @@ fn only_the_input_decides_whether_a_line_is_complete() {
     for (declaration, callable, expected, complete) in [
         (
             "export default function details(input: { id: number }): Promise<{ base: { ref: string } }>;".to_string(),
-            Callable::SavedFunction { leaf: "details" },
+            Callable::PrivateTool { leaf: "details" },
             "details(input: { id: number }): Promise<{ base: {…} }>",
             true,
         ),
@@ -604,14 +604,14 @@ fn only_the_input_decides_whether_a_line_is_complete() {
         (
             "export default function post(input: { body: Body }): Promise<{ id: number }>;"
                 .to_string(),
-            Callable::SavedFunction { leaf: "post" },
+            Callable::PrivateTool { leaf: "post" },
             "post(input: { body: Body }): Promise<{ id: number }>",
             false,
         ),
         (
             "export default function nest(input: { body: { text: string } }): Promise<{ id: number }>;"
                 .to_string(),
-            Callable::SavedFunction { leaf: "nest" },
+            Callable::PrivateTool { leaf: "nest" },
             "nest(input: { body: {…} }): Promise<{ id: number }>",
             false,
         ),
@@ -647,13 +647,13 @@ fn a_line_that_shows_one_of_several_overloads_is_not_complete() {
         ),
         (
             named,
-            Callable::SavedFunction { leaf: "pick" },
+            Callable::PrivateTool { leaf: "pick" },
             "pick(input: { id: string }): number",
             false,
         ),
         (
             single,
-            Callable::SavedFunction { leaf: "pick" },
+            Callable::PrivateTool { leaf: "pick" },
             "pick(input: { id: string }): number",
             true,
         ),

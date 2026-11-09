@@ -1,4 +1,4 @@
-//! Program admission, packaging and Saved Function linking.
+//! Program admission, packaging and Private Tool linking.
 use super::*;
 
 #[test]
@@ -20,42 +20,41 @@ fn fixed_run_timeout_limit_accepts_the_boundary_only() {
 }
 
 #[tokio::test]
-async fn admission_rejects_a_saved_function_change_during_one_source_closure_read() {
+async fn admission_rejects_a_private_tool_change_during_one_source_closure_read() {
     let (engine, release) = ClosureReadGateEngine::new();
     let fixture = TestModules::new(Arc::new(engine.clone())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let (workspace_id, principal) = fixture
         .user_scope("user:closure-race", "Read one consistent source closure")
         .await;
-    let dependency_path = SavedFunctionPath::parse("closure.dependency").expect("dependency path");
-    let root_path = SavedFunctionPath::parse("closure.root").expect("root path");
-    saved_functions
+    let dependency_path = PrivateToolPath::parse("closure.dependency").expect("dependency path");
+    let root_path = PrivateToolPath::parse("closure.root").expect("root path");
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 30, 'a'),
+            &private_tool_change(principal.clone(), 30, 'a'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 dependency_path.clone(),
-                SavedFunctionDescription::parse("Closure dependency").expect("description"),
-                SavedFunctionSource::parse("export default () => 'old dependency';")
-                    .expect("source"),
+                PrivateToolDescription::parse("Closure dependency").expect("description"),
+                PrivateToolSource::parse("export default () => 'old dependency';").expect("source"),
             ),
         )
         .await
         .expect("save dependency");
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 31, 'b'),
+            &private_tool_change(principal.clone(), 31, 'b'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 root_path.clone(),
-                SavedFunctionDescription::parse("Closure root").expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolDescription::parse("Closure root").expect("description"),
+                PrivateToolSource::parse(
                     "const marker = 'root-v1'; export default () => marker + coral.private.closure.dependency();",
                 )
                 .expect("source"),
@@ -78,14 +77,14 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
     });
     wait_until(|| engine.reading_root.load(Ordering::SeqCst)).await;
 
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 40, 'c'),
+            &private_tool_change(principal.clone(), 40, 'c'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 root_path,
-                SavedFunctionDescription::parse("Changed closure root").expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolDescription::parse("Changed closure root").expect("description"),
+                PrivateToolSource::parse(
                     "const marker = 'root-v2'; export default () => marker + coral.private.closure.dependency();",
                 )
                 .expect("source"),
@@ -93,15 +92,14 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
         )
         .await
         .expect("replace root during closure read");
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal, 41, 'd'),
+            &private_tool_change(principal, 41, 'd'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 dependency_path,
-                SavedFunctionDescription::parse("Changed closure dependency").expect("description"),
-                SavedFunctionSource::parse("export default () => 'new dependency';")
-                    .expect("source"),
+                PrivateToolDescription::parse("Changed closure dependency").expect("description"),
+                PrivateToolSource::parse("export default () => 'new dependency';").expect("source"),
             ),
         )
         .await
@@ -120,31 +118,31 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
 }
 
 #[tokio::test]
-async fn type_only_saved_function_references_do_not_enter_the_runtime_closure() {
+async fn type_only_private_tool_references_do_not_enter_the_runtime_closure() {
     coral_test_support::database_only!(Sqlite);
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let (workspace_id, principal) = fixture
         .user_scope(
             "user:type-only-link",
-            "Erase a type-only Saved Function reference",
+            "Erase a type-only Private Tool reference",
         )
         .await;
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 30, '6'),
+            &private_tool_change(principal.clone(), 30, '6'),
             &workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("types.answer").expect("path"),
-                SavedFunctionDescription::parse("Return an answer").expect("description"),
-                SavedFunctionSource::parse(
+            PrivateToolSave::new(
+                PrivateToolPath::parse("types.answer").expect("path"),
+                PrivateToolDescription::parse("Return an answer").expect("description"),
+                PrivateToolSource::parse(
                     "export default function answer(): number { type Missing = typeof coral.private.never.loaded; const value: number = 42; return value; }",
                 )
                 .expect("source"),
@@ -171,28 +169,28 @@ async fn type_only_saved_function_references_do_not_enter_the_runtime_closure() 
 }
 
 #[tokio::test]
-async fn program_calls_one_saved_function_repeatedly_after_top_level_initialization() {
+async fn program_calls_one_private_tool_repeatedly_after_top_level_initialization() {
     coral_test_support::database_only!(Sqlite);
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let (workspace_id, principal) = fixture
-        .user_scope("user:function-runner", "Call Saved Function")
+        .user_scope("user:function-runner", "Call Private Tool")
         .await;
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 30, '1'),
+            &private_tool_change(principal.clone(), 30, '1'),
             &workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("math.factorial").expect("path"),
-                SavedFunctionDescription::parse("Calculate a factorial").expect("description"),
-                SavedFunctionSource::parse(
+            PrivateToolSave::new(
+                PrivateToolPath::parse("math.factorial").expect("path"),
+                PrivateToolDescription::parse("Calculate a factorial").expect("description"),
+                PrivateToolSource::parse(
                     r"
                         function factorial(value: number): number {
                             return value <= 1 ? 1 : value * factorial(value - 1);
@@ -234,19 +232,19 @@ async fn program_calls_one_saved_function_repeatedly_after_top_level_initializat
 }
 
 #[tokio::test]
-async fn program_links_multiple_transitive_saved_functions_into_one_run() {
+async fn program_links_multiple_transitive_private_tools_into_one_run() {
     coral_test_support::database_only!(Sqlite);
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let (workspace_id, principal) = fixture
-        .user_scope("user:closure-runner", "Link a Saved Function closure")
+        .user_scope("user:closure-runner", "Link a Private Tool closure")
         .await;
 
     for (path, description, source) in [
@@ -266,14 +264,14 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
             "export default function triple(value: number): number { return value * 3; }",
         ),
     ] {
-        saved_functions
+        private_tools
             .save(
-                &saved_function_change(principal.clone(), 30, '1'),
+                &private_tool_change(principal.clone(), 30, '1'),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(path).expect("path"),
-                    SavedFunctionDescription::parse(description).expect("description"),
-                    SavedFunctionSource::parse(source).expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("path"),
+                    PrivateToolDescription::parse(description).expect("description"),
+                    PrivateToolSource::parse(source).expect("source"),
                 ),
             )
             .await
@@ -299,11 +297,11 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
     ));
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 
-    saved_functions
+    private_tools
         .delete(
-            &saved_function_change(principal.clone(), 50, '2'),
+            &private_tool_change(principal.clone(), 50, '2'),
             &workspace_id,
-            &SavedFunctionPath::parse("math.increment").expect("dependency path"),
+            &PrivateToolPath::parse("math.increment").expect("dependency path"),
         )
         .await
         .expect("delete transitive dependency");
@@ -326,20 +324,20 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
 #[tokio::test]
 async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomically() {
     let fixture = TestModules::new(Arc::new(ReferenceScanningEngine)).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = &fixture.runs;
     let (workspace_id, principal) = fixture
-        .user_scope("user:closure-limit", "Bound the Saved Function closure")
+        .user_scope("user:closure-limit", "Bound the Private Tool closure")
         .await;
 
-    for index in (0..=crate::LINKED_SAVED_FUNCTION_MAX_COUNT).rev() {
-        let source = if index == crate::LINKED_SAVED_FUNCTION_MAX_COUNT {
+    for index in (0..=crate::LINKED_PRIVATE_TOOL_MAX_COUNT).rev() {
+        let source = if index == crate::LINKED_PRIVATE_TOOL_MAX_COUNT {
             "export default function end(): number { return 1; }".to_string()
         } else {
             format!(
@@ -347,14 +345,14 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
                 index + 1
             )
         };
-        saved_functions
+        private_tools
             .save(
-                &saved_function_change(principal.clone(), 30, '3'),
+                &private_tool_change(principal.clone(), 30, '3'),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(&format!("limit.function{index:02}")).expect("path"),
-                    SavedFunctionDescription::parse("One closure member").expect("description"),
-                    SavedFunctionSource::parse(&source).expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(&format!("limit.function{index:02}")).expect("path"),
+                    PrivateToolDescription::parse("One closure member").expect("description"),
+                    PrivateToolSource::parse(&source).expect("source"),
                 ),
             )
             .await
@@ -368,13 +366,13 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
             submission("return coral.private.limit.function01();"),
         )
         .await
-        .expect("accept exactly 64 linked Saved Functions");
+        .expect("accept exactly 64 linked Private Tools");
     let boundary = wait_for_terminal(runs, &principal, &workspace_id, boundary.run_id()).await;
     assert!(matches!(
         boundary.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value)
-        }) if value.as_json() == &serde_json::json!(crate::LINKED_SAVED_FUNCTION_MAX_COUNT)
+        }) if value.as_json() == &serde_json::json!(crate::LINKED_PRIVATE_TOOL_MAX_COUNT)
     ));
 
     assert!(matches!(
@@ -393,13 +391,13 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
 #[tokio::test]
 async fn transitive_source_closure_enforces_the_combined_typescript_limit_without_a_run() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let (workspace_id, principal) = fixture
         .user_scope("user:closure-bytes", "Bound combined TypeScript")
@@ -418,15 +416,14 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
         let padding = "x".repeat(large_source_bytes - implementation.len() - 4);
         let source = format!("/*{padding}*/{implementation}");
         assert_eq!(source.len(), large_source_bytes);
-        saved_functions
+        private_tools
             .save(
-                &saved_function_change(principal.clone(), 30, '4'),
+                &private_tool_change(principal.clone(), 30, '4'),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(&format!("bytes.function{index:02}")).expect("path"),
-                    SavedFunctionDescription::parse("One large closure member")
-                        .expect("description"),
-                    SavedFunctionSource::parse(&source).expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(&format!("bytes.function{index:02}")).expect("path"),
+                    PrivateToolDescription::parse("One large closure member").expect("description"),
+                    PrivateToolSource::parse(&source).expect("source"),
                 ),
             )
             .await
@@ -449,7 +446,7 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn saved_function_initialization_uses_the_run_surface_once_before_the_program_body() {
+async fn private_tool_initialization_uses_the_run_surface_once_before_the_program_body() {
     coral_test_support::database_only!(Sqlite);
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -463,33 +460,33 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
 
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.live_runs(None);
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let tool = fixture
         .user_tool_at(
             "user:initialization-runner",
-            "Initialize one Saved Function",
+            "Initialize one Private Tool",
             &server.uri(),
         )
         .await;
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(tool.principal.clone(), 40, 'a'),
+            &private_tool_change(tool.principal.clone(), 40, 'a'),
             &tool.workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("weather.initializedTemperature").expect("path"),
-                SavedFunctionDescription::parse("Read the initialized temperature")
+            PrivateToolSave::new(
+                PrivateToolPath::parse("weather.initializedTemperature").expect("path"),
+                PrivateToolDescription::parse("Read the initialized temperature")
                     .expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolSource::parse(
                     r#"
                         const forecast = await coral.providers.weather.getForecast();
                         await coral.emit({ phase: "initialization", temperature: forecast.data.temperature });
-                        console.log("Saved Function initialized");
+                        console.log("Private Tool initialized");
                         const initializedTemperature = forecast.data.temperature;
                         export default function read(): number { return initializedTemperature; }
                     "#,
@@ -536,7 +533,7 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
             if matches!(initialized.kind(), RunEventKind::ProgramEmitted { value }
                     if value.as_json() == &serde_json::json!({"phase": "initialization", "temperature": 21}))
                 && matches!(initialization_log.kind(), RunEventKind::ProgramLogged { level: ProgramLogLevel::Info, message }
-                    if message == "Saved Function initialized")
+                    if message == "Private Tool initialized")
                 && matches!(body.kind(), RunEventKind::ProgramEmitted { value }
                     if value.as_json() == &serde_json::json!({"phase": "body"}))
                 && matches!(body_log.kind(), RunEventKind::ProgramLogged { level: ProgramLogLevel::Info, message }
@@ -548,26 +545,26 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
 async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
     let (engine, release) = SnapshotEngine::new();
     let fixture = TestModules::new(Arc::new(engine.clone())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let (workspace_id, principal) = fixture
         .user_scope("user:snapshot-runner", "Retain accepted source")
         .await;
-    let path = SavedFunctionPath::parse("snapshots.value").expect("path");
+    let path = PrivateToolPath::parse("snapshots.value").expect("path");
     let original_source = "export default function value() { return 'original'; }";
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 30, '7'),
+            &private_tool_change(principal.clone(), 30, '7'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Original snapshot").expect("description"),
-                SavedFunctionSource::parse(original_source).expect("source"),
+                PrivateToolDescription::parse("Original snapshot").expect("description"),
+                PrivateToolSource::parse(original_source).expect("source"),
             ),
         )
         .await
@@ -584,14 +581,14 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         .expect("accept Run with original source");
     wait_until(|| engine.started.load(Ordering::SeqCst)).await;
 
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 40, '8'),
+            &private_tool_change(principal.clone(), 40, '8'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Replacement snapshot").expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolDescription::parse("Replacement snapshot").expect("description"),
+                PrivateToolSource::parse(
                     "export default function value() { return 'replacement'; }",
                 )
                 .expect("source"),
@@ -599,9 +596,9 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         )
         .await
         .expect("replace after Run acceptance");
-    saved_functions
+    private_tools
         .delete(
-            &saved_function_change(principal.clone(), 50, '9'),
+            &private_tool_change(principal.clone(), 50, '9'),
             &workspace_id,
             &path,
         )
@@ -651,7 +648,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
 }
 
 #[tokio::test]
-async fn admission_rejects_missing_or_computed_saved_function_paths_without_a_run() {
+async fn admission_rejects_missing_or_computed_private_tool_paths_without_a_run() {
     coral_test_support::database_only!(Sqlite);
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.live_runs(None);
@@ -702,29 +699,29 @@ async fn admission_rejects_missing_or_computed_saved_function_paths_without_a_ru
 }
 
 #[tokio::test]
-async fn direct_repeated_calls_follow_a_unicode_saved_function_live_binding() {
+async fn direct_repeated_calls_follow_a_unicode_private_tool_live_binding() {
     coral_test_support::database_only!(Sqlite);
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let (workspace_id, principal) = fixture
         .user_scope("user:live-binding", "Run live binding")
         .await;
-    saved_functions
+    private_tools
         .save(
-            &saved_function_change(principal.clone(), 40, 'a'),
+            &private_tool_change(principal.clone(), 40, 'a'),
             &workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("café.calculer").expect("Unicode path"),
-                SavedFunctionDescription::parse("Follow the exported live binding")
+            PrivateToolSave::new(
+                PrivateToolPath::parse("café.calculer").expect("Unicode path"),
+                PrivateToolDescription::parse("Follow the exported live binding")
                     .expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolSource::parse(
                     "let calculer = () => { calculer = () => 2; return 1; }; export { calculer as default };",
                 )
                 .expect("source"),
@@ -755,13 +752,13 @@ async fn direct_repeated_calls_follow_a_unicode_saved_function_live_binding() {
 async fn equivalent_callable_default_export_forms_execute() {
     coral_test_support::database_only!(Sqlite);
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let saved_functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler");
+    .expect("start Private Tool compiler");
     let runs = fixture.live_runs(None);
     let (workspace_id, principal) = fixture
         .user_scope("user:export-forms", "Run export forms")
@@ -777,20 +774,20 @@ async fn equivalent_callable_default_export_forms_execute() {
     ];
 
     for (index, source) in forms.into_iter().enumerate() {
-        saved_functions
+        private_tools
             .save(
-                &saved_function_change(
+                &private_tool_change(
                     principal.clone(),
                     40 + i64::try_from(index).expect("small index"),
                     char::from_digit(u32::try_from(index + 4).expect("small digit"), 16)
                         .expect("hex digit"),
                 ),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse("forms.answer").expect("path"),
-                    SavedFunctionDescription::parse("Return the supplied answer")
+                PrivateToolSave::new(
+                    PrivateToolPath::parse("forms.answer").expect("path"),
+                    PrivateToolDescription::parse("Return the supplied answer")
                         .expect("description"),
-                    SavedFunctionSource::parse(source).expect("source"),
+                    PrivateToolSource::parse(source).expect("source"),
                 ),
             )
             .await

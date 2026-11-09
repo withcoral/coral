@@ -4,7 +4,7 @@ use super::*;
 use coral_workspace::{AuthoritySource, LifecycleAction, OrganizationModule, WorkspaceRole};
 
 /// One Workspace the departing User owns, with their connected Account, pending
-/// reconnect, and Saved Function there.
+/// reconnect, and Private Tool there.
 struct Owned {
     workspace: coral_workspace::Workspace,
     connected: accounts::ConnectedScope,
@@ -17,7 +17,7 @@ struct Departure {
     workspaces: WorkspaceModule,
     organization: OrganizationModule,
     lifecycle: AccessLifecycleModule,
-    functions: SavedFunctionModule,
+    functions: PrivateToolModule,
     administrator: AuthenticatedUser,
     departing: AuthenticatedUser,
     target: AuthenticatedUser,
@@ -47,10 +47,10 @@ impl Departure {
             .set_enabled(&change(&administrator), disabled.user_id(), 1, false)
             .await
             .unwrap();
-        let functions = SavedFunctionModule::new(
+        let functions = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
@@ -127,7 +127,7 @@ impl Departure {
     /// the departing User still owns every Workspace.
     async fn state(&self) -> impl PartialEq + std::fmt::Debug + use<> {
         let author = AuthenticatedPrincipal::user(self.departing.clone());
-        let path = SavedFunctionPath::parse("answer").unwrap();
+        let path = PrivateToolPath::parse("answer").unwrap();
         let mut scopes = Vec::new();
         for owned in self.owned() {
             let workspace = owned.workspace.id();
@@ -328,10 +328,10 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
                 .get(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace,
-                    &SavedFunctionPath::parse("answer").unwrap()
+                    &PrivateToolPath::parse("answer").unwrap()
                 )
                 .await,
-            Err(coral_functions::Error::SavedFunctionNotFound)
+            Err(coral_tools::Error::PrivateToolNotFound)
         ));
         owned.connected.assert_retired(&returned).await;
     }

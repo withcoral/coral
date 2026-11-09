@@ -208,7 +208,7 @@ fn diagnostic(code: &'static str, message: &'static str) -> CatalogDiagnostic {
 /// Whether `value` is a Call Path segment that the Program Runtime Surface's
 /// Call Path proxy cannot route. The proxy answers `then` with `undefined`, so
 /// awaiting a path does not treat it as a thenable; the rest are object-model
-/// names. Tool paths, Provider namespaces and Saved Function paths all
+/// names. Tool paths, Provider namespaces and Private Tool paths all
 /// reserve these. Language keywords such as `delete` stay usable: property
 /// access accepts them, and a Tool's declaration does not spell its
 /// path.

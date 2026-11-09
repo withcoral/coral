@@ -313,7 +313,7 @@ impl ActiveGeneration {
 /// Disabled Providers are included: disabling changes what a caller sees at
 /// query time, not what the index holds. The Private Provider is left out:
 /// its Generation holds no Tool, and search finds Private Tools through
-/// coral-functions. This facet reads no Tool catalog.
+/// coral-tools. This facet reads no Tool catalog.
 ///
 /// # Errors
 ///

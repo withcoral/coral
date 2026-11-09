@@ -213,31 +213,31 @@ async fn an_invalid_argument_names_what_to_correct() {
 #[tokio::test]
 async fn a_lookup_fails_rather_than_round_a_saved_diagnostic_integer() {
     let scope = AdminScope::new("user:search-diagnostics").await;
-    SavedFunctionModule::new(
+    PrivateToolModule::new(
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler")
+    .expect("start Private Tool compiler")
     .save(
-        &saved_function_change(scope.owner.clone(), 30, 'a'),
+        &private_tool_change(scope.owner.clone(), 30, 'a'),
         &scope.workspace_id,
-        SavedFunctionSave::new(
-            SavedFunctionPath::parse("reports.weekly").expect("path"),
-            SavedFunctionDescription::parse("The weekly report").expect("description"),
-            SavedFunctionSource::parse("export default async function weekly() { return 1; }")
+        PrivateToolSave::new(
+            PrivateToolPath::parse("reports.weekly").expect("path"),
+            PrivateToolDescription::parse("The weekly report").expect("description"),
+            PrivateToolSource::parse("export default async function weekly() { return 1; }")
                 .expect("source"),
         ),
     )
     .await
-    .expect("save Saved Function");
+    .expect("save Private Tool");
     // 2^53 + 1, which a JSON reader rounds to 2^53.
     scope
         .fixture
         .test_database
         .execute_fixture_sql(
-            "UPDATE saved_function_records SET diagnostics_json = \
+            "UPDATE private_tool_records SET diagnostics_json = \
              '[{\"category\":\"warning\",\"code\":9007199254740993,\"message\":\"unused\",\
              \"line\":1,\"column\":1}]'",
         )

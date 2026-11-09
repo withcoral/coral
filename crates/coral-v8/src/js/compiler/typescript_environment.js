@@ -15,14 +15,14 @@ const PROGRAM_COMPILER_OPTIONS = Object.freeze({
 });
 
 // Authoring-only types for the host root. Callers supply the declarations of
-// the Tools and Saved Functions a source names; a root without them is
+// the Tools and Private Tools a source names; a root without them is
 // any. Tools type `coral.providers` and the Built-in Tools on `coral`
 // together.
 const CORAL_HOST_DECLARATION_FILE_NAME = 'coral.d.ts';
 // Coral's diagnostic codes are outside TypeScript's range.
 // A called Tool path that names no Tool the caller can call.
 const UNKNOWN_TOOL_DIAGNOSTIC_CODE = 100001;
-// A typed Saved Function declaration saved untyped because it would exceed
+// A typed Private Tool declaration saved untyped because it would exceed
 // the declaration limit.
 const DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE = 100002;
 
@@ -99,7 +99,7 @@ function renderCallableNode(node, open) {
 // Each supplied declaration is an ambient module named by its Call Path, so
 // the named types of two callables never collide and a diagnostic that names
 // the module names the Call Path. `export {}` keeps those names private, so
-// an emitted Saved Function declaration inlines them or fails to name them.
+// an emitted Private Tool declaration inlines them or fails to name them.
 // A Call Path cannot contain `-`, so module resolution never finds the file
 // that declares it and loads it a second time.
 // `callable` types each callable from the type of its declared default.

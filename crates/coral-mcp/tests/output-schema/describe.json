@@ -90,7 +90,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "const": "saved_function"
+              "const": "private_tool"
             },
             "call_path": {
               "type": "string"

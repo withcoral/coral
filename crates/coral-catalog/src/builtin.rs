@@ -141,7 +141,7 @@ pub enum BuiltinTool {
     /// Changes one Owner-created Provider's configuration or source. A person
     /// reviews and publishes the change in Reef, except a rename alone.
     UpdateProvider,
-    /// Finds the Tools and Saved Functions the caller can call, ranked by a
+    /// Finds the Tools and Private Tools the caller can call, ranked by a
     /// query, or reads the exact descriptions of named Call Paths.
     Search,
     /// Creates one of the caller's own Private Tools; fails when one is

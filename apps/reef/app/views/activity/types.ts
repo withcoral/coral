@@ -99,8 +99,8 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
  * column start at 1; the column counts UTF-16 code units.
  */
 export interface RecordSourceLocation {
-  /** The accepted program, or the linked snapshot of this Saved Function resource. */
-  document: { kind: 'program' } | { kind: 'saved_function'; savedFunction: string }
+  /** The accepted program, or the linked snapshot of this Private Tool resource. */
+  document: { kind: 'program' } | { kind: 'private_tool'; privateTool: string }
   line: number
   column: number
 }
@@ -164,7 +164,7 @@ export interface RunDetail {
   run: ExecutionRow
   submission?: InteractionRow
   source: string
-  linkedFunctions: { savedFunction: string; path: string; source: string }[]
+  linkedFunctions: { privateTool: string; path: string; source: string }[]
   terminal: RunTerminal
   /** The parts of the Run's context impact, in exact bytes. Absent while the total is. */
   contextImpact?: RunContextImpact
@@ -454,7 +454,7 @@ export type DiscoveryContext =
   | { kind: 'describe'; callPath: string; types: string[] }
   | { kind: 'unknown' }
 /** A kind of Search Entity, as Coral stores it. */
-export type DiscoveryEntityKind = 'provider_tool' | 'saved_function'
+export type DiscoveryEntityKind = 'provider_tool' | 'private_tool'
 /** What a Tool's provider and Workspace policy state about a call. */
 export interface ToolFlags {
   approvalRequired: boolean
@@ -509,7 +509,7 @@ export interface Description {
   description: string
   declaration: string
   tool: (ToolFacts & { tags: string[]; guidance: string | null }) | null
-  savedFunction: {
+  privateTool: {
     source: string
     diagnostics: DescriptionDiagnostic[]
     diagnosticsTruncated: boolean

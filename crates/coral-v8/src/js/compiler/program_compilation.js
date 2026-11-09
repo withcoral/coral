@@ -62,13 +62,13 @@ function compileProgram(body, builtinTools, fileName, targetName) {
       validationError,
     );
   }
-  const carrier = savedFunctionCarrierName([sourceFile]);
+  const carrier = privateToolCarrierName([sourceFile]);
   const extraction =
     validationError === undefined && !hasSyntaxErrors(sourceFile)
       ? programExtraction(sourceFile, program, wrapped.authoredMappings, carrier)
       : { edits: [] };
   const compiled = compiledProgramBody(body, extraction.edits ?? []);
-  const prefix = `(async () => { ${savedFunctionCarrierDeclaration(carrier)}\n${coralRootPrelude(builtinTools, [])}\nreturn await (async () => {\n`;
+  const prefix = `(async () => { ${privateToolCarrierDeclaration(carrier)}\n${coralRootPrelude(builtinTools, [])}\nreturn await (async () => {\n`;
   const bodyLine = sourceLineCount(prefix) - 1;
   return compileProgramSource(
     `${prefix}${compiled.text}\n})(); })();\n`,
@@ -83,9 +83,9 @@ function compileProgram(body, builtinTools, fileName, targetName) {
   );
 }
 
-function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targetName) {
+function compileLinkedProgram(body, privateTools, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
-  if (!Array.isArray(savedFunctions)) {
+  if (!Array.isArray(privateTools)) {
     throw new Error('Private Tool closure must be an array');
   }
   const wrapped = wrapProgramBody(body);
@@ -106,19 +106,19 @@ function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targ
       diagnostics: [],
     };
   }
-  const modules = savedFunctions.map((savedFunction, index) => {
-    if (typeof savedFunction?.source !== 'string') {
+  const modules = privateTools.map((privateTool, index) => {
+    if (typeof privateTool?.source !== 'string') {
       throw new Error('Private Tool closure contains an invalid source entry');
     }
     const { program: moduleProgram, sourceFile } = virtualTypeScriptProgram(
-      `saved_function_${index}.ts`,
-      savedFunction.source,
+      `private_tool_${index}.ts`,
+      privateTool.source,
       compilerOptions,
     );
     if (!sourceFile) {
       throw new Error('Private Tool virtual source is missing');
     }
-    return { program: moduleProgram, sourceFile, pathSegments: savedFunction.pathSegments };
+    return { program: moduleProgram, sourceFile, pathSegments: privateTool.pathSegments };
   });
   let validationError = forbiddenCapabilityError(
     ordinaryProgram,
@@ -132,7 +132,7 @@ function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targ
       modules[index].program,
     );
   }
-  const carrier = savedFunctionCarrierName([
+  const carrier = privateToolCarrierName([
     ordinaryProgram,
     ...modules.map((module) => module.sourceFile),
   ]);
@@ -150,7 +150,7 @@ function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targ
     for (let index = 0; saveRefusal === undefined && index < modules.length; index += 1) {
       const { sourceFile, program: moduleProgram, pathSegments } = modules[index];
       if (hasSyntaxErrors(sourceFile) || !Array.isArray(pathSegments)) continue;
-      const moduleExtraction = savedFunctionModuleExtraction(
+      const moduleExtraction = privateToolModuleExtraction(
         sourceFile,
         moduleProgram,
         pathSegments,
@@ -171,7 +171,7 @@ function compileLinkedProgram(body, savedFunctions, builtinTools, fileName, targ
       diagnostics: [],
     };
   }
-  const linked = linkedProgramSource(body, savedFunctions, builtinTools, target, saves);
+  const linked = linkedProgramSource(body, privateTools, builtinTools, target, saves);
   return compileProgramSource(
     linked.source,
     fileName,

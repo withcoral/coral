@@ -11,25 +11,24 @@ use coral_workspace::{
     WorkspaceRole,
 };
 
-use crate::saved_function::{PreparedSavedFunction, SavedFunctionCompiler};
+use crate::private_tool::{PreparedPrivateTool, PrivateToolCompiler};
 use crate::{
-    Error, LifecycleAction as SavedFunctionLifecycleAction, SavedFunctionChangeContext,
-    SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath, SavedFunctionSave,
-    SavedFunctionSource,
+    Error, LifecycleAction as PrivateToolLifecycleAction, PrivateToolChangeContext,
+    PrivateToolDescription, PrivateToolModule, PrivateToolPath, PrivateToolSave, PrivateToolSource,
 };
 
 #[test]
-fn fixed_saved_function_source_and_declaration_limits_accept_the_boundary_only() {
-    let maximum_function = "f".repeat(crate::SAVED_FUNCTION_SOURCE_MAX_BYTES);
-    SavedFunctionSource::parse(&maximum_function).expect("maximum Saved Function source");
-    SavedFunctionSource::parse(&format!("{maximum_function}f"))
-        .expect_err("oversized Saved Function source");
+fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
+    let maximum_function = "f".repeat(crate::PRIVATE_TOOL_SOURCE_MAX_BYTES);
+    PrivateToolSource::parse(&maximum_function).expect("maximum Private Tool source");
+    PrivateToolSource::parse(&format!("{maximum_function}f"))
+        .expect_err("oversized Private Tool source");
 
-    let maximum_declaration = "d".repeat(crate::SAVED_FUNCTION_DECLARATION_MAX_BYTES);
-    crate::SavedFunctionDeclaration::from_compiler(&maximum_declaration)
-        .expect("maximum Saved Function declaration");
+    let maximum_declaration = "d".repeat(crate::PRIVATE_TOOL_DECLARATION_MAX_BYTES);
+    crate::PrivateToolDeclaration::from_compiler(&maximum_declaration)
+        .expect("maximum Private Tool declaration");
     assert!(matches!(
-        crate::SavedFunctionDeclaration::from_compiler(&format!("{maximum_declaration}d")),
+        crate::PrivateToolDeclaration::from_compiler(&format!("{maximum_declaration}d")),
         Err(Error::PackageTooLarge {
             component: "Private Tool declaration",
             ..
@@ -38,8 +37,8 @@ fn fixed_saved_function_source_and_declaration_limits_accept_the_boundary_only()
 }
 
 #[tokio::test]
-async fn saved_function_save_publishes_exact_authoring_record_and_event() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn private_tool_save_publishes_exact_authoring_record_and_event() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:function-author").await;
     let source = r"
         interface Input { value: number }
@@ -50,15 +49,15 @@ async fn saved_function_save_publishes_exact_authoring_record_and_event() {
     ";
 
     let saved = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 20, 'a'),
+            &private_tool_change(principal.clone(), 20, 'a'),
             &workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("finance.calculate").expect("Saved Function Path"),
-                SavedFunctionDescription::parse("Calculate a doubled finance value")
+            PrivateToolSave::new(
+                PrivateToolPath::parse("finance.calculate").expect("Private Tool Path"),
+                PrivateToolDescription::parse("Calculate a doubled finance value")
                     .expect("description"),
-                SavedFunctionSource::parse(source).expect("source"),
+                PrivateToolSource::parse(source).expect("source"),
             ),
         )
         .await
@@ -66,7 +65,7 @@ async fn saved_function_save_publishes_exact_authoring_record_and_event() {
 
     assert!(saved.declaration().as_str().contains("interface Input"));
     assert!(saved.declaration().as_str().contains("export default"));
-    let crate::SavedFunctionDeclarationFieldProjection::Ready(fields) =
+    let crate::PrivateToolDeclarationFieldProjection::Ready(fields) =
         saved.declaration_field_projection()
     else {
         panic!("declaration fields must be ready");
@@ -77,14 +76,14 @@ async fn saved_function_save_publishes_exact_authoring_record_and_event() {
             .any(|field| field.path() == "input.input.value")
     );
     let events = fixture
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&principal, &workspace_id)
         .await
         .expect("list author lifecycle Events");
     assert!(matches!(
         events.as_slice(),
         [event]
-            if event.action() == SavedFunctionLifecycleAction::Created
+            if event.action() == PrivateToolLifecycleAction::Created
                 && event.outcome() == crate::LifecycleOutcome::Accepted
                 && event.target_id() == saved.id()
                 && event.target_path() == saved.path()
@@ -104,7 +103,7 @@ async fn saved_function_save_publishes_exact_authoring_record_and_event() {
 // Event does not name.
 #[tokio::test]
 async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_change() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:function-policy").await;
     let saved_fields = [
         "source",
@@ -157,19 +156,19 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
         ),
     ];
     for (step, (path, policy, default, names_default)) in steps.into_iter().enumerate() {
-        let path = SavedFunctionPath::parse(path).expect("path");
-        let save = SavedFunctionSave::new(
+        let path = PrivateToolPath::parse(path).expect("path");
+        let save = PrivateToolSave::new(
             path.clone(),
-            SavedFunctionDescription::parse("Look up one value").expect("description"),
-            SavedFunctionSource::parse(&format!("export default async () => {step};"))
+            PrivateToolDescription::parse("Look up one value").expect("description"),
+            PrivateToolSource::parse(&format!("export default async () => {step};"))
                 .expect("source"),
         )
         .declaring_default(policy);
         let at = 20 + i64::try_from(step).expect("step");
         fixture
-            .saved_functions
+            .private_tools
             .save(
-                &saved_function_change(principal.clone(), at, 'a'),
+                &private_tool_change(principal.clone(), at, 'a'),
                 &workspace_id,
                 save,
             )
@@ -177,7 +176,7 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
             .expect("save");
         assert_eq!(
             fixture
-                .saved_functions
+                .private_tools
                 .get(&principal, &workspace_id, &path)
                 .await
                 .expect("read the saved tool")
@@ -186,7 +185,7 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
             "step {step}"
         );
         let events = fixture
-            .saved_functions
+            .private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
             .expect("list lifecycle Events");
@@ -212,39 +211,39 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
     reason = "one lifecycle scenario covers failed save, replacement, and deletion atomicity"
 )]
 async fn failed_save_preserves_current_definition_and_accepted_changes_follow_transaction_order() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:function-editor").await;
-    let path = SavedFunctionPath::parse("reports.total").expect("path");
+    let path = PrivateToolPath::parse("reports.total").expect("path");
     let original_source = "export default function total() { return 41; }";
     let original = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 100, 'b'),
+            &private_tool_change(principal.clone(), 100, 'b'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Original total").expect("description"),
-                SavedFunctionSource::parse(original_source).expect("source"),
+                PrivateToolDescription::parse("Original total").expect("description"),
+                PrivateToolSource::parse(original_source).expect("source"),
             ),
         )
         .await
         .expect("save original");
 
     let failed = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 200, 'c'),
+            &private_tool_change(principal.clone(), 200, 'c'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Broken replacement").expect("description"),
-                SavedFunctionSource::parse("export default function (").expect("source"),
+                PrivateToolDescription::parse("Broken replacement").expect("description"),
+                PrivateToolSource::parse("export default function (").expect("source"),
             ),
         )
         .await;
-    assert!(matches!(failed, Err(Error::SavedFunctionAdmission(_))));
+    assert!(matches!(failed, Err(Error::PrivateToolAdmission(_))));
     let unchanged = fixture
-        .saved_functions
+        .private_tools
         .get(&principal, &workspace_id, &path)
         .await
         .expect("read unchanged current function");
@@ -252,7 +251,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
     assert_eq!(unchanged.source().as_str(), original_source);
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
             .expect("events after rejection")
@@ -262,14 +261,14 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
 
     let replacement_source = "export default function total() { return 42; }";
     let replacement = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 50, 'd'),
+            &private_tool_change(principal.clone(), 50, 'd'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Replacement total").expect("description"),
-                SavedFunctionSource::parse(replacement_source).expect("source"),
+                PrivateToolDescription::parse("Replacement total").expect("description"),
+                PrivateToolSource::parse(replacement_source).expect("source"),
             ),
         )
         .await
@@ -279,9 +278,9 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
     assert_eq!(replacement.saved_at_unix_nanos(), 50);
 
     let deleted_id = fixture
-        .saved_functions
+        .private_tools
         .delete(
-            &saved_function_change(principal.clone(), 40, 'e'),
+            &private_tool_change(principal.clone(), 40, 'e'),
             &workspace_id,
             &path,
         )
@@ -290,27 +289,25 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
     assert_eq!(&deleted_id, original.id());
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&principal, &workspace_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     let events = fixture
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&principal, &workspace_id)
         .await
         .expect("complete lifecycle evidence");
     assert_eq!(events.len(), 3);
     assert!(events.iter().any(|event| {
-        event.action() == SavedFunctionLifecycleAction::Created
-            && event.target_id() == original.id()
+        event.action() == PrivateToolLifecycleAction::Created && event.target_id() == original.id()
     }));
     assert!(events.iter().any(|event| {
-        event.action() == SavedFunctionLifecycleAction::Replaced
-            && event.target_id() == original.id()
+        event.action() == PrivateToolLifecycleAction::Replaced && event.target_id() == original.id()
     }));
     assert!(events.iter().any(|event| {
-        event.action() == SavedFunctionLifecycleAction::Deleted
+        event.action() == PrivateToolLifecycleAction::Deleted
             && event.target_id() == original.id()
             && event.changed_field_paths()
                 == [
@@ -329,7 +326,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
     reason = "one scenario compares both reads across replacement, deletion, and Workspaces"
 )]
 async fn entry_reads_return_current_functions_with_revision_and_declaration_fields() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, user) = fixture.user_workspace("user:entry-author").await;
     let agent = registered_agent(&fixture.workspaces, &user, &workspace_id).await;
     let (other_workspace_id, other_user) = fixture.user_workspace("user:entry-elsewhere").await;
@@ -338,19 +335,19 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
                 path: &str,
                 description: &str,
                 at: i64| {
-        let saved_functions = fixture.saved_functions.clone();
-        let context = saved_function_change(principal.clone(), at, 'a');
+        let private_tools = fixture.private_tools.clone();
+        let context = private_tool_change(principal.clone(), at, 'a');
         let workspace_id = workspace_id.clone();
-        let save = SavedFunctionSave::new(
-            SavedFunctionPath::parse(path).expect("path"),
-            SavedFunctionDescription::parse(description).expect("description"),
-            SavedFunctionSource::parse(
+        let save = PrivateToolSave::new(
+            PrivateToolPath::parse(path).expect("path"),
+            PrivateToolDescription::parse(description).expect("description"),
+            PrivateToolSource::parse(
                 "interface Input { value: number }\nexport default function run(input: Input): number { return input.value; }",
             )
             .expect("source"),
         );
         async move {
-            saved_functions
+            private_tools
                 .save(&context, &workspace_id, save)
                 .await
                 .expect("save function")
@@ -376,11 +373,11 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     .await;
     let gone = save(&user, &workspace_id, "reports.gone", "Soon deleted", 50).await;
     fixture
-        .saved_functions
+        .private_tools
         .delete(
-            &saved_function_change(user.clone(), 60, 'b'),
+            &private_tool_change(user.clone(), 60, 'b'),
             &workspace_id,
-            &SavedFunctionPath::parse("reports.gone").expect("path"),
+            &PrivateToolPath::parse("reports.gone").expect("path"),
         )
         .await
         .expect("delete function");
@@ -395,10 +392,10 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
 
     let mut transaction = fixture.database.begin().await.expect("begin entry read");
     let workspace_entries =
-        crate::saved_function_entries_in_transaction(&mut transaction, &workspace_id)
+        crate::private_tool_entries_in_transaction(&mut transaction, &workspace_id)
             .await
             .expect("read one Workspace's entries");
-    let every_entry = crate::all_saved_function_entries_in_transaction(&mut transaction)
+    let every_entry = crate::all_private_tool_entries_in_transaction(&mut transaction)
         .await
         .expect("read every Workspace's entries");
     for (workspace, function, revision) in [
@@ -408,7 +405,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
         (&workspace_id, gone.id(), None),
     ] {
         assert_eq!(
-            crate::saved_function_entry_in_transaction(&mut transaction, workspace, function)
+            crate::private_tool_entry_in_transaction(&mut transaction, workspace, function)
                 .await
                 .expect("read one function's entry")
                 .map(|entry| entry.revision()),
@@ -417,7 +414,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     }
     transaction.rollback().await.expect("finish entry read");
 
-    let summary = |entries: &[crate::SavedFunctionEntry]| {
+    let summary = |entries: &[crate::PrivateToolEntry]| {
         let mut summary = entries
             .iter()
             .map(|entry| {
@@ -479,7 +476,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
             .expect("current function has an entry");
         assert_eq!(
             read,
-            &crate::SavedFunctionEntry::from_saved(saved),
+            &crate::PrivateToolEntry::from_saved(saved),
             "the read agrees with what a save hands to search"
         );
         assert_eq!(read.declaration(), saved.declaration());
@@ -498,7 +495,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     )
     .await;
     let mut transaction = fixture.database.begin().await.expect("begin entry read");
-    let entries = crate::saved_function_entries_in_transaction(&mut transaction, &workspace_id)
+    let entries = crate::private_tool_entries_in_transaction(&mut transaction, &workspace_id)
         .await
         .expect("a corrupt projection does not fail the read");
     transaction.rollback().await.expect("finish entry read");
@@ -511,35 +508,32 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
 }
 
 #[tokio::test]
-async fn agent_and_user_saved_function_paths_are_principal_owned() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn agent_and_user_private_tool_paths_are_principal_owned() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, user) = fixture.user_workspace("user:function-owner").await;
     let agent = registered_agent(&fixture.workspaces, &user, &workspace_id).await;
-    let path = SavedFunctionPath::parse("private.answer").expect("path");
+    let path = PrivateToolPath::parse("private.answer").expect("path");
     let saved = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(agent.clone(), 20, 'd'),
+            &private_tool_change(agent.clone(), 20, 'd'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Agent-private answer").expect("description"),
-                SavedFunctionSource::parse("export default () => 42;").expect("source"),
+                PrivateToolDescription::parse("Agent-private answer").expect("description"),
+                PrivateToolSource::parse("export default () => 42;").expect("source"),
             ),
         )
         .await
         .expect("Agent saves its own function");
 
     assert!(matches!(
-        fixture
-            .saved_functions
-            .get(&user, &workspace_id, &path)
-            .await,
-        Err(Error::SavedFunctionNotFound)
+        fixture.private_tools.get(&user, &workspace_id, &path).await,
+        Err(Error::PrivateToolNotFound)
     ));
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&agent, &workspace_id, &path)
             .await
             .expect("Agent reads own current definition")
@@ -547,9 +541,9 @@ async fn agent_and_user_saved_function_paths_are_principal_owned() {
         saved.id()
     );
     fixture
-        .saved_functions
+        .private_tools
         .delete(
-            &saved_function_change(agent.clone(), 30, 'e'),
+            &private_tool_change(agent.clone(), 30, 'e'),
             &workspace_id,
             &path,
         )
@@ -557,14 +551,14 @@ async fn agent_and_user_saved_function_paths_are_principal_owned() {
         .expect("Agent deletes its own function");
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&agent, &workspace_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .list_lifecycle_events(&agent, &workspace_id)
             .await,
         Err(Error::PermissionDenied(_))
@@ -578,20 +572,20 @@ async fn agent_and_user_saved_function_paths_are_principal_owned() {
 )]
 async fn only_designated_owners_inspect_and_delete_agent_functions_without_authoring_as_the_agent()
 {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, workspace_owner) = fixture.user_workspace("user:workspace-owner").await;
     let agent = registered_agent(&fixture.workspaces, &workspace_owner, &workspace_id).await;
     let agent_id = agent.principal().id().clone();
-    let path = SavedFunctionPath::parse("private.answer").expect("path");
+    let path = PrivateToolPath::parse("private.answer").expect("path");
     let agent_function = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(agent.clone(), 20, '7'),
+            &private_tool_change(agent.clone(), 20, '7'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Agent-owned answer").expect("description"),
-                SavedFunctionSource::parse("export default () => 'agent';").expect("source"),
+                PrivateToolDescription::parse("Agent-owned answer").expect("description"),
+                PrivateToolSource::parse("export default () => 'agent';").expect("source"),
             ),
         )
         .await
@@ -599,7 +593,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
 
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .get_agent(&workspace_owner, &workspace_id, &agent_id, &path)
             .await
             .expect("Workspace Owner inspects Agent function")
@@ -608,7 +602,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     );
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .list_agent(&workspace_owner, &workspace_id, &agent_id)
             .await
             .expect("Workspace Owner lists Agent functions")
@@ -617,14 +611,14 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     );
 
     let owner_function = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(workspace_owner.clone(), 30, '8'),
+            &private_tool_change(workspace_owner.clone(), 30, '8'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Owner's private answer").expect("description"),
-                SavedFunctionSource::parse("export default () => 'owner';").expect("source"),
+                PrivateToolDescription::parse("Owner's private answer").expect("description"),
+                PrivateToolSource::parse("export default () => 'owner';").expect("source"),
             ),
         )
         .await
@@ -632,7 +626,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     assert_ne!(owner_function.id(), agent_function.id());
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .get_agent(&workspace_owner, &workspace_id, &agent_id, &path)
             .await
             .expect("Agent definition remains unchanged")
@@ -666,29 +660,29 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     let member = AuthenticatedPrincipal::user(member_user);
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get_agent(&member, &workspace_id, &agent_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .list_agent(&member, &workspace_id, &agent_id)
             .await,
         Err(Error::PermissionDenied(_))
     ));
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .delete_agent(
-                &saved_function_change(member, 36, 'b'),
+                &private_tool_change(member, 36, 'b'),
                 &workspace_id,
                 &agent_id,
                 &path,
             )
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
 
     let organization_owner = AuthenticatedPrincipal::user(
@@ -702,33 +696,33 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     // An Organization Owner without a Membership is denied like any non-Member.
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .list_agent(&organization_owner, &workspace_id, &agent_id)
             .await,
         Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
     ));
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get_agent(&organization_owner, &workspace_id, &agent_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .delete_agent(
-                &saved_function_change(organization_owner, 40, '9'),
+                &private_tool_change(organization_owner, 40, '9'),
                 &workspace_id,
                 &agent_id,
                 &path,
             )
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&agent, &workspace_id, &path)
             .await
             .expect("denied deletions leave the Agent function current")
@@ -737,9 +731,9 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     );
 
     fixture
-        .saved_functions
+        .private_tools
         .delete_agent(
-            &saved_function_change(workspace_owner.clone(), 41, '9'),
+            &private_tool_change(workspace_owner.clone(), 41, '9'),
             &workspace_id,
             &agent_id,
             &path,
@@ -749,14 +743,14 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
 
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&agent, &workspace_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&workspace_owner, &workspace_id, &path)
             .await
             .expect("Owner's User function stays private and current")
@@ -770,16 +764,11 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
 /// every part of the definition kept.
 // Catches: an upgrade that loses or rewrites part of a definition, gives a
 // Private Tool another owner, or leaves it without the default Tool Access
-// State and the binding to the definition Coral performs.
+// State, the binding to the definition Coral performs, or its renamed table.
 #[tokio::test]
 async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
-    let before_upgrade = coral_test_support::edited_migration_plan(|migrations| {
-        migrations
-            .into_iter()
-            .filter(|migration| migration.version != 62)
-            .collect()
-    });
-    let fixture = SavedFunctionTestModules::on_plan(&before_upgrade).await;
+    let before_upgrade = coral_test_support::migration_plan_before(62);
+    let fixture = PrivateToolTestModules::on_plan(&before_upgrade).await;
     let (workspace_id, owner) = fixture.user_workspace("user:upgrade-owner").await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
     let declaration = "export default function lookup(input: { id: string }): Promise<string>;";
@@ -828,11 +817,11 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
     let agent_id = agent.principal().id().clone();
     for (principal, id, path, revision) in stored {
         let tool = fixture
-            .saved_functions
+            .private_tools
             .get(
                 principal,
                 &workspace_id,
-                &SavedFunctionPath::parse(path).expect("path"),
+                &PrivateToolPath::parse(path).expect("path"),
             )
             .await
             .expect("the owner reads its Private Tool");
@@ -858,7 +847,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
     // A Workspace Owner still reads an Agent's Private Tool.
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .list_agent(&owner, &workspace_id, &agent_id)
             .await
             .expect("the Owner lists the Agent's Private Tools")
@@ -870,20 +859,20 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
 }
 
 #[tokio::test]
-async fn saved_function_paths_cannot_overlap_virtual_namespaces() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:path-conflict").await;
 
     for path in ["reports.current", "finance.tax.calculate"] {
         fixture
-            .saved_functions
+            .private_tools
             .save(
-                &saved_function_change(principal.clone(), 20, 'c'),
+                &private_tool_change(principal.clone(), 20, 'c'),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(path).expect("path"),
-                    SavedFunctionDescription::parse("Current callable").expect("description"),
-                    SavedFunctionSource::parse("export default () => 42;").expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("path"),
+                    PrivateToolDescription::parse("Current callable").expect("description"),
+                    PrivateToolSource::parse("export default () => 42;").expect("source"),
                 ),
             )
             .await
@@ -893,42 +882,41 @@ async fn saved_function_paths_cannot_overlap_virtual_namespaces() {
     for path in ["reports.current.detail", "finance.tax"] {
         assert!(matches!(
             fixture
-                .saved_functions
+                .private_tools
                 .save(
-                    &saved_function_change(principal.clone(), 30, 'd'),
+                    &private_tool_change(principal.clone(), 30, 'd'),
                     &workspace_id,
-                    SavedFunctionSave::new(
-                        SavedFunctionPath::parse(path).expect("path"),
-                        SavedFunctionDescription::parse("Conflicting callable")
-                            .expect("description"),
-                        SavedFunctionSource::parse("export default () => 0;").expect("source"),
+                    PrivateToolSave::new(
+                        PrivateToolPath::parse(path).expect("path"),
+                        PrivateToolDescription::parse("Conflicting callable").expect("description"),
+                        PrivateToolSource::parse("export default () => 0;").expect("source"),
                     ),
                 )
                 .await,
-            Err(Error::SavedFunctionPathConflict)
+            Err(Error::PrivateToolPathConflict)
         ));
         assert!(
             matches!(
                 fixture
-                    .saved_functions
+                    .private_tools
                     .get(
                         &principal,
                         &workspace_id,
-                        &SavedFunctionPath::parse(path).expect("path"),
+                        &PrivateToolPath::parse(path).expect("path"),
                     )
                     .await,
-                Err(Error::SavedFunctionNotFound)
+                Err(Error::PrivateToolNotFound)
             ),
             "the refused save of {path} saved nothing"
         );
     }
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(
                 &principal,
                 &workspace_id,
-                &SavedFunctionPath::parse("reports.current").expect("path"),
+                &PrivateToolPath::parse("reports.current").expect("path"),
             )
             .await,
         Ok(function) if function.source().as_str() == "export default () => 42;"
@@ -937,25 +925,25 @@ async fn saved_function_paths_cannot_overlap_virtual_namespaces() {
 
 #[tokio::test]
 async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:compile-failures").await;
-    let path = SavedFunctionPath::parse("compile.failure").expect("path");
+    let path = PrivateToolPath::parse("compile.failure").expect("path");
 
     for (failure, kind, rejection) in [
         (
             CompileFailure::Rejected("scripted rejection".to_string()),
-            "saved_function_admission",
-            Some("saved_function_admission_failed"),
+            "private_tool_admission",
+            Some("private_tool_admission_failed"),
         ),
         (
             CompileFailure::Busy,
             "compiler_busy",
-            Some("saved_function_compiler_busy"),
+            Some("private_tool_compiler_busy"),
         ),
         (
             CompileFailure::TimedOut,
-            "saved_function_compilation_timed_out",
-            Some("saved_function_compilation_timed_out"),
+            "private_tool_compilation_timed_out",
+            Some("private_tool_compilation_timed_out"),
         ),
         (CompileFailure::Stopped, "compiler_worker_stopped", None),
         (
@@ -964,19 +952,19 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
             None,
         ),
     ] {
-        let module = SavedFunctionModule::with_compiler(
+        let module = PrivateToolModule::with_compiler(
             fixture.database.clone(),
             fixture.workspaces.clone(),
-            Arc::new(GatedSavedFunctionCompiler::failing(failure)),
+            Arc::new(GatedPrivateToolCompiler::failing(failure)),
         );
         let error = module
             .save(
-                &saved_function_change(principal.clone(), 20, 'e'),
+                &private_tool_change(principal.clone(), 20, 'e'),
                 &workspace_id,
-                SavedFunctionSave::new(
+                PrivateToolSave::new(
                     path.clone(),
-                    SavedFunctionDescription::parse("Fails to compile").expect("description"),
-                    SavedFunctionSource::parse("export default () => 1;").expect("source"),
+                    PrivateToolDescription::parse("Fails to compile").expect("description"),
+                    PrivateToolSource::parse("export default () => 1;").expect("source"),
                 ),
             )
             .await
@@ -988,10 +976,10 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
         );
         assert!(matches!(
             fixture
-                .saved_functions
+                .private_tools
                 .get(&principal, &workspace_id, &path)
                 .await,
-            Err(Error::SavedFunctionNotFound)
+            Err(Error::PrivateToolNotFound)
         ));
     }
 }
@@ -1011,46 +999,44 @@ type Refusal = (&'static str, Result<(), Error>, fn(&Error) -> bool);
     reason = "one table checks each refusal's variant and that it changed nothing"
 )]
 async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:intent-before-compile").await;
-    let path = SavedFunctionPath::parse("reports.current").expect("path");
-    let save = |path: &SavedFunctionPath| {
-        SavedFunctionSave::new(
+    let path = PrivateToolPath::parse("reports.current").expect("path");
+    let save = |path: &PrivateToolPath| {
+        PrivateToolSave::new(
             path.clone(),
-            SavedFunctionDescription::parse("Report the current value").expect("description"),
-            SavedFunctionSource::parse("export default () => 42;").expect("source"),
+            PrivateToolDescription::parse("Report the current value").expect("description"),
+            PrivateToolSource::parse("export default () => 42;").expect("source"),
         )
     };
     fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 10, 'a'),
+            &private_tool_change(principal.clone(), 10, 'a'),
             &workspace_id,
             save(&path),
         )
         .await
         .expect("the first save");
     // Every compile times out, so only a check before it can refuse.
-    let timing_out = SavedFunctionModule::with_compiler(
+    let timing_out = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
-        Arc::new(GatedSavedFunctionCompiler::failing(
-            CompileFailure::TimedOut,
-        )),
+        Arc::new(GatedPrivateToolCompiler::failing(CompileFailure::TimedOut)),
     );
-    let missing = SavedFunctionPath::parse("reports.missing").expect("path");
+    let missing = PrivateToolPath::parse("reports.missing").expect("path");
     let current = fixture
-        .saved_functions
+        .private_tools
         .get(&principal, &workspace_id, &path)
         .await
         .expect("the first save is current");
     let events = fixture
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&principal, &workspace_id)
         .await
         .expect("Events")
         .len();
-    let context = saved_function_change(principal.clone(), 20, 'b');
+    let context = private_tool_change(principal.clone(), 20, 'b');
     let refusals: [Refusal; 4] = [
         (
             "create-only at a taken path",
@@ -1066,7 +1052,7 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                 .save(&context, &workspace_id, save(&missing).replace_only(None))
                 .await
                 .map(drop),
-            |error| matches!(error, Error::SavedFunctionNotFound),
+            |error| matches!(error, Error::PrivateToolNotFound),
         ),
         (
             "replace-only at a moved revision",
@@ -1082,14 +1068,14 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                 .delete(&context, &workspace_id, &missing)
                 .await
                 .map(drop),
-            |error| matches!(error, Error::SavedFunctionNotFound),
+            |error| matches!(error, Error::PrivateToolNotFound),
         ),
     ];
     for (name, refused, expected) in refusals {
         assert!(refused.as_ref().is_err_and(expected), "{name}: {refused:?}");
         assert_eq!(
             fixture
-                .saved_functions
+                .private_tools
                 .get(&principal, &workspace_id, &path)
                 .await
                 .expect("still current"),
@@ -1099,16 +1085,16 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
         assert!(
             matches!(
                 fixture
-                    .saved_functions
+                    .private_tools
                     .get(&principal, &workspace_id, &missing)
                     .await,
-                Err(Error::SavedFunctionNotFound)
+                Err(Error::PrivateToolNotFound)
             ),
             "{name}: nothing was created"
         );
         assert_eq!(
             fixture
-                .saved_functions
+                .private_tools
                 .list_lifecycle_events(&principal, &workspace_id)
                 .await
                 .expect("Events")
@@ -1120,51 +1106,51 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
     assert!(matches!(
         timing_out
             .save(
-                &saved_function_change(principal.clone(), 30, 'c'),
+                &private_tool_change(principal.clone(), 30, 'c'),
                 &workspace_id,
                 save(&path).replace_only(Some(1)),
             )
             .await,
-        Err(Error::SavedFunctionCompilationTimedOut)
+        Err(Error::PrivateToolCompilationTimedOut)
     ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:path-conflict-race").await;
-    let saved_functions = SavedFunctionModule::with_compiler(
+    let private_tools = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
-        Arc::new(GatedSavedFunctionCompiler::paired()),
+        Arc::new(GatedPrivateToolCompiler::paired()),
     );
 
-    let first_module = saved_functions.clone();
+    let first_module = private_tools.clone();
     let first_workspace = workspace_id.clone();
     let first_principal = principal.clone();
     let first = tokio::spawn(async move {
         first_module
             .save(
-                &saved_function_change(first_principal, 20, 'e'),
+                &private_tool_change(first_principal, 20, 'e'),
                 &first_workspace,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse("concurrent.path").expect("path"),
-                    SavedFunctionDescription::parse("Concurrent parent").expect("description"),
-                    SavedFunctionSource::parse("export default () => 1;").expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse("concurrent.path").expect("path"),
+                    PrivateToolDescription::parse("Concurrent parent").expect("description"),
+                    PrivateToolSource::parse("export default () => 1;").expect("source"),
                 ),
             )
             .await
     });
-    let second_module = saved_functions;
+    let second_module = private_tools;
     let second = tokio::spawn(async move {
         second_module
             .save(
-                &saved_function_change(principal, 21, 'f'),
+                &private_tool_change(principal, 21, 'f'),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse("concurrent.path.child").expect("path"),
-                    SavedFunctionDescription::parse("Concurrent child").expect("description"),
-                    SavedFunctionSource::parse("export default () => 2;").expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse("concurrent.path.child").expect("path"),
+                    PrivateToolDescription::parse("Concurrent child").expect("description"),
+                    PrivateToolSource::parse("export default () => 2;").expect("source"),
                 ),
             )
             .await
@@ -1179,18 +1165,18 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(result, Err(Error::SavedFunctionPathConflict)))
+            .filter(|result| matches!(result, Err(Error::PrivateToolPathConflict)))
             .count(),
         1
     );
 }
 
 #[tokio::test]
-async fn saved_function_compilation_holds_no_write_transaction_and_rechecks_active_workspace() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active_workspace() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:authoring-race").await;
-    let (compiler, compiling, release) = GatedSavedFunctionCompiler::held();
-    let blocked_functions = SavedFunctionModule::with_compiler(
+    let (compiler, compiling, release) = GatedPrivateToolCompiler::held();
+    let blocked_functions = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         Arc::new(compiler),
@@ -1201,13 +1187,13 @@ async fn saved_function_compilation_holds_no_write_transaction_and_rechecks_acti
     let save = tokio::spawn(async move {
         saving_module
             .save(
-                &saved_function_change(saving_principal, 30, 'a'),
+                &private_tool_change(saving_principal, 30, 'a'),
                 &saving_workspace,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse("races.compile").expect("path"),
-                    SavedFunctionDescription::parse("Compile outside transaction")
+                PrivateToolSave::new(
+                    PrivateToolPath::parse("races.compile").expect("path"),
+                    PrivateToolDescription::parse("Compile outside transaction")
                         .expect("description"),
-                    SavedFunctionSource::parse("export default () => 42;").expect("source"),
+                    PrivateToolSource::parse("export default () => 42;").expect("source"),
                 ),
             )
             .await
@@ -1237,10 +1223,10 @@ async fn saved_function_compilation_holds_no_write_transaction_and_rechecks_acti
             .get(
                 &principal,
                 &workspace_id,
-                &SavedFunctionPath::parse("races.compile").expect("path"),
+                &PrivateToolPath::parse("races.compile").expect("path"),
             )
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert!(
         blocked_functions
@@ -1252,20 +1238,19 @@ async fn saved_function_compilation_holds_no_write_transaction_and_rechecks_acti
 }
 
 #[tokio::test]
-async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_public_types() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_public_types() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:typed-function-author").await;
-    let path = SavedFunctionPath::parse("typed.advisory").expect("path");
+    let path = PrivateToolPath::parse("typed.advisory").expect("path");
     let advisory = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 20, '2'),
+            &private_tool_change(principal.clone(), 20, '2'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Keep strict semantic advice")
-                    .expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolDescription::parse("Keep strict semantic advice").expect("description"),
+                PrivateToolSource::parse(
                     r"
                         interface Input { value: number }
                         export default function advise(input: Input): number {
@@ -1291,14 +1276,14 @@ async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_p
     assert!(advisory.declaration().as_str().contains("interface Input"));
 
     let rejected = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 30, '3'),
+            &private_tool_change(principal.clone(), 30, '3'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Unresolved public type").expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolDescription::parse("Unresolved public type").expect("description"),
+                PrivateToolSource::parse(
                     "export default function invalid(input: MissingPublicType): number { return 0; }",
                 )
                 .expect("source"),
@@ -1306,7 +1291,7 @@ async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_p
         )
         .await;
     assert!(
-        matches!(rejected, Err(Error::SavedFunctionAdmission(_))),
+        matches!(rejected, Err(Error::PrivateToolAdmission(_))),
         "unexpected unresolved-public-type result: {rejected:?}"
     );
     for invalid_source in [
@@ -1321,23 +1306,22 @@ async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_p
     ] {
         assert!(matches!(
             fixture
-                .saved_functions
+                .private_tools
                 .save(
-                    &saved_function_change(principal.clone(), 31, '4'),
+                    &private_tool_change(principal.clone(), 31, '4'),
                     &workspace_id,
-                    SavedFunctionSave::new(
+                    PrivateToolSave::new(
                         path.clone(),
-                        SavedFunctionDescription::parse("Invalid export shape")
-                            .expect("description"),
-                        SavedFunctionSource::parse(invalid_source).expect("source"),
+                        PrivateToolDescription::parse("Invalid export shape").expect("description"),
+                        PrivateToolSource::parse(invalid_source).expect("source"),
                     ),
                 )
                 .await,
-            Err(Error::SavedFunctionAdmission(_))
+            Err(Error::PrivateToolAdmission(_))
         ));
     }
     let unchanged = fixture
-        .saved_functions
+        .private_tools
         .get(&principal, &workspace_id, &path)
         .await
         .expect("advisory definition remains current");
@@ -1345,7 +1329,7 @@ async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_p
     assert_eq!(unchanged.source(), advisory.source());
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
             .expect("one accepted authoring Event")
@@ -1359,14 +1343,14 @@ async fn saved_function_authoring_keeps_semantic_advice_but_rejects_unresolved_p
 // refuses one whose types say nothing about the data (`any`, `unknown`).
 #[tokio::test]
 async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:data-only-author").await;
-    let path = SavedFunctionPath::parse("data.only").expect("path");
+    let path = PrivateToolPath::parse("data.only").expect("path");
     let save = |source: &str| {
-        SavedFunctionSave::new(
+        PrivateToolSave::new(
             path.clone(),
-            SavedFunctionDescription::parse("Takes and returns data").expect("description"),
-            SavedFunctionSource::parse(source).expect("source"),
+            PrivateToolDescription::parse("Takes and returns data").expect("description"),
+            PrivateToolSource::parse(source).expect("source"),
         )
     };
     for (source, reason) in [
@@ -1401,9 +1385,9 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
         ),
     ] {
         let refused = fixture
-            .saved_functions
+            .private_tools
             .save(
-                &saved_function_change(principal.clone(), 20, 'd'),
+                &private_tool_change(principal.clone(), 20, 'd'),
                 &workspace_id,
                 save(source),
             )
@@ -1415,10 +1399,10 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
     }
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&principal, &workspace_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
 
     for source in [
@@ -1428,9 +1412,9 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
         "export default async (): Promise<void> => {};",
     ] {
         fixture
-            .saved_functions
+            .private_tools
             .save(
-                &saved_function_change(principal.clone(), 30, 'e'),
+                &private_tool_change(principal.clone(), 30, 'e'),
                 &workspace_id,
                 save(source),
             )
@@ -1440,20 +1424,20 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
 }
 
 #[tokio::test]
-async fn saved_function_save_rejects_missing_and_computed_dependencies_atomically() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:dependency-author").await;
-    let path = SavedFunctionPath::parse("reports.compose").expect("path");
+    let path = PrivateToolPath::parse("reports.compose").expect("path");
 
     let missing = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal.clone(), 20, '5'),
+            &private_tool_change(principal.clone(), 20, '5'),
             &workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Compose one report").expect("description"),
-                SavedFunctionSource::parse(
+                PrivateToolDescription::parse("Compose one report").expect("description"),
+                PrivateToolSource::parse(
                     "export default function compose() {\n  return coral.private.missing.value();\n}",
                 )
                 .expect("source"),
@@ -1463,7 +1447,7 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
     assert!(
         matches!(
             &missing,
-            Err(Error::SavedFunctionAdmission(message))
+            Err(Error::PrivateToolAdmission(message))
                 if message == "Private Tool coral.private.reports.compose:2:10: \
                     coral.private.missing.value names no Tool that you can call. \
                     Find one with coral.search."
@@ -1478,20 +1462,20 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
         "function pick(root: any, key: string) { return root[key]; } export default function compose() { return pick(coral.private, 'reports')(); }",
     ] {
         let rejected = fixture
-            .saved_functions
+            .private_tools
             .save(
-                &saved_function_change(principal.clone(), 20, '5'),
+                &private_tool_change(principal.clone(), 20, '5'),
                 &workspace_id,
-                SavedFunctionSave::new(
+                PrivateToolSave::new(
                     path.clone(),
-                    SavedFunctionDescription::parse("Compose one report").expect("description"),
-                    SavedFunctionSource::parse(source).expect("source"),
+                    PrivateToolDescription::parse("Compose one report").expect("description"),
+                    PrivateToolSource::parse(source).expect("source"),
                 ),
             )
             .await;
         assert!(matches!(
             rejected,
-            Err(Error::SavedFunctionAdmission(message))
+            Err(Error::PrivateToolAdmission(message))
                 if message.contains("Private Tool coral.private.reports.compose")
                     && (message.contains(" at 1:") || message.contains(":1:"))
         ));
@@ -1499,14 +1483,14 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
 
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(&principal, &workspace_id, &path)
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert!(
         fixture
-            .saved_functions
+            .private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
             .expect("list lifecycle evidence")
@@ -1515,24 +1499,24 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
 }
 
 #[tokio::test]
-async fn accepted_saved_function_diagnostics_are_bounded() {
-    let fixture = SavedFunctionTestModules::new().await;
+async fn accepted_private_tool_diagnostics_are_bounded() {
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:diagnostic-bound").await;
-    let mut source = (0..=crate::SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT)
+    let mut source = (0..=crate::PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT)
         .map(|index| format!("const invalid{index}: string = {index};"))
         .collect::<Vec<_>>()
         .join("\n");
     source.push_str("\nexport default function bounded(): number { return 42; }");
 
     let saved = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &saved_function_change(principal, 20, 'c'),
+            &private_tool_change(principal, 20, 'c'),
             &workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("diagnostics.bounded").expect("path"),
-                SavedFunctionDescription::parse("Bound compiler diagnostics").expect("description"),
-                SavedFunctionSource::parse(&source).expect("source"),
+            PrivateToolSave::new(
+                PrivateToolPath::parse("diagnostics.bounded").expect("path"),
+                PrivateToolDescription::parse("Bound compiler diagnostics").expect("description"),
+                PrivateToolSource::parse(&source).expect("source"),
             ),
         )
         .await
@@ -1540,7 +1524,7 @@ async fn accepted_saved_function_diagnostics_are_bounded() {
 
     assert_eq!(
         saved.diagnostics().len(),
-        crate::SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT
+        crate::PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT
     );
     assert!(saved.diagnostics_truncated());
 }
@@ -1584,7 +1568,7 @@ impl crate::ToolDeclarationReader for StalledReader {
 /// compiles in time.
 #[tokio::test]
 async fn a_stalled_declaration_read_saves_untyped_in_time() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:stalled-typing").await;
     let readers: [(&str, &dyn crate::ToolDeclarationReader, Vec<u64>); 2] = [
         ("a reader that answers", &DeclaresReposGet, vec![2353]),
@@ -1593,14 +1577,14 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
     for (name, reader, expected) in readers {
         let started = std::time::Instant::now();
         let prepared = fixture
-            .saved_functions
+            .private_tools
             .prepare_save(
-                &saved_function_change(principal.clone(), 20, 'd'),
+                &private_tool_change(principal.clone(), 20, 'd'),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse("typing.stalled").expect("path"),
-                    SavedFunctionDescription::parse("Typed").expect("description"),
-                    SavedFunctionSource::parse(
+                PrivateToolSave::new(
+                    PrivateToolPath::parse("typing.stalled").expect("path"),
+                    PrivateToolDescription::parse("Typed").expect("description"),
+                    PrivateToolSource::parse(
                         "export default async function f() { return coral.providers.github.repos.get({ owner: \"a\", nope: 1 }); }",
                     )
                     .expect("source"),
@@ -1616,7 +1600,7 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
         );
         let mut transaction = fixture.database.begin().await.expect("begin save");
         let saved = fixture
-            .saved_functions
+            .private_tools
             .save_in_transaction(&mut transaction, prepared)
             .await
             .expect("save");
@@ -1624,7 +1608,7 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
             saved
                 .diagnostics()
                 .iter()
-                .map(crate::SavedFunctionDiagnostic::code)
+                .map(crate::PrivateToolDiagnostic::code)
                 .collect::<Vec<_>>(),
             expected,
             "{name}"
@@ -1634,7 +1618,7 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
 
 #[tokio::test]
 async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let (first, principal) = fixture.user_workspace("user:two-workspaces").await;
     let second = fixture
         .workspaces
@@ -1646,7 +1630,7 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
         .unwrap()
         .id()
         .clone();
-    let path = SavedFunctionPath::parse("reports.total").unwrap();
+    let path = PrivateToolPath::parse("reports.total").unwrap();
     let mut saved = Vec::new();
     for (workspace, source) in [
         (&first, "export default () => 1;"),
@@ -1654,14 +1638,14 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
     ] {
         saved.push(
             fixture
-                .saved_functions
+                .private_tools
                 .save(
-                    &saved_function_change(principal.clone(), 20, 'a'),
+                    &private_tool_change(principal.clone(), 20, 'a'),
                     workspace,
-                    SavedFunctionSave::new(
+                    PrivateToolSave::new(
                         path.clone(),
-                        SavedFunctionDescription::parse("Total").unwrap(),
-                        SavedFunctionSource::parse(source).unwrap(),
+                        PrivateToolDescription::parse("Total").unwrap(),
+                        PrivateToolSource::parse(source).unwrap(),
                     ),
                 )
                 .await
@@ -1671,34 +1655,30 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
     let [in_first, in_second] = <[_; 2]>::try_from(saved).unwrap();
     assert_ne!(in_first.id(), in_second.id());
     let first_events = fixture
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&principal, &first)
         .await
         .unwrap();
     let get = |workspace: &coral_workspace::WorkspaceId| {
-        let (functions, principal, workspace, path) = (
-            &fixture.saved_functions,
-            &principal,
-            workspace.clone(),
-            &path,
-        );
+        let (functions, principal, workspace, path) =
+            (&fixture.private_tools, &principal, workspace.clone(), &path);
         async move { functions.get(principal, &workspace, path).await }
     };
     assert_eq!(get(&second).await.unwrap(), in_second);
 
-    let context = saved_function_change(principal.clone(), 30, 'b');
-    let delete = || fixture.saved_functions.delete(&context, &second, &path);
+    let context = private_tool_change(principal.clone(), 30, 'b');
+    let delete = || fixture.private_tools.delete(&context, &second, &path);
     assert_eq!(&delete().await.unwrap(), in_second.id());
     assert!(matches!(
         get(&second).await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     // Deleting again finds nothing and never falls back to the first Workspace.
-    assert!(matches!(delete().await, Err(Error::SavedFunctionNotFound)));
+    assert!(matches!(delete().await, Err(Error::PrivateToolNotFound)));
     assert_eq!(get(&first).await.unwrap(), in_first);
     assert_eq!(
         fixture
-            .saved_functions
+            .private_tools
             .list_lifecycle_events(&principal, &first)
             .await
             .unwrap(),
@@ -1707,11 +1687,11 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
 }
 
 /// Compiles every source to one fixed declaration once its gate opens.
-struct GatedSavedFunctionCompiler {
+struct GatedPrivateToolCompiler {
     gate: Box<dyn Fn() -> Result<(), CompileFailure> + Send + Sync>,
 }
 
-impl GatedSavedFunctionCompiler {
+impl GatedPrivateToolCompiler {
     /// Each compilation waits until a second one reaches the gate.
     fn paired() -> Self {
         let barrier = Barrier::new(2);
@@ -1751,12 +1731,12 @@ impl GatedSavedFunctionCompiler {
     }
 }
 
-impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
+impl PrivateToolCompiler for GatedPrivateToolCompiler {
     fn call_paths(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Option<coral_v8::SavedFunctionCallPaths> {
+    ) -> Option<coral_v8::PrivateToolCallPaths> {
         None
     }
 
@@ -1765,14 +1745,14 @@ impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
         _deadline: std::time::Instant,
         _source: &str,
         _declarations: Option<&coral_v8::CoralDeclarations>,
-    ) -> Result<PreparedSavedFunction, CompileFailure> {
+    ) -> Result<PreparedPrivateTool, CompileFailure> {
         (self.gate)()?;
-        Ok(PreparedSavedFunction {
-            declaration: crate::SavedFunctionDeclaration::from_compiler(
+        Ok(PreparedPrivateTool {
+            declaration: crate::PrivateToolDeclaration::from_compiler(
                 "declare const _default: () => number;\nexport default _default;\n",
             )
             .map_err(|error| error.to_string())?,
-            declaration_field_projection: crate::SavedFunctionDeclarationFieldProjection::Ready(
+            declaration_field_projection: crate::PrivateToolDeclarationFieldProjection::Ready(
                 Vec::new(),
             ),
             diagnostics: Vec::new(),
@@ -1783,14 +1763,14 @@ impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
     }
 }
 
-struct SavedFunctionTestModules {
+struct PrivateToolTestModules {
     fixture: TestDatabase,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
-    saved_functions: SavedFunctionModule,
+    private_tools: PrivateToolModule,
 }
 
-impl SavedFunctionTestModules {
+impl PrivateToolTestModules {
     async fn new() -> Self {
         Self::on_plan(coral_db::migration_plan()).await
     }
@@ -1798,21 +1778,21 @@ impl SavedFunctionTestModules {
     async fn on_plan(plan: &coral_db::MigrationPlan) -> Self {
         let fixture = TestDatabase::new(plan)
             .await
-            .expect("create Saved Function test database");
+            .expect("create Private Tool test database");
         let database = fixture.database();
         let workspaces = WorkspaceModule::new(database.clone());
-        let saved_functions = SavedFunctionModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
             crate::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
-        .expect("start Saved Function compiler");
+        .expect("start Private Tool compiler");
         Self {
             fixture,
             database,
             workspaces,
-            saved_functions,
+            private_tools,
         }
     }
 
@@ -1826,7 +1806,7 @@ impl SavedFunctionTestModules {
             .workspaces
             .create(
                 &change(user.clone(), 10, 'f'),
-                WorkspaceDisplayName::parse("Saved Functions").expect("display name"),
+                WorkspaceDisplayName::parse("Private Tools").expect("display name"),
             )
             .await
             .expect("create Workspace");
@@ -1858,12 +1838,12 @@ async fn registered_agent(
         .expect("authenticate Agent")
 }
 
-fn saved_function_change(
+fn private_tool_change(
     actor: AuthenticatedPrincipal,
     occurred_at_unix_nanos: i64,
     digit: char,
-) -> SavedFunctionChangeContext {
-    SavedFunctionChangeContext::new(
+) -> PrivateToolChangeContext {
+    PrivateToolChangeContext::new(
         actor,
         occurred_at_unix_nanos,
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
@@ -1876,26 +1856,26 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
         (true, coral_workspace::Error::AgentDisabled),
         (false, coral_workspace::Error::AgentRegistrationExpired),
     ] {
-        let fixture = SavedFunctionTestModules::new().await;
+        let fixture = PrivateToolTestModules::new().await;
         let (workspace_id, owner) = fixture.user_workspace("user:owner").await;
         let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
-        let path = SavedFunctionPath::parse("private.answer").unwrap();
-        let save = SavedFunctionSave::new(
+        let path = PrivateToolPath::parse("private.answer").unwrap();
+        let save = PrivateToolSave::new(
             path.clone(),
-            SavedFunctionDescription::parse("Answer").unwrap(),
-            SavedFunctionSource::parse("export default () => 42;").unwrap(),
+            PrivateToolDescription::parse("Answer").unwrap(),
+            PrivateToolSource::parse("export default () => 42;").unwrap(),
         );
         let original = fixture
-            .saved_functions
+            .private_tools
             .save(
-                &saved_function_change(agent.clone(), 20, '1'),
+                &private_tool_change(agent.clone(), 20, '1'),
                 &workspace_id,
                 save.clone(),
             )
             .await
             .unwrap();
-        let (compiler, compiling, release) = GatedSavedFunctionCompiler::held();
-        let module = SavedFunctionModule::with_compiler(
+        let (compiler, compiling, release) = GatedPrivateToolCompiler::held();
+        let module = PrivateToolModule::with_compiler(
             fixture.database.clone(),
             fixture.workspaces.clone(),
             Arc::new(compiler),
@@ -1904,7 +1884,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
         let target = workspace_id.clone();
         let saving = tokio::spawn(async move {
             module
-                .save(&saved_function_change(caller, 30, '2'), &target, save)
+                .save(&private_tool_change(caller, 30, '2'), &target, save)
                 .await
         });
         compiling.notified().await;
@@ -1946,7 +1926,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
         assert!(denied(saving.await.unwrap().map(drop)));
         assert_eq!(
             fixture
-                .saved_functions
+                .private_tools
                 .get_agent(&owner, &workspace_id, agent.principal().id(), &path)
                 .await
                 .unwrap(),
@@ -1954,8 +1934,8 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
         );
         assert!(denied(
             fixture
-                .saved_functions
-                .delete(&saved_function_change(agent, 40, '4'), &workspace_id, &path)
+                .private_tools
+                .delete(&private_tool_change(agent, 40, '4'), &workspace_id, &path)
                 .await
                 .map(drop)
         ));
@@ -1968,7 +1948,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
     reason = "one listing scenario compares the owner, another Member, an Agent, another Workspace, and access loss"
 )]
 async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
-    let fixture = SavedFunctionTestModules::new().await;
+    let fixture = PrivateToolTestModules::new().await;
     let organization = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_user(
         fixture.database.clone(),
@@ -2013,17 +1993,17 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
     let save = |actor: &AuthenticatedPrincipal, workspace: &coral_workspace::WorkspaceId, path| {
         let (functions, actor, workspace) =
-            (&fixture.saved_functions, actor.clone(), workspace.clone());
+            (&fixture.private_tools, actor.clone(), workspace.clone());
         async move {
             functions
                 .save(
-                    &saved_function_change(actor, 20, 'c'),
+                    &private_tool_change(actor, 20, 'c'),
                     &workspace,
-                    SavedFunctionSave::new(
-                        SavedFunctionPath::parse(path).expect("path"),
-                        SavedFunctionDescription::parse(&format!("Describe {path}"))
+                    PrivateToolSave::new(
+                        PrivateToolPath::parse(path).expect("path"),
+                        PrivateToolDescription::parse(&format!("Describe {path}"))
                             .expect("description"),
-                        SavedFunctionSource::parse("export default () => 1;").expect("source"),
+                        PrivateToolSource::parse("export default () => 1;").expect("source"),
                     ),
                 )
                 .await
@@ -2039,17 +2019,17 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
     save(&agent, &workspace_id, "agent.work").await;
 
     let inspection =
-        crate::SavedFunctionInspection::new(fixture.database.clone(), fixture.workspaces.clone());
+        crate::PrivateToolInspection::new(fixture.database.clone(), fixture.workspaces.clone());
     let list = |actor: &AuthenticatedPrincipal, after: Option<&str>, page_size| {
         let (functions, actor, workspace) = (&inspection, actor.clone(), workspace_id.clone());
-        let after = after.map(|path| SavedFunctionPath::parse(path).expect("after path"));
+        let after = after.map(|path| PrivateToolPath::parse(path).expect("after path"));
         async move {
             functions
                 .list(&actor, &workspace, after.as_ref(), page_size)
                 .await
         }
     };
-    let paths = |page: &crate::SavedFunctionPage| {
+    let paths = |page: &crate::PrivateToolPage| {
         page.summaries()
             .iter()
             .map(|summary| summary.path().as_str().to_owned())
@@ -2094,7 +2074,7 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
         ),
         "{denied:?}"
     );
-    for page_size in [0, crate::SAVED_FUNCTION_PAGE_MAX_SIZE + 1] {
+    for page_size in [0, crate::PRIVATE_TOOL_PAGE_MAX_SIZE + 1] {
         assert!(matches!(
             list(&member, None, page_size).await,
             Err(Error::InvalidInput(_))
@@ -2107,7 +2087,7 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
             .begin_read_snapshot()
             .await
             .expect("read snapshot");
-        let entries = crate::saved_function_entries_in_transaction(&mut transaction, &workspace_id)
+        let entries = crate::private_tool_entries_in_transaction(&mut transaction, &workspace_id)
             .await
             .expect("entries");
         transaction.commit().await.expect("commit read");
@@ -2133,14 +2113,14 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
     ));
     assert!(matches!(
         fixture
-            .saved_functions
+            .private_tools
             .get(
                 &member,
                 &workspace_id,
-                &SavedFunctionPath::parse("alpha.first").expect("path"),
+                &PrivateToolPath::parse("alpha.first").expect("path"),
             )
             .await,
-        Err(Error::SavedFunctionNotFound)
+        Err(Error::PrivateToolNotFound)
     ));
     assert_eq!(entries().await, before);
 }

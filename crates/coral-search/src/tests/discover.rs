@@ -7,12 +7,12 @@ use super::index::CapturedLogs;
 use super::{TestModules, TracerScope};
 use crate::{Discovery, DiscoveryRequest, EntityKind, Error, ExactLookup, ExactPaths};
 use coral_catalog::{SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, ToolKey};
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionPath, SavedFunctionSave,
-    SavedFunctionSource,
-};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_test_support::{change, trace};
+use coral_tools::{
+    PrivateToolChangeContext, PrivateToolDescription, PrivateToolPath, PrivateToolSave,
+    PrivateToolSource,
+};
 use coral_workspace::AuthenticatedPrincipal;
 
 async fn look_up(fixture: &TestModules, scope: &TracerScope, paths: &[&str]) -> ExactLookup {
@@ -460,14 +460,14 @@ async fn a_missing_private_path_names_the_callers_own_nearest_private_tools() {
         );
         async move {
             fixture
-                .saved_functions
+                .private_tools
                 .save(
-                    &SavedFunctionChangeContext::new(principal, at, trace('6')),
+                    &PrivateToolChangeContext::new(principal, at, trace('6')),
                     workspace,
-                    SavedFunctionSave::new(
-                        SavedFunctionPath::parse(&path).expect("a path"),
-                        SavedFunctionDescription::parse("Format one value").expect("a description"),
-                        SavedFunctionSource::parse(
+                    PrivateToolSave::new(
+                        PrivateToolPath::parse(&path).expect("a path"),
+                        PrivateToolDescription::parse("Format one value").expect("a description"),
+                        PrivateToolSource::parse(
                             "export default async (value: number): Promise<string> => `${value}`;",
                         )
                         .expect("a source"),

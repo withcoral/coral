@@ -13,9 +13,9 @@ use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
     BuiltinTools, CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory,
-    Error, IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl,
-    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionDeclarationField,
-    SavedFunctionReference, ToolReferences, UnknownToolCall,
+    Error, IsolateLimits, LinkedPrivateToolSource, PrivateToolCallPaths, PrivateToolCompilation,
+    PrivateToolDeclarationField, PrivateToolReference, ProgramExecutionControl, ToolReferences,
+    UnknownToolCall,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -31,11 +31,11 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n",
     include_str!("js/compiler/authored_source_policy.js"),
     "\n",
-    include_str!("js/compiler/saved_function_authoring.js"),
+    include_str!("js/compiler/private_tool_authoring.js"),
     "\n",
-    include_str!("js/compiler/saved_function_extraction.js"),
+    include_str!("js/compiler/private_tool_extraction.js"),
     "\n",
-    include_str!("js/compiler/saved_function_linking.js"),
+    include_str!("js/compiler/private_tool_linking.js"),
     "\n",
     include_str!("js/compiler/program_compilation.js"),
     "\n",
@@ -43,7 +43,7 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n})();\n",
 );
 const PROGRAM_FILE_NAME: &str = "program.ts";
-const SAVED_FUNCTION_FILE_NAME: &str = "saved_function.ts";
+const PRIVATE_TOOL_FILE_NAME: &str = "private_tool.ts";
 
 // Leave headroom above the measured ~130 MiB transient authoring working set.
 const COMPILER_RECYCLE_HEAP_BYTES: usize = 256 * 1024 * 1024;
@@ -67,7 +67,7 @@ type CompilerJob = Box<
 /// queue, which stop when the last handle drops.
 ///
 /// Each request compiles against the handle's [`BuiltinTools`]: a Program
-/// calls them on `coral`, and a Saved Function is typed with them. A handle
+/// calls them on `coral`, and a Private Tool is typed with them. A handle
 /// from [`Self::new`] has none.
 pub struct ProgramCompiler {
     worker: Arc<CompilerWorker>,
@@ -206,7 +206,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Emits and validates the self-contained declaration for one Saved Function.
+    /// Emits and validates the self-contained declaration for one Private Tool.
     ///
     /// `coral.providers`, the Built-in Tools on `coral` and `coral.private` are `any`.
     /// Strict semantic diagnostics are returned as advisory authoring evidence.
@@ -216,21 +216,19 @@ impl ProgramCompiler {
     /// # Errors
     ///
     /// Returns a blocking authoring or compiler-isolate failure.
-    pub fn prepare_saved_function(
+    pub fn prepare_private_tool(
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<SavedFunctionCompilation, Error> {
+    ) -> Result<PrivateToolCompilation, Error> {
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
-        self.request(
-            CompilerOperation::SavedFunction,
-            deadline,
-            move |compiler| compiler.prepare_saved_function(&source, &builtin_tools, "null"),
-        )
+        self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
+            compiler.prepare_private_tool(&source, &builtin_tools, "null")
+        })
     }
 
-    /// Prepares one Saved Function as [`Self::prepare_saved_function`] does,
+    /// Prepares one Private Tool as [`Self::prepare_private_tool`] does,
     /// with the Call Paths it names typed by `declarations`.
     ///
     /// A result type from `declarations` is inlined into the declaration. When
@@ -241,44 +239,40 @@ impl ProgramCompiler {
     /// # Errors
     ///
     /// Returns a blocking authoring or compiler-isolate failure.
-    pub fn prepare_typed_saved_function(
+    pub fn prepare_typed_private_tool(
         &self,
         deadline: Instant,
         source: &str,
         declarations: &CoralDeclarations,
-    ) -> Result<SavedFunctionCompilation, Error> {
+    ) -> Result<PrivateToolCompilation, Error> {
         let declarations_json = serde_json::to_string(declarations)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
-        self.request(
-            CompilerOperation::SavedFunction,
-            deadline,
-            move |compiler| {
-                compiler.prepare_saved_function(&source, &builtin_tools, &declarations_json)
-            },
-        )
+        self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
+            compiler.prepare_private_tool(&source, &builtin_tools, &declarations_json)
+        })
     }
 
-    /// Finds the Saved Functions and Tools one Saved Function module
+    /// Finds the Private Tools and Tools one Private Tool module
     /// names directly, to type it.
     ///
     /// # Errors
     ///
     /// Rejects computed or aliased `coral.private` access and malformed
     /// module source.
-    pub fn saved_function_call_paths(
+    pub fn private_tool_call_paths(
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, Error> {
+    ) -> Result<PrivateToolCallPaths, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.saved_function_call_paths(&source)
+            compiler.private_tool_call_paths(&source)
         })
     }
 
-    /// Finds the Saved Functions and Tools one Program body names
+    /// Finds the Private Tools and Tools one Program body names
     /// directly, to link and check it.
     ///
     /// # Errors
@@ -289,20 +283,16 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, Error> {
+    ) -> Result<PrivateToolCallPaths, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.call_paths(
-                "__coralAnalyzeSavedFunctionPaths",
-                PROGRAM_FILE_NAME,
-                &source,
-            )
+            compiler.call_paths("__coralAnalyzePrivateToolPaths", PROGRAM_FILE_NAME, &source)
         })
     }
 
     /// The called chains of `tools` that name no Tool among `callable`, the
     /// complete Call Paths the caller can call, by the rule the
-    /// unknown-Tool diagnostic of typed Saved Function preparation applies:
+    /// unknown-Tool diagnostic of typed Private Tool preparation applies:
     /// a chain is known once a prefix of it is callable, and a prefix that
     /// is only a namespace of a callable path reads on. A called chain that
     /// ends at such a namespace is unknown too: calling it names no Tool.
@@ -330,34 +320,34 @@ impl ProgramCompiler {
     /// # Errors
     ///
     /// Rejects computed or aliased access and malformed wrapper escapes.
-    pub fn saved_function_paths(
+    pub fn private_tool_paths(
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
+    ) -> Result<Vec<PrivateToolReference>, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.saved_function_paths(&source)
+            compiler.private_tool_paths(&source)
         })
     }
 
-    /// Finds directly named `coral.private` paths in one Saved Function module.
+    /// Finds directly named `coral.private` paths in one Private Tool module.
     ///
     /// # Errors
     ///
     /// Rejects computed or aliased access and malformed module source.
-    pub fn saved_function_dependency_paths(
+    pub fn private_tool_dependency_paths(
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
+    ) -> Result<Vec<PrivateToolReference>, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.saved_function_dependency_paths(&source)
+            compiler.private_tool_dependency_paths(&source)
         })
     }
 
-    /// Lowers one Program body together with its exact Saved Function source closure.
+    /// Lowers one Program body together with its exact Private Tool source closure.
     ///
     /// Linked modules initialize once in the supplied dependency order before
     /// the submitted body. Their callables are installed under immutable
@@ -370,18 +360,18 @@ impl ProgramCompiler {
     /// Returns blocking compiler diagnostics, invalid linked source, a save
     /// whose source names no top-level function, or a compiler-isolate
     /// failure.
-    pub fn compile_with_saved_functions(
+    pub fn compile_with_private_tools(
         &self,
         deadline: Instant,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        private_tools: &[LinkedPrivateToolSource],
     ) -> Result<CompiledProgram, Error> {
-        let saved_functions_json = serde_json::to_string(saved_functions)
+        let private_tools_json = serde_json::to_string(private_tools)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile_with_saved_functions(&source, &saved_functions_json, &builtin_tools)
+            compiler.compile_with_private_tools(&source, &private_tools_json, &builtin_tools)
         })
     }
 
@@ -501,10 +491,10 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
         Err(
             Error::Compilation { .. }
             | Error::InvalidProgramBody
-            | Error::InvalidSavedFunction(_)
+            | Error::InvalidPrivateTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. }
+            | Error::InvalidPrivateToolReference { .. }
             | Error::InvalidFunctionSave(_),
         ) => CompilerOutcome::Rejected,
         Err(_) => CompilerOutcome::Failed,
@@ -547,36 +537,36 @@ struct CompileOutput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionOutput {
+struct PrivateToolOutput {
     declaration_text: Option<String>,
-    declaration_fields: Option<Vec<SavedFunctionDeclarationField>>,
+    declaration_fields: Option<Vec<PrivateToolDeclarationField>>,
     declaration_projection_error: Option<String>,
     validation_error: Option<String>,
-    reference_error: Option<SavedFunctionReferenceError>,
+    reference_error: Option<PrivateToolReferenceError>,
     blocking_diagnostics: Vec<CompilerDiagnostic>,
     diagnostics: Vec<CompilerDiagnostic>,
-    references: Vec<SavedFunctionReference>,
+    references: Vec<PrivateToolReference>,
     not_data: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionPathsOutput {
-    references: Vec<SavedFunctionReference>,
-    validation_error: Option<SavedFunctionReferenceError>,
+struct PrivateToolPathsOutput {
+    references: Vec<PrivateToolReference>,
+    validation_error: Option<PrivateToolReferenceError>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionCallPathsOutput {
-    references: Vec<SavedFunctionReference>,
-    validation_error: Option<SavedFunctionReferenceError>,
+struct PrivateToolCallPathsOutput {
+    references: Vec<PrivateToolReference>,
+    validation_error: Option<PrivateToolReferenceError>,
     tools: Option<ToolReferences>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionReferenceError {
+struct PrivateToolReferenceError {
     message: String,
     line: u64,
     column: u64,
@@ -647,23 +637,23 @@ impl CompilerIsolate {
         decode_compiled_program(&json)
     }
 
-    fn prepare_saved_function(
+    fn prepare_private_tool(
         &mut self,
         source: &str,
         builtin_tools: &str,
         declarations_json: &str,
-    ) -> Result<SavedFunctionCompilation, Error> {
+    ) -> Result<PrivateToolCompilation, Error> {
         let json = self.call(
-            "__coralPrepareSavedFunction",
+            "__coralPreparePrivateTool",
             &[
                 source,
                 builtin_tools,
                 declarations_json,
-                SAVED_FUNCTION_FILE_NAME,
+                PRIVATE_TOOL_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
         )?;
-        let output: SavedFunctionOutput = serde_json::from_str(&json)
+        let output: PrivateToolOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         if !output.blocking_diagnostics.is_empty() {
             return Err(Error::Compilation {
@@ -671,10 +661,10 @@ impl CompilerIsolate {
             });
         }
         if let Some(error) = output.reference_error {
-            return Err(invalid_saved_function_reference(error));
+            return Err(invalid_private_tool_reference(error));
         }
         if let Some(message) = output.validation_error {
-            return Err(Error::InvalidSavedFunction(message));
+            return Err(Error::InvalidPrivateTool(message));
         }
         let declaration = output.declaration_text.ok_or_else(|| {
             Error::CompilerProtocol("compiler emitted no Private Tool declaration".to_string())
@@ -691,7 +681,7 @@ impl CompilerIsolate {
                 ));
             }
         };
-        Ok(SavedFunctionCompilation::new(
+        Ok(PrivateToolCompilation::new(
             declaration,
             declaration_field_projection,
             output.diagnostics,
@@ -700,10 +690,10 @@ impl CompilerIsolate {
         ))
     }
 
-    fn saved_function_call_paths(&mut self, source: &str) -> Result<SavedFunctionCallPaths, Error> {
+    fn private_tool_call_paths(&mut self, source: &str) -> Result<PrivateToolCallPaths, Error> {
         self.call_paths(
-            "__coralAnalyzeSavedFunctionCallPaths",
-            SAVED_FUNCTION_FILE_NAME,
+            "__coralAnalyzePrivateToolCallPaths",
+            PRIVATE_TOOL_FILE_NAME,
             source,
         )
     }
@@ -713,16 +703,16 @@ impl CompilerIsolate {
         function: &str,
         file_name: &str,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, Error> {
+    ) -> Result<PrivateToolCallPaths, Error> {
         let json = self.call(
             function,
             &[source, file_name, TYPESCRIPT_PROFILE.javascript_target()],
         )?;
-        let output: SavedFunctionCallPathsOutput = serde_json::from_str(&json)
+        let output: PrivateToolCallPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         match (output.validation_error, output.tools) {
-            (Some(error), _) => Err(invalid_saved_function_reference(error)),
-            (None, Some(tools)) => Ok(SavedFunctionCallPaths {
+            (Some(error), _) => Err(invalid_private_tool_reference(error)),
+            (None, Some(tools)) => Ok(PrivateToolCallPaths {
                 functions: output.references,
                 tools,
             }),
@@ -732,22 +722,22 @@ impl CompilerIsolate {
         }
     }
 
-    fn saved_function_paths(&mut self, source: &str) -> Result<Vec<SavedFunctionReference>, Error> {
-        self.analyze_saved_function_paths("__coralAnalyzeSavedFunctionPaths", source)
+    fn private_tool_paths(&mut self, source: &str) -> Result<Vec<PrivateToolReference>, Error> {
+        self.analyze_private_tool_paths("__coralAnalyzePrivateToolPaths", source)
     }
 
-    fn saved_function_dependency_paths(
+    fn private_tool_dependency_paths(
         &mut self,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
-        self.analyze_saved_function_paths("__coralAnalyzeSavedFunctionDependencies", source)
+    ) -> Result<Vec<PrivateToolReference>, Error> {
+        self.analyze_private_tool_paths("__coralAnalyzePrivateToolDependencies", source)
     }
 
-    fn analyze_saved_function_paths(
+    fn analyze_private_tool_paths(
         &mut self,
         function: &str,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
+    ) -> Result<Vec<PrivateToolReference>, Error> {
         let json = self.call(
             function,
             &[
@@ -756,26 +746,26 @@ impl CompilerIsolate {
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
         )?;
-        let output: SavedFunctionPathsOutput = serde_json::from_str(&json)
+        let output: PrivateToolPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         if let Some(error) = output.validation_error {
-            Err(invalid_saved_function_reference(error))
+            Err(invalid_private_tool_reference(error))
         } else {
             Ok(output.references)
         }
     }
 
-    fn compile_with_saved_functions(
+    fn compile_with_private_tools(
         &mut self,
         source: &str,
-        saved_functions_json: &str,
+        private_tools_json: &str,
         builtin_tools: &str,
     ) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompileLinkedProgram",
             &[
                 source,
-                saved_functions_json,
+                private_tools_json,
                 builtin_tools,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
@@ -844,8 +834,8 @@ impl CompilerIsolate {
 /// What V8 throws when the compiler's recursion over source overflows its stack.
 const STACK_OVERFLOW: &str = "RangeError: Maximum call stack size exceeded";
 
-fn invalid_saved_function_reference(error: SavedFunctionReferenceError) -> Error {
-    Error::InvalidSavedFunctionReference {
+fn invalid_private_tool_reference(error: PrivateToolReferenceError) -> Error {
+    Error::InvalidPrivateToolReference {
         message: error.message,
         line: error.line,
         column: error.column,
@@ -928,7 +918,7 @@ mod tests {
             let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
                 .expect("authoring compiler");
             authoring
-                .prepare_saved_function(deadline(), "export default () => 1;")
+                .prepare_private_tool(deadline(), "export default () => 1;")
                 .expect("authoring queue remains available");
             let depths = metrics.named("coral.compiler.queue.depth");
             for (role, expected) in [("run", 32.0), ("authoring", 0.0)] {
@@ -941,7 +931,7 @@ mod tests {
                 assert!((point.value - expected).abs() < f64::EPSILON);
             }
             assert!(matches!(
-                compiler.prepare_saved_function(Instant::now(), "export default () => 1;"),
+                compiler.prepare_private_tool(Instant::now(), "export default () => 1;"),
                 Err(Error::CompilerBusy)
             ));
             assert_eq!(
@@ -975,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_metrics_cover_programs_and_saved_function_authoring() {
+    fn compiler_metrics_cover_programs_and_private_tool_authoring() {
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
         let compiler =
@@ -984,18 +974,18 @@ mod tests {
         let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
             .expect("authoring compiler");
         authoring
-            .prepare_saved_function(
+            .prepare_private_tool(
                 deadline(),
                 "export default function answer() { return 42; }",
             )
-            .expect("Saved Function");
+            .expect("Private Tool");
         for name in [
             "coral.compiler.request.duration",
             "coral.compiler.queue.duration",
             "coral.compiler.work.duration",
         ] {
             let points = metrics.named(name);
-            for (operation, role) in [("program", "run"), ("saved_function", "authoring")] {
+            for (operation, role) in [("program", "run"), ("private_tool", "authoring")] {
                 let point = points
                     .iter()
                     .find(|point| {
@@ -1328,7 +1318,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    compiler.saved_function_paths(deadline(), &source),
+                    compiler.private_tool_paths(deadline(), &source),
                     Err(Error::SourceTooDeeplyNested)
                 ),
                 "analysis"

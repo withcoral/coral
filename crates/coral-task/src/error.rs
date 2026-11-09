@@ -21,7 +21,7 @@ pub enum Error {
     Search(#[from] coral_search::Error),
     /// Functions selected an authoring failure.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Functions(#[from] coral_tools::Error),
     /// Run selected an admission or observation failure.
     #[error(transparent)]
     Run(#[from] coral_run::Error),

@@ -1,7 +1,7 @@
-//! The Saved Function retriever: the requesting Principal's own Saved
+//! The Private Tool retriever: the requesting Principal's own Saved
 //! Functions, ranked inside the database.
 //!
-//! coral-functions decides that a Saved Function is visible to its owner
+//! coral-tools decides that a Private Tool is visible to its owner
 //! only; the statement holds that as a condition on the row's own Principal
 //! columns.
 
@@ -10,14 +10,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_functions::SavedFunctionSearchMaterial;
 use coral_telemetry::safe;
+use coral_tools::PrivateToolSearchMaterial;
 
 use super::plan::QueryPlan;
 use super::repository;
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, SavedFunctionRef, WindowEntry, count,
+    Answer, EntityRef, EntityRetriever, Hydrated, Listing, PrivateToolRef, QueryError,
+    QueryRequest, RequestContext, WindowEntry, count,
 };
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
@@ -28,21 +28,21 @@ use crate::{
     SearchHit,
 };
 
-/// Ranks, hydrates, and describes Saved Functions.
+/// Ranks, hydrates, and describes Private Tools.
 #[derive(Debug, Default)]
-pub(crate) struct SavedFunctionRetriever {
+pub(crate) struct PrivateToolRetriever {
     /// Makes the ranked statement fail, for tests of a retriever error.
     #[cfg(test)]
     pub(crate) fail_ranking: bool,
 }
 
 #[async_trait]
-impl EntityRetriever for SavedFunctionRetriever {
+impl EntityRetriever for PrivateToolRetriever {
     fn kind(&self) -> EntityKind {
-        EntityKind::SavedFunction
+        EntityKind::PrivateTool
     }
 
-    // TODO: a Provider filter could keep only the Saved Functions that call
+    // TODO: a Provider filter could keep only the Private Tools that call
     // the named Providers. Until then the filter narrows Tools only.
     async fn list(
         &self,
@@ -121,11 +121,11 @@ impl EntityRetriever for SavedFunctionRetriever {
         for function in ranked.entities.into_iter().take(request.window) {
             // A function's delete leaves its row for a later write, so only
             // what the owner holds now may answer.
-            let Some(material) = functions.get(&function.saved_function_id) else {
+            let Some(material) = functions.get(&function.private_tool_id) else {
                 continue;
             };
             window.push(WindowEntry {
-                entity: EntityRef::SavedFunction(SavedFunctionRef {
+                entity: EntityRef::PrivateTool(PrivateToolRef {
                     material: material.clone(),
                     call_path: function.call_path,
                     near_spellings: Arc::clone(&near_spellings),
@@ -150,10 +150,10 @@ impl EntityRetriever for SavedFunctionRetriever {
         context: RequestContext<'_>,
         entity: &EntityRef,
     ) -> Result<Hydrated, Error> {
-        let EntityRef::SavedFunction(function) = entity else {
+        let EntityRef::PrivateTool(function) = entity else {
             return Ok(Hydrated::Dropped);
         };
-        let material = match coral_functions::hydrate_saved_function_search_material_in_transaction(
+        let material = match coral_tools::hydrate_private_tool_search_material_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
@@ -164,12 +164,12 @@ impl EntityRetriever for SavedFunctionRetriever {
             Ok(Some(material)) => material,
             Ok(None) => return Ok(Hydrated::Dropped),
             // A corrupt function leaves the page; the others stay.
-            Err(coral_functions::Error::CorruptData(_)) => return Ok(Hydrated::Unreadable),
+            Err(coral_tools::Error::CorruptData(_)) => return Ok(Hydrated::Unreadable),
             Err(error) => return Err(error.into()),
         };
         let hit_material = HitMaterial {
             declaration: material.declaration().as_str(),
-            callable: Callable::SavedFunction {
+            callable: Callable::PrivateTool {
                 leaf: function.call_path.leaf(),
             },
             description: material.description().as_str(),
@@ -177,7 +177,7 @@ impl EntityRetriever for SavedFunctionRetriever {
             tags: &[],
         };
         let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_saved_function(
+            return Ok(Hydrated::Hit(Box::new(SearchHit::from_private_tool(
                 function.call_path.clone(),
                 hit_text(&hit_material, None),
                 SearchEvidence::default(),
@@ -188,31 +188,30 @@ impl EntityRetriever for SavedFunctionRetriever {
         evidence
             .field("call_path", [function.call_path.as_str()])
             .field("description", [hit_material.description]);
-        let declaration =
-            coral_functions::saved_function_declaration_search_material_in_transaction(
-                transaction,
-                context.workspace_id,
-                context.actor.principal(),
-                function.material.path(),
-            )
-            .await?;
+        let declaration = coral_tools::private_tool_declaration_search_material_in_transaction(
+            transaction,
+            context.workspace_id,
+            context.actor.principal(),
+            function.material.path(),
+        )
+        .await?;
         for field in declaration
             .as_ref()
-            .and_then(coral_functions::SavedFunctionDeclarationSearchMaterial::declaration_fields)
+            .and_then(coral_tools::PrivateToolDeclarationSearchMaterial::declaration_fields)
             .unwrap_or_default()
         {
             evidence.path(field.path(), field.text());
         }
         let Some(matched) = evidence.build() else {
             tracing::debug!(
-                coral.saved_function.call_path =
+                coral.private_tool.call_path =
                     safe::id(&super::RankedCallPath(&function.call_path)),
-                "a ranked Saved Function has no evidence and leaves the page"
+                "a ranked Private Tool has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);
         };
         let text = hit_text(&hit_material, Some((&terms, &matched)));
-        Ok(Hydrated::Hit(Box::new(SearchHit::from_saved_function(
+        Ok(Hydrated::Hit(Box::new(SearchHit::from_private_tool(
             function.call_path.clone(),
             text,
             matched.evidence,
@@ -227,11 +226,11 @@ impl EntityRetriever for SavedFunctionRetriever {
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
         let Some(path) = call_path
             .private_tool_path()
-            .and_then(|relative| coral_functions::SavedFunctionPath::parse(relative).ok())
+            .and_then(|relative| coral_tools::PrivateToolPath::parse(relative).ok())
         else {
             return Ok(None);
         };
-        let Some(exact) = coral_functions::exact_saved_function_description_in_transaction(
+        let Some(exact) = coral_tools::exact_private_tool_description_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
@@ -266,7 +265,7 @@ impl EntityRetriever for SavedFunctionRetriever {
     }
 }
 
-/// Whether a ranked Saved Function is a strong match, by its retriever's own
+/// Whether a ranked Private Tool is a strong match, by its retriever's own
 /// rule: a field holds the query's words in order, or a word of its path
 /// starts with a content word of the query. One that shares only description
 /// words with the query is weak, so it follows every strong Tool.
@@ -313,7 +312,7 @@ impl PrivateToolPolicy {
     /// declared `declared`.
     fn access_state(
         &self,
-        id: &coral_functions::SavedFunctionId,
+        id: &coral_tools::PrivateToolId,
         declared: coral_policy::ToolAccessState,
     ) -> coral_policy::ToolAccessState {
         self.rules.private_tool_access_state(
@@ -331,29 +330,27 @@ impl PrivateToolPolicy {
 async fn current_functions(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
-) -> Result<Vec<SavedFunctionSearchMaterial>, Error> {
+) -> Result<Vec<PrivateToolSearchMaterial>, Error> {
     let Some(policy) = PrivateToolPolicy::load(transaction, context).await? else {
         return Ok(Vec::new());
     };
-    Ok(
-        coral_functions::saved_function_search_material_in_transaction(
-            transaction,
-            context.workspace_id,
-            context.actor.principal(),
-        )
-        .await?
-        .into_iter()
-        .filter(|function| {
-            policy.access_state(function.id(), function.default_access_state())
-                != coral_policy::ToolAccessState::Disabled
-        })
-        .collect(),
+    Ok(coral_tools::private_tool_search_material_in_transaction(
+        transaction,
+        context.workspace_id,
+        context.actor.principal(),
     )
+    .await?
+    .into_iter()
+    .filter(|function| {
+        policy.access_state(function.id(), function.default_access_state())
+            != coral_policy::ToolAccessState::Disabled
+    })
+    .collect())
 }
 
-fn function_ref(material: SavedFunctionSearchMaterial) -> Result<EntityRef, Error> {
-    Ok(EntityRef::SavedFunction(SavedFunctionRef {
-        call_path: CallPath::saved_function(material.path().as_str())?,
+fn function_ref(material: PrivateToolSearchMaterial) -> Result<EntityRef, Error> {
+    Ok(EntityRef::PrivateTool(PrivateToolRef {
+        call_path: CallPath::private_tool(material.path().as_str())?,
         material,
         near_spellings: Arc::new([]),
     }))

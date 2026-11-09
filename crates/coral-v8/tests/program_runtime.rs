@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use coral_v8::{
     AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
-    IsolateLimits, LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutionControl,
-    ProgramExecutor, ProgramHost, ProgramOutputHostError, SavedFunctionReference,
+    IsolateLimits, LinkedPrivateToolSource, PrivateToolReference, ProgramCompiler,
+    ProgramExecutionControl, ProgramExecutor, ProgramHost, ProgramOutputHostError,
     TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
@@ -28,18 +28,15 @@ fn compilation_deadline() -> std::time::Instant {
     std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT
 }
 
-fn linked_source(path: &[&str], source: &str) -> LinkedSavedFunctionSource {
-    LinkedSavedFunctionSource::new(
+fn linked_source(path: &[&str], source: &str) -> LinkedPrivateToolSource {
+    LinkedPrivateToolSource::new(
         path.iter().map(|segment| (*segment).to_string()).collect(),
         source.to_string(),
     )
 }
 
-fn reference_paths(references: &[SavedFunctionReference]) -> Vec<&str> {
-    references
-        .iter()
-        .map(SavedFunctionReference::path)
-        .collect()
+fn reference_paths(references: &[PrivateToolReference]) -> Vec<&str> {
+    references.iter().map(PrivateToolReference::path).collect()
 }
 
 #[test]
@@ -346,11 +343,11 @@ fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
 }
 
 #[test]
-fn saved_function_reference_analysis_is_static_and_runtime_only() {
+fn private_tool_reference_analysis_is_static_and_runtime_only() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let paths = compiler
-        .saved_function_paths(
+        .private_tool_paths(
             compilation_deadline(),
             r"
                 type Erased = typeof coral.private.types.only;
@@ -382,7 +379,7 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
     );
 
     let dependencies = compiler
-        .saved_function_dependency_paths(
+        .private_tool_dependency_paths(
             compilation_deadline(),
             r"
                 export default function compose(): number {
@@ -391,7 +388,7 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
                 }
             ",
         )
-        .expect("analyze literal Saved Function dependencies");
+        .expect("analyze literal Private Tool dependencies");
     assert_eq!(reference_paths(&dependencies), ["alpha.one"]);
     assert!(matches!(
         dependencies.as_slice(),
@@ -399,27 +396,27 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
     ));
 
     let overload_only = compiler
-        .saved_function_dependency_paths(compilation_deadline(),
+        .private_tool_dependency_paths(compilation_deadline(),
             "function coral(value: string): void; export default function compose() { return coral.private.alpha.one(); }",
         )
         .expect("analyze through an erased overload declaration");
     assert_eq!(reference_paths(&overload_only), ["alpha.one"]);
     let erased_overload = compiler
-        .saved_function_dependency_paths(compilation_deadline(),
+        .private_tool_dependency_paths(compilation_deadline(),
             "function erased(value = coral.private.types.overloadOnly()): void; export default function compose() { return 42; }",
         )
         .expect("ignore an erased overload declaration");
     assert!(erased_overload.is_empty());
 
     let shadowed_global = compiler
-        .saved_function_paths(compilation_deadline(),
+        .private_tool_paths(compilation_deadline(),
             "const globalThis = { coral: { private: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
         )
         .expect("ignore a local globalThis binding");
     assert!(shadowed_global.is_empty());
 
     let shadowed = compiler
-        .prepare_saved_function(compilation_deadline(),
+        .prepare_private_tool(compilation_deadline(),
             "export default function local(coral: { private: { local: { value(): number } } }): number { return coral.private.local.value(); }",
         )
         .expect("prepare a callable with a local coral parameter");
@@ -443,7 +440,7 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
         "const key = 'base'; class RuntimeHeritage extends coral.private.models[key] {} return RuntimeHeritage;",
     ] {
         compiler
-            .saved_function_paths(compilation_deadline(), source)
+            .private_tool_paths(compilation_deadline(), source)
             .expect_err("computed or aliased Program reference must be rejected");
     }
 }
@@ -458,14 +455,14 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
         "return (((coral as any))).private.alpha.one();",
     ] {
         let references = compiler
-            .saved_function_paths(compilation_deadline(), source)
+            .private_tool_paths(compilation_deadline(), source)
             .expect("transparent wrappers preserve a literal reference");
         assert_eq!(reference_paths(&references), ["alpha.one"]);
     }
 
     let source = "type __coralModel = number; const __coralValue: __coralModel = 1; let global = globalThis; return global[\"JSON\"].stringify(__coralValue);";
     let ordinary_globals = compiler
-        .saved_function_paths(compilation_deadline(), source)
+        .private_tool_paths(compilation_deadline(), source)
         .expect("ordinary globals and local compiler-prefix names remain available");
     assert!(ordinary_globals.is_empty());
     compiler
@@ -478,8 +475,8 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let error = compiler
-        .compile_with_saved_functions(compilation_deadline(),
-            "__coralSavedFunctionDefaults[0] = () => (() => 'changed'); return coral.private.safe.value();",
+        .compile_with_private_tools(compilation_deadline(),
+            "__coralPrivateToolDefaults[0] = () => (() => 'changed'); return coral.private.safe.value();",
             &[linked_source(
                 &["safe", "value"],
                 "export default function value(): string { return 'original'; }",
@@ -495,17 +492,17 @@ fn authored_source_cannot_reach_private_linker_bindings() {
         "unexpected private-binding error: {error:?}"
     );
     compiler
-        .prepare_saved_function(
+        .prepare_private_tool(
             compilation_deadline(),
-            "export default function value() { return __coralSavedFunctionDefaults[0]; }",
+            "export default function value() { return __coralPrivateToolDefaults[0]; }",
         )
-        .expect_err("Saved Function source must not reach private linker state");
+        .expect_err("Private Tool source must not reach private linker state");
     for source in [
-        "class Attack extends (__coralSavedFunctionDefaults[0] = Object, Object) {} return Attack;",
-        "const captured = { __coralSavedFunctionDefaults }; return captured;",
+        "class Attack extends (__coralPrivateToolDefaults[0] = Object, Object) {} return Attack;",
+        "const captured = { __coralPrivateToolDefaults }; return captured;",
     ] {
         compiler
-            .compile_with_saved_functions(
+            .compile_with_private_tools(
                 compilation_deadline(),
                 source,
                 &[linked_source(
@@ -517,8 +514,8 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     }
 
     let local_private_name = compiler
-        .compile_with_saved_functions(compilation_deadline(),
-            "const __coralSavedFunctionDefaults = 42; void coral.private.safe.value; return __coralSavedFunctionDefaults;",
+        .compile_with_private_tools(compilation_deadline(),
+            "const __coralPrivateToolDefaults = 42; void coral.private.safe.value; return __coralPrivateToolDefaults;",
             &[linked_source(
                 &["safe", "value"],
                 "export default function value(): string { return 'original'; }",
@@ -531,7 +528,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     assert_eq!(output.final_value_json(), Some("42"));
 
     let prototype_probe = compiler
-        .compile_with_saved_functions(
+        .compile_with_private_tools(
             compilation_deadline(),
             r#"
                 const captured = globalThis.capturedLinkedDefault;
@@ -563,7 +560,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
 }
 
 #[test]
-fn forbidden_capabilities_block_programs_and_saved_functions() {
+fn forbidden_capabilities_block_programs_and_private_tools() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for source in [
@@ -602,10 +599,10 @@ fn forbidden_capabilities_block_programs_and_saved_functions() {
         )
         .expect("an erased unresolved type is ordinary non-blocking semantic advice");
     compiler
-        .prepare_saved_function(compilation_deadline(),
+        .prepare_private_tool(compilation_deadline(),
             "type BrowserFile = File; export default function available(): boolean { return true; }",
         )
-        .expect("a private erased unresolved type must not block Saved Function authoring");
+        .expect("a private erased unresolved type must not block Private Tool authoring");
 
     for source in [
         "export default async function load() { return import('node:fs'); }",
@@ -614,8 +611,8 @@ fn forbidden_capabilities_block_programs_and_saved_functions() {
         "export default function values() { return new Float64Array(8); }",
     ] {
         compiler
-            .prepare_saved_function(compilation_deadline(), source)
-            .expect_err("forbidden Saved Function capability must be rejected");
+            .prepare_private_tool(compilation_deadline(), source)
+            .expect_err("forbidden Private Tool capability must be rejected");
     }
 }
 
@@ -623,12 +620,12 @@ fn forbidden_capabilities_block_programs_and_saved_functions() {
 fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_saved_functions(compilation_deadline(),
+        .compile_with_private_tools(compilation_deadline(),
             "return coral.private.safe.value();",
             &[
                 linked_source(
                     &["comments", "marker"],
-                    "/*__coral_authored_saved_function_1__*/\n/*__coral_authored_program__*/\nexport default function marker(): number { return 1; }",
+                    "/*__coral_authored_private_tool_1__*/\n/*__coral_authored_program__*/\nexport default function marker(): number { return 1; }",
                 ),
                 linked_source(
                     &["safe", "value"],
@@ -648,11 +645,11 @@ fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
     clippy::too_many_lines,
     reason = "one compact corpus covers callable-rooted declaration projection"
 )]
-fn saved_function_declaration_fields_follow_the_callable_contract() {
+fn private_tool_declaration_fields_follow_the_callable_contract() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = compiler
-        .prepare_saved_function(compilation_deadline(),
+        .prepare_private_tool(compilation_deadline(),
             r#"
                 interface RecursiveNode {
                     label: string;
@@ -679,14 +676,14 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
                 export default inspect;
             "#,
         )
-        .expect("prepare Saved Function");
+        .expect("prepare Private Tool");
 
     let fields = compilation
         .declaration_fields()
         .expect("declaration projection is ready");
     let paths = fields
         .iter()
-        .map(coral_v8::SavedFunctionDeclarationField::path)
+        .map(coral_v8::PrivateToolDeclarationField::path)
         .collect::<Vec<_>>();
     assert!(paths.contains(&"input.value.label"));
     assert!(paths.contains(&"input.value.children"));
@@ -705,7 +702,7 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
     );
 
     let nested_and_rest = compiler
-        .prepare_saved_function(
+        .prepare_private_tool(
             compilation_deadline(),
             r"
                 interface Item { id: string }
@@ -716,12 +713,12 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
                 }
             ",
         )
-        .expect("prepare nested-callable and rest Saved Function");
+        .expect("prepare nested-callable and rest Private Tool");
     let nested_and_rest_paths = nested_and_rest
         .declaration_fields()
         .expect("declaration projection is ready")
         .iter()
-        .map(coral_v8::SavedFunctionDeclarationField::path)
+        .map(coral_v8::PrivateToolDeclarationField::path)
         .collect::<Vec<_>>();
     assert!(nested_and_rest_paths.contains(&"input.options.callback"));
     assert!(nested_and_rest_paths.contains(&"input.items[].id"));
@@ -744,13 +741,13 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
         ),
     ] {
         let projected = compiler
-            .prepare_saved_function(compilation_deadline(), source)
+            .prepare_private_tool(compilation_deadline(), source)
             .unwrap_or_else(|error| panic!("prepare {case}: {error}"));
         let paths = projected
             .declaration_fields()
             .unwrap_or_else(|error| panic!("project {case}: {error}"))
             .iter()
-            .map(coral_v8::SavedFunctionDeclarationField::path)
+            .map(coral_v8::PrivateToolDeclarationField::path)
             .collect::<Vec<_>>();
         assert!(paths.contains(&"input.items[].id"), "{case}: {paths:?}");
         assert!(
@@ -760,10 +757,10 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
     }
 
     let destructured = compiler
-        .prepare_saved_function(compilation_deadline(),
+        .prepare_private_tool(compilation_deadline(),
             "export default function inspect({ label }: { label: string }): string { return label; }",
         )
-        .expect("prepare destructured Saved Function");
+        .expect("prepare destructured Private Tool");
     assert!(
         destructured
             .declaration_fields()
@@ -774,11 +771,11 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
 }
 
 #[test]
-fn saved_function_authoring_types_the_coral_host_root() {
+fn private_tool_authoring_types_the_coral_host_root() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let typed = compiler
-        .prepare_saved_function(
+        .prepare_private_tool(
             compilation_deadline(),
             r"
         export default async function report(id: string): Promise<string> {
@@ -800,7 +797,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
         }
         ",
         )
-        .expect("prepare a Saved Function that uses the coral host root");
+        .expect("prepare a Private Tool that uses the coral host root");
     assert_eq!(
         typed
             .diagnostics()
@@ -812,7 +809,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
     assert_eq!(reference_paths(typed.references()), ["reports.title"]);
 
     let misused = compiler
-        .prepare_saved_function(
+        .prepare_private_tool(
             compilation_deadline(),
             "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); return coral.missing; }",
         )
@@ -834,7 +831,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
     }
 
     let error = compiler
-        .prepare_saved_function(
+        .prepare_private_tool(
             compilation_deadline(),
             "export default function leak(error: coral.ToolError): string { return error.code; }",
         )
@@ -850,7 +847,7 @@ fn declaration_projection_uses_resolved_public_instance_types() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = compiler
-        .prepare_saved_function(
+        .prepare_private_tool(
             compilation_deadline(),
             r#"
         interface Item {
@@ -879,7 +876,7 @@ fn declaration_projection_uses_resolved_public_instance_types() {
     let fields = compilation.declaration_fields().expect("project fields");
     let paths = fields
         .iter()
-        .map(coral_v8::SavedFunctionDeclarationField::path)
+        .map(coral_v8::PrivateToolDeclarationField::path)
         .collect::<Vec<_>>();
     for path in [
         "input.picked.customerEmail",
@@ -1574,8 +1571,8 @@ fn failure_stacks_name_only_authored_locations() {
         &["debug", "fetch"],
         "export default async function fetch() {\n    await coral.providers.weather.getForecast();\n}",
     );
-    // (Program, its Saved Functions, the failure's message, its authored frames)
-    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 10] = [
+    // (Program, its Private Tools, the failure's message, its authored frames)
+    let cases: [(&str, Vec<LinkedPrivateToolSource>, &str, &[&str]); 10] = [
         (
             "const meaning: number = 42;\nvoid meaning;\nthrow new Error(\"private rejection canary\");",
             vec![],
@@ -1603,7 +1600,7 @@ fn failure_stacks_name_only_authored_locations() {
             "return coral.private.debug.caller();",
             vec![failure, caller],
             "ToolError: authored dependency canary\n",
-            &["at Saved Function coral.private.debug.caller:1:"],
+            &["at Private Tool coral.private.debug.caller:1:"],
         ),
         // Tool rejections settle asynchronously but keep their call sites.
         (
@@ -1612,7 +1609,7 @@ fn failure_stacks_name_only_authored_locations() {
             "",
             &["at Program:2:"],
         ),
-        // Saved Function source without semicolons keeps its frames. Its
+        // Private Tool source without semicolons keeps its frames. Its
         // module throws as it initializes, before the Program body runs.
         (
             "return coral.private.debug.asi();",
@@ -1621,9 +1618,9 @@ fn failure_stacks_name_only_authored_locations() {
                 "export default () => {}\nconst reason = 'asi canary'\nthrow new Error(reason)",
             )],
             "Error: asi canary\n",
-            &["at Saved Function coral.private.debug.asi:3:"],
+            &["at Private Tool coral.private.debug.asi:3:"],
         ),
-        // An error frame inside a Saved Function statement with a trailing
+        // An error frame inside a Private Tool statement with a trailing
         // comma keeps its line.
         (
             "return coral.private.debug.comma();",
@@ -1632,7 +1629,7 @@ fn failure_stacks_name_only_authored_locations() {
                 "export default function () {}\nthrow new Error('comma canary', {\n    cause: 1,\n  },)",
             )],
             "Error: comma canary\n",
-            &["at Saved Function coral.private.debug.comma:2:"],
+            &["at Private Tool coral.private.debug.comma:2:"],
         ),
         // Frames count ECMAScript line terminators, not only LF.
         (
@@ -1651,12 +1648,12 @@ fn failure_stacks_name_only_authored_locations() {
             "return await coral.private.debug.fetch();",
             vec![fetch],
             "",
-            &["at Saved Function coral.private.debug.fetch:2:"],
+            &["at Private Tool coral.private.debug.fetch:2:"],
         ),
     ];
     for (source, functions, message, frames) in cases {
         let program = compiler
-            .compile_with_saved_functions(compilation_deadline(), source, &functions)
+            .compile_with_private_tools(compilation_deadline(), source, &functions)
             .expect(source);
         let error = ProgramExecutor::new(IsolateLimits::default())
             .execute_with_host(&program, Arc::new(RejectingToolHost))
@@ -2342,11 +2339,11 @@ fn run_with_recording_host(source: &str) -> (Option<String>, Arc<RecordingHost>)
 
 fn run_linked_with_recording_host(
     source: &str,
-    functions: &[LinkedSavedFunctionSource],
+    functions: &[LinkedPrivateToolSource],
 ) -> (Option<String>, Arc<RecordingHost>) {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_saved_functions(compilation_deadline(), source, functions)
+        .compile_with_private_tools(compilation_deadline(), source, functions)
         .expect("compile output probe");
     let host = RecordingHost::new(
         coral_value::ValueLimits::new(1024, HOST_BYTES, 1024, 1024).expect("limits"),
@@ -2373,9 +2370,9 @@ fn at(line: u32, column: u32) -> Option<AuthoredLocation> {
     clippy::unnecessary_wraps,
     reason = "table rows compare the optional location each host call receives"
 )]
-fn in_saved_function(path: &str, line: u32, column: u32) -> Option<AuthoredLocation> {
+fn in_private_tool(path: &str, line: u32, column: u32) -> Option<AuthoredLocation> {
     Some(AuthoredLocation {
-        source: AuthoredSource::SavedFunction {
+        source: AuthoredSource::PrivateTool {
             path: path.to_string(),
         },
         line,
@@ -2393,11 +2390,11 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         &["debug", "fetch"],
         "console.info(\"linked\");\n\nexport default async function fetch(id: number) {\n    return coral.providers.demo.getItem({ id });\n}",
     );
-    // (Program, Saved Functions, every host call in arrival order)
+    // (Program, Private Tools, every host call in arrival order)
     #[expect(clippy::type_complexity, reason = "one readable table of cases")]
     let cases: Vec<(
         &str,
-        Vec<LinkedSavedFunctionSource>,
+        Vec<LinkedPrivateToolSource>,
         Vec<(&str, Option<AuthoredLocation>)>,
     )> = vec![
         // One call per line: the column is the called name, after type syntax
@@ -2441,15 +2438,15 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![],
             vec![("log", at(1, 25))],
         ),
-        // A call inside a Saved Function names that Saved Function's source,
+        // A call inside a Private Tool names that Private Tool's source,
         // including its top-level initialization before the Program body.
         (
             "\nawait coral.private.debug.fetch(7);",
             vec![helpers],
             vec![
-                ("log", in_saved_function("debug.fetch", 1, 9)),
+                ("log", in_private_tool("debug.fetch", 1, 9)),
                 ("perform", at(2, 27)),
-                ("invoke", in_saved_function("debug.fetch", 4, 33)),
+                ("invoke", in_private_tool("debug.fetch", 4, 33)),
             ],
         ),
         // Lines follow ECMAScript line terminators: CRLF counts once, and a lone
@@ -2483,13 +2480,13 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             // The body runs once the call is permitted, after the Program's
             // next line.
             vec![
-                ("log", in_saved_function("debug.mixed", 1, 9)),
+                ("log", in_private_tool("debug.mixed", 1, 9)),
                 ("perform", at(1, 21)),
                 ("log", at(2, 9)),
-                ("log", in_saved_function("debug.mixed", 3, 13)),
+                ("log", in_private_tool("debug.mixed", 3, 13)),
             ],
         ),
-        // Saved Function lines follow the same terminators. A private line the
+        // Private Tool lines follow the same terminators. A private line the
         // linker writes after a lone CR, U+2028 or U+2029 adds no line of its own
         // to the authored count.
         (
@@ -2499,9 +2496,9 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "console.info(1)\rexport default (() => {\u{2028}  console.log(2)\u{2029}})\r",
             )],
             vec![
-                ("log", in_saved_function("terminators.lone", 1, 9)),
+                ("log", in_private_tool("terminators.lone", 1, 9)),
                 ("perform", at(1, 27)),
-                ("log", in_saved_function("terminators.lone", 3, 11)),
+                ("log", in_private_tool("terminators.lone", 3, 11)),
             ],
         ),
         (
@@ -2511,9 +2508,9 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "export {}\u{2028}console.info('a\u{2029}b')\u{2029}const run = () => console.log(1)\rexport { run as default }",
             )],
             vec![
-                ("log", in_saved_function("terminators.clause", 2, 9)),
+                ("log", in_private_tool("terminators.clause", 2, 9)),
                 ("perform", at(1, 27)),
-                ("log", in_saved_function("terminators.clause", 4, 27)),
+                ("log", in_private_tool("terminators.clause", 4, 27)),
             ],
         ),
         // A trailing CR ends the last authored line; nothing maps past it.
@@ -2528,7 +2525,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![],
             vec![("log", at(2, 5))],
         ),
-        // Calls inside Saved Function source without semicolons keep their lines.
+        // Calls inside Private Tool source without semicolons keep their lines.
         (
             "await coral.private.locations.notify()",
             vec![linked_source(
@@ -2537,8 +2534,8 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 31)),
-                ("invoke", in_saved_function("locations.notify", 2, 41)),
-                ("log", in_saved_function("locations.notify", 3, 11)),
+                ("invoke", in_private_tool("locations.notify", 2, 41)),
+                ("log", in_private_tool("locations.notify", 3, 11)),
             ],
         ),
         (
@@ -2549,8 +2546,8 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.named", 3, 11)),
-                ("emit", in_saved_function("locations.named", 4, 9)),
+                ("log", in_private_tool("locations.named", 3, 11)),
+                ("emit", in_private_tool("locations.named", 4, 9)),
             ],
         ),
         (
@@ -2573,9 +2570,9 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ("perform", at(1, 25)),
                 ("perform", at(1, 61)),
                 ("perform", at(1, 100)),
-                ("log", in_saved_function("locations.implicit", 1, 30)),
-                ("log", in_saved_function("locations.guarded", 4, 23)),
-                ("log", in_saved_function("locations.boxed", 5, 32)),
+                ("log", in_private_tool("locations.implicit", 1, 30)),
+                ("log", in_private_tool("locations.guarded", 4, 23)),
+                ("log", in_private_tool("locations.boxed", 5, 32)),
             ],
         ),
         // A template or regular expression earlier on the line cannot shift a
@@ -2588,10 +2585,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("emit", in_saved_function("locations.lexical", 3, 23)),
-                ("emit", in_saved_function("locations.lexical", 4, 20)),
-                ("emit", in_saved_function("locations.lexical", 5, 28)),
-                ("log", in_saved_function("locations.lexical", 6, 11)),
+                ("emit", in_private_tool("locations.lexical", 3, 23)),
+                ("emit", in_private_tool("locations.lexical", 4, 20)),
+                ("emit", in_private_tool("locations.lexical", 5, 28)),
+                ("log", in_private_tool("locations.lexical", 6, 11)),
             ],
         ),
         (
@@ -2602,10 +2599,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.documented", 3, 11)),
+                ("log", in_private_tool("locations.documented", 3, 11)),
             ],
         ),
-        // A trailing comma later in a Saved Function statement leaves every
+        // A trailing comma later in a Private Tool statement leaves every
         // earlier call in it mapped.
         (
             "coral.private.locations.reprinted()",
@@ -2615,7 +2612,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.reprinted", 2, 11)),
+                ("log", in_private_tool("locations.reprinted", 2, 11)),
             ],
         ),
         // Export syntax spread over lines and comments leaves later lines in place.
@@ -2627,7 +2624,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.multiline", 4, 13)),
+                ("log", in_private_tool("locations.multiline", 4, 13)),
             ],
         ),
         (
@@ -2638,7 +2635,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.generated", 1, 27)),
+                ("log", in_private_tool("locations.generated", 1, 27)),
             ],
         ),
         // A call inside the default expression itself keeps its column.
@@ -2649,7 +2646,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "export default (console.log('init'), () => {})",
             )],
             vec![
-                ("log", in_saved_function("locations.initialized", 1, 25)),
+                ("log", in_private_tool("locations.initialized", 1, 25)),
                 ("perform", at(1, 25)),
             ],
         ),
@@ -2661,8 +2658,8 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "console.info('first')\nexport {}\n(() => console.log('second'))()\nconst clause = () => {}\nexport { clause as default }",
             )],
             vec![
-                ("log", in_saved_function("locations.clause", 1, 9)),
-                ("log", in_saved_function("locations.clause", 3, 16)),
+                ("log", in_private_tool("locations.clause", 1, 9)),
+                ("log", in_private_tool("locations.clause", 3, 16)),
                 ("perform", at(1, 25)),
             ],
         ),
@@ -2674,7 +2671,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.shebang", 3, 30)),
+                ("log", in_private_tool("locations.shebang", 3, 30)),
             ],
         ),
         // The private default name cannot collide with an authored binding,
@@ -2683,11 +2680,11 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             "coral.private.locations.hygiene()",
             vec![linked_source(
                 &["locations", "hygiene"],
-                "const \\u005f_coralSavedFunctionDefaultExport_1 = 1\nexport default () => console.log(__coralSavedFunctionDefaultExport_1)",
+                "const \\u005f_coralPrivateToolDefaultExport_1 = 1\nexport default () => console.log(__coralPrivateToolDefaultExport_1)",
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.hygiene", 2, 30)),
+                ("log", in_private_tool("locations.hygiene", 2, 30)),
             ],
         ),
         (
@@ -2698,7 +2695,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 31)),
-                ("log", in_saved_function("locations.agen", 1, 33)),
+                ("log", in_private_tool("locations.agen", 1, 33)),
             ],
         ),
         // Several export removals on one line keep the rest of the line in place.
@@ -2709,9 +2706,9 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "const one = () => console.log('one'); export {}; export { one as default }; console.info('tail')",
             )],
             vec![
-                ("log", in_saved_function("locations.removals", 1, 85)),
+                ("log", in_private_tool("locations.removals", 1, 85)),
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.removals", 1, 27)),
+                ("log", in_private_tool("locations.removals", 1, 27)),
             ],
         ),
         (
@@ -2722,10 +2719,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 25)),
-                ("log", in_saved_function("locations.template", 3, 16)),
+                ("log", in_private_tool("locations.template", 3, 16)),
             ],
         ),
-        // Repeated and parallel calls inside a Saved Function keep their own
+        // Repeated and parallel calls inside a Private Tool keep their own
         // call sites.
         (
             "await coral.private.locations.parallel()",
@@ -2735,10 +2732,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             )],
             vec![
                 ("perform", at(1, 31)),
-                ("log", in_saved_function("locations.parallel", 2, 36)),
-                ("log", in_saved_function("locations.parallel", 2, 36)),
-                ("invoke", in_saved_function("locations.parallel", 3, 43)),
-                ("invoke", in_saved_function("locations.parallel", 3, 77)),
+                ("log", in_private_tool("locations.parallel", 2, 36)),
+                ("log", in_private_tool("locations.parallel", 2, 36)),
+                ("invoke", in_private_tool("locations.parallel", 3, 43)),
+                ("invoke", in_private_tool("locations.parallel", 3, 77)),
             ],
         ),
         // A call before an inline export that needs private source on the same
@@ -2756,8 +2753,8 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ),
             ],
             vec![
-                ("log", in_saved_function("locations.inline", 1, 25)),
-                ("emit", in_saved_function("locations.anonymous", 1, 7)),
+                ("log", in_private_tool("locations.inline", 1, 25)),
+                ("emit", in_private_tool("locations.anonymous", 1, 7)),
                 ("perform", at(1, 25)),
                 ("perform", at(1, 59)),
             ],
@@ -2935,7 +2932,7 @@ fn reading_a_program_error_runs_no_program_code() {
 fn private_linker_source_maps_to_no_authored_source() {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_saved_functions(
+        .compile_with_private_tools(
             compilation_deadline(),
             "coral.private.a(); coral.private.b(); coral.private.c();",
             &[
@@ -2967,9 +2964,9 @@ fn private_linker_source_maps_to_no_authored_source() {
     for (line, text) in javascript.lines().enumerate() {
         for marker in [
             "(async () => {",
-            "__coralSavedFunctionDefaults[",
-            "const __coralSavedFunctionDefaultExport_",
-            "__coralSavedFunctionDefaultExport_",
+            "__coralPrivateToolDefaults[",
+            "const __coralPrivateToolDefaultExport_",
+            "__coralPrivateToolDefaultExport_",
             "return () =>",
         ] {
             for (column, _) in text.match_indices(marker) {
@@ -2985,9 +2982,9 @@ fn private_linker_source_maps_to_no_authored_source() {
     }
     for marker in [
         "(async () => {",
-        "__coralSavedFunctionDefaults[",
-        "const __coralSavedFunctionDefaultExport_",
-        "__coralSavedFunctionDefaultExport_",
+        "__coralPrivateToolDefaults[",
+        "const __coralPrivateToolDefaultExport_",
+        "__coralPrivateToolDefaultExport_",
         "return () =>",
         ";",
     ] {
@@ -3019,15 +3016,15 @@ fn source_maps_name_only_authored_sources_and_embed_no_text() {
         with("sources", serde_json::json!(["program.ts"])),
         with(
             "sources",
-            serde_json::json!(["Saved Function coral.private.a/b"]),
+            serde_json::json!(["Private Tool coral.private.a/b"]),
         ),
         with(
             "sources",
-            serde_json::json!(["Saved Function coral.private.a\nb"]),
+            serde_json::json!(["Private Tool coral.private.a\nb"]),
         ),
         with(
             "sources",
-            serde_json::json!([format!("Saved Function coral.private.{}", "a".repeat(257))]),
+            serde_json::json!([format!("Private Tool coral.private.{}", "a".repeat(257))]),
         ),
     ] {
         assert!(
@@ -3179,7 +3176,7 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
     );
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_saved_functions(
+        .compile_with_private_tools(
             compilation_deadline(),
             "await coral.providers.demo.top({});\n\
              const labels = await Promise.all([\n\

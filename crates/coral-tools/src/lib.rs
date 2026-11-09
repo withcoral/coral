@@ -1,6 +1,6 @@
-//! Current Saved Function authoring and discovery material for Coral.
+//! Current Private Tool authoring and discovery material for Coral.
 //!
-//! [`SavedFunctionModule`] owns current definitions, validation, visibility, and
+//! [`PrivateToolModule`] owns current definitions, validation, visibility, and
 //! atomic Administrative Lifecycle Events. It uses canonical Workspace authority
 //! and Coral's pinned compiler-only V8 adapter, never Run execution.
 //!
@@ -11,8 +11,8 @@
 //! removal discards current definitions where Workspace access ends, with
 //! explicit deletion evidence in Administration's transaction.
 //!
-//! [`SavedFunctionInspection`] reads the caller's own current definitions
-//! without a compiler, for read-only surfaces. [`SavedFunctionDeletion`]
+//! [`PrivateToolInspection`] reads the caller's own current definitions
+//! without a compiler, for read-only surfaces. [`PrivateToolDeletion`]
 //! deletes them without a compiler, for management surfaces.
 //!
 //! Search facets join the caller's authorized read snapshot and separate metadata,
@@ -26,8 +26,8 @@
 mod deletion;
 mod error;
 mod inspection;
+mod private_tool;
 mod repository;
-mod saved_function;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures_repository;
 mod tool_typing;
@@ -38,29 +38,28 @@ use coral_db::Transaction;
 use coral_workspace::{Principal, WorkspaceId};
 
 pub use coral_v8::IsolateLimits;
-pub use deletion::SavedFunctionDeletion;
+pub use deletion::PrivateToolDeletion;
 pub use error::Error;
-pub use inspection::SavedFunctionInspection;
-pub use repository::{hold_source_selection_in_transaction, select_source_in_transaction};
-pub use saved_function::{
-    PreparedSave, SavedFunctionModule, delete_current_for_access_removal_in_transaction,
+pub use inspection::PrivateToolInspection;
+pub use private_tool::{
+    PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
 };
+pub use repository::{hold_source_selection_in_transaction, select_source_in_transaction};
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{
-    AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, ExactSavedFunctionAuthoringMaterial,
-    ExactSavedFunctionDescriptionMaterial, LifecycleAction, LifecycleOutcome,
-    SAVED_FUNCTION_DECLARATION_MAX_BYTES, SAVED_FUNCTION_DESCRIPTION_MAX_BYTES,
-    SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT, SAVED_FUNCTION_DIAGNOSTIC_MESSAGE_MAX_BYTES,
-    SAVED_FUNCTION_PAGE_MAX_SIZE, SAVED_FUNCTION_PATH_MAX_BYTES, SAVED_FUNCTION_PATH_MAX_SEGMENTS,
-    SAVED_FUNCTION_SOURCE_MAX_BYTES, SavedFunction, SavedFunctionAuthoringMaterial,
-    SavedFunctionChangeContext, SavedFunctionDeclaration, SavedFunctionDeclarationField,
-    SavedFunctionDeclarationFieldProjection, SavedFunctionDeclarationSearchMaterial,
-    SavedFunctionDescription, SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory,
-    SavedFunctionEntry, SavedFunctionId, SavedFunctionIndexRevision, SavedFunctionPage,
-    SavedFunctionPath, SavedFunctionSave, SavedFunctionSearchMaterial, SavedFunctionSource,
-    SavedFunctionSummary,
+    AdministrativeLifecycleEvent, COMPILATION_TIMEOUT, ExactPrivateToolAuthoringMaterial,
+    ExactPrivateToolDescriptionMaterial, LifecycleAction, LifecycleOutcome,
+    PRIVATE_TOOL_DECLARATION_MAX_BYTES, PRIVATE_TOOL_DESCRIPTION_MAX_BYTES,
+    PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT, PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
+    PRIVATE_TOOL_PAGE_MAX_SIZE, PRIVATE_TOOL_PATH_MAX_BYTES, PRIVATE_TOOL_PATH_MAX_SEGMENTS,
+    PRIVATE_TOOL_SOURCE_MAX_BYTES, PrivateTool, PrivateToolAuthoringMaterial,
+    PrivateToolChangeContext, PrivateToolDeclaration, PrivateToolDeclarationField,
+    PrivateToolDeclarationFieldProjection, PrivateToolDeclarationSearchMaterial,
+    PrivateToolDescription, PrivateToolDiagnostic, PrivateToolDiagnosticCategory, PrivateToolEntry,
+    PrivateToolId, PrivateToolIndexRevision, PrivateToolPage, PrivateToolPath, PrivateToolSave,
+    PrivateToolSearchMaterial, PrivateToolSource, PrivateToolSummary,
 };
-pub use types::{PrivateToolScope, ReadablePrivateTool, SavedFunctionSelection};
+pub use types::{PrivateToolScope, PrivateToolSelection, ReadablePrivateTool};
 
 /// The declared default Tool Access State of each of `tools` that names a
 /// current Private Tool of the Workspace within `scope` of `reader`. No
@@ -117,27 +116,27 @@ pub async fn readable_page_in_transaction(
 /// # Errors
 ///
 /// Returns a shared persistence or corrupt target failure.
-pub async fn saved_function_search_material_in_transaction(
+pub async fn private_tool_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-) -> Result<Vec<SavedFunctionSearchMaterial>, Error> {
+) -> Result<Vec<PrivateToolSearchMaterial>, Error> {
     repository::list_search_material_in_transaction(transaction, workspace_id, principal).await
 }
 
-/// Loads one Principal-owned Saved Function's declaration fields, for the
+/// Loads one Principal-owned Private Tool's declaration fields, for the
 /// evidence of one search hit.
 ///
 /// # Errors
 ///
 /// Returns a shared persistence failure. Projection corruption stays isolated
 /// as `None` fields on the function.
-pub async fn saved_function_declaration_search_material_in_transaction(
+pub async fn private_tool_declaration_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
-) -> Result<Option<SavedFunctionDeclarationSearchMaterial>, Error> {
+    path: &PrivateToolPath,
+) -> Result<Option<PrivateToolDeclarationSearchMaterial>, Error> {
     repository::declaration_search_material_in_transaction(
         transaction,
         workspace_id,
@@ -147,7 +146,7 @@ pub async fn saved_function_declaration_search_material_in_transaction(
     .await
 }
 
-/// Reads every current Saved Function of one Workspace, of every Principal, as
+/// Reads every current Private Tool of one Workspace, of every Principal, as
 /// search entries.
 ///
 /// The caller decides visibility; this facet reads no source.
@@ -156,27 +155,27 @@ pub async fn saved_function_declaration_search_material_in_transaction(
 ///
 /// Returns a shared persistence or corrupt-definition failure. An unreadable
 /// declaration-field projection stays isolated as `None` on its one function.
-pub async fn saved_function_entries_in_transaction(
+pub async fn private_tool_entries_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<Vec<SavedFunctionEntry>, Error> {
+) -> Result<Vec<PrivateToolEntry>, Error> {
     repository::list_workspace_entries_in_transaction(transaction, workspace_id).await
 }
 
-/// Reads every current Saved Function of every Workspace as search entries,
+/// Reads every current Private Tool of every Workspace as search entries,
 /// for the search index's reconcile task.
 ///
 /// # Errors
 ///
 /// Returns a shared persistence or corrupt-definition failure. An unreadable
 /// declaration-field projection stays isolated as `None` on its one function.
-pub async fn all_saved_function_entries_in_transaction(
+pub async fn all_private_tool_entries_in_transaction(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<SavedFunctionEntry>, Error> {
+) -> Result<Vec<PrivateToolEntry>, Error> {
     repository::list_every_entry_in_transaction(transaction).await
 }
 
-/// Reads one current Saved Function as a search entry, `None` when the
+/// Reads one current Private Tool as a search entry, `None` when the
 /// Workspace holds no such function.
 ///
 /// The caller decides visibility; this facet reads no source.
@@ -185,11 +184,11 @@ pub async fn all_saved_function_entries_in_transaction(
 ///
 /// Returns a shared persistence or corrupt-definition failure. An unreadable
 /// declaration-field projection stays isolated as `None` on the function.
-pub async fn saved_function_entry_in_transaction(
+pub async fn private_tool_entry_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    id: &SavedFunctionId,
-) -> Result<Option<SavedFunctionEntry>, Error> {
+    id: &PrivateToolId,
+) -> Result<Option<PrivateToolEntry>, Error> {
     repository::entry_in_transaction(transaction, workspace_id, id).await
 }
 
@@ -199,28 +198,28 @@ pub async fn saved_function_entry_in_transaction(
 ///
 /// # Errors
 /// Returns a persistence or corrupt revision failure.
-pub async fn saved_function_index_revisions_in_transaction(
+pub async fn private_tool_index_revisions_in_transaction(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<SavedFunctionIndexRevision>, Error> {
+) -> Result<Vec<PrivateToolIndexRevision>, Error> {
     repository::index_revisions(transaction).await
 }
 
-/// Hydrates one current ranked Saved Function without reading its source.
+/// Hydrates one current ranked Private Tool without reading its source.
 ///
 /// # Errors
 ///
 /// Returns a persistence or authoritative-description corruption failure.
-pub async fn hydrate_saved_function_search_material_in_transaction(
+pub async fn hydrate_private_tool_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    target: &SavedFunctionSearchMaterial,
-) -> Result<Option<SavedFunctionAuthoringMaterial>, Error> {
+    target: &PrivateToolSearchMaterial,
+) -> Result<Option<PrivateToolAuthoringMaterial>, Error> {
     repository::hydrate_search_material_in_transaction(transaction, workspace_id, principal, target)
         .await
 }
 
-/// Loads one complete exact Principal-owned Saved Function description.
+/// Loads one complete exact Principal-owned Private Tool description.
 ///
 /// The authoritative declaration, source, and diagnostics are read by exact
 /// path without selecting or decoding declaration relevance material.
@@ -228,12 +227,12 @@ pub async fn hydrate_saved_function_search_material_in_transaction(
 /// # Errors
 ///
 /// Returns a persistence or authoritative-description corruption failure.
-pub async fn exact_saved_function_description_in_transaction(
+pub async fn exact_private_tool_description_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
-) -> Result<Option<ExactSavedFunctionDescriptionMaterial>, Error> {
+    path: &PrivateToolPath,
+) -> Result<Option<ExactPrivateToolDescriptionMaterial>, Error> {
     repository::exact_description_material_in_transaction(
         transaction,
         workspace_id,

@@ -5,7 +5,7 @@ pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
 use coral_provider::access::ProviderNamespace;
 
-pub use coral_functions::ExactSavedFunctionAuthoringMaterial as ExactSavedFunctionDetail;
+pub use coral_tools::ExactPrivateToolAuthoringMaterial as ExactPrivateToolDetail;
 
 use crate::Error;
 use crate::signature::SignatureLine;
@@ -346,7 +346,7 @@ pub(crate) fn split_written_path(path: &str) -> Option<(ProviderCallRoot, &str)>
     })
 }
 
-/// Complete public JavaScript path for one Tool or Saved Function.
+/// Complete public JavaScript path for one Tool or Private Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);
 
@@ -375,7 +375,7 @@ impl CallPath {
         Self::parse(&format!("{}.{relative_path}", call_root.as_str()))
     }
 
-    pub(crate) fn saved_function(relative_path: &str) -> Result<Self, Error> {
+    pub(crate) fn private_tool(relative_path: &str) -> Result<Self, Error> {
         Self::parse(&format!("{PRIVATE_TOOL_ROOT}.{relative_path}"))
     }
 
@@ -416,8 +416,8 @@ fn safe_path_segment(value: &str) -> bool {
 pub enum EntityKind {
     /// One Provider Tool projected through a Provider.
     ProviderTool,
-    /// One current Principal-owned Saved Function.
-    SavedFunction,
+    /// One current Principal-owned Private Tool.
+    PrivateTool,
 }
 
 impl EntityKind {
@@ -425,7 +425,7 @@ impl EntityKind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ProviderTool => "provider_tool",
-            Self::SavedFunction => "saved_function",
+            Self::PrivateTool => "private_tool",
         }
     }
 }
@@ -647,7 +647,7 @@ impl AuthoringDescription {
     pub const fn kind(&self) -> EntityKind {
         match self {
             Self::Tool(_) => EntityKind::ProviderTool,
-            Self::PrivateTool(_) => EntityKind::SavedFunction,
+            Self::PrivateTool(_) => EntityKind::PrivateTool,
         }
     }
 
@@ -809,7 +809,7 @@ impl SearchHit {
         )
     }
 
-    pub(crate) fn from_saved_function(
+    pub(crate) fn from_private_tool(
         call_path: CallPath,
         text: HitText,
         evidence: SearchEvidence,
@@ -840,7 +840,7 @@ impl SearchHit {
         if self.tool.is_some() {
             EntityKind::ProviderTool
         } else {
-            EntityKind::SavedFunction
+            EntityKind::PrivateTool
         }
     }
 
@@ -963,7 +963,7 @@ impl RetrieverCoverage {
     }
 
     /// Returns the units the caller may search: visible, ready Providers for
-    /// Tools; the Principal's current Saved Functions for functions.
+    /// Tools; the Principal's current Private Tools for functions.
     #[must_use]
     pub const fn eligible_units(&self) -> u64 {
         self.eligible_units
@@ -1079,24 +1079,24 @@ impl SearchPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactAuthoringDescription {
     authoring: AuthoringDescription,
-    saved_function_detail: Option<ExactSavedFunctionDetail>,
+    private_tool_detail: Option<ExactPrivateToolDetail>,
 }
 
 impl ExactAuthoringDescription {
     pub(crate) const fn tool(authoring: ToolAuthoringDescription) -> Self {
         Self {
             authoring: AuthoringDescription::Tool(authoring),
-            saved_function_detail: None,
+            private_tool_detail: None,
         }
     }
 
     pub(crate) const fn private_tool(
         authoring: PrivateToolAuthoringDescription,
-        detail: ExactSavedFunctionDetail,
+        detail: ExactPrivateToolDetail,
     ) -> Self {
         Self {
             authoring: AuthoringDescription::PrivateTool(authoring),
-            saved_function_detail: Some(detail),
+            private_tool_detail: Some(detail),
         }
     }
 
@@ -1105,7 +1105,7 @@ impl ExactAuthoringDescription {
     /// Function's source and diagnostics, which the caller already has.
     pub(crate) fn abridge(mut self, types: &[String]) -> Result<Self, crate::Error> {
         if !types.is_empty() {
-            self.saved_function_detail = None;
+            self.private_tool_detail = None;
         }
         let kind = self.authoring.kind();
         let declaration = match &mut self.authoring {
@@ -1124,10 +1124,10 @@ impl ExactAuthoringDescription {
         &self.authoring
     }
 
-    /// Returns editable Saved Function detail for an exact owned Saved Function.
+    /// Returns editable Private Tool detail for an exact owned Private Tool.
     #[must_use]
-    pub const fn saved_function_detail(&self) -> Option<&ExactSavedFunctionDetail> {
-        self.saved_function_detail.as_ref()
+    pub const fn private_tool_detail(&self) -> Option<&ExactPrivateToolDetail> {
+        self.private_tool_detail.as_ref()
     }
 }
 

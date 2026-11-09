@@ -4,24 +4,24 @@ package coral.management.v1;
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
-// Inspection and deletion of the calling User's own current Saved Functions.
+// Inspection and deletion of the calling User's own current Private Tools.
 //
-// A Saved Function Path names a definition only for its owning Principal in
+// A Private Tool Path names a definition only for its owning Principal in
 // one Workspace, so requests carry the Workspace and path rather than a
 // resource name. Another Principal's function and an absent path return the
 // same NOT_FOUND. Workspace-owned Agent functions never appear.
-service SavedFunctionService {
+service PrivateToolService {
   // Lists one page of the caller's own functions in path order, without source or diagnostics.
-  rpc ListSavedFunctions(ListSavedFunctionsRequest) returns (ListSavedFunctionsResponse);
+  rpc ListPrivateTools(ListPrivateToolsRequest) returns (ListPrivateToolsResponse);
   // Returns one of the caller's own functions with its source and saved diagnostics.
-  rpc GetSavedFunction(GetSavedFunctionRequest) returns (SavedFunction);
+  rpc GetPrivateTool(GetPrivateToolRequest) returns (PrivateTool);
   // Deletes one of the caller's own functions and records its lifecycle Event.
   // Coral keeps no reverse references: Programs that call the path fail at admission.
-  rpc DeleteSavedFunction(DeleteSavedFunctionRequest) returns (google.protobuf.Empty);
+  rpc DeletePrivateTool(DeletePrivateToolRequest) returns (google.protobuf.Empty);
 }
 
-// Lists the caller's own current Saved Functions in one Workspace.
-message ListSavedFunctionsRequest {
+// Lists the caller's own current Private Tools in one Workspace.
+message ListPrivateToolsRequest {
   // workspaces/{workspace}.
   string parent = 1;
   // Maximum results, bounded to 100; zero selects the default.
@@ -30,10 +30,10 @@ message ListSavedFunctionsRequest {
   string page_token = 3;
 }
 
-// One scoped page of source-free Saved Function summaries in path order.
-message ListSavedFunctionsResponse {
+// One scoped page of source-free Private Tool summaries in path order.
+message ListPrivateToolsResponse {
   // The caller's own functions on this page.
-  repeated SavedFunctionSummary saved_functions = 1;
+  repeated PrivateToolSummary private_tools = 1;
   // Empty when no further page remains.
   string next_page_token = 2;
   // The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
@@ -41,9 +41,9 @@ message ListSavedFunctionsResponse {
   string private_provider = 3;
 }
 
-// Source-free summary of one current Saved Function.
-message SavedFunctionSummary {
-  // Saved Function Path relative to coral.private.
+// Source-free summary of one current Private Tool.
+message PrivateToolSummary {
+  // Private Tool Path relative to coral.private.
   string path = 1;
   // Exact authored description.
   string description = 2;
@@ -51,25 +51,25 @@ message SavedFunctionSummary {
   google.protobuf.Timestamp update_time = 3;
 }
 
-// Reads one of the caller's own current Saved Functions.
-message GetSavedFunctionRequest {
+// Reads one of the caller's own current Private Tools.
+message GetPrivateToolRequest {
   // workspaces/{workspace}.
   string parent = 1;
-  // Saved Function Path relative to coral.private.
+  // Private Tool Path relative to coral.private.
   string path = 2;
 }
 
-// Deletes one of the caller's own current Saved Functions.
-message DeleteSavedFunctionRequest {
+// Deletes one of the caller's own current Private Tools.
+message DeletePrivateToolRequest {
   // workspaces/{workspace}.
   string parent = 1;
-  // Saved Function Path relative to coral.private.
+  // Private Tool Path relative to coral.private.
   string path = 2;
 }
 
-// One current Saved Function with its authoring material.
-message SavedFunction {
-  // Saved Function Path relative to coral.private.
+// One current Private Tool with its authoring material.
+message PrivateTool {
+  // Private Tool Path relative to coral.private.
   string path = 1;
   // Exact authored description.
   string description = 2;
@@ -78,7 +78,7 @@ message SavedFunction {
   // Exact authored TypeScript source.
   string source = 4;
   // Advisory diagnostics retained from the latest accepted save.
-  repeated SavedFunctionDiagnostic diagnostics = 5;
+  repeated PrivateToolDiagnostic diagnostics = 5;
   // True when Coral omitted diagnostics beyond its retention bound.
   bool diagnostics_truncated = 6;
   // Occurrence time of the latest accepted save.
@@ -86,23 +86,23 @@ message SavedFunction {
 }
 
 // Category of one advisory TypeScript diagnostic.
-enum SavedFunctionDiagnosticCategory {
+enum PrivateToolDiagnosticCategory {
   // Not supplied or not recognized by this client.
-  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0;
+  PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0;
   // Informational compiler message.
-  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_MESSAGE = 1;
+  PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE = 1;
   // Non-blocking warning.
-  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_WARNING = 2;
+  PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_WARNING = 2;
   // Strict semantic error retained without rejecting the save.
-  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_ERROR = 3;
+  PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_ERROR = 3;
   // Non-blocking authoring suggestion.
-  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_SUGGESTION = 4;
+  PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION = 4;
 }
 
 // One bounded advisory diagnostic retained with an accepted save.
-message SavedFunctionDiagnostic {
+message PrivateToolDiagnostic {
   // Diagnostic category.
-  SavedFunctionDiagnosticCategory category = 1;
+  PrivateToolDiagnosticCategory category = 1;
   // Official TypeScript diagnostic code.
   uint64 code = 2;
   // Bounded compiler message.

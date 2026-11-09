@@ -296,7 +296,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .tool(
             "exec",
             json!({
-                "task_id": task, "intent": "Fail in a Saved Function", "wait_ms": 5000,
+                "task_id": task, "intent": "Fail in a Private Tool", "wait_ms": 5000,
                 "program": "return coral.private.diagnostics.fail();",
             }),
         )
@@ -336,10 +336,10 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
 
     let owner = AuthenticatedPrincipal::user(tracer.local_user.clone());
     let functions = tracer
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&owner, &tracer.workspace_a)
         .await
-        .expect("Saved Function lifecycle events");
+        .expect("Private Tool lifecycle events");
     let decisions = tracer
         .approvals
         .list_lifecycle_events(&owner, &tracer.workspace_a, &decided)

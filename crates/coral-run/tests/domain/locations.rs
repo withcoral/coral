@@ -15,19 +15,19 @@ fn program_at(line: u32, column: u32) -> Option<SourceLocation> {
     })
 }
 
-const ACCEPTED_SAVED_FUNCTION: &str = "export default async function forecast(city: string) {\n    console.warn(city);\n    return coral.providers.weather.getForecast({ city });\n}";
+const ACCEPTED_PRIVATE_TOOL: &str = "export default async function forecast(city: string) {\n    console.warn(city);\n    return coral.providers.weather.getForecast({ city });\n}";
 
-fn saved_functions(fixture: &TestModules) -> SavedFunctionModule {
-    SavedFunctionModule::new(
+fn private_tools(fixture: &TestModules) -> PrivateToolModule {
+    PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
-    .expect("start Saved Function compiler")
+    .expect("start Private Tool compiler")
 }
 
-/// Runs one real-V8 Program that calls a linked Saved Function, emits in a
+/// Runs one real-V8 Program that calls a linked Private Tool, emits in a
 /// loop and fans out Tool calls, and waits for it to succeed.
 async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
     let fixture = TestModules::with_upstream(
@@ -41,18 +41,18 @@ async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
     let tool = fixture
         .user_tool("user:locations", "Record authored locations")
         .await;
-    saved_functions(&fixture)
+    private_tools(&fixture)
         .save(
-            &saved_function_change(tool.principal.clone(), 30, 'a'),
+            &private_tool_change(tool.principal.clone(), 30, 'a'),
             &tool.workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("weather.forecast").expect("path"),
-                SavedFunctionDescription::parse("Forecast one city").expect("description"),
-                SavedFunctionSource::parse(ACCEPTED_SAVED_FUNCTION).expect("source"),
+            PrivateToolSave::new(
+                PrivateToolPath::parse("weather.forecast").expect("path"),
+                PrivateToolDescription::parse("Forecast one city").expect("description"),
+                PrivateToolSource::parse(ACCEPTED_PRIVATE_TOOL).expect("source"),
             ),
         )
         .await
-        .expect("save Saved Function");
+        .expect("save Private Tool");
 
     let accepted = fixture
         .runs
@@ -170,7 +170,7 @@ async fn read_locations(
     ReadLocations {
         events,
         rows,
-        snapshot_id: snapshot.saved_function_id.clone(),
+        snapshot_id: snapshot.private_tool_id.clone(),
         snapshot_source: snapshot.source.clone(),
     }
 }
@@ -178,37 +178,37 @@ async fn read_locations(
 #[tokio::test]
 async fn each_record_keeps_the_authored_location_of_its_own_call() {
     let (fixture, tool, run_id) = run_located_program().await;
-    // Replacing and then deleting the current Saved Function cannot move a
+    // Replacing and then deleting the current Private Tool cannot move a
     // recorded location off the Run's snapshot.
-    let functions = saved_functions(&fixture);
-    let path = SavedFunctionPath::parse("weather.forecast").expect("path");
+    let functions = private_tools(&fixture);
+    let path = PrivateToolPath::parse("weather.forecast").expect("path");
     functions
         .save(
-            &saved_function_change(tool.principal.clone(), 40, 'b'),
+            &private_tool_change(tool.principal.clone(), 40, 'b'),
             &tool.workspace_id,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Replaced").expect("description"),
-                SavedFunctionSource::parse("\n\nexport default () => console.info('replaced');")
+                PrivateToolDescription::parse("Replaced").expect("description"),
+                PrivateToolSource::parse("\n\nexport default () => console.info('replaced');")
                     .expect("source"),
             ),
         )
         .await
-        .expect("replace Saved Function");
+        .expect("replace Private Tool");
     functions
         .delete(
-            &saved_function_change(tool.principal.clone(), 41, 'c'),
+            &private_tool_change(tool.principal.clone(), 41, 'c'),
             &tool.workspace_id,
             &path,
         )
         .await
-        .expect("delete Saved Function");
+        .expect("delete Private Tool");
     let read = read_locations(&fixture, &tool, &run_id).await;
-    assert_eq!(read.snapshot_source, ACCEPTED_SAVED_FUNCTION);
+    assert_eq!(read.snapshot_source, ACCEPTED_PRIVATE_TOOL);
     let in_snapshot = |line, column| {
         Some(SourceLocation {
-            document: SourceDocument::SavedFunction {
-                saved_function_id: read.snapshot_id.clone(),
+            document: SourceDocument::PrivateTool {
+                private_tool_id: read.snapshot_id.clone(),
             },
             line,
             column,
@@ -246,7 +246,7 @@ async fn records_without_a_recorded_location_read_back_as_unavailable() {
     for table in ["tool_invocations", "program_run_events"] {
         fixture
             .inject_fault(&format!(
-                "UPDATE {table} SET source_document = NULL, source_saved_function_id = NULL, \
+                "UPDATE {table} SET source_document = NULL, source_private_tool_id = NULL, \
                  source_line = NULL, source_column = NULL WHERE run_id = '{run_id}'"
             ))
             .await;
@@ -274,10 +274,10 @@ async fn storage_rejects_an_incomplete_or_misplaced_location() {
             "UPDATE program_run_events SET source_document = NULL \
              WHERE run_id = '{run_id}' AND event_type = 'program.emitted'"
         ),
-        // A Saved Function location without its snapshot identity.
+        // A Private Tool location without its snapshot identity.
         format!(
-            "UPDATE tool_invocations SET source_saved_function_id = NULL \
-             WHERE run_id = '{run_id}' AND source_document = 'saved_function'"
+            "UPDATE tool_invocations SET source_private_tool_id = NULL \
+             WHERE run_id = '{run_id}' AND source_document = 'private_tool'"
         ),
         // Lifecycle Events never carry a location.
         format!(

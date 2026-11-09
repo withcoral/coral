@@ -11,7 +11,7 @@ use coral_catalog::{
     SavedDiagnostic, SavedDiagnosticCategory, SearchOutput, SearchResult, SearchRetriever,
     SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, ToolHints,
 };
-use coral_functions::{SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory};
+use coral_tools::{PrivateToolDiagnostic, PrivateToolDiagnosticCategory};
 use serde_json::{Value, json};
 
 #[cfg(test)]
@@ -125,7 +125,7 @@ fn retriever_status(status: &RetrieverStatus) -> Option<SearchRetrieverStatus> {
     Some(SearchRetrieverStatus {
         retriever: match status.retriever() {
             crate::EntityKind::ProviderTool => SearchRetriever::ProviderTool,
-            crate::EntityKind::SavedFunction => SearchRetriever::SavedFunction,
+            crate::EntityKind::PrivateTool => SearchRetriever::PrivateTool,
         },
         state,
         coverage: SearchRetrieverCoverage {
@@ -156,7 +156,7 @@ pub fn description(exact: &ExactAuthoringDescription) -> Description {
             approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
         },
         // The kind keeps the name retained Task history uses.
-        AuthoringDescription::PrivateTool(tool) => Description::SavedFunction {
+        AuthoringDescription::PrivateTool(tool) => Description::PrivateTool {
             authoring: authoring(exact.authoring()),
             provider_id: tool.provider_id().to_string(),
             provider_display_name: tool.provider_display_name().to_owned(),
@@ -164,7 +164,7 @@ pub fn description(exact: &ExactAuthoringDescription) -> Description {
             hints: DeclaredHints::from(coral_catalog::ToolHints::default()),
             approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
             revision: tool.revision(),
-            detail: exact.saved_function_detail().map(|detail| SavedDetail {
+            detail: exact.private_tool_detail().map(|detail| SavedDetail {
                 source: detail.source().as_str().to_owned(),
                 diagnostics: detail.diagnostics().iter().map(diagnostic).collect(),
                 diagnostics_truncated: detail.diagnostics_truncated(),
@@ -189,13 +189,13 @@ fn authoring(description: &AuthoringDescription) -> DescriptionAuthoring {
 
 /// One saved diagnostic as a Program reads it.
 #[must_use]
-pub fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> SavedDiagnostic {
+pub fn diagnostic(diagnostic: &PrivateToolDiagnostic) -> SavedDiagnostic {
     SavedDiagnostic {
         category: match diagnostic.category() {
-            SavedFunctionDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
-            SavedFunctionDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
-            SavedFunctionDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
-            SavedFunctionDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
+            PrivateToolDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
+            PrivateToolDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
+            PrivateToolDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
+            PrivateToolDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
         },
         code: diagnostic.code(),
         message: diagnostic.message().to_owned(),

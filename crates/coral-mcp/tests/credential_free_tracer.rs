@@ -12,7 +12,6 @@ use axum::http::header;
 use axum::routing::get;
 use coral_auth as _;
 use coral_catalog::{OpenApiDocument, ToolKey};
-use coral_functions::SavedFunctionModule;
 use coral_mcp::{McpHttpConfig, McpModules, SUPPORTED_PROTOCOL_VERSIONS, start_local};
 use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
@@ -22,6 +21,7 @@ use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
 use coral_telemetry::testing::{ExportCapture, SpanCapture};
 use coral_test_support::TestDatabase;
+use coral_tools::PrivateToolModule;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
     local_organization_owner,
@@ -229,8 +229,8 @@ struct Tracer {
     runs: RunModule,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
-    /// Reads what Coral recorded about Saved Function changes.
-    saved_functions: SavedFunctionModule,
+    /// Reads what Coral recorded about Private Tool changes.
+    private_tools: PrivateToolModule,
     /// The search index. The Task save notifies it; the tracer Provider is
     /// published without the Provider workflow, so `start` indexes it with one
     /// reconcile pass.
@@ -265,13 +265,13 @@ impl Tracer {
             workspaces.clone(),
         );
         let policies = ToolPolicyModule::new(db.clone(), workspaces.clone());
-        let saved_functions = SavedFunctionModule::new(
+        let private_tools = PrivateToolModule::new(
             db.clone(),
             workspaces.clone(),
             coral_run::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
-        .expect("start Saved Function compiler");
+        .expect("start Private Tool compiler");
         let runs = RunModule::new(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
@@ -335,8 +335,8 @@ impl Tracer {
         index.reconcile().await;
         // Programs save through the one module the Task commands use, and
         // notify the same index.
-        let runs = runs.with_saved_functions(coral_run::SavedFunctions::new(
-            saved_functions.clone(),
+        let runs = runs.with_private_tools(coral_run::PrivateTools::new(
+            private_tools.clone(),
             index.clone(),
         ));
         let agent = workspaces
@@ -383,7 +383,7 @@ impl Tracer {
             runs,
             policies,
             approvals,
-            saved_functions,
+            private_tools,
             index,
         }
     }
@@ -1027,7 +1027,7 @@ async fn check_raw_oversized_items(endpoint: &str, task: &str, version: &Protoco
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table of failure projections: Program, Tool, aggregate, and Saved Function errors"
+    reason = "one table of failure projections: Program, Tool, aggregate, and Private Tool errors"
 )]
 async fn program_failures_are_run_updates_with_existing_error_facts() {
     capture();
@@ -1327,7 +1327,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         &Save {
             path: "diagnostics.fail",
             description: "Fail with an authored message",
-            declarations: "function fail() { throw new Error('saved-function-canary'); }",
+            declarations: "function fail() { throw new Error('private-tool-canary'); }",
             name: "fail",
         },
     )
@@ -1341,7 +1341,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         &client_a,
         "exec",
         json!({
-            "task_id":task_id, "intent":"Observe the Saved Function failure", "wait_ms":5000,
+            "task_id":task_id, "intent":"Observe the Private Tool failure", "wait_ms":5000,
             "program":"return coral.private.diagnostics.fail();"
         }),
     )
@@ -1357,7 +1357,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     );
     assert_eq!(
         structured(&linked_failure).pointer("/failure/error/message"),
-        Some(&json!("saved-function-canary"))
+        Some(&json!("private-tool-canary"))
     );
 }
 
@@ -1500,7 +1500,7 @@ return { found: found.data, read: read.data };"#,
     let function_result = searched_function["hits"]
         .as_array()
         .and_then(|items| items.first())
-        .expect("Saved Function search result");
+        .expect("Private Tool search result");
     assert_eq!(
         function_result["call_path"],
         "coral.private.weather.currentTemperature"
@@ -1510,7 +1510,7 @@ return { found: found.data, read: read.data };"#,
     for absent in ["provider_display_name", "hints", "typescript_declaration"] {
         assert!(
             function_result.get(absent).is_none(),
-            "a Saved Function hit has no {absent}"
+            "a Private Tool hit has no {absent}"
         );
     }
 

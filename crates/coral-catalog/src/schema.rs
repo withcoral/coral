@@ -754,7 +754,7 @@ impl ProjectionOptions {
 }
 
 /// Declares a Tool's callable as an anonymous default export, as a
-/// Saved Function's compiler-emitted declaration does. The Call Path travels
+/// Private Tool's compiler-emitted declaration does. The Call Path travels
 /// beside the declaration, so a segment such as `delete`, which TypeScript
 /// rejects as a function or namespace name, never has to parse here.
 /// Whether a callable whose projected input is `input` declares a

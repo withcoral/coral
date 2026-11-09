@@ -261,7 +261,7 @@ function KindPill({ kind }: { kind: DiscoveryEntityKind }) {
     </Pill>
   ) : (
     <Pill color="purple" size="small" variant="outline">
-      saved function
+      private tool
     </Pill>
   )
 }
@@ -402,11 +402,11 @@ function DescriptionResult({
   record?: string | null
 }) {
   const id = useId()
-  const { tool, savedFunction } = description
+  const { tool, privateTool } = description
   const problems = (['error', 'warning'] as const)
     .map((category) => ({
       category,
-      count: savedFunction?.diagnostics.filter((item) => item.category === category).length ?? 0,
+      count: privateTool?.diagnostics.filter((item) => item.category === category).length ?? 0,
     }))
     .filter(({ count }) => count > 0)
   return (
@@ -436,7 +436,7 @@ function DescriptionResult({
                 <Pill key={category} color={diagnosticColors[category]} size="small">
                   {count} {category}
                   {count === 1 ? '' : 's'}
-                  {savedFunction?.diagnosticsTruncated ? '+' : ''}
+                  {privateTool?.diagnosticsTruncated ? '+' : ''}
                 </Pill>
               ))}
             </div>
@@ -456,7 +456,7 @@ function DescribeDetails({
   description: Description
   record?: string | null
 }) {
-  const savedFunction = description.savedFunction
+  const privateTool = description.privateTool
   return (
     <Disclosure title="Details">
       {description.tool?.guidance && (
@@ -472,20 +472,20 @@ function DescribeDetails({
         framed
         maxLines={DECLARATION_LINES}
       />
-      {savedFunction && (
+      {privateTool && (
         <>
           <Typography.HeadingXSmall as="h4">Source</Typography.HeadingXSmall>
           <CodeBlock
-            value={savedFunction.source}
+            value={privateTool.source}
             format="typescript"
             framed
             maxLines={DECLARATION_LINES}
           />
-          {(savedFunction.diagnostics.length > 0 || savedFunction.diagnosticsTruncated) && (
+          {(privateTool.diagnostics.length > 0 || privateTool.diagnosticsTruncated) && (
             <>
               <Typography.HeadingXSmall as="h4">Diagnostics</Typography.HeadingXSmall>
               <ul className={styles.diagnostics}>
-                {savedFunction.diagnostics.map((diagnostic, index) => (
+                {privateTool.diagnostics.map((diagnostic, index) => (
                   <li key={index} className={styles.row}>
                     <Pill color={diagnosticColors[diagnostic.category]} size="small">
                       {diagnostic.category} TS{diagnostic.code}
@@ -500,7 +500,7 @@ function DescribeDetails({
                   </li>
                 ))}
               </ul>
-              {savedFunction.diagnosticsTruncated && (
+              {privateTool.diagnosticsTruncated && (
                 <Typography.BodySmall variant="tertiary">
                   Coral kept only the first diagnostics.
                 </Typography.BodySmall>

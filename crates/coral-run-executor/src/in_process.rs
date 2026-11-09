@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
     BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramCompiler, SavedFunctionCallPaths, SavedFunctionCompilation,
-    SavedFunctionReference, ToolReferences, UnknownToolCall,
+    LinkedPrivateToolSource, PrivateToolCallPaths, PrivateToolCompilation, PrivateToolReference,
+    ProgramCompiler, ToolReferences, UnknownToolCall,
 };
 
 use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
@@ -14,7 +14,7 @@ use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
 pub struct InProcessCompiler {
     /// Program Admission's handle.
     run: ProgramCompiler,
-    /// Saved Function save's handle on the same thread and queue.
+    /// Private Tool save's handle on the same thread and queue.
     authoring: ProgramCompiler,
 }
 
@@ -37,7 +37,7 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
+    ) -> Result<PrivateToolCallPaths, CompileError> {
         self.run
             .program_call_paths(deadline(time_left), source)
             .map_err(compile_error)
@@ -58,9 +58,9 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileError> {
+    ) -> Result<Vec<PrivateToolReference>, CompileError> {
         self.run
-            .saved_function_dependency_paths(deadline(time_left), source)
+            .private_tool_dependency_paths(deadline(time_left), source)
             .map_err(compile_error)
     }
 
@@ -68,15 +68,15 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        private_tools: &[LinkedPrivateToolSource],
         builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError> {
         let deadline = deadline(time_left);
         let run = self.run.with_builtin_tools(builtin_tools);
-        if saved_functions.is_empty() {
+        if private_tools.is_empty() {
             run.compile(deadline, source)
         } else {
-            run.compile_with_saved_functions(deadline, source, saved_functions)
+            run.compile_with_private_tools(deadline, source, private_tools)
         }
         .map_err(compile_error)
     }
@@ -85,9 +85,9 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
+    ) -> Result<PrivateToolCallPaths, CompileError> {
         self.authoring
-            .saved_function_call_paths(deadline(time_left), source)
+            .private_tool_call_paths(deadline(time_left), source)
             .map_err(compile_error)
     }
 
@@ -97,14 +97,14 @@ impl CompilerClient for InProcessCompiler {
         source: &str,
         builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError> {
+    ) -> Result<PrivateToolCompilation, CompileError> {
         let deadline = deadline(time_left);
         let authoring = self.authoring.with_builtin_tools(builtin_tools);
         match declarations {
             Some(declarations) => {
-                authoring.prepare_typed_saved_function(deadline, source, declarations)
+                authoring.prepare_typed_private_tool(deadline, source, declarations)
             }
-            None => authoring.prepare_saved_function(deadline, source),
+            None => authoring.prepare_private_tool(deadline, source),
         }
         .map_err(compile_error)
     }
@@ -117,7 +117,7 @@ fn deadline(time_left: Duration) -> Instant {
 fn compile_error(error: coral_v8::Error) -> CompileError {
     match error {
         coral_v8::Error::MemoryLimitExceeded => CompileError::MemoryLimit,
-        coral_v8::Error::InvalidSavedFunctionReference {
+        coral_v8::Error::InvalidPrivateToolReference {
             message,
             line,
             column,
@@ -179,8 +179,8 @@ mod tests {
                 "invalid_program_body",
             ),
             (
-                || coral_v8::Error::InvalidSavedFunction("no default export".into()),
-                "invalid_saved_function",
+                || coral_v8::Error::InvalidPrivateTool("no default export".into()),
+                "invalid_private_tool",
             ),
             (
                 || coral_v8::Error::SourceTooDeeplyNested,
@@ -191,12 +191,12 @@ mod tests {
                 "forbidden_capability",
             ),
             (
-                || coral_v8::Error::InvalidSavedFunctionReference {
+                || coral_v8::Error::InvalidPrivateToolReference {
                     message: "computed access".into(),
                     line: 2,
                     column: 7,
                 },
-                "invalid_saved_function_reference",
+                "invalid_private_tool_reference",
             ),
             (
                 || coral_v8::Error::MemoryLimitExceeded,

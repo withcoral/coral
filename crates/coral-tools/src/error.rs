@@ -1,12 +1,12 @@
-/// Current Saved Function authoring, inspection, and persistence failure.
+/// Current Private Tool authoring, inspection, and persistence failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Caller-supplied domain input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    /// The Saved Function is absent or concealed from this Principal.
+    /// The Private Tool is absent or concealed from this Principal.
     #[error("Private Tool was not found")]
-    SavedFunctionNotFound,
+    PrivateToolNotFound,
     /// A create-only save found a Private Tool at its path.
     #[error("a Private Tool is already at this path")]
     PrivateToolExists,
@@ -18,7 +18,7 @@ pub enum Error {
     },
     /// Source could not become one accepted callable definition.
     #[error("Private Tool authoring failed: {0}")]
-    SavedFunctionAdmission(String),
+    PrivateToolAdmission(String),
     /// The source's arguments or result cannot cross a Tool call as data:
     /// the reason names where the declaration holds a function, a class
     /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
@@ -29,10 +29,10 @@ pub enum Error {
     #[error(
         "Private Tool authoring failed: Private Tool Path conflicts with an existing virtual namespace"
     )]
-    SavedFunctionPathConflict,
+    PrivateToolPathConflict,
     /// Compilation exceeded the fixed authoring deadline.
     #[error("Private Tool compilation exceeded the two-second deadline")]
-    SavedFunctionCompilationTimedOut,
+    PrivateToolCompilationTimedOut,
     /// The compiler queue was full, so the source was not judged. Retryable.
     #[error("Private Tool compiler is busy; retry shortly")]
     CompilerBusy,
@@ -77,13 +77,13 @@ impl Error {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::InvalidInput { .. } => "invalid_input",
-            Self::SavedFunctionNotFound { .. } => "saved_function_not_found",
+            Self::PrivateToolNotFound { .. } => "private_tool_not_found",
             Self::PrivateToolExists => "private_tool_exists",
             Self::PrivateToolRevisionConflict { .. } => "private_tool_revision_conflict",
-            Self::SavedFunctionAdmission { .. } => "saved_function_admission",
+            Self::PrivateToolAdmission { .. } => "private_tool_admission",
             Self::PrivateToolNotData(_) => "private_tool_not_data",
-            Self::SavedFunctionPathConflict => "saved_function_path_conflict",
-            Self::SavedFunctionCompilationTimedOut { .. } => "saved_function_compilation_timed_out",
+            Self::PrivateToolPathConflict => "private_tool_path_conflict",
+            Self::PrivateToolCompilationTimedOut { .. } => "private_tool_compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::PackageTooLarge { .. } => "package_too_large",
@@ -107,15 +107,15 @@ impl Error {
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
-            Self::SavedFunctionNotFound => "saved_function_not_found",
+            Self::PrivateToolNotFound => "private_tool_not_found",
             Self::PrivateToolExists => "private_tool_exists",
             Self::PrivateToolRevisionConflict { .. } => "private_tool_revision_conflict",
-            Self::SavedFunctionAdmission(_) | Self::SavedFunctionPathConflict => {
-                "saved_function_admission_failed"
+            Self::PrivateToolAdmission(_) | Self::PrivateToolPathConflict => {
+                "private_tool_admission_failed"
             }
             Self::PrivateToolNotData(_) => "private_tool_not_data",
-            Self::SavedFunctionCompilationTimedOut => "saved_function_compilation_timed_out",
-            Self::CompilerBusy => "saved_function_compiler_busy",
+            Self::PrivateToolCompilationTimedOut => "private_tool_compilation_timed_out",
+            Self::CompilerBusy => "private_tool_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::PermissionDenied(_) => "permission_denied",
             _ => return None,

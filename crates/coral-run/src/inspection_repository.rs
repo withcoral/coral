@@ -77,21 +77,21 @@ pub(crate) async fn sources(
         .await?
         .ok_or_else(|| Error::CorruptData("missing accepted source".into()))?;
     let mut snapshots = scoped(
-        "program_run_saved_function_snapshots",
+        "program_run_private_tool_snapshots",
         workspace,
         "run_id",
         run.to_string(),
     );
     snapshots
         .columns([
-            Alias::new("saved_function_id"),
+            Alias::new("private_tool_id"),
             Alias::new("path"),
             Alias::new("source"),
         ])
         .order_by(Alias::new("path"), Order::Asc)
-        .limit(crate::LINKED_SAVED_FUNCTION_MAX_COUNT as u64 + 1);
+        .limit(crate::LINKED_PRIVATE_TOOL_MAX_COUNT as u64 + 1);
     let rows: Vec<(String, String, String)> = tx.fetch_all(snapshots).await?;
-    if rows.len() > crate::LINKED_SAVED_FUNCTION_MAX_COUNT {
+    if rows.len() > crate::LINKED_PRIVATE_TOOL_MAX_COUNT {
         return Err(Error::CorruptData(
             "accepted linked source exceeds its admission bound".into(),
         ));
@@ -99,8 +99,8 @@ pub(crate) async fn sources(
     Ok((
         source,
         rows.into_iter()
-            .map(|(saved_function_id, path, source)| SourceSnapshot {
-                saved_function_id,
+            .map(|(private_tool_id, path, source)| SourceSnapshot {
+                private_tool_id,
                 path,
                 source,
             })

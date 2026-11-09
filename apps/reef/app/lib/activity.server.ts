@@ -64,7 +64,7 @@ import {
   workspaceName,
   type ManagementApi,
 } from './management.server'
-import { savedFunctionHref } from './management-views.server'
+import { privateToolHref } from './management-views.server'
 import { listAllTools, listAllProviders, providerPath } from './providers.server'
 import { privateToolPath, toolOwner } from './call-root'
 import { connectionState } from './accounts.server'
@@ -89,7 +89,7 @@ import { activityPageFetchKey } from './activity-page-fetch'
 /** Activity and its requests, and the current catalog that discovery links open. */
 export type ActivityApi = Pick<
   ManagementApi,
-  'activity' | 'accounts' | 'providers' | 'savedFunctions'
+  'activity' | 'accounts' | 'providers' | 'privateTools'
 > &
   // Page live mode reads whether the Workspace is archived. Without it, it counts as active.
   Partial<Pick<ManagementApi, 'workspaces'>>
@@ -223,27 +223,27 @@ async function linkCurrentTargets(
   }
   // Reef opens only the caller's own functions. A function that an Agent's
   // search found belongs to the Agent, so the same path can name another function.
-  if (!interaction.agent && targets.some((target) => target.kind === 'saved_function')) {
+  if (!interaction.agent && targets.some((target) => target.kind === 'private_tool')) {
     const paths = new Set(
       await listedOrNone(async () => {
         const all: string[] = []
         let pageToken = ''
         do {
-          const page = await api.savedFunctions.listSavedFunctions({
+          const page = await api.privateTools.listPrivateTools({
             parent: workspace,
             pageSize: 100,
             pageToken,
           })
-          all.push(...page.savedFunctions.map((savedFunction) => savedFunction.path))
+          all.push(...page.privateTools.map((privateTool) => privateTool.path))
           pageToken = page.nextPageToken
         } while (pageToken)
         return all
       }),
     )
     for (const target of targets) {
-      const path = target.kind === 'saved_function' ? privateToolPath(target.callPath) : null
+      const path = target.kind === 'private_tool' ? privateToolPath(target.callPath) : null
       if (path && paths.has(path))
-        target.currentHref = savedFunctionHref(resourcePath(workspace), path)
+        target.currentHref = privateToolHref(resourcePath(workspace), path)
     }
   }
 }
@@ -268,7 +268,7 @@ async function evidenceView(
       }
     case 'run':
       return { kind: 'run', reference: evidence.value }
-    case 'savedFunction':
+    case 'privateTool':
       return { kind: 'function', reference: evidence.value }
     default:
       return { kind: 'unknown' }
@@ -388,8 +388,8 @@ function sourceLocationView(
   switch (document.case) {
     case 'program':
       return { document: { kind: 'program' }, line, column }
-    case 'savedFunction':
-      return { document: { kind: 'saved_function', savedFunction: document.value }, line, column }
+    case 'privateTool':
+      return { document: { kind: 'private_tool', privateTool: document.value }, line, column }
     default:
       return undefined
   }
@@ -644,8 +644,8 @@ function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail 
     run,
     source: value.submittedSource,
     submission: value.submission ? interactionView(value.submission) : undefined,
-    linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
-      savedFunction,
+    linkedFunctions: value.linkedFunctions.map(({ privateTool, path, source }) => ({
+      privateTool,
       path,
       source,
     })),

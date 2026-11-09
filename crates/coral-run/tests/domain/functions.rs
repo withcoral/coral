@@ -1,6 +1,6 @@
 //! `coral.addTool`, `coral.updateTool` and `coral.removeTool` author the
 //! invoking Principal's Private Tools from inside a Program, over the real
-//! V8 engine. Authoring rules are tested at their owner, coral-functions, and
+//! V8 engine. Authoring rules are tested at their owner, coral-tools, and
 //! the default Access State at coral-policy.
 use super::provider_setup::{AdminScope, RunEndsAfterPreparation, final_value, workspace_call};
 use super::*;
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 /// The function each Program saves: `saved`, declared at its top level.
 const SOURCE: &str = "const saved = (name: string): string => `hello ${name}`;";
 
-/// An Admin scope whose Runs author Saved Functions, with no exact rule on
+/// An Admin scope whose Runs author Private Tools, with no exact rule on
 /// either Tool, and the index each save notifies.
 async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) {
     let mut scope = AdminScope::new(user).await;
@@ -21,13 +21,13 @@ async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) 
         .fixture
         .runs
         .clone()
-        .with_saved_functions(crate::SavedFunctions::new(module, index.clone()));
+        .with_private_tools(crate::PrivateTools::new(module, index.clone()));
     (scope, index)
 }
 
 /// The module that stores `scope`'s Private Tools.
-fn functions_module(scope: &AdminScope) -> SavedFunctionModule {
-    SavedFunctionModule::new(
+fn functions_module(scope: &AdminScope) -> PrivateToolModule {
+    PrivateToolModule::new(
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
@@ -75,7 +75,7 @@ async fn outcome(scope: &AdminScope, actor: &AuthenticatedPrincipal, run: RunSub
 }
 
 /// Whether admission refuses `run`, as it does a Program that names a
-/// Saved Function the caller does not have.
+/// Private Tool the caller does not have.
 async fn admission_refuses(
     scope: &AdminScope,
     actor: &AuthenticatedPrincipal,
@@ -188,7 +188,7 @@ async fn each_principal_adds_and_removes_its_own_tool_with_no_rule() {
 }
 
 // Catches: a save that throws on an advisory type error, admits a function
-// that cannot become a Saved Function, or saves at a path that cannot hold it.
+// that cannot become a Private Tool, or saves at a path that cannot hold it.
 #[tokio::test]
 async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
     let (scope, _index) = authoring_scope("user:functions-diagnostics").await;
@@ -417,9 +417,9 @@ return [saving.data.diagnostics, removing.data.diagnostics];"
     assert!(admission_refuses(&scope, &scope.owner, greet()).await);
 }
 
-// Catches: authoring Tools that run where no Saved Function module is wired.
+// Catches: authoring Tools that run where no Private Tool module is wired.
 #[tokio::test]
-async fn without_saved_functions_the_tools_are_unavailable() {
+async fn without_private_tools_the_tools_are_unavailable() {
     let scope = AdminScope::new("user:functions-unwired").await;
     for run in [add("people.greet", SOURCE), remove("people.greet")] {
         let refused = outcome(&scope, &scope.owner, run).await;
@@ -503,26 +503,26 @@ fn remove(path: &str) -> RunSubmission {
 /// The actions of `actor`'s lifecycle Events, oldest first.
 async fn lifecycle_actions(
     scope: &AdminScope,
-    functions: &SavedFunctionModule,
+    functions: &PrivateToolModule,
     actor: &AuthenticatedPrincipal,
-) -> Vec<coral_functions::LifecycleAction> {
+) -> Vec<coral_tools::LifecycleAction> {
     let mut events = functions
         .list_lifecycle_events(actor, &scope.workspace_id)
         .await
         .unwrap();
-    events.sort_by_key(coral_functions::AdministrativeLifecycleEvent::occurred_at_unix_nanos);
+    events.sort_by_key(coral_tools::AdministrativeLifecycleEvent::occurred_at_unix_nanos);
     events
         .iter()
-        .map(coral_functions::AdministrativeLifecycleEvent::action)
+        .map(coral_tools::AdministrativeLifecycleEvent::action)
         .collect()
 }
 
 // Catches: an authoring Tool whose refusal reaches the Program under any
 // code but its own, or whose result reports the wrong path or revision.
-// coral-functions tests that a refusal changes nothing.
+// coral-tools tests that a refusal changes nothing.
 #[tokio::test]
 async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_their_codes() {
-    use coral_functions::LifecycleAction::{Created, Deleted, Replaced};
+    use coral_tools::LifecycleAction::{Created, Deleted, Replaced};
     let (scope, _index) = authoring_scope("user:tools-intents").await;
     let functions = functions_module(&scope);
     let before = lifecycle_actions(&scope, &functions, &scope.owner).await;
@@ -845,16 +845,16 @@ async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
         // roots went can still name them.
         module
             .save(
-                &coral_functions::SavedFunctionChangeContext::new(
+                &coral_tools::PrivateToolChangeContext::new(
                     scope.owner.clone(),
                     60,
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &scope.workspace_id,
-                coral_functions::SavedFunctionSave::new(
-                    coral_functions::SavedFunctionPath::parse(path).unwrap(),
-                    coral_functions::SavedFunctionDescription::parse("Call an old root").unwrap(),
-                    coral_functions::SavedFunctionSource::parse(&format!(
+                coral_tools::PrivateToolSave::new(
+                    coral_tools::PrivateToolPath::parse(path).unwrap(),
+                    coral_tools::PrivateToolDescription::parse("Call an old root").unwrap(),
+                    coral_tools::PrivateToolSource::parse(&format!(
                         "export default async () => {body};"
                     ))
                     .unwrap(),
@@ -1105,7 +1105,7 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
                     .get(
                         &author,
                         &scope.workspace_id,
-                        &SavedFunctionPath::parse("people.greet").unwrap(),
+                        &PrivateToolPath::parse("people.greet").unwrap(),
                     )
                     .await
                     .unwrap();

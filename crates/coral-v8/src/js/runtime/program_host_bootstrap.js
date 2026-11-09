@@ -43,7 +43,7 @@
   // carrier that admission writes and the compiled wrapper takes before any
   // authored code runs. A carrier has no prototype, so no Program reaches
   // this class, and a private field marks it, so no Program forges one.
-  class SavedFunctionSource {
+  class PrivateToolSource {
     #text;
     constructor(text) {
       this.#text = text;
@@ -57,8 +57,8 @@
         : undefined;
     }
   }
-  Object.defineProperty(globalThis, '__coralSavedFunctionSource', {
-    value: (text) => new SavedFunctionSource(nativeString(text)),
+  Object.defineProperty(globalThis, '__coralPrivateToolSource', {
+    value: (text) => new PrivateToolSource(nativeString(text)),
     enumerable: false,
     writable: false,
     configurable: true,
@@ -74,7 +74,7 @@
       // A copied `toJSON` would replace what this encodes, source included.
       if (key !== 'source' && key !== 'toJSON') encoded[key] = input[key];
     }
-    const text = SavedFunctionSource.textOf(input.source);
+    const text = PrivateToolSource.textOf(input.source);
     if (text !== undefined) encoded.source = text;
     return encoded;
   };

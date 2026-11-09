@@ -78,7 +78,7 @@ use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
 use page::{Ranked, hydrate_page_in_transaction};
-use retriever::functions::SavedFunctionRetriever;
+use retriever::functions::PrivateToolRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
     Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
@@ -93,7 +93,7 @@ pub use storage::{StorageError, prepare_storage};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
-    ExactSavedFunctionDetail, PrivateToolAuthoringDescription, ProviderCallRoot, ProviderId,
+    ExactPrivateToolDetail, PrivateToolAuthoringDescription, ProviderCallRoot, ProviderId,
     RetrieverCoverage, RetrieverState, RetrieverStatus, SEARCH_DEFAULT_LIMIT,
     SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX,
     SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SearchEvidence,
@@ -111,8 +111,8 @@ pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     /// One retriever per Search Entity kind. At equal mark and position, an
-    /// earlier retriever's Entity comes first: Tools, then Saved Functions.
-    /// A strong Saved Function therefore leads every Tool below its
+    /// earlier retriever's Entity comes first: Tools, then Private Tools.
+    /// A strong Private Tool therefore leads every Tool below its
     /// position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
@@ -129,7 +129,7 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            SavedFunctionRetriever::default(),
+            PrivateToolRetriever::default(),
             ToolRetriever::default(),
         )
     }
@@ -145,8 +145,8 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            SavedFunctionRetriever {
-                fail_ranking: kinds.contains(&EntityKind::SavedFunction),
+            PrivateToolRetriever {
+                fail_ranking: kinds.contains(&EntityKind::PrivateTool),
             },
             ToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::ProviderTool),
@@ -157,7 +157,7 @@ impl UniversalSearchModule {
     fn with_retrievers(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        functions: SavedFunctionRetriever,
+        functions: PrivateToolRetriever,
         tools: ToolRetriever,
     ) -> Self {
         Self {
@@ -402,7 +402,7 @@ impl UniversalSearchModule {
     ///
     /// The declaration is abridged. With `types`, it holds those types of the
     /// declaration instead, with their own nested types abridged the same
-    /// way. Exact description of the User's own Saved Function additionally
+    /// way. Exact description of the User's own Private Tool additionally
     /// carries current source and saved diagnostics, except with `types`. An
     /// absent or invisible path is concealed as missing; authoritative
     /// corruption remains operational.

@@ -7,18 +7,17 @@ use sqlx::FromRow;
 
 use crate::Error;
 use crate::types::{
-    AdministrativeLifecycleEvent, ExactSavedFunctionAuthoringMaterial,
-    ExactSavedFunctionDescriptionMaterial, LifecycleAction, LifecycleOutcome,
-    SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT, SAVED_FUNCTION_DIAGNOSTIC_MESSAGE_MAX_BYTES,
-    SavedFunction, SavedFunctionAuthoringMaterial, SavedFunctionDeclaration,
-    SavedFunctionDeclarationFieldProjection, SavedFunctionDeclarationSearchMaterial,
-    SavedFunctionDescription, SavedFunctionDiagnostic, SavedFunctionEntry, SavedFunctionId,
-    SavedFunctionPage, SavedFunctionPath, SavedFunctionSearchMaterial, SavedFunctionSelection,
-    SavedFunctionSource, SavedFunctionSummary,
+    AdministrativeLifecycleEvent, ExactPrivateToolAuthoringMaterial,
+    ExactPrivateToolDescriptionMaterial, LifecycleAction, LifecycleOutcome,
+    PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT, PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES, PrivateTool,
+    PrivateToolAuthoringMaterial, PrivateToolDeclaration, PrivateToolDeclarationFieldProjection,
+    PrivateToolDeclarationSearchMaterial, PrivateToolDescription, PrivateToolDiagnostic,
+    PrivateToolEntry, PrivateToolId, PrivateToolPage, PrivateToolPath, PrivateToolSearchMaterial,
+    PrivateToolSelection, PrivateToolSource, PrivateToolSummary,
 };
 
 #[derive(Iden)]
-enum SavedFunctionRecords {
+enum PrivateToolRecords {
     Table,
     Id,
     WorkspaceId,
@@ -40,7 +39,7 @@ enum SavedFunctionRecords {
 }
 
 #[derive(Iden)]
-enum SavedFunctionLifecycleEvents {
+enum PrivateToolLifecycleEvents {
     Table,
     Id,
     WorkspaceId,
@@ -48,7 +47,7 @@ enum SavedFunctionLifecycleEvents {
     ActorPrincipalKind,
     PrivateUserId,
     Action,
-    TargetSavedFunctionId,
+    TargetPrivateToolId,
     TargetPath,
     Outcome,
     ChangedFieldPaths,
@@ -57,7 +56,7 @@ enum SavedFunctionLifecycleEvents {
 }
 
 #[derive(Debug, FromRow)]
-struct SavedFunctionRow {
+struct PrivateToolRow {
     id: String,
     workspace_id: String,
     principal_id: String,
@@ -77,9 +76,9 @@ struct SavedFunctionRow {
     default_access_state: String,
 }
 
-impl SavedFunctionRow {
-    fn decode(self) -> Result<SavedFunction, Error> {
-        let id = SavedFunctionId::parse(&self.id).map_err(|_error| {
+impl PrivateToolRow {
+    fn decode(self) -> Result<PrivateTool, Error> {
+        let id = PrivateToolId::parse(&self.id).map_err(|_error| {
             Error::CorruptData("Private Tool has invalid identity".to_string())
         })?;
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_error| {
@@ -92,15 +91,15 @@ impl SavedFunctionRow {
             principal_id,
             principal_kind_from_storage(&self.principal_kind)?,
         );
-        let path = SavedFunctionPath::parse(&self.path)
+        let path = PrivateToolPath::parse(&self.path)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid path".to_string()))?;
-        let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
+        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool has invalid description".to_string())
         })?;
-        let source = SavedFunctionSource::parse(&self.source)
+        let source = PrivateToolSource::parse(&self.source)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
-        let declaration = SavedFunctionDeclaration::from_persisted(&self.declaration)?;
-        let declaration_field_projection = SavedFunctionDeclarationFieldProjection::from_storage(
+        let declaration = PrivateToolDeclaration::from_persisted(&self.declaration)?;
+        let declaration_field_projection = PrivateToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
             self.declaration_fields_json.as_deref(),
@@ -108,7 +107,7 @@ impl SavedFunctionRow {
         )?;
         let diagnostics = decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?;
         let revision = decode_revision(self.definition_revision)?;
-        Ok(SavedFunction::new(
+        Ok(PrivateTool::new(
             id,
             workspace_id,
             principal,
@@ -127,25 +126,25 @@ impl SavedFunctionRow {
 }
 
 #[derive(Debug, FromRow)]
-struct SavedFunctionSearchRow {
+struct PrivateToolSearchRow {
     id: String,
     path: String,
     description: String,
     default_access_state: String,
 }
 
-impl SavedFunctionSearchRow {
-    fn decode(self) -> Result<SavedFunctionSearchMaterial, Error> {
-        let id = SavedFunctionId::parse(&self.id).map_err(|_error| {
+impl PrivateToolSearchRow {
+    fn decode(self) -> Result<PrivateToolSearchMaterial, Error> {
+        let id = PrivateToolId::parse(&self.id).map_err(|_error| {
             Error::CorruptData("Private Tool search target has invalid identity".to_string())
         })?;
-        let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
+        let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool search target has invalid path".to_string())
         })?;
-        let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
+        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool search target has invalid description".to_string())
         })?;
-        Ok(SavedFunctionSearchMaterial::new(
+        Ok(PrivateToolSearchMaterial::new(
             id,
             path,
             description,
@@ -155,21 +154,21 @@ impl SavedFunctionSearchRow {
 }
 
 #[derive(Debug, FromRow)]
-struct SavedFunctionSummaryRow {
+struct PrivateToolSummaryRow {
     path: String,
     description: String,
     saved_at_unix_nanos: i64,
 }
 
-impl SavedFunctionSummaryRow {
-    fn decode(self) -> Result<SavedFunctionSummary, Error> {
-        let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
+impl PrivateToolSummaryRow {
+    fn decode(self) -> Result<PrivateToolSummary, Error> {
+        let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool summary has invalid path".to_string())
         })?;
-        let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
+        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool summary has invalid description".to_string())
         })?;
-        Ok(SavedFunctionSummary::new(
+        Ok(PrivateToolSummary::new(
             path,
             description,
             self.saved_at_unix_nanos,
@@ -178,7 +177,7 @@ impl SavedFunctionSummaryRow {
 }
 
 #[derive(Debug, FromRow)]
-struct SavedFunctionDeclarationSearchRow {
+struct PrivateToolDeclarationSearchRow {
     path: String,
     declaration_fields_format: String,
     declaration_fields_status: String,
@@ -186,12 +185,12 @@ struct SavedFunctionDeclarationSearchRow {
     declaration_fields_failure: Option<String>,
 }
 
-impl SavedFunctionDeclarationSearchRow {
-    fn decode(self) -> Result<SavedFunctionDeclarationSearchMaterial, Error> {
-        let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
+impl PrivateToolDeclarationSearchRow {
+    fn decode(self) -> Result<PrivateToolDeclarationSearchMaterial, Error> {
+        let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool search lane has invalid path".to_string())
         })?;
-        let declaration_fields = SavedFunctionDeclarationFieldProjection::from_storage(
+        let declaration_fields = PrivateToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
             self.declaration_fields_json.as_deref(),
@@ -199,7 +198,7 @@ impl SavedFunctionDeclarationSearchRow {
         )
         .ok()
         .and_then(|projection| projection.fields().map(<[_]>::to_vec));
-        Ok(SavedFunctionDeclarationSearchMaterial::new(
+        Ok(PrivateToolDeclarationSearchMaterial::new(
             path,
             declaration_fields,
         ))
@@ -207,7 +206,7 @@ impl SavedFunctionDeclarationSearchRow {
 }
 
 #[derive(Debug, FromRow)]
-struct SavedFunctionEntryRow {
+struct PrivateToolEntryRow {
     id: String,
     workspace_id: String,
     principal_id: String,
@@ -222,9 +221,9 @@ struct SavedFunctionEntryRow {
     definition_revision: i64,
 }
 
-impl SavedFunctionEntryRow {
-    fn decode(self) -> Result<SavedFunctionEntry, Error> {
-        let id = SavedFunctionId::parse(&self.id).map_err(|_error| {
+impl PrivateToolEntryRow {
+    fn decode(self) -> Result<PrivateToolEntry, Error> {
+        let id = PrivateToolId::parse(&self.id).map_err(|_error| {
             Error::CorruptData("Private Tool entry has invalid identity".to_string())
         })?;
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_error| {
@@ -237,16 +236,16 @@ impl SavedFunctionEntryRow {
             principal_id,
             principal_kind_from_storage(&self.principal_kind)?,
         );
-        let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
+        let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool entry has invalid path".to_string())
         })?;
-        let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
+        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool entry has invalid description".to_string())
         })?;
-        let declaration = SavedFunctionDeclaration::from_persisted(&self.declaration)?;
+        let declaration = PrivateToolDeclaration::from_persisted(&self.declaration)?;
         // As in the relevance lane, an unreadable projection stays isolated to
         // its one function, which remains searchable by path and description.
-        let declaration_fields = SavedFunctionDeclarationFieldProjection::from_storage(
+        let declaration_fields = PrivateToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
             self.declaration_fields_json.as_deref(),
@@ -260,7 +259,7 @@ impl SavedFunctionEntryRow {
             .ok_or_else(|| {
                 Error::CorruptData("Private Tool entry has invalid definition revision".to_string())
             })?;
-        Ok(SavedFunctionEntry::new(
+        Ok(PrivateToolEntry::new(
             id,
             workspace_id,
             principal,
@@ -274,24 +273,24 @@ impl SavedFunctionEntryRow {
 }
 
 #[derive(Debug, FromRow)]
-struct SavedFunctionAuthoringRow {
+struct PrivateToolAuthoringRow {
     path: String,
     description: String,
     declaration: String,
 }
 
-impl SavedFunctionAuthoringRow {
-    fn decode(self) -> Result<SavedFunctionAuthoringMaterial, Error> {
-        let path = SavedFunctionPath::parse(&self.path).map_err(|_error| {
+impl PrivateToolAuthoringRow {
+    fn decode(self) -> Result<PrivateToolAuthoringMaterial, Error> {
+        let path = PrivateToolPath::parse(&self.path).map_err(|_error| {
             Error::CorruptData("Private Tool authoring material has invalid path".to_string())
         })?;
-        let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
+        let description = PrivateToolDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData(
                 "Private Tool authoring material has invalid description".to_string(),
             )
         })?;
-        let declaration = SavedFunctionDeclaration::from_persisted(&self.declaration)?;
-        Ok(SavedFunctionAuthoringMaterial::new(
+        let declaration = PrivateToolDeclaration::from_persisted(&self.declaration)?;
+        Ok(PrivateToolAuthoringMaterial::new(
             path,
             description,
             declaration,
@@ -300,7 +299,7 @@ impl SavedFunctionAuthoringRow {
 }
 
 #[derive(Debug, FromRow)]
-struct ExactSavedFunctionDescriptionRow {
+struct ExactPrivateToolDescriptionRow {
     id: String,
     path: String,
     description: String,
@@ -312,27 +311,23 @@ struct ExactSavedFunctionDescriptionRow {
     default_access_state: String,
 }
 
-impl ExactSavedFunctionDescriptionRow {
-    fn decode(self) -> Result<ExactSavedFunctionDescriptionMaterial, Error> {
-        let authoring = SavedFunctionAuthoringRow {
+impl ExactPrivateToolDescriptionRow {
+    fn decode(self) -> Result<ExactPrivateToolDescriptionMaterial, Error> {
+        let authoring = PrivateToolAuthoringRow {
             path: self.path,
             description: self.description,
             declaration: self.declaration,
         }
         .decode()?;
-        let source = SavedFunctionSource::parse(&self.source)
+        let source = PrivateToolSource::parse(&self.source)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
         let diagnostics = decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?;
-        let id = SavedFunctionId::parse(&self.id)
+        let id = PrivateToolId::parse(&self.id)
             .map_err(|_error| Error::CorruptData("Private Tool has an invalid id".to_string()))?;
-        Ok(ExactSavedFunctionDescriptionMaterial::new(
+        Ok(ExactPrivateToolDescriptionMaterial::new(
             id,
             authoring,
-            ExactSavedFunctionAuthoringMaterial::new(
-                source,
-                diagnostics,
-                self.diagnostics_truncated,
-            ),
+            ExactPrivateToolAuthoringMaterial::new(source, diagnostics, self.diagnostics_truncated),
             decode_revision(self.definition_revision)?,
             access_state_from_storage(&self.default_access_state)?,
         ))
@@ -345,7 +340,7 @@ struct LifecycleEventRow {
     actor_principal_id: String,
     actor_principal_kind: String,
     action: String,
-    target_saved_function_id: String,
+    target_private_tool_id: String,
     target_path: String,
     outcome: String,
     changed_field_paths: String,
@@ -365,11 +360,10 @@ impl LifecycleEventRow {
             actor_id,
             principal_kind_from_storage(&self.actor_principal_kind)?,
         );
-        let target_id =
-            SavedFunctionId::parse(&self.target_saved_function_id).map_err(|_error| {
-                Error::CorruptData("Private Tool lifecycle Event has invalid target".to_string())
-            })?;
-        let target_path = SavedFunctionPath::parse(&self.target_path).map_err(|_error| {
+        let target_id = PrivateToolId::parse(&self.target_private_tool_id).map_err(|_error| {
+            Error::CorruptData("Private Tool lifecycle Event has invalid target".to_string())
+        })?;
+        let target_path = PrivateToolPath::parse(&self.target_path).map_err(|_error| {
             Error::CorruptData("Private Tool lifecycle Event has invalid target path".to_string())
         })?;
         let changed_field_paths =
@@ -399,32 +393,32 @@ pub(crate) async fn find_current_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
-) -> Result<Option<SavedFunction>, Error> {
-    let row: Option<SavedFunctionRow> = transaction
+    path: &PrivateToolPath,
+) -> Result<Option<PrivateTool>, Error> {
+    let row: Option<PrivateToolRow> = transaction
         .fetch_optional(current_statement(workspace_id, principal, path))
         .await?;
-    row.map(SavedFunctionRow::decode).transpose()
+    row.map(PrivateToolRow::decode).transpose()
 }
 
 pub(crate) async fn hold_current_path_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
+    path: &PrivateToolPath,
 ) -> Result<bool, Error> {
     let statement = Query::update()
-        .table(SavedFunctionRecords::Table)
+        .table(PrivateToolRecords::Table)
         .value(
-            SavedFunctionRecords::DefinitionRevision,
-            Expr::col(SavedFunctionRecords::DefinitionRevision),
+            PrivateToolRecords::DefinitionRevision,
+            Expr::col(PrivateToolRecords::DefinitionRevision),
         )
-        .and_where(Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Path).eq(path.as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
 }
@@ -434,13 +428,12 @@ pub(crate) async fn hold_current_path_in_transaction(
 fn readable_owners(reader: &Principal, scope: crate::PrivateToolScope) -> Cond {
     let owners = Cond::any().add(
         Cond::all()
-            .add(Expr::col(SavedFunctionRecords::PrincipalId).eq(reader.id().as_str()))
-            .add(Expr::col(SavedFunctionRecords::PrincipalKind).eq(reader.kind().as_storage_str())),
+            .add(Expr::col(PrivateToolRecords::PrincipalId).eq(reader.id().as_str()))
+            .add(Expr::col(PrivateToolRecords::PrincipalKind).eq(reader.kind().as_storage_str())),
     );
     if scope == crate::PrivateToolScope::OwnAndAgents {
         owners.add(
-            Expr::col(SavedFunctionRecords::PrincipalKind)
-                .eq(PrincipalKind::Agent.as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(PrincipalKind::Agent.as_storage_str()),
         )
     } else {
         owners
@@ -461,11 +454,11 @@ pub(crate) async fn readable_page_in_transaction(
     // Match Rust string ordering regardless of the Postgres locale, so the
     // exclusive cursor predicate agrees with the page order.
     let id = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => Expr::col(SavedFunctionRecords::Id),
+        coral_db::DatabaseSystem::Sqlite => Expr::col(PrivateToolRecords::Id),
         coral_db::DatabaseSystem::Postgres => Expr::cust("\"id\" COLLATE \"C\""),
     };
     let mut condition = Cond::all()
-        .add(Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .add(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
         .add(readable_owners(reader, scope));
     if let Some(after) = after {
         condition = condition.add(id.clone().gt(after.as_str()));
@@ -474,13 +467,13 @@ pub(crate) async fn readable_page_in_transaction(
         .fetch_all(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Id,
-                    SavedFunctionRecords::Path,
-                    SavedFunctionRecords::PrincipalKind,
-                    SavedFunctionRecords::PrincipalId,
-                    SavedFunctionRecords::DefaultAccessState,
+                    PrivateToolRecords::Id,
+                    PrivateToolRecords::Path,
+                    PrivateToolRecords::PrincipalKind,
+                    PrivateToolRecords::PrincipalId,
+                    PrivateToolRecords::DefaultAccessState,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
                 .cond_where(condition)
                 .order_by_expr(id, Order::Asc)
                 .limit(u64::from(page_size) + 1)
@@ -490,8 +483,8 @@ pub(crate) async fn readable_page_in_transaction(
     rows.into_iter()
         .map(|(id, path, kind, principal, state)| {
             let corrupt = || Error::CorruptData("Private Tool has an invalid row".to_string());
-            let id = SavedFunctionId::parse(&id).map_err(|_error| corrupt())?;
-            let path = SavedFunctionPath::parse(&path).map_err(|_error| corrupt())?;
+            let id = PrivateToolId::parse(&id).map_err(|_error| corrupt())?;
+            let path = PrivateToolPath::parse(&path).map_err(|_error| corrupt())?;
             let agent = match PrincipalKind::from_storage_str(&kind).map_err(|_error| corrupt())? {
                 PrincipalKind::Agent => {
                     Some(PrincipalId::parse(&principal).map_err(|_error| corrupt())?)
@@ -522,18 +515,17 @@ pub(crate) async fn readable_defaults_in_transaction(
         .fetch_all(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Id,
-                    SavedFunctionRecords::DefaultAccessState,
+                    PrivateToolRecords::Id,
+                    PrivateToolRecords::DefaultAccessState,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
                 .cond_where(
                     Cond::all()
                         .add(
-                            Expr::col(SavedFunctionRecords::WorkspaceId)
-                                .eq(workspace_id.to_string()),
+                            Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()),
                         )
                         .add(
-                            Expr::col(SavedFunctionRecords::Id)
+                            Expr::col(PrivateToolRecords::Id)
                                 .is_in(tools.iter().map(|key| key.as_str().to_owned())),
                         )
                         .add(owners),
@@ -543,7 +535,7 @@ pub(crate) async fn readable_defaults_in_transaction(
         .await?;
     rows.into_iter()
         .map(|(id, state)| {
-            let id = SavedFunctionId::parse(&id).map_err(|_error| {
+            let id = PrivateToolId::parse(&id).map_err(|_error| {
                 Error::CorruptData("Private Tool has an invalid id".to_string())
             })?;
             Ok((id.tool_key(), access_state_from_storage(&state)?))
@@ -555,25 +547,23 @@ pub(crate) async fn list_current_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-) -> Result<Vec<SavedFunction>, Error> {
-    let rows: Vec<SavedFunctionRow> = transaction
+) -> Result<Vec<PrivateTool>, Error> {
+    let rows: Vec<PrivateToolRow> = transaction
         .fetch_all(
             Query::select()
-                .columns(saved_function_columns())
-                .from(SavedFunctionRecords::Table)
+                .columns(private_tool_columns())
+                .from(PrivateToolRecords::Table)
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
                 .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
-                .and_where(
-                    Expr::col(SavedFunctionRecords::PrincipalKind)
+                    Expr::col(PrivateToolRecords::PrincipalKind)
                         .eq(principal.kind().as_storage_str()),
                 )
-                .order_by(SavedFunctionRecords::Path, Order::Asc)
+                .order_by(PrivateToolRecords::Path, Order::Asc)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(SavedFunctionRow::decode).collect()
+    rows.into_iter().map(PrivateToolRow::decode).collect()
 }
 
 /// Reads one page of source-free summaries after `after` in path order.
@@ -581,28 +571,28 @@ pub(crate) async fn list_summary_page_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    after: Option<&SavedFunctionPath>,
+    after: Option<&PrivateToolPath>,
     page_size: u32,
-) -> Result<SavedFunctionPage, Error> {
+) -> Result<PrivateToolPage, Error> {
     // Match Rust string ordering regardless of the Postgres locale, so the
     // exclusive cursor predicate agrees with the page order. SQLite's TEXT
     // columns use BINARY by default.
     let path = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => Expr::col(SavedFunctionRecords::Path),
+        coral_db::DatabaseSystem::Sqlite => Expr::col(PrivateToolRecords::Path),
         coral_db::DatabaseSystem::Postgres => Expr::cust("\"path\" COLLATE \"C\""),
     };
     let mut statement = Query::select();
     statement
         .columns([
-            SavedFunctionRecords::Path,
-            SavedFunctionRecords::Description,
-            SavedFunctionRecords::SavedAtUnixNanos,
+            PrivateToolRecords::Path,
+            PrivateToolRecords::Description,
+            PrivateToolRecords::SavedAtUnixNanos,
         ])
-        .from(SavedFunctionRecords::Table)
-        .and_where(Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
+        .from(PrivateToolRecords::Table)
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
         )
         .order_by_expr(path.clone(), Order::Asc)
         // One extra row shows whether another page follows.
@@ -610,10 +600,10 @@ pub(crate) async fn list_summary_page_in_transaction(
     if let Some(after) = after {
         statement.and_where(path.gt(after.as_str()));
     }
-    let rows: Vec<SavedFunctionSummaryRow> = transaction.fetch_all(statement).await?;
+    let rows: Vec<PrivateToolSummaryRow> = transaction.fetch_all(statement).await?;
     let mut summaries = rows
         .into_iter()
-        .map(SavedFunctionSummaryRow::decode)
+        .map(PrivateToolSummaryRow::decode)
         .collect::<Result<Vec<_>, _>>()?;
     let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
     let next_after = if summaries.len() > page_size {
@@ -622,138 +612,123 @@ pub(crate) async fn list_summary_page_in_transaction(
     } else {
         None
     };
-    Ok(SavedFunctionPage::new(summaries, next_after))
+    Ok(PrivateToolPage::new(summaries, next_after))
 }
 
 pub(crate) async fn list_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-) -> Result<Vec<SavedFunctionSearchMaterial>, Error> {
-    let rows: Vec<SavedFunctionSearchRow> = transaction
+) -> Result<Vec<PrivateToolSearchMaterial>, Error> {
+    let rows: Vec<PrivateToolSearchRow> = transaction
         .fetch_all(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Id,
-                    SavedFunctionRecords::Path,
-                    SavedFunctionRecords::Description,
-                    SavedFunctionRecords::DefaultAccessState,
+                    PrivateToolRecords::Id,
+                    PrivateToolRecords::Path,
+                    PrivateToolRecords::Description,
+                    PrivateToolRecords::DefaultAccessState,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
                 .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
-                .and_where(
-                    Expr::col(SavedFunctionRecords::PrincipalKind)
+                    Expr::col(PrivateToolRecords::PrincipalKind)
                         .eq(principal.kind().as_storage_str()),
                 )
-                .order_by(SavedFunctionRecords::Path, Order::Asc)
+                .order_by(PrivateToolRecords::Path, Order::Asc)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(SavedFunctionSearchRow::decode)
-        .collect()
+    rows.into_iter().map(PrivateToolSearchRow::decode).collect()
 }
 
 pub(crate) async fn declaration_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
-) -> Result<Option<SavedFunctionDeclarationSearchMaterial>, Error> {
-    let row: Option<SavedFunctionDeclarationSearchRow> = transaction
+    path: &PrivateToolPath,
+) -> Result<Option<PrivateToolDeclarationSearchMaterial>, Error> {
+    let row: Option<PrivateToolDeclarationSearchRow> = transaction
         .fetch_optional(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Path,
-                    SavedFunctionRecords::DeclarationFieldsFormat,
-                    SavedFunctionRecords::DeclarationFieldsStatus,
-                    SavedFunctionRecords::DeclarationFieldsJson,
-                    SavedFunctionRecords::DeclarationFieldsFailure,
+                    PrivateToolRecords::Path,
+                    PrivateToolRecords::DeclarationFieldsFormat,
+                    PrivateToolRecords::DeclarationFieldsStatus,
+                    PrivateToolRecords::DeclarationFieldsJson,
+                    PrivateToolRecords::DeclarationFieldsFailure,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
                 .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
-                .and_where(
-                    Expr::col(SavedFunctionRecords::PrincipalKind)
+                    Expr::col(PrivateToolRecords::PrincipalKind)
                         .eq(principal.kind().as_storage_str()),
                 )
-                .and_where(Expr::col(SavedFunctionRecords::Path).eq(path.as_str()))
+                .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
                 .to_owned(),
         )
         .await?;
-    row.map(SavedFunctionDeclarationSearchRow::decode)
-        .transpose()
+    row.map(PrivateToolDeclarationSearchRow::decode).transpose()
 }
 
 pub(crate) async fn list_workspace_entries_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<Vec<SavedFunctionEntry>, Error> {
-    let rows: Vec<SavedFunctionEntryRow> = transaction
+) -> Result<Vec<PrivateToolEntry>, Error> {
+    let rows: Vec<PrivateToolEntryRow> = transaction
         .fetch_all(
             entries_statement()
-                .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(SavedFunctionEntryRow::decode)
-        .collect()
+    rows.into_iter().map(PrivateToolEntryRow::decode).collect()
 }
 
 pub(crate) async fn list_every_entry_in_transaction(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<SavedFunctionEntry>, Error> {
-    let rows: Vec<SavedFunctionEntryRow> = transaction.fetch_all(entries_statement()).await?;
-    rows.into_iter()
-        .map(SavedFunctionEntryRow::decode)
-        .collect()
+) -> Result<Vec<PrivateToolEntry>, Error> {
+    let rows: Vec<PrivateToolEntryRow> = transaction.fetch_all(entries_statement()).await?;
+    rows.into_iter().map(PrivateToolEntryRow::decode).collect()
 }
 
 pub(crate) async fn entry_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    id: &SavedFunctionId,
-) -> Result<Option<SavedFunctionEntry>, Error> {
-    let row: Option<SavedFunctionEntryRow> = transaction
+    id: &PrivateToolId,
+) -> Result<Option<PrivateToolEntry>, Error> {
+    let row: Option<PrivateToolEntryRow> = transaction
         .fetch_optional(
             entries_statement()
-                .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::Id).eq(id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::Id).eq(id.to_string()))
                 .to_owned(),
         )
         .await?;
-    row.map(SavedFunctionEntryRow::decode).transpose()
+    row.map(PrivateToolEntryRow::decode).transpose()
 }
 
 pub(crate) async fn index_revisions(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<crate::SavedFunctionIndexRevision>, Error> {
+) -> Result<Vec<crate::PrivateToolIndexRevision>, Error> {
     let rows: Vec<(String, String, i64)> = transaction
         .fetch_all(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Id,
-                    SavedFunctionRecords::WorkspaceId,
-                    SavedFunctionRecords::DefinitionRevision,
+                    PrivateToolRecords::Id,
+                    PrivateToolRecords::WorkspaceId,
+                    PrivateToolRecords::DefinitionRevision,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
                 .to_owned(),
         )
         .await?;
     rows.into_iter()
         .map(|(id, workspace, revision)| {
-            Ok(crate::SavedFunctionIndexRevision {
-                id: SavedFunctionId::parse(&id).map_err(|_error| {
+            Ok(crate::PrivateToolIndexRevision {
+                id: PrivateToolId::parse(&id).map_err(|_error| {
                     Error::CorruptData("invalid Private Tool index identity".to_string())
                 })?,
                 workspace_id: WorkspaceId::parse(&workspace).map_err(|_error| {
@@ -770,24 +745,24 @@ pub(crate) async fn index_revisions(
 fn entries_statement() -> sea_query::SelectStatement {
     Query::select()
         .columns([
-            SavedFunctionRecords::Id,
-            SavedFunctionRecords::WorkspaceId,
-            SavedFunctionRecords::PrincipalId,
-            SavedFunctionRecords::PrincipalKind,
-            SavedFunctionRecords::Path,
-            SavedFunctionRecords::Description,
-            SavedFunctionRecords::Declaration,
-            SavedFunctionRecords::DeclarationFieldsFormat,
-            SavedFunctionRecords::DeclarationFieldsStatus,
-            SavedFunctionRecords::DeclarationFieldsJson,
-            SavedFunctionRecords::DeclarationFieldsFailure,
-            SavedFunctionRecords::DefinitionRevision,
+            PrivateToolRecords::Id,
+            PrivateToolRecords::WorkspaceId,
+            PrivateToolRecords::PrincipalId,
+            PrivateToolRecords::PrincipalKind,
+            PrivateToolRecords::Path,
+            PrivateToolRecords::Description,
+            PrivateToolRecords::Declaration,
+            PrivateToolRecords::DeclarationFieldsFormat,
+            PrivateToolRecords::DeclarationFieldsStatus,
+            PrivateToolRecords::DeclarationFieldsJson,
+            PrivateToolRecords::DeclarationFieldsFailure,
+            PrivateToolRecords::DefinitionRevision,
         ])
-        .from(SavedFunctionRecords::Table)
-        .order_by(SavedFunctionRecords::WorkspaceId, Order::Asc)
-        .order_by(SavedFunctionRecords::PrincipalKind, Order::Asc)
-        .order_by(SavedFunctionRecords::PrincipalId, Order::Asc)
-        .order_by(SavedFunctionRecords::Path, Order::Asc)
+        .from(PrivateToolRecords::Table)
+        .order_by(PrivateToolRecords::WorkspaceId, Order::Asc)
+        .order_by(PrivateToolRecords::PrincipalKind, Order::Asc)
+        .order_by(PrivateToolRecords::PrincipalId, Order::Asc)
+        .order_by(PrivateToolRecords::Path, Order::Asc)
         .to_owned()
 }
 
@@ -795,31 +770,29 @@ pub(crate) async fn hydrate_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    target: &SavedFunctionSearchMaterial,
-) -> Result<Option<SavedFunctionAuthoringMaterial>, Error> {
-    let row: Option<SavedFunctionAuthoringRow> = transaction
+    target: &PrivateToolSearchMaterial,
+) -> Result<Option<PrivateToolAuthoringMaterial>, Error> {
+    let row: Option<PrivateToolAuthoringRow> = transaction
         .fetch_optional(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Path,
-                    SavedFunctionRecords::Description,
-                    SavedFunctionRecords::Declaration,
+                    PrivateToolRecords::Path,
+                    PrivateToolRecords::Description,
+                    PrivateToolRecords::Declaration,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
                 .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
-                .and_where(
-                    Expr::col(SavedFunctionRecords::PrincipalKind)
+                    Expr::col(PrivateToolRecords::PrincipalKind)
                         .eq(principal.kind().as_storage_str()),
                 )
-                .and_where(Expr::col(SavedFunctionRecords::Id).eq(target.id().to_string()))
-                .and_where(Expr::col(SavedFunctionRecords::Path).eq(target.path().as_str()))
+                .and_where(Expr::col(PrivateToolRecords::Id).eq(target.id().to_string()))
+                .and_where(Expr::col(PrivateToolRecords::Path).eq(target.path().as_str()))
                 .to_owned(),
         )
         .await?;
-    let material = row.map(SavedFunctionAuthoringRow::decode).transpose()?;
+    let material = row.map(PrivateToolAuthoringRow::decode).transpose()?;
     if material
         .as_ref()
         .is_some_and(|material| material.description() != target.description())
@@ -835,65 +808,62 @@ pub(crate) async fn exact_description_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
-) -> Result<Option<ExactSavedFunctionDescriptionMaterial>, Error> {
-    let row: Option<ExactSavedFunctionDescriptionRow> = transaction
+    path: &PrivateToolPath,
+) -> Result<Option<ExactPrivateToolDescriptionMaterial>, Error> {
+    let row: Option<ExactPrivateToolDescriptionRow> = transaction
         .fetch_optional(
             Query::select()
                 .columns([
-                    SavedFunctionRecords::Id,
-                    SavedFunctionRecords::Path,
-                    SavedFunctionRecords::Description,
-                    SavedFunctionRecords::Declaration,
-                    SavedFunctionRecords::Source,
-                    SavedFunctionRecords::DiagnosticsJson,
-                    SavedFunctionRecords::DiagnosticsTruncated,
-                    SavedFunctionRecords::DefinitionRevision,
-                    SavedFunctionRecords::DefaultAccessState,
+                    PrivateToolRecords::Id,
+                    PrivateToolRecords::Path,
+                    PrivateToolRecords::Description,
+                    PrivateToolRecords::Declaration,
+                    PrivateToolRecords::Source,
+                    PrivateToolRecords::DiagnosticsJson,
+                    PrivateToolRecords::DiagnosticsTruncated,
+                    PrivateToolRecords::DefinitionRevision,
+                    PrivateToolRecords::DefaultAccessState,
                 ])
-                .from(SavedFunctionRecords::Table)
+                .from(PrivateToolRecords::Table)
+                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
                 .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
-                .and_where(
-                    Expr::col(SavedFunctionRecords::PrincipalKind)
+                    Expr::col(PrivateToolRecords::PrincipalKind)
                         .eq(principal.kind().as_storage_str()),
                 )
-                .and_where(Expr::col(SavedFunctionRecords::Path).eq(path.as_str()))
+                .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
                 .to_owned(),
         )
         .await?;
-    row.map(ExactSavedFunctionDescriptionRow::decode)
-        .transpose()
+    row.map(ExactPrivateToolDescriptionRow::decode).transpose()
 }
 
 pub(crate) async fn insert_current(
     transaction: &mut Transaction<'_>,
-    function: &SavedFunction,
+    function: &PrivateTool,
 ) -> Result<(), Error> {
     let diagnostics_json = serde_json::to_string(function.diagnostics())?;
     let revision = stored_revision(function.revision)?;
     let statement = Query::insert()
-        .into_table(SavedFunctionRecords::Table)
+        .into_table(PrivateToolRecords::Table)
         .columns([
-            SavedFunctionRecords::Id,
-            SavedFunctionRecords::WorkspaceId,
-            SavedFunctionRecords::PrincipalId,
-            SavedFunctionRecords::PrincipalKind,
-            SavedFunctionRecords::Path,
-            SavedFunctionRecords::Description,
-            SavedFunctionRecords::Source,
-            SavedFunctionRecords::Declaration,
-            SavedFunctionRecords::DeclarationFieldsFormat,
-            SavedFunctionRecords::DeclarationFieldsStatus,
-            SavedFunctionRecords::DeclarationFieldsJson,
-            SavedFunctionRecords::DeclarationFieldsFailure,
-            SavedFunctionRecords::DiagnosticsJson,
-            SavedFunctionRecords::DiagnosticsTruncated,
-            SavedFunctionRecords::SavedAtUnixNanos,
-            SavedFunctionRecords::DefinitionRevision,
-            SavedFunctionRecords::DefaultAccessState,
+            PrivateToolRecords::Id,
+            PrivateToolRecords::WorkspaceId,
+            PrivateToolRecords::PrincipalId,
+            PrivateToolRecords::PrincipalKind,
+            PrivateToolRecords::Path,
+            PrivateToolRecords::Description,
+            PrivateToolRecords::Source,
+            PrivateToolRecords::Declaration,
+            PrivateToolRecords::DeclarationFieldsFormat,
+            PrivateToolRecords::DeclarationFieldsStatus,
+            PrivateToolRecords::DeclarationFieldsJson,
+            PrivateToolRecords::DeclarationFieldsFailure,
+            PrivateToolRecords::DiagnosticsJson,
+            PrivateToolRecords::DiagnosticsTruncated,
+            PrivateToolRecords::SavedAtUnixNanos,
+            PrivateToolRecords::DefinitionRevision,
+            PrivateToolRecords::DefaultAccessState,
         ])
         .values_panic([
             Expr::val(function.id().to_string()),
@@ -904,7 +874,7 @@ pub(crate) async fn insert_current(
             Expr::val(function.description().as_str()),
             Expr::val(function.source().as_str()),
             Expr::val(function.declaration().as_str()),
-            Expr::val(SavedFunctionDeclarationFieldProjection::format()),
+            Expr::val(PrivateToolDeclarationFieldProjection::format()),
             Expr::val(function.declaration_field_projection().status()),
             Expr::val(
                 function
@@ -927,37 +897,37 @@ pub(crate) async fn insert_current(
 
 pub(crate) async fn replace_current(
     transaction: &mut Transaction<'_>,
-    previous: &SavedFunction,
-    replacement: &SavedFunction,
+    previous: &PrivateTool,
+    replacement: &PrivateTool,
 ) -> Result<(), Error> {
     let diagnostics_json = serde_json::to_string(replacement.diagnostics())?;
     let previous_revision = stored_revision(previous.revision)?;
     let replacement_revision = stored_revision(replacement.revision)?;
     let statement = Query::update()
-        .table(SavedFunctionRecords::Table)
+        .table(PrivateToolRecords::Table)
         .values([
             (
-                SavedFunctionRecords::Description,
+                PrivateToolRecords::Description,
                 Expr::val(replacement.description().as_str()),
             ),
             (
-                SavedFunctionRecords::Source,
+                PrivateToolRecords::Source,
                 Expr::val(replacement.source().as_str()),
             ),
             (
-                SavedFunctionRecords::Declaration,
+                PrivateToolRecords::Declaration,
                 Expr::val(replacement.declaration().as_str()),
             ),
             (
-                SavedFunctionRecords::DeclarationFieldsFormat,
-                Expr::val(SavedFunctionDeclarationFieldProjection::format()),
+                PrivateToolRecords::DeclarationFieldsFormat,
+                Expr::val(PrivateToolDeclarationFieldProjection::format()),
             ),
             (
-                SavedFunctionRecords::DeclarationFieldsStatus,
+                PrivateToolRecords::DeclarationFieldsStatus,
                 Expr::val(replacement.declaration_field_projection().status()),
             ),
             (
-                SavedFunctionRecords::DeclarationFieldsJson,
+                PrivateToolRecords::DeclarationFieldsJson,
                 Expr::val(
                     replacement
                         .declaration_field_projection()
@@ -967,43 +937,43 @@ pub(crate) async fn replace_current(
                 ),
             ),
             (
-                SavedFunctionRecords::DeclarationFieldsFailure,
+                PrivateToolRecords::DeclarationFieldsFailure,
                 Expr::val(replacement.declaration_field_projection().failure_reason()),
             ),
             (
-                SavedFunctionRecords::DiagnosticsJson,
+                PrivateToolRecords::DiagnosticsJson,
                 Expr::val(diagnostics_json),
             ),
             (
-                SavedFunctionRecords::DiagnosticsTruncated,
+                PrivateToolRecords::DiagnosticsTruncated,
                 Expr::val(replacement.diagnostics_truncated()),
             ),
             (
-                SavedFunctionRecords::SavedAtUnixNanos,
+                PrivateToolRecords::SavedAtUnixNanos,
                 Expr::val(replacement.saved_at_unix_nanos()),
             ),
             (
-                SavedFunctionRecords::DefaultAccessState,
+                PrivateToolRecords::DefaultAccessState,
                 Expr::val(replacement.default_access_state().as_storage_str()),
             ),
             (
-                SavedFunctionRecords::DefinitionRevision,
+                PrivateToolRecords::DefinitionRevision,
                 Expr::val(replacement_revision),
             ),
         ])
         .and_where(
-            Expr::col(SavedFunctionRecords::WorkspaceId).eq(previous.workspace_id().to_string()),
+            Expr::col(PrivateToolRecords::WorkspaceId).eq(previous.workspace_id().to_string()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Id).eq(previous.id().to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(previous.id().to_string()))
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalId).eq(previous.principal().id().as_str()),
+            Expr::col(PrivateToolRecords::PrincipalId).eq(previous.principal().id().as_str()),
         )
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalKind)
+            Expr::col(PrivateToolRecords::PrincipalKind)
                 .eq(previous.principal().kind().as_storage_str()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Path).eq(previous.path().as_str()))
-        .and_where(Expr::col(SavedFunctionRecords::DefinitionRevision).eq(previous_revision))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(previous.path().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::DefinitionRevision).eq(previous_revision))
         .to_owned();
     if transaction.execute(statement).await? != 1 {
         return Err(Error::CorruptData(
@@ -1015,24 +985,24 @@ pub(crate) async fn replace_current(
 
 pub(crate) async fn delete_current(
     transaction: &mut Transaction<'_>,
-    function: &SavedFunction,
+    function: &PrivateTool,
 ) -> Result<(), Error> {
     let statement = Query::delete()
-        .from_table(SavedFunctionRecords::Table)
+        .from_table(PrivateToolRecords::Table)
         .and_where(
-            Expr::col(SavedFunctionRecords::WorkspaceId).eq(function.workspace_id().to_string()),
+            Expr::col(PrivateToolRecords::WorkspaceId).eq(function.workspace_id().to_string()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Id).eq(function.id().to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(function.id().to_string()))
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalId).eq(function.principal().id().as_str()),
+            Expr::col(PrivateToolRecords::PrincipalId).eq(function.principal().id().as_str()),
         )
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalKind)
+            Expr::col(PrivateToolRecords::PrincipalKind)
                 .eq(function.principal().kind().as_storage_str()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Path).eq(function.path().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(function.path().as_str()))
         .and_where(
-            Expr::col(SavedFunctionRecords::DefinitionRevision)
+            Expr::col(PrivateToolRecords::DefinitionRevision)
                 .eq(stored_revision(function.revision)?),
         )
         .to_owned();
@@ -1049,8 +1019,8 @@ pub(crate) struct NewLifecycleEvent<'a> {
     pub(crate) actor: &'a Principal,
     pub(crate) private_user_id: Option<&'a PrincipalId>,
     pub(crate) action: LifecycleAction,
-    pub(crate) target_id: &'a SavedFunctionId,
-    pub(crate) target_path: &'a SavedFunctionPath,
+    pub(crate) target_id: &'a PrivateToolId,
+    pub(crate) target_path: &'a PrivateToolPath,
     pub(crate) changed_field_paths: &'a [&'a str],
     pub(crate) occurred_at_unix_nanos: i64,
     pub(crate) trace_id: &'a TraceId,
@@ -1062,20 +1032,20 @@ pub(crate) async fn insert_lifecycle_event(
 ) -> Result<(), Error> {
     let changed_field_paths = serde_json::to_string(event.changed_field_paths)?;
     let statement = Query::insert()
-        .into_table(SavedFunctionLifecycleEvents::Table)
+        .into_table(PrivateToolLifecycleEvents::Table)
         .columns([
-            SavedFunctionLifecycleEvents::Id,
-            SavedFunctionLifecycleEvents::WorkspaceId,
-            SavedFunctionLifecycleEvents::ActorPrincipalId,
-            SavedFunctionLifecycleEvents::ActorPrincipalKind,
-            SavedFunctionLifecycleEvents::PrivateUserId,
-            SavedFunctionLifecycleEvents::Action,
-            SavedFunctionLifecycleEvents::TargetSavedFunctionId,
-            SavedFunctionLifecycleEvents::TargetPath,
-            SavedFunctionLifecycleEvents::Outcome,
-            SavedFunctionLifecycleEvents::ChangedFieldPaths,
-            SavedFunctionLifecycleEvents::OccurredAtUnixNanos,
-            SavedFunctionLifecycleEvents::TraceId,
+            PrivateToolLifecycleEvents::Id,
+            PrivateToolLifecycleEvents::WorkspaceId,
+            PrivateToolLifecycleEvents::ActorPrincipalId,
+            PrivateToolLifecycleEvents::ActorPrincipalKind,
+            PrivateToolLifecycleEvents::PrivateUserId,
+            PrivateToolLifecycleEvents::Action,
+            PrivateToolLifecycleEvents::TargetPrivateToolId,
+            PrivateToolLifecycleEvents::TargetPath,
+            PrivateToolLifecycleEvents::Outcome,
+            PrivateToolLifecycleEvents::ChangedFieldPaths,
+            PrivateToolLifecycleEvents::OccurredAtUnixNanos,
+            PrivateToolLifecycleEvents::TraceId,
         ])
         .values_panic([
             Expr::val(uuid::Uuid::new_v4().hyphenated().to_string()),
@@ -1103,40 +1073,35 @@ pub(crate) async fn list_lifecycle_events_in_transaction(
 ) -> Result<Vec<AdministrativeLifecycleEvent>, Error> {
     let statement = Query::select()
         .columns([
-            SavedFunctionLifecycleEvents::WorkspaceId,
-            SavedFunctionLifecycleEvents::ActorPrincipalId,
-            SavedFunctionLifecycleEvents::ActorPrincipalKind,
-            SavedFunctionLifecycleEvents::Action,
-            SavedFunctionLifecycleEvents::TargetSavedFunctionId,
-            SavedFunctionLifecycleEvents::TargetPath,
-            SavedFunctionLifecycleEvents::Outcome,
-            SavedFunctionLifecycleEvents::ChangedFieldPaths,
-            SavedFunctionLifecycleEvents::OccurredAtUnixNanos,
-            SavedFunctionLifecycleEvents::TraceId,
+            PrivateToolLifecycleEvents::WorkspaceId,
+            PrivateToolLifecycleEvents::ActorPrincipalId,
+            PrivateToolLifecycleEvents::ActorPrincipalKind,
+            PrivateToolLifecycleEvents::Action,
+            PrivateToolLifecycleEvents::TargetPrivateToolId,
+            PrivateToolLifecycleEvents::TargetPath,
+            PrivateToolLifecycleEvents::Outcome,
+            PrivateToolLifecycleEvents::ChangedFieldPaths,
+            PrivateToolLifecycleEvents::OccurredAtUnixNanos,
+            PrivateToolLifecycleEvents::TraceId,
         ])
-        .from(SavedFunctionLifecycleEvents::Table)
+        .from(PrivateToolLifecycleEvents::Table)
+        .and_where(Expr::col(PrivateToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(
-            Expr::col(SavedFunctionLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()),
-        )
-        .and_where(
-            Expr::col(SavedFunctionLifecycleEvents::PrivateUserId)
+            Expr::col(PrivateToolLifecycleEvents::PrivateUserId)
                 .eq(principal.id().as_str())
-                .or(Expr::col(SavedFunctionLifecycleEvents::PrivateUserId)
+                .or(Expr::col(PrivateToolLifecycleEvents::PrivateUserId)
                     .is_null()
                     .and(
-                        Expr::col(SavedFunctionLifecycleEvents::ActorPrincipalId)
+                        Expr::col(PrivateToolLifecycleEvents::ActorPrincipalId)
                             .eq(principal.id().as_str()),
                     )
                     .and(
-                        Expr::col(SavedFunctionLifecycleEvents::ActorPrincipalKind)
+                        Expr::col(PrivateToolLifecycleEvents::ActorPrincipalKind)
                             .eq(principal.kind().as_storage_str()),
                     )),
         )
-        .order_by(
-            SavedFunctionLifecycleEvents::OccurredAtUnixNanos,
-            Order::Asc,
-        )
-        .order_by(SavedFunctionLifecycleEvents::Id, Order::Asc)
+        .order_by(PrivateToolLifecycleEvents::OccurredAtUnixNanos, Order::Asc)
+        .order_by(PrivateToolLifecycleEvents::Id, Order::Asc)
         .to_owned();
     let rows: Vec<LifecycleEventRow> = transaction.fetch_all(statement).await?;
     rows.into_iter().map(LifecycleEventRow::decode).collect()
@@ -1155,11 +1120,11 @@ pub async fn select_source_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
-) -> Result<Option<SavedFunctionSelection>, Error> {
+    path: &PrivateToolPath,
+) -> Result<Option<PrivateToolSelection>, Error> {
     find_current_in_transaction(transaction, workspace_id, principal, path)
         .await
-        .map(|function| function.as_ref().map(SavedFunctionSelection::from_current))
+        .map(|function| function.as_ref().map(PrivateToolSelection::from_current))
 }
 
 /// Holds a selected definition unchanged through the caller's acceptance commit.
@@ -1176,39 +1141,38 @@ pub async fn hold_source_selection_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    snapshot: &SavedFunctionSelection,
+    snapshot: &PrivateToolSelection,
 ) -> Result<bool, Error> {
     let statement = Query::update()
-        .table(SavedFunctionRecords::Table)
+        .table(PrivateToolRecords::Table)
         .value(
-            SavedFunctionRecords::DefinitionRevision,
-            Expr::col(SavedFunctionRecords::DefinitionRevision),
+            PrivateToolRecords::DefinitionRevision,
+            Expr::col(PrivateToolRecords::DefinitionRevision),
         )
-        .and_where(Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SavedFunctionRecords::Id).eq(snapshot.id.to_string()))
-        .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(snapshot.id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Path).eq(snapshot.path.as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(snapshot.path.as_str()))
         .and_where(
-            Expr::col(SavedFunctionRecords::DefinitionRevision)
+            Expr::col(PrivateToolRecords::DefinitionRevision)
                 .eq(stored_revision(snapshot.revision)?),
         )
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
 }
 
-fn decode_diagnostics(json: &str, truncated: bool) -> Result<Vec<SavedFunctionDiagnostic>, Error> {
-    let diagnostics: Vec<SavedFunctionDiagnostic> =
-        serde_json::from_str(json).map_err(|error| {
-            Error::CorruptData(format!("Private Tool has invalid diagnostics: {error}"))
-        })?;
-    if diagnostics.len() > SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT
+fn decode_diagnostics(json: &str, truncated: bool) -> Result<Vec<PrivateToolDiagnostic>, Error> {
+    let diagnostics: Vec<PrivateToolDiagnostic> = serde_json::from_str(json).map_err(|error| {
+        Error::CorruptData(format!("Private Tool has invalid diagnostics: {error}"))
+    })?;
+    if diagnostics.len() > PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT
         || diagnostics.iter().any(|diagnostic| {
-            diagnostic.message().len() > SAVED_FUNCTION_DIAGNOSTIC_MESSAGE_MAX_BYTES
+            diagnostic.message().len() > PRIVATE_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES
         })
-        || (truncated && diagnostics.len() != SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT)
+        || (truncated && diagnostics.len() != PRIVATE_TOOL_DIAGNOSTIC_MAX_COUNT)
     {
         return Err(Error::CorruptData(
             "Private Tool diagnostics exceed their stored bounds".to_string(),
@@ -1220,39 +1184,39 @@ fn decode_diagnostics(json: &str, truncated: bool) -> Result<Vec<SavedFunctionDi
 fn current_statement(
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &SavedFunctionPath,
+    path: &PrivateToolPath,
 ) -> sea_query::SelectStatement {
     Query::select()
-        .columns(saved_function_columns())
-        .from(SavedFunctionRecords::Table)
-        .and_where(Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SavedFunctionRecords::PrincipalId).eq(principal.id().as_str()))
+        .columns(private_tool_columns())
+        .from(PrivateToolRecords::Table)
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(
-            Expr::col(SavedFunctionRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
         )
-        .and_where(Expr::col(SavedFunctionRecords::Path).eq(path.as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
         .to_owned()
 }
 
-fn saved_function_columns() -> [SavedFunctionRecords; 17] {
+fn private_tool_columns() -> [PrivateToolRecords; 17] {
     [
-        SavedFunctionRecords::Id,
-        SavedFunctionRecords::WorkspaceId,
-        SavedFunctionRecords::PrincipalId,
-        SavedFunctionRecords::PrincipalKind,
-        SavedFunctionRecords::Path,
-        SavedFunctionRecords::Description,
-        SavedFunctionRecords::Source,
-        SavedFunctionRecords::Declaration,
-        SavedFunctionRecords::DeclarationFieldsFormat,
-        SavedFunctionRecords::DeclarationFieldsStatus,
-        SavedFunctionRecords::DeclarationFieldsJson,
-        SavedFunctionRecords::DeclarationFieldsFailure,
-        SavedFunctionRecords::DiagnosticsJson,
-        SavedFunctionRecords::DiagnosticsTruncated,
-        SavedFunctionRecords::SavedAtUnixNanos,
-        SavedFunctionRecords::DefinitionRevision,
-        SavedFunctionRecords::DefaultAccessState,
+        PrivateToolRecords::Id,
+        PrivateToolRecords::WorkspaceId,
+        PrivateToolRecords::PrincipalId,
+        PrivateToolRecords::PrincipalKind,
+        PrivateToolRecords::Path,
+        PrivateToolRecords::Description,
+        PrivateToolRecords::Source,
+        PrivateToolRecords::Declaration,
+        PrivateToolRecords::DeclarationFieldsFormat,
+        PrivateToolRecords::DeclarationFieldsStatus,
+        PrivateToolRecords::DeclarationFieldsJson,
+        PrivateToolRecords::DeclarationFieldsFailure,
+        PrivateToolRecords::DiagnosticsJson,
+        PrivateToolRecords::DiagnosticsTruncated,
+        PrivateToolRecords::SavedAtUnixNanos,
+        PrivateToolRecords::DefinitionRevision,
+        PrivateToolRecords::DefaultAccessState,
     ]
 }
 

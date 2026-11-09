@@ -13,7 +13,7 @@ function identifierNames(sourceFile) {
 // The authored source with `edits` applied and private source after it: the
 // line break ends any trailing comment, and the semicolon ends any
 // unterminated last statement.
-function editedSavedFunctionBody(sourceFile, edits, defaultName) {
+function editedPrivateToolBody(sourceFile, edits, defaultName) {
   const edited = editedSource(sourceFile.text, edits);
   return {
     text: `${edited.text}\n;return () => ${defaultName};`,
@@ -22,9 +22,9 @@ function editedSavedFunctionBody(sourceFile, edits, defaultName) {
 }
 
 // `extraEdits` carry the functions the module saves, at module offsets.
-function savedFunctionRuntimeBody(source, target, extraEdits) {
+function privateToolRuntimeBody(source, target, extraEdits) {
   const sourceFile = ts.createSourceFile(
-    'saved_function.ts',
+    'private_tool.ts',
     source,
     target,
     true,
@@ -45,7 +45,7 @@ function savedFunctionRuntimeBody(source, target, extraEdits) {
   const usedNames = identifierNames(sourceFile);
   function privateName() {
     for (let suffix = 1; ; suffix += 1) {
-      const name = `__coralSavedFunctionDefaultExport_${suffix}`;
+      const name = `__coralPrivateToolDefaultExport_${suffix}`;
       if (!usedNames.has(name)) {
         usedNames.add(name);
         return name;
@@ -145,7 +145,7 @@ function savedFunctionRuntimeBody(source, target, extraEdits) {
   }
   edits.push(...extraEdits);
   edits.sort((left, right) => left.start - right.start);
-  return editedSavedFunctionBody(sourceFile, edits, defaultName);
+  return editedPrivateToolBody(sourceFile, edits, defaultName);
 }
 
 const COMPLETE_ROOT_GLOBAL = '__coralCompleteRoot';
@@ -157,8 +157,8 @@ const COMPLETE_ROOT_GLOBAL = '__coralCompleteRoot';
 // innermost frame of this script at a call is the authored call site. A call
 // performs the Tool, whose body is the default export of its module once that
 // module has initialized. Module code then sets
-// `__coralSavedFunctionDefaults[index]`.
-function coralRootPrelude(builtinTools, savedFunctions) {
+// `__coralPrivateToolDefaults[index]`.
+function coralRootPrelude(builtinTools, privateTools) {
   if (
     !Array.isArray(builtinTools) ||
     builtinTools.some(
@@ -168,21 +168,21 @@ function coralRootPrelude(builtinTools, savedFunctions) {
     throw new Error('Built-in Tools must be identifiers');
   }
   const linkedPaths = JSON.stringify(
-    savedFunctions.map((savedFunction) => savedFunction.pathSegments),
+    privateTools.map((privateTool) => privateTool.pathSegments),
   );
   return `    const __coralCompleteRoot = globalThis.${COMPLETE_ROOT_GLOBAL};
     Reflect.deleteProperty(globalThis, "${COMPLETE_ROOT_GLOBAL}");
     const __coralLinkedPaths = ${linkedPaths};
-    const __coralSavedFunctionDefaults = Object.create(null);
+    const __coralPrivateToolDefaults = Object.create(null);
     for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
-      Object.defineProperty(__coralSavedFunctionDefaults, __coralIndex, {
+      Object.defineProperty(__coralPrivateToolDefaults, __coralIndex, {
         value: undefined,
         enumerable: false,
         writable: true,
         configurable: false,
       });
     }
-    Object.preventExtensions(__coralSavedFunctionDefaults);
+    Object.preventExtensions(__coralPrivateToolDefaults);
     const __coralBuildPrivateTools = (__coralPrivateTool) => {
       const __coralFunctionRoot = Object.create(null);
       const __coralFunctionNamespaces = [__coralFunctionRoot];
@@ -204,7 +204,7 @@ function coralRootPrelude(builtinTools, savedFunctions) {
           __coralFunctionParent = __coralFunctionParent[__coralSegment];
         }
         const __coralBody = () => {
-          const __coralDefault = __coralSavedFunctionDefaults[__coralIndex];
+          const __coralDefault = __coralPrivateToolDefaults[__coralIndex];
           if (__coralDefault === undefined) {
             throw new TypeError(__coralCallPath + " is called before its module initialized");
           }
@@ -245,18 +245,18 @@ function coralRootPrelude(builtinTools, savedFunctions) {
 
 // `saves` names the private carrier and holds the edits that carry what the
 // Program body and each module save.
-function linkedProgramSource(body, savedFunctions, builtinTools, target, saves) {
+function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
   const pathKeys = new Set();
-  for (const savedFunction of savedFunctions) {
+  for (const privateTool of privateTools) {
     if (
-      !Array.isArray(savedFunction.pathSegments) ||
-      savedFunction.pathSegments.length === 0 ||
-      savedFunction.pathSegments.some((segment) => typeof segment !== 'string') ||
-      typeof savedFunction.source !== 'string'
+      !Array.isArray(privateTool.pathSegments) ||
+      privateTool.pathSegments.length === 0 ||
+      privateTool.pathSegments.some((segment) => typeof segment !== 'string') ||
+      typeof privateTool.source !== 'string'
     ) {
       throw new Error('Private Tool closure contains an invalid source entry');
     }
-    const key = savedFunction.pathSegments.join('.');
+    const key = privateTool.pathSegments.join('.');
     if (pathKeys.has(key)) {
       throw new Error('Private Tool closure contains a duplicate path');
     }
@@ -270,10 +270,10 @@ function linkedProgramSource(body, savedFunctions, builtinTools, target, saves) 
     }
   }
 
-  const modules = savedFunctions.map((savedFunction, index) => ({
-    ...savedFunction,
+  const modules = privateTools.map((privateTool, index) => ({
+    ...privateTool,
     index,
-    body: savedFunctionRuntimeBody(savedFunction.source, target, saves.moduleEdits[index]),
+    body: privateToolRuntimeBody(privateTool.source, target, saves.moduleEdits[index]),
   }));
   const sourceParts = [];
   const authoredMappings = [];
@@ -286,26 +286,26 @@ function linkedProgramSource(body, savedFunctions, builtinTools, target, saves) 
   }
 
   append(`(async () => {
-    ${savedFunctionCarrierDeclaration(saves.carrier)}
-${coralRootPrelude(builtinTools, savedFunctions)}
+    ${privateToolCarrierDeclaration(saves.carrier)}
+${coralRootPrelude(builtinTools, privateTools)}
 `);
 
   for (const module of modules) {
-    append(`    __coralSavedFunctionDefaults[${module.index}] = await (async () => {\n`);
-    const savedFunctionStart = generatedLine;
+    append(`    __coralPrivateToolDefaults[${module.index}] = await (async () => {\n`);
+    const privateToolStart = generatedLine;
     append(module.body.text);
     for (const mapping of module.body.mappings) {
       authoredMappings.push({
         ...mapping,
-        generatedLine: savedFunctionStart + mapping.generatedLine,
-        source: `Saved Function coral.private.${module.pathSegments.join('.')}`,
+        generatedLine: privateToolStart + mapping.generatedLine,
+        source: `Private Tool coral.private.${module.pathSegments.join('.')}`,
       });
     }
     append(`
     })();
     if (
-      typeof __coralSavedFunctionDefaults[${module.index}] !== "function"
-      || typeof __coralSavedFunctionDefaults[${module.index}]() !== "function"
+      typeof __coralPrivateToolDefaults[${module.index}] !== "function"
+      || typeof __coralPrivateToolDefaults[${module.index}]() !== "function"
     ) {
       throw new TypeError("Private Tool default export is not callable");
     }

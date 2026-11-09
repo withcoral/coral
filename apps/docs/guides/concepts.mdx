@@ -86,7 +86,7 @@ You can add the same provider multiple times, with different account settings. F
 - Ask, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
 - Block, the tool cannot be called, and is hidden from the agent altogether
 
-Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addTool`, `coral.updateTool` and `coral.removeTool` are Allow too, because they change only the caller's own saved functions. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
+Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addTool`, `coral.updateTool` and `coral.removeTool` are Allow too, because they change only the caller's own private tools. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
 
 A program can read an added provider's policy with `coral.getPolicy`. A workspace owner's program can change it with `coral.updatePolicy`, which needs approval until you set another policy for it. `updatePolicy` cannot change the policy of the built-in provider's tools.
 
@@ -110,7 +110,7 @@ const issues = await coral.providers.github.issues.list({ state: "open" });
 coral.emit({ open: issues.data.length });
 ```
 
-It can also call the principal's [saved functions](#saved-functions) under `coral.private`.
+It can also call the principal's [private tools](#private-tools) under `coral.private`.
 
 It never sees your credentials.
 
@@ -130,9 +130,9 @@ The **Coral UI** is Coral's web interface. The desktop app and a shared server b
 
 Use the Coral UI to add [providers](#providers), connect [accounts](#account-setting), set [policy](#tool-policy), approve tool calls, and inspect [runs](#runs). A workspace's overview summarizes your recent activity over the last 24 hours, 7 days or 30 days: how your calls ended, which tools were called or stopped, approval decisions, and how many bytes your runs added to or saved from your context. In a workspace you own, it includes your agents' runs. Your agents do not use the Coral UI. They reach a workspace through its MCP endpoint.
 
-## Saved functions
+## Private tools
 
-A **saved function** is reusable TypeScript that a [principal](#principals) saves at a path under `coral.private` in one [workspace](#workspaces).
+A **private tool** is reusable TypeScript that a [principal](#principals) saves at a path under `coral.private` in one [workspace](#workspaces).
 
 ```ts
 await coral.private.triage.staleIssues({ days: 30 });
@@ -140,7 +140,7 @@ await coral.private.triage.staleIssues({ days: 30 });
 
 A [program](#programs) calls one the same way it calls a [tool](#tools). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
 
-A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.addTool`. Coral saves the function with the top-level declarations it uses. `coral.addTool` fails when the path is already taken. A program replaces a saved function with `coral.updateTool` and removes one with `coral.removeTool`. All three act only on the principal's own saved functions.
+A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.addTool`. Coral saves the function with the top-level declarations it uses. `coral.addTool` fails when the path is already taken. A program replaces a private tool with `coral.updateTool` and removes one with `coral.removeTool`. All three act only on the principal's own private tools.
 
 ```ts
 async function staleIssues({ days }: { days: number }) {
@@ -159,6 +159,6 @@ await coral.addTool({
 return issues;
 ```
 
-Later programs call it as `coral.private.triage.staleIssues`. The program that saves it cannot call the new version by that path. A program that replaces a saved function calls the version that was current when it started.
+Later programs call it as `coral.private.triage.staleIssues`. The program that saves it cannot call the new version by that path. A program that replaces a private tool calls the version that was current when it started.
 
-A user's saved functions are private to that user.
+A user's private tools are private to that user.

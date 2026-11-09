@@ -34,7 +34,7 @@ describe('toolOwner', () => {
 describe('privateToolPath', () => {
   it.each([
     ['coral.private.github.repos', 'github.repos'],
-    // A retained Run keeps the old root of Saved Functions.
+    // A retained Run keeps the old root of Private Tools.
     ['coral.functions.github.repos', 'github.repos'],
     ['coral.private.', null],
     ['coral.providers.github.repos', null],

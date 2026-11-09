@@ -156,7 +156,7 @@ impl AccessLifecycleModule {
         }
         coral_provider::account::retire_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
-        coral_functions::delete_current_for_access_removal_in_transaction(tx, context, &prepared)
+        coral_tools::delete_current_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
         coral_auth::user_tokens::retire_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
@@ -180,7 +180,7 @@ pub enum Error {
     Provider(#[from] coral_provider::Error),
     /// Current function cleanup failed.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Functions(#[from] coral_tools::Error),
     /// Refresh Grant retirement failed.
     #[error(transparent)]
     Auth(#[from] coral_auth::Error),

@@ -27,7 +27,7 @@ struct Fixture {
     /// The index the fixture's saves and deletes notify.
     index: coral_search::SearchIndex,
     runs: coral_run::RunModule,
-    functions: coral_functions::SavedFunctionModule,
+    functions: coral_tools::PrivateToolModule,
     user: coral_workspace::AuthenticatedUser,
     actor: AuthenticatedPrincipal,
     workspace: coral_workspace::WorkspaceId,
@@ -66,11 +66,11 @@ impl Fixture {
         path: &str,
         description: &str,
         source: &str,
-    ) -> Result<coral_functions::SavedFunction, Error> {
-        let save = coral_functions::SavedFunctionSave::new(
-            coral_functions::SavedFunctionPath::parse(path)?,
-            coral_functions::SavedFunctionDescription::parse(description)?,
-            coral_functions::SavedFunctionSource::parse(source)?,
+    ) -> Result<coral_tools::PrivateTool, Error> {
+        let save = coral_tools::PrivateToolSave::new(
+            coral_tools::PrivateToolPath::parse(path)?,
+            coral_tools::PrivateToolDescription::parse(description)?,
+            coral_tools::PrivateToolSource::parse(source)?,
         );
         let search = coral_search::UniversalSearchModule::new(
             self.tasks.database.clone(),
@@ -104,13 +104,13 @@ impl Fixture {
         &self,
         call: &AttributedCommand,
         path: &str,
-    ) -> Result<coral_functions::SavedFunctionId, Error> {
+    ) -> Result<coral_tools::PrivateToolId, Error> {
         let deleted = self
             .functions
             .delete(
                 &function_context(call),
                 &call.workspace_id,
-                &coral_functions::SavedFunctionPath::parse(path)?,
+                &coral_tools::PrivateToolPath::parse(path)?,
             )
             .await?;
         self.index
@@ -143,10 +143,10 @@ impl Fixture {
         install_private_provider(&database, &workspaces, &user, workspace.id()).await;
         let actor = AuthenticatedPrincipal::user(user.clone());
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
-        let functions = coral_functions::SavedFunctionModule::new(
+        let functions = coral_tools::PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
@@ -373,7 +373,7 @@ async fn describe_bounds_call_paths_by_utf8_bytes() {
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Check the Call Path bound");
     // 18 ASCII bytes of prefix, then two bytes per character: 521 characters.
-    // A Provider path, because a Saved Function path stops at 256 bytes of its own.
+    // A Provider path, because a Private Tool path stops at 256 bytes of its own.
     let at_bound = format!("coral.providers.x.{}", "é".repeat(503));
     let over_bound = format!("{at_bound}a");
     assert_eq!((at_bound.len(), over_bound.len()), (1024, 1025));
@@ -448,16 +448,16 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
     fixture
         .functions
         .save(
-            &coral_functions::SavedFunctionChangeContext::new(
+            &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(member),
                 wall_time(),
                 coral_test_support::trace('1'),
             ),
             &fixture.workspace,
-            coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse("privateAnswer").unwrap(),
-                coral_functions::SavedFunctionDescription::parse("Private answer").unwrap(),
-                coral_functions::SavedFunctionSource::parse("export default () => 42;").unwrap(),
+            coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("privateAnswer").unwrap(),
+                coral_tools::PrivateToolDescription::parse("Private answer").unwrap(),
+                coral_tools::PrivateToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await
@@ -490,7 +490,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
 }
 
 #[tokio::test]
-async fn saved_function_descriptions_survive_replacement_and_deletion() {
+async fn private_tool_descriptions_survive_replacement_and_deletion() {
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Keep this exact description");
@@ -1239,7 +1239,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
         .get(
             &fixture.actor,
             &fixture.workspace,
-            &coral_functions::SavedFunctionPath::parse("current").unwrap(),
+            &coral_tools::PrivateToolPath::parse("current").unwrap(),
         )
         .await
         .unwrap();
@@ -2244,9 +2244,9 @@ impl Fixture {
     }
 }
 
-/// `call`'s Principal at the wall clock, as a Saved Function change names it.
-fn function_context(call: &AttributedCommand) -> coral_functions::SavedFunctionChangeContext {
-    coral_functions::SavedFunctionChangeContext::new(
+/// `call`'s Principal at the wall clock, as a Private Tool change names it.
+fn function_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
+    coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
         wall_time(),
         coral_test_support::trace('f'),

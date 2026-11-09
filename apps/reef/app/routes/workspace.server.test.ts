@@ -44,7 +44,7 @@ function fakeCoral(summaries: number[] = []) {
       }),
     },
     memberships: { listWorkspaceOwners: () => ({ owners: [] }) },
-    savedFunctions: { listSavedFunctions: () => ({ savedFunctions: [] }) },
+    privateTools: { listPrivateTools: () => ({ privateTools: [] }) },
     activity: {
       browseActivityRoots: () => ({ roots: [] }),
       browseRequiredActions: () => ({ actions: [] }),

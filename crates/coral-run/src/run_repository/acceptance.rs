@@ -1,7 +1,7 @@
 //! The accepted Program package, its linked source snapshots, and `run.started`.
 
 use coral_db::Transaction;
-use coral_functions::SavedFunctionSelection;
+use coral_tools::PrivateToolSelection;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 use sqlx::FromRow;
@@ -73,7 +73,7 @@ pub(crate) async fn insert_acceptance(
     holder: &CoralInstanceId,
     source: &ProgramSource,
     package: &ProgramPackage,
-    linked: &[SavedFunctionSelection],
+    linked: &[PrivateToolSelection],
     compilation_timeout: std::time::Duration,
 ) -> Result<bool, Error> {
     let program_source_max_bytes = stored_usize(PROGRAM_SOURCE_MAX_BYTES)?;
@@ -231,11 +231,11 @@ fn stored_usize(value: usize) -> Result<i64, Error> {
 }
 
 #[derive(Iden)]
-pub(super) enum ProgramRunSavedFunctionSnapshots {
+enum ProgramRunPrivateToolSnapshots {
     Table,
     RunId,
     WorkspaceId,
-    SavedFunctionId,
+    PrivateToolId,
     Path,
     Source,
 }
@@ -243,16 +243,16 @@ pub(super) enum ProgramRunSavedFunctionSnapshots {
 async fn insert_run_snapshot(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
-    snapshot: &SavedFunctionSelection,
+    snapshot: &PrivateToolSelection,
 ) -> Result<(), Error> {
     let statement = Query::insert()
-        .into_table(ProgramRunSavedFunctionSnapshots::Table)
+        .into_table(ProgramRunPrivateToolSnapshots::Table)
         .columns([
-            ProgramRunSavedFunctionSnapshots::RunId,
-            ProgramRunSavedFunctionSnapshots::WorkspaceId,
-            ProgramRunSavedFunctionSnapshots::SavedFunctionId,
-            ProgramRunSavedFunctionSnapshots::Path,
-            ProgramRunSavedFunctionSnapshots::Source,
+            ProgramRunPrivateToolSnapshots::RunId,
+            ProgramRunPrivateToolSnapshots::WorkspaceId,
+            ProgramRunPrivateToolSnapshots::PrivateToolId,
+            ProgramRunPrivateToolSnapshots::Path,
+            ProgramRunPrivateToolSnapshots::Source,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),

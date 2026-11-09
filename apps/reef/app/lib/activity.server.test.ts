@@ -83,14 +83,14 @@ const tool = {
 type StoredLocation = {
   document:
     | { case: 'program'; value: Record<string, never> }
-    | { case: 'savedFunction'; value: string }
+    | { case: 'privateTool'; value: string }
     | { case: undefined; value?: undefined }
   line: number
   column: number
 }
-const linkedSnapshot = `${workspace}/savedFunctions/00000000-0000-4000-8000-000000000009`
+const linkedSnapshot = `${workspace}/privateTools/00000000-0000-4000-8000-000000000009`
 const inSnapshot: StoredLocation = {
-  document: { case: 'savedFunction', value: linkedSnapshot },
+  document: { case: 'privateTool', value: linkedSnapshot },
   line: 2,
   column: 11,
 }
@@ -329,9 +329,9 @@ function catalog(
         })),
       }),
     },
-    savedFunctions: {
-      listSavedFunctions: () => ({
-        savedFunctions: (options.functions ?? []).map((path) => ({ path })),
+    privateTools: {
+      listPrivateTools: () => ({
+        privateTools: (options.functions ?? []).map((path) => ({ path })),
       }),
     },
   }
@@ -467,7 +467,7 @@ function runDetail(
           submittedSource: 'return secretSource;',
           linkedFunctions: [
             {
-              savedFunction: 'saved-before-deletion',
+              privateTool: 'saved-before-deletion',
               path: 'old',
               source: 'export default () => 41',
             },
@@ -1271,15 +1271,15 @@ describe('hierarchical activity through the private server interface', () => {
   })
   it.each([
     {
-      name: 'links your own Saved Function hit to the current function',
+      name: 'links your own Private Tool hit to the current function',
       functions: ['github.openIssuesByLabel'],
       href: `/${workspace}/functions/github.openIssuesByLabel`,
       reads: 1,
     },
-    { name: 'leaves a deleted Saved Function without a link', functions: [], href: null, reads: 1 },
+    { name: 'leaves a deleted Private Tool without a link', functions: [], href: null, reads: 1 },
     {
       // Reef opens only your own functions, and the Agent owns the function that its search found.
-      name: "leaves an Agent's Saved Function hit without a link",
+      name: "leaves an Agent's Private Tool hit without a link",
       functions: ['github.openIssuesByLabel'],
       agentRun: true,
       href: null,
@@ -1292,10 +1292,10 @@ describe('hierarchical activity through the private server interface', () => {
       catalog({ namespaces: ['github'], functions }),
     )
     const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
-    const [savedFunction, merge] = searchHits(page)
-    expect(savedFunction).toMatchObject({ kind: 'saved_function', currentHref: href })
+    const [privateTool, merge] = searchHits(page)
+    expect(privateTool).toMatchObject({ kind: 'private_tool', currentHref: href })
     expect(merge.currentHref).toBe(`/${workspace}/providers/${githubProvider}/tools/pulls.merge`)
-    expect(loaded(calls, 'listSavedFunctions')).toBe(reads)
+    expect(loaded(calls, 'listPrivateTools')).toBe(reads)
   })
   it('links a historical description to the current tool', async () => {
     const { api } = coral(
@@ -1394,7 +1394,7 @@ describe('hierarchical activity through the private server interface', () => {
     for (const record of shown)
       expect(record).toMatchObject({
         sourceLocation: {
-          document: { kind: 'saved_function', savedFunction: linkedSnapshot },
+          document: { kind: 'private_tool', privateTool: linkedSnapshot },
           line: 2,
           column: 11,
         },

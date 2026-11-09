@@ -1,5 +1,5 @@
 [package]
-name = "coral-functions"
+name = "coral-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ publish = false
 workspace = true
 
 [features]
-# Test-only faults in persisted Saved Functions. Dev-dependencies enable this;
+# Test-only faults in persisted Private Tools. Dev-dependencies enable this;
 # production crates never do.
 test-fixtures = []
 

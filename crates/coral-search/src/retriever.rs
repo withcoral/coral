@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_functions::SavedFunctionSearchMaterial;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, LoadedGenerations};
+use coral_tools::PrivateToolSearchMaterial;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceId};
 
 use crate::{
@@ -47,7 +47,7 @@ pub(crate) struct RequestContext<'a> {
 #[derive(Clone)]
 pub(crate) enum EntityRef {
     Tool(ToolRef),
-    SavedFunction(SavedFunctionRef),
+    PrivateTool(PrivateToolRef),
 }
 
 /// A Tool of a Provider's active Generation, with what hydration needs:
@@ -63,11 +63,11 @@ pub(crate) struct ToolRef {
     near_spellings: Arc<[String]>,
 }
 
-/// A Saved Function of the requesting Principal, with the near-spellings its
+/// A Private Tool of the requesting Principal, with the near-spellings its
 /// ranking matched.
 #[derive(Clone)]
-pub(crate) struct SavedFunctionRef {
-    material: SavedFunctionSearchMaterial,
+pub(crate) struct PrivateToolRef {
+    material: PrivateToolSearchMaterial,
     call_path: CallPath,
     near_spellings: Arc<[String]>,
 }
@@ -75,7 +75,7 @@ pub(crate) struct SavedFunctionRef {
 /// The Call Path of an entity a retriever ranked, as a span field.
 pub(crate) struct RankedCallPath<'a>(pub(crate) &'a CallPath);
 
-/// The search index holds only the Tools and Saved Functions Coral serves,
+/// The search index holds only the Tools and Private Tools Coral serves,
 /// so a ranked entity's Call Path names one of them.
 impl coral_telemetry::safe::Identifier for RankedCallPath<'_> {}
 
@@ -89,13 +89,13 @@ impl EntityRef {
     pub(crate) const fn call_path(&self) -> &CallPath {
         match self {
             Self::Tool(tool) => &tool.call_path,
-            Self::SavedFunction(function) => &function.call_path,
+            Self::PrivateTool(function) => &function.call_path,
         }
     }
 }
 
 /// Every Entity of one kind the Principal may see, and how many units they
-/// come from: Providers for Tools, Saved Functions for functions.
+/// come from: Providers for Tools, Private Tools for functions.
 pub(crate) struct Listing {
     pub(crate) entities: Vec<EntityRef>,
     pub(crate) units: usize,

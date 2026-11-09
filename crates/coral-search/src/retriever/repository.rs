@@ -9,8 +9,8 @@ use std::collections::HashSet;
 
 use coral_catalog::{ProviderGenerationId, ToolKey};
 use coral_db::{DatabaseSystem, Error, Transaction};
-use coral_functions::SavedFunctionId;
 use coral_provider::ProviderId;
+use coral_tools::PrivateToolId;
 use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
@@ -26,7 +26,7 @@ enum SearchEntities {
     Table,
     WorkspaceId,
     Kind,
-    SavedFunctionId,
+    PrivateToolId,
     PrincipalId,
     PrincipalKind,
 }
@@ -42,7 +42,7 @@ enum SearchIndexStates {
 }
 
 const TOOL: &str = "provider_tool";
-const SAVED_FUNCTION: &str = "saved_function";
+const PRIVATE_TOOL: &str = "private_tool";
 const COMPLETE: &str = "complete";
 
 /// The rows one kind's statement may rank, as its visibility step decided.
@@ -59,8 +59,8 @@ enum Scope<'a> {
         excluded: &'a [(String, String)],
         named: &'a [String],
     },
-    /// The Principal's own Saved Functions.
-    SavedFunctions {
+    /// The Principal's own Private Tools.
+    PrivateTools {
         workspace_id: &'a WorkspaceId,
         principal: &'a Principal,
     },
@@ -69,7 +69,7 @@ enum Scope<'a> {
 impl Scope<'_> {
     const fn workspace_id(&self) -> &WorkspaceId {
         match self {
-            Self::Tools { workspace_id, .. } | Self::SavedFunctions { workspace_id, .. } => {
+            Self::Tools { workspace_id, .. } | Self::PrivateTools { workspace_id, .. } => {
                 workspace_id
             }
         }
@@ -119,11 +119,11 @@ impl Scope<'_> {
                      AND NOT EXISTS ({excluded})"
                 )
             }
-            Self::SavedFunctions { principal, .. } => {
+            Self::PrivateTools { principal, .. } => {
                 let principal_id = binds.push(principal.id().as_str().to_string());
                 let principal_kind = binds.push(principal.kind().as_storage_str().to_string());
                 format!(
-                    "d.workspace_id = {workspace} AND d.kind = '{SAVED_FUNCTION}' \
+                    "d.workspace_id = {workspace} AND d.kind = '{PRIVATE_TOOL}' \
                      AND d.principal_id = {principal_id} \
                      AND d.principal_kind = {principal_kind}"
                 )
@@ -157,7 +157,7 @@ struct RankedRow {
     call_path: String,
     provider_id: Option<String>,
     tool_key: Option<String>,
-    saved_function_id: Option<String>,
+    private_tool_id: Option<String>,
     #[sqlx(flatten)]
     matched: RowMatch,
 }
@@ -182,10 +182,10 @@ pub(super) struct RankedTool {
     pub(super) matched: RowMatch,
 }
 
-/// One ranked Saved Function: its identity, its Call Path, and what its
+/// One ranked Private Tool: its identity, its Call Path, and what its
 /// statement saw.
 pub(super) struct RankedFunction {
-    pub(super) saved_function_id: SavedFunctionId,
+    pub(super) private_tool_id: PrivateToolId,
     pub(super) call_path: CallPath,
     pub(super) matched: RowMatch,
 }
@@ -266,7 +266,7 @@ pub(super) async fn rank_tools(
     })
 }
 
-/// Ranks the Principal's own Saved Functions for the plan, best first, at
+/// Ranks the Principal's own Private Tools for the plan, best first, at
 /// most `limit`.
 pub(super) async fn rank_functions(
     transaction: &mut Transaction<'_>,
@@ -275,7 +275,7 @@ pub(super) async fn rank_functions(
     plan: &QueryPlan,
     limit: usize,
 ) -> Result<Ranking<RankedFunction>, RetrievalError> {
-    let scope = Scope::SavedFunctions {
+    let scope = Scope::PrivateTools {
         workspace_id,
         principal,
     };
@@ -283,12 +283,12 @@ pub(super) async fn rank_functions(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let saved_function_id = row.saved_function_id.ok_or(RetrievalError::Corrupt(
-                "a Saved Function row has no function id",
+            let private_tool_id = row.private_tool_id.ok_or(RetrievalError::Corrupt(
+                "a Private Tool row has no function id",
             ))?;
             Ok(RankedFunction {
-                saved_function_id: SavedFunctionId::parse(&saved_function_id)
-                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Saved Function id"))?,
+                private_tool_id: PrivateToolId::parse(&private_tool_id)
+                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Private Tool id"))?,
                 call_path: call_path(&row.call_path)?,
                 matched: row.matched,
             })
@@ -352,12 +352,12 @@ async fn rank_postgres(
     let limit = binds.push(limit_value(limit));
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
-             SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.saved_function_id, \
+             SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.private_tool_id, \
                     d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.tsv_length \
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
-         SELECT c.call_path, c.provider_id, c.tool_key, c.saved_function_id, \
+         SELECT c.call_path, c.provider_id, c.tool_key, c.private_tool_id, \
                 c.qualified_name, c.title, CAST({phrase} AS BIGINT) AS phrase_points \
          FROM candidates AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
@@ -491,7 +491,7 @@ async fn rank_sqlite(
     let named = scope.named_key(&mut binds, "d");
     let limit = binds.push(limit_value(limit));
     let sql = format!(
-        "SELECT d.call_path, d.provider_id, d.tool_key, d.saved_function_id, \
+        "SELECT d.call_path, d.provider_id, d.tool_key, d.private_tool_id, \
                 d.qualified_name, d.title, CAST({phrase} AS BIGINT) AS phrase_points \
          FROM search_entities_fts AS f \
          JOIN search_entities AS d ON d.workspace_id = f.workspace_id AND d.doc_id = f.doc_id \
@@ -666,7 +666,7 @@ pub(super) async fn complete_generations(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// The Principal's Saved Functions that have a row in the index.
+/// The Principal's Private Tools that have a row in the index.
 pub(super) async fn indexed_functions(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -675,10 +675,10 @@ pub(super) async fn indexed_functions(
     let rows: Vec<(String,)> = transaction
         .fetch_all(
             Query::select()
-                .column(SearchEntities::SavedFunctionId)
+                .column(SearchEntities::PrivateToolId)
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
+                .and_where(Expr::col(SearchEntities::Kind).eq(PRIVATE_TOOL))
                 .and_where(Expr::col(SearchEntities::PrincipalId).eq(principal.id().as_str()))
                 .and_where(
                     Expr::col(SearchEntities::PrincipalKind).eq(principal.kind().as_storage_str()),

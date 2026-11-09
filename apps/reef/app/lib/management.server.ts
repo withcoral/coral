@@ -16,7 +16,7 @@ import { ProviderService, ProviderSetupService } from '@/generated/coral/managem
 import { ProviderAccountService } from '@/generated/coral/management/v1/account_pb'
 import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
-import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
+import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { UsageDataService } from '@/generated/coral/management/v1/usage_data_pb'
 import { managementTransportForRequest } from './coral-request.server'
@@ -42,7 +42,7 @@ export function management(context: Readonly<RouterContextProvider>) {
     setups: createClient(ProviderSetupService, providerTransport),
     accounts: createClient(ProviderAccountService, providerTransport),
     policies: createClient(ToolPolicyService, transport),
-    savedFunctions: createClient(SavedFunctionService, transport),
+    privateTools: createClient(PrivateToolService, transport),
     releases: createClient(ReleaseService, transport),
     usageData: createClient(UsageDataService, transport),
   }

@@ -11,9 +11,9 @@
  *
  * Built from those captures, to show each branch:
  * - `complete`: the captured page as Coral writes it now.
- * - `mixed`: a Saved Function hit, a guidance match, a matched input, and flags.
+ * - `mixed`: a Private Tool hit, a guidance match, a matched input, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
- * - `sparse`: a Saved Function hit, then a hit whose signature and description are empty.
+ * - `sparse`: a Private Tool hit, then a hit whose signature and description are empty.
  * - `earlierShape`: the response before Search Hits. The parser rejects it.
  */
 const githubHits = [
@@ -149,7 +149,7 @@ const subIssuesHit = {
 }
 
 const functionHit = {
-  kind: 'saved_function',
+  kind: 'private_tool',
   call_path: 'coral.private.github.openIssuesByLabel',
   signature_line:
     'openIssuesByLabel(input: { owner: string; repo: string; label: string; limit?: number }): Promise<Array<{ number: number; title: string; url: string }>>',
@@ -194,7 +194,7 @@ const untrimmed = {
   has_more: true,
   retriever_statuses: [
     {
-      retriever: 'saved_function',
+      retriever: 'private_tool',
       state: 'empty',
       coverage: {
         eligible_units: 0,
@@ -310,7 +310,7 @@ const describeTool = {
 }
 
 const describeFunction = {
-  kind: 'saved_function',
+  kind: 'private_tool',
   call_path: 'coral.private.github.openIssuesByLabel',
   description:
     'Lists the open issues of one repository that carry a label, newest first, with number, title and URL. Use it before triage to see what waits under a label.',

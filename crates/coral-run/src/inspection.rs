@@ -29,11 +29,11 @@ impl Default for RunInspection {
     }
 }
 
-/// Exact accepted linked source; never today's Saved Function definition.
+/// Exact accepted linked source; never today's Private Tool definition.
 #[derive(Debug)]
 pub struct SourceSnapshot {
-    /// Retained Saved Function identity.
-    pub saved_function_id: String,
+    /// Retained Private Tool identity.
+    pub private_tool_id: String,
     /// Retained callable path.
     pub path: String,
     /// Exact accepted TypeScript source.

@@ -2,7 +2,7 @@
 //!
 //! This private Adapter crate gives `coral-run` narrow compiler and execution
 //! Interfaces. [`ProgramCompiler::compile`] lowers one TypeScript async-function
-//! body; [`ProgramCompiler::prepare_saved_function`] emits one self-contained
+//! body; [`ProgramCompiler::prepare_private_tool`] emits one self-contained
 //! callable declaration; linked compilation packages one exact current Saved
 //! Function source closure. [`ProgramExecutor::execute`] runs emitted JavaScript in a
 //! fresh V8 isolate. Run execution installs one narrow [`ProgramHost`] through
@@ -296,9 +296,9 @@ pub trait ProgramHost: Send + Sync {
 pub enum AuthoredSource {
     /// The submitted Program body.
     Program,
-    /// One Saved Function linked into the package, by its path relative to
+    /// One Private Tool linked into the package, by its path relative to
     /// `coral.private`.
-    SavedFunction {
+    PrivateTool {
         /// Dotted path, such as `debug.fetch`.
         path: String,
     },
@@ -311,7 +311,7 @@ pub enum AuthoredSource {
 /// called member name of a property call such as `console.log(...)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredLocation {
-    /// Program or linked Saved Function source.
+    /// Program or linked Private Tool source.
     pub source: AuthoredSource,
     /// One-based authored line.
     pub line: u32,
@@ -453,15 +453,15 @@ impl CompiledProgram {
     }
 }
 
-/// One callable-rooted field projected from an emitted Saved Function declaration.
+/// One callable-rooted field projected from an emitted Private Tool declaration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SavedFunctionDeclarationField {
+pub struct PrivateToolDeclarationField {
     path: String,
     text: String,
 }
 
-impl SavedFunctionDeclarationField {
+impl PrivateToolDeclarationField {
     /// Returns the readable JavaScript path rooted at `input` or `result`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -475,22 +475,22 @@ impl SavedFunctionDeclarationField {
     }
 }
 
-/// Authoring output retained for one accepted Saved Function source.
+/// Authoring output retained for one accepted Private Tool source.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SavedFunctionCompilation {
+pub struct PrivateToolCompilation {
     declaration: String,
-    declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
+    declaration_field_projection: Result<Vec<PrivateToolDeclarationField>, String>,
     diagnostics: Vec<CompilerDiagnostic>,
-    references: Vec<SavedFunctionReference>,
+    references: Vec<PrivateToolReference>,
     not_data: Option<String>,
 }
 
-impl SavedFunctionCompilation {
+impl PrivateToolCompilation {
     pub(crate) const fn new(
         declaration: String,
-        declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
+        declaration_field_projection: Result<Vec<PrivateToolDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
-        references: Vec<SavedFunctionReference>,
+        references: Vec<PrivateToolReference>,
         not_data: Option<String>,
     ) -> Self {
         Self {
@@ -521,7 +521,7 @@ impl SavedFunctionCompilation {
     /// # Errors
     ///
     /// Returns a stable private reason when traversal could not prepare fields.
-    pub fn declaration_fields(&self) -> Result<&[SavedFunctionDeclarationField], &str> {
+    pub fn declaration_fields(&self) -> Result<&[PrivateToolDeclarationField], &str> {
         self.declaration_field_projection
             .as_deref()
             .map_err(String::as_str)
@@ -533,23 +533,23 @@ impl SavedFunctionCompilation {
         &self.diagnostics
     }
 
-    /// Returns directly named runtime Saved Function references in path order.
+    /// Returns directly named runtime Private Tool references in path order.
     #[must_use]
-    pub fn references(&self) -> &[SavedFunctionReference] {
+    pub fn references(&self) -> &[PrivateToolReference] {
         &self.references
     }
 }
 
-/// One statically named runtime Saved Function reference.
+/// One statically named runtime Private Tool reference.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SavedFunctionReference {
+pub struct PrivateToolReference {
     path: String,
     line: u64,
     column: u64,
 }
 
-impl SavedFunctionReference {
+impl PrivateToolReference {
     /// Returns the dotted path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -569,15 +569,15 @@ impl SavedFunctionReference {
     }
 }
 
-/// One exact Saved Function source supplied for linked compilation.
+/// One exact Private Tool source supplied for linked compilation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LinkedSavedFunctionSource {
+pub struct LinkedPrivateToolSource {
     path_segments: Vec<String>,
     source: String,
 }
 
-impl LinkedSavedFunctionSource {
+impl LinkedPrivateToolSource {
     /// Builds one validated-domain source input for the compiler Adapter.
     #[must_use]
     pub const fn new(path_segments: Vec<String>, source: String) -> Self {
@@ -588,18 +588,18 @@ impl LinkedSavedFunctionSource {
     }
 }
 
-/// The Call Paths one Saved Function module or Program body names
+/// The Call Paths one Private Tool module or Program body names
 /// directly, as typed preparation and Program Admission need them.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SavedFunctionCallPaths {
-    functions: Vec<SavedFunctionReference>,
+pub struct PrivateToolCallPaths {
+    functions: Vec<PrivateToolReference>,
     tools: ToolReferences,
 }
 
-impl SavedFunctionCallPaths {
+impl PrivateToolCallPaths {
     /// Returns the directly named `coral.private` paths.
     #[must_use]
-    pub fn functions(&self) -> &[SavedFunctionReference] {
+    pub fn functions(&self) -> &[PrivateToolReference] {
         &self.functions
     }
 
@@ -678,7 +678,7 @@ impl UnknownToolCall {
 }
 
 /// One declaration that types a Call Path under `coral`: a Tool or a
-/// Saved Function at `coral.private`.
+/// Private Tool at `coral.private`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallableDeclaration {
@@ -689,10 +689,10 @@ pub struct CallableDeclaration {
 impl CallableDeclaration {
     /// Builds one declaration for its path segments: relative to `coral` for
     /// a Tool, such as `providers.github.repos.get`, and to
-    /// `coral.private` for a Saved Function.
+    /// `coral.private` for a Private Tool.
     ///
     /// The declaration is self-contained TypeScript with one
-    /// `export default` callable, as describe and Saved Function save emit it.
+    /// `export default` callable, as describe and Private Tool save emit it.
     #[must_use]
     pub const fn new(path_segments: Vec<String>, declaration: String) -> Self {
         Self {
@@ -704,7 +704,7 @@ impl CallableDeclaration {
 
 /// The Built-in Tools a Program calls directly on `coral`, by Tool Key, such
 /// as `search` for `coral.search`. A Program is compiled with them, so it
-/// calls exactly the ones it was admitted with, and a Saved Function is typed
+/// calls exactly the ones it was admitted with, and a Private Tool is typed
 /// with them.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct BuiltinTools(Vec<String>);
@@ -722,7 +722,7 @@ impl BuiltinTools {
     }
 }
 
-/// The declarations that type the `coral` namespace for one Saved Function
+/// The declarations that type the `coral` namespace for one Private Tool
 /// save.
 ///
 /// A root without declarations stays `any`. A typed root holds only the
@@ -742,7 +742,7 @@ struct TypedTools {
 }
 
 impl CoralDeclarations {
-    /// Types nothing yet. A typed Saved Function declaration above
+    /// Types nothing yet. A typed Private Tool declaration above
     /// `declaration_max_bytes` is saved untyped.
     #[must_use]
     pub const fn new(declaration_max_bytes: usize) -> Self {
@@ -755,7 +755,7 @@ impl CoralDeclarations {
 
     /// Types `coral.providers` and the Built-in Tools on `coral` from the Tools the
     /// caller can call. `references` are what
-    /// [`ProgramCompiler::saved_function_call_paths`] found in the same
+    /// [`ProgramCompiler::private_tool_call_paths`] found in the same
     /// source.
     #[must_use]
     pub fn with_tools(
@@ -770,7 +770,7 @@ impl CoralDeclarations {
         self
     }
 
-    /// Types `coral.private` from stored Saved Function declarations.
+    /// Types `coral.private` from stored Private Tool declarations.
     #[must_use]
     pub fn with_functions(mut self, functions: Vec<CallableDeclaration>) -> Self {
         self.functions = Some(functions);
@@ -861,18 +861,18 @@ pub enum Error {
     /// Source changed the shape of Coral's private async entry wrapper.
     #[error("Program source is not one async-function body")]
     InvalidProgramBody,
-    /// Saved Function source did not define one import-free default callable.
+    /// Private Tool source did not define one import-free default callable.
     #[error("Private Tool authoring failed: {0}")]
-    InvalidSavedFunction(String),
+    InvalidPrivateTool(String),
     /// Source nesting overflowed the compiler's stack.
     #[error("TypeScript source is nested too deeply to compile")]
     SourceTooDeeplyNested,
-    /// Program or Saved Function source requested a forbidden authoring capability.
+    /// Program or Private Tool source requested a forbidden authoring capability.
     #[error("TypeScript source uses a forbidden capability: {0}")]
     ForbiddenCapability(String),
-    /// Program source did not directly name supported Saved Function paths.
+    /// Program source did not directly name supported Private Tool paths.
     #[error("Private Tool reference analysis failed at {line}:{column}: {message}")]
-    InvalidSavedFunctionReference {
+    InvalidPrivateToolReference {
         /// Clear safe reason.
         message: String,
         /// One-based authored source line.
@@ -936,10 +936,10 @@ impl Error {
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
             Self::Compilation { .. } => "compilation",
             Self::InvalidProgramBody { .. } => "invalid_program_body",
-            Self::InvalidSavedFunction { .. } => "invalid_saved_function",
+            Self::InvalidPrivateTool { .. } => "invalid_private_tool",
             Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
-            Self::InvalidSavedFunctionReference { .. } => "invalid_saved_function_reference",
+            Self::InvalidPrivateToolReference { .. } => "invalid_private_tool_reference",
             Self::InvalidFunctionSave { .. } => "invalid_function_save",
             Self::CompilerProtocol { .. } => "compiler_protocol",
             Self::InvalidSourceMap { .. } => "invalid_source_map",
@@ -984,10 +984,10 @@ impl From<Error> for CompileFailure {
             Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
             authored @ (Error::Compilation { .. }
             | Error::InvalidProgramBody
-            | Error::InvalidSavedFunction(_)
+            | Error::InvalidPrivateTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. }
+            | Error::InvalidPrivateToolReference { .. }
             | Error::InvalidFunctionSave(_)
             | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
             other => Self::Failed(other.code()),

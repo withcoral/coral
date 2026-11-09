@@ -5,7 +5,7 @@
 // replaces the `source` value with a private carrier of that text. Only the Program host reads a carrier, so no
 // authored value reaches the Tool as a source.
 
-const SAVE_FUNCTION_SOURCE_GLOBAL = '__coralSavedFunctionSource';
+const SAVE_FUNCTION_SOURCE_GLOBAL = '__coralPrivateToolSource';
 
 // The Built-in Tools that take a function as `source`. The Program host
 // in runtime/program_host_bootstrap.js lists them too; change both.
@@ -67,7 +67,7 @@ function isFunctionInitializer(initializer) {
 // The top-level statements that declare the function `symbol` names, or
 // undefined unless it is a top-level function declaration or a top-level
 // `const` bound to an arrow or function expression.
-function savedFunctionStatements(symbol, sourceFile, container) {
+function privateToolStatements(symbol, sourceFile, container) {
   const declarations = (symbol?.declarations ?? []).filter(
     (declaration) => declaration.getSourceFile() === sourceFile,
   );
@@ -208,12 +208,12 @@ function isSourceProperty(property) {
   );
 }
 
-// The edits that carry each saved function's module to its literal
+// The edits that carry each private tool's module to its literal
 // saving call in `sourceFile`, or the first refusal.
 // `container` holds the source's top-level statements, `sourceName` and
 // `scope` name it in a refusal, and `carrier` names the private function that
 // wraps each module.
-function savedFunctionExtraction({
+function privateToolExtraction({
   sourceFile,
   program,
   container,
@@ -253,7 +253,7 @@ function savedFunctionExtraction({
     } else {
       return refuse(sourceValueRefusal(property, scope), property);
     }
-    const statements = savedFunctionStatements(symbol, sourceFile, container);
+    const statements = privateToolStatements(symbol, sourceFile, container);
     if (statements === undefined) {
       return refuse(
         `${name.text} is not a function declared at the top level of ${scope}; declare it there with function or const`,
@@ -327,7 +327,7 @@ function savedFunctionExtraction({
 
 // A carrier name no authored source declares, so no authored binding
 // shadows it.
-function savedFunctionCarrierName(sourceFiles) {
+function privateToolCarrierName(sourceFiles) {
   const used = new Set(sourceFiles.flatMap((sourceFile) => [...identifierNames(sourceFile)]));
   for (let suffix = 1; ; suffix += 1) {
     const name = `${SAVE_FUNCTION_SOURCE_GLOBAL}_${suffix}`;
@@ -337,13 +337,13 @@ function savedFunctionCarrierName(sourceFiles) {
 
 // Private source that takes the host's carrier constructor before any
 // authored code runs, so no Program can reach it.
-function savedFunctionCarrierDeclaration(carrier) {
+function privateToolCarrierDeclaration(carrier) {
   return `const ${carrier} = globalThis.${SAVE_FUNCTION_SOURCE_GLOBAL}; Reflect.deleteProperty(globalThis, "${SAVE_FUNCTION_SOURCE_GLOBAL}");`;
 }
 
 function programExtraction(sourceFile, program, authoredMappings, carrier) {
   const entry = unwrapParentheses(sourceFile.statements[0].expression.expression);
-  const extraction = savedFunctionExtraction({
+  const extraction = privateToolExtraction({
     sourceFile,
     program,
     container: entry.body,
@@ -363,8 +363,8 @@ function programExtraction(sourceFile, program, authoredMappings, carrier) {
   };
 }
 
-function savedFunctionModuleExtraction(sourceFile, program, pathSegments, carrier) {
-  return savedFunctionExtraction({
+function privateToolModuleExtraction(sourceFile, program, pathSegments, carrier) {
+  return privateToolExtraction({
     sourceFile,
     program,
     container: sourceFile,

@@ -1,6 +1,6 @@
 //! The Private Provider's catalog. Coral defines it, and it holds no
 //! materialized Tools: each Principal's Private Tools are rows that
-//! coral-functions keeps and declares from their own source.
+//! coral-tools keeps and declares from their own source.
 
 use crate::schema::SchemaGraphAccumulator;
 use crate::{

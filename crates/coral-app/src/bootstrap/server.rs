@@ -718,7 +718,7 @@ impl RunningServer {
     }
 
     /// Shares the process's one warm compiler with companion runtime
-    /// composition, so Saved Function save compiles where Program Admission
+    /// composition, so Private Tool save compiles where Program Admission
     /// does.
     #[must_use]
     pub fn compiler(&self) -> Arc<dyn coral_run_executor::CompilerClient> {
@@ -890,7 +890,7 @@ pub(crate) async fn start_server(
         .map_err(|error| {
             AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
         })?;
-    // Program Admission and Saved Function save share one warm compiler.
+    // Program Admission and Private Tool save share one warm compiler.
     let compiler: Arc<dyn coral_run_executor::CompilerClient> = Arc::new(
         coral_run_executor::InProcessCompiler::new(runtime_limits.isolate()).map_err(|error| {
             AppError::FailedPrecondition(format!("Program runtime is unavailable: {error}"))
@@ -912,10 +912,10 @@ pub(crate) async fn start_server(
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }
-    let saved_functions =
-        coral_functions::SavedFunctionInspection::new(database.clone(), workspaces.clone());
-    let saved_function_deletion =
-        coral_functions::SavedFunctionDeletion::new(database.clone(), workspaces.clone());
+    let private_tools =
+        coral_tools::PrivateToolInspection::new(database.clone(), workspaces.clone());
+    let private_tool_deletion =
+        coral_tools::PrivateToolDeletion::new(database.clone(), workspaces.clone());
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
@@ -940,8 +940,8 @@ pub(crate) async fn start_server(
             providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
-            saved_functions,
-            saved_function_deletion,
+            private_tools,
+            private_tool_deletion,
             runs: runs.clone(),
             releases: releases.clone(),
             usage: usage.as_ref().map(|usage| usage.data.clone()),

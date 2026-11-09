@@ -3,7 +3,7 @@
 //! names split camelCase.
 
 use coral_db::Database;
-use coral_functions::{SavedFunctionChangeContext, SavedFunctionPath};
+use coral_tools::{PrivateToolChangeContext, PrivateToolPath};
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, InsertStatement, OnConflict, Order, Query};
 use wiremock::MockServer;
@@ -57,7 +57,7 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
 }
 
 #[tokio::test]
-async fn sqlite_text_index_follows_a_saved_function_removal() {
+async fn sqlite_text_index_follows_a_private_tool_removal() {
     coral_test_support::database_only!(Sqlite);
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
@@ -74,9 +74,9 @@ async fn sqlite_text_index_follows_a_saved_function_removal() {
         .await;
     let doc = saved.id().to_string();
     database
-        .execute(saved_function_row(&tracer.workspace, &doc, Some("user")))
+        .execute(private_tool_row(&tracer.workspace, &doc, Some("user")))
         .await
-        .expect("insert the Saved Function row");
+        .expect("insert the Private Tool row");
     assert_eq!(
         text_matches(&database, &tracer.workspace, "forecast").await,
         [doc]
@@ -84,14 +84,14 @@ async fn sqlite_text_index_follows_a_saved_function_removal() {
 
     tracer
         .modules
-        .saved_functions
+        .private_tools
         .delete(
-            &SavedFunctionChangeContext::new(principal, 50, trace('5')),
+            &PrivateToolChangeContext::new(principal, 50, trace('5')),
             &tracer.workspace,
-            &SavedFunctionPath::parse("internal.formatForecast").unwrap(),
+            &PrivateToolPath::parse("internal.formatForecast").unwrap(),
         )
         .await
-        .expect("delete the Saved Function");
+        .expect("delete the Private Tool");
     tracer
         .modules
         .index
@@ -226,7 +226,7 @@ async fn index_two_rows_before_key_step(
 }
 
 #[tokio::test]
-async fn saved_function_rows_without_a_principal_kind_fail_their_check() {
+async fn private_tool_rows_without_a_principal_kind_fail_their_check() {
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
     let database = tracer.modules.search.database.clone();
@@ -244,8 +244,8 @@ async fn saved_function_rows_without_a_principal_kind_fail_their_check() {
     for (table, without_kind, with_kind) in [
         (
             "search_entities",
-            saved_function_row(&tracer.workspace, &doc, None),
-            saved_function_row(&tracer.workspace, &doc, Some("user")),
+            private_tool_row(&tracer.workspace, &doc, None),
+            private_tool_row(&tracer.workspace, &doc, Some("user")),
         ),
         (
             "search_index_states",
@@ -256,7 +256,7 @@ async fn saved_function_rows_without_a_principal_kind_fail_their_check() {
         let error = database
             .execute(without_kind)
             .await
-            .expect_err("a Saved Function row needs its Principal kind");
+            .expect_err("a Private Tool row needs its Principal kind");
         assert!(
             matches!(
                 &error,
@@ -659,7 +659,7 @@ impl Tracer {
     }
 }
 
-fn saved_function_row(
+fn private_tool_row(
     workspace: &WorkspaceId,
     doc: &str,
     principal_kind: Option<&str>,
@@ -670,7 +670,7 @@ fn saved_function_row(
         .values_panic([
             workspace.to_string().into(),
             doc.into(),
-            "saved_function".into(),
+            "private_tool".into(),
             Option::<String>::None.into(),
             Option::<String>::None.into(),
             Option::<String>::None.into(),
@@ -702,7 +702,7 @@ fn failed_function_state(
                 "workspace_id",
                 "target_id",
                 "kind",
-                "saved_function_id",
+                "private_tool_id",
                 "principal_id",
                 "principal_kind",
                 "state",
@@ -714,7 +714,7 @@ fn failed_function_state(
         .values_panic([
             workspace.to_string().into(),
             doc.into(),
-            "saved_function".into(),
+            "private_tool".into(),
             Some(doc.to_string()).into(),
             Some(USER.to_string()).into(),
             principal_kind.map(str::to_string).into(),
@@ -733,7 +733,7 @@ fn row_columns() -> [Alias; 18] {
         "provider_id",
         "provider_generation_id",
         "tool_key",
-        "saved_function_id",
+        "private_tool_id",
         "principal_id",
         "principal_kind",
         "call_path",

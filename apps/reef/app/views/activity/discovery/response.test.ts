@@ -53,9 +53,9 @@ it('reads a page retained with a cursor as a page with no more results', () => {
 it('reads the kind of each hit from its Call Path, and an absent flag as unset', () => {
   const view = discoveryView(search, stored.mixed)
   if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
-  const [savedFunction, merge, subIssues] = view.page.hits
-  expect(savedFunction).toMatchObject({
-    kind: 'saved_function',
+  const [privateTool, merge, subIssues] = view.page.hits
+  expect(privateTool).toMatchObject({
+    kind: 'private_tool',
     title: 'github.openIssuesByLabel',
     tool: null,
   })
@@ -95,7 +95,7 @@ it('reads an untrimmed page with its titles, full coverage, and declaration path
   expect(view.page.hasMore).toBe(true)
   expect(view.page.coverage).toEqual([
     {
-      kind: 'saved_function',
+      kind: 'private_tool',
       state: 'empty',
       eligible: 0,
       searched: 0,
@@ -145,15 +145,15 @@ const exact: DiscoveryContext = {
   types: [],
 }
 
-it('reads a stored Saved Function description with its source and diagnostics', () => {
+it('reads a stored Private Tool description with its source and diagnostics', () => {
   const view = discoveryView(exact, stored.describeFunction)
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
   expect(view.description).toMatchObject({
-    kind: 'saved_function',
+    kind: 'private_tool',
     callPath: 'coral.private.github.openIssuesByLabel',
     title: 'github.openIssuesByLabel',
     tool: null,
-    savedFunction: {
+    privateTool: {
       diagnostics: [
         {
           category: 'error',
@@ -168,10 +168,10 @@ it('reads a stored Saved Function description with its source and diagnostics', 
     currentHref: null,
   })
   expect(view.description.declaration).toMatch(/^export default function openIssuesByLabel/)
-  expect(view.description.savedFunction?.source).toMatch(/^export default async function/)
+  expect(view.description.privateTool?.source).toMatch(/^export default async function/)
 })
 
-it('reads a Saved Function description returned for types, which has no source', () => {
+it('reads a Private Tool description returned for types, which has no source', () => {
   const {
     source: _source,
     diagnostics: _d,
@@ -180,7 +180,7 @@ it('reads a Saved Function description returned for types, which has no source',
   } = JSON.parse(stored.describeFunction)
   const view = discoveryView({ ...exact, types: ['Issue'] }, JSON.stringify(typesOnly))
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
-  expect(view.description).toMatchObject({ kind: 'saved_function', savedFunction: null })
+  expect(view.description).toMatchObject({ kind: 'private_tool', privateTool: null })
 })
 
 it('reads a stored Tool description with its provider facts', () => {
@@ -197,7 +197,7 @@ it('reads a stored Tool description with its provider facts', () => {
       tags: ['issues'],
       guidance: 'API method documentation',
     },
-    savedFunction: null,
+    privateTool: null,
   })
 })
 

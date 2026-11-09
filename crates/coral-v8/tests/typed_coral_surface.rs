@@ -5,7 +5,7 @@ use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
     BuiltinTools, CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits,
-    ProgramCompiler, SavedFunctionCompilation,
+    PrivateToolCompilation, ProgramCompiler,
 };
 use coral_value as _;
 use deno_core_icudata as _;
@@ -39,7 +39,7 @@ const REPOS_DELETE: &str =
 // A result whose shape the Provider does not declare.
 const NOTION_SEARCH: &str = "export default function (): Promise<{ status: 200; data: unknown }>;";
 
-// A result type the declaration exports, so an emitted Saved Function
+// A result type the declaration exports, so an emitted Private Tool
 // declaration could name it only by its Call Path module, which it cannot
 // resolve.
 const EXPORTED_GET: &str = "export type Item = { \"name\": string };\nexport default function (): Promise<{ status: 200; data: Item }>;";
@@ -81,16 +81,16 @@ fn compiler() -> ProgramCompiler {
         ]))
 }
 
-/// Prepares `source` as Saved Function save does: typed by `tools` and
+/// Prepares `source` as Private Tool save does: typed by `tools` and
 /// `weather.forecast` along the Call Paths the source names.
 fn prepare(
     compiler: &ProgramCompiler,
     source: &str,
     tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
-) -> Result<SavedFunctionCompilation, coral_v8::Error> {
-    let named = compiler.saved_function_call_paths(deadline(), source)?;
-    compiler.prepare_typed_saved_function(
+) -> Result<PrivateToolCompilation, coral_v8::Error> {
+    let named = compiler.private_tool_call_paths(deadline(), source)?;
+    compiler.prepare_typed_private_tool(
         deadline(),
         source,
         &CoralDeclarations::new(declaration_max_bytes)
@@ -110,7 +110,7 @@ fn errors(diagnostics: &[CompilerDiagnostic]) -> Vec<Located> {
 }
 
 #[test]
-fn saved_function_diagnostics_check_calls_against_declarations() {
+fn private_tool_diagnostics_check_calls_against_declarations() {
     let compiler = compiler();
     let cases: &[(&str, &str, &[Located])] = &[
         (
@@ -124,7 +124,7 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
             &[(2551, Some(3), Some(17))],
         ),
         (
-            "a wrong Saved Function argument",
+            "a wrong Private Tool argument",
             "export default async function hot() {\n  return (await coral.private.weather.forecast(42)).temperatureC > 30;\n}",
             &[(2345, Some(2), Some(48))],
         ),
@@ -323,7 +323,7 @@ fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
 }
 
 #[test]
-fn saved_function_declaration_inlines_a_tool_result_type() {
+fn private_tool_declaration_inlines_a_tool_result_type() {
     let compiler = compiler();
     let compilation = prepare(
         &compiler,
@@ -397,11 +397,11 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 fn call_path_analysis_names_every_candidate_tool_call_path() {
     let compiler = compiler();
     let named = compiler
-        .saved_function_call_paths(
+        .private_tool_call_paths(
             deadline(),
             "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.listProviders();\n  const e = await coral.search({});\n  return [a, b, c, d, e, coral.providers, coral.private.weather.forecast];\n}",
         )
-        .expect("analyze Saved Function");
+        .expect("analyze Private Tool");
     assert_eq!(
         named.tools().call_paths(),
         [
@@ -417,7 +417,7 @@ fn call_path_analysis_names_every_candidate_tool_call_path() {
         named
             .functions()
             .iter()
-            .map(coral_v8::SavedFunctionReference::path)
+            .map(coral_v8::PrivateToolReference::path)
             .collect::<Vec<_>>(),
         ["weather.forecast"]
     );

@@ -288,11 +288,11 @@ message InspectRunRequest {
   // substituted.
   string account_connection = 5;
 }
-// Source of a Saved Function as it was when the Run was accepted.
+// Source of a Private Tool as it was when the Run was accepted.
 message ActivitySourceSnapshot {
-  // workspaces/{workspace}/savedFunctions/{saved_function} at the time. Unique among
-  // the Run's snapshots. The Saved Function may have changed or been deleted since.
-  string saved_function = 1;
+  // workspaces/{workspace}/privateTools/{private_tool} at the time. Unique among
+  // the Run's snapshots. The Private Tool may have changed or been deleted since.
+  string private_tool = 1;
   // Path the Program called it by.
   string path = 2;
   // TypeScript source as accepted.
@@ -307,9 +307,9 @@ message ActivitySourceLocation {
   oneof document {
     // The Run's submitted Program source.
     ActivityEmpty program = 1;
-    // workspaces/{workspace}/savedFunctions/{saved_function}: the saved_function of
+    // workspaces/{workspace}/privateTools/{private_tool}: the private_tool of
     // exactly one of the Run's linked_functions snapshots.
-    string saved_function = 2;
+    string private_tool = 2;
   }
   // Line number, starting at 1. Lines end at every ECMAScript line terminator:
   // CRLF, CR, LF, U+2028 and U+2029, also inside strings and comments.
@@ -321,8 +321,8 @@ message ActivitySourceLocation {
 }
 // One stack frame in code the author wrote.
 message ActivityErrorFrame {
-  // "Program" or "Saved Function coral.private.{path}". Unlike
-  // ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
+  // "Program" or "Private Tool coral.private.{path}". Unlike
+  // ActivitySourceLocation, it names a Private Tool by path, not by snapshot.
   string source = 1;
   // Line number, starting at 1.
   uint32 line = 2;
@@ -526,7 +526,7 @@ message InspectRunResponse {
   ActivityRun run = 1;
   // TypeScript the caller submitted, as accepted.
   string submitted_source = 2;
-  // Source of each Saved Function the Run used, as accepted.
+  // Source of each Private Tool the Run used, as accepted.
   repeated ActivitySourceSnapshot linked_functions = 3;
   // A page of Events in order: output, logs, cancellation requests and so on.
   repeated ActivityRunEvent events = 4;
@@ -969,8 +969,8 @@ message InspectTaskInteractionResponse {
     ActivityDiscovery discovery = 2;
     // workspaces/{workspace}/runs/{run} the call started.
     string run = 3;
-    // Saved Function the call saved or deleted. It may have changed or been deleted since.
-    string saved_function = 5;
+    // Private Tool the call saved or deleted. It may have changed or been deleted since.
+    string private_tool = 5;
     // Why the call was rejected.
     ActivityRejection rejection = 6;
   }

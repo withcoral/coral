@@ -35,7 +35,7 @@ fn describe_fits_the_remaining_types_to_the_budget() {
         .iter()
         .map(|text| text.len() + 1)
         .sum::<usize>();
-    let saved_function = "interface Input {\n    owner: string;\n}\ninterface Report {\n    author: Person;\n}\ninterface Person {\n    login: string;\n}\nexport default function weekly(input: Input): Promise<Report>;";
+    let private_tool = "interface Input {\n    owner: string;\n}\ninterface Report {\n    author: Person;\n}\ninterface Person {\n    login: string;\n}\nexport default function weekly(input: Input): Promise<Report>;";
     let mcp = r#"type Day = { "high": number };
 type McpSafeMeta = Record<string, unknown>;
 function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day> }; metadata: { _meta?: McpSafeMeta } }>;"#;
@@ -88,9 +88,9 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
             [MILESTONE, &user_stub, &not_shown(r#""Label""#)].join("\n"),
         ),
         (
-            "a Saved Function's whole result is its success data",
-            saved_function,
-            EntityKind::SavedFunction,
+            "a Private Tool's whole result is its success data",
+            private_tool,
+            EntityKind::PrivateTool,
             &[],
             0,
             "interface Input {\n    owner: string;\n}\nexport default function weekly(input: Input): Promise<Report>;\ninterface Report {\n    author: Person;\n}\n".to_string()
@@ -137,13 +137,7 @@ fn stubs_and_requested_types_keep_fields_from_named_parts_and_merged_interfaces(
 
     let merged = "interface Person {\n    login: string;\n}\ninterface Report {\n    author: Person;\n}\ninterface Person {\n    email: string;\n}\nexport default function weekly(): Promise<Report>;\nexport {};";
     assert_eq!(
-        fit(
-            merged,
-            EntityKind::SavedFunction,
-            &["Person".to_string()],
-            0
-        )
-        .unwrap(),
+        fit(merged, EntityKind::PrivateTool, &["Person".to_string()], 0).unwrap(),
         "interface Person {\n    login: string;\n}\ninterface Person {\n    email: string;\n}"
     );
 }

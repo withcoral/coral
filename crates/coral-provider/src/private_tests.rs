@@ -1,6 +1,6 @@
 //! The Private Provider: one per Workspace at `coral.private`, which Coral
 //! performs, with no Accounts. Its Tools are the Private Tools that
-//! coral-functions keeps.
+//! coral-tools keeps.
 use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
 
 use super::tests::{change_context, organization_user, test_modules};

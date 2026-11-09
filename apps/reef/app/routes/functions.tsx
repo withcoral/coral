@@ -1,9 +1,9 @@
 import { data, Outlet, type ShouldRevalidateFunctionArgs } from 'react-router'
 import type { Route } from './+types/functions'
-import type { SavedFunctionSummary } from '@/generated/coral/management/v1/saved_function_pb'
+import type { PrivateToolSummary } from '@/generated/coral/management/v1/private_tool_pb'
 import type { PolicyState } from '@/components/policy-toggle'
 import { managementFailure, privateHeaders, type ManagementApi } from '@/lib/management.server'
-import { savedFunctionSummaryView } from '@/lib/management-views.server'
+import { privateToolSummaryView } from '@/lib/management-views.server'
 import { accessState, TOOL_ACCESS_PAGE_SIZE } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { FunctionsPage } from '@/views/functions/functions-page'
@@ -32,16 +32,16 @@ export async function loader({ context, params }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     // The page groups and filters every function, so it reads each bounded page.
-    const summaries: SavedFunctionSummary[] = []
+    const summaries: PrivateToolSummary[] = []
     let privateProvider = ''
     let pageToken = ''
     do {
-      const page = await api.savedFunctions.listSavedFunctions({
+      const page = await api.privateTools.listPrivateTools({
         parent: w.name,
         pageSize: 100,
         pageToken,
       })
-      summaries.push(...page.savedFunctions)
+      summaries.push(...page.privateTools)
       privateProvider = page.privateProvider
       pageToken = page.nextPageToken
     } while (pageToken)
@@ -49,7 +49,7 @@ export async function loader({ context, params }: Route.LoaderArgs) {
     return data(
       {
         workspace: w,
-        functions: summaries.map((f) => savedFunctionSummaryView(w.path, f, policies.get(f.path))),
+        functions: summaries.map((f) => privateToolSummaryView(w.path, f, policies.get(f.path))),
       },
       { headers: privateHeaders },
     )

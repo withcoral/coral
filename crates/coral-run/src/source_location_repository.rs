@@ -8,12 +8,12 @@ use sea_query::{Alias, Expr, Value};
 use crate::{Error, SourceDocument, SourceLocation};
 
 const PROGRAM: &str = "program";
-const SAVED_FUNCTION: &str = "saved_function";
+const PRIVATE_TOOL: &str = "private_tool";
 
 /// Column names, in the order [`values`] returns them.
 pub(crate) const COLUMNS: [&str; 4] = [
     "source_document",
-    "source_saved_function_id",
+    "source_private_tool_id",
     "source_line",
     "source_column",
 ];
@@ -22,17 +22,14 @@ pub(crate) const COLUMNS: [&str; 4] = [
 pub(crate) fn values(location: Option<&SourceLocation>) -> [(Alias, Expr); 4] {
     let [
         document_column,
-        saved_function_column,
+        private_tool_column,
         line_column,
         column_column,
     ] = COLUMNS;
-    let [document, saved_function_id, line, column] = row_values(location);
+    let [document, private_tool_id, line, column] = row_values(location);
     [
         (Alias::new(document_column), Expr::val(document)),
-        (
-            Alias::new(saved_function_column),
-            Expr::val(saved_function_id),
-        ),
+        (Alias::new(private_tool_column), Expr::val(private_tool_id)),
         (Alias::new(line_column), Expr::val(line)),
         (Alias::new(column_column), Expr::val(column)),
     ]
@@ -42,18 +39,18 @@ pub(crate) fn values(location: Option<&SourceLocation>) -> [(Alias, Expr); 4] {
 /// of each column's own type, so a multi-row `VALUES` insert whose rows all
 /// lack a location still types every column.
 pub(crate) fn row_values(location: Option<&SourceLocation>) -> [Value; 4] {
-    let (document, saved_function_id, line, column) = match location {
+    let (document, private_tool_id, line, column) = match location {
         None => (None, None, None, None),
         Some(location) => {
-            let (document, saved_function_id) = match &location.document {
+            let (document, private_tool_id) = match &location.document {
                 SourceDocument::Program => (PROGRAM, None),
-                SourceDocument::SavedFunction { saved_function_id } => {
-                    (SAVED_FUNCTION, Some(saved_function_id.clone()))
+                SourceDocument::PrivateTool { private_tool_id } => {
+                    (PRIVATE_TOOL, Some(private_tool_id.clone()))
                 }
             };
             (
                 Some(document),
-                saved_function_id,
+                private_tool_id,
                 Some(i64::from(location.line)),
                 Some(i64::from(location.column)),
             )
@@ -61,7 +58,7 @@ pub(crate) fn row_values(location: Option<&SourceLocation>) -> [Value; 4] {
     };
     [
         Value::from(document.map(str::to_string)),
-        Value::from(saved_function_id),
+        Value::from(private_tool_id),
         Value::from(line),
         Value::from(column),
     ]
@@ -75,7 +72,7 @@ pub(crate) fn row_values(location: Option<&SourceLocation>) -> [Value; 4] {
 )]
 pub(crate) struct StoredSourceLocation {
     source_document: Option<String>,
-    source_saved_function_id: Option<String>,
+    source_private_tool_id: Option<String>,
     source_line: Option<i64>,
     source_column: Option<i64>,
 }
@@ -84,7 +81,7 @@ impl StoredSourceLocation {
     pub(crate) fn decode(self) -> Result<Option<SourceLocation>, Error> {
         let corrupt = || Error::CorruptData("record has an invalid source location".to_string());
         let Some(document) = self.source_document else {
-            return if self.source_saved_function_id.is_none()
+            return if self.source_private_tool_id.is_none()
                 && self.source_line.is_none()
                 && self.source_column.is_none()
             {
@@ -93,10 +90,10 @@ impl StoredSourceLocation {
                 Err(corrupt())
             };
         };
-        let document = match (document.as_str(), self.source_saved_function_id) {
+        let document = match (document.as_str(), self.source_private_tool_id) {
             (PROGRAM, None) => SourceDocument::Program,
-            (SAVED_FUNCTION, Some(saved_function_id)) if !saved_function_id.is_empty() => {
-                SourceDocument::SavedFunction { saved_function_id }
+            (PRIVATE_TOOL, Some(private_tool_id)) if !private_tool_id.is_empty() => {
+                SourceDocument::PrivateTool { private_tool_id }
             }
             _ => return Err(corrupt()),
         };

@@ -5,7 +5,7 @@
 //! waits at least one reconcile interval, twice as long after each such
 //! failure in a row, and never more than an hour. A newer Coral version
 //! retries either at once. A notified write always tries, whatever the rule,
-//! so removing a Provider and adding it again, or saving a Saved Function
+//! so removing a Provider and adding it again, or saving a Private Tool
 //! again, retries it at once.
 //!
 //! An older version never retries a failure a newer one recorded, so two

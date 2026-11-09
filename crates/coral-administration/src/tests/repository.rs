@@ -36,11 +36,7 @@ impl EventFault {
                 'b',
             ),
             Self::AccountDeleted => ("provider_lifecycle_events", "provider_account.deleted", 'c'),
-            Self::FunctionDeleted => (
-                "saved_function_lifecycle_events",
-                "saved_function.deleted",
-                'd',
-            ),
+            Self::FunctionDeleted => ("private_tool_lifecycle_events", "private_tool.deleted", 'd'),
             Self::MembershipRemoved => (
                 "workspace_lifecycle_events",
                 "workspace_membership.removed",
@@ -76,7 +72,7 @@ impl EventFault {
             Self::FunctionDeleted => {
                 matches!(
                     error,
-                    crate::Error::Functions(coral_functions::Error::Database(_))
+                    crate::Error::Functions(coral_tools::Error::Database(_))
                 )
             }
             Self::MembershipRemoved
@@ -109,12 +105,12 @@ pub(super) async fn fixture() -> TestDatabase {
     let event_fault = match coral_test_support::selected_database().unwrap() {
         coral_db::DatabaseSystem::Sqlite => {
             r"CREATE TRIGGER offboarding_event_failure
-            BEFORE INSERT ON saved_function_lifecycle_events
-            WHEN NEW.action = 'saved_function.deleted'
+            BEFORE INSERT ON private_tool_lifecycle_events
+            WHEN NEW.action = 'private_tool.deleted'
                 AND NEW.trace_id = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
                 AND EXISTS (
-                    SELECT 1 FROM saved_function_lifecycle_events
-                    WHERE action = 'saved_function.deleted' AND trace_id = NEW.trace_id
+                    SELECT 1 FROM private_tool_lifecycle_events
+                    WHERE action = 'private_tool.deleted' AND trace_id = NEW.trace_id
                 )
             BEGIN
                 SELECT RAISE(ABORT, 'injected second deletion event failure');
@@ -123,11 +119,11 @@ pub(super) async fn fixture() -> TestDatabase {
         coral_db::DatabaseSystem::Postgres => {
             r"CREATE FUNCTION offboarding_event_failure() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
-                IF NEW.action = 'saved_function.deleted'
+                IF NEW.action = 'private_tool.deleted'
                     AND NEW.trace_id = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
                     AND EXISTS (
-                        SELECT 1 FROM saved_function_lifecycle_events
-                        WHERE action = 'saved_function.deleted' AND trace_id = NEW.trace_id
+                        SELECT 1 FROM private_tool_lifecycle_events
+                        WHERE action = 'private_tool.deleted' AND trace_id = NEW.trace_id
                     )
                 THEN
                     RAISE EXCEPTION 'injected second deletion event failure';
@@ -135,7 +131,7 @@ pub(super) async fn fixture() -> TestDatabase {
                 RETURN NEW;
             END $$;
             CREATE TRIGGER offboarding_event_failure
-                BEFORE INSERT ON saved_function_lifecycle_events
+                BEFORE INSERT ON private_tool_lifecycle_events
                 FOR EACH ROW EXECUTE FUNCTION offboarding_event_failure();"
         }
     };

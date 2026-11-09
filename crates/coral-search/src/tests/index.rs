@@ -1,4 +1,4 @@
-//! Indexing Provider Generations and Saved Functions through `SearchIndex`.
+//! Indexing Provider Generations and Private Tools through `SearchIndex`.
 //!
 //! Every test publishes through the real Provider Module, then either notifies
 //! `SearchIndex` with the Generation's ids, as publication does after its
@@ -210,11 +210,13 @@ async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_
     // test starts at 0048, and the steps after it there wait too. Every later
     // step applies first, because today's code publishes the tracer Provider
     // and may read any of them. A later step needs no change to this range
-    // unless it depends on one of the held-back steps.
+    // unless it depends on one of the held-back steps: 0065 rebuilds the
+    // search tables on SQLite, so it waits with 0066, and the publish reads
+    // none of what they rename.
     let modules = TestModules::with_plan(&coral_test_support::edited_migration_plan(|steps| {
         steps
             .into_iter()
-            .filter(|step| !(48..55).contains(&step.version))
+            .filter(|step| !(48..55).contains(&step.version) && !(65..67).contains(&step.version))
             .collect()
     }))
     .await;
@@ -1182,7 +1184,7 @@ async fn two_concurrent_passes_converge_on_the_rows_one_pass_leaves() {
 }
 
 #[tokio::test]
-async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
+async fn a_pass_corrects_the_statistics_a_private_tool_delete_leaves() {
     coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -2919,7 +2921,7 @@ impl World {
             .expect("read the statistics")
     }
 
-    /// How many Saved Function rows the index holds in the Workspace.
+    /// How many Private Tool rows the index holds in the Workspace.
     async fn function_rows(&self) -> usize {
         let rows: Vec<(String,)> = self
             .modules
@@ -2930,7 +2932,7 @@ impl World {
                     .column(Alias::new("doc_id"))
                     .from(Alias::new("search_entities"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("private_tool"))
                     .to_owned(),
             )
             .await

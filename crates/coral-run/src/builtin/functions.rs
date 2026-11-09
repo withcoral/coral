@@ -8,47 +8,47 @@
 //! made it (ADR 0031).
 
 use coral_catalog::{RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments};
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
-    SavedFunctionSave, SavedFunctionSource,
-};
 use coral_search::SearchIndex;
+use coral_tools::{
+    PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
+    PrivateToolSave, PrivateToolSource,
+};
 
 use super::BuiltinHost;
 use crate::error::InputProblem;
 use crate::{CoralFailure, Error, Rejection};
 
-/// What Saved Function authoring from a Program acts through: the module
+/// What Private Tool authoring from a Program acts through: the module
 /// that compiles and stores functions, and the index it notifies after each
 /// commit.
 #[derive(Clone)]
-pub struct SavedFunctions {
+pub struct PrivateTools {
     // Shared, so a RunModule and every Run's Tool host hold one pointer.
-    inner: std::sync::Arc<SavedFunctionsInner>,
+    inner: std::sync::Arc<PrivateToolsInner>,
 }
 
-struct SavedFunctionsInner {
-    module: SavedFunctionModule,
+struct PrivateToolsInner {
+    module: PrivateToolModule,
     index: SearchIndex,
 }
 
-impl SavedFunctions {
+impl PrivateTools {
     /// Authoring through `module`, notifying `index` after each commit.
     /// Pass the module the rest of the process saves through, so every save
     /// shares one compiler and its deadline.
     #[must_use]
-    pub fn new(module: SavedFunctionModule, index: SearchIndex) -> Self {
+    pub fn new(module: PrivateToolModule, index: SearchIndex) -> Self {
         Self {
-            inner: std::sync::Arc::new(SavedFunctionsInner { module, index }),
+            inner: std::sync::Arc::new(PrivateToolsInner { module, index }),
         }
     }
 }
 
 /// `addTool`'s or `updateTool`'s arguments, each checked by
-/// coral-functions.
+/// coral-tools.
 #[derive(Clone)]
 pub(crate) struct SaveTool {
-    save: SavedFunctionSave,
+    save: PrivateToolSave,
 }
 
 impl SaveTool {
@@ -68,13 +68,13 @@ impl SaveTool {
 
     /// Checks the path, description and source before any other work, and
     /// names every one to correct.
-    fn checked(arguments: &ToolSaveArguments) -> Result<SavedFunctionSave, Rejection> {
-        let path = SavedFunctionPath::parse(arguments.path());
-        let description = SavedFunctionDescription::parse(arguments.description());
-        let source = SavedFunctionSource::parse(arguments.source());
+    fn checked(arguments: &ToolSaveArguments) -> Result<PrivateToolSave, Rejection> {
+        let path = PrivateToolPath::parse(arguments.path());
+        let description = PrivateToolDescription::parse(arguments.description());
+        let source = PrivateToolSource::parse(arguments.source());
         match (path, description, source) {
             (Ok(path), Ok(description), Ok(source)) => {
-                Ok(SavedFunctionSave::new(path, description, source)
+                Ok(PrivateToolSave::new(path, description, source)
                     .declaring_default(arguments.policy()))
             }
             (path, description, source) => Err(Rejection::invalid_inputs(
@@ -152,16 +152,16 @@ impl SaveTool {
     }
 }
 
-/// `removeTool`'s path, checked by coral-functions.
+/// `removeTool`'s path, checked by coral-tools.
 #[derive(Clone)]
 pub(crate) struct RemoveTool {
-    path: SavedFunctionPath,
+    path: PrivateToolPath,
 }
 
 impl RemoveTool {
     /// `removeTool`, with its path checked before any other work.
     pub(super) fn new(arguments: &RemoveToolArguments) -> Result<Self, Rejection> {
-        SavedFunctionPath::parse(arguments.path())
+        PrivateToolPath::parse(arguments.path())
             .map(|path| Self { path })
             .map_err(|error| Rejection::invalid_inputs(vec![problem("path", &error)]))
     }
@@ -196,29 +196,29 @@ impl RemoveTool {
 }
 
 /// The authoring wiring; a Run without it cannot author.
-fn authoring<'a>(host: &BuiltinHost<'a>) -> Result<&'a SavedFunctions, Error> {
+fn authoring<'a>(host: &BuiltinHost<'a>) -> Result<&'a PrivateTools, Error> {
     host.functions
         .ok_or_else(|| Error::InvocationRejected(CoralFailure::ToolUnavailable.into()))
 }
 
-fn call_path(path: &SavedFunctionPath) -> String {
+fn call_path(path: &PrivateToolPath) -> String {
     format!("coral.private.{}", path.as_str())
 }
 
 /// The invoking Principal, at the Run's clock. The trace id is the
 /// Invocation's, so the lifecycle Event joins the Run's trace.
-fn change_context(host: &BuiltinHost<'_>) -> Result<SavedFunctionChangeContext, Error> {
-    Ok(SavedFunctionChangeContext::new(
+fn change_context(host: &BuiltinHost<'_>) -> Result<PrivateToolChangeContext, Error> {
+    Ok(PrivateToolChangeContext::new(
         host.actor.clone(),
         host.run.now()?,
         coral_workspace::TraceId::current_or_new(),
     ))
 }
 
-/// The reason coral-functions gives for a value it refused. It is bounded,
+/// The reason coral-tools gives for a value it refused. It is bounded,
 /// and names only what the Program wrote: its own source, path or
 /// description.
-fn problem(field: &str, error: &coral_functions::Error) -> InputProblem {
+fn problem(field: &str, error: &coral_tools::Error) -> InputProblem {
     InputProblem::new(
         field,
         error.safe_rejection().map_or_else(
@@ -230,10 +230,10 @@ fn problem(field: &str, error: &coral_functions::Error) -> InputProblem {
 
 /// A failure the Program can read and correct, or a host error. `field` is
 /// the argument an authoring failure names.
-fn failure(field: &str, error: coral_functions::Error) -> Error {
-    use coral_functions::Error as E;
+fn failure(field: &str, error: coral_tools::Error) -> Error {
+    use coral_tools::Error as E;
     match error {
-        E::SavedFunctionNotFound => {
+        E::PrivateToolNotFound => {
             Error::InvocationRejected(CoralFailure::PrivateToolNotFound.into())
         }
         E::PrivateToolExists => Error::InvocationRejected(CoralFailure::PrivateToolExists.into()),
@@ -245,17 +245,17 @@ fn failure(field: &str, error: coral_functions::Error) -> Error {
             )],
         )),
         // The path holds or lies under the caller's other functions.
-        E::SavedFunctionPathConflict => {
+        E::PrivateToolPathConflict => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem("path", &error)]))
         }
-        E::InvalidInput(_) | E::SavedFunctionAdmission(_) | E::PrivateToolNotData(_) => {
+        E::InvalidInput(_) | E::PrivateToolAdmission(_) | E::PrivateToolNotData(_) => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem(field, &error)]))
         }
         E::PackageTooLarge { .. } => Error::InvocationRejected(Rejection::naming(
             CoralFailure::InputTooLarge,
             vec![problem(field, &error)],
         )),
-        E::SavedFunctionCompilationTimedOut | E::CompilerBusy => Error::InvocationRejected(
+        E::PrivateToolCompilationTimedOut | E::CompilerBusy => Error::InvocationRejected(
             Rejection::naming(CoralFailure::ToolUnavailable, vec![problem(field, &error)]),
         ),
         E::PermissionDenied(_) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),

@@ -25,10 +25,10 @@ mod organization_memberships;
 mod organization_workspaces;
 #[path = "grpc/private_access.rs"]
 mod private_access;
+#[path = "grpc/private_tools.rs"]
+mod private_tools;
 #[path = "grpc/providers.rs"]
 mod providers;
-#[path = "grpc/saved_functions.rs"]
-mod saved_functions;
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_grpc::coral::{internal::v1 as internal, management::v1 as management};
 use coral_outbound::DestinationPolicy;
@@ -58,7 +58,7 @@ struct Fixture {
     provider_module: coral_provider::ProviderModule,
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
-    saved_functions: coral_functions::SavedFunctionModule,
+    private_tools: coral_tools::PrivateToolModule,
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {
@@ -196,10 +196,10 @@ impl Fixture {
         )
         .unwrap()
         .with_accounts(accounts.clone());
-        let saved_functions = coral_functions::SavedFunctionModule::new(
+        let private_tools = coral_tools::PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
@@ -235,11 +235,11 @@ impl Fixture {
                 ),
                 workspaces: workspaces.clone(),
                 tasks: tasks.clone(),
-                saved_functions: coral_functions::SavedFunctionInspection::new(
+                private_tools: coral_tools::PrivateToolInspection::new(
                     database.clone(),
                     workspaces.clone(),
                 ),
-                saved_function_deletion: coral_functions::SavedFunctionDeletion::new(
+                private_tool_deletion: coral_tools::PrivateToolDeletion::new(
                     database.clone(),
                     workspaces.clone(),
                 ),
@@ -282,7 +282,7 @@ impl Fixture {
             provider_module: providers,
             runs,
             tasks,
-            saved_functions,
+            private_tools,
         }
     }
 
@@ -388,12 +388,10 @@ impl Fixture {
         )
     }
 
-    fn saved_functions(
+    fn private_tools(
         &self,
-    ) -> management::saved_function_service_client::SavedFunctionServiceClient<Channel> {
-        management::saved_function_service_client::SavedFunctionServiceClient::new(
-            self.channel.clone(),
-        )
+    ) -> management::private_tool_service_client::PrivateToolServiceClient<Channel> {
+        management::private_tool_service_client::PrivateToolServiceClient::new(self.channel.clone())
     }
 
     fn policies(&self) -> management::tool_policy_service_client::ToolPolicyServiceClient<Channel> {

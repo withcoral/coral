@@ -1,4 +1,4 @@
-//! Indexing a Saved Function through `SearchIndex`.
+//! Indexing a Private Tool through `SearchIndex`.
 //!
 //! Every test saves, deletes, or removes access through the real modules.
 //! A save or delete notifies the fixture's index, as a Program's does; a test awaits the
@@ -108,11 +108,11 @@ async fn a_pass_retries_a_failed_function_once_its_retry_is_due() {
                 .test_database
                 .execute_fixture_sql(&format!(
                     "INSERT INTO search_index_states (workspace_id, target_id, kind, \
-                     saved_function_id, principal_id, principal_kind, state, \
+                     private_tool_id, principal_id, principal_kind, state, \
                      attempted_at_unix_nanos, error, failed_attempts, \
                      retry_after_unix_nanos, failed_coral_version, \
-                     failed_saved_function_revision) \
-                     VALUES ('{workspace}', '{function}', 'saved_function', '{function}', \
+                     failed_private_tool_revision) \
+                     VALUES ('{workspace}', '{function}', 'private_tool', '{function}', \
                      '{principal}', 'user', 'failed', {attempted_at}, '{INJECTED_FAULT}', 1, \
                      {retry_after}, '{version}', {revision})",
                     workspace = fixture.workspace,
@@ -168,7 +168,7 @@ async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
     for change in [
         "failed_coral_version = '0.0.0'",
         "failed_coral_version = NULL",
-        "failed_saved_function_revision = 0",
+        "failed_private_tool_revision = 0",
     ] {
         let fixture = Fixture::new().await;
         let goal = fixture.goal().await;
@@ -236,7 +236,7 @@ async fn a_notified_save_indexes_the_function_and_a_save_over_keeps_one_row() {
         function_rows(&fixture).await,
         [FunctionRow {
             doc_id: first.id().to_string(),
-            saved_function_id: first.id().to_string(),
+            private_tool_id: first.id().to_string(),
             principal_id: user.clone(),
             principal_kind: "user".to_string(),
             call_path: "coral.private.triage.openIssues".to_string(),
@@ -301,7 +301,7 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
         let index = &fixture.index;
         let goal = fixture.goal().await;
         let call = fixture.call(&goal, "Save a function");
-        let path = coral_functions::SavedFunctionPath::parse("answer").unwrap();
+        let path = coral_tools::PrivateToolPath::parse("answer").unwrap();
         if indexed_before {
             fixture
                 .save_function(&call, path.as_str(), "Answer", SOURCE)
@@ -349,7 +349,7 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
             .to_string();
         assert_eq!(
             (
-                state.saved_function_id.as_str(),
+                state.private_tool_id.as_str(),
                 state.principal_id.as_str(),
                 state.principal_kind.as_str(),
                 state.state.as_str()
@@ -366,7 +366,7 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
         assert_eq!(event.level, tracing::Level::ERROR);
         for (field, value) in [
             ("coral.workspace.id", fixture.workspace.to_string()),
-            ("coral.saved_function.id", saved.id().to_string()),
+            ("coral.private_tool.id", saved.id().to_string()),
             ("error.type", "\"database\"".to_string()),
         ] {
             assert_eq!(event.fields.get(field), Some(&value), "{field}");
@@ -453,7 +453,7 @@ async fn a_delete_commits_while_an_index_write_holds_the_functions_search_row() 
     let mut index_write = fixture.tasks.database.begin().await.unwrap();
     index_write
         .execute_sql(
-            "UPDATE search_entities SET description = description WHERE saved_function_id = $1",
+            "UPDATE search_entities SET description = description WHERE private_tool_id = $1",
             sea_query::Values(vec![saved.id().to_string().into()]),
         )
         .await
@@ -602,7 +602,7 @@ async fn a_function_without_projected_declaration_fields_is_indexed_by_path_and_
         .unwrap();
     assert!(matches!(
         saved.declaration_field_projection(),
-        coral_functions::SavedFunctionDeclarationFieldProjection::Failed(_)
+        coral_tools::PrivateToolDeclarationFieldProjection::Failed(_)
     ));
     index.settled().await;
 
@@ -664,7 +664,7 @@ type FunctionColumns = (
 #[derive(Debug, PartialEq, Eq)]
 struct FunctionRow {
     doc_id: String,
-    saved_function_id: String,
+    private_tool_id: String,
     principal_id: String,
     principal_kind: String,
     call_path: String,
@@ -715,7 +715,7 @@ async fn principal_call(fixture: &Fixture, actor: AuthenticatedPrincipal) -> Att
     )
 }
 
-/// The Principals of the fixture Workspace's Saved Function state rows.
+/// The Principals of the fixture Workspace's Private Tool state rows.
 async fn state_principals(fixture: &Fixture) -> Vec<String> {
     let mut principals = function_states(fixture)
         .await
@@ -726,7 +726,7 @@ async fn state_principals(fixture: &Fixture) -> Vec<String> {
     principals
 }
 
-/// The qualified names of the fixture Workspace's Saved Function rows.
+/// The qualified names of the fixture Workspace's Private Tool rows.
 async fn indexed_paths(fixture: &Fixture) -> Vec<String> {
     let mut paths = function_rows(fixture)
         .await
@@ -737,7 +737,7 @@ async fn indexed_paths(fixture: &Fixture) -> Vec<String> {
     paths
 }
 
-/// The fixture Workspace's Saved Function rows, in document order.
+/// The fixture Workspace's Private Tool rows, in document order.
 async fn function_rows(fixture: &Fixture) -> Vec<FunctionRow> {
     let rows: Vec<FunctionColumns> = fixture
         .tasks
@@ -747,7 +747,7 @@ async fn function_rows(fixture: &Fixture) -> Vec<FunctionRow> {
                 .columns(
                     [
                         "doc_id",
-                        "saved_function_id",
+                        "private_tool_id",
                         "principal_id",
                         "principal_kind",
                         "call_path",
@@ -763,17 +763,17 @@ async fn function_rows(fixture: &Fixture) -> Vec<FunctionRow> {
                 )
                 .from(Alias::new("search_entities"))
                 .and_where(Expr::col(Alias::new("workspace_id")).eq(fixture.workspace.to_string()))
-                .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                .and_where(Expr::col(Alias::new("kind")).eq("private_tool"))
                 .order_by(Alias::new("doc_id"), Order::Asc)
                 .to_owned(),
         )
         .await
-        .expect("read the Saved Function rows");
+        .expect("read the Private Tool rows");
     rows.into_iter()
         .map(
             |(
                 doc_id,
-                saved_function_id,
+                private_tool_id,
                 principal_id,
                 principal_kind,
                 call_path,
@@ -786,7 +786,7 @@ async fn function_rows(fixture: &Fixture) -> Vec<FunctionRow> {
                 fingerprint,
             )| FunctionRow {
                 doc_id,
-                saved_function_id,
+                private_tool_id,
                 principal_id,
                 principal_kind,
                 call_path,
@@ -804,14 +804,14 @@ async fn function_rows(fixture: &Fixture) -> Vec<FunctionRow> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct FunctionState {
-    saved_function_id: String,
+    private_tool_id: String,
     principal_id: String,
     principal_kind: String,
     state: String,
     error: String,
 }
 
-/// The fixture Workspace's Saved Function state rows.
+/// The fixture Workspace's Private Tool state rows.
 async fn function_states(fixture: &Fixture) -> Vec<FunctionState> {
     let rows: Vec<(String, String, String, String, String)> = fixture
         .tasks
@@ -820,7 +820,7 @@ async fn function_states(fixture: &Fixture) -> Vec<FunctionState> {
             Query::select()
                 .columns(
                     [
-                        "saved_function_id",
+                        "private_tool_id",
                         "principal_id",
                         "principal_kind",
                         "state",
@@ -830,16 +830,16 @@ async fn function_states(fixture: &Fixture) -> Vec<FunctionState> {
                 )
                 .from(Alias::new("search_index_states"))
                 .and_where(Expr::col(Alias::new("workspace_id")).eq(fixture.workspace.to_string()))
-                .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                .and_where(Expr::col(Alias::new("kind")).eq("private_tool"))
                 .order_by(Alias::new("target_id"), Order::Asc)
                 .to_owned(),
         )
         .await
-        .expect("read the Saved Function states");
+        .expect("read the Private Tool states");
     rows.into_iter()
         .map(
-            |(saved_function_id, principal_id, principal_kind, state, error)| FunctionState {
-                saved_function_id,
+            |(private_tool_id, principal_id, principal_kind, state, error)| FunctionState {
+                private_tool_id,
                 principal_id,
                 principal_kind,
                 state,
@@ -849,19 +849,19 @@ async fn function_states(fixture: &Fixture) -> Vec<FunctionState> {
         .collect()
 }
 
-/// Makes every Saved Function row fail to write, insert or upsert alike.
+/// Makes every Private Tool row fail to write, insert or upsert alike.
 async fn reject_function_rows(fixture: &Fixture) {
     let sql = match fixture.tasks.database.system() {
         coral_db::DatabaseSystem::Sqlite => format!(
             "CREATE TRIGGER inject_index_fault BEFORE INSERT ON search_entities \
-             WHEN NEW.kind = 'saved_function' \
+             WHEN NEW.kind = 'private_tool' \
              BEGIN SELECT RAISE(ABORT, '{INJECTED_FAULT}'); END;"
         ),
         coral_db::DatabaseSystem::Postgres => format!(
             "CREATE FUNCTION inject_index_fault() RETURNS trigger LANGUAGE plpgsql \
              AS $$ BEGIN RAISE EXCEPTION '{INJECTED_FAULT}'; END $$; \
              CREATE TRIGGER inject_index_fault BEFORE INSERT ON search_entities \
-             FOR EACH ROW WHEN (NEW.kind = 'saved_function') \
+             FOR EACH ROW WHEN (NEW.kind = 'private_tool') \
              EXECUTE FUNCTION inject_index_fault();"
         ),
     };
@@ -872,14 +872,14 @@ async fn reject_function_rows(fixture: &Fixture) {
         .expect("install the index fault");
 }
 
-/// Deletes every Saved Function row, as a notification that never arrived
+/// Deletes every Private Tool row, as a notification that never arrived
 /// leaves the index.
 async fn lose_function_rows(fixture: &Fixture) {
     fixture
         .test_database
-        .execute_fixture_sql("DELETE FROM search_entities WHERE kind = 'saved_function'")
+        .execute_fixture_sql("DELETE FROM search_entities WHERE kind = 'private_tool'")
         .await
-        .expect("delete the Saved Function rows");
+        .expect("delete the Private Tool rows");
 }
 
 /// Moves every transient failure's retry time into the past.
@@ -907,7 +907,7 @@ async fn allow_function_rows(fixture: &Fixture) {
         .expect("remove the index fault");
 }
 
-/// When each of the fixture Workspace's Saved Function rows was last
+/// When each of the fixture Workspace's Private Tool rows was last
 /// written, by document id.
 async fn indexed_at(fixture: &Fixture) -> Vec<(String, i64)> {
     fixture
@@ -918,12 +918,12 @@ async fn indexed_at(fixture: &Fixture) -> Vec<(String, i64)> {
                 .columns(["doc_id", "indexed_at_unix_nanos"].map(Alias::new))
                 .from(Alias::new("search_entities"))
                 .and_where(Expr::col(Alias::new("workspace_id")).eq(fixture.workspace.to_string()))
-                .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                .and_where(Expr::col(Alias::new("kind")).eq("private_tool"))
                 .order_by(Alias::new("doc_id"), Order::Asc)
                 .to_owned(),
         )
         .await
-        .expect("read the Saved Function row stamps")
+        .expect("read the Private Tool row stamps")
 }
 
 /// Records every event of the search crate with its level and fields.

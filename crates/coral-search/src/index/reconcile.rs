@@ -13,7 +13,7 @@ use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
 use super::{SearchIndex, WriteTrigger, function_span, generation_span, in_write_span, skipped};
-use crate::indexer::functions::SavedFunctionIndexer;
+use crate::indexer::functions::PrivateToolIndexer;
 use crate::indexer::tools::ToolIndexer;
 use crate::indexer::{self, EntityIndexer, IndexError, Recount};
 
@@ -126,13 +126,13 @@ impl SearchIndex {
     /// 1. Indexes every Provider whose active Generation has no `complete`
     ///    state row, one under another Provider display name, or a `failed`
     ///    one whose retry is due, from the stored Generation.
-    /// 2. Indexes every Saved Function whose `failed` state row's retry is
+    /// 2. Indexes every Private Tool whose `failed` state row's retry is
     ///    due, and every one with no `failed` state row whose row is missing
     ///    or whose fingerprint differs from its definition revision. A
     ///    failure of the current revision not yet due waits, whatever the
     ///    row holds.
     /// 3. Removes the rows and state rows of every Generation that is no
-    ///    Provider's active Generation, and of every Saved Function that no
+    ///    Provider's active Generation, and of every Private Tool that no
     ///    longer exists. Best effort. A source's delete never touches these
     ///    tables, so this step is what guarantees the rows go.
     /// 4. On Postgres, recounts the statistics of every Workspace whose rows
@@ -161,7 +161,7 @@ impl SearchIndex {
     ///
     /// The retry module's rule decides when a failure is due. A failure that
     /// repeats until something changes waits for a newer Coral version, or,
-    /// for a Saved Function, for another revision, so a pass does not spend
+    /// for a Private Tool, for another revision, so a pass does not spend
     /// its turn at the writer on it pass after pass.
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
@@ -309,16 +309,16 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// Step 3 of a pass, run first: syncs every Saved Function the index
+    /// Step 3 of a pass, run first: syncs every Private Tool the index
     /// holds that no longer exists, in one transaction each. Best effort.
     async fn remove_orphaned_functions(&self) -> Result<(), ()> {
         let removed = async {
             let orphaned = self
                 .read_snapshot(async |transaction| {
                     let current =
-                        coral_functions::saved_function_index_revisions_in_transaction(transaction)
+                        coral_tools::private_tool_index_revisions_in_transaction(transaction)
                             .await?;
-                    SavedFunctionIndexer.orphaned(transaction, &current).await
+                    PrivateToolIndexer.orphaned(transaction, &current).await
                 })
                 .await?;
             for orphan in &orphaned {
@@ -337,7 +337,7 @@ impl SearchIndex {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
                 error.type = safe::kind(error.code()),
-                "failed to remove orphaned Saved Functions from the search index"
+                "failed to remove orphaned Private Tools from the search index"
             );
             return Err(());
         }
@@ -445,7 +445,7 @@ impl SearchIndex {
         .await
     }
 
-    /// Step 2 of a pass: indexes each current Saved Function whose failure
+    /// Step 2 of a pass: indexes each current Private Tool whose failure
     /// has a retry due at `now_unix_nanos` or another revision, and each
     /// without a failure that the index lacks or holds at another revision.
     /// A failure of the current revision not yet due waits.
@@ -453,8 +453,8 @@ impl SearchIndex {
         let stale = self
             .read_snapshot(async |transaction| {
                 let expected =
-                    coral_functions::all_saved_function_entries_in_transaction(transaction).await?;
-                let stale = SavedFunctionIndexer
+                    coral_tools::all_private_tool_entries_in_transaction(transaction).await?;
+                let stale = PrivateToolIndexer
                     .reconcile(transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()
@@ -482,7 +482,7 @@ impl SearchIndex {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
                     error.type = safe::kind(error.code()),
-                    "failed to reconcile the indexed Saved Functions"
+                    "failed to reconcile the indexed Private Tools"
                 );
                 Err(())
             }

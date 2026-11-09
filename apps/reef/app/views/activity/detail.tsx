@@ -481,7 +481,7 @@ function RecordDetail({ page }: { page: ActivityPage }) {
                   a delete shows the ID without a link, and a save states no target. */}
               {deleted && save.evidence.kind === 'function' && (
                 <DescriptionList.Row label="Deleted">
-                  <CodeChip>{savedFunctionId(save.evidence.reference)}</CodeChip>
+                  <CodeChip>{privateToolId(save.evidence.reference)}</CodeChip>
                 </DescriptionList.Row>
               )}
               {times}
@@ -733,9 +733,9 @@ function ErrorCard({
     </List.Container>
   )
 }
-/** The ID in `workspaces/{workspace}/savedFunctions/{id}`, else the name as stored. */
-const savedFunctionId = (name: string) =>
-  /^workspaces\/[^/]+\/savedFunctions\/([^/]+)$/.exec(name)?.[1] ?? name
+/** The ID in `workspaces/{workspace}/privateTools/{id}`, else the name as stored. */
+const privateToolId = (name: string) =>
+  /^workspaces\/[^/]+\/privateTools\/([^/]+)$/.exec(name)?.[1] ?? name
 function EventEvidence({
   event,
   recordHref,

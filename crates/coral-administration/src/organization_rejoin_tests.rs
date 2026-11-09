@@ -1,9 +1,9 @@
 use crate::{AccessLifecycleModule, Error};
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
-    SavedFunctionSave, SavedFunctionSource,
-};
 use coral_test_support::{TestDatabase, provision_user};
+use coral_tools::{
+    PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
+    PrivateToolSave, PrivateToolSource,
+};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole,
     WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
@@ -101,26 +101,22 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         .await
         .unwrap();
     let author = AuthenticatedPrincipal::user(returned);
-    let functions = SavedFunctionModule::new(
+    let functions = PrivateToolModule::new(
         database,
         workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    let path = SavedFunctionPath::parse("fresh").unwrap();
+    let path = PrivateToolPath::parse("fresh").unwrap();
     let saved = functions
         .save(
-            &SavedFunctionChangeContext::new(
-                author.clone(),
-                100,
-                change(&owner).trace_id().clone(),
-            ),
+            &PrivateToolChangeContext::new(author.clone(), 100, change(&owner).trace_id().clone()),
             workspace.id(),
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Fresh work after rejoining").unwrap(),
-                SavedFunctionSource::parse("export default () => 42;").unwrap(),
+                PrivateToolDescription::parse("Fresh work after rejoining").unwrap(),
+                PrivateToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await

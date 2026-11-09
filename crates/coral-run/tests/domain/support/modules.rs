@@ -58,12 +58,12 @@ pub(crate) async fn registered_agent(
         .expect("authenticate Agent")
 }
 
-pub(crate) fn saved_function_change(
+pub(crate) fn private_tool_change(
     actor: AuthenticatedPrincipal,
     occurred_at_unix_nanos: i64,
     digit: char,
-) -> SavedFunctionChangeContext {
-    SavedFunctionChangeContext::new(
+) -> PrivateToolChangeContext {
+    PrivateToolChangeContext::new(
         actor,
         occurred_at_unix_nanos,
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
@@ -377,7 +377,7 @@ impl TestModules {
                         Alias::new("result_kind"),
                         Alias::new("ended_at_unix_nanos"),
                         Alias::new("parent_invocation_id"),
-                        Alias::new("source_saved_function_id"),
+                        Alias::new("source_private_tool_id"),
                     ])
                     .from(Alias::new("tool_invocations"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
@@ -399,7 +399,7 @@ impl TestModules {
                     result_kind,
                     ended_at_unix_nanos,
                     parent_id,
-                    source_saved_function_id,
+                    source_private_tool_id,
                 )| {
                     InvocationRow {
                         id: crate::InvocationId::parse(&id).expect("Invocation id"),
@@ -415,7 +415,7 @@ impl TestModules {
                         parent_id: parent_id.map(|id| {
                             crate::InvocationId::parse(&id).expect("parent Invocation id")
                         }),
-                        source_saved_function_id,
+                        source_private_tool_id,
                     }
                 },
             )
@@ -1237,7 +1237,7 @@ pub(crate) struct InvocationRow {
     /// The Invocation of the performed call whose body made this one.
     pub(crate) parent_id: Option<crate::InvocationId>,
     /// The Private Tool whose source made the call, if one did.
-    pub(crate) source_saved_function_id: Option<String>,
+    pub(crate) source_private_tool_id: Option<String>,
 }
 
 pub(crate) struct ToolFixture {

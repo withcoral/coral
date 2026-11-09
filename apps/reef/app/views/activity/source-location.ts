@@ -24,13 +24,13 @@ export interface SourceLocation {
 }
 
 export const ACCEPTED_PROGRAM_DOCUMENT_ID = 'accepted-program'
-const savedFunctionDocumentId = (savedFunction: string) => `saved-function:${savedFunction}`
+const privateToolDocumentId = (privateTool: string) => `private-tool:${privateTool}`
 
 const PROGRAM_FRAME_SOURCE = 'Program'
-/** A Saved Function's frames name it by its Call Path after this prefix. */
-const SAVED_FUNCTION_FRAME_SOURCE_PREFIX = 'Saved Function '
+/** A Private Tool's frames name it by its Call Path after this prefix. */
+const PRIVATE_TOOL_FRAME_SOURCE_PREFIX = 'Private Tool '
 
-/** The accepted program, then every Saved Function the Run linked, as accepted. */
+/** The accepted program, then every Private Tool the Run linked, as accepted. */
 export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
   return [
     {
@@ -39,8 +39,8 @@ export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
       fileName: `program-${context.run.name.split('/').at(-1)}.ts`,
     },
     ...context.linkedFunctions.map((linked) => ({
-      id: savedFunctionDocumentId(linked.savedFunction),
-      label: `Saved-function snapshot: ${linked.path}`,
+      id: privateToolDocumentId(linked.privateTool),
+      label: `Private tool snapshot: ${linked.path}`,
       code: linked.source,
       fileName: `${linked.path}.ts`,
     })),
@@ -63,7 +63,7 @@ function shownAt(code: string, line: number, column: number) {
 /**
  * Where a failed Run's Program error was thrown. Null for any Run that has
  * not failed, a failed Run with no retained error, a frame whose source names
- * neither the accepted program nor one of this Run's linked Saved Functions,
+ * neither the accepted program nor one of this Run's linked Private Tools,
  * or a frame whose line and column are not a place the source pane shows
  * (see `shownAt`). Coral's retained evidence is always
  * well-formed; these checks exist so a malformed or stale frame fails honest
@@ -93,7 +93,7 @@ export function madeByCall(
 
 /**
  * The location Coral stored for a tool call, emission or log, in this
- * Run's accepted program or one of its linked Saved Function snapshots. Null
+ * Run's accepted program or one of its linked Private Tool snapshots. Null
  * for any other record, a record with no stored location, a record of another Run, a snapshot
  * this Run did not link, or a line or column outside the document. A column
  * counts UTF-16 code units and may sit one past the end of its line.
@@ -106,8 +106,8 @@ export function recordedLocationFor(context: RunDetail, row: ActivityRow): Sourc
   const documentId =
     source.kind === 'program'
       ? ACCEPTED_PROGRAM_DOCUMENT_ID
-      : context.linkedFunctions.some((linked) => linked.savedFunction === source.savedFunction)
-        ? savedFunctionDocumentId(source.savedFunction)
+      : context.linkedFunctions.some((linked) => linked.privateTool === source.privateTool)
+        ? privateToolDocumentId(source.privateTool)
         : null
   if (documentId === null) return null
   const document = sourceDocumentsFor(context).find((candidate) => candidate.id === documentId)!
@@ -117,10 +117,10 @@ export function recordedLocationFor(context: RunDetail, row: ActivityRow): Sourc
 
 function documentIdForFrameSource(frameSource: string, context: RunDetail): string | null {
   if (frameSource === PROGRAM_FRAME_SOURCE) return ACCEPTED_PROGRAM_DOCUMENT_ID
-  const path = frameSource.startsWith(SAVED_FUNCTION_FRAME_SOURCE_PREFIX)
-    ? privateToolPath(frameSource.slice(SAVED_FUNCTION_FRAME_SOURCE_PREFIX.length))
+  const path = frameSource.startsWith(PRIVATE_TOOL_FRAME_SOURCE_PREFIX)
+    ? privateToolPath(frameSource.slice(PRIVATE_TOOL_FRAME_SOURCE_PREFIX.length))
     : null
   if (path === null) return null
   const linked = context.linkedFunctions.find((candidate) => candidate.path === path)
-  return linked ? savedFunctionDocumentId(linked.savedFunction) : null
+  return linked ? privateToolDocumentId(linked.privateTool) : null
 }

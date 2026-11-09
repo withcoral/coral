@@ -206,14 +206,14 @@ impl ToolPolicyModule {
             }
             let owner = evidence.effective_role() == WorkspaceRole::Owner;
             let reader = AuthenticatedPrincipal::user(actor.clone());
-            let page = coral_functions::readable_page_in_transaction(
+            let page = coral_tools::readable_page_in_transaction(
                 &mut transaction,
                 workspace,
                 reader.principal(),
                 if owner {
-                    coral_functions::PrivateToolScope::OwnAndAgents
+                    coral_tools::PrivateToolScope::OwnAndAgents
                 } else {
-                    coral_functions::PrivateToolScope::Own
+                    coral_tools::PrivateToolScope::Own
                 },
                 after,
                 page_size,
@@ -487,7 +487,7 @@ impl ToolPolicyModule {
 /// A Private Tool's row, as a Provider Tool's would be: available, with no
 /// tags or diagnostics, and its declared default as its policy facts.
 fn private_tool_listing(
-    tool: &coral_functions::ReadablePrivateTool,
+    tool: &coral_tools::ReadablePrivateTool,
 ) -> (
     coral_catalog::ToolListing,
     Option<coral_workspace::PrincipalId>,
@@ -505,10 +505,10 @@ fn private_tool_listing(
     )
 }
 
-/// A coral-functions read failure: only persistence or corrupt data.
-fn functions_error(error: coral_functions::Error) -> Error {
+/// A coral-tools read failure: only persistence or corrupt data.
+fn functions_error(error: coral_tools::Error) -> Error {
     match error {
-        coral_functions::Error::Database(error) => Error::Database(error),
+        coral_tools::Error::Database(error) => Error::Database(error),
         other => Error::CorruptData(other.to_string()),
     }
 }
@@ -609,14 +609,14 @@ async fn ruled_tool_facts_in_transaction(
     }
     let reader = AuthenticatedPrincipal::user(actor.clone());
     let owner = evidence.effective_role() == WorkspaceRole::Owner;
-    let facts = coral_functions::readable_defaults_in_transaction(
+    let facts = coral_tools::readable_defaults_in_transaction(
         transaction,
         workspace_id,
         reader.principal(),
         if owner {
-            coral_functions::PrivateToolScope::OwnAndAgents
+            coral_tools::PrivateToolScope::OwnAndAgents
         } else {
-            coral_functions::PrivateToolScope::Own
+            coral_tools::PrivateToolScope::Own
         },
         keys,
     )

@@ -6,10 +6,9 @@ mod memberships;
 mod organization_memberships;
 mod organization_workspaces;
 mod policies;
+mod private_tools;
 mod providers;
 mod releases;
-mod saved_functions;
-mod usage_data;
 mod workspaces;
 use std::sync::Arc;
 
@@ -42,10 +41,10 @@ pub struct Dependencies {
     pub runs: coral_run::RunModule,
     /// Task inspection.
     pub tasks: coral_task::TaskModule,
-    /// The caller's own current Saved Function inspection.
-    pub saved_functions: coral_functions::SavedFunctionInspection,
-    /// The caller's own current Saved Function deletion.
-    pub saved_function_deletion: coral_functions::SavedFunctionDeletion,
+    /// The caller's own current Private Tool inspection.
+    pub private_tools: coral_tools::PrivateToolInspection,
+    /// The caller's own current Private Tool deletion.
+    pub private_tool_deletion: coral_tools::PrivateToolDeletion,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
@@ -85,8 +84,8 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         policies: dependencies.policies,
         accounts: dependencies.accounts,
         tasks: dependencies.tasks,
-        saved_functions: dependencies.saved_functions,
-        saved_function_deletion: dependencies.saved_function_deletion,
+        private_tools: dependencies.private_tools,
+        private_tool_deletion: dependencies.private_tool_deletion,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
@@ -138,10 +137,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             services.clone(),
         ))
         .add_service(
-            management::usage_data_service_server::UsageDataServiceServer::new(services.clone()),
-        )
-        .add_service(
-            management::saved_function_service_server::SavedFunctionServiceServer::new(
+            management::private_tool_service_server::PrivateToolServiceServer::new(
                 services.clone(),
             ),
         )
@@ -175,8 +171,8 @@ struct GrpcServices {
     policies: coral_policy::ToolPolicyModule,
     accounts: Option<coral_provider::account::AccountModule>,
     tasks: coral_task::TaskModule,
-    saved_functions: coral_functions::SavedFunctionInspection,
-    saved_function_deletion: coral_functions::SavedFunctionDeletion,
+    private_tools: coral_tools::PrivateToolInspection,
+    private_tool_deletion: coral_tools::PrivateToolDeletion,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,

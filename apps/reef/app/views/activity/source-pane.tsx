@@ -17,7 +17,7 @@ import * as styles from './source-pane.css'
 /**
  * The persistent, read-only accepted-source pane: one document over Wax's
  * `AnnotatedCodeBlock` for line numbers, syntax highlighting, the highlighted
- * range, and its reveal whenever `revealKey` changes. A Saved Function
+ * range, and its reveal whenever `revealKey` changes. A Private Tool
  * snapshot is named; the accepted program is the pane's default and is not.
  * An explicit "no recorded location" message replaces a guessed one when the
  * selected record has a call but no mapped range.

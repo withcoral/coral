@@ -135,10 +135,10 @@ async fn describe_rejects_undeclared_or_oversized_types_and_changes_nothing() {
     }
 }
 
-/// The caller already has a Saved Function's source from describing it, so a
+/// The caller already has a Private Tool's source from describing it, so a
 /// description cut to `types` leaves it out.
 #[tokio::test]
-async fn a_saved_function_described_for_types_leaves_out_its_source() {
+async fn a_private_tool_described_for_types_leaves_out_its_source() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     let path = CallPath::parse("coral.private.internal.formatForecast").unwrap();
@@ -156,8 +156,8 @@ async fn a_saved_function_described_for_types_leaves_out_its_source() {
     let whole = describe(Vec::new()).await;
     let forecast = describe(vec!["Forecast".to_string()]).await;
 
-    assert!(whole.saved_function_detail().is_some());
-    assert!(forecast.saved_function_detail().is_none());
+    assert!(whole.private_tool_detail().is_some());
+    assert!(forecast.private_tool_detail().is_none());
     assert!(
         forecast
             .authoring()

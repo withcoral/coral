@@ -18,7 +18,7 @@ import type {
  * their schemas. `response.test.ts` checks each key and type here against
  * those snapshots, so change both together.
  */
-const entityKind = z.enum(['provider_tool', 'saved_function'])
+const entityKind = z.enum(['provider_tool', 'private_tool'])
 const hints = z.object({
   read_only: z.boolean().optional(),
   destructive: z.boolean().optional(),
@@ -86,7 +86,7 @@ const untrimmedSearchPageSchema = z.object({
         guidance_snippet: z.string().nullish(),
         matched_tags: z.array(z.string()).optional(),
       }),
-      z.object({ kind: z.literal('saved_function'), ...untrimmedHitFields }),
+      z.object({ kind: z.literal('private_tool'), ...untrimmedHitFields }),
     ]),
   ),
   has_more: z.boolean(),
@@ -117,7 +117,7 @@ export const descriptionSchema = z.discriminatedUnion('kind', [
     approval_required: z.boolean(),
   }),
   z.object({
-    kind: z.literal('saved_function'),
+    kind: z.literal('private_tool'),
     ...authoringFields,
     // Absent when `describe` returned only the types it was asked for.
     source: z.string().optional(),
@@ -158,7 +158,7 @@ function toolFacts(
   return { providerLabel: value.provider_display_name, ...toolFlags(value) }
 }
 /**
- * A Saved Function shows its path. A Tool without a title shows its Call
+ * A Private Tool shows its path. A Tool without a title shows its Call
  * Path until the loader links it to a provider and shortens it.
  */
 function title(value: { call_path: string; title?: string | null }) {
@@ -181,11 +181,11 @@ function searchCoverage({
   }
 }
 
-/** The Call Path names the kind: Saved Functions live under `coral.private`. */
+/** The Call Path names the kind: Private Tools live under `coral.private`. */
 function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
   return {
     hits: value.hits.map((hit): SearchHit => {
-      const kind = privateToolPath(hit.call_path) === null ? 'provider_tool' : 'saved_function'
+      const kind = privateToolPath(hit.call_path) === null ? 'provider_tool' : 'private_tool'
       return {
         kind,
         callPath: hit.call_path,
@@ -240,8 +240,8 @@ function description(value: z.infer<typeof descriptionSchema>): Description {
       value.kind === 'provider_tool'
         ? { ...toolFacts(value), tags: value.tags, guidance: value.guidance }
         : null,
-    savedFunction:
-      value.kind === 'saved_function' && value.source !== undefined
+    privateTool:
+      value.kind === 'private_tool' && value.source !== undefined
         ? {
             source: value.source,
             diagnostics: value.diagnostics ?? [],

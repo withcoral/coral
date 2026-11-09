@@ -7,22 +7,22 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
     let fixture = TestModules::new(Arc::new(engine.clone())).await;
     let (workspace, owner) = fixture.user_scope("user:deletion-owner", "Deletion").await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace).await;
-    let saved = SavedFunctionModule::new(
+    let saved = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    let path = SavedFunctionPath::parse("snapshots.value").unwrap();
+    let path = PrivateToolPath::parse("snapshots.value").unwrap();
     saved
         .save(
-            &saved_function_change(agent.clone(), 20, '1'),
+            &private_tool_change(agent.clone(), 20, '1'),
             &workspace,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Answer").unwrap(),
-                SavedFunctionSource::parse("export default () => 42;").unwrap(),
+                PrivateToolDescription::parse("Answer").unwrap(),
+                PrivateToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await
@@ -77,7 +77,7 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         saved
             .get_agent(&owner, &workspace, agent.principal().id(), &path)
             .await,
-        Err(FunctionsError::SavedFunctionNotFound)
+        Err(FunctionsError::PrivateToolNotFound)
     ));
     release.send(()).unwrap();
     let terminal = wait_for_terminal(&fixture.runs, &owner, &workspace, run.run_id()).await;

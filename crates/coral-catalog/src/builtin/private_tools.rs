@@ -2,7 +2,7 @@
 //! Program is typed from, the arguments Coral reads against the input
 //! schemas, and the results it writes against the output schemas. They
 //! create, replace and remove one of the caller's own Private Tools;
-//! coral-functions checks each path, description and source (ADR 0031,
+//! coral-tools checks each path, description and source (ADR 0031,
 //! ADR 0033).
 
 use coral_workspace::WorkspaceAction;
@@ -179,7 +179,7 @@ struct RemoveArguments {
 /// The opaque type of `source`: a Program passes a function, and admission
 /// replaces it with the module it extracts, which the Program host encodes
 /// as the string this schema describes.
-pub(super) const SOURCE_OPAQUE_TYPE: &str = "SavedFunctionSource";
+pub(super) const SOURCE_OPAQUE_TYPE: &str = "PrivateToolSource";
 
 /// Accepts any function a Program declares.
 pub(super) const SOURCE_TYPESCRIPT_TYPE: &str = "(...args: never[]) => unknown";
@@ -221,7 +221,7 @@ fn empty<'a>(fields: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Argume
 }
 
 /// `addTool`'s or `updateTool`'s arguments in the shape the schema allows.
-/// coral-functions checks each value itself.
+/// coral-tools checks each value itself.
 #[derive(Debug, Clone)]
 pub struct ToolSaveArguments {
     path: String,

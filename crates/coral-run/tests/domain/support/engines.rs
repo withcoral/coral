@@ -21,20 +21,20 @@ impl ClosureReadGateEngine {
 }
 
 impl ProgramEngine for ClosureReadGateEngine {
-    fn program_saved_function_references(
+    fn program_private_tool_references(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        test_saved_function_reference("closure.root").map(|reference| vec![reference])
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+        test_private_tool_reference("closure.root").map(|reference| vec![reference])
     }
 
-    fn saved_function_dependency_references(
+    fn private_tool_dependency_references(
         &self,
         _deadline: std::time::Instant,
-        _path: &SavedFunctionPath,
+        _path: &PrivateToolPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         if !source.contains("root-v1") {
             return Ok(Vec::new());
         }
@@ -44,7 +44,7 @@ impl ProgramEngine for ClosureReadGateEngine {
             .map_err(|error| error.to_string())?
             .recv()
             .map_err(|error| error.to_string())?;
-        test_saved_function_reference("closure.dependency").map(|reference| vec![reference])
+        test_private_tool_reference("closure.dependency").map(|reference| vec![reference])
     }
 
     fn compile(
@@ -55,11 +55,11 @@ impl ProgramEngine for ClosureReadGateEngine {
         Ok(ProgramPackage::scripted(source))
     }
 
-    fn compile_with_saved_functions(
+    fn compile_with_private_tools(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[PrivateToolSelection],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -95,12 +95,12 @@ impl SnapshotEngine {
 }
 
 impl ProgramEngine for SnapshotEngine {
-    fn program_saved_function_references(
+    fn program_private_tool_references(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        test_saved_function_reference("snapshots.value").map(|reference| vec![reference])
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+        test_private_tool_reference("snapshots.value").map(|reference| vec![reference])
     }
 
     fn compile(
@@ -111,16 +111,16 @@ impl ProgramEngine for SnapshotEngine {
         Ok(ProgramPackage::scripted(source))
     }
 
-    fn compile_with_saved_functions(
+    fn compile_with_private_tools(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[PrivateToolSelection],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         let linked = linked
             .first()
-            .ok_or_else(|| "Saved Function snapshot is missing".to_string())?;
+            .ok_or_else(|| "Private Tool snapshot is missing".to_string())?;
         Ok(ProgramPackage::scripted(linked.source().as_str()))
     }
 
@@ -215,11 +215,11 @@ impl FailingCompileEngine {
 }
 
 impl ProgramEngine for FailingCompileEngine {
-    fn program_saved_function_references(
+    fn program_private_tool_references(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         Self::fail_at("analysis", source)?;
         Ok(Vec::new())
     }
@@ -538,12 +538,12 @@ impl ProgramEngine for CompileGateEngine {
 
 /// Finds `coral.private.<path>` references by scanning source text, so Saved
 /// Function closure rules run without TypeScript compilation time. A linked
-/// Program returns how many Saved Functions it linked.
+/// Program returns how many Private Tools it linked.
 #[derive(Clone, Default)]
 pub(crate) struct ReferenceScanningEngine;
 
 impl ReferenceScanningEngine {
-    fn references(source: &str) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    fn references(source: &str) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         const PREFIX: &str = "coral.private.";
         source
             .match_indices(PREFIX)
@@ -556,27 +556,27 @@ impl ReferenceScanningEngine {
                     })
                     .next()
                     .unwrap_or_default();
-                test_saved_function_reference(path)
+                test_private_tool_reference(path)
             })
             .collect()
     }
 }
 
 impl ProgramEngine for ReferenceScanningEngine {
-    fn program_saved_function_references(
+    fn program_private_tool_references(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         Self::references(source)
     }
 
-    fn saved_function_dependency_references(
+    fn private_tool_dependency_references(
         &self,
         _deadline: std::time::Instant,
-        _path: &SavedFunctionPath,
+        _path: &PrivateToolPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
         Self::references(source)
     }
 
@@ -588,11 +588,11 @@ impl ProgramEngine for ReferenceScanningEngine {
         Ok(ProgramPackage::scripted(source))
     }
 
-    fn compile_with_saved_functions(
+    fn compile_with_private_tools(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[PrivateToolSelection],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(&linked.len().to_string()))
@@ -611,11 +611,11 @@ impl ProgramEngine for ReferenceScanningEngine {
     }
 }
 
-pub(crate) fn test_saved_function_reference(
+pub(crate) fn test_private_tool_reference(
     path: &str,
-) -> Result<SavedFunctionReference, CompileFailure> {
-    Ok(SavedFunctionReference {
-        path: SavedFunctionPath::parse(path).map_err(|error| error.to_string())?,
+) -> Result<PrivateToolReference, CompileFailure> {
+    Ok(PrivateToolReference {
+        path: PrivateToolPath::parse(path).map_err(|error| error.to_string())?,
         line: 1,
         column: 1,
     })

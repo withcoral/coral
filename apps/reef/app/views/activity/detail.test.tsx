@@ -751,10 +751,10 @@ it.each<[string, Detail, string]>([
   ],
   [
     // A save states no target: its reference is an ID that no page opens.
-    'a saved function without an intent by its tool, not its ID',
+    'a private tool without an intent by its tool, not its ID',
     tool(
       { tool: 'save_function', intent: '' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
+      { kind: 'function', reference: `${workspace}/privateTools/reminders` },
     ),
     'Save function',
   ],
@@ -762,7 +762,7 @@ it.each<[string, Detail, string]>([
     'a deleted function without an intent by its tool, not its ID',
     tool(
       { tool: 'delete_function', intent: '' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
+      { kind: 'function', reference: `${workspace}/privateTools/reminders` },
     ),
     'Delete function',
   ],
@@ -901,7 +901,7 @@ it.each<[string, RunDetail, string | null]>([
       },
       source: 'exact-accepted-source',
       linkedFunctions: [
-        { savedFunction: 'snapshot-id', path: 'billing.remind', source: 'exact-snapshot' },
+        { privateTool: 'snapshot-id', path: 'billing.remind', source: 'exact-snapshot' },
       ],
     }
     const container = document.createElement('div')
@@ -928,7 +928,7 @@ it.each<[string, RunDetail, string | null]>([
       'Inspect original exec submission',
       'Accepted program source',
       'exact-accepted-source',
-      'Saved-function snapshot',
+      'Private tool snapshot',
       'exact-snapshot',
       detail.run.name,
     ])
@@ -1128,7 +1128,7 @@ it("links a result to today's catalog with a labelled icon beside its call path,
 
 it.each([
   ['tools', stored.complete],
-  ['tools and saved functions', stored.mixed],
+  ['tools and private tools', stored.mixed],
 ])('shows each %s result as one compact row in its retained order', (_, response) => {
   const view = discoveryView(searchContext, response)
   if (view.kind !== 'search') throw new Error('expected a search page')
@@ -1141,7 +1141,7 @@ it.each([
   rows.forEach((row, index) => {
     const hit = hits[index]
     expect(row).toHaveTextContent(hit.title)
-    expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'saved function')
+    expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'private tool')
     if (hit.matched.fields.length + hit.matched.tags.length > 0)
       expect(row).toHaveTextContent('Matched in')
     // Approval shows as the Providers page's Ask hand, named, never as a text badge.
@@ -1273,12 +1273,12 @@ it.each([
     folded: ['namespace issues', 'Any user with pull access', 'API method documentation'],
   },
   {
-    case: 'a saved function with diagnostics',
+    case: 'a private tool with diagnostics',
     context: describedFunction,
     response: stored.describeFunction,
     asked: ['Call path', 'Types', 'Intent'],
     title: 'coral.private.github.openIssuesByLabel',
-    kind: 'saved function',
+    kind: 'private tool',
     summary: ['1 error'],
     folded: [
       'function openIssuesByLabel',
@@ -1515,8 +1515,8 @@ const functionPanel = (overrides: Partial<InteractionRow>, evidence: Interaction
   })
   return { container, name }
 }
-const savedFunctionId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
-const savedFunction = `${workspace}/savedFunctions/${savedFunctionId}`
+const privateToolId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
+const privateTool = `${workspace}/privateTools/${privateToolId}`
 const functionCalls = [
   {
     tool: 'save_function',
@@ -1525,7 +1525,7 @@ const functionCalls = [
     done: null,
     noun: 'save',
     notices: false,
-    code: 'saved_function_admission_failed',
+    code: 'private_tool_admission_failed',
     message: 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^',
   },
   {
@@ -1535,7 +1535,7 @@ const functionCalls = [
     noun: 'delete',
     notices: true,
     code: 'not_found',
-    message: "Saved function 'billing.oldReminders' does not exist.\n  path: billing.oldReminders",
+    message: "Private tool 'billing.oldReminders' does not exist.\n  path: billing.oldReminders",
   },
 ]
 const functionCases = functionCalls.flatMap((call) =>
@@ -1544,7 +1544,7 @@ const functionCases = functionCalls.flatMap((call) =>
       {
         case: `a ${call.noun} that succeeded`,
         overrides: { outcome: 'succeeded' },
-        evidence: { kind: 'function', reference: savedFunction },
+        evidence: { kind: 'function', reference: privateTool },
       },
       {
         case: `a rejected ${call.noun}`,
@@ -1617,7 +1617,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
     'Rejected:',
     'Completion is unknown',
     name,
-    savedFunction,
+    privateTool,
     'workspaces/',
   ])
     expect(container.textContent).not.toContain(gone)
@@ -1625,10 +1625,10 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
   expect(container.querySelector('details')).toBeNull()
   // It retained only the function's ID. No route opens a function by ID, so it has no link.
   expect(container.querySelector('a')).toBeNull()
-  if (changed) expect(factIn(lists[0], call.done!)!.textContent).toBe(savedFunctionId)
+  if (changed) expect(factIn(lists[0], call.done!)!.textContent).toBe(privateToolId)
   else {
     expect(within(container).queryByText('Saved', { selector: 'dt' })).toBeNull()
-    expect(container.textContent).not.toContain(savedFunctionId)
+    expect(container.textContent).not.toContain(privateToolId)
   }
   const { list, item } = resultCard()
   const error = container.querySelector('section[aria-label="Error"]')
@@ -3020,12 +3020,12 @@ describe('each record states only what helps, once', () => {
     [
       'a save',
       { tool: 'save_function' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/id` },
+      { kind: 'function', reference: `${workspace}/privateTools/id` },
     ],
     [
       'a delete',
       { tool: 'delete_function' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/id` },
+      { kind: 'function', reference: `${workspace}/privateTools/id` },
     ],
     ['another tool', { tool: 'inspect' }, { kind: 'unknown' }],
   ])('does not repeat the title of %s as its Intent', (_, overrides, evidence) => {
