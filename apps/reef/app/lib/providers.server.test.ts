@@ -80,6 +80,10 @@ it.each([
 it('fails a provider change for a lapsed sign-in with 401', () => {
   const result = providerFailure(new ConnectError('expired', Code.Unauthenticated))
   expect(result.init?.status).toBe(401)
+  expect(result.data).toEqual({
+    error: 'Coral could not apply this change. Sign in again to continue.',
+    credential: null,
+  })
 })
 
 // Catches: a provider that search indexed showing a notice, a pending
