@@ -4,6 +4,9 @@ import type { SendBlock, UsageDataView } from './types'
 export const contents =
   'Coral sends anonymous usage data. It never sends your programs, tool arguments, tool results, credentials or the names you give things.'
 
+/** What a report holds and how to turn sharing off. */
+export const docsUrl = 'https://withcoral.com/docs/reference/usage-data'
+
 export function place(kind: UsageDataView['kind']): string {
   return kind === 'desktop' ? 'your computer' : 'this server'
 }

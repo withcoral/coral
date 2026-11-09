@@ -531,6 +531,11 @@ function SidebarNavigation({
                 {link.label}
               </Menu.Item>
             ))}
+            {/* Every member can read what Coral sends; only organization owners change it. */}
+            <Menu.Separator />
+            <Menu.Item to="/usage-data" icon="ChartNoAxesColumn">
+              Usage data
+            </Menu.Item>
           </Menu.Content>
         </Menu.Container>
         <Menu.Container>
