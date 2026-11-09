@@ -843,12 +843,17 @@ fn missing_saved_function_dependency(
     source_path: &SavedFunctionPath,
     reference: &SavedFunctionReference,
 ) -> Error {
+    // Worded as any path that names no Tool; a save looks up no
+    // suggestions.
     Error::SavedFunctionAdmission(format!(
-        "Private Tool coral.private.{}:{}:{} references missing Private Tool coral.private.{}",
+        "Private Tool coral.private.{}:{}:{}: {}",
         source_path.as_str(),
         reference.line,
         reference.column,
-        reference.path.as_str()
+        coral_catalog::unknown_call_path_message(
+            &format!("coral.private.{}", reference.path.as_str()),
+            &[],
+        )
     ))
 }
 

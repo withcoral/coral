@@ -333,6 +333,19 @@ impl SearchRequest {
 /// The root that every Private Tool's Call Path starts with.
 const PRIVATE_TOOL_ROOT: &str = "coral.private";
 
+/// Splits a written path into the Call Root that would own it and the path
+/// under that root: a Provider Call Root's, or `coral.private` for a
+/// Private Tool's, which no Provider Call Root splits. `None` when no root
+/// owns it.
+pub(crate) fn split_written_path(path: &str) -> Option<(ProviderCallRoot, &str)> {
+    ProviderCallRoot::split_call_path(path).or_else(|| {
+        path.strip_prefix(PRIVATE_TOOL_ROOT)?
+            .strip_prefix('.')
+            .filter(|relative| relative.split('.').all(|segment| !segment.is_empty()))
+            .map(|relative| (ProviderCallRoot::Private, relative))
+    })
+}
+
 /// Complete public JavaScript path for one Tool or Saved Function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);

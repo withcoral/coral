@@ -131,7 +131,10 @@ pub use openapi::{
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
     OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, SuccessSelection, validate_openapi_configuration,
 };
-pub use paths::{ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid};
+pub use paths::{
+    ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid,
+    unknown_call_path_message,
+};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,

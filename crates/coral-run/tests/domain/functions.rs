@@ -903,3 +903,45 @@ async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
         );
     }
 }
+
+// Catches: a call to a Private Tool the caller does not have refused with
+// other words than any path that names no Tool, or without the caller's own
+// nearest Private Tools to call instead.
+#[tokio::test]
+async fn a_missing_private_tool_is_refused_like_any_unknown_path_with_its_nearest_tools() {
+    let (scope, _index) = authoring_scope("user:functions-missing").await;
+    outcome(
+        &scope,
+        &scope.owner,
+        author(
+            "addTool",
+            "people.greetPerson",
+            "const saved = async (name: string): Promise<string> => `hello ${name}`;",
+            "",
+        ),
+    )
+    .await;
+    for (source, refusal) in [
+        (
+            "return await coral.private.people.personGreet('Ada');",
+            "Program:1:14: coral.private.people.personGreet names no Tool that you can call. \
+             Nearest: coral.private.people.greetPerson.",
+        ),
+        (
+            "return await coral.private.nobody.here();",
+            "Program:1:14: coral.private.nobody.here names no Tool that you can call. \
+             Find one with coral.search.",
+        ),
+    ] {
+        let refused = scope
+            .fixture
+            .runs
+            .start(&scope.owner, &scope.workspace_id, submission(source))
+            .await;
+        assert!(
+            matches!(&refused, Err(crate::Error::ProgramAdmission(message)) if message == refusal),
+            "{source}: {:?}",
+            refused.err()
+        );
+    }
+}

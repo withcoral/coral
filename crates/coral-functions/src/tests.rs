@@ -1353,12 +1353,16 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
             ),
         )
         .await;
-    assert!(matches!(
-        missing,
-        Err(Error::SavedFunctionAdmission(message))
-            if message.contains("coral.private.reports.compose")
-                && message.contains("coral.private.missing.value")
-    ));
+    assert!(
+        matches!(
+            &missing,
+            Err(Error::SavedFunctionAdmission(message))
+                if message == "Private Tool coral.private.reports.compose:2:10: \
+                    coral.private.missing.value names no Tool that you can call. \
+                    Find one with coral.search."
+        ),
+        "{missing:?}"
+    );
 
     for source in [
         "const dependency = 'value'; export default function compose() { return coral.private.reports[dependency](); }",

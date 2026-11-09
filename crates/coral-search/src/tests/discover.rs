@@ -7,8 +7,13 @@ use super::index::CapturedLogs;
 use super::{TestModules, TracerScope};
 use crate::{Discovery, DiscoveryRequest, EntityKind, Error, ExactLookup, ExactPaths};
 use coral_catalog::{SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, ToolKey};
+use coral_functions::{
+    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionPath, SavedFunctionSave,
+    SavedFunctionSource,
+};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
-use coral_test_support::change;
+use coral_test_support::{change, trace};
+use coral_workspace::AuthenticatedPrincipal;
 
 async fn look_up(fixture: &TestModules, scope: &TracerScope, paths: &[&str]) -> ExactLookup {
     let paths = ExactPaths::new(paths.iter().map(ToString::to_string).collect(), Vec::new())
@@ -435,5 +440,75 @@ async fn a_ranking_failure_leaves_the_exact_suggestions_and_is_logged() {
                     .map(String::as_str)
                     == Some("\"provider_tool\"")),
         "{events:?}"
+    );
+}
+
+// Catches: a guessed Private Tool path reported with nothing to call though
+// the caller has a Tool by that name, because suggestions read only the
+// Provider Tools; or a suggestion of another Principal's Private Tool.
+#[tokio::test]
+async fn a_missing_private_path_names_the_callers_own_nearest_private_tools() {
+    let fixture = TestModules::new().await;
+    let route = super::AgentRoute::new(&fixture).await;
+    let owner = AuthenticatedPrincipal::user(route.user.clone());
+    let save = |principal: &AuthenticatedPrincipal, path: &str, at: i64| {
+        let (fixture, workspace, principal, path) = (
+            &fixture,
+            &route.workspace,
+            principal.clone(),
+            path.to_owned(),
+        );
+        async move {
+            fixture
+                .saved_functions
+                .save(
+                    &SavedFunctionChangeContext::new(principal, at, trace('6')),
+                    workspace,
+                    SavedFunctionSave::new(
+                        SavedFunctionPath::parse(&path).expect("a path"),
+                        SavedFunctionDescription::parse("Format one value").expect("a description"),
+                        SavedFunctionSource::parse(
+                            "export default async (value: number): Promise<string> => `${value}`;",
+                        )
+                        .expect("a source"),
+                    ),
+                )
+                .await
+                .expect("save the Private Tool");
+        }
+    };
+    save(&owner, "people.greet", 30).await;
+    save(&route.agent, "people.greetAll", 31).await;
+    fixture.converge().await;
+
+    let paths = ExactPaths::new(
+        vec![
+            "coral.private.people.greets".to_string(),
+            "coral.private.people.greetEveryone".to_string(),
+        ],
+        Vec::new(),
+    )
+    .expect("a bounded lookup");
+    let Discovery::Exact(lookup) = fixture
+        .search
+        .discover(&owner, &route.workspace, &DiscoveryRequest::Paths(paths))
+        .await
+        .expect("an exact lookup")
+    else {
+        panic!("paths return an exact lookup");
+    };
+    assert_eq!(
+        suggestions(&lookup),
+        [
+            (
+                "coral.private.people.greets",
+                vec!["coral.private.people.greet"]
+            ),
+            (
+                "coral.private.people.greetEveryone",
+                vec!["coral.private.people.greet"]
+            ),
+        ],
+        "only the caller's own Private Tools, never the Agent's"
     );
 }

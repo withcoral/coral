@@ -421,8 +421,19 @@ impl RunModule {
                 actor.principal(),
                 path,
             )
-            .await?
-            .ok_or_else(|| missing_saved_function(&pending_reference))?;
+            .await?;
+            let Some(snapshot) = snapshot else {
+                // The lookup for suggestions reads in its own snapshot.
+                transaction.rollback().await?;
+                return Err(self
+                    .missing_private_tool(
+                        actor,
+                        workspace_id,
+                        &pending_reference,
+                        compilation_deadline,
+                    )
+                    .await);
+            };
             let ProgramReferences {
                 functions: referenced,
                 tools: named_tools,
@@ -553,7 +564,12 @@ impl RunModule {
         }
         let suggestions = timeout_at(
             compilation_deadline.into(),
-            unknown_path_suggestions(&search, actor, workspace_id, &named),
+            unknown_path_suggestions(
+                &search,
+                actor,
+                workspace_id,
+                named.iter().map(|call| call.call_path()),
+            ),
         )
         .await
         .unwrap_or_default();
@@ -564,7 +580,7 @@ impl RunModule {
                     "{source_name}:{}:{}: {}",
                     call.line(),
                     call.column(),
-                    crate::error::unknown_call_path_message(
+                    coral_catalog::unknown_call_path_message(
                         call.call_path(),
                         suggestions
                             .get(call.call_path())
@@ -577,6 +593,50 @@ impl RunModule {
         Err(Error::ProgramAdmission(
             coral_v8::bounded_diagnostic_message(&message),
         ))
+    }
+
+    /// Refuses a Program that calls, in its body or in a Private Tool it
+    /// links, a Private Tool the caller does not have: like any path that
+    /// names no Tool, with the caller's nearest Private Tools, which a
+    /// lookup bounded by the compilation deadline finds.
+    async fn missing_private_tool(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        pending: &PendingSavedFunctionReference,
+        compilation_deadline: Instant,
+    ) -> Error {
+        let source_name = match &pending.source {
+            SavedFunctionReferenceSource::SubmittedProgram => "Program".to_string(),
+            SavedFunctionReferenceSource::SavedFunction(path) => {
+                format!("Private Tool coral.private.{}", path.as_str())
+            }
+        };
+        let call_path = format!("coral.private.{}", pending.reference.path.as_str());
+        let search = coral_search::UniversalSearchModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+        );
+        let suggestions = timeout_at(
+            compilation_deadline.into(),
+            unknown_path_suggestions(
+                &search,
+                actor,
+                workspace_id,
+                std::iter::once(call_path.as_str()),
+            ),
+        )
+        .await
+        .unwrap_or_default();
+        Error::ProgramAdmission(coral_v8::bounded_diagnostic_message(&format!(
+            "{source_name}:{}:{}: {}",
+            pending.reference.line,
+            pending.reference.column,
+            coral_catalog::unknown_call_path_message(
+                &call_path,
+                suggestions.get(&call_path).map_or(&[][..], Vec::as_slice),
+            )
+        )))
     }
 
     /// The Workspace's Built-in Tools, which the Run calls on `coral`: the
@@ -653,15 +713,13 @@ impl RunModule {
 /// The nearest Discoverable Call Paths to the first [`SEARCH_PATHS_MAX`]
 /// unknown paths, by path, from one lookup. Discovery is advice: a failed
 /// lookup suggests nothing.
-async fn unknown_path_suggestions(
+async fn unknown_path_suggestions<'a>(
     search: &coral_search::UniversalSearchModule,
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
-    unknown: &[&coral_v8::UnknownToolCall],
+    unknown: impl Iterator<Item = &'a str>,
 ) -> HashMap<String, Vec<String>> {
     let paths = unknown
-        .iter()
-        .map(|call| call.call_path())
         .filter(|path| path.len() <= coral_catalog::SEARCH_PATH_MAX_BYTES)
         .take(SEARCH_PATHS_MAX)
         .map(str::to_owned)
@@ -718,21 +776,6 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
         None,
         run.value_limits,
     )
-}
-
-fn missing_saved_function(pending: &PendingSavedFunctionReference) -> Error {
-    let source_name = match &pending.source {
-        SavedFunctionReferenceSource::SubmittedProgram => "Program".to_string(),
-        SavedFunctionReferenceSource::SavedFunction(path) => {
-            format!("Private Tool coral.private.{}", path.as_str())
-        }
-    };
-    Error::ProgramAdmission(format!(
-        "{source_name}:{}:{} references missing Private Tool coral.private.{}",
-        pending.reference.line,
-        pending.reference.column,
-        pending.reference.path.as_str()
-    ))
 }
 
 fn order_saved_function_closure(

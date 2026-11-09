@@ -1,7 +1,8 @@
 //! The nearest Discoverable Call Paths to a path that names nothing the
 //! caller can call, so a Program can correct a guessed path without a
 //! separate search. Only Tools of the path's own Call Root are suggested,
-//! and only ones the caller can already discover.
+//! and only ones the caller can already discover: under `coral.private`,
+//! the caller's own Private Tools.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -13,7 +14,8 @@ use crate::retriever::{
     EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
     end_query,
 };
-use crate::{EntityKind, Error, ProviderCallRoot, ProviderFilter, query_terms};
+use crate::types::split_written_path;
+use crate::{EntityKind, Error, ProviderCallRoot, query_terms};
 
 /// The most Call Paths one missing path names.
 pub const SUGGESTIONS_MAX: usize = 3;
@@ -44,13 +46,17 @@ pub(crate) async fn suggestions(
     retrievers: &[Arc<dyn EntityRetriever>],
     written: &str,
 ) -> Result<Vec<String>, Error> {
-    let Some((call_root, relative_path)) = ProviderCallRoot::split_call_path(written) else {
+    let Some((call_root, relative_path)) = split_written_path(written) else {
         return Ok(Vec::new());
     };
-    let Some(tools) = retrievers
-        .iter()
-        .find(|retriever| retriever.kind() == EntityKind::ProviderTool)
-    else {
+    // The caller's own Private Tools are the Entities under its Private
+    // root; every other root holds Provider Tools.
+    let kind = if call_root == ProviderCallRoot::Private {
+        EntityKind::SavedFunction
+    } else {
+        EntityKind::ProviderTool
+    };
+    let Some(tools) = retrievers.iter().find(|retriever| retriever.kind() == kind) else {
         return Ok(Vec::new());
     };
     let listing = match tools
@@ -68,7 +74,7 @@ pub(crate) async fn suggestions(
         .map(|entity| entity.call_path().as_str())
         .filter(|path| {
             *path != written
-                && ProviderCallRoot::split_call_path(path)
+                && split_written_path(path)
                     .is_some_and(|(_root, relative)| leaf_words(relative) == leaf)
         })
         .map(str::to_owned)
@@ -120,13 +126,11 @@ pub(crate) async fn suggestions(
     };
     let written_words = path_words(relative_path);
     let (named, others): (Vec<_>, Vec<_>) = window.into_iter().partition(|entry| {
-        ProviderCallRoot::split_call_path(entry.entity.call_path().as_str()).is_some_and(
-            |(_root, relative)| {
-                path_words(relative)
-                    .iter()
-                    .any(|word| written_words.iter().any(|written| same_word(word, written)))
-            },
-        )
+        split_written_path(entry.entity.call_path().as_str()).is_some_and(|(_root, relative)| {
+            path_words(relative)
+                .iter()
+                .any(|word| written_words.iter().any(|written| same_word(word, written)))
+        })
     });
     for entry in named.into_iter().chain(others) {
         let path = entry.entity.call_path().as_str();
