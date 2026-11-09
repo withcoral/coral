@@ -223,6 +223,12 @@ async function applyPolicyBatches(
         })
         for (const target of targets) outcomes.push({ ...target, status: 'updated' })
       } catch (error) {
+        // A lapsed sign-in fails the whole change, so the protected layout
+        // signs the reader in again. No later batch starts.
+        if (error instanceof ConnectError && error.code === Code.Unauthenticated) {
+          next = batches.length
+          throw error
+        }
         const reason = failureReason(error)
         for (const target of targets) outcomes.push({ ...target, status: 'failed', reason })
       }
