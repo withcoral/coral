@@ -1,5 +1,6 @@
 //! Minimal Provider authority snapshots for retained Invocation evidence.
 //! Publication creates one Provider; these projections have no independent lifecycle.
+use coral_catalog::AuthoredToolKind;
 use coral_workspace::WorkspaceId;
 
 use coral_db::Transaction;
@@ -49,9 +50,9 @@ pub struct ProviderNamespace {
 /// The Call Root of every Workspace's Built-in Provider.
 const BUILTIN_ROOT: &str = "coral";
 /// The Call Root of every Workspace's Private Provider.
-const PRIVATE_ROOT: &str = "coral.private";
+const PRIVATE_ROOT: &str = AuthoredToolKind::Private.call_root();
 /// The Call Root of every Workspace's Shared Provider.
-const SHARED_ROOT: &str = "coral.shared";
+const SHARED_ROOT: &str = AuthoredToolKind::Shared.call_root();
 /// The prefix of every Owner-added Provider's Call Root.
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
 

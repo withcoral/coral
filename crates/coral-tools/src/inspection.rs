@@ -45,7 +45,7 @@ impl PrivateToolInspection {
         self.authorize_in_transaction(&mut transaction, actor, workspace_id)
             .await
             .map_err(conceal_inspection_error)?;
-        let function = repository::find_current_in_transaction(
+        let tool = repository::find_current_in_transaction(
             &mut transaction,
             workspace_id,
             actor.principal(),
@@ -54,14 +54,14 @@ impl PrivateToolInspection {
         .await?
         .ok_or(Error::PrivateToolNotFound)?;
         transaction.commit().await?;
-        Ok(function)
+        Ok(tool)
     }
 
     /// Lists one page of the authenticated Principal's own current Private
     /// Tools in one Workspace, in path order after `after`.
     ///
     /// Summaries carry no source, declaration, or diagnostics. Another
-    /// Principal's functions, including a Workspace-owned Agent's for a
+    /// Principal's Private Tools, including a Workspace-owned Agent's for a
     /// Workspace Owner, never appear.
     ///
     /// # Errors
@@ -96,7 +96,7 @@ impl PrivateToolInspection {
         Ok(page)
     }
 
-    /// Checks that the caller can read its own functions in this Workspace.
+    /// Checks that the caller can read its own Private Tools in this Workspace.
     ///
     /// Workspace authority rechecks the current User, or the current Agent and
     /// its Registration, in this snapshot. Denials keep their Workspace error for

@@ -185,7 +185,7 @@ function coralSurface(builtinTools, declarations) {
   const privateTools = typedRoot(
     sources,
     'coral.private',
-    declarations?.functions,
+    declarations?.privateTools,
     privateToolCallable,
   );
   // A Shared Tool call is a Tool Invocation too.

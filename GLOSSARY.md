@@ -748,6 +748,13 @@ A Tool whose schema Coral cannot type declares one untyped result in full.
 **MCP Resource Reference (`McpResourceRef`)**: An opaque, Provider-bound reference created from an upstream MCP resource
 link. Reading it is a separate Provider Tool; Coral never auto-fetches it. _Avoid_: Raw resource URI, Binary Value
 
+**Authored Tool**: A Tool that Coral performs from TypeScript source that a Principal wrote: a Private Tool or a Shared
+Tool. The two kinds share one source format, one declaration format, the same limits, and the same data-only contract,
+and differ in their Call Root, their owner, and how their source changes: a Private Tool Save replaces a Private Tool,
+and a Shared Tool Publish adds a Shared Tool Revision. A Provider Tool is not one: an Upstream Service or Coral itself
+performs it. Use the term only for what both kinds share. _Avoid_: Saved Function, code tool, custom tool, user-defined
+tool
+
 **Private Tool Path**: The Principal-owned dotted JavaScript path relative to `coral.private` that names one Private
 Tool, such as `internal.finance.calculateTax`. Each segment is a valid JavaScript path segment, and Coral rejects
 reserved internal segments. Parent paths are virtual namespaces rather than folders or separate resources. The complete
@@ -762,12 +769,12 @@ as its default export. `addTool` fails when the path exists. `updateTool` fails 
 expected revision, when the current revision differs. Either can set the Tool's default Tool Access State, `enabled`
 when `addTool` omits it; an update that omits it keeps the current one. `coral.removeTool` removes one. Each call is a Tool Invocation of its Run, not a separate Task Interaction; MCP has no authoring tools.
 Only the owning Principal can save or replace it. Without an expected revision, the latest accepted save wins. It replaces the source, description,
-declaration, and diagnostics together, while failure leaves the current function unchanged. A save outlives its Run. A
+declaration, and diagnostics together, while failure leaves the current Private Tool unchanged. A save outlives its Run. A
 Program can call the function it saves, but not by its Private Tool Path: its Run linked its Private Tools at
 admission. Reef uses a private first-party service for the same behavior, with the source as text. Saving never
 executes the saved source. A Workspace Owner can list, inspect, and delete an Agent-owned Private Tool but cannot
 save or replace one as the Agent. V1 exposes no public versions, edit token, or rename operation, and updating or
-deleting a function cannot change an already accepted Run. _Avoid_: Draft save, partial publication, Private Tool
+deleting a Private Tool cannot change an already accepted Run. _Avoid_: Draft save, partial publication, Private Tool
 generation, source string, saveFunction
 
 **Private Tool Declaration**: The exact, self-contained TypeScript declaration emitted from one accepted Private
@@ -795,7 +802,7 @@ a linked module can invoke a Tool even when the submitted Program never calls it
 TypeScript is its behavior authority, and its Private Tool Declaration is its interface authority. It is not a
 Provider Tool, can call several Tools, and, like every Tool, takes and returns only data: no callback, function, or
 class instance crosses a call. At Program admission Coral statically identifies literal Private Tool references,
-rejects computed function paths, and links the exact current source closure into the Program compilation. It also
+rejects computed Private Tool Paths, and links the exact current source closure into the Program compilation. It also
 extracts, from the Program and from each linked source, the module that each literal `coral.addTool`
 call saves (Private Tool Save). V1 does not
 preserve reverse-reference integrity when a Private Tool is later deleted; a missing source in the closure blocks a
@@ -864,7 +871,7 @@ Program Run. _Avoid_: Runtime compilation, partial Run, semantic type gate
 **Program Run**: The higher-level Workspace record for one accepted execution of a Coral Program; MCP work associates
 it with a Task, while standalone Reef execution does not require one. It stores the exact accepted Program source, the
 identities and exact source snapshots of linked Private Tools, and enough private compiler output and provenance to
-retain the code that V8 executed. Every new Run compiles its submitted source and linked Private Tool closure with Coral's currently pinned TypeScript profile, even when a function was saved under an
+retain the code that V8 executed. Every new Run compiles its submitted source and linked Private Tool closure with Coral's currently pinned TypeScript profile, even when a Private Tool was saved under an
 older profile. Coral stores the selected profile and emitted output with the Run and does not retain or select old
 compilers per Private Tool. The Run identity identifies this stored source and executable package; v1 adds no separate
 source or executable digest. A later profile update can affect future Runs but cannot change an accepted Run.

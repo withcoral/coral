@@ -266,7 +266,7 @@ attribute! {
     /// The bounded kind of work sent to the TypeScript compiler.
     CompilerOperation {
         Program => "program",
-        PrivateTool => "private_tool",
+        AuthoredTool => "authored_tool",
         Analysis => "analysis",
     }
 }

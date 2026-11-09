@@ -83,9 +83,9 @@ function compileProgram(body, builtinTools, fileName, targetName) {
   );
 }
 
-function compileLinkedProgram(body, privateTools, builtinTools, fileName, targetName) {
+function compileLinkedProgram(body, linkedTools, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
-  if (!Array.isArray(privateTools)) {
+  if (!Array.isArray(linkedTools)) {
     throw new Error('Linked Tool closure must be an array');
   }
   const wrapped = wrapProgramBody(body);
@@ -106,13 +106,13 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
       diagnostics: [],
     };
   }
-  const modules = privateTools.map((privateTool, index) => {
-    if (typeof privateTool?.source !== 'string') {
+  const modules = linkedTools.map((linkedTool, index) => {
+    if (typeof linkedTool?.source !== 'string') {
       throw new Error('Linked Tool closure contains an invalid source entry');
     }
     const { program: moduleProgram, sourceFile } = virtualTypeScriptProgram(
       `private_tool_${index}.ts`,
-      privateTool.source,
+      linkedTool.source,
       compilerOptions,
     );
     if (!sourceFile) {
@@ -121,8 +121,8 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
     return {
       program: moduleProgram,
       sourceFile,
-      pathSegments: privateTool.pathSegments,
-      root: privateTool.root,
+      pathSegments: linkedTool.pathSegments,
+      root: linkedTool.root,
     };
   });
   let validationError = forbiddenCapabilityError(
@@ -177,7 +177,7 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
       diagnostics: [],
     };
   }
-  const linked = linkedProgramSource(body, privateTools, builtinTools, target, saves);
+  const linked = linkedProgramSource(body, linkedTools, builtinTools, target, saves);
   return compileProgramSource(
     linked.source,
     fileName,

@@ -209,7 +209,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
 }
 
 #[tokio::test]
-async fn old_removal_cannot_delete_rejoined_membership_or_fresh_functions() {
+async fn old_removal_cannot_delete_rejoined_membership_or_fresh_private_tools() {
     stale_command_preserves_rejoined_membership_and_work(StaleCommand::Remove).await;
 }
 

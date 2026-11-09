@@ -384,7 +384,7 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       : null
   // An exec submission states its times and intent, then any error; its badge states its outcome.
   const exec = detail.kind === 'tool' && detail.interaction.tool === 'exec' ? detail : null
-  // A save or a delete states its intent, the function a delete removed, then its times; a
+  // A save or a delete states its intent, the private tool a delete removed, then its times; a
   // rejection shows its error below.
   const save =
     detail.kind === 'tool' &&
@@ -538,8 +538,8 @@ const toolKinds: Record<string, string> = {
   search: 'search',
   describe: 'describe',
   exec: 'exec submission',
-  save_function: 'save function',
-  delete_function: 'delete function',
+  save_function: 'save private tool',
+  delete_function: 'delete private tool',
 }
 /** The most specific retained name for a tool call: a search's intent, then its query; what a
  * describe call described; otherwise its intent, then the Run it started. The tool only when
@@ -553,10 +553,9 @@ function toolTitle(interaction: InteractionRow, evidence: InteractionEvidence) {
         ? context.callPath || interaction.intent
         : interaction.intent || (evidence.kind === 'run' ? evidence.reference : '')
   const kind = toolKinds[interaction.tool] ?? 'tool interaction'
-  // A save or a delete retains only a function ID that no page opens, so its tool titles it.
-  const functionTool =
-    interaction.tool === 'save_function' || interaction.tool === 'delete_function'
-  return name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
+  // A save or a delete retains only a private tool ID that no page opens, so its tool titles it.
+  const privateTool = interaction.tool === 'save_function' || interaction.tool === 'delete_function'
+  return name || (privateTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
 }
 /** A retained event's identity. A log message or an emitted value is the program's own
  * content, so it stays in the body and never becomes the title. */

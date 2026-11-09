@@ -8,19 +8,19 @@ use uuid::Uuid;
 
 use crate::Error;
 
-/// Maximum UTF-8 byte length of one Private Tool Path.
+/// Maximum UTF-8 byte length of one Private or Shared Tool Path.
 pub const AUTHORED_TOOL_PATH_MAX_BYTES: usize = 256;
-/// Maximum number of segments in one Private Tool Path.
+/// Maximum number of segments in one Private or Shared Tool Path.
 pub const AUTHORED_TOOL_PATH_MAX_SEGMENTS: usize = 16;
-/// Maximum UTF-8 byte length of one explicit Private Tool description.
+/// Maximum UTF-8 byte length of one explicit Authored Tool description.
 pub const AUTHORED_TOOL_DESCRIPTION_MAX_BYTES: usize = 4 * 1024;
 /// The deadline for one save or Run compilation, the Program Authoring Limit
 /// production composes. Each authoring Module receives its own value, so tests
 /// can relax it.
 pub const COMPILATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-/// Maximum UTF-8 byte length of one current Private Tool source.
+/// Maximum UTF-8 byte length of one current Authored Tool source.
 pub const AUTHORED_TOOL_SOURCE_MAX_BYTES: usize = 64 * 1024;
-/// Maximum UTF-8 byte length of one emitted Private Tool declaration.
+/// Maximum UTF-8 byte length of one emitted Authored Tool declaration.
 pub const AUTHORED_TOOL_DECLARATION_MAX_BYTES: usize = 256 * 1024;
 /// Maximum number of advisory diagnostics retained by one accepted save.
 pub const AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT: usize = 100;
@@ -147,7 +147,7 @@ fn safe_path_segment(value: &str) -> bool {
         && !coral_catalog::call_path_segment_is_reserved(value)
 }
 
-/// Explicit safe human-facing description of one Private Tool.
+/// Explicit safe human-facing description of one Authored Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthoredToolDescription(String);
 
@@ -165,7 +165,7 @@ impl AuthoredToolDescription {
             || value.chars().any(char::is_control)
         {
             return Err(Error::InvalidInput(format!(
-                "Private Tool description must be non-blank, have no surrounding whitespace or control characters, and be at most {AUTHORED_TOOL_DESCRIPTION_MAX_BYTES} UTF-8 bytes"
+                "Tool description must be non-blank, have no surrounding whitespace or control characters, and be at most {AUTHORED_TOOL_DESCRIPTION_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -192,7 +192,7 @@ impl AuthoredToolSource {
         if value.is_empty() || value.contains('\0') || value.len() > AUTHORED_TOOL_SOURCE_MAX_BYTES
         {
             return Err(Error::InvalidInput(format!(
-                "Private Tool source must be non-empty, contain no null byte, and be at most {AUTHORED_TOOL_SOURCE_MAX_BYTES} UTF-8 bytes"
+                "Tool source must be non-empty, contain no null byte, and be at most {AUTHORED_TOOL_SOURCE_MAX_BYTES} UTF-8 bytes"
             )));
         }
         Ok(Self(value.to_string()))
@@ -213,12 +213,12 @@ impl AuthoredToolDeclaration {
     pub(crate) fn from_compiler(value: &str) -> Result<Self, Error> {
         if value.is_empty() {
             return Err(Error::PrivateToolAdmission(
-                "TypeScript emitted no Private Tool declaration".to_string(),
+                "TypeScript emitted no Tool declaration".to_string(),
             ));
         }
         if value.len() > AUTHORED_TOOL_DECLARATION_MAX_BYTES {
             return Err(Error::PackageTooLarge {
-                component: "Private Tool declaration",
+                component: "Tool declaration",
                 maximum_bytes: AUTHORED_TOOL_DECLARATION_MAX_BYTES,
             });
         }
@@ -227,7 +227,7 @@ impl AuthoredToolDeclaration {
 
     pub(crate) fn from_persisted(value: &str) -> Result<Self, Error> {
         Self::from_compiler(value).map_err(|error| {
-            Error::CorruptData(format!("Private Tool has invalid declaration: {error}"))
+            Error::CorruptData(format!("authored Tool has invalid declaration: {error}"))
         })
     }
 
@@ -329,7 +329,7 @@ impl AuthoredToolDeclarationFieldProjection {
     ) -> Result<Self, Error> {
         if format != PRIVATE_TOOL_DECLARATION_FIELDS_FORMAT {
             return Err(Error::CorruptData(
-                "Private Tool declaration fields have an incompatible format".to_string(),
+                "authored Tool declaration fields have an incompatible format".to_string(),
             ));
         }
         match (status, fields_json, failure_reason) {
@@ -337,12 +337,12 @@ impl AuthoredToolDeclarationFieldProjection {
                 let fields: Vec<AuthoredToolDeclarationField> = serde_json::from_str(json)
                     .map_err(|_error| {
                         Error::CorruptData(
-                            "Private Tool declaration fields are not valid JSON".to_string(),
+                            "authored Tool declaration fields are not valid JSON".to_string(),
                         )
                     })?;
                 if !valid_declaration_fields(&fields) {
                     return Err(Error::CorruptData(
-                        "Private Tool declaration fields exceed their bounds".to_string(),
+                        "authored Tool declaration fields exceed their bounds".to_string(),
                     ));
                 }
                 Ok(Self::Ready(fields))
@@ -357,7 +357,7 @@ impl AuthoredToolDeclarationFieldProjection {
                 Ok(Self::Failed(reason.to_string()))
             }
             _ => Err(Error::CorruptData(
-                "Private Tool has an invalid declaration-field projection outcome".to_string(),
+                "authored Tool has an invalid declaration-field projection outcome".to_string(),
             )),
         }
     }
@@ -399,7 +399,7 @@ pub enum AuthoredToolDiagnosticCategory {
     Suggestion,
 }
 
-/// One bounded advisory diagnostic retained with an accepted Private Tool.
+/// One bounded advisory diagnostic retained with an accepted Authored Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthoredToolDiagnostic {
     category: AuthoredToolDiagnosticCategory,
@@ -479,7 +479,7 @@ pub struct PrivateToolSave {
     declared_default: Option<ToolAccessState>,
 }
 
-/// What a save requires of the function currently at its path.
+/// What a save requires of the Private Tool currently at its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SaveIntent {
     CreateOrReplace,
@@ -514,7 +514,7 @@ impl PrivateToolSave {
         self
     }
 
-    /// Saves only when no function is at the path; otherwise the save fails
+    /// Saves only when no Private Tool is at the path; otherwise the save fails
     /// with [`Error::PrivateToolExists`].
     #[must_use]
     pub const fn create_only(mut self) -> Self {
@@ -522,8 +522,8 @@ impl PrivateToolSave {
         self
     }
 
-    /// Saves only over a function at the path, and, with
-    /// `expected_revision`, only while that function is at that revision.
+    /// Saves only over a Private Tool at the path, and, with
+    /// `expected_revision`, only while that Private Tool is at that revision.
     /// Otherwise the save fails with [`Error::PrivateToolNotFound`] or
     /// [`Error::PrivateToolRevisionConflict`].
     #[must_use]
@@ -532,12 +532,12 @@ impl PrivateToolSave {
         self
     }
 
-    /// Whether the save requires anything of the function at its path.
+    /// Whether the save requires anything of the Private Tool at its path.
     pub(crate) const fn has_precondition(&self) -> bool {
         !matches!(self.intent, SaveIntent::CreateOrReplace)
     }
 
-    /// Checks the intent against the revision of the function at the path:
+    /// Checks the intent against the revision of the Private Tool at the path:
     /// first from a snapshot, so a refused save never compiles, then under
     /// the save's hold, which decides.
     pub(crate) const fn admits(&self, current_revision: Option<u64>) -> Result<(), Error> {
@@ -807,19 +807,19 @@ pub struct PrivateToolEntry {
 impl PrivateToolEntry {
     /// Returns what an accepted save hands to search after its commit.
     #[must_use]
-    pub fn from_saved(function: &PrivateTool) -> Self {
+    pub fn from_saved(tool: &PrivateTool) -> Self {
         Self {
-            id: function.id.clone(),
-            workspace_id: function.workspace_id.clone(),
-            principal: function.principal.clone(),
-            path: function.path.clone(),
-            description: function.description.clone(),
-            declaration: function.declaration.clone(),
-            declaration_fields: function
+            id: tool.id.clone(),
+            workspace_id: tool.workspace_id.clone(),
+            principal: tool.principal.clone(),
+            path: tool.path.clone(),
+            description: tool.description.clone(),
+            declaration: tool.declaration.clone(),
+            declaration_fields: tool
                 .declaration_field_projection
                 .fields()
                 .map(<[_]>::to_vec),
-            revision: function.revision,
+            revision: tool.revision,
         }
     }
 
@@ -855,13 +855,13 @@ impl PrivateToolEntry {
         &self.id
     }
 
-    /// Returns the Workspace that owns the function.
+    /// Returns the Workspace that owns the Private Tool.
     #[must_use]
     pub const fn workspace_id(&self) -> &WorkspaceId {
         &self.workspace_id
     }
 
-    /// Returns the owning Principal, the only one who can see the function.
+    /// Returns the owning Principal, the only one who can see the Private Tool.
     #[must_use]
     pub const fn principal(&self) -> &Principal {
         &self.principal
@@ -887,7 +887,7 @@ impl PrivateToolEntry {
 
     /// Returns the readable declaration paths with their text, or `None` when
     /// the save projected none or the stored projection is unreadable. The
-    /// function is still searchable by path and description.
+    /// Private Tool is still searchable by path and description.
     #[must_use]
     pub fn declaration_fields(&self) -> Option<&[AuthoredToolDeclarationField]> {
         self.declaration_fields.as_deref()
@@ -1134,7 +1134,7 @@ impl PrivateToolSearchMaterial {
     }
 }
 
-/// Per-function declaration-lane material loaded only for relevance search.
+/// Per-Tool declaration-lane material loaded only for relevance search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrivateToolDeclarationSearchMaterial {
     path: PrivateToolPath,
@@ -1158,7 +1158,7 @@ impl PrivateToolDeclarationSearchMaterial {
         &self.path
     }
 
-    /// Returns fields when this function's declaration lane is healthy.
+    /// Returns fields when this Private Tool's declaration lane is healthy.
     #[must_use]
     pub fn declaration_fields(&self) -> Option<&[AuthoredToolDeclarationField]> {
         self.declaration_fields.as_deref()
@@ -1466,13 +1466,13 @@ impl PrivateToolSelection {
 }
 
 impl PrivateToolSelection {
-    pub(crate) fn from_current(function: &PrivateTool) -> Self {
+    pub(crate) fn from_current(tool: &PrivateTool) -> Self {
         Self {
-            id: function.id.clone(),
-            path: function.path.clone(),
-            source: function.source.clone(),
-            revision: function.revision,
-            default_access_state: function.default_access_state,
+            id: tool.id.clone(),
+            path: tool.path.clone(),
+            source: tool.source.clone(),
+            revision: tool.revision,
+            default_access_state: tool.default_access_state,
         }
     }
 }

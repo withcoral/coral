@@ -324,7 +324,7 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
 /// Scanning references, rather than compiling 64 functions with V8, keeps the
 /// two-second compilation deadline out of this count rule under load.
 #[tokio::test]
-async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomically() {
+async fn linked_private_tool_limit_accepts_the_boundary_and_rejects_overflow_atomically() {
     let fixture = TestModules::new(Arc::new(ReferenceScanningEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),

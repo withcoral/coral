@@ -317,7 +317,7 @@ pub enum AuthoredSource {
 /// called member name of a property call such as `console.log(...)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredLocation {
-    /// Program or linked Private Tool source.
+    /// Program or linked Authored Tool source.
     pub source: AuthoredSource,
     /// One-based authored line.
     pub line: u32,
@@ -481,7 +481,7 @@ impl AuthoredToolDeclarationField {
     }
 }
 
-/// Authoring output retained for one accepted Private Tool source.
+/// Authoring output retained for one accepted Authored Tool source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredToolCompilation {
     declaration: String,
@@ -628,7 +628,7 @@ impl LinkedToolSource {
     }
 }
 
-/// The Call Paths one Private Tool module or Program body names
+/// The Call Paths one Authored Tool module or Program body names
 /// directly, as typed preparation and Program Admission need them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NamedCallPaths {
@@ -759,8 +759,8 @@ impl UnknownToolCall {
     }
 }
 
-/// One declaration that types a Call Path under `coral`: a Tool or a
-/// Private Tool at `coral.private`.
+/// One declaration that types a Call Path under `coral`: a Tool, a Private
+/// Tool at `coral.private` or a Shared Tool at `coral.shared`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallableDeclaration {
@@ -770,11 +770,11 @@ pub struct CallableDeclaration {
 
 impl CallableDeclaration {
     /// Builds one declaration for its path segments: relative to `coral` for
-    /// a Tool, such as `providers.github.repos.get`, and to
-    /// `coral.private` for a Private Tool.
+    /// a Tool, such as `providers.github.repos.get`, to `coral.private` for
+    /// a Private Tool and to `coral.shared` for a Shared Tool.
     ///
     /// The declaration is self-contained TypeScript with one
-    /// `export default` callable, as describe and Private Tool save emit it.
+    /// `export default` callable, as describe and an Authored Tool save emit it.
     #[must_use]
     pub const fn new(path_segments: Vec<String>, declaration: String) -> Self {
         Self {
@@ -786,7 +786,7 @@ impl CallableDeclaration {
 
 /// The Built-in Tools a Program calls directly on `coral`, by Tool Key, such
 /// as `search` for `coral.search`. A Program is compiled with them, so it
-/// calls exactly the ones it was admitted with, and a Private Tool is typed
+/// calls exactly the ones it was admitted with, and an Authored Tool is typed
 /// with them.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct BuiltinTools(Vec<String>);
@@ -804,7 +804,7 @@ impl BuiltinTools {
     }
 }
 
-/// The declarations that type the `coral` namespace for one Private Tool
+/// The declarations that type the `coral` namespace for one Authored Tool
 /// save.
 ///
 /// A root without declarations stays `any`. A typed root holds only the
@@ -814,7 +814,7 @@ impl BuiltinTools {
 pub struct CoralDeclarations {
     declaration_max_bytes: usize,
     tools: Option<TypedTools>,
-    functions: Option<Vec<CallableDeclaration>>,
+    private_tools: Option<Vec<CallableDeclaration>>,
     shared_tools: Option<Vec<CallableDeclaration>>,
 }
 
@@ -832,7 +832,7 @@ impl CoralDeclarations {
         Self {
             declaration_max_bytes,
             tools: None,
-            functions: None,
+            private_tools: None,
             shared_tools: None,
         }
     }
@@ -856,8 +856,8 @@ impl CoralDeclarations {
 
     /// Types `coral.private` from stored Private Tool declarations.
     #[must_use]
-    pub fn with_private_tools(mut self, functions: Vec<CallableDeclaration>) -> Self {
-        self.functions = Some(functions);
+    pub fn with_private_tools(mut self, private_tools: Vec<CallableDeclaration>) -> Self {
+        self.private_tools = Some(private_tools);
         self
     }
 
@@ -953,17 +953,17 @@ pub enum Error {
     /// Source changed the shape of Coral's private async entry wrapper.
     #[error("Program source is not one async-function body")]
     InvalidProgramBody,
-    /// Private Tool source did not define one import-free default callable.
-    #[error("Private Tool authoring failed: {0}")]
-    InvalidPrivateTool(String),
+    /// Authored Tool source did not define one import-free default callable.
+    #[error("Tool authoring failed: {0}")]
+    InvalidAuthoredTool(String),
     /// Source nesting overflowed the compiler's stack.
     #[error("TypeScript source is nested too deeply to compile")]
     SourceTooDeeplyNested,
-    /// Program or Private Tool source requested a forbidden authoring capability.
+    /// Program or Authored Tool source requested a forbidden authoring capability.
     #[error("TypeScript source uses a forbidden capability: {0}")]
     ForbiddenCapability(String),
-    /// Program source did not directly name supported Private Tool paths.
-    #[error("Private Tool reference analysis failed at {line}:{column}: {message}")]
+    /// Source did not directly name supported Private or Shared Tool paths.
+    #[error("Tool reference analysis failed at {line}:{column}: {message}")]
     InvalidLinkedToolReference {
         /// Clear safe reason.
         message: String,
@@ -1028,7 +1028,7 @@ impl Error {
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
             Self::Compilation { .. } => "compilation",
             Self::InvalidProgramBody { .. } => "invalid_program_body",
-            Self::InvalidPrivateTool { .. } => "invalid_private_tool",
+            Self::InvalidAuthoredTool { .. } => "invalid_authored_tool",
             Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
             Self::InvalidLinkedToolReference { .. } => "invalid_linked_tool_reference",
@@ -1076,7 +1076,7 @@ impl From<Error> for CompileFailure {
             Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
             authored @ (Error::Compilation { .. }
             | Error::InvalidProgramBody
-            | Error::InvalidPrivateTool(_)
+            | Error::InvalidAuthoredTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
             | Error::InvalidLinkedToolReference { .. }

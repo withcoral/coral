@@ -41,7 +41,10 @@ impl BodyScope {
         fixture.runs = fixture
             .runs
             .clone()
-            .with_private_tools(crate::PrivateTools::new(Self::functions(&fixture), index));
+            .with_private_tools(crate::PrivateTools::new(
+                Self::private_tool_module(&fixture),
+                index,
+            ));
         let tool = fixture.user_tool(user, "Tool bodies").await;
         assert_eq!(tool.call_path, WEATHER);
         Self {
@@ -51,7 +54,7 @@ impl BodyScope {
         }
     }
 
-    fn functions(fixture: &TestModules) -> PrivateToolModule {
+    fn private_tool_module(fixture: &TestModules) -> PrivateToolModule {
         PrivateToolModule::new(
             fixture.database.clone(),
             fixture.workspaces.clone(),
@@ -70,7 +73,7 @@ impl BodyScope {
 
     /// Saves the User's Private Tool at `path` with the module `source`.
     async fn save_module(&self, path: &str, source: &str) {
-        Self::functions(&self.fixture)
+        Self::private_tool_module(&self.fixture)
             .save(
                 &PrivateToolChangeContext::new(
                     self.tool.principal.clone(),

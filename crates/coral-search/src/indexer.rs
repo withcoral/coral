@@ -405,7 +405,7 @@ pub(crate) async fn projection_backlog(
     let recorded = repository::recorded_private_tools(transaction)
         .await?
         .into_iter()
-        .map(|row| (row.function, row.fingerprint))
+        .map(|row| (row.private_tool, row.fingerprint))
         .collect::<std::collections::HashMap<_, _>>();
     let missing_private_tools = private_tools
         .iter()

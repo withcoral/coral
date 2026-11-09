@@ -244,7 +244,7 @@ impl PrivateToolEntryRow {
         })?;
         let declaration = AuthoredToolDeclaration::from_persisted(&self.declaration)?;
         // As in the relevance lane, an unreadable projection stays isolated to
-        // its one function, which remains searchable by path and description.
+        // its one Private Tool, which remains searchable by path and description.
         let declaration_fields = AuthoredToolDeclarationFieldProjection::from_storage(
             &self.declaration_fields_format,
             &self.declaration_fields_status,
@@ -840,10 +840,10 @@ pub(crate) async fn exact_description_material_in_transaction(
 
 pub(crate) async fn insert_current(
     transaction: &mut Transaction<'_>,
-    function: &PrivateTool,
+    tool: &PrivateTool,
 ) -> Result<(), Error> {
-    let diagnostics_json = serde_json::to_string(function.diagnostics())?;
-    let revision = stored_revision(function.revision)?;
+    let diagnostics_json = serde_json::to_string(tool.diagnostics())?;
+    let revision = stored_revision(tool.revision)?;
     let statement = Query::insert()
         .into_table(PrivateToolRecords::Table)
         .columns([
@@ -866,29 +866,28 @@ pub(crate) async fn insert_current(
             PrivateToolRecords::DefaultAccessState,
         ])
         .values_panic([
-            Expr::val(function.id().to_string()),
-            Expr::val(function.workspace_id().to_string()),
-            Expr::val(function.principal().id().as_str()),
-            Expr::val(function.principal().kind().as_storage_str()),
-            Expr::val(function.path().as_str()),
-            Expr::val(function.description().as_str()),
-            Expr::val(function.source().as_str()),
-            Expr::val(function.declaration().as_str()),
+            Expr::val(tool.id().to_string()),
+            Expr::val(tool.workspace_id().to_string()),
+            Expr::val(tool.principal().id().as_str()),
+            Expr::val(tool.principal().kind().as_storage_str()),
+            Expr::val(tool.path().as_str()),
+            Expr::val(tool.description().as_str()),
+            Expr::val(tool.source().as_str()),
+            Expr::val(tool.declaration().as_str()),
             Expr::val(AuthoredToolDeclarationFieldProjection::format()),
-            Expr::val(function.declaration_field_projection().status()),
+            Expr::val(tool.declaration_field_projection().status()),
             Expr::val(
-                function
-                    .declaration_field_projection()
+                tool.declaration_field_projection()
                     .fields()
                     .map(serde_json::to_string)
                     .transpose()?,
             ),
-            Expr::val(function.declaration_field_projection().failure_reason()),
+            Expr::val(tool.declaration_field_projection().failure_reason()),
             Expr::val(diagnostics_json),
-            Expr::val(function.diagnostics_truncated()),
-            Expr::val(function.saved_at_unix_nanos()),
+            Expr::val(tool.diagnostics_truncated()),
+            Expr::val(tool.saved_at_unix_nanos()),
             Expr::val(revision),
-            Expr::val(function.default_access_state().as_storage_str()),
+            Expr::val(tool.default_access_state().as_storage_str()),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -985,25 +984,20 @@ pub(crate) async fn replace_current(
 
 pub(crate) async fn delete_current(
     transaction: &mut Transaction<'_>,
-    function: &PrivateTool,
+    tool: &PrivateTool,
 ) -> Result<(), Error> {
     let statement = Query::delete()
         .from_table(PrivateToolRecords::Table)
-        .and_where(
-            Expr::col(PrivateToolRecords::WorkspaceId).eq(function.workspace_id().to_string()),
-        )
-        .and_where(Expr::col(PrivateToolRecords::Id).eq(function.id().to_string()))
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalId).eq(function.principal().id().as_str()),
-        )
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(tool.workspace_id().to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(tool.id().to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(tool.principal().id().as_str()))
         .and_where(
             Expr::col(PrivateToolRecords::PrincipalKind)
-                .eq(function.principal().kind().as_storage_str()),
+                .eq(tool.principal().kind().as_storage_str()),
         )
-        .and_where(Expr::col(PrivateToolRecords::Path).eq(function.path().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(tool.path().as_str()))
         .and_where(
-            Expr::col(PrivateToolRecords::DefinitionRevision)
-                .eq(stored_revision(function.revision)?),
+            Expr::col(PrivateToolRecords::DefinitionRevision).eq(stored_revision(tool.revision)?),
         )
         .to_owned();
     if transaction.execute(statement).await? != 1 {
@@ -1124,7 +1118,7 @@ pub async fn select_source_in_transaction(
 ) -> Result<Option<PrivateToolSelection>, Error> {
     find_current_in_transaction(transaction, workspace_id, principal, path)
         .await
-        .map(|function| function.as_ref().map(PrivateToolSelection::from_current))
+        .map(|tool| tool.as_ref().map(PrivateToolSelection::from_current))
 }
 
 /// Holds a selected definition unchanged through the caller's acceptance commit.

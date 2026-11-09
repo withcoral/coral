@@ -125,7 +125,7 @@ impl PrivateToolModule {
     /// this crate, so the call would be a cycle. A production caller notifies
     /// `SearchIndex::sync_private_tool` after its commit, as
     /// `coral.addTool` and `coral.updateTool` do. Until then, the reconcile task
-    /// indexes the function.
+    /// indexes the Private Tool.
     ///
     /// # Errors
     ///
@@ -139,9 +139,9 @@ impl PrivateToolModule {
     ) -> Result<PrivateTool, Error> {
         let prepared = self.prepare_save(context, workspace_id, save, None).await?;
         let mut transaction = self.database.begin().await?;
-        let function = self.save_in_transaction(&mut transaction, prepared).await?;
+        let tool = self.save_in_transaction(&mut transaction, prepared).await?;
         transaction.commit().await?;
-        Ok(function)
+        Ok(tool)
     }
 
     /// Prepares non-executing authoring work outside the final write transaction.
@@ -238,7 +238,7 @@ impl PrivateToolModule {
         if default_access_state != previous_default.unwrap_or(PrivateToolSave::NEW_TOOL_DEFAULT) {
             changed_field_paths.push("default_access_state");
         }
-        let function = PrivateTool::new(
+        let tool = PrivateTool::new(
             id,
             workspace_id.clone(),
             context.actor().principal().clone(),
@@ -255,9 +255,9 @@ impl PrivateToolModule {
         );
         authority.require_current_at(now_unix_nanos()?)?;
         match previous.as_ref() {
-            None => repository::insert_current(transaction, &function).await?,
+            None => repository::insert_current(transaction, &tool).await?,
             Some(previous) => {
-                repository::replace_current(transaction, previous, &function).await?;
+                repository::replace_current(transaction, previous, &tool).await?;
             }
         }
         repository::insert_lifecycle_event(
@@ -265,19 +265,18 @@ impl PrivateToolModule {
             repository::NewLifecycleEvent {
                 workspace_id,
                 actor: context.actor().principal(),
-                private_user_id: (function.principal().kind()
-                    == coral_workspace::PrincipalKind::User)
-                    .then_some(function.principal().id()),
+                private_user_id: (tool.principal().kind() == coral_workspace::PrincipalKind::User)
+                    .then_some(tool.principal().id()),
                 action,
-                target_id: function.id(),
-                target_path: function.path(),
+                target_id: tool.id(),
+                target_path: tool.path(),
                 changed_field_paths: &changed_field_paths,
                 occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
                 trace_id: context.trace_id(),
             },
         )
         .await?;
-        Ok(function)
+        Ok(tool)
     }
 
     /// Returns the current definition at one path owned by the authenticated Principal.
@@ -297,7 +296,7 @@ impl PrivateToolModule {
 
     /// Lists one Workspace-owned Agent's current Private Tools for a Workspace Owner.
     ///
-    /// User-owned functions remain private and cannot be selected through this Interface.
+    /// User-owned Private Tools remain private and cannot be selected through this Interface.
     /// The Agent's stable identity is an inspection target, never an authoring identity
     /// for the calling User.
     ///
@@ -318,10 +317,10 @@ impl PrivateToolModule {
         self.authorize_agent_inspection_in_transaction(&mut transaction, user, workspace_id)
             .await?;
         let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let functions =
+        let tools =
             repository::list_current_in_transaction(&mut transaction, workspace_id, &agent).await?;
         transaction.commit().await?;
-        Ok(functions)
+        Ok(tools)
     }
 
     /// Returns one Workspace-owned Agent Private Tool to a Workspace Owner.
@@ -345,12 +344,12 @@ impl PrivateToolModule {
             .await
             .map_err(conceal_inspection_error)?;
         let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let function =
+        let tool =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
                 .await?
                 .ok_or(Error::PrivateToolNotFound)?;
         transaction.commit().await?;
-        Ok(function)
+        Ok(tool)
     }
 
     /// Atomically deletes one Workspace-owned Agent Private Tool as a Workspace Owner.
@@ -379,12 +378,12 @@ impl PrivateToolModule {
             .await
             .map_err(conceal_agent_private_tool_error)?;
         let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let function =
+        let tool =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
                 .await?
                 .ok_or(Error::PrivateToolNotFound)?;
         let deleted_id =
-            delete_current_with_event(&mut transaction, context, workspace_id, &function).await?;
+            delete_current_with_event(&mut transaction, context, workspace_id, &tool).await?;
         transaction.commit().await?;
         Ok(deleted_id)
     }
@@ -475,7 +474,7 @@ impl PrivateToolModule {
                 .await?;
         if current_private_tools
             .iter()
-            .any(|function| tool_paths_overlap(function.path().as_str(), path.as_str()))
+            .any(|tool| tool_paths_overlap(tool.path().as_str(), path.as_str()))
         {
             return Err(Error::PrivateToolPathConflict);
         }
@@ -505,7 +504,7 @@ impl PrivateToolModule {
         }
         let previous = current_private_tools
             .into_iter()
-            .find(|function| function.path() == path);
+            .find(|tool| tool.path() == path);
         Ok((authority, previous))
     }
 
@@ -592,7 +591,7 @@ impl PrivateToolModule {
             else {
                 return Ok(None);
             };
-            let functions = if private_tool_paths.is_empty() {
+            let private_tools = if private_tool_paths.is_empty() {
                 None
             } else {
                 self.private_tool_declarations(actor, workspace_id, &private_tool_paths)
@@ -611,12 +610,12 @@ impl PrivateToolModule {
                 }
                 None => None,
             };
-            if functions.is_none() && tools.is_none() {
+            if private_tools.is_none() && tools.is_none() {
                 return Ok(None);
             }
             let mut declarations = CoralDeclarations::new(AUTHORED_TOOL_DECLARATION_MAX_BYTES);
-            if let Some(functions) = functions {
-                declarations = declarations.with_private_tools(functions);
+            if let Some(private_tools) = private_tools {
+                declarations = declarations.with_private_tools(private_tools);
             }
             if let Some(tools) = tools {
                 declarations = declarations.with_tools(named.tools(), tools);
@@ -638,13 +637,13 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
         paths: &[PrivateToolPath],
     ) -> Result<Vec<CallableDeclaration>, Error> {
-        let mut functions = Vec::new();
+        let mut tools = Vec::new();
         if paths.is_empty() {
-            return Ok(functions);
+            return Ok(tools);
         }
         let mut transaction = self.database.begin_read_snapshot().await?;
         for path in paths {
-            if let Some(function) = repository::find_current_in_transaction(
+            if let Some(tool) = repository::find_current_in_transaction(
                 &mut transaction,
                 workspace_id,
                 actor.principal(),
@@ -652,17 +651,17 @@ impl PrivateToolModule {
             )
             .await?
             {
-                functions.push(CallableDeclaration::new(
+                tools.push(CallableDeclaration::new(
                     path.segments(),
-                    function.declaration().as_str().to_string(),
+                    tool.declaration().as_str().to_string(),
                 ));
             }
         }
         transaction.commit().await?;
-        Ok(functions)
+        Ok(tools)
     }
 
-    /// The revision of the actor's function at `path`, from a snapshot.
+    /// The revision of the actor's Private Tool at `path`, from a snapshot.
     /// Only a precheck reads it: the save decides under its hold.
     async fn current_revision(
         &self,
@@ -713,12 +712,12 @@ fn missing_private_tool_dependency(
     // Worded as any path that names no Tool; a save looks up no
     // suggestions.
     Error::PrivateToolAdmission(format!(
-        "Private Tool coral.private.{}:{}:{}: {}",
-        source_path.as_str(),
+        "{}:{}:{}: {}",
+        AuthoredToolKind::Private.source_name(source_path.as_str()),
         reference.line,
         reference.column,
         coral_catalog::unknown_call_path_message(
-            &format!("coral.private.{}", reference.path.as_str()),
+            &AuthoredToolKind::Private.call_path(reference.path.as_str()),
             &[],
         )
     ))
@@ -746,15 +745,14 @@ pub async fn delete_current_for_access_removal_in_transaction(
         context.trace_id().clone(),
     );
     for scope in prepared.lost_access() {
-        let functions = repository::list_current_in_transaction(
+        let tools = repository::list_current_in_transaction(
             transaction,
             scope.workspace_id(),
             scope.principal(),
         )
         .await?;
-        for function in functions {
-            delete_current_with_event(transaction, &change, scope.workspace_id(), &function)
-                .await?;
+        for tool in tools {
+            delete_current_with_event(transaction, &change, scope.workspace_id(), &tool).await?;
         }
     }
     Ok(())
@@ -764,19 +762,19 @@ pub(crate) async fn delete_current_with_event(
     transaction: &mut Transaction<'_>,
     context: &PrivateToolChangeContext,
     workspace_id: &WorkspaceId,
-    function: &PrivateTool,
+    tool: &PrivateTool,
 ) -> Result<PrivateToolId, Error> {
-    repository::delete_current(transaction, function).await?;
+    repository::delete_current(transaction, tool).await?;
     repository::insert_lifecycle_event(
         transaction,
         repository::NewLifecycleEvent {
             workspace_id,
             actor: context.actor().principal(),
-            private_user_id: (function.principal().kind() == coral_workspace::PrincipalKind::User)
-                .then_some(function.principal().id()),
+            private_user_id: (tool.principal().kind() == coral_workspace::PrincipalKind::User)
+                .then_some(tool.principal().id()),
             action: LifecycleAction::Deleted,
-            target_id: function.id(),
-            target_path: function.path(),
+            target_id: tool.id(),
+            target_path: tool.path(),
             changed_field_paths: &[
                 "source",
                 "description",
@@ -789,7 +787,7 @@ pub(crate) async fn delete_current_with_event(
         },
     )
     .await?;
-    Ok(function.id().clone())
+    Ok(tool.id().clone())
 }
 
 pub(crate) fn conceal_inspection_error(error: Error) -> Error {

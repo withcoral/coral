@@ -191,7 +191,7 @@ async fn each_principal_adds_and_removes_its_own_tool_with_no_rule() {
 // Catches: a save that throws on an advisory type error, admits a function
 // that cannot become a Private Tool, or saves at a path that cannot hold it.
 #[tokio::test]
-async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
+async fn type_errors_are_advisory_and_invalid_private_tools_save_nothing() {
     let (scope, _index) = authoring_scope("user:functions-diagnostics").await;
     let typed = outcome(
         &scope,

@@ -150,7 +150,7 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
 }
 
 #[tokio::test]
-async fn delete_removes_only_the_callers_own_function() {
+async fn delete_removes_only_the_callers_own_private_tool() {
     let f = Fixture::new().await;
     save(&f, &f.owner, "reports.total", "export default () => 1;").await;
     let parent = format!("workspaces/{}", f.workspace.id());

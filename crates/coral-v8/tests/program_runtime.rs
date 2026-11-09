@@ -533,7 +533,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let error = compiler
         .compile_linked(compilation_deadline(),
-            "__coralPrivateToolDefaults[0] = () => (() => 'changed'); return coral.private.safe.value();",
+            "__coralLinkedToolDefaults[0] = () => (() => 'changed'); return coral.private.safe.value();",
             &[linked_source(
                 &["safe", "value"],
                 "export default function value(): string { return 'original'; }",
@@ -551,12 +551,12 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     compiler
         .prepare_authored_tool(
             compilation_deadline(),
-            "export default function value() { return __coralPrivateToolDefaults[0]; }",
+            "export default function value() { return __coralLinkedToolDefaults[0]; }",
         )
         .expect_err("Private Tool source must not reach private linker state");
     for source in [
-        "class Attack extends (__coralPrivateToolDefaults[0] = Object, Object) {} return Attack;",
-        "const captured = { __coralPrivateToolDefaults }; return captured;",
+        "class Attack extends (__coralLinkedToolDefaults[0] = Object, Object) {} return Attack;",
+        "const captured = { __coralLinkedToolDefaults }; return captured;",
     ] {
         compiler
             .compile_linked(
@@ -572,7 +572,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
 
     let local_private_name = compiler
         .compile_linked(compilation_deadline(),
-            "const __coralPrivateToolDefaults = 42; void coral.private.safe.value; return __coralPrivateToolDefaults;",
+            "const __coralLinkedToolDefaults = 42; void coral.private.safe.value; return __coralLinkedToolDefaults;",
             &[linked_source(
                 &["safe", "value"],
                 "export default function value(): string { return 'original'; }",
@@ -2396,11 +2396,11 @@ fn run_with_recording_host(source: &str) -> (Option<String>, Arc<RecordingHost>)
 
 fn run_linked_with_recording_host(
     source: &str,
-    functions: &[LinkedToolSource],
+    linked_tools: &[LinkedToolSource],
 ) -> (Option<String>, Arc<RecordingHost>) {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_linked(compilation_deadline(), source, functions)
+        .compile_linked(compilation_deadline(), source, linked_tools)
         .expect("compile output probe");
     let host = RecordingHost::new(
         coral_value::ValueLimits::new(1024, HOST_BYTES, 1024, 1024).expect("limits"),
@@ -2764,7 +2764,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             "coral.private.locations.hygiene()",
             vec![linked_source(
                 &["locations", "hygiene"],
-                "const \\u005f_coralPrivateToolDefaultExport_1 = 1\nexport default () => console.log(__coralPrivateToolDefaultExport_1)",
+                "const \\u005f_coralLinkedToolDefaultExport_1 = 1\nexport default () => console.log(__coralLinkedToolDefaultExport_1)",
             )],
             vec![
                 ("perform", at(1, 25)),
@@ -3048,9 +3048,9 @@ fn private_linker_source_maps_to_no_authored_source() {
     for (line, text) in javascript.lines().enumerate() {
         for marker in [
             "(async () => {",
-            "__coralPrivateToolDefaults[",
-            "const __coralPrivateToolDefaultExport_",
-            "__coralPrivateToolDefaultExport_",
+            "__coralLinkedToolDefaults[",
+            "const __coralLinkedToolDefaultExport_",
+            "__coralLinkedToolDefaultExport_",
             "return () =>",
         ] {
             for (column, _) in text.match_indices(marker) {
@@ -3066,9 +3066,9 @@ fn private_linker_source_maps_to_no_authored_source() {
     }
     for marker in [
         "(async () => {",
-        "__coralPrivateToolDefaults[",
-        "const __coralPrivateToolDefaultExport_",
-        "__coralPrivateToolDefaultExport_",
+        "__coralLinkedToolDefaults[",
+        "const __coralLinkedToolDefaultExport_",
+        "__coralLinkedToolDefaultExport_",
         "return () =>",
         ";",
     ] {

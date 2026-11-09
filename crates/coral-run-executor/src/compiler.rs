@@ -38,7 +38,7 @@ pub trait CompilerClient: Send + Sync {
         callable: &[String],
     ) -> Result<Vec<UnknownToolCall>, CompileError>;
 
-    /// The Private Tools that one Private Tool module names directly.
+    /// The Private Tools that one Authored Tool module names directly.
     ///
     /// # Errors
     ///
@@ -49,7 +49,7 @@ pub trait CompilerClient: Send + Sync {
         source: &str,
     ) -> Result<Vec<LinkedToolReference>, CompileError>;
 
-    /// A Program body lowered with the Private Tools it links, which
+    /// A Program body lowered with the Private and Shared Tools it links, which
     /// initialize in the given order, and with `builtin_tools` on `coral`.
     ///
     /// # Errors
@@ -64,7 +64,7 @@ pub trait CompilerClient: Send + Sync {
         builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError>;
 
-    /// The Private Tools and Tools that one Private Tool module names
+    /// The Private Tools and Tools that one Authored Tool module names
     /// directly, to type it.
     ///
     /// # Errors
@@ -74,7 +74,7 @@ pub trait CompilerClient: Send + Sync {
     fn call_paths(&self, time_left: Duration, source: &str)
     -> Result<NamedCallPaths, CompileError>;
 
-    /// One Private Tool's declaration and advisory diagnostics, with
+    /// One Authored Tool's declaration and advisory diagnostics, with
     /// `builtin_tools` on `coral` and typed by `declarations` when there are
     /// any.
     ///

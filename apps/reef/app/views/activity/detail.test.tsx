@@ -720,7 +720,7 @@ const event = (value: RunEvent): Extract<Detail, { kind: 'output' }> => ({
 })
 const at = { sequence: '4', occurredAt: run.startedAt }
 const KIND_LABEL =
-  /^(task|program run|tool|search|describe|exec submission|save function|delete function|tool interaction|program log|program output|run event|approval request|account connection request)$/
+  /^(task|program run|tool|search|describe|exec submission|save private tool|delete private tool|tool interaction|program log|program output|run event|approval request|account connection request)$/
 
 it.each<[string, Detail, string]>([
   [
@@ -765,18 +765,18 @@ it.each<[string, Detail, string]>([
       { tool: 'save_function', intent: '' },
       { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
-    'Save function',
+    'Save private tool',
   ],
   [
-    'a deleted function without an intent by its tool, not its ID',
+    'a deleted private tool without an intent by its tool, not its ID',
     tool(
       { tool: 'delete_function', intent: '' },
       { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
-    'Delete function',
+    'Delete private tool',
   ],
   [
-    'a deleted function by its intent',
+    'a deleted private tool by its intent',
     tool({ tool: 'delete_function', intent: 'Remove the old batch' }, { kind: 'unknown' }),
     'Remove the old batch',
   ],

@@ -512,7 +512,7 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
     clippy::too_many_lines,
     reason = "one retained discovery journey verifies typed metadata, exact native response, summary isolation, and private audience"
 )]
-async fn discovery_wire_projects_typed_context_and_exact_deleted_function_response_only_on_exact_read()
+async fn discovery_wire_projects_typed_context_and_exact_deleted_private_tool_response_only_on_exact_read()
  {
     let f = Fixture::new().await;
     let actor = AuthenticatedPrincipal::user(f.member.clone());

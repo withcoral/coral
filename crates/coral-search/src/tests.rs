@@ -286,7 +286,7 @@ async fn tool_signature_lines_follow_the_published_declaration() {
 }
 
 #[tokio::test]
-async fn queries_match_safe_tool_fields_and_function_declarations() {
+async fn queries_match_safe_tool_fields_and_private_tool_declarations() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     for query in [
@@ -612,7 +612,7 @@ async fn disabled_tool_leaves_search_and_describe() {
 }
 
 #[tokio::test]
-async fn function_replacement_and_corrupt_relevance_keep_exact_descriptions() {
+async fn private_tool_replacement_and_corrupt_relevance_keep_exact_descriptions() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     let replaced = fixture

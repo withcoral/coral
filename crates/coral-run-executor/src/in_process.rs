@@ -179,8 +179,8 @@ mod tests {
                 "invalid_program_body",
             ),
             (
-                || coral_v8::Error::InvalidPrivateTool("no default export".into()),
-                "invalid_private_tool",
+                || coral_v8::Error::InvalidAuthoredTool("no default export".into()),
+                "invalid_authored_tool",
             ),
             (
                 || coral_v8::Error::SourceTooDeeplyNested,

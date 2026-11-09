@@ -382,13 +382,13 @@ impl SearchIndex {
     }
 
     /// A Private Tool was saved, saved over or deleted: brings the index in
-    /// line with the function as it stands when the write runs. The committing
+    /// line with the Private Tool as it stands when the write runs. The committing
     /// workflow sends ids alone, so a notification may run late, twice or out
     /// of order, and may be lost: a reconcile pass finds the same difference.
     ///
-    /// The write upserts the function's row and removes the `failed` state
-    /// row an earlier attempt left, or removes both when the function is gone.
-    /// A failed attempt rolls back, removes the function's row, and leaves a
+    /// The write upserts the Private Tool's row and removes the `failed` state
+    /// row an earlier attempt left, or removes both when the Private Tool is gone.
+    /// A failed attempt rolls back, removes the Private Tool's row, and leaves a
     /// `failed` state row.
     pub fn sync_private_tool(&self, workspace_id: WorkspaceId, private_tool_id: PrivateToolId) {
         let span = private_tool_span(&workspace_id, &private_tool_id);
@@ -403,7 +403,7 @@ impl SearchIndex {
     }
 
     /// Brings the index in line with one Private Tool. The caller holds the
-    /// mutex. Answers whether it indexed the function.
+    /// mutex. Answers whether it indexed the Private Tool.
     async fn sync_private_tool_held(
         &self,
         workspace_id: &WorkspaceId,

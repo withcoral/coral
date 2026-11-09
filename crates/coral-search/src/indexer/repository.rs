@@ -564,7 +564,7 @@ pub(super) async fn delete_provider(
 
 /// The columns a Private Tool row sets, in [`PrivateToolRow::values`] order.
 /// The first two are the key.
-const FUNCTION_COLUMNS: [SearchEntities; 15] = [
+const PRIVATE_TOOL_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::WorkspaceId,
     SearchEntities::DocId,
     SearchEntities::Kind,
@@ -583,7 +583,7 @@ const FUNCTION_COLUMNS: [SearchEntities; 15] = [
 ];
 
 /// One Private Tool's row in `search_entities`. The document id is the
-/// function id; the fingerprint is [`private_tool_fingerprint`] of the
+/// Private Tool id; the fingerprint is [`private_tool_fingerprint`] of the
 /// definition revision. The write stamps the row when it upserts it.
 pub(crate) struct PrivateToolRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
@@ -597,7 +597,7 @@ pub(crate) struct PrivateToolRow<'a> {
 }
 
 impl PrivateToolRow<'_> {
-    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; FUNCTION_COLUMNS.len()] {
+    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; PRIVATE_TOOL_COLUMNS.len()] {
         let private_tool_id = self.private_tool_id.to_string();
         [
             self.workspace_id.to_string().into(),
@@ -648,12 +648,12 @@ pub(super) async fn upsert_private_tool_row(
     row: &PrivateToolRow<'_>,
     indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let on_conflict = changed_rows_only(FUNCTION_COLUMNS);
+    let on_conflict = changed_rows_only(PRIVATE_TOOL_COLUMNS);
     transaction
         .execute(
             Query::insert()
                 .into_table(SearchEntities::Table)
-                .columns(FUNCTION_COLUMNS)
+                .columns(PRIVATE_TOOL_COLUMNS)
                 .values_panic(row.values(indexed_at_unix_nanos))
                 .on_conflict(on_conflict)
                 .to_owned(),
@@ -1220,7 +1220,7 @@ pub(super) struct WorkspacePrivateTool {
 
 /// One Private Tool's row, as a reconcile pass compares it.
 pub(super) struct RecordedPrivateTool {
-    pub(super) function: WorkspacePrivateTool,
+    pub(super) private_tool: WorkspacePrivateTool,
     /// The row's fingerprint, as [`private_tool_fingerprint`] writes it.
     pub(super) fingerprint: String,
 }
@@ -1245,7 +1245,7 @@ pub(super) async fn recorded_private_tools(
     rows.into_iter()
         .map(|(workspace_id, private_tool_id, fingerprint)| {
             Ok(RecordedPrivateTool {
-                function: workspace_private_tool(&workspace_id, &private_tool_id)?,
+                private_tool: workspace_private_tool(&workspace_id, &private_tool_id)?,
                 fingerprint,
             })
         })
@@ -1276,7 +1276,7 @@ pub(super) async fn recorded_private_tool_fingerprint(
 /// One Private Tool whose last attempt failed, as a reconcile pass
 /// compares it.
 pub(super) struct FailedPrivateTool {
-    pub(super) function: WorkspacePrivateTool,
+    pub(super) private_tool: WorkspacePrivateTool,
     pub(super) failure: PrivateToolFailure,
 }
 
@@ -1308,7 +1308,7 @@ pub(super) async fn failed_private_tools(
     rows.into_iter()
         .map(|row| {
             Ok(FailedPrivateTool {
-                function: workspace_private_tool(&row.workspace_id, &row.private_tool_id)?,
+                private_tool: workspace_private_tool(&row.workspace_id, &row.private_tool_id)?,
                 failure: row.failure.into(),
             })
         })

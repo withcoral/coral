@@ -31,7 +31,7 @@ fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
     assert!(matches!(
         crate::AuthoredToolDeclaration::from_compiler(&format!("{maximum_declaration}d")),
         Err(Error::PackageTooLarge {
-            component: "Private Tool declaration",
+            component: "Tool declaration",
             ..
         })
     ));
@@ -40,7 +40,7 @@ fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
 #[tokio::test]
 async fn private_tool_save_publishes_exact_authoring_record_and_event() {
     let fixture = PrivateToolTestModules::new().await;
-    let (workspace_id, principal) = fixture.user_workspace("user:function-author").await;
+    let (workspace_id, principal) = fixture.user_workspace("user:tool-author").await;
     let source = r"
         interface Input { value: number }
         function double(value: number): number { return value * 2; }
@@ -62,7 +62,7 @@ async fn private_tool_save_publishes_exact_authoring_record_and_event() {
             ),
         )
         .await
-        .expect("save function");
+        .expect("save tool");
 
     assert!(saved.declaration().as_str().contains("interface Input"));
     assert!(saved.declaration().as_str().contains("export default"));
@@ -105,7 +105,7 @@ async fn private_tool_save_publishes_exact_authoring_record_and_event() {
 #[tokio::test]
 async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_change() {
     let fixture = PrivateToolTestModules::new().await;
-    let (workspace_id, principal) = fixture.user_workspace("user:function-policy").await;
+    let (workspace_id, principal) = fixture.user_workspace("user:tool-policy").await;
     let saved_fields = [
         "source",
         "description",
@@ -213,7 +213,7 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
 )]
 async fn failed_save_preserves_current_definition_and_accepted_changes_follow_transaction_order() {
     let fixture = PrivateToolTestModules::new().await;
-    let (workspace_id, principal) = fixture.user_workspace("user:function-editor").await;
+    let (workspace_id, principal) = fixture.user_workspace("user:tool-editor").await;
     let path = PrivateToolPath::parse("reports.total").expect("path");
     let original_source = "export default function total() { return 41; }";
     let original = fixture
@@ -247,7 +247,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
         .private_tools
         .get(&principal, &workspace_id, &path)
         .await
-        .expect("read unchanged current function");
+        .expect("read unchanged current tool");
     assert_eq!(unchanged.id(), original.id());
     assert_eq!(unchanged.source().as_str(), original_source);
     assert_eq!(
@@ -326,7 +326,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
     clippy::too_many_lines,
     reason = "one scenario compares both reads across replacement, deletion, and Workspaces"
 )]
-async fn entry_reads_return_current_functions_with_revision_and_declaration_fields() {
+async fn entry_reads_return_current_private_tools_with_revision_and_declaration_fields() {
     let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, user) = fixture.user_workspace("user:entry-author").await;
     let agent = registered_agent(&fixture.workspaces, &user, &workspace_id).await;
@@ -351,7 +351,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
             private_tools
                 .save(&context, &workspace_id, save)
                 .await
-                .expect("save function")
+                .expect("save tool")
         }
     };
 
@@ -381,7 +381,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
             &PrivateToolPath::parse("reports.gone").expect("path"),
         )
         .await
-        .expect("delete function");
+        .expect("delete tool");
     let elsewhere = save(
         &other_user,
         &other_workspace_id,
@@ -399,16 +399,16 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     let every_entry = crate::all_private_tool_entries_in_transaction(&mut transaction)
         .await
         .expect("read every Workspace's entries");
-    for (workspace, function, revision) in [
+    for (workspace, tool, revision) in [
         (&workspace_id, replaced.id(), Some(2)),
         (&other_workspace_id, elsewhere.id(), Some(1)),
         (&other_workspace_id, replaced.id(), None),
         (&workspace_id, gone.id(), None),
     ] {
         assert_eq!(
-            crate::private_tool_entry_in_transaction(&mut transaction, workspace, function)
+            crate::private_tool_entry_in_transaction(&mut transaction, workspace, tool)
                 .await
-                .expect("read one function's entry")
+                .expect("read one tool's entry")
                 .map(|entry| entry.revision()),
             revision
         );
@@ -449,7 +449,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
                 2,
             ),
         ],
-        "every Principal's current functions of this Workspace, at their current revision"
+        "every Principal's current tools of this Workspace, at their current revision"
     );
     let mut expected = summary(&workspace_entries);
     expected.push((
@@ -462,7 +462,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     assert_eq!(
         summary(&every_entry),
         expected,
-        "the cross-Workspace read adds the other Workspace's function"
+        "the cross-Workspace read adds the other Workspace's tool"
     );
     for (entries, saved) in [
         (&workspace_entries, &replaced),
@@ -474,7 +474,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
         let read = entries
             .iter()
             .find(|entry| entry.id() == saved.id())
-            .expect("current function has an entry");
+            .expect("current tool has an entry");
         assert_eq!(
             read,
             &crate::PrivateToolEntry::from_saved(saved),
@@ -503,7 +503,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     let corrupt = entries
         .iter()
         .find(|entry| entry.id() == agent_private_tool.id())
-        .expect("the function stays readable by path and description");
+        .expect("the tool stays readable by path and description");
     assert_eq!(corrupt.declaration_fields(), None);
     assert_eq!(corrupt.description().as_str(), "Answer a question");
 }
@@ -511,7 +511,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
 #[tokio::test]
 async fn agent_and_user_private_tool_paths_are_principal_owned() {
     let fixture = PrivateToolTestModules::new().await;
-    let (workspace_id, user) = fixture.user_workspace("user:function-owner").await;
+    let (workspace_id, user) = fixture.user_workspace("user:tool-owner").await;
     let agent = registered_agent(&fixture.workspaces, &user, &workspace_id).await;
     let path = PrivateToolPath::parse("private.answer").expect("path");
     let saved = fixture
@@ -526,7 +526,7 @@ async fn agent_and_user_private_tool_paths_are_principal_owned() {
             ),
         )
         .await
-        .expect("Agent saves its own function");
+        .expect("Agent saves its own tool");
 
     assert!(matches!(
         fixture.private_tools.get(&user, &workspace_id, &path).await,
@@ -549,7 +549,7 @@ async fn agent_and_user_private_tool_paths_are_principal_owned() {
             &path,
         )
         .await
-        .expect("Agent deletes its own function");
+        .expect("Agent deletes its own tool");
     assert!(matches!(
         fixture
             .private_tools
@@ -571,8 +571,8 @@ async fn agent_and_user_private_tool_paths_are_principal_owned() {
     clippy::too_many_lines,
     reason = "one visibility scenario compares a designated Owner with a Member and a non-Member Organization Owner"
 )]
-async fn only_designated_owners_inspect_and_delete_agent_functions_without_authoring_as_the_agent()
-{
+async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_authoring_as_the_agent()
+ {
     let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, workspace_owner) = fixture.user_workspace("user:workspace-owner").await;
     let agent = registered_agent(&fixture.workspaces, &workspace_owner, &workspace_id).await;
@@ -590,14 +590,14 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             ),
         )
         .await
-        .expect("Agent saves its function");
+        .expect("Agent saves its tool");
 
     assert_eq!(
         fixture
             .private_tools
             .get_agent(&workspace_owner, &workspace_id, &agent_id, &path)
             .await
-            .expect("Workspace Owner inspects Agent function")
+            .expect("Workspace Owner inspects Agent tool")
             .id(),
         agent_private_tool.id()
     );
@@ -606,7 +606,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .private_tools
             .list_agent(&workspace_owner, &workspace_id, &agent_id)
             .await
-            .expect("Workspace Owner lists Agent functions")
+            .expect("Workspace Owner lists Agent tools")
             .as_slice(),
         std::slice::from_ref(&agent_private_tool)
     );
@@ -637,7 +637,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
 
     let member_user = organization_user(
         fixture.database.clone(),
-        "user:function-member",
+        "user:tool-member",
         OrganizationRole::Member,
     )
     .await;
@@ -726,7 +726,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .private_tools
             .get(&agent, &workspace_id, &path)
             .await
-            .expect("denied deletions leave the Agent function current")
+            .expect("denied deletions leave the Agent tool current")
             .id(),
         agent_private_tool.id()
     );
@@ -740,7 +740,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             &path,
         )
         .await
-        .expect("designated Owner deletes Agent function");
+        .expect("designated Owner deletes Agent tool");
 
     assert!(matches!(
         fixture
@@ -754,7 +754,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .private_tools
             .get(&workspace_owner, &workspace_id, &path)
             .await
-            .expect("Owner's User function stays private and current")
+            .expect("Owner's User tool stays private and current")
             .id(),
         owner_private_tool.id()
     );
@@ -877,7 +877,7 @@ async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
                 ),
             )
             .await
-            .expect("save non-overlapping function");
+            .expect("save non-overlapping tool");
     }
 
     for path in ["reports.current.detail", "finance.tax"] {
@@ -921,7 +921,7 @@ async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
                 &PrivateToolPath::parse("reports.current").expect("path"),
             )
             .await,
-        Ok(function) if function.source().as_str() == "export default () => 42;"
+        Ok(tool) if tool.source().as_str() == "export default () => 42;"
     ));
 }
 
@@ -940,7 +940,7 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
         (
             CompileFailure::Busy,
             "compiler_busy",
-            Some("private_tool_compiler_busy"),
+            Some("authoring_compiler_busy"),
         ),
         (
             CompileFailure::TimedOut,
@@ -1242,7 +1242,7 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
 #[tokio::test]
 async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_public_types() {
     let fixture = PrivateToolTestModules::new().await;
-    let (workspace_id, principal) = fixture.user_workspace("user:typed-function-author").await;
+    let (workspace_id, principal) = fixture.user_workspace("user:typed-tool-author").await;
     let path = PrivateToolPath::parse("typed.advisory").expect("path");
     let advisory = fixture
         .private_tools
@@ -1620,7 +1620,7 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
 }
 
 #[tokio::test]
-async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
+async fn one_users_private_tools_at_the_same_path_stay_scoped_to_each_workspace() {
     let fixture = PrivateToolTestModules::new().await;
     let (first, principal) = fixture.user_workspace("user:two-workspaces").await;
     let second = fixture
@@ -1663,9 +1663,9 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
         .await
         .unwrap();
     let get = |workspace: &coral_workspace::WorkspaceId| {
-        let (functions, principal, workspace, path) =
+        let (tools, principal, workspace, path) =
             (&fixture.private_tools, &principal, workspace.clone(), &path);
-        async move { functions.get(principal, &workspace, path).await }
+        async move { tools.get(principal, &workspace, path).await }
     };
     assert_eq!(get(&second).await.unwrap(), in_second);
 
@@ -1951,7 +1951,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
     clippy::too_many_lines,
     reason = "one listing scenario compares the owner, another Member, an Agent, another Workspace, and access loss"
 )]
-async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
+async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
     let fixture = PrivateToolTestModules::new().await;
     let organization = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_user(
@@ -1996,10 +1996,9 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
     let member = AuthenticatedPrincipal::user(member_user.clone());
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
     let save = |actor: &AuthenticatedPrincipal, workspace: &coral_workspace::WorkspaceId, path| {
-        let (functions, actor, workspace) =
-            (&fixture.private_tools, actor.clone(), workspace.clone());
+        let (tools, actor, workspace) = (&fixture.private_tools, actor.clone(), workspace.clone());
         async move {
-            functions
+            tools
                 .save(
                     &private_tool_change(actor, 20, 'c'),
                     &workspace,
@@ -2011,7 +2010,7 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
                     ),
                 )
                 .await
-                .expect("save function")
+                .expect("save tool")
         }
     };
     // An uppercase path sorts first on both databases, as in Rust string order.
@@ -2025,10 +2024,10 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
     let inspection =
         crate::PrivateToolInspection::new(fixture.database.clone(), fixture.workspaces.clone());
     let list = |actor: &AuthenticatedPrincipal, after: Option<&str>, page_size| {
-        let (functions, actor, workspace) = (&inspection, actor.clone(), workspace_id.clone());
+        let (tools, actor, workspace) = (&inspection, actor.clone(), workspace_id.clone());
         let after = after.map(|path| PrivateToolPath::parse(path).expect("after path"));
         async move {
-            functions
+            tools
                 .list(&actor, &workspace, after.as_ref(), page_size)
                 .await
         }
@@ -2047,11 +2046,11 @@ async fn list_pages_only_the_callers_own_functions_in_one_workspace() {
     assert_eq!(summary.saved_at_unix_nanos(), 20);
     let after = first.next_after().expect("more pages").as_str().to_owned();
     let second = list(&member, Some(&after), 2).await.expect("second page");
-    // A page that ends exactly at the last function has no continuation.
+    // A page that ends exactly at the last tool has no continuation.
     assert_eq!(paths(&second), ["reports.total", "zeta.last"]);
     assert_eq!(second.next_after(), None);
 
-    // An Owner sees only their own functions: never a Member's or an Agent's.
+    // An Owner sees only their own tools: never a Member's or an Agent's.
     // An Agent likewise sees only its own.
     for (actor, own) in [(&owner, "owner.private"), (&agent, "agent.work")] {
         assert_eq!(

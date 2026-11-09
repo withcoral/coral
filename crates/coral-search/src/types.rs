@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use coral_catalog::{SEARCH_PROVIDERS_MAX, ToolHints, ToolPresentation};
+use coral_catalog::{AuthoredToolKind, ToolHints, ToolPresentation};
 pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
 use coral_provider::access::ProviderNamespace;
@@ -335,17 +335,14 @@ impl SearchRequest {
     }
 }
 
-/// The root that every Private Tool's Call Path starts with.
-const PRIVATE_TOOL_ROOT: &str = "coral.private";
-
 /// Splits a written path into the Call Root that would own it and the path
 /// under that root: a Provider Call Root's, or `coral.private` for a
 /// Private Tool's, which no Provider Call Root splits. `None` when no root
 /// owns it.
 pub(crate) fn split_written_path(path: &str) -> Option<(ProviderCallRoot, &str)> {
     ProviderCallRoot::split_call_path(path).or_else(|| {
-        path.strip_prefix(PRIVATE_TOOL_ROOT)?
-            .strip_prefix('.')
+        AuthoredToolKind::Private
+            .relative_path(path)
             .filter(|relative| relative.split('.').all(|segment| !segment.is_empty()))
             .map(|relative| (ProviderCallRoot::Private, relative))
     })
@@ -381,15 +378,13 @@ impl CallPath {
     }
 
     pub(crate) fn private_tool(relative_path: &str) -> Result<Self, Error> {
-        Self::parse(&format!("{PRIVATE_TOOL_ROOT}.{relative_path}"))
+        Self::parse(&AuthoredToolKind::Private.call_path(relative_path))
     }
 
     /// Returns the path relative to `coral.private`, for a Private Tool's
     /// Call Path.
     pub(crate) fn private_tool_path(&self) -> Option<&str> {
-        self.0
-            .strip_prefix(PRIVATE_TOOL_ROOT)
-            .and_then(|path| path.strip_prefix('.'))
+        AuthoredToolKind::Private.relative_path(&self.0)
     }
 
     /// Returns the last segment: the name a signature line calls it by.

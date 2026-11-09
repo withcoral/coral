@@ -13,7 +13,7 @@ function identifierNames(sourceFile) {
 // The authored source with `edits` applied and private source after it: the
 // line break ends any trailing comment, and the semicolon ends any
 // unterminated last statement.
-function editedPrivateToolBody(sourceFile, edits, defaultName) {
+function editedLinkedToolBody(sourceFile, edits, defaultName) {
   const edited = editedSource(sourceFile.text, edits);
   return {
     text: `${edited.text}\n;return () => ${defaultName};`,
@@ -22,8 +22,8 @@ function editedPrivateToolBody(sourceFile, edits, defaultName) {
 }
 
 // `extraEdits` carry the functions the module saves, at module offsets.
-function privateToolRuntimeBody(source, target, extraEdits) {
-  const sourceFile = ts.createSourceFile('private_tool.ts', source, target, true, ts.ScriptKind.TS);
+function linkedToolRuntimeBody(source, target, extraEdits) {
+  const sourceFile = ts.createSourceFile('linked_tool.ts', source, target, true, ts.ScriptKind.TS);
   if (
     sourceFile.parseDiagnostics.some(
       (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
@@ -39,7 +39,7 @@ function privateToolRuntimeBody(source, target, extraEdits) {
   const usedNames = identifierNames(sourceFile);
   function privateName() {
     for (let suffix = 1; ; suffix += 1) {
-      const name = `__coralPrivateToolDefaultExport_${suffix}`;
+      const name = `__coralLinkedToolDefaultExport_${suffix}`;
       if (!usedNames.has(name)) {
         usedNames.add(name);
         return name;
@@ -139,7 +139,7 @@ function privateToolRuntimeBody(source, target, extraEdits) {
   }
   edits.push(...extraEdits);
   edits.sort((left, right) => left.start - right.start);
-  return editedPrivateToolBody(sourceFile, edits, defaultName);
+  return editedLinkedToolBody(sourceFile, edits, defaultName);
 }
 
 const COMPLETE_ROOT_GLOBAL = '__coralCompleteRoot';
@@ -155,8 +155,8 @@ const LINKED_ROOT_KINDS = Object.freeze({ private: 'Private Tool', shared: 'Shar
 // callable, outside this script, so the innermost frame of this script at a
 // call is the authored call site. A call performs the Tool, whose body is the
 // default export of its module once that module has initialized. Module code
-// then sets `__coralPrivateToolDefaults[index]`.
-function coralRootPrelude(builtinTools, privateTools) {
+// then sets `__coralLinkedToolDefaults[index]`.
+function coralRootPrelude(builtinTools, linkedTools) {
   if (
     !Array.isArray(builtinTools) ||
     builtinTools.some(
@@ -166,71 +166,71 @@ function coralRootPrelude(builtinTools, privateTools) {
     throw new Error('Built-in Tools must be identifiers');
   }
   const linkedPaths = JSON.stringify(
-    privateTools.map((privateTool) => ({
-      root: privateTool.root,
-      path: privateTool.pathSegments,
+    linkedTools.map((linkedTool) => ({
+      root: linkedTool.root,
+      path: linkedTool.pathSegments,
     })),
   );
   return `    const __coralCompleteRoot = globalThis.${COMPLETE_ROOT_GLOBAL};
     Reflect.deleteProperty(globalThis, "${COMPLETE_ROOT_GLOBAL}");
     const __coralLinkedPaths = ${linkedPaths};
-    const __coralPrivateToolDefaults = Object.create(null);
+    const __coralLinkedToolDefaults = Object.create(null);
     for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
-      Object.defineProperty(__coralPrivateToolDefaults, __coralIndex, {
+      Object.defineProperty(__coralLinkedToolDefaults, __coralIndex, {
         value: undefined,
         enumerable: false,
         writable: true,
         configurable: false,
       });
     }
-    Object.preventExtensions(__coralPrivateToolDefaults);
-    const __coralBuildLinkedRoot = (__coralRoot, __coralPrivateTool) => {
-      const __coralFunctionRoot = Object.create(null);
-      const __coralFunctionNamespaces = [__coralFunctionRoot];
+    Object.preventExtensions(__coralLinkedToolDefaults);
+    const __coralBuildLinkedRoot = (__coralRoot, __coralLinkedTool) => {
+      const __coralToolRoot = Object.create(null);
+      const __coralToolNamespaces = [__coralToolRoot];
       for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
         if (__coralLinkedPaths[__coralIndex].root !== __coralRoot) continue;
         const __coralPath = __coralLinkedPaths[__coralIndex].path;
         const __coralCallPath = "coral." + __coralRoot + "." + __coralPath.join(".");
-        let __coralFunctionParent = __coralFunctionRoot;
+        let __coralToolParent = __coralToolRoot;
         for (const __coralSegment of __coralPath.slice(0, -1)) {
-          if (!Object.hasOwn(__coralFunctionParent, __coralSegment)) {
+          if (!Object.hasOwn(__coralToolParent, __coralSegment)) {
             const __coralNext = Object.create(null);
-            Object.defineProperty(__coralFunctionParent, __coralSegment, {
+            Object.defineProperty(__coralToolParent, __coralSegment, {
               value: __coralNext,
               enumerable: true,
               writable: false,
               configurable: false,
             });
-            __coralFunctionNamespaces.push(__coralNext);
+            __coralToolNamespaces.push(__coralNext);
           }
-          __coralFunctionParent = __coralFunctionParent[__coralSegment];
+          __coralToolParent = __coralToolParent[__coralSegment];
         }
         const __coralBody = () => {
-          const __coralDefault = __coralPrivateToolDefaults[__coralIndex];
+          const __coralDefault = __coralLinkedToolDefaults[__coralIndex];
           if (__coralDefault === undefined) {
             throw new TypeError(__coralCallPath + " is called before its module initialized");
           }
           return __coralDefault();
         };
         Object.defineProperty(
-          __coralFunctionParent,
+          __coralToolParent,
           __coralPath[__coralPath.length - 1],
           {
-            value: __coralPrivateTool(__coralCallPath, __coralBody),
+            value: __coralLinkedTool(__coralCallPath, __coralBody),
             enumerable: true,
             writable: false,
             configurable: false,
           },
         );
       }
-      for (const __coralNamespace of __coralFunctionNamespaces.toReversed()) {
+      for (const __coralNamespace of __coralToolNamespaces.toReversed()) {
         Object.freeze(__coralNamespace);
       }
-      return __coralFunctionRoot;
+      return __coralToolRoot;
     };
-    const __coralBuildLinkedTools = (__coralPrivateTool) => ({
-      private: __coralBuildLinkedRoot("private", __coralPrivateTool),
-      shared: __coralBuildLinkedRoot("shared", __coralPrivateTool),
+    const __coralBuildLinkedTools = (__coralLinkedTool) => ({
+      private: __coralBuildLinkedRoot("private", __coralLinkedTool),
+      shared: __coralBuildLinkedRoot("shared", __coralLinkedTool),
     });
     if (__coralCompleteRoot !== undefined) {
       __coralCompleteRoot(${JSON.stringify(builtinTools)}, __coralBuildLinkedTools);
@@ -252,23 +252,23 @@ function coralRootPrelude(builtinTools, privateTools) {
 
 // `saves` names the private carrier and holds the edits that carry what the
 // Program body and each module save.
-function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
+function linkedProgramSource(body, linkedTools, builtinTools, target, saves) {
   const pathKeys = { private: new Set(), shared: new Set() };
-  for (const privateTool of privateTools) {
+  for (const linkedTool of linkedTools) {
     if (
-      !Object.hasOwn(LINKED_ROOT_KINDS, privateTool.root) ||
-      !Array.isArray(privateTool.pathSegments) ||
-      privateTool.pathSegments.length === 0 ||
-      privateTool.pathSegments.some((segment) => typeof segment !== 'string') ||
-      typeof privateTool.source !== 'string'
+      !Object.hasOwn(LINKED_ROOT_KINDS, linkedTool.root) ||
+      !Array.isArray(linkedTool.pathSegments) ||
+      linkedTool.pathSegments.length === 0 ||
+      linkedTool.pathSegments.some((segment) => typeof segment !== 'string') ||
+      typeof linkedTool.source !== 'string'
     ) {
       throw new Error('Linked Tool closure contains an invalid source entry');
     }
-    const key = privateTool.pathSegments.join('.');
-    if (pathKeys[privateTool.root].has(key)) {
+    const key = linkedTool.pathSegments.join('.');
+    if (pathKeys[linkedTool.root].has(key)) {
       throw new Error('Linked Tool closure contains a duplicate path');
     }
-    pathKeys[privateTool.root].add(key);
+    pathKeys[linkedTool.root].add(key);
   }
   for (const keys of Object.values(pathKeys)) {
     for (const key of keys) {
@@ -280,10 +280,10 @@ function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
     }
   }
 
-  const modules = privateTools.map((privateTool, index) => ({
-    ...privateTool,
+  const modules = linkedTools.map((linkedTool, index) => ({
+    ...linkedTool,
     index,
-    body: privateToolRuntimeBody(privateTool.source, target, saves.moduleEdits[index]),
+    body: linkedToolRuntimeBody(linkedTool.source, target, saves.moduleEdits[index]),
   }));
   const sourceParts = [];
   const authoredMappings = [];
@@ -297,25 +297,25 @@ function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
 
   append(`(async () => {
     ${privateToolCarrierDeclaration(saves.carrier)}
-${coralRootPrelude(builtinTools, privateTools)}
+${coralRootPrelude(builtinTools, linkedTools)}
 `);
 
   for (const module of modules) {
-    append(`    __coralPrivateToolDefaults[${module.index}] = await (async () => {\n`);
-    const privateToolStart = generatedLine;
+    append(`    __coralLinkedToolDefaults[${module.index}] = await (async () => {\n`);
+    const linkedToolStart = generatedLine;
     append(module.body.text);
     for (const mapping of module.body.mappings) {
       authoredMappings.push({
         ...mapping,
-        generatedLine: privateToolStart + mapping.generatedLine,
+        generatedLine: linkedToolStart + mapping.generatedLine,
         source: `${LINKED_ROOT_KINDS[module.root]} coral.${module.root}.${module.pathSegments.join('.')}`,
       });
     }
     append(`
     })();
     if (
-      typeof __coralPrivateToolDefaults[${module.index}] !== "function"
-      || typeof __coralPrivateToolDefaults[${module.index}]() !== "function"
+      typeof __coralLinkedToolDefaults[${module.index}] !== "function"
+      || typeof __coralLinkedToolDefaults[${module.index}]() !== "function"
     ) {
       throw new TypeError("Tool default export is not callable");
     }

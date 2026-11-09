@@ -1,7 +1,7 @@
 //! The Private Tool indexer: one private tool's entry in, one row out.
 //!
-//! A function's delete never touches these rows (ADR 0017). [`sync`] removes
-//! them once it finds the function gone, and a reconcile pass finds the rows
+//! A Private Tool's delete never touches these rows (ADR 0017). [`sync`] removes
+//! them once it finds the Private Tool gone, and a reconcile pass finds the rows
 //! whose notification never came, such as those of a removed Principal.
 //!
 //! [`sync`]: PrivateToolIndexer::sync
@@ -34,12 +34,12 @@ pub(crate) struct PrivateToolRemoval {
 
 /// What it takes to bring the index in line with one Private Tool.
 pub(crate) enum PrivateToolSync {
-    /// The function exists and the index lacks it, holds another revision of
+    /// The Private Tool exists and the index lacks it, holds another revision of
     /// it, or holds a failure of it that is due again.
     Index(Box<PrivateToolEntry>),
-    /// The function is gone and the index still holds rows of it.
+    /// The Private Tool is gone and the index still holds rows of it.
     Remove(PrivateToolRemoval),
-    /// The index already agrees with the function.
+    /// The index already agrees with the Private Tool.
     Nothing,
 }
 
@@ -70,7 +70,7 @@ impl EntityIndexer for PrivateToolIndexer {
         Ok(super::IndexEffect::Updated)
     }
 
-    /// Removes the function's row and state row. A failed function has a
+    /// Removes the Private Tool's row and state row. A failed Private Tool has a
     /// state row alone, whose removal leaves the statistics as they were.
     async fn remove(
         &self,
@@ -86,14 +86,14 @@ impl EntityIndexer for PrivateToolIndexer {
         Ok((removed > 0).then(|| removal.workspace_id.clone()))
     }
 
-    /// Returns each current function to index again:
+    /// Returns each current Private Tool to index again:
     /// - one with a `failed` state row that another definition revision
     ///   recorded, or whose retry rule is due at `now_unix_nanos`;
     /// - one without such a row whose row is missing, or whose fingerprint is
     ///   not [`repository::private_tool_fingerprint`] of its definition revision.
     ///
     /// A failure of the current definition revision that is not yet due
-    /// waits for a later pass, whatever the function's row holds.
+    /// waits for a later pass, whatever the Private Tool's row holds.
     /// [`Self::orphaned`] finds what a pass must remove.
     ///
     /// The fingerprint holds the definition revision and the indexer
@@ -110,12 +110,12 @@ impl EntityIndexer for PrivateToolIndexer {
         let fingerprints = repository::recorded_private_tools(transaction)
             .await?
             .into_iter()
-            .map(|row| (row.function, row.fingerprint))
+            .map(|row| (row.private_tool, row.fingerprint))
             .collect::<HashMap<_, _>>();
         let failures = repository::failed_private_tools(transaction)
             .await?
             .into_iter()
-            .map(|failed| (failed.function, failed.failure))
+            .map(|failed| (failed.private_tool, failed.failure))
             .collect::<HashMap<_, _>>();
         Ok(expected
             .iter()
@@ -135,7 +135,7 @@ impl EntityIndexer for PrivateToolIndexer {
     }
 }
 
-/// The rule of [`PrivateToolIndexer::reconcile`] for one function, its
+/// The rule of [`PrivateToolIndexer::reconcile`] for one Private Tool, its
 /// failure, if any, and its row's fingerprint, if it has a row.
 fn needs_indexing(
     failure: Option<&PrivateToolFailure>,
@@ -154,10 +154,10 @@ fn needs_indexing(
 }
 
 impl PrivateToolIndexer {
-    /// What it takes, read now, to bring the index in line with the function:
+    /// What it takes, read now, to bring the index in line with the Private Tool:
     /// the one rule for a save, a delete and a reconcile pass, so each may
     /// run late, twice or out of order. A notification names an id alone, so
-    /// a late one reads the function as it stands, never an older copy.
+    /// a late one reads the Private Tool as it stands, never an older copy.
     pub(crate) async fn sync(
         &self,
         transaction: &mut Transaction<'_>,
@@ -200,13 +200,13 @@ impl PrivateToolIndexer {
         })
     }
 
-    /// The removal of every function the index holds and `current` does not:
-    /// every function that exists now. Reads only, so a read snapshot serves
+    /// The removal of every Private Tool the index holds and `current` does not:
+    /// every Private Tool that exists now. Reads only, so a read snapshot serves
     /// it and a pass that finds none never takes the writer.
     ///
     /// `transaction` must be the snapshot `current` was read from, so a
-    /// function saved later is invisible to both reads. The pass then runs
-    /// [`Self::sync`] for each one, which reads the function again.
+    /// Private Tool saved later is invisible to both reads. The pass then runs
+    /// [`Self::sync`] for each one, which reads the Private Tool again.
     pub(crate) async fn orphaned(
         &self,
         transaction: &mut Transaction<'_>,
@@ -214,14 +214,14 @@ impl PrivateToolIndexer {
     ) -> Result<Vec<PrivateToolRemoval>, IndexError> {
         let current = current
             .iter()
-            .map(|function| (function.workspace_id(), function.id()))
+            .map(|private_tool| (private_tool.workspace_id(), private_tool.id()))
             .collect::<HashSet<_>>();
         let recorded = repository::recorded_private_tools(transaction).await?;
         let failed = repository::failed_private_tools(transaction).await?;
         Ok(recorded
             .into_iter()
-            .map(|row| row.function)
-            .chain(failed.into_iter().map(|failed| failed.function))
+            .map(|row| row.private_tool)
+            .chain(failed.into_iter().map(|failed| failed.private_tool))
             .filter(|held| !current.contains(&(&held.workspace_id, &held.private_tool_id)))
             .map(|held| PrivateToolRemoval {
                 workspace_id: held.workspace_id,
@@ -233,12 +233,12 @@ impl PrivateToolIndexer {
     }
 }
 
-/// Records a failed attempt for the function: a `failed` state row with the
+/// Records a failed attempt for the Private Tool: a `failed` state row with the
 /// error, the revision it tried, and its retry rule under
 /// `reconcile_interval`, and no row in the search table. The caller runs
 /// this in a fresh transaction after the attempt's transaction rolled back.
 /// A row an earlier attempt wrote goes too: the search table holds only what
-/// indexed, so a function whose last attempt failed does not rank on stale
+/// indexed, so a Private Tool whose last attempt failed does not rank on stale
 /// text. Answers whether that row went.
 pub(crate) async fn record_failed_attempt(
     transaction: &mut Transaction<'_>,
@@ -293,7 +293,7 @@ fn private_tool_row(entry: &PrivateToolEntry) -> Result<PrivateToolRow<'_>, Inde
 
 /// The lowest-weight text: the words of every declaration path with its
 /// text and of the compact identifier variant of the path, each once, as
-/// [`DistinctWords`] keeps them. A function whose declaration fields did not
+/// [`DistinctWords`] keeps them. A Private Tool whose declaration fields did not
 /// project is searchable by path and description. Raise
 /// [`super::INDEXER_REVISION`] when this text changes.
 fn searchable_text(entry: &PrivateToolEntry) -> String {

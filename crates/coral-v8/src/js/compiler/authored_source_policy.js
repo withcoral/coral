@@ -430,7 +430,7 @@ function referencesByPath(found) {
 
 // The Private and Shared Tools one source names directly, each sorted by
 // path, or the first way it names one that admission cannot link.
-function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
+function linkedToolPathAnalysis(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
   const references = { private: new Map(), shared: new Map() };
   let validationError;
@@ -464,7 +464,10 @@ function privateToolPathAnalysis(sourceFile, program, authoredMappings) {
           access.segments[0] === undefined) ||
         access?.root === 'computed_global'
       ) {
-        return reject('Private Tool paths must be directly named through coral.private', node);
+        return reject(
+          'Private and Shared Tool paths must be directly named through coral.private and coral.shared',
+          node,
+        );
       }
       if (
         ts.isElementAccessExpression(node) &&
@@ -514,9 +517,9 @@ function referenceAnalysisProgram(source, fileName, targetName) {
   return { program, sourceFile };
 }
 
-// The Private Tools and Tools one Program body names, from one analysis:
+// The Private Tools, Shared Tools and Tools one Program body names, from one analysis:
 // what Program Admission links and checks.
-function analyzePrivateToolPaths(body, fileName, targetName) {
+function analyzeProgramPaths(body, fileName, targetName) {
   const wrapped = wrapProgramBody(body);
   const { program, sourceFile } = referenceAnalysisProgram(wrapped.source, fileName, targetName);
   if (!hasExpectedProgramShape(sourceFile)) {
@@ -530,13 +533,13 @@ function analyzePrivateToolPaths(body, fileName, targetName) {
     };
   }
 
-  const functions = privateToolPathAnalysis(sourceFile, program, wrapped.authoredMappings);
-  if (functions.validationError !== undefined) return functions;
+  const analysis = linkedToolPathAnalysis(sourceFile, program, wrapped.authoredMappings);
+  if (analysis.validationError !== undefined) return analysis;
   const chains = calledPathChains(
     toolReferenceChains(sourceFile, program, wrapped.authoredMappings),
   );
   return {
-    ...functions,
+    ...analysis,
     tools: { callPaths: candidateToolPaths(chains), chains },
   };
 }
@@ -551,7 +554,7 @@ function calledPathChains(chains) {
   }));
 }
 
-function privateToolDependencyAnalysis(sourceFile, program) {
+function linkedToolDependencyAnalysis(sourceFile, program) {
   const syntaxError = sourceFile.parseDiagnostics.find(
     (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
   );
@@ -569,12 +572,12 @@ function privateToolDependencyAnalysis(sourceFile, program) {
       },
     };
   }
-  return privateToolPathAnalysis(sourceFile, program);
+  return linkedToolPathAnalysis(sourceFile, program);
 }
 
-function analyzePrivateToolDependencies(source, fileName, targetName) {
+function analyzeAuthoredToolDependencies(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  return privateToolDependencyAnalysis(sourceFile, program);
+  return linkedToolDependencyAnalysis(sourceFile, program);
 }
 
 // The members of `coral` that name no Tool: the linked Tools' roots and the
@@ -651,11 +654,11 @@ function candidateToolPaths(chains) {
   return [...paths].toSorted();
 }
 
-// The Private Tools and Tools one Private Tool module names, from
+// The Private Tools, Shared Tools and Tools one Authored Tool module names, from
 // one analysis: what its typed preparation needs.
-function analyzePrivateToolCallPaths(source, fileName, targetName) {
+function analyzeAuthoredToolCallPaths(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  const dependencies = privateToolDependencyAnalysis(sourceFile, program);
+  const dependencies = linkedToolDependencyAnalysis(sourceFile, program);
   if (dependencies.validationError !== undefined) return dependencies;
   const chains = toolReferenceChains(sourceFile, program);
   return {

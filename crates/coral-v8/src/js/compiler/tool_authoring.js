@@ -126,7 +126,7 @@ function defaultExportSignatures(checker, sourceFile) {
   return checker.getSignaturesOfType(callable, ts.SignatureKind.Call);
 }
 
-// Where a Private Tool's arguments or its awaited result hold something that
+// Where an Authored Tool's arguments or its awaited result hold something that
 // cannot cross a Tool call as JSON data, such as "`input.callback` is a
 // function", or undefined when they hold only data. `any`, `unknown` and a
 // type parameter without a constraint say nothing about the value, so they
@@ -416,7 +416,7 @@ function privateToolDeclarationResult(emitted, diagnostics, { references, shared
     return {
       declarationText: null,
       validationError:
-        declarationText === undefined ? 'TypeScript emitted no Private Tool declaration' : null,
+        declarationText === undefined ? 'TypeScript emitted no Tool declaration' : null,
       blockingDiagnostics: blockingDiagnostics.map((diagnostic) => diagnosticPayload(diagnostic)),
       diagnostics,
       references,
@@ -439,9 +439,9 @@ function privateToolDeclarationResult(emitted, diagnostics, { references, shared
   };
 }
 
-// Prepares one Private Tool, typed by `declarations` when they are given.
+// Prepares one Authored Tool, typed by `declarations` when they are given.
 // `builtinTools` are the keys of the Built-in Tools it can call on `coral`.
-function preparePrivateTool(source, builtinTools, declarations, fileName, targetName) {
+function prepareAuthoredTool(source, builtinTools, declarations, fileName, targetName) {
   const compilerOptions = {
     ...PROGRAM_COMPILER_OPTIONS,
     target: resolveTypeScriptTarget(targetName),
@@ -484,7 +484,7 @@ function preparePrivateTool(source, builtinTools, declarations, fileName, target
       references: [],
     };
   }
-  const pathAnalysis = privateToolPathAnalysis(sourceFile, program);
+  const pathAnalysis = linkedToolPathAnalysis(sourceFile, program);
   if (pathAnalysis.validationError !== undefined) {
     return {
       declarationText: null,

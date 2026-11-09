@@ -147,15 +147,15 @@ impl SearchIndex {
     /// snapshot, so a pass that finds no change never takes the writer, which
     /// every other write in the process would wait behind.
     ///
-    /// Each removal, Generation, function and recount is written in a
+    /// Each removal, Generation, Private Tool and recount is written in a
     /// transaction of its own. Each but a recount runs under the in-process
     /// mutex, which the pass holds for that one item; a recount holds its
     /// Workspace's statistics lock alone, which no write takes. A pass under load waits for the writer once
     /// per item, and holding the mutex across those waits would hold back
     /// every notified write. A notified write or a change that lands between
     /// two items may index, replace or delete what the pass read as stale, so
-    /// the pass reads each Generation and function again under the mutex and
-    /// skips what changed; a function goes through
+    /// the pass reads each Generation and Private Tool again under the mutex and
+    /// skips what changed; a Private Tool goes through
     /// [`SearchIndex::sync_private_tool`]'s one rule. A failed removal is logged and the pass goes on
     /// without further removals; a failed write is logged and
     /// recorded like a notified write's, and the pass goes on. Passes in two

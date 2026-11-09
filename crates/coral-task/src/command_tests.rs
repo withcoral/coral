@@ -1141,7 +1141,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
     clippy::too_many_lines,
     reason = "one retention matrix covers unknown attempts, completion feedback, and independent authoring evidence"
 )]
-async fn unknown_attempts_and_completion_feedback_expire_without_deleting_current_functions() {
+async fn unknown_attempts_and_completion_feedback_expire_without_deleting_current_private_tools() {
     let fixture = Fixture::new().await;
     let abandoned = fixture.goal().await;
     let call = fixture.call(&abandoned, "Interrupted preparation");

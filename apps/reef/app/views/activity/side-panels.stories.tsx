@@ -825,7 +825,7 @@ const toolEvidence = {
   ),
   private_tool: functionStory(
     panel(
-      'Save function · saved',
+      'Save private tool · saved',
       toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
       { evidence: 'Save the reminder batch' },
     ),
@@ -907,7 +907,7 @@ export const SaveFunctionSaved = toolEvidence.private_tool
 /** A save on a phone: its intent and times, nothing wider than the screen. */
 export const SaveFunctionNarrow = functionStory(
   panel(
-    'Save function · saved, narrow screen',
+    'Save private tool · saved, narrow screen',
     toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: 'Save the reminder batch', narrow: true },
   ),
@@ -917,9 +917,9 @@ export const SaveFunctionNarrow = functionStory(
  * shows nowhere, not even as the title. */
 const unnamedSave = functionStory(
   panel(
-    'Save function · saved, no intent retained',
+    'Save private tool · saved, no intent retained',
     toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
-    { evidence: 'Save function' },
+    { evidence: 'Save private tool' },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded' },
 )
@@ -934,7 +934,7 @@ export const SaveFunctionWithoutIntent: Story = {
 }
 export const SaveFunctionRejected = functionStory(
   panel(
-    'Save function · rejected',
+    'Save private tool · rejected',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
       code: 'private_tool_admission_failed',
@@ -947,7 +947,7 @@ export const SaveFunctionRejected = functionStory(
 /** A long compiler report on a phone wraps inside its card and keeps its lines. */
 export const SaveFunctionRejectedNarrow = functionStory(
   panel(
-    'Save function · rejected, long diagnostic, narrow screen',
+    'Save private tool · rejected, long diagnostic, narrow screen',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
       code: 'private_tool_admission_failed',
@@ -959,7 +959,7 @@ export const SaveFunctionRejectedNarrow = functionStory(
 )
 export const SaveFunctionRejectedWithoutMessage = functionStory(
   panel(
-    'Save function · rejected, no message',
+    'Save private tool · rejected, no message',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
       code: 'private_tool_admission_failed',
@@ -974,14 +974,18 @@ export const SaveFunctionRejectedWithoutMessage = functionStory(
   },
 )
 export const SaveFunctionCompletionUnknown = functionStory(
-  panel('Save function · completion unknown', toolPage(saveCall('unknown'), { kind: 'unknown' }), {
-    evidence: 'Save the reminder batch',
-  }),
+  panel(
+    'Save private tool · completion unknown',
+    toolPage(saveCall('unknown'), { kind: 'unknown' }),
+    {
+      evidence: 'Save the reminder batch',
+    },
+  ),
   { times: ['Started'], outcome: 'result unknown' },
 )
 export const SaveFunctionEvidenceUnavailable = functionStory(
   panel(
-    'Save function · evidence unavailable',
+    'Save private tool · evidence unavailable',
     toolPage(saveCall('succeeded'), { kind: 'unknown' }),
     { evidence: 'Save the reminder batch' },
   ),
@@ -989,7 +993,7 @@ export const SaveFunctionEvidenceUnavailable = functionStory(
 )
 export const DeleteFunctionDeleted = functionStory(
   panel(
-    'Delete function · deleted',
+    'Delete private tool · deleted',
     toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId },
   ),
@@ -997,7 +1001,7 @@ export const DeleteFunctionDeleted = functionStory(
 )
 export const DeleteFunctionNarrow = functionStory(
   panel(
-    'Delete function · deleted, narrow screen',
+    'Delete private tool · deleted, narrow screen',
     toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId, narrow: true },
   ),
@@ -1005,7 +1009,7 @@ export const DeleteFunctionNarrow = functionStory(
 )
 export const DeleteFunctionRejected = functionStory(
   panel(
-    'Delete function · rejected',
+    'Delete private tool · rejected',
     toolPage(deleteCall('rejected'), {
       kind: 'rejection',
       code: 'not_found',
@@ -1017,7 +1021,7 @@ export const DeleteFunctionRejected = functionStory(
 )
 export const DeleteFunctionRejectedNarrow = functionStory(
   panel(
-    'Delete function · rejected, long message, narrow screen',
+    'Delete private tool · rejected, long message, narrow screen',
     toolPage(deleteCall('rejected'), {
       kind: 'rejection',
       code: 'not_found',
@@ -1029,7 +1033,7 @@ export const DeleteFunctionRejectedNarrow = functionStory(
 )
 export const DeleteFunctionCompletionUnknown = functionStory(
   panel(
-    'Delete function · completion unknown',
+    'Delete private tool · completion unknown',
     toolPage(deleteCall('unknown'), { kind: 'unknown' }),
     { evidence: 'Remove the old reminder batch' },
   ),
@@ -1037,7 +1041,7 @@ export const DeleteFunctionCompletionUnknown = functionStory(
 )
 export const DeleteFunctionEvidenceUnavailable = functionStory(
   panel(
-    'Delete function · evidence unavailable',
+    'Delete private tool · evidence unavailable',
     toolPage(deleteCall('succeeded'), { kind: 'unknown' }),
     { evidence: 'The delete evidence is unavailable.' },
   ),

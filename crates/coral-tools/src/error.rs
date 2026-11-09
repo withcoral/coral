@@ -13,7 +13,7 @@ pub enum Error {
     /// A replace-only save expected a revision other than the current one.
     #[error("the Private Tool is at revision {current}")]
     PrivateToolRevisionConflict {
-        /// The revision of the function at the path.
+        /// The revision of the Private Tool at the path.
         current: u64,
     },
     /// Source could not become one accepted callable definition.
@@ -53,7 +53,7 @@ pub enum Error {
     /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
     #[error("a Private Tool takes and returns only data: {0}")]
     PrivateToolNotData(String),
-    /// The path names a namespace that holds the caller's other functions,
+    /// The path names a namespace that holds the caller's other Private Tools,
     /// or lies under one of them.
     #[error(
         "Private Tool authoring failed: Private Tool Path conflicts with an existing virtual namespace"
@@ -158,7 +158,7 @@ impl Error {
             Self::SharedToolNotData(_) => "shared_tool_not_data",
             Self::SharedToolCompilationTimedOut => "shared_tool_compilation_timed_out",
             Self::PrivateToolCompilationTimedOut => "private_tool_compilation_timed_out",
-            Self::CompilerBusy => "private_tool_compiler_busy",
+            Self::CompilerBusy => "authoring_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::PermissionDenied(_) => "permission_denied",
             _ => return None,

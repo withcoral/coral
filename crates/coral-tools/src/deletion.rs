@@ -69,7 +69,7 @@ impl PrivateToolDeletion {
                 now_unix_nanos()?,
             )
             .await?;
-        let function = repository::find_current_in_transaction(
+        let tool = repository::find_current_in_transaction(
             transaction,
             workspace_id,
             context.actor().principal(),
@@ -78,6 +78,6 @@ impl PrivateToolDeletion {
         .await?
         .ok_or(Error::PrivateToolNotFound)?;
         authority.require_current_at(now_unix_nanos()?)?;
-        delete_current_with_event(transaction, context, workspace_id, &function).await
+        delete_current_with_event(transaction, context, workspace_id, &tool).await
     }
 }

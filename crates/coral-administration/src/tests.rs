@@ -115,7 +115,7 @@ const BEARER_OPENAPI: &str = r#"{"openapi":"3.0.3","info":{"title":"Private","ve
 /// An Organization Owner keeps nothing when their Workspace Membership ends, and
 /// the sole designated Owner cannot leave until another Owner exists.
 #[tokio::test]
-async fn organization_owner_leaving_loses_current_functions_once_another_owner_exists() {
+async fn organization_owner_leaving_loses_current_private_tools_once_another_owner_exists() {
     let db = fixture().await;
     let database = db.database();
     let workspaces = WorkspaceModule::new(database.clone());
@@ -314,7 +314,7 @@ impl MemberRemoval {
 }
 
 #[tokio::test]
-async fn failed_member_removal_changes_no_credentials_functions_or_events() {
+async fn failed_member_removal_changes_no_credentials_private_tools_or_events() {
     let f = MemberRemoval::new().await;
     let path = PrivateToolPath::parse("answer").unwrap();
     let saved = f
@@ -387,7 +387,7 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
 /// Removal always ends access there: an Organization Owner keeps no more of
 /// their private work than an ordinary Member does.
 #[tokio::test]
-async fn member_removal_retires_credentials_pending_connections_and_functions() {
+async fn member_removal_retires_credentials_pending_connections_and_private_tools() {
     for role in [OrganizationRole::Member, OrganizationRole::Owner] {
         member_removal_retires_current_work(role).await;
     }
@@ -1177,7 +1177,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     clippy::too_many_lines,
     reason = "one offboarding fixture proves credentials, authorizations, functions, authority and events roll back together"
 )]
-async fn agent_removal_rolls_back_registration_functions_and_events_together() {
+async fn agent_removal_rolls_back_registration_private_tools_and_events_together() {
     let db = fixture().await;
     let database = db.database();
     let workspaces = WorkspaceModule::new(database.clone());

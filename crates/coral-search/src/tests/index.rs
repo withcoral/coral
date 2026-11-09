@@ -644,7 +644,7 @@ async fn a_notice_for_an_indexed_generation_writes_nothing() {
 /// items, so a notified write of a newer revision can land first. Writing the
 /// pass's older copy after it would put the old text back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revision() {
+async fn a_pass_leaves_a_private_tool_that_a_notified_write_indexed_at_a_newer_revision() {
     let upstream = MockServer::start().await;
     let mut world = World::publish_tracer(&upstream).await;
     world.index.reconcile().await;
@@ -1219,7 +1219,7 @@ async fn a_pass_corrects_the_statistics_a_private_tool_delete_leaves() {
 }
 
 #[tokio::test]
-async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
+async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());

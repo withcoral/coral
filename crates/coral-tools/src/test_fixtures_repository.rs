@@ -17,12 +17,12 @@ use crate::{AUTHORED_TOOL_SOURCE_MAX_BYTES, PrivateToolId};
 pub async fn corrupt_declaration_fields(
     database: &Database,
     workspace: &WorkspaceId,
-    function: &PrivateToolId,
+    tool: &PrivateToolId,
 ) {
     corrupt(
         database,
         workspace,
-        function,
+        tool,
         "declaration_fields_json",
         r#"[{"path":"bogus","text":"value"}]"#.to_owned(),
     )
@@ -34,15 +34,11 @@ pub async fn corrupt_declaration_fields(
 /// # Panics
 ///
 /// Panics when the write fails or does not change exactly one Private Tool.
-pub async fn corrupt_source(
-    database: &Database,
-    workspace: &WorkspaceId,
-    function: &PrivateToolId,
-) {
+pub async fn corrupt_source(database: &Database, workspace: &WorkspaceId, tool: &PrivateToolId) {
     corrupt(
         database,
         workspace,
-        function,
+        tool,
         "source",
         "x".repeat(AUTHORED_TOOL_SOURCE_MAX_BYTES + 1),
     )
@@ -57,15 +53,15 @@ pub async fn corrupt_source(
 pub async fn corrupt_description(
     database: &Database,
     workspace: &WorkspaceId,
-    function: &PrivateToolId,
+    tool: &PrivateToolId,
 ) {
-    corrupt(database, workspace, function, "description", " ".to_owned()).await;
+    corrupt(database, workspace, tool, "description", " ".to_owned()).await;
 }
 
 async fn corrupt(
     database: &Database,
     workspace: &WorkspaceId,
-    function: &PrivateToolId,
+    tool: &PrivateToolId,
     column: &'static str,
     value: String,
 ) {
@@ -75,7 +71,7 @@ async fn corrupt(
                 .table(Alias::new("private_tool_records"))
                 .value(Alias::new(column), value)
                 .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.to_string()))
-                .and_where(Expr::col(Alias::new("id")).eq(function.to_string()))
+                .and_where(Expr::col(Alias::new("id")).eq(tool.to_string()))
                 .to_owned(),
         )
         .await

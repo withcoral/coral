@@ -149,7 +149,7 @@ pub async fn private_tool_search_material_in_transaction(
 /// # Errors
 ///
 /// Returns a shared persistence failure. Projection corruption stays isolated
-/// as `None` fields on the function.
+/// as `None` fields on the Private Tool.
 pub async fn private_tool_declaration_search_material_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -173,7 +173,7 @@ pub async fn private_tool_declaration_search_material_in_transaction(
 /// # Errors
 ///
 /// Returns a shared persistence or corrupt-definition failure. An unreadable
-/// declaration-field projection stays isolated as `None` on its one function.
+/// declaration-field projection stays isolated as `None` on its one Private Tool.
 pub async fn private_tool_entries_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -187,7 +187,7 @@ pub async fn private_tool_entries_in_transaction(
 /// # Errors
 ///
 /// Returns a shared persistence or corrupt-definition failure. An unreadable
-/// declaration-field projection stays isolated as `None` on its one function.
+/// declaration-field projection stays isolated as `None` on its one Private Tool.
 pub async fn all_private_tool_entries_in_transaction(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<PrivateToolEntry>, Error> {
@@ -195,14 +195,14 @@ pub async fn all_private_tool_entries_in_transaction(
 }
 
 /// Reads one current Private Tool as a search entry, `None` when the
-/// Workspace holds no such function.
+/// Workspace holds no such Private Tool.
 ///
 /// The caller decides visibility; this facet reads no source.
 ///
 /// # Errors
 ///
 /// Returns a shared persistence or corrupt-definition failure. An unreadable
-/// declaration-field projection stays isolated as `None` on the function.
+/// declaration-field projection stays isolated as `None` on the Private Tool.
 pub async fn private_tool_entry_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -212,7 +212,7 @@ pub async fn private_tool_entry_in_transaction(
 }
 
 /// Reads only identities and current revisions for the background index's
-/// telemetry snapshot and for finding search rows without a function. The
+/// telemetry snapshot and for finding search rows without a Private Tool. The
 /// caller decides visibility; no declaration is read.
 ///
 /// # Errors

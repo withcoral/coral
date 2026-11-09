@@ -7,7 +7,9 @@
 //! its functions before it ran, and a save or delete outlives the Run that
 //! made it (ADR 0031).
 
-use coral_catalog::{RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments};
+use coral_catalog::{
+    AuthoredToolKind, RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments,
+};
 use coral_search::SearchIndex;
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
@@ -202,7 +204,7 @@ fn authoring<'a>(host: &BuiltinHost<'a>) -> Result<&'a PrivateTools, Error> {
 }
 
 fn call_path(path: &PrivateToolPath) -> String {
-    format!("coral.private.{}", path.as_str())
+    AuthoredToolKind::Private.call_path(path.as_str())
 }
 
 /// The invoking Principal, at the Run's clock. The trace id is the

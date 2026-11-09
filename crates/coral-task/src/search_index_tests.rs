@@ -15,8 +15,8 @@ use tracing_subscriber::layer::SubscriberExt as _;
 const INJECTED_FAULT: &str = "injected index fault";
 
 #[tokio::test]
-async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_second_changes_nothing()
-{
+async fn one_reconcile_pass_indexes_a_private_tool_a_notification_missed_and_a_second_changes_nothing()
+ {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let goal = fixture.goal().await;
@@ -48,7 +48,7 @@ async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_secon
 }
 
 #[tokio::test]
-async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision() {
+async fn a_pass_reindexes_a_private_tool_whose_fingerprint_differs_from_its_revision() {
     // Two processes can leave revision 9 indexed over revision 10. As text,
     // "9" sorts after "10", so only a comparison for inequality finds the row
     // stale.
@@ -84,7 +84,7 @@ async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision
 }
 
 #[tokio::test]
-async fn a_pass_retries_a_failed_function_once_its_retry_is_due() {
+async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
     // A failed attempt leaves no row. A failure in one process and a success
     // in another can commit together and leave a current row beside a
     // `failed` state row; the same rule applies.
@@ -161,7 +161,7 @@ async fn a_pass_retries_a_failed_function_once_its_retry_is_due() {
 }
 
 #[tokio::test]
-async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
+async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
     // A newer Coral version, a row written before Coral recorded one, or a
     // failure of another revision, such as one whose save notification was
     // lost, each make the failure due.
@@ -216,7 +216,7 @@ async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
 }
 
 #[tokio::test]
-async fn a_notified_save_indexes_the_function_and_a_save_over_keeps_one_row() {
+async fn a_notified_save_indexes_the_private_tool_and_a_save_over_keeps_one_row() {
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save a function");
@@ -384,7 +384,7 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
 }
 
 #[tokio::test]
-async fn a_notified_delete_removes_the_functions_row() {
+async fn a_notified_delete_removes_the_private_tools_row() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let goal = fixture.goal().await;
@@ -404,7 +404,7 @@ async fn a_notified_delete_removes_the_functions_row() {
 }
 
 #[tokio::test]
-async fn a_notification_reads_the_function_as_it_stands() {
+async fn a_notification_reads_the_private_tool_as_it_stands() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let goal = fixture.goal().await;
@@ -436,7 +436,7 @@ async fn a_notification_reads_the_function_as_it_stands() {
 }
 
 #[tokio::test]
-async fn a_delete_commits_while_an_index_write_holds_the_functions_search_row() {
+async fn a_delete_commits_while_an_index_write_holds_the_private_tools_search_row() {
     // A cascade from the function to its search rows made this delete wait
     // for the index write. When that write then re-checked its foreign key,
     // Postgres ended one of the two with `40P01` (#2684).
@@ -472,7 +472,7 @@ async fn a_delete_commits_while_an_index_write_holds_the_functions_search_row() 
 }
 
 #[tokio::test]
-async fn a_pass_removes_the_rows_of_the_functions_that_removing_access_deleted() {
+async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_deleted() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let owner = fixture.actor.authenticated_user().unwrap().clone();
@@ -578,7 +578,7 @@ async fn a_pass_removes_the_rows_of_the_functions_that_removing_access_deleted()
 }
 
 #[tokio::test]
-async fn a_function_without_projected_declaration_fields_is_indexed_by_path_and_description() {
+async fn a_private_tool_without_projected_declaration_fields_is_indexed_by_path_and_description() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let goal = fixture.goal().await;
@@ -622,7 +622,7 @@ async fn a_function_without_projected_declaration_fields_is_indexed_by_path_and_
 }
 
 #[tokio::test]
-async fn postgres_statistics_follow_each_function_write() {
+async fn postgres_statistics_follow_each_private_tool_write() {
     coral_test_support::database_only!(Postgres);
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;

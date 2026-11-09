@@ -31,11 +31,11 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n",
     include_str!("js/compiler/authored_source_policy.js"),
     "\n",
-    include_str!("js/compiler/private_tool_authoring.js"),
+    include_str!("js/compiler/tool_authoring.js"),
     "\n",
     include_str!("js/compiler/private_tool_extraction.js"),
     "\n",
-    include_str!("js/compiler/private_tool_linking.js"),
+    include_str!("js/compiler/tool_linking.js"),
     "\n",
     include_str!("js/compiler/program_compilation.js"),
     "\n",
@@ -43,7 +43,7 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n})();\n",
 );
 const PROGRAM_FILE_NAME: &str = "program.ts";
-const PRIVATE_TOOL_FILE_NAME: &str = "private_tool.ts";
+const AUTHORED_TOOL_FILE_NAME: &str = "authored_tool.ts";
 
 // Leave headroom above the measured ~130 MiB transient authoring working set.
 const COMPILER_RECYCLE_HEAP_BYTES: usize = 256 * 1024 * 1024;
@@ -67,7 +67,7 @@ type CompilerJob = Box<
 /// queue, which stop when the last handle drops.
 ///
 /// Each request compiles against the handle's [`BuiltinTools`]: a Program
-/// calls them on `coral`, and a Private Tool is typed with them. A handle
+/// calls them on `coral`, and an Authored Tool is typed with them. A handle
 /// from [`Self::new`] has none.
 pub struct ProgramCompiler {
     worker: Arc<CompilerWorker>,
@@ -206,10 +206,11 @@ impl ProgramCompiler {
         })
     }
 
-    /// Emits and validates the self-contained declaration for one Private Tool.
+    /// Emits and validates the self-contained declaration for one Authored Tool.
     ///
-    /// `coral.providers`, the Built-in Tools on `coral` and `coral.private` are `any`.
-    /// Strict semantic diagnostics are returned as advisory authoring evidence.
+    /// `coral.providers`, the Built-in Tools on `coral`, `coral.private` and
+    /// `coral.shared` are `any`. Strict semantic diagnostics are returned as
+    /// advisory authoring evidence.
     /// Syntax, imports, invalid export shape, declaration-emission failure, and
     /// unresolved names in the emitted public declaration are blocking.
     ///
@@ -223,12 +224,12 @@ impl ProgramCompiler {
     ) -> Result<AuthoredToolCompilation, Error> {
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
-        self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
+        self.request(CompilerOperation::AuthoredTool, deadline, move |compiler| {
             compiler.prepare_authored_tool(&source, &builtin_tools, "null")
         })
     }
 
-    /// Prepares one Private Tool as [`Self::prepare_authored_tool`] does,
+    /// Prepares one Authored Tool as [`Self::prepare_authored_tool`] does,
     /// with the Call Paths it names typed by `declarations`.
     ///
     /// A result type from `declarations` is inlined into the declaration. When
@@ -249,13 +250,13 @@ impl ProgramCompiler {
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
-        self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
+        self.request(CompilerOperation::AuthoredTool, deadline, move |compiler| {
             compiler.prepare_authored_tool(&source, &builtin_tools, &declarations_json)
         })
     }
 
-    /// Finds the Private Tools and Tools one Private Tool module
-    /// names directly, to type it.
+    /// Finds the Private Tools, Shared Tools and Tools one Authored Tool
+    /// module names directly, to type it.
     ///
     /// # Errors
     ///
@@ -272,7 +273,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds the Private Tools and Tools one Program body names
+    /// Finds the Private Tools, Shared Tools and Tools one Program body names
     /// directly, to link and check it.
     ///
     /// # Errors
@@ -286,13 +287,13 @@ impl ProgramCompiler {
     ) -> Result<NamedCallPaths, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.call_paths("__coralAnalyzePrivateToolPaths", PROGRAM_FILE_NAME, &source)
+            compiler.call_paths("__coralAnalyzeProgramPaths", PROGRAM_FILE_NAME, &source)
         })
     }
 
     /// The called chains of `tools` that name no Tool among `callable`, the
     /// complete Call Paths the caller can call, by the rule the
-    /// unknown-Tool diagnostic of typed Private Tool preparation applies:
+    /// unknown-Tool diagnostic of typed Authored Tool preparation applies:
     /// a chain is known once a prefix of it is callable, and a prefix that
     /// is only a namespace of a callable path reads on. A called chain that
     /// ends at such a namespace is unknown too: calling it names no Tool.
@@ -331,7 +332,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds directly named `coral.private` paths in one Private Tool module.
+    /// Finds directly named `coral.private` paths in one Authored Tool module.
     ///
     /// # Errors
     ///
@@ -347,7 +348,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Lowers one Program body together with its exact Private Tool source closure.
+    /// Lowers one Program body together with the exact source closure of its linked Tools.
     ///
     /// Linked modules initialize once in the supplied dependency order before
     /// the submitted body. Their callables are installed under immutable
@@ -364,14 +365,14 @@ impl ProgramCompiler {
         &self,
         deadline: Instant,
         source: &str,
-        private_tools: &[LinkedToolSource],
+        linked_tools: &[LinkedToolSource],
     ) -> Result<CompiledProgram, Error> {
-        let private_tools_json = serde_json::to_string(private_tools)
+        let linked_tools_json = serde_json::to_string(linked_tools)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile_linked(&source, &private_tools_json, &builtin_tools)
+            compiler.compile_linked(&source, &linked_tools_json, &builtin_tools)
         })
     }
 
@@ -491,7 +492,7 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
         Err(
             Error::Compilation { .. }
             | Error::InvalidProgramBody
-            | Error::InvalidPrivateTool(_)
+            | Error::InvalidAuthoredTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
             | Error::InvalidLinkedToolReference { .. }
@@ -537,7 +538,7 @@ struct CompileOutput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PrivateToolOutput {
+struct AuthoredToolOutput {
     declaration_text: Option<String>,
     declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
     declaration_projection_error: Option<String>,
@@ -560,7 +561,7 @@ struct PrivateToolPathsOutput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PrivateToolCallPathsOutput {
+struct NamedCallPathsOutput {
     references: Vec<LinkedToolReference>,
     #[serde(default)]
     shared_references: Vec<LinkedToolReference>,
@@ -648,16 +649,16 @@ impl CompilerIsolate {
         declarations_json: &str,
     ) -> Result<AuthoredToolCompilation, Error> {
         let json = self.call(
-            "__coralPreparePrivateTool",
+            "__coralPrepareAuthoredTool",
             &[
                 source,
                 builtin_tools,
                 declarations_json,
-                PRIVATE_TOOL_FILE_NAME,
+                AUTHORED_TOOL_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
         )?;
-        let output: PrivateToolOutput = serde_json::from_str(&json)
+        let output: AuthoredToolOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         if !output.blocking_diagnostics.is_empty() {
             return Err(Error::Compilation {
@@ -668,10 +669,10 @@ impl CompilerIsolate {
             return Err(invalid_linked_tool_reference(error));
         }
         if let Some(message) = output.validation_error {
-            return Err(Error::InvalidPrivateTool(message));
+            return Err(Error::InvalidAuthoredTool(message));
         }
         let declaration = output.declaration_text.ok_or_else(|| {
-            Error::CompilerProtocol("compiler emitted no Private Tool declaration".to_string())
+            Error::CompilerProtocol("compiler emitted no Tool declaration".to_string())
         })?;
         let declaration_field_projection = match (
             output.declaration_fields,
@@ -697,8 +698,8 @@ impl CompilerIsolate {
 
     fn authored_tool_call_paths(&mut self, source: &str) -> Result<NamedCallPaths, Error> {
         self.call_paths(
-            "__coralAnalyzePrivateToolCallPaths",
-            PRIVATE_TOOL_FILE_NAME,
+            "__coralAnalyzeAuthoredToolCallPaths",
+            AUTHORED_TOOL_FILE_NAME,
             source,
         )
     }
@@ -713,7 +714,7 @@ impl CompilerIsolate {
             function,
             &[source, file_name, TYPESCRIPT_PROFILE.javascript_target()],
         )?;
-        let output: PrivateToolCallPathsOutput = serde_json::from_str(&json)
+        let output: NamedCallPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         match (output.validation_error, output.tools) {
             (Some(error), _) => Err(invalid_linked_tool_reference(error)),
@@ -729,14 +730,14 @@ impl CompilerIsolate {
     }
 
     fn private_tool_paths(&mut self, source: &str) -> Result<Vec<LinkedToolReference>, Error> {
-        self.analyze_private_tool_paths("__coralAnalyzePrivateToolPaths", source)
+        self.analyze_private_tool_paths("__coralAnalyzeProgramPaths", source)
     }
 
     fn private_tool_dependency_paths(
         &mut self,
         source: &str,
     ) -> Result<Vec<LinkedToolReference>, Error> {
-        self.analyze_private_tool_paths("__coralAnalyzePrivateToolDependencies", source)
+        self.analyze_private_tool_paths("__coralAnalyzeAuthoredToolDependencies", source)
     }
 
     fn analyze_private_tool_paths(
@@ -764,14 +765,14 @@ impl CompilerIsolate {
     fn compile_linked(
         &mut self,
         source: &str,
-        private_tools_json: &str,
+        linked_tools_json: &str,
         builtin_tools: &str,
     ) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompileLinkedProgram",
             &[
                 source,
-                private_tools_json,
+                linked_tools_json,
                 builtin_tools,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
@@ -971,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_metrics_cover_programs_and_private_tool_authoring() {
+    fn compiler_metrics_cover_programs_and_tool_authoring() {
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
         let compiler =
@@ -991,7 +992,7 @@ mod tests {
             "coral.compiler.work.duration",
         ] {
             let points = metrics.named(name);
-            for (operation, role) in [("program", "run"), ("private_tool", "authoring")] {
+            for (operation, role) in [("program", "run"), ("authored_tool", "authoring")] {
                 let point = points
                     .iter()
                     .find(|point| {
