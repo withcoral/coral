@@ -135,7 +135,7 @@ impl CoralFailure {
             Self::OutboundDestinationRejected => "Provider destination is not permitted",
             Self::UpstreamIncomplete => "Upstream result is incomplete",
             Self::UpstreamRejected => "Upstream rejected the request",
-            Self::UpstreamUnauthorized => "Upstream refused the request's credentials",
+            Self::UpstreamUnauthorized => "Upstream refused the request's credentials or access",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
         }
