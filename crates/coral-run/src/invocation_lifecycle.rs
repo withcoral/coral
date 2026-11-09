@@ -43,7 +43,7 @@ impl UnfinishedInvocation {
         match self.state {
             InvocationState::Pending => Ok((InvocationResultKind::RunTerminated, None)),
             InvocationState::Dispatching
-                if performed_in_program(transaction, &self.generation).await? =>
+                if generation_runs_in_program(transaction, &self.generation).await? =>
             {
                 Ok((InvocationResultKind::RunTerminated, None))
             }
@@ -66,7 +66,7 @@ impl UnfinishedInvocation {
 /// Whether Coral performs the Tools of `generation` by running their bodies
 /// in the Program: such a dispatch ends when the Program does, and never
 /// records a result once its Run is ending.
-async fn performed_in_program(
+async fn generation_runs_in_program(
     transaction: &mut Transaction<'_>,
     generation: &coral_catalog::ProviderGenerationId,
 ) -> Result<bool, Error> {
@@ -90,7 +90,7 @@ pub(crate) async fn has_dispatch_in_flight(
         invocation_repository::dispatching_generations_for_run(transaction, workspace_id, run_id)
             .await?
     {
-        if !performed_in_program(transaction, &generation).await? {
+        if !generation_runs_in_program(transaction, &generation).await? {
             return Ok(true);
         }
     }

@@ -19,11 +19,10 @@ const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phr
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 /// `exec`'s description, with the one example of discovery an agent reads.
 /// A test runs its first Program against a real `coral.search` and
-/// saves it as a Saved Function to type-check it, so keep that Program whole.
-/// [`exec_description`] adds the caller's namespaces after it.
+/// saves it as a Private Tool to type-check it, so keep that Program whole.
 pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find provider tools and Saved Functions with `coral.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`.
+Find provider tools and private tools with `coral.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`.
 ```ts
 const { data } = await coral.search({ query: "list pull requests", limit: 5 });
 const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);

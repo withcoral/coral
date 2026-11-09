@@ -33,10 +33,10 @@ pub const SEARCH_PROVIDERS_MAX: usize = 32;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::Search.key(),
-        summary: "Search the provider tools and Saved Functions you can call",
+        summary: "Search the provider tools and private tools you can call",
         presentation: ToolPresentation::new(
             Some("Search".to_string()),
-            "Find the provider tools and Saved Functions you can call, ranked by a query, or \
+            "Find the provider tools and private tools you can call, ranked by a query, or \
              read the exact descriptions of the Call Paths you name."
                 .to_string(),
             false,
@@ -430,7 +430,7 @@ pub struct SearchHit {
     /// The complete Call Path.
     #[schemars(
         description = "`coral.providers.<namespace>.…` for a provider tool, `coral.…` \
-                       for one of Coral's own, `coral.private.…` for a Saved Function."
+                       for one of Coral's own, `coral.private.…` for one of your private tools."
     )]
     pub call_path: String,
     /// The callable's signature, within its byte limit.
@@ -439,7 +439,7 @@ pub struct SearchHit {
                        its result, which the line always keeps: a provider tool's result data as its \
                        top-level field names when they fit, or by type name; for an MCP tool that \
                        declares no output, a note that the result is text, usually JSON, in \
-                       `data.content[0].text`; and a Saved Function's result members one level \
+                       `data.content[0].text`; and a private tool's result members one level \
                        deep. `{…}` marks an object the line does not show, a bare `…` a type it \
                        cannot read, and a last `…` member or final `…` what it cut to fit. At most \
                        512 UTF-8 bytes."
@@ -581,7 +581,7 @@ impl JsonSchema for SearchRetrieverState {
         let mut schema = words_schema(&["partial", "error"]);
         schema.insert(
             "description".to_owned(),
-            "- `partial`: some Providers or Saved Functions are not indexed yet, or failed; \
+            "- `partial`: some Providers or private tools are not indexed yet, or failed; \
              results may be missing.\n- `error`: the retriever could not rank; its results are \
              missing.\n\nRetry shortly or list without a query."
                 .into(),
