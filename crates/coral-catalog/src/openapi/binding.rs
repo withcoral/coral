@@ -551,14 +551,47 @@ pub enum HttpRedirectPolicy {
 }
 
 /// Reference to one host-owned credential injection slot.
+///
+/// Every Tool of a Provider shares one credential contract, so a slot holds
+/// it by reference and its stored binding leaves it out: the Provider
+/// Generation keeps it once, and loading a Tool restores it from there. An
+/// OAuth contract can name any number of scopes, so a copy per Tool would grow
+/// as Tools × scopes. A slot stored before this keeps its own copy, and that
+/// copy still wins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpCredentialSlot {
     scheme_name: String,
-    contract: crate::ProviderCredentialContract,
+    #[serde(
+        default = "unrestored_contract",
+        skip_serializing,
+        deserialize_with = "deserialize_retained_contract"
+    )]
+    contract: std::sync::Arc<crate::ProviderCredentialContract>,
+}
+
+/// Marks a slot decoded without a contract until its Generation's contract
+/// replaces it. It reads as no credential, never as a panic.
+static UNRESTORED: std::sync::LazyLock<std::sync::Arc<crate::ProviderCredentialContract>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(crate::ProviderCredentialContract::NONE));
+
+fn unrestored_contract() -> std::sync::Arc<crate::ProviderCredentialContract> {
+    std::sync::Arc::clone(&UNRESTORED)
+}
+
+fn deserialize_retained_contract<'de, D>(
+    deserializer: D,
+) -> Result<std::sync::Arc<crate::ProviderCredentialContract>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::ProviderCredentialContract::deserialize(deserializer).map(std::sync::Arc::new)
 }
 
 impl HttpCredentialSlot {
-    pub(crate) fn new(scheme_name: String, contract: crate::ProviderCredentialContract) -> Self {
+    pub(crate) const fn new(
+        scheme_name: String,
+        contract: std::sync::Arc<crate::ProviderCredentialContract>,
+    ) -> Self {
         Self {
             scheme_name,
             contract,
@@ -567,9 +600,15 @@ impl HttpCredentialSlot {
 
     /// Returns the exact secret-free credential method and injection contract.
     #[must_use]
-    pub const fn contract(&self) -> &crate::ProviderCredentialContract {
+    pub fn contract(&self) -> &crate::ProviderCredentialContract {
         &self.contract
     }
+
+    /// The contract this slot shares with the Provider's other Tools.
+    pub(crate) fn shared_contract(&self) -> std::sync::Arc<crate::ProviderCredentialContract> {
+        std::sync::Arc::clone(&self.contract)
+    }
+
     /// Returns the secret-free OpenAPI security-scheme name.
     #[must_use]
     pub fn scheme_name(&self) -> &str {
@@ -703,6 +742,28 @@ impl HttpExecutionBinding {
 
     pub(crate) fn set_credential_slots(&mut self, slots: Vec<HttpCredentialSlot>) {
         self.credential_slots = slots;
+    }
+
+    /// Restores the contract the stored binding left out of each slot.
+    ///
+    /// # Errors
+    /// Returns corrupt data when a slot has no contract and the Provider
+    /// Generation names none.
+    pub(crate) fn restore_credential_contract(
+        &mut self,
+        contract: &std::sync::Arc<crate::ProviderCredentialContract>,
+    ) -> Result<(), Error> {
+        for slot in &mut self.credential_slots {
+            if std::sync::Arc::ptr_eq(&slot.contract, &UNRESTORED) {
+                if **contract == crate::ProviderCredentialContract::NONE {
+                    return Err(Error::CorruptData(
+                        "HTTP credential slot has no contract to restore".to_string(),
+                    ));
+                }
+                slot.contract = std::sync::Arc::clone(contract);
+            }
+        }
+        Ok(())
     }
 
     /// Returns the exact HTTP method.

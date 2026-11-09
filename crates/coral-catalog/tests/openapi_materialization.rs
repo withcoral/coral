@@ -1403,6 +1403,10 @@ fn operations_share_one_oauth_grant_for_every_scope_they_request() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table names every pair of credential schemes two Tools can declare"
+)]
 fn operations_agree_on_credential_contracts_not_security_scheme_names() {
     let bearer = "{ type: http, scheme: bearer }";
     let api_key = "{ type: apiKey, in: header, name: X-Admin-Key }";
@@ -1441,6 +1445,24 @@ fn operations_agree_on_credential_contracts_not_security_scheme_names() {
             "two OAuth authorization servers, same scopes",
             (oauth, "read"),
             (other_oauth, "read"),
+            None,
+        ),
+        (
+            "two OAuth authorization servers, different scopes",
+            (oauth, "read"),
+            (other_oauth, "admin"),
+            None,
+        ),
+        (
+            "OAuth, then an API key",
+            (oauth, "read"),
+            (api_key, ""),
+            None,
+        ),
+        (
+            "an API key, then OAuth",
+            (api_key, ""),
+            (oauth, "read"),
             None,
         ),
     ];

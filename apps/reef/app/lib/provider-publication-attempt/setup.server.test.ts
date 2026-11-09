@@ -114,22 +114,26 @@ describe('setupView with confirmed authentication settings', () => {
   })
 })
 
-// Catches: a stored sign-in discovery failure showing as a bare code, and a
-// mapping that rewrites the other diagnostics the views compare as codes.
+// Catches: a stored sign-in discovery failure showing as a bare code, a
+// mapping that rewrites the other diagnostics the views compare as codes, and
+// prose shown after "Error code:" for a source Coral could not read.
 it.each([
   [
     'resource_metadata_unavailable',
+    true,
     "Coral cannot read this server's OAuth resource metadata. Check the server URL. If it is correct, contact the server owner.",
   ],
-  ['empty_mcp_catalog', 'empty_mcp_catalog'],
-  ['outbound_destination_rejected', 'outbound_destination_rejected'],
-])('shows the %s diagnostic as its cause', async (diagnostic, shown) => {
+  ['resource_metadata_unavailable', false, 'resource_metadata_unavailable'],
+  ['empty_mcp_catalog', true, 'empty_mcp_catalog'],
+  ['outbound_destination_rejected', true, 'outbound_destination_rejected'],
+])('shows the %s diagnostic (readable: %s) as %s', async (diagnostic, readable, shown) => {
   const view = await viewOf({
     inputKind: ProviderSetupInputKind.MCP,
-    configuration: { diagnostic },
+    configuration: { diagnostic, ...(readable && { suggested: { displayName: 'Server' } }) },
   })
 
   expect(view.configuration?.diagnostic).toBe(shown)
+  expect(view.configuration?.readable).toBe(readable)
 })
 
 describe('setupView service name for sign-in copy', () => {

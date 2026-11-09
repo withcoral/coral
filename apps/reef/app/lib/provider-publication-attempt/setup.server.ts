@@ -363,6 +363,8 @@ function configurationView(
   review: NonNullable<ProviderSetup['configuration']>,
   kind: ProviderSetupInputKind,
 ): ConfigurationReviewView {
+  // A source Coral read suggests a configuration, even one it cannot publish.
+  const readable = review.suggested !== undefined || !review.diagnostic
   const value = review.confirmed ?? review.suggested ?? create(ProviderConfigurationSchema)
   const draft = configurationDraft(value)
   if (kind === ProviderSetupInputKind.MCP) {
@@ -446,10 +448,10 @@ function configurationView(
       key,
       reasons,
     })),
-    // A discovery failure reads as its cause; other diagnostics stay as codes.
-    diagnostic: authorizationDiscoveryMessage(review.diagnostic) ?? review.diagnostic,
-    // A source Coral read suggests a configuration, even one it cannot publish.
-    readable: review.suggested !== undefined || !review.diagnostic,
+    // A discovery failure on a readable source reads as its cause. An
+    // unreadable source shows its diagnostic as an error code.
+    diagnostic: (readable && authorizationDiscoveryMessage(review.diagnostic)) || review.diagnostic,
+    readable,
     errors: review.errors,
   }
 }

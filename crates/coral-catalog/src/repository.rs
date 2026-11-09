@@ -333,7 +333,10 @@ struct SearchableToolRow {
 }
 
 impl SearchableToolRow {
-    fn decode(self) -> Result<crate::SearchableTool, Error> {
+    fn decode(
+        self,
+        credential_contract: &std::sync::Arc<crate::ProviderCredentialContract>,
+    ) -> Result<crate::SearchableTool, Error> {
         let key = ToolKey::parse(&self.tool_key).map_err(|_error| {
             Error::CorruptData("Materialized Tool has invalid key".to_string())
         })?;
@@ -349,7 +352,11 @@ impl SearchableToolRow {
             &self.tags_json,
             self.guidance,
         )?;
-        let binding = ExecutionBinding::from_storage_json(&self.protocol, &self.definition_json)?;
+        let binding = ExecutionBinding::from_storage_json(
+            &self.protocol,
+            &self.definition_json,
+            credential_contract,
+        )?;
         let input_schema = SchemaId::from_storage(self.input_schema_id.ok_or_else(|| {
             Error::CorruptData("Materialized Tool has no input schema identity".to_string())
         })?)?;
@@ -478,7 +485,10 @@ impl ToolRow {
         clippy::too_many_lines,
         reason = "one persisted Tool row validates every protocol-specific invariant"
     )]
-    fn decode(self) -> Result<MaterializedTool, Error> {
+    fn decode(
+        self,
+        credential_contract: &std::sync::Arc<crate::ProviderCredentialContract>,
+    ) -> Result<MaterializedTool, Error> {
         let key = ToolKey::parse(&self.tool_key).map_err(|_error| {
             Error::CorruptData("Materialized Tool has invalid key".to_string())
         })?;
@@ -510,7 +520,11 @@ impl ToolRow {
             &self.tags_json,
             self.guidance,
         )?;
-        let binding = ExecutionBinding::from_storage_json(&self.protocol, &self.definition_json)?;
+        let binding = ExecutionBinding::from_storage_json(
+            &self.protocol,
+            &self.definition_json,
+            credential_contract,
+        )?;
         let hints = self.hints.decode();
         let availability = ToolAvailability::from_storage_str(&self.availability)?;
         let stored_diagnostic = match (self.diagnostic_code, self.diagnostic_message) {
@@ -564,7 +578,9 @@ impl ToolRow {
                         "Materialized Tool binding disagrees with its index".to_string(),
                     ));
                 }
-                self.definition_json
+                // A binding stored with its own contract re-encodes without
+                // it, so it compares equal to the same binding prepared today.
+                binding.to_storage_json()?
             }
             ExecutionBinding::Mcp(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
@@ -988,7 +1004,8 @@ pub(super) async fn generation_fingerprint(
     let schema_graph_json = row.schema_graph_json.clone();
     let typescript_view = row.typescript_view.clone();
     let (stored_id, _input_digest, schema_graph) = row.decode()?;
-    let tools = load_catalog_tools(transaction, &stored_id).await?;
+    let credential_contract = retained_credential_contract(transaction, &stored_id).await?;
+    let tools = catalog_tools_under(transaction, &stored_id, &credential_contract).await?;
     verify_tool_schema_references(&schema_graph, &tools)?;
     let configuration_json = load_configuration(transaction, generation_id)
         .await?
@@ -1000,6 +1017,7 @@ pub(super) async fn generation_fingerprint(
         &typescript_view,
         &tools,
         configuration_json.as_deref(),
+        &credential_contract,
     ))
 }
 
@@ -1007,6 +1025,17 @@ pub(super) async fn load_credential_contract(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<crate::ProviderCredentialContract, Error> {
+    retained_credential_contract(transaction, generation_id)
+        .await
+        .map(std::sync::Arc::unwrap_or_clone)
+}
+
+/// The credential contract a retained Generation keeps once for all its
+/// Tools, read in the one query that also proves the Generation exists.
+async fn retained_credential_contract(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<std::sync::Arc<crate::ProviderCredentialContract>, Error> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
             Query::select()
@@ -1016,8 +1045,9 @@ pub(super) async fn load_credential_contract(
                 .to_owned(),
         )
         .await?;
-    let (value,) = row.ok_or_else(|| Error::CorruptData("missing credential contract".into()))?;
-    crate::ProviderCredentialContract::from_storage(&value)
+    let (value,) =
+        row.ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))?;
+    crate::ProviderCredentialContract::from_storage(&value).map(std::sync::Arc::new)
 }
 
 pub(super) async fn generation_publication_times(
@@ -1115,7 +1145,7 @@ pub(super) async fn searchable_tools(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<Vec<crate::SearchableTool>, Error> {
-    require_generation(transaction, generation_id).await?;
+    let contract = retained_credential_contract(transaction, generation_id).await?;
     let rows: Vec<SearchableToolRow> = transaction
         .fetch_all(
             Query::select()
@@ -1144,7 +1174,7 @@ pub(super) async fn searchable_tools(
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(SearchableToolRow::decode).collect()
+    rows.into_iter().map(|row| row.decode(&contract)).collect()
 }
 
 /// The columns a [`ToolListingRow`] decodes.
@@ -1255,7 +1285,16 @@ pub(super) async fn load_catalog_tools(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<Vec<MaterializedTool>, Error> {
-    require_generation(transaction, generation_id).await?;
+    let contract = retained_credential_contract(transaction, generation_id).await?;
+    catalog_tools_under(transaction, generation_id, &contract).await
+}
+
+/// Every Tool of a Generation whose credential contract is `contract`.
+async fn catalog_tools_under(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    contract: &std::sync::Arc<crate::ProviderCredentialContract>,
+) -> Result<Vec<MaterializedTool>, Error> {
     let rows: Vec<ToolRow> = transaction
         .fetch_all(
             Query::select()
@@ -1269,7 +1308,7 @@ pub(super) async fn load_catalog_tools(
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(ToolRow::decode).collect()
+    rows.into_iter().map(|row| row.decode(contract)).collect()
 }
 
 pub(super) async fn load_tool_paths(
@@ -1412,7 +1451,7 @@ async fn load_one_tool(
     generation_id: &ProviderGenerationId,
     predicate: sea_query::SimpleExpr,
 ) -> Result<Option<MaterializedTool>, Error> {
-    require_generation(transaction, generation_id).await?;
+    let contract = retained_credential_contract(transaction, generation_id).await?;
     let row: Option<ToolRow> = transaction
         .fetch_optional(
             Query::select()
@@ -1426,7 +1465,7 @@ async fn load_one_tool(
                 .to_owned(),
         )
         .await?;
-    row.map(ToolRow::decode).transpose()
+    row.map(|row| row.decode(&contract)).transpose()
 }
 
 fn verify_tool_schema_references(

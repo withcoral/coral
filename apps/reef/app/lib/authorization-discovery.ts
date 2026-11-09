@@ -16,7 +16,7 @@ const messages: Record<string, string> = {
   pkce_unsupported:
     'The authorization server does not support S256 PKCE. Sign-in needs it. Contact the server owner.',
   insecure_endpoint:
-    'This server gives sign-in addresses that do not use HTTPS. Contact the server owner.',
+    "This server's OAuth metadata lists a sign-in address Coral cannot use. Contact the server owner.",
   client_bootstrap_failed:
     'Automatic OAuth client registration does not work with this server. Enter a client ID from the server owner.',
   challenge_unsupported:
