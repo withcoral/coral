@@ -3,7 +3,8 @@ import { CodeBlock } from '@/wax/components/code-block'
 import { Switch } from '@/wax/components/inputs/switch'
 import { PageLayout } from '@/wax/components/page-layout'
 import { SettingsLayout } from '@/wax/components/settings-layout'
-import { blockReason, contents, utc } from './copy'
+import { SavedAt } from '@/views/functions/saved-at'
+import { blockReason, contents, place } from './copy'
 import type { UsageDataView } from './types'
 import * as styles from './usage-data.css'
 
@@ -13,9 +14,8 @@ export function UsageDataPage({
   onChoose,
 }: {
   view: UsageDataView
-  onChoose?: (share: boolean) => void
+  onChoose: (share: boolean) => void
 }) {
-  const sends = v.choice === 'on' && !v.block
   return (
     <PageLayout variant="wide" breadcrumbs={[{ id: 'current', type: 'text', text: 'Usage data' }]}>
       <SettingsLayout
@@ -26,7 +26,7 @@ export function UsageDataPage({
           </div>
         }
       >
-        {v.block && <Banner variant="info">{blockReason(v.block)}</Banner>}
+        {v.block && <Banner variant="info">{blockReason(v.block, v.kind)}</Banner>}
         <Card.Card
           title="Share anonymous usage data"
           description={description(v)}
@@ -39,27 +39,22 @@ export function UsageDataPage({
             />
           }
         />
-        <Card.Card
-          title="What we send"
-          description={`Exactly what leaves ${place(v)}, word for word. ${
-            sends
-              ? 'It sends at the end of the day (UTC).'
-              : v.block
-                ? 'This process does not send it.'
-                : 'Nothing sends while sharing is off.'
-          }`}
-        >
+        <Card.Card title="What Coral sends" description={nextDescription(v)}>
           <div className={styles.report}>
-            <CodeBlock value={v.next} format="json" framed />
+            {/* Text, not JSON: the JSON format re-indents the value, and this shows it byte for byte. */}
+            <CodeBlock value={v.next} framed wrap />
           </div>
         </Card.Card>
         <Card.Card
-          title="What we sent last"
-          description={v.lastSent ? `Sent at ${utc(v.lastSent.at)}.` : 'No report sent yet.'}
+          title="What Coral sent last"
+          description={v.lastSent ? undefined : 'Coral has not sent a report.'}
         >
           {v.lastSent && (
             <div className={styles.report}>
-              <CodeBlock value={v.lastSent.json} format="json" framed />
+              <Typography.Body as="p" variant="tertiary">
+                Sent <SavedAt at={v.lastSent.at} />.
+              </Typography.Body>
+              <CodeBlock value={v.lastSent.json} framed wrap />
             </div>
           )}
         </Card.Card>
@@ -75,6 +70,10 @@ function description(v: UsageDataView): string {
   return `${contents} ${who}`
 }
 
-function place(v: UsageDataView): string {
-  return v.kind === 'desktop' ? 'your computer' : 'this server'
+function nextDescription(v: UsageDataView): string {
+  const report = `The next report, exactly as it leaves ${place(v.kind)}.`
+  // The banner already says why a blocked process sends nothing.
+  return v.choice === 'off' && !v.block
+    ? `${report} Coral does not send it while sharing is off.`
+    : report
 }

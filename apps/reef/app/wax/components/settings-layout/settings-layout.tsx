@@ -1,4 +1,3 @@
-import classNames from 'classnames'
 import type { ReactNode } from 'react'
 
 import * as CardFrame from '@/wax/components/card'
@@ -6,18 +5,25 @@ import { Typography } from '@/wax/components/typography'
 
 import * as styles from './settings-layout.css'
 
-export interface SettingsLayoutProps {
+export type SettingsLayoutProps = {
   /** The resource's name, its status and any page-wide notice. */
   header: ReactNode
   /** One card per setting, each filling the main column. */
   children: ReactNode
-  /** A panel beside the cards, such as the resource's source. */
-  aside?: ReactNode
   /** The removal section, apart at the end. */
   removal?: ReactNode
-  /** A page that never has an aside: the header and the cards share one centred column. */
-  single?: boolean
-}
+} & (
+  | {
+      /** A panel beside the cards, such as the resource's source. */
+      aside?: ReactNode
+      single?: false
+    }
+  | {
+      /** A page that never has an aside: its cards take the full width of the page. */
+      single: true
+      aside?: never
+    }
+)
 
 /** One resource's settings page: one card per setting, then removal apart at the end. */
 export function SettingsLayout({
@@ -28,12 +34,12 @@ export function SettingsLayout({
   single = false,
 }: SettingsLayoutProps) {
   return (
-    <div className={classNames(styles.page, single && styles.pageSingle)}>
+    <div className={styles.page}>
       <div className={styles.top}>
         <div className={styles.header}>{header}</div>
-        <div className={classNames(styles.columns, single && styles.columnsSingle)}>
+        <div className={single ? styles.singleColumn : styles.columns}>
           <div className={styles.main}>{children}</div>
-          {!single && aside}
+          {aside}
         </div>
       </div>
       {removal}

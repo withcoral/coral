@@ -160,7 +160,7 @@ export const Sharing: Story = {
     const toggle = canvas.getByRole('switch', { name: 'Share anonymous usage data' })
     await userEvent.click(toggle)
     await expect(toggle).not.toBeChecked()
-    await expect(canvas.getByText(/Nothing sends while sharing is off/)).toBeVisible()
+    await expect(canvas.getByText(/Coral does not send it while sharing is off/)).toBeVisible()
   },
 }
 
@@ -180,14 +180,31 @@ export const Member: Story = {
   },
 }
 
-/** DO_NOT_TRACK, CORAL_TELEMETRY=0 or CI turns it off for this process only. */
-export const TurnedOffByEnvironment: Story = {
+/** DO_NOT_TRACK, CORAL_TELEMETRY or CI stops sending from one Coral process, whatever the switch shows. */
+export const TurnedOffByDoNotTrack: Story = {
+  args: { view: { ...sharing, block: { kind: 'environment', variable: 'DO_NOT_TRACK' } } },
+}
+
+/** CORAL_TELEMETRY is off on 0 or false, so the banner says off, not set. */
+export const TurnedOffByCoralTelemetry: Story = {
   args: {
     view: {
       ...sharing,
-      block: { kind: 'environment', variable: 'DO_NOT_TRACK' },
+      kind: 'server',
+      block: { kind: 'environment', variable: 'CORAL_TELEMETRY' },
     },
   },
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText(
+        'CORAL_TELEMETRY is off. Coral sends no usage data from this server, even when sharing is on.',
+      ),
+    ).toBeVisible()
+  },
+}
+
+export const TurnedOffByCi: Story = {
+  args: { view: { ...sharing, block: { kind: 'environment', variable: 'CI' } } },
 }
 
 /** Source and dev builds show the report but never send it. */

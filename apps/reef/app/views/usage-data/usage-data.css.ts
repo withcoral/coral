@@ -7,5 +7,8 @@ export const heading = style({
 })
 
 export const report = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
   paddingTop: '12px',
 })

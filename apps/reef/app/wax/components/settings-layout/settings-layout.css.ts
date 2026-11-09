@@ -17,8 +17,6 @@ export const page = style({
   width: '100%',
   '@media': { [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 32 } },
 })
-// Without an aside, the page is one column as wide as long content needs, such as a JSON block.
-export const pageSingle = style({ maxWidth: 640 })
 // The header heads both columns, so the first card and the aside start on the
 // same line.
 export const top = style({
@@ -42,10 +40,8 @@ export const columns = style({
   rowGap: 32,
   '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 480px)' } },
 })
-export const columnsSingle = style({
-  gridTemplateColumns: 'minmax(0, 1fr)',
-  '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
-})
+// Without an aside, the cards take the page's full width, which long content such as a JSON block needs.
+export const singleColumn = style({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)' })
 // A wide list beside the same aside: the main column takes the free width.
 export const wideColumns = style({
   alignItems: 'start',
