@@ -669,7 +669,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
     let before_upgrade = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()
-            .filter(|migration| migration.version != 60)
+            .filter(|migration| migration.version != 62)
             .collect()
     });
     let fixture = SavedFunctionTestModules::on_plan(&before_upgrade).await;

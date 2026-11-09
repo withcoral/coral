@@ -146,7 +146,7 @@ async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
 #[tokio::test]
 async fn upgrade_moves_the_builtin_tools_and_saved_functions_to_the_new_roots() {
     let fixture = TestModules::without_migration(
-        58,
+        60,
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
