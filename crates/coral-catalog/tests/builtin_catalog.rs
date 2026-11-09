@@ -69,7 +69,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Read-only, so the default Tool Access State is enabled.
             ToolHints::new(Some(true), None, Some(true), None),
             &[
-                "export default function (input: Record<string, never>)",
+                // It takes no input, so a call passes no argument.
+                "export default function ():",
                 r#"{ "providers": Array<Provider>; "setups": Array<ProviderSetup> }"#,
                 // What a person does next on a Setup a Program asked for.
                 r#""state": "awaiting_configuration" | "awaiting_sign_in" | "awaiting_discovery" | "ready""#,

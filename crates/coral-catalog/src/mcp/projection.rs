@@ -1,6 +1,6 @@
 use crate::schema::{
     Direction, ProjectionOptions, SharedTypes, TypeScriptNames, TypeScriptProjection,
-    TypeScriptProjector, render_callable_declaration,
+    TypeScriptProjector, input_parameter, render_callable_declaration, takes_input,
 };
 use crate::{CatalogDiagnostic, McpExecutionBinding, McpInvocationMethod, SchemaGraph, SchemaId};
 
@@ -34,12 +34,8 @@ pub(super) fn project_mcp_typescript(
         || Ok("unknown".to_string()),
         |schema| projector.project(schema, Direction::Output),
     )?;
-    let input_declared = !matches!(input.as_str(), "{}" | "Record<string, never>");
-    let input_parameter = if input_declared {
-        format!("input: {input}")
-    } else {
-        String::new()
-    };
+    let input_declared = takes_input(&input);
+    let input_parameter = input_parameter(&input);
     let type_references = projector.share_named_declarations(shared)?;
     let mut declarations = Vec::new();
     declarations.extend([

@@ -302,6 +302,12 @@ impl ProgramEngine for V8ProgramEngine {
             Err(coral_v8::Error::InvalidProgramValue(message)) => ExecutionCompletion::Failed(
                 RunFailure::new(RunFailureCode::InvalidProgramValue, message),
             ),
+            // Nothing is left that could settle what the Program awaits: no
+            // Tool call is in flight, and no other event source exists.
+            Err(coral_v8::Error::PendingProgram) => ExecutionCompletion::Failed(RunFailure::new(
+                RunFailureCode::ProgramExecutionFailed,
+                "Program awaited a Promise that nothing can settle".to_string(),
+            )),
             Err(_private_diagnostic) => ExecutionCompletion::Failed(RunFailure::new(
                 RunFailureCode::ProgramExecutionFailed,
                 "Program execution failed".to_string(),

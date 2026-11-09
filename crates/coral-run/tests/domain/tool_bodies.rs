@@ -359,7 +359,8 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
 
 // Catches: a Program that ends while a tool body still waits on nothing
 // Coral holds, leaving the outer Invocation `dispatching` so that the
-// terminal write refuses and the Run stays `running`.
+// terminal write refuses and the Run stays `running`; or a Program that
+// awaits it failing with a message that does not say why.
 #[tokio::test]
 async fn a_program_that_ends_before_a_tool_body_settles_ends_its_call_as_run_terminated() {
     let scope = BodyScope::new("user:tool-bodies-unsettled").await;
@@ -373,6 +374,16 @@ async fn a_program_that_ends_before_a_tool_body_settles_ends_its_call_as_run_ter
         let run = scope.start(&scope.fixture.runs, submission(source)).await;
         let terminal = scope.terminal(&run).await;
         assert_eq!(terminal.state(), state, "{source}: {terminal:?}");
+        if let Some(RunTerminalOutcome::Failed(failure)) = terminal.terminal_outcome() {
+            assert_eq!(
+                (failure.code(), failure.message()),
+                (
+                    RunFailureCode::ProgramExecutionFailed,
+                    "Program awaited a Promise that nothing can settle"
+                ),
+                "{source}"
+            );
+        }
         assert_eq!(
             outcomes(&scope.rows(&run).await),
             [(

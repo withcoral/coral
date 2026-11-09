@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::schema::{
     Direction, ProjectionOptions, SchemaGraphAccumulator, SharedTypes, TypeScriptNames,
-    TypeScriptProjector, canonicalize, render_callable_declaration,
+    TypeScriptProjector, canonicalize, input_parameter, render_callable_declaration,
 };
 use crate::{
     AuthenticationKind, CatalogDiagnostic, Error, ExecutionBinding, MaterializedTool,
@@ -824,7 +824,7 @@ fn project(
         .iter()
         .map(|(input, output)| {
             render_callable_declaration(
-                &format!("input: {input}"),
+                &input_parameter(input),
                 &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
             )
         })
