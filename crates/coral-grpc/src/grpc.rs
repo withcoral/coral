@@ -9,6 +9,7 @@ mod policies;
 mod private_tools;
 mod providers;
 mod releases;
+mod shared_tools;
 mod workspaces;
 use std::sync::Arc;
 
@@ -45,6 +46,8 @@ pub struct Dependencies {
     pub private_tools: coral_tools::PrivateToolInspection,
     /// The caller's own current Private Tool deletion.
     pub private_tool_deletion: coral_tools::PrivateToolDeletion,
+    /// The Workspace's Shared Tools: reads, and Owner publishing.
+    pub shared_tools: coral_tools::SharedToolModule,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
@@ -86,6 +89,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         tasks: dependencies.tasks,
         private_tools: dependencies.private_tools,
         private_tool_deletion: dependencies.private_tool_deletion,
+        shared_tools: dependencies.shared_tools,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
@@ -142,6 +146,9 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             ),
         )
         .add_service(
+            management::shared_tool_service_server::SharedToolServiceServer::new(services.clone()),
+        )
+        .add_service(
             management::agent_registration_service_server::AgentRegistrationServiceServer::new(
                 services.clone(),
             ),
@@ -173,6 +180,7 @@ struct GrpcServices {
     tasks: coral_task::TaskModule,
     private_tools: coral_tools::PrivateToolInspection,
     private_tool_deletion: coral_tools::PrivateToolDeletion,
+    shared_tools: coral_tools::SharedToolModule,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,

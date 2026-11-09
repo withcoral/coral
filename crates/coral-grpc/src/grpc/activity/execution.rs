@@ -280,8 +280,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             .as_ref()
             .map(|location| source_location(&value.workspace, location)),
         tool_kind: tool_kind(value.tool_kind).into(),
-        // Shared Tools arrive with #2979; no other kind has a revision.
-        shared_tool_revision: 0,
+        shared_tool_revision: value.shared_tool_revision.unwrap_or_default(),
         parent: value
             .parent
             .as_ref()
@@ -289,7 +288,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
                 invocation: format!("workspaces/{}/invocations/{}", value.workspace, parent.id),
                 call_path: parent.call_path.clone(),
                 tool_kind: tool_kind(parent.tool_kind).into(),
-                shared_tool_revision: 0,
+                shared_tool_revision: parent.shared_tool_revision.unwrap_or_default(),
             }),
     }
 }
@@ -297,6 +296,26 @@ const fn tool_kind(value: coral_run::ToolKind) -> wire::ActivityToolKind {
     match value {
         coral_run::ToolKind::Provider => wire::ActivityToolKind::Provider,
         coral_run::ToolKind::Private => wire::ActivityToolKind::Private,
+        coral_run::ToolKind::Shared => wire::ActivityToolKind::Shared,
+    }
+}
+fn private_tool_snapshot(
+    workspace: &WorkspaceId,
+    snapshot: coral_run::SourceSnapshot,
+) -> wire::ActivitySourceSnapshot {
+    wire::ActivitySourceSnapshot {
+        private_tool: private_tool_name(workspace, &snapshot.private_tool_id),
+        path: snapshot.path,
+        source: snapshot.source,
+    }
+}
+fn shared_tool_snapshot(
+    snapshot: coral_run::SharedSourceSnapshot,
+) -> wire::ActivitySharedToolSnapshot {
+    wire::ActivitySharedToolSnapshot {
+        path: snapshot.path,
+        revision: snapshot.revision,
+        source: snapshot.source,
     }
 }
 /// Names a snapshot exactly as `InspectRunResponse.linked_private_tools` does.
@@ -497,11 +516,12 @@ pub(super) async fn inspect_run(
         linked_private_tools: detail
             .linked_private_tools
             .into_iter()
-            .map(|s| wire::ActivitySourceSnapshot {
-                private_tool: private_tool_name(&workspace, &s.private_tool_id),
-                path: s.path,
-                source: s.source,
-            })
+            .map(|snapshot| private_tool_snapshot(&workspace, snapshot))
+            .collect(),
+        linked_shared_tools: detail
+            .linked_shared_tools
+            .into_iter()
+            .map(shared_tool_snapshot)
             .collect(),
         next_event_after: detail
             .events
@@ -514,34 +534,30 @@ pub(super) async fn inspect_run(
             .as_ref()
             .map_or_else(String::new, |trace| trace.as_str().to_string()),
         events: detail.events.iter().map(|e| event(&workspace, e)).collect(),
-        terminal: detail.terminal.map(|terminal| {
-            use wire::inspect_run_response::Terminal as T;
-            match terminal {
-                coral_run::RunTerminalOutcome::Succeeded { final_value } => {
-                    T::Succeeded(wire::ActivityRunSucceeded {
-                        final_value_json: match final_value {
-                            coral_run::FinalValue::Present(value) => {
-                                Some(value.as_json().to_string())
-                            }
-                            coral_run::FinalValue::Absent => None,
-                        },
-                    })
-                }
-                coral_run::RunTerminalOutcome::Failed(failure) => {
-                    T::Failed(wire::ActivityRunFailed {
-                        code: failure_code(failure.code()),
-                        message: failure.message().into(),
-                        error: failure.error().map(program_error),
-                    })
-                }
-                coral_run::RunTerminalOutcome::Canceled => T::Canceled(wire::ActivityEmpty {}),
-                coral_run::RunTerminalOutcome::TimedOut => T::TimedOut(wire::ActivityEmpty {}),
-                coral_run::RunTerminalOutcome::Interrupted => {
-                    T::Interrupted(wire::ActivityEmpty {})
-                }
-            }
-        }),
+        terminal: detail.terminal.map(run_terminal),
     }))
+}
+/// How a Run ended, as `InspectRunResponse.terminal` says it.
+fn run_terminal(terminal: coral_run::RunTerminalOutcome) -> wire::inspect_run_response::Terminal {
+    use wire::inspect_run_response::Terminal as T;
+    match terminal {
+        coral_run::RunTerminalOutcome::Succeeded { final_value } => {
+            T::Succeeded(wire::ActivityRunSucceeded {
+                final_value_json: match final_value {
+                    coral_run::FinalValue::Present(value) => Some(value.as_json().to_string()),
+                    coral_run::FinalValue::Absent => None,
+                },
+            })
+        }
+        coral_run::RunTerminalOutcome::Failed(failure) => T::Failed(wire::ActivityRunFailed {
+            code: failure_code(failure.code()),
+            message: failure.message().into(),
+            error: failure.error().map(program_error),
+        }),
+        coral_run::RunTerminalOutcome::Canceled => T::Canceled(wire::ActivityEmpty {}),
+        coral_run::RunTerminalOutcome::TimedOut => T::TimedOut(wire::ActivityEmpty {}),
+        coral_run::RunTerminalOutcome::Interrupted => T::Interrupted(wire::ActivityEmpty {}),
+    }
 }
 fn request_reference(
     workspace: &WorkspaceId,

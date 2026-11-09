@@ -916,6 +916,13 @@ pub(crate) async fn start_server(
         coral_tools::PrivateToolInspection::new(database.clone(), workspaces.clone());
     let private_tool_deletion =
         coral_tools::PrivateToolDeletion::new(database.clone(), workspaces.clone());
+    // A Shared Tool Publish compiles through the same warm compiler.
+    let shared_tools = coral_tools::SharedToolModule::with_compiler_client(
+        database.clone(),
+        workspaces.clone(),
+        compiler.clone(),
+        runtime_limits.compilation_timeout(),
+    );
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
@@ -942,6 +949,7 @@ pub(crate) async fn start_server(
             tasks,
             private_tools,
             private_tool_deletion,
+            shared_tools,
             runs: runs.clone(),
             releases: releases.clone(),
             usage: usage.as_ref().map(|usage| usage.data.clone()),

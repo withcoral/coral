@@ -1,0 +1,229 @@
+syntax = "proto3";
+
+package coral.management.v1;
+
+import "coral/management/v1/policy.proto";
+import "coral/management/v1/private_tool.proto";
+import "google/protobuf/timestamp.proto";
+
+// The Shared Tools of one Workspace: the Tools at coral.shared that a
+// Workspace Owner published, which the Workspace owns.
+//
+// Every User with a Workspace Membership reads them. Only a Workspace Owner
+// publishes. A Shared Tool Path names one live Shared Tool in its Workspace, so
+// requests carry the Workspace and path. A Workspace the caller cannot inspect
+// and an absent path return the same NOT_FOUND.
+service SharedToolService {
+  // Lists one page of the Workspace's Shared Tools in path order, without source.
+  rpc ListSharedTools(ListSharedToolsRequest) returns (ListSharedToolsResponse);
+  // Returns one Shared Tool with its current revision and source.
+  rpc GetSharedTool(GetSharedToolRequest) returns (SharedTool);
+  // Lists every revision of one Shared Tool, newest first, without source.
+  rpc ListSharedToolRevisions(ListSharedToolRevisionsRequest) returns (ListSharedToolRevisionsResponse);
+  // Returns one revision of one Shared Tool with its source.
+  rpc GetSharedToolRevision(GetSharedToolRevisionRequest) returns (SharedToolRevision);
+  // Publishes the exact source and description of the request as the next
+  // revision of the Shared Tool at its path, and makes it current. The Private
+  // Tool it copies stays as it was. With validate_only, returns the review and
+  // writes nothing.
+  //
+  // PERMISSION_DENIED unless the caller is a Workspace Owner.
+  // FAILED_PRECONDITION with reason SHARED_TOOL_SOURCE_UNREADABLE when the
+  // origin is another User's Private Tool, a Private Tool that is gone, or a
+  // revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
+  // path is inside another Shared Tool's namespace, or holds one.
+  // ABORTED when the current revision is not expected_revision.
+  // INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
+  // cannot become a Tool.
+  rpc PublishSharedTool(PublishSharedToolRequest) returns (PublishSharedToolResponse);
+}
+
+// Lists the Shared Tools of one Workspace.
+message ListSharedToolsRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Maximum results, bounded to 100; zero selects the default.
+  int32 page_size = 2;
+  // Opaque continuation from the preceding page in this scope.
+  string page_token = 3;
+}
+
+// One page of source-free Shared Tool summaries in path order.
+message ListSharedToolsResponse {
+  // The Shared Tools on this page.
+  repeated SharedToolSummary shared_tools = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
+  // The Workspace's Shared Provider, workspaces/{workspace}/providers/{provider}.
+  string shared_provider = 3;
+}
+
+// Source-free summary of one Shared Tool.
+message SharedToolSummary {
+  // Shared Tool Path relative to coral.shared.
+  string path = 1;
+  // Description of the current revision.
+  string description = 2;
+  // The current Shared Tool Revision, from 1.
+  uint64 revision = 3;
+  // When the current revision was published.
+  google.protobuf.Timestamp update_time = 4;
+}
+
+// Reads one Shared Tool.
+message GetSharedToolRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Shared Tool Path relative to coral.shared.
+  string path = 2;
+}
+
+// One Shared Tool with its current revision.
+message SharedTool {
+  // Shared Tool Path relative to coral.shared.
+  string path = 1;
+  // users/{user} who first published it. Attribution only.
+  string creator = 2;
+  // When it was first published.
+  google.protobuf.Timestamp create_time = 3;
+  // The current revision, which every new Run links.
+  SharedToolRevision current_revision = 4;
+}
+
+// One immutable, numbered publication of a Shared Tool.
+message SharedToolRevision {
+  // Revision number, from 1.
+  uint64 revision = 1;
+  // Exact published description.
+  string description = 2;
+  // Self-contained TypeScript declaration emitted from the source.
+  string declaration = 3;
+  // Exact published TypeScript source.
+  string source = 4;
+  // Advisory diagnostics retained from the publish.
+  repeated PrivateToolDiagnostic diagnostics = 5;
+  // True when Coral omitted diagnostics beyond its retention bound.
+  bool diagnostics_truncated = 6;
+  // Lowercase hex SHA-256 of the description and source.
+  string content_hash = 7;
+  // Default Tool Access State the Owner chose at publish.
+  ToolAccessState default_access_state = 8;
+  // users/{user} who published it. Attribution only.
+  string publisher = 9;
+  // When it was published.
+  google.protobuf.Timestamp publish_time = 10;
+  // The earlier revision this one restored. Zero when it copied a Private Tool.
+  uint64 restored_from_revision = 11;
+}
+
+// Lists the revisions of one Shared Tool.
+message ListSharedToolRevisionsRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Shared Tool Path relative to coral.shared.
+  string path = 2;
+}
+
+// Every revision of one Shared Tool, newest first.
+message ListSharedToolRevisionsResponse {
+  // Source-free revisions, newest first.
+  repeated SharedToolRevisionSummary revisions = 1;
+}
+
+// Source-free summary of one Shared Tool Revision.
+message SharedToolRevisionSummary {
+  // Revision number, from 1.
+  uint64 revision = 1;
+  // Exact published description.
+  string description = 2;
+  // Lowercase hex SHA-256 of the description and source.
+  string content_hash = 3;
+  // Default Tool Access State the Owner chose at publish.
+  ToolAccessState default_access_state = 4;
+  // users/{user} who published it. Attribution only.
+  string publisher = 5;
+  // When it was published.
+  google.protobuf.Timestamp publish_time = 6;
+  // The earlier revision this one restored. Zero when it copied a Private Tool.
+  uint64 restored_from_revision = 7;
+}
+
+// Reads one revision of one Shared Tool.
+message GetSharedToolRevisionRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Shared Tool Path relative to coral.shared.
+  string path = 2;
+  // Revision number, from 1.
+  uint64 revision = 3;
+}
+
+// Publishes the content an Owner reviewed as a Shared Tool Revision.
+message PublishSharedToolRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Shared Tool Path relative to coral.shared.
+  string path = 2;
+  // What the publish copies.
+  oneof origin {
+    // One current Private Tool: the caller's own, or an Agent's.
+    PrivateToolOrigin private_tool = 3;
+    // An earlier revision of the Shared Tool at this path, to restore it.
+    uint64 restore_revision = 4;
+  }
+  // The exact description the Owner reviewed.
+  string description = 5;
+  // The exact TypeScript source the Owner reviewed.
+  string source = 6;
+  // Default Tool Access State of the new revision.
+  ToolAccessState default_access_state = 7;
+  // The revision the Owner expects to be current at the path. Zero creates the Shared Tool.
+  uint64 expected_revision = 8;
+  // Return the review and write nothing.
+  bool validate_only = 9;
+}
+
+// Names one current Private Tool that a publish copies.
+message PrivateToolOrigin {
+  // workspaces/{workspace}/agents/{agent} for an Agent's Private Tool. Empty for the caller's own.
+  string agent = 1;
+  // Private Tool Path relative to coral.private.
+  string path = 2;
+}
+
+// The outcome of a publish.
+message PublishSharedToolResponse {
+  // The Shared Tool with its new current revision. Absent with validate_only.
+  SharedTool shared_tool = 1;
+  // What the publish changes and what its source calls.
+  SharedToolReview review = 2;
+}
+
+// What an Owner reviews before a publish. Coral computes it from the exact
+// description and source of the request.
+message SharedToolReview {
+  // The revision current at the path: the other side of the source and
+  // declaration diffs. Absent when the publish creates the Shared Tool.
+  SharedToolRevision previous_revision = 1;
+  // The declaration the publish emits.
+  string declaration = 2;
+  // Advisory diagnostics of the reviewed source.
+  repeated PrivateToolDiagnostic diagnostics = 3;
+  // True when Coral omitted diagnostics beyond its retention bound.
+  bool diagnostics_truncated = 4;
+  // Every Call Path the source calls by a literal path, in path order.
+  repeated string called_tools = 5;
+  // The Shared Tools the source calls, with their current revisions.
+  repeated SharedToolCall shared_tools = 6;
+  // The literal start of each Tool path the source builds at runtime. When
+  // any is present, called_tools may be incomplete.
+  repeated string runtime_built_paths = 7;
+}
+
+// One Shared Tool that a reviewed source calls.
+message SharedToolCall {
+  // Shared Tool Path relative to coral.shared.
+  string path = 1;
+  // Its current revision, from 1.
+  uint64 revision = 2;
+}

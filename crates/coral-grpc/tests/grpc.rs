@@ -29,6 +29,8 @@ mod private_access;
 mod private_tools;
 #[path = "grpc/providers.rs"]
 mod providers;
+#[path = "grpc/shared_tools.rs"]
+mod shared_tools;
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_grpc::coral::{internal::v1 as internal, management::v1 as management};
 use coral_outbound::DestinationPolicy;
@@ -173,10 +175,14 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
         );
-        // Every Workspace Coral serves has its Private Provider.
+        // Every Workspace Coral serves has its Private and Shared Providers.
         let mut tx = database.begin().await.unwrap();
         providers
             .install_private_in_transaction(&mut tx, &change(&owner), workspace.id())
+            .await
+            .unwrap();
+        providers
+            .install_shared_in_transaction(&mut tx, &change(&owner), workspace.id())
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -243,6 +249,13 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
+                shared_tools: coral_tools::SharedToolModule::new(
+                    database.clone(),
+                    workspaces.clone(),
+                    coral_tools::IsolateLimits::default(),
+                    coral_test_support::TEST_COMPILATION_TIMEOUT,
+                )
+                .unwrap(),
                 releases,
                 usage: Some(coral_usage::UsageData::new(
                     database.clone(),
@@ -392,6 +405,12 @@ impl Fixture {
         &self,
     ) -> management::private_tool_service_client::PrivateToolServiceClient<Channel> {
         management::private_tool_service_client::PrivateToolServiceClient::new(self.channel.clone())
+    }
+
+    fn shared_tools(
+        &self,
+    ) -> management::shared_tool_service_client::SharedToolServiceClient<Channel> {
+        management::shared_tool_service_client::SharedToolServiceClient::new(self.channel.clone())
     }
 
     fn policies(&self) -> management::tool_policy_service_client::ToolPolicyServiceClient<Channel> {

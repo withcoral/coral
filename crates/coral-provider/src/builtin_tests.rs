@@ -1025,6 +1025,36 @@ impl CoralDefined {
         }
     }
 
+    /// Gives `arranged`'s Workspace this Provider as creating the Workspace
+    /// does. `BuiltinWorkspace` already installed the Built-in Provider.
+    async fn install_as_at_creation(
+        self,
+        arranged: &BuiltinWorkspace,
+        context: &coral_workspace::ChangeContext,
+    ) {
+        let database = arranged.fixture.database();
+        let workspace = arranged.workspace.id();
+        let mut transaction = database.begin().await.unwrap();
+        match self {
+            Self::Builtin => {}
+            Self::Private => {
+                arranged
+                    .providers
+                    .install_private_in_transaction(&mut transaction, context, workspace)
+                    .await
+                    .unwrap();
+            }
+            Self::Shared => {
+                arranged
+                    .providers
+                    .install_shared_in_transaction(&mut transaction, context, workspace)
+                    .await
+                    .unwrap();
+            }
+        }
+        transaction.commit().await.unwrap();
+    }
+
     const fn call_root(self) -> ProviderCallRoot {
         match self {
             Self::Builtin => ProviderCallRoot::Builtin,
@@ -1055,25 +1085,7 @@ async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_
     ] {
         let arranged = BuiltinWorkspace::new().await;
         let context = change_context(arranged.owner.clone(), 15, '2');
-        if !matches!(kind, CoralDefined::Builtin) {
-            let database = arranged.fixture.database();
-            let workspace = arranged.workspace.id();
-            let mut transaction = database.begin().await.unwrap();
-            if matches!(kind, CoralDefined::Private) {
-                arranged
-                    .providers
-                    .install_private_in_transaction(&mut transaction, &context, workspace)
-                    .await
-                    .unwrap();
-            } else {
-                arranged
-                    .providers
-                    .install_shared_in_transaction(&mut transaction, &context, workspace)
-                    .await
-                    .unwrap();
-            }
-            transaction.commit().await.unwrap();
-        }
+        kind.install_as_at_creation(&arranged, &context).await;
         let mut missing = Vec::new();
         for name in ["Earlier", "Archived"] {
             missing.push(

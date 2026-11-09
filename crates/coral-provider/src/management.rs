@@ -320,6 +320,26 @@ impl ProviderModule {
         Ok(provider)
     }
 
+    /// Returns the Workspace's Shared Provider, which every User who
+    /// inspects the Workspace reads: coral-tools keeps its Shared Tools.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority or persistence failures, and
+    /// [`Error::ProviderNotFound`] for a Workspace Coral has not yet given one.
+    pub async fn inspect_shared_provider(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+    ) -> Result<Provider, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.management_authority(&mut tx, actor, workspace).await?;
+        let provider = crate::shared_provider_in_transaction(&mut tx, workspace)
+            .await?
+            .ok_or(Error::ProviderNotFound)?;
+        tx.rollback().await?;
+        Ok(provider)
+    }
+
     /// Reads the icon of one Provider that `actor` may inspect; none when
     /// it has no uploaded icon.
     ///

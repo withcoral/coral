@@ -551,7 +551,7 @@ pub(crate) async fn insert_record(
             Expr::val(tool.created_at_unix_nanos()),
         ])
         .to_owned();
-    transaction.execute(statement).await?;
+    transaction.execute_change(statement).await?;
     Ok(())
 }
 
@@ -571,7 +571,7 @@ pub(crate) async fn advance_current(
         .and_where(Expr::col(SharedToolRecords::CurrentRevision).eq(stored_revision(from)?))
         .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
         .to_owned();
-    if transaction.execute(statement).await? != 1 {
+    if transaction.execute_change(statement).await? != 1 {
         return Err(Error::CorruptData(
             "a held Shared Tool moved inside its transaction".to_string(),
         ));
@@ -634,7 +634,7 @@ pub(crate) async fn insert_revision(
             Expr::val(revision.published_at_unix_nanos()),
         ])
         .to_owned();
-    transaction.execute(statement).await?;
+    transaction.execute_change(statement).await?;
     Ok(())
 }
 
@@ -663,7 +663,7 @@ pub(crate) async fn insert_dependencies(
                 Expr::val(stored_revision(dependency.revision())?),
             ])
             .to_owned();
-        transaction.execute(statement).await?;
+        transaction.execute_change(statement).await?;
     }
     Ok(())
 }
@@ -715,6 +715,6 @@ pub(crate) async fn insert_lifecycle_event(
             Expr::val(event.trace_id.as_str()),
         ])
         .to_owned();
-    transaction.execute(statement).await?;
+    transaction.execute_change(statement).await?;
     Ok(())
 }

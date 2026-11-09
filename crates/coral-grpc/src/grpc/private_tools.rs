@@ -19,8 +19,16 @@ fn error(error: coral_tools::Error) -> Status {
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
         E::PrivateToolExists => (tonic::Code::AlreadyExists, "ALREADY_EXISTS"),
         E::PrivateToolRevisionConflict { .. } => (tonic::Code::Aborted, "ABORTED"),
-        // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
-        E::PrivateToolAdmission(_)
+        // Reads and deletes never compile, and no Private Tool call reads or
+        // writes a Shared Tool. Name every variant so a new one needs a wire
+        // decision.
+        E::SharedToolNotFound
+        | E::SharedToolRevisionConflict { .. }
+        | E::SharedToolSourceUnreadable
+        | E::SharedToolPathConflict
+        | E::SharedToolAdmission(_)
+        | E::SharedToolNotData(_)
+        | E::PrivateToolAdmission(_)
         | E::PrivateToolNotData(_)
         | E::PrivateToolPathConflict
         | E::PrivateToolCompilationTimedOut
@@ -48,7 +56,7 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
     }
 }
 
-fn diagnostic(diagnostic: &PrivateToolDiagnostic) -> wire::PrivateToolDiagnostic {
+pub(super) fn diagnostic(diagnostic: &PrivateToolDiagnostic) -> wire::PrivateToolDiagnostic {
     let category = match diagnostic.category() {
         PrivateToolDiagnosticCategory::Message => wire::PrivateToolDiagnosticCategory::Message,
         PrivateToolDiagnosticCategory::Warning => wire::PrivateToolDiagnosticCategory::Warning,

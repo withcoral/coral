@@ -21,7 +21,7 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         }
     }
 }
-fn access(state: i32) -> Result<ToolAccessState, Status> {
+pub(super) fn access(state: i32) -> Result<ToolAccessState, Status> {
     match wire::ToolAccessState::try_from(state) {
         Ok(wire::ToolAccessState::Enabled) => Ok(ToolAccessState::Enabled),
         Ok(wire::ToolAccessState::ApprovalRequired) => Ok(ToolAccessState::ApprovalRequired),
@@ -29,7 +29,7 @@ fn access(state: i32) -> Result<ToolAccessState, Status> {
         _ => Err(invalid("invalid access state")),
     }
 }
-fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
+pub(super) fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
     match state {
         ToolAccessState::Enabled => wire::ToolAccessState::Enabled,
         ToolAccessState::ApprovalRequired => wire::ToolAccessState::ApprovalRequired,

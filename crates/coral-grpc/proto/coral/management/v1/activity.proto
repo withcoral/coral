@@ -327,6 +327,16 @@ message ActivitySourceSnapshot {
   // TypeScript source as accepted.
   string source = 3;
 }
+// The Shared Tool Revision a Run linked, with its source as accepted. The
+// Shared Tool may have a newer revision or have been removed since.
+message ActivitySharedToolSnapshot {
+  // Path the Program called it by, relative to coral.shared.
+  string path = 1;
+  // The Shared Tool Revision the Run linked, from 1.
+  uint64 revision = 2;
+  // TypeScript source as accepted.
+  string source = 3;
+}
 // Where the Run's accepted source made one record: a Tool call, an
 // emitted value or a log message. Absent when Coral did not record one,
 // including for every record made before Coral recorded them.
@@ -350,8 +360,9 @@ message ActivitySourceLocation {
 }
 // One stack frame in code the author wrote.
 message ActivityErrorFrame {
-  // "Program" or "Private Tool coral.private.{path}". Unlike
-  // ActivitySourceLocation, it names a Private Tool by path, not by snapshot.
+  // "Program", "Private Tool coral.private.{path}" or
+  // "Shared Tool coral.shared.{path}". Unlike ActivitySourceLocation, it names
+  // a Private Tool by path, not by snapshot.
   string source = 1;
   // Line number, starting at 1.
   uint32 line = 2;
@@ -586,6 +597,8 @@ message InspectRunResponse {
   string trace_id = 14;
   // The parts of run.context_impact_bytes. Absent when that total is absent.
   ActivityRunContextImpact context_impact = 15;
+  // The Shared Tool Revision of each Shared Tool the Run used, as accepted.
+  repeated ActivitySharedToolSnapshot linked_shared_tools = 16;
 }
 // The retained payload bytes that net to a Run's context impact:
 // final_value_bytes + output_bytes - tool_result_bytes.

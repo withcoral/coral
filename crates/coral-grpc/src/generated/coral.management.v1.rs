@@ -6001,6 +6001,20 @@ pub struct ActivitySourceSnapshot {
     #[prost(string, tag = "3")]
     pub source: ::prost::alloc::string::String,
 }
+/// The Shared Tool Revision a Run linked, with its source as accepted. The
+/// Shared Tool may have a newer revision or have been removed since.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivitySharedToolSnapshot {
+    /// Path the Program called it by, relative to coral.shared.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// The Shared Tool Revision the Run linked, from 1.
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+    /// TypeScript source as accepted.
+    #[prost(string, tag = "3")]
+    pub source: ::prost::alloc::string::String,
+}
 /// Where the Run's accepted source made one record: a Tool call, an
 /// emitted value or a log message. Absent when Coral did not record one,
 /// including for every record made before Coral recorded them.
@@ -6038,8 +6052,9 @@ pub mod activity_source_location {
 /// One stack frame in code the author wrote.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityErrorFrame {
-    /// "Program" or "Private Tool coral.private.{path}". Unlike
-    /// ActivitySourceLocation, it names a Private Tool by path, not by snapshot.
+    /// "Program", "Private Tool coral.private.{path}" or
+    /// "Shared Tool coral.shared.{path}". Unlike ActivitySourceLocation, it names
+    /// a Private Tool by path, not by snapshot.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
     /// Line number, starting at 1.
@@ -6280,6 +6295,9 @@ pub struct InspectRunResponse {
     /// The parts of run.context_impact_bytes. Absent when that total is absent.
     #[prost(message, optional, tag = "15")]
     pub context_impact: ::core::option::Option<ActivityRunContextImpact>,
+    /// The Shared Tool Revision of each Shared Tool the Run used, as accepted.
+    #[prost(message, repeated, tag = "16")]
+    pub linked_shared_tools: ::prost::alloc::vec::Vec<ActivitySharedToolSnapshot>,
     /// How the Run ended. Absent while running, or for an outcome unknown to this client.
     #[prost(oneof = "inspect_run_response::Terminal", tags = "7, 8, 9, 10, 11")]
     pub terminal: ::core::option::Option<inspect_run_response::Terminal>,
@@ -15231,6 +15249,952 @@ pub(crate) mod release_service_server {
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "coral.management.v1.ReleaseService";
     impl<T> tonic::server::NamedService for ReleaseServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
+/// Lists the Shared Tools of one Workspace.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSharedToolsRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Maximum results, bounded to 100; zero selects the default.
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
+    /// Opaque continuation from the preceding page in this scope.
+    #[prost(string, tag = "3")]
+    pub page_token: ::prost::alloc::string::String,
+}
+/// One page of source-free Shared Tool summaries in path order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSharedToolsResponse {
+    /// The Shared Tools on this page.
+    #[prost(message, repeated, tag = "1")]
+    pub shared_tools: ::prost::alloc::vec::Vec<SharedToolSummary>,
+    /// Empty when no further page remains.
+    #[prost(string, tag = "2")]
+    pub next_page_token: ::prost::alloc::string::String,
+    /// The Workspace's Shared Provider, workspaces/{workspace}/providers/{provider}.
+    #[prost(string, tag = "3")]
+    pub shared_provider: ::prost::alloc::string::String,
+}
+/// Source-free summary of one Shared Tool.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SharedToolSummary {
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// Description of the current revision.
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+    /// The current Shared Tool Revision, from 1.
+    #[prost(uint64, tag = "3")]
+    pub revision: u64,
+    /// When the current revision was published.
+    #[prost(message, optional, tag = "4")]
+    pub update_time: ::core::option::Option<::prost_types::Timestamp>,
+}
+/// Reads one Shared Tool.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSharedToolRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+}
+/// One Shared Tool with its current revision.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SharedTool {
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// users/{user} who first published it. Attribution only.
+    #[prost(string, tag = "2")]
+    pub creator: ::prost::alloc::string::String,
+    /// When it was first published.
+    #[prost(message, optional, tag = "3")]
+    pub create_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// The current revision, which every new Run links.
+    #[prost(message, optional, tag = "4")]
+    pub current_revision: ::core::option::Option<SharedToolRevision>,
+}
+/// One immutable, numbered publication of a Shared Tool.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SharedToolRevision {
+    /// Revision number, from 1.
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    /// Exact published description.
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+    /// Self-contained TypeScript declaration emitted from the source.
+    #[prost(string, tag = "3")]
+    pub declaration: ::prost::alloc::string::String,
+    /// Exact published TypeScript source.
+    #[prost(string, tag = "4")]
+    pub source: ::prost::alloc::string::String,
+    /// Advisory diagnostics retained from the publish.
+    #[prost(message, repeated, tag = "5")]
+    pub diagnostics: ::prost::alloc::vec::Vec<PrivateToolDiagnostic>,
+    /// True when Coral omitted diagnostics beyond its retention bound.
+    #[prost(bool, tag = "6")]
+    pub diagnostics_truncated: bool,
+    /// Lowercase hex SHA-256 of the description and source.
+    #[prost(string, tag = "7")]
+    pub content_hash: ::prost::alloc::string::String,
+    /// Default Tool Access State the Owner chose at publish.
+    #[prost(enumeration = "ToolAccessState", tag = "8")]
+    pub default_access_state: i32,
+    /// users/{user} who published it. Attribution only.
+    #[prost(string, tag = "9")]
+    pub publisher: ::prost::alloc::string::String,
+    /// When it was published.
+    #[prost(message, optional, tag = "10")]
+    pub publish_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// The earlier revision this one restored. Zero when it copied a Private Tool.
+    #[prost(uint64, tag = "11")]
+    pub restored_from_revision: u64,
+}
+/// Lists the revisions of one Shared Tool.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSharedToolRevisionsRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+}
+/// Every revision of one Shared Tool, newest first.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSharedToolRevisionsResponse {
+    /// Source-free revisions, newest first.
+    #[prost(message, repeated, tag = "1")]
+    pub revisions: ::prost::alloc::vec::Vec<SharedToolRevisionSummary>,
+}
+/// Source-free summary of one Shared Tool Revision.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SharedToolRevisionSummary {
+    /// Revision number, from 1.
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    /// Exact published description.
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+    /// Lowercase hex SHA-256 of the description and source.
+    #[prost(string, tag = "3")]
+    pub content_hash: ::prost::alloc::string::String,
+    /// Default Tool Access State the Owner chose at publish.
+    #[prost(enumeration = "ToolAccessState", tag = "4")]
+    pub default_access_state: i32,
+    /// users/{user} who published it. Attribution only.
+    #[prost(string, tag = "5")]
+    pub publisher: ::prost::alloc::string::String,
+    /// When it was published.
+    #[prost(message, optional, tag = "6")]
+    pub publish_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// The earlier revision this one restored. Zero when it copied a Private Tool.
+    #[prost(uint64, tag = "7")]
+    pub restored_from_revision: u64,
+}
+/// Reads one revision of one Shared Tool.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSharedToolRevisionRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+    /// Revision number, from 1.
+    #[prost(uint64, tag = "3")]
+    pub revision: u64,
+}
+/// Publishes the content an Owner reviewed as a Shared Tool Revision.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PublishSharedToolRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+    /// The exact description the Owner reviewed.
+    #[prost(string, tag = "5")]
+    pub description: ::prost::alloc::string::String,
+    /// The exact TypeScript source the Owner reviewed.
+    #[prost(string, tag = "6")]
+    pub source: ::prost::alloc::string::String,
+    /// Default Tool Access State of the new revision.
+    #[prost(enumeration = "ToolAccessState", tag = "7")]
+    pub default_access_state: i32,
+    /// The revision the Owner expects to be current at the path. Zero creates the Shared Tool.
+    #[prost(uint64, tag = "8")]
+    pub expected_revision: u64,
+    /// Return the review and write nothing.
+    #[prost(bool, tag = "9")]
+    pub validate_only: bool,
+    /// What the publish copies.
+    #[prost(oneof = "publish_shared_tool_request::Origin", tags = "3, 4")]
+    pub origin: ::core::option::Option<publish_shared_tool_request::Origin>,
+}
+/// Nested message and enum types in `PublishSharedToolRequest`.
+pub mod publish_shared_tool_request {
+    /// What the publish copies.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Origin {
+        /// One current Private Tool: the caller's own, or an Agent's.
+        #[prost(message, tag = "3")]
+        PrivateTool(super::PrivateToolOrigin),
+        /// An earlier revision of the Shared Tool at this path, to restore it.
+        #[prost(uint64, tag = "4")]
+        RestoreRevision(u64),
+    }
+}
+/// Names one current Private Tool that a publish copies.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrivateToolOrigin {
+    /// workspaces/{workspace}/agents/{agent} for an Agent's Private Tool. Empty for the caller's own.
+    #[prost(string, tag = "1")]
+    pub agent: ::prost::alloc::string::String,
+    /// Private Tool Path relative to coral.private.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+}
+/// The outcome of a publish.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PublishSharedToolResponse {
+    /// The Shared Tool with its new current revision. Absent with validate_only.
+    #[prost(message, optional, tag = "1")]
+    pub shared_tool: ::core::option::Option<SharedTool>,
+    /// What the publish changes and what its source calls.
+    #[prost(message, optional, tag = "2")]
+    pub review: ::core::option::Option<SharedToolReview>,
+}
+/// What an Owner reviews before a publish. Coral computes it from the exact
+/// description and source of the request.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SharedToolReview {
+    /// The revision current at the path: the other side of the source and
+    /// declaration diffs. Absent when the publish creates the Shared Tool.
+    #[prost(message, optional, tag = "1")]
+    pub previous_revision: ::core::option::Option<SharedToolRevision>,
+    /// The declaration the publish emits.
+    #[prost(string, tag = "2")]
+    pub declaration: ::prost::alloc::string::String,
+    /// Advisory diagnostics of the reviewed source.
+    #[prost(message, repeated, tag = "3")]
+    pub diagnostics: ::prost::alloc::vec::Vec<PrivateToolDiagnostic>,
+    /// True when Coral omitted diagnostics beyond its retention bound.
+    #[prost(bool, tag = "4")]
+    pub diagnostics_truncated: bool,
+    /// Every Call Path the source calls by a literal path, in path order.
+    #[prost(string, repeated, tag = "5")]
+    pub called_tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The Shared Tools the source calls, with their current revisions.
+    #[prost(message, repeated, tag = "6")]
+    pub shared_tools: ::prost::alloc::vec::Vec<SharedToolCall>,
+    /// The literal start of each Tool path the source builds at runtime. When
+    /// any is present, called_tools may be incomplete.
+    #[prost(string, repeated, tag = "7")]
+    pub runtime_built_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// One Shared Tool that a reviewed source calls.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SharedToolCall {
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// Its current revision, from 1.
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+}
+/// Generated client implementations.
+pub mod shared_tool_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// The Shared Tools of one Workspace: the Tools at coral.shared that a
+    /// Workspace Owner published, which the Workspace owns.
+    ///
+    /// Every User with a Workspace Membership reads them. Only a Workspace Owner
+    /// publishes. A Shared Tool Path names one live Shared Tool in its Workspace, so
+    /// requests carry the Workspace and path. A Workspace the caller cannot inspect
+    /// and an absent path return the same NOT_FOUND.
+    #[derive(Debug, Clone)]
+    pub struct SharedToolServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl SharedToolServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> SharedToolServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> SharedToolServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            SharedToolServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Lists one page of the Workspace's Shared Tools in path order, without source.
+        pub async fn list_shared_tools(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSharedToolsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSharedToolsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/ListSharedTools",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "ListSharedTools",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Returns one Shared Tool with its current revision and source.
+        pub async fn get_shared_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSharedToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::SharedTool>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/GetSharedTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "GetSharedTool",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Lists every revision of one Shared Tool, newest first, without source.
+        pub async fn list_shared_tool_revisions(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSharedToolRevisionsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSharedToolRevisionsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/ListSharedToolRevisions",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "ListSharedToolRevisions",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Returns one revision of one Shared Tool with its source.
+        pub async fn get_shared_tool_revision(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSharedToolRevisionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SharedToolRevision>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/GetSharedToolRevision",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "GetSharedToolRevision",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Publishes the exact source and description of the request as the next
+        /// revision of the Shared Tool at its path, and makes it current. The Private
+        /// Tool it copies stays as it was. With validate_only, returns the review and
+        /// writes nothing.
+        ///
+        /// PERMISSION_DENIED unless the caller is a Workspace Owner.
+        /// FAILED_PRECONDITION with reason SHARED_TOOL_SOURCE_UNREADABLE when the
+        /// origin is another User's Private Tool, a Private Tool that is gone, or a
+        /// revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
+        /// path is inside another Shared Tool's namespace, or holds one.
+        /// ABORTED when the current revision is not expected_revision.
+        /// INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
+        /// cannot become a Tool.
+        pub async fn publish_shared_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PublishSharedToolRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PublishSharedToolResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/PublishSharedTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "PublishSharedTool",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod shared_tool_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with SharedToolServiceServer.
+    #[async_trait]
+    pub trait SharedToolService: std::marker::Send + std::marker::Sync + 'static {
+        /// Lists one page of the Workspace's Shared Tools in path order, without source.
+        async fn list_shared_tools(
+            &self,
+            request: tonic::Request<super::ListSharedToolsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSharedToolsResponse>,
+            tonic::Status,
+        >;
+        /// Returns one Shared Tool with its current revision and source.
+        async fn get_shared_tool(
+            &self,
+            request: tonic::Request<super::GetSharedToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::SharedTool>, tonic::Status>;
+        /// Lists every revision of one Shared Tool, newest first, without source.
+        async fn list_shared_tool_revisions(
+            &self,
+            request: tonic::Request<super::ListSharedToolRevisionsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSharedToolRevisionsResponse>,
+            tonic::Status,
+        >;
+        /// Returns one revision of one Shared Tool with its source.
+        async fn get_shared_tool_revision(
+            &self,
+            request: tonic::Request<super::GetSharedToolRevisionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SharedToolRevision>,
+            tonic::Status,
+        >;
+        /// Publishes the exact source and description of the request as the next
+        /// revision of the Shared Tool at its path, and makes it current. The Private
+        /// Tool it copies stays as it was. With validate_only, returns the review and
+        /// writes nothing.
+        ///
+        /// PERMISSION_DENIED unless the caller is a Workspace Owner.
+        /// FAILED_PRECONDITION with reason SHARED_TOOL_SOURCE_UNREADABLE when the
+        /// origin is another User's Private Tool, a Private Tool that is gone, or a
+        /// revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
+        /// path is inside another Shared Tool's namespace, or holds one.
+        /// ABORTED when the current revision is not expected_revision.
+        /// INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
+        /// cannot become a Tool.
+        async fn publish_shared_tool(
+            &self,
+            request: tonic::Request<super::PublishSharedToolRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PublishSharedToolResponse>,
+            tonic::Status,
+        >;
+    }
+    /// The Shared Tools of one Workspace: the Tools at coral.shared that a
+    /// Workspace Owner published, which the Workspace owns.
+    ///
+    /// Every User with a Workspace Membership reads them. Only a Workspace Owner
+    /// publishes. A Shared Tool Path names one live Shared Tool in its Workspace, so
+    /// requests carry the Workspace and path. A Workspace the caller cannot inspect
+    /// and an absent path return the same NOT_FOUND.
+    #[derive(Debug)]
+    pub struct SharedToolServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> SharedToolServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for SharedToolServiceServer<T>
+    where
+        T: SharedToolService,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/coral.management.v1.SharedToolService/ListSharedTools" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSharedToolsSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::ListSharedToolsRequest>
+                    for ListSharedToolsSvc<T> {
+                        type Response = super::ListSharedToolsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListSharedToolsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::list_shared_tools(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSharedToolsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SharedToolService/GetSharedTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSharedToolSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::GetSharedToolRequest>
+                    for GetSharedToolSvc<T> {
+                        type Response = super::SharedTool;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetSharedToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::get_shared_tool(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSharedToolSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SharedToolService/ListSharedToolRevisions" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSharedToolRevisionsSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::ListSharedToolRevisionsRequest>
+                    for ListSharedToolRevisionsSvc<T> {
+                        type Response = super::ListSharedToolRevisionsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ListSharedToolRevisionsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::list_shared_tool_revisions(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSharedToolRevisionsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SharedToolService/GetSharedToolRevision" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSharedToolRevisionSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::GetSharedToolRevisionRequest>
+                    for GetSharedToolRevisionSvc<T> {
+                        type Response = super::SharedToolRevision;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetSharedToolRevisionRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::get_shared_tool_revision(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSharedToolRevisionSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SharedToolService/PublishSharedTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct PublishSharedToolSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::PublishSharedToolRequest>
+                    for PublishSharedToolSvc<T> {
+                        type Response = super::PublishSharedToolResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PublishSharedToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::publish_shared_tool(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PublishSharedToolSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for SharedToolServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "coral.management.v1.SharedToolService";
+    impl<T> tonic::server::NamedService for SharedToolServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
