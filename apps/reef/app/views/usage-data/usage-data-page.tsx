@@ -4,9 +4,12 @@ import { Switch } from '@/wax/components/inputs/switch'
 import { PageLayout } from '@/wax/components/page-layout'
 import { SettingsLayout } from '@/wax/components/settings-layout'
 import { SavedAt } from '@/views/functions/saved-at'
-import { blockReason, contents, place } from './copy'
+import { blockReason, contents } from './copy'
 import type { UsageDataView } from './types'
 import * as styles from './usage-data.css'
+
+/** Each report scrolls inside its card, so both fit on one screen. */
+const REPORT_LINES = 20
 
 /** The deployment's usage data setting and the exact reports. Every member can read it. */
 export function UsageDataPage({
@@ -41,16 +44,16 @@ export function UsageDataPage({
         />
         {v.choice === 'on' ? (
           <Card.Card
-            title="What Coral sends"
-            description={`The next report Coral sends from ${place(v.kind)}.`}
+            title="Today so far"
+            description="A draft: it changes until the day ends (UTC), then goes out once."
           >
             <div className={styles.report}>
-              <CodeBlock value={v.next} format="json" framed />
+              <CodeBlock value={v.next} format="json" framed maxLines={REPORT_LINES} />
             </div>
           </Card.Card>
         ) : (
           <Card.Card
-            title="What Coral sends"
+            title="Today so far"
             description="Coral sends no usage data while sharing is off."
           />
         )}
@@ -63,7 +66,7 @@ export function UsageDataPage({
               <Typography.Body as="p" variant="tertiary">
                 Sent <SavedAt at={v.lastSent.at} />.
               </Typography.Body>
-              <CodeBlock value={v.lastSent.json} format="json" framed />
+              <CodeBlock value={v.lastSent.json} format="json" framed maxLines={REPORT_LINES} />
             </div>
           )}
         </Card.Card>

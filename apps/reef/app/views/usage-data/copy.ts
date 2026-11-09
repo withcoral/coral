@@ -1,8 +1,8 @@
 import type { SendBlock, UsageDataView } from './types'
 
-/** What a report never holds. "What Coral sends" below shows the rest. */
+/** What a report never holds. "Today so far" below shows the rest. */
 export const contents =
-  'Coral sends anonymous usage counts. It never sends your programs, tool arguments, tool results, credentials or the names you give things.'
+  'Coral sends anonymous usage data. It never sends your programs, tool arguments, tool results, credentials or the names you give things.'
 
 export function place(kind: UsageDataView['kind']): string {
   return kind === 'desktop' ? 'your computer' : 'this server'

@@ -157,7 +157,12 @@ const meta = {
   decorators: [
     (Story) => {
       const Stub = createRoutesStub([{ path: '*', Component: () => <Story /> }])
-      return <Stub />
+      // The app shell bounds a page's height, so the page's scroll area scrolls.
+      return (
+        <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+          <Stub />
+        </div>
+      )
     },
   ],
 } satisfies Meta<typeof Demo>
