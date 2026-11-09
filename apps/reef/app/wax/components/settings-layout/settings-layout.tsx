@@ -1,3 +1,4 @@
+import classNames from 'classnames'
 import type { ReactNode } from 'react'
 
 import * as CardFrame from '@/wax/components/card'
@@ -14,17 +15,25 @@ export interface SettingsLayoutProps {
   aside?: ReactNode
   /** The removal section, apart at the end. */
   removal?: ReactNode
+  /** A page that never has an aside: the header and the cards share one centred column. */
+  single?: boolean
 }
 
 /** One resource's settings page: one card per setting, then removal apart at the end. */
-export function SettingsLayout({ header, children, aside, removal }: SettingsLayoutProps) {
+export function SettingsLayout({
+  header,
+  children,
+  aside,
+  removal,
+  single = false,
+}: SettingsLayoutProps) {
   return (
-    <div className={styles.page}>
+    <div className={classNames(styles.page, single && styles.pageSingle)}>
       <div className={styles.top}>
         <div className={styles.header}>{header}</div>
-        <div className={styles.columns}>
+        <div className={classNames(styles.columns, single && styles.columnsSingle)}>
           <div className={styles.main}>{children}</div>
-          {aside}
+          {!single && aside}
         </div>
       </div>
       {removal}
