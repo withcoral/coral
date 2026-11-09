@@ -576,19 +576,8 @@ const fn authentication_name(kind: AuthenticationKind) -> &'static str {
     }
 }
 
-/// A Tool Access State, as Built-in Tools spell it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuiltinAccessState {
-    /// A call runs without approval.
-    Enabled,
-    /// A call waits for a person to approve it.
-    ApprovalRequired,
-    /// A call is refused.
-    Disabled,
-}
-
-impl JsonSchema for BuiltinAccessState {
+/// A Tool Access State as a Program writes it, one of its storage words.
+impl JsonSchema for crate::ToolAccessState {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "ToolAccessState".into()
     }

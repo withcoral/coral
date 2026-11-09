@@ -16,18 +16,17 @@ mod binding;
 mod builtin;
 pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
-    BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
-    BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices,
-    ConfigurationOutput, ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring,
-    GetPolicyArguments, GetPolicyResult, GetProviderArguments, GetProviderResult,
-    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
-    MissingPath, NON_TOOL_ROOT_MEMBERS, PathsResult, ProviderFacts, ProviderSourceArgument,
-    ProviderSourceOutput, RemoveToolArguments, RemovedToolResult, SEARCH_PATH_MAX_BYTES,
-    SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory, SavedToolResult,
-    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
-    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, SourceChange,
-    ToolSaveArguments, UpdatePolicyArguments, UpdatePolicyResult, UpdateProviderArguments,
-    UpdateProviderResult,
+    BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
+    BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices, ConfigurationOutput,
+    ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring, GetPolicyArguments,
+    GetPolicyResult, GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
+    ListedProviderState, ListedSetup, ListedSetupState, MissingPath, NON_TOOL_ROOT_MEMBERS,
+    PathsResult, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput, RemoveToolArguments,
+    RemovedToolResult, SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic,
+    SavedDiagnosticCategory, SavedToolResult, SearchArguments, SearchHit, SearchOutput,
+    SearchResult, SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState,
+    SearchRetrieverStatus, SourceChange, ToolSaveArguments, UpdatePolicyArguments,
+    UpdatePolicyResult, UpdateProviderArguments, UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{
@@ -141,8 +140,8 @@ pub use types::{
     MaterializationOutcome, MaterializedTool, PreparedProviderCatalog,
     ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
-    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability, ToolHints, ToolKey,
-    ToolPolicyFacts, ToolPresentation,
+    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAccessState, ToolAvailability,
+    ToolHints, ToolKey, ToolPolicyFacts, ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.

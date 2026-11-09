@@ -876,7 +876,8 @@ pub async fn resolve_invocation_tool_in_transaction(
 
 /// Resolves one of the caller's Private Tools to the Tool its Invocation
 /// retains: the Tool at `relative_path` under `coral.private` that Coral
-/// performs by running the definition `binding` names, in the Workspace's
+/// performs by running the definition `binding` names, with the default its
+/// author declared for that revision, in the Workspace's
 /// Private Provider, which this holds shared as the Policy Enforcement
 /// Point does. The caller decides which Private Tools a Principal reaches:
 /// a Run links only its own, and binds each call to the definition it
@@ -890,6 +891,7 @@ pub async fn resolve_private_tool_in_transaction(
     workspace_id: &WorkspaceId,
     relative_path: &str,
     binding: coral_catalog::CodeExecutionBinding,
+    declared_default: coral_catalog::ToolAccessState,
 ) -> Result<Option<ResolvedInvocationTool>, Error> {
     let Some(stored) = repository::current_provider(
         transaction,
@@ -901,7 +903,7 @@ pub async fn resolve_private_tool_in_transaction(
     .and_then(repository::ProviderWithActiveGeneration::into_active) else {
         return Ok(None);
     };
-    let tool = coral_catalog::private_tool(relative_path, binding)?;
+    let tool = coral_catalog::private_tool(relative_path, binding, declared_default)?;
     resolved(
         transaction,
         Some((stored.provider.access().clone(), stored.generation_id, tool)),

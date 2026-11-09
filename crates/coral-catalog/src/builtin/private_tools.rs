@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ArgumentProblem, BuiltinTool, Declared, Definition, derived_schema, tool_result};
-use crate::{SavedDiagnostic, ToolHints, ToolPresentation};
+use crate::{SavedDiagnostic, ToolAccessState, ToolHints, ToolPresentation};
 
 /// Every Principal authors its own Private Tools.
 pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Author;
@@ -24,6 +24,17 @@ const DESCRIPTION_DESCRIPTION: &str = "One line, one or two sentences: what the 
                                        when to use it. Use words a search would match. Do not \
                                        restate input or return types; the declaration is shown \
                                        beside it.";
+
+const ADD_POLICY_DESCRIPTION: &str = "The tool's default policy: enabled runs each call, \
+                                      approval_required waits for a person to approve each \
+                                      call, and disabled refuses each call. An owner's rule \
+                                      overrides it. Omit it for enabled.";
+
+const UPDATE_POLICY_DESCRIPTION: &str = "The tool's default policy: enabled runs each call, \
+                                         approval_required waits for a person to approve \
+                                         each call, and disabled refuses each call. An \
+                                         owner's rule overrides it. Omit it to keep the \
+                                         current one.";
 
 const SAVE_NOTES: &str = "Pass source as the name of a function declared at the top level of \
                           this Program, with function or const: not a string, an inline \
@@ -122,6 +133,9 @@ struct AddArguments {
     description: String,
     #[schemars(schema_with = "source_schema")]
     source: String,
+    #[serde(default, deserialize_with = "super::present")]
+    #[schemars(with = "ToolAccessState", description = ADD_POLICY_DESCRIPTION)]
+    policy: Option<ToolAccessState>,
 }
 
 /// `updateTool`'s arguments as a Program writes them.
@@ -143,6 +157,9 @@ struct UpdateArguments {
                        returned it. Omit it to replace whatever is current."
     )]
     expected_revision: Option<u64>,
+    #[serde(default, deserialize_with = "super::present")]
+    #[schemars(with = "ToolAccessState", description = UPDATE_POLICY_DESCRIPTION)]
+    policy: Option<ToolAccessState>,
 }
 
 /// `removeTool`'s arguments as a Program writes them.
@@ -206,6 +223,7 @@ pub struct ToolSaveArguments {
     description: String,
     source: String,
     expected_revision: Option<u64>,
+    policy: Option<ToolAccessState>,
 }
 
 impl ToolSaveArguments {
@@ -234,6 +252,13 @@ impl ToolSaveArguments {
         self.expected_revision
     }
 
+    /// The default Tool Access State the save declares; `None` when the
+    /// Program omits it.
+    #[must_use]
+    pub const fn policy(&self) -> Option<ToolAccessState> {
+        self.policy
+    }
+
     /// Reads `addTool`'s arguments.
     ///
     /// # Errors
@@ -247,8 +272,9 @@ impl ToolSaveArguments {
             path,
             description,
             source,
+            policy,
         } = super::read(arguments).map_err(|problem| vec![problem])?;
-        Self::checked(path, description, source, None)
+        Self::checked(path, description, source, None, policy)
     }
 
     /// Reads `updateTool`'s arguments.
@@ -265,6 +291,7 @@ impl ToolSaveArguments {
             description,
             source,
             expected_revision,
+            policy,
         } = super::read(arguments).map_err(|problem| vec![problem])?;
         let mut problems = Vec::new();
         if expected_revision == Some(0) {
@@ -273,7 +300,7 @@ impl ToolSaveArguments {
                 "pass a revision of 1 or more",
             ));
         }
-        match Self::checked(path, description, source, expected_revision) {
+        match Self::checked(path, description, source, expected_revision, policy) {
             Ok(arguments) if problems.is_empty() => Ok(arguments),
             Ok(_arguments) => Err(problems),
             Err(mut found) => {
@@ -288,6 +315,7 @@ impl ToolSaveArguments {
         description: String,
         source: String,
         expected_revision: Option<u64>,
+        policy: Option<ToolAccessState>,
     ) -> Result<Self, Vec<ArgumentProblem>> {
         let problems = empty([
             ("path", path.as_str()),
@@ -302,6 +330,7 @@ impl ToolSaveArguments {
             description,
             source,
             expected_revision,
+            policy,
         })
     }
 }
@@ -337,11 +366,19 @@ impl RemoveToolArguments {
 /// The only arguments `addTool` takes, for its conformance test.
 #[cfg(test)]
 pub(super) fn valid_add_arguments() -> Vec<Value> {
-    vec![serde_json::json!({
-        "path": "github.pulls.listStale",
-        "description": "List open pull requests with no update in a week.",
-        "source": "export default async function () { return []; }",
-    })]
+    vec![
+        serde_json::json!({
+            "path": "github.pulls.listStale",
+            "description": "List open pull requests with no update in a week.",
+            "source": "export default async function () { return []; }",
+        }),
+        serde_json::json!({
+            "path": "github.pulls.listStale",
+            "description": "List open pull requests with no update in a week.",
+            "source": "export default async function () { return []; }",
+            "policy": "approval_required",
+        }),
+    ]
 }
 
 /// The arguments `updateTool` takes, for its conformance test.
@@ -357,6 +394,7 @@ pub(super) fn valid_update_arguments() -> Vec<Value> {
             "description": description,
             "source": source,
             "expectedRevision": 2,
+            "policy": "disabled",
         }),
     ]
 }

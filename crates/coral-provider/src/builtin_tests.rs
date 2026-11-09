@@ -196,19 +196,17 @@ enum BuiltinChange {
     ConnectAccount,
     RotateOAuthClientSecret,
     Delete,
-    Disable,
 }
 
-/// An Owner can only disable or restore the Built-in Provider and set its
-/// Tools' policy, and cannot change the Private Provider at all. Every other
-/// change is rejected and changes nothing.
+/// An Owner can only disable or restore the Providers Coral defines, and
+/// set their Tools' policy: disabling the Private Provider stops every
+/// Private Tool. Every other change is rejected and changes nothing.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one table covers every change the Providers Coral defines refuse and the two the Built-in Provider allows"
 )]
-async fn an_owner_can_only_disable_and_restore_the_builtin_provider_and_cannot_change_the_private_one()
- {
+async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
     let harness = Harness::new().await;
     let (database, providers) = (harness.database.clone(), &harness.providers);
     let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
@@ -255,14 +253,11 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider_and_cannot_c
         BuiltinChange::RotateOAuthClientSecret,
         BuiltinChange::Delete,
     ];
-    // Nothing reads the Private Provider's state yet, so it refuses a
-    // disable too (#2977).
-    for (provider, change) in refused.map(|change| (&builtin, change)).into_iter().chain(
-        refused
-            .into_iter()
-            .chain([BuiltinChange::Disable])
-            .map(|change| (&private, change)),
-    ) {
+    for (provider, change) in refused
+        .map(|change| (&builtin, change))
+        .into_iter()
+        .chain(refused.map(|change| (&private, change)))
+    {
         let before = events().await.len();
         let context = context.clone().with_etag(&provider.etag()).unwrap();
         let result = match change {
@@ -327,10 +322,6 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider_and_cannot_c
                 .delete_provider(&context, workspace.id(), provider.id())
                 .await
                 .map(drop),
-            BuiltinChange::Disable => providers
-                .disable_provider(&context, workspace.id(), provider.id())
-                .await
-                .map(drop),
         };
         assert!(
             matches!(result, Err(Error::BuiltinProviderManaged)),
@@ -354,42 +345,46 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider_and_cannot_c
         transaction.rollback().await.unwrap();
     }
 
-    let before = events().await.len();
-    let disabled = providers
-        .disable_provider(
-            &change_context(owner.clone(), 20, '2')
-                .with_etag(&builtin.etag())
-                .unwrap(),
-            workspace.id(),
-            builtin.id(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(disabled.state(), ProviderState::Disabled);
-    let restored = providers
-        .restore_provider(
-            &change_context(owner.clone(), 30, '3')
-                .with_etag(&disabled.etag())
-                .unwrap(),
-            workspace.id(),
-            builtin.id(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(restored.state(), ProviderState::Active);
-    let actions = events()
-        .await
-        .iter()
-        .skip(before)
-        .map(crate::AdministrativeLifecycleEvent::action)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        actions,
-        [
-            LifecycleAction::ProviderDisabled,
-            LifecycleAction::ProviderRestored
-        ]
-    );
+    for (provider, at) in [(&builtin, 20), (&private, 40)] {
+        let before = events().await.len();
+        let disabled = providers
+            .disable_provider(
+                &change_context(owner.clone(), at, '2')
+                    .with_etag(&provider.etag())
+                    .unwrap(),
+                workspace.id(),
+                provider.id(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.state(), ProviderState::Disabled);
+        let restored = providers
+            .restore_provider(
+                &change_context(owner.clone(), at + 10, '3')
+                    .with_etag(&disabled.etag())
+                    .unwrap(),
+                workspace.id(),
+                provider.id(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored.state(), ProviderState::Active);
+        let actions = events()
+            .await
+            .iter()
+            .skip(before)
+            .map(crate::AdministrativeLifecycleEvent::action)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            [
+                LifecycleAction::ProviderDisabled,
+                LifecycleAction::ProviderRestored
+            ],
+            "{:?}",
+            provider.call_root()
+        );
+    }
 }
 
 /// Coral defines the Built-in Provider's catalog in Rust, so it has no source

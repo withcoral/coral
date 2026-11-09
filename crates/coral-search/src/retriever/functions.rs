@@ -241,17 +241,31 @@ impl EntityRetriever for SavedFunctionRetriever {
         else {
             return Ok(None);
         };
-        // Coral installs it in every Workspace before it serves requests.
+        // Coral installs it in every Workspace before it serves requests. A
+        // disabled Private Provider stops every Private Tool.
         let Some(provider) =
             coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
                 .await?
+                .filter(|provider| provider.state() == coral_provider::ProviderState::Active)
         else {
             return Ok(None);
         };
-        // No exact rule can name a Private Tool yet, so its default decides
-        // (#2977 brings Owner rules). A disabled Tool leaves describe, as a
-        // disabled Provider Tool does.
-        let approval_requirement = match exact.default_access_state() {
+        // An Owner's exact rule decides, and the declared default without
+        // one. A disabled Tool leaves describe, as a disabled Provider Tool
+        // does.
+        let target = coral_policy::ToolPolicyTarget::new(
+            context.workspace_id.clone(),
+            provider.id().clone(),
+            exact.id().tool_key(),
+        );
+        let decision = coral_policy::discovery_decision_in_transaction(
+            transaction,
+            &target,
+            coral_catalog::ToolPolicyFacts::default()
+                .declaring_default(exact.default_access_state()),
+        )
+        .await?;
+        let approval_requirement = match decision.access_state() {
             coral_policy::ToolAccessState::Enabled => ApprovalRequirement::NotRequired,
             coral_policy::ToolAccessState::ApprovalRequired => ApprovalRequirement::Required,
             coral_policy::ToolAccessState::Disabled => return Ok(None),
@@ -279,19 +293,40 @@ fn strong_function(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
     matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
 }
 
-/// The Principal's current Saved Functions. Reads no source or declaration.
+/// The Principal's current Private Tools that policy lets it call: none
+/// while the Private Provider is disabled, and none that an Owner's rule
+/// or, without one, the declared default disables. Reads no source or
+/// declaration.
 async fn current_functions(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
 ) -> Result<Vec<SavedFunctionSearchMaterial>, Error> {
-    Ok(
-        coral_functions::saved_function_search_material_in_transaction(
-            transaction,
-            context.workspace_id,
-            context.actor.principal(),
-        )
-        .await?,
+    let Some(provider) =
+        coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
+            .await?
+            .filter(|provider| provider.state() == coral_provider::ProviderState::Active)
+    else {
+        return Ok(Vec::new());
+    };
+    let rules =
+        coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id).await?;
+    let mut functions = Vec::new();
+    for function in coral_functions::saved_function_search_material_in_transaction(
+        transaction,
+        context.workspace_id,
+        context.actor.principal(),
     )
+    .await?
+    {
+        let key = function.id().tool_key();
+        let facts = coral_catalog::ToolPolicyFacts::default()
+            .declaring_default(function.default_access_state());
+        if rules.access_state(provider.id(), &key, facts) != coral_policy::ToolAccessState::Disabled
+        {
+            functions.push(function);
+        }
+    }
+    Ok(functions)
 }
 
 fn function_ref(material: SavedFunctionSearchMaterial) -> Result<EntityRef, Error> {

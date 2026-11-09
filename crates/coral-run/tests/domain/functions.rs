@@ -945,3 +945,273 @@ async fn a_missing_private_tool_is_refused_like_any_unknown_path_with_its_neares
         );
     }
 }
+
+/// A tool whose body makes one call of its own, so a row for that call
+/// shows the body ran.
+const CALLING_SOURCE: &str = "const saved = async (name: string): Promise<string> => {
+    await coral.listProviders();
+    return `hello ${name}`;
+};";
+
+/// Who authors and calls the tool in a policy row.
+#[derive(Debug, Clone, Copy)]
+enum Author {
+    Owner,
+    Agent,
+}
+
+/// What an Owner does after the save, before the call.
+#[derive(Debug, Clone, Copy)]
+enum Gate {
+    Nothing,
+    Rule(ToolAccessState),
+    DisableProvider,
+}
+
+/// One row: who authors the tool, the policy its save declares, the
+/// Owner's gate, the decision on an approval the call waits for, and the
+/// call's outcome: its value or its Tool Error's code.
+struct PolicyRow {
+    author: Author,
+    declared: Option<&'static str>,
+    gate: Gate,
+    decision: Option<crate::approval::ApprovalDecision>,
+    outcome: Value,
+}
+
+// Catches: a Private Tool whose declared default, or an Owner's rule over
+// it, does not decide its call; a disabled Private Provider that leaves a
+// Private Tool callable; an outer call that needs approval whose body runs
+// before the decision, or at all once declined; or an Agent's call that its
+// Owner cannot approve.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers each source of a Private Tool's policy"
+)]
+async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_private_provider() {
+    use crate::approval::ApprovalDecision::{Approve, Decline};
+    use Gate::{DisableProvider, Nothing, Rule};
+    let hello = || json!("hello Ada");
+    let code = |code: &str| json!({ "code": code });
+    let rows = [
+        PolicyRow {
+            author: Author::Owner,
+            declared: None,
+            gate: Nothing,
+            decision: None,
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: Some("enabled"),
+            gate: Nothing,
+            decision: None,
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: Some("disabled"),
+            gate: Nothing,
+            decision: None,
+            outcome: code("tool_disabled"),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: Some("approval_required"),
+            gate: Nothing,
+            decision: Some(Approve),
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: Some("approval_required"),
+            gate: Nothing,
+            decision: Some(Decline),
+            outcome: code("approval_declined"),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: Some("approval_required"),
+            gate: Rule(ToolAccessState::Enabled),
+            decision: None,
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: None,
+            gate: Rule(ToolAccessState::ApprovalRequired),
+            decision: Some(Approve),
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: None,
+            gate: Rule(ToolAccessState::Disabled),
+            decision: None,
+            outcome: code("tool_disabled"),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: None,
+            gate: DisableProvider,
+            decision: None,
+            outcome: code("provider_unavailable"),
+        },
+        PolicyRow {
+            author: Author::Agent,
+            declared: Some("approval_required"),
+            gate: Nothing,
+            decision: Some(Approve),
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Agent,
+            declared: None,
+            gate: Rule(ToolAccessState::Disabled),
+            decision: None,
+            outcome: code("tool_disabled"),
+        },
+    ];
+    for (index, row) in rows.into_iter().enumerate() {
+        let label = format!(
+            "row {index}: {:?} {:?} {:?}",
+            row.author, row.declared, row.gate
+        );
+        let (scope, _index) = authoring_scope(&format!("user:private-policy-{index}")).await;
+        let author = match row.author {
+            Author::Owner => scope.owner.clone(),
+            Author::Agent => {
+                registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await
+            }
+        };
+        let policy = row
+            .declared
+            .map_or_else(String::new, |policy| format!(", policy: {}", json!(policy)));
+        let saved = outcome(
+            &scope,
+            &author,
+            author_with("addTool", CALLING_SOURCE, &policy),
+        )
+        .await;
+        assert!(
+            saved.pointer("/data/revision").is_some(),
+            "{label}: {saved}"
+        );
+        let mut transaction = scope.fixture.database.begin().await.unwrap();
+        let private =
+            coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
+                .await
+                .unwrap()
+                .expect("the Private Provider");
+        transaction.rollback().await.unwrap();
+        match row.gate {
+            Nothing => {}
+            Rule(state) => {
+                let tool = functions_module(&scope)
+                    .get(
+                        &author,
+                        &scope.workspace_id,
+                        &SavedFunctionPath::parse("people.greet").unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                scope
+                    .fixture
+                    .policies
+                    .set_access_state(
+                        &change(scope.owner_user(), 13, '4'),
+                        ToolPolicyTarget::new(
+                            scope.workspace_id.clone(),
+                            private.id().clone(),
+                            coral_catalog::ToolKey::parse(&tool.id().to_string()).unwrap(),
+                        ),
+                        state,
+                    )
+                    .await
+                    .expect("set the Owner's rule");
+            }
+            DisableProvider => {
+                scope
+                    .fixture
+                    .providers
+                    .disable_provider(
+                        &change(scope.owner_user(), 13, '4')
+                            .with_etag(&private.etag())
+                            .unwrap(),
+                        &scope.workspace_id,
+                        private.id(),
+                    )
+                    .await
+                    .expect("disable the Private Provider");
+            }
+        }
+
+        let run = scope.start(&author, greet_or_code()).await;
+        if let Some(decision) = row.decision {
+            let approver = reader(&scope, &author);
+            let approvals = scope.fixture.approvals();
+            let request = wait_for_approval(&approvals, approver, &scope.workspace_id, &run).await;
+            // The call waits on its decision with its body not yet run.
+            let paths = |rows: Vec<InvocationRow>| {
+                rows.into_iter()
+                    .map(|row| row.call_path)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                paths(
+                    scope
+                        .fixture
+                        .invocation_rows(&scope.workspace_id, &run)
+                        .await
+                ),
+                ["coral.private.people.greet"],
+                "{label}"
+            );
+            approvals
+                .decide(
+                    approver,
+                    &scope.workspace_id,
+                    &request.id,
+                    decision,
+                    None,
+                    &TraceId::parse(&"d".repeat(32)).unwrap(),
+                )
+                .await
+                .expect("decide the call");
+        }
+        let value = final_value(&scope.terminal(&author, &run).await);
+        let found = value
+            .get("code")
+            .map_or_else(|| value.clone(), |code| json!({ "code": code }));
+        assert_eq!(found, row.outcome, "{label}: {value}");
+        // The body ran, and made its own call, only when the call ran. A
+        // disabled Provider admits no call, as for any Provider.
+        let mut called: Vec<_> = scope
+            .fixture
+            .invocation_rows(&scope.workspace_id, &run)
+            .await
+            .into_iter()
+            .map(|row| row.call_path)
+            .collect();
+        called.sort();
+        let expected = match (row.gate, row.outcome == hello()) {
+            (DisableProvider, _) => Vec::new(),
+            (_, true) => vec!["coral.listProviders", "coral.private.people.greet"],
+            (_, false) => vec!["coral.private.people.greet"],
+        };
+        assert_eq!(called, expected, "{label}");
+    }
+}
+
+/// `coral.addTool` or `coral.updateTool` saving `saved` from
+/// `declarations` at `people.greet`, with `extra` fields after `source`.
+fn author_with(verb: &str, declarations: &str, extra: &str) -> RunSubmission {
+    author(verb, "people.greet", declarations, extra)
+}
+
+/// Calls `people.greet` and returns its value, or its Tool Error's code
+/// and message.
+fn greet_or_code() -> RunSubmission {
+    tool_call("", "coral.private.people.greet('Ada')")
+}

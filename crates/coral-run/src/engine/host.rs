@@ -22,7 +22,7 @@ use super::{ExecutionCompletion, ProgramEngine, ProgramPackage};
 pub(crate) async fn execute(
     engine: Arc<dyn ProgramEngine>,
     package: ProgramPackage,
-    linked_snapshots: HashMap<String, coral_catalog::CodeExecutionBinding>,
+    linked_snapshots: HashMap<String, crate::types::LinkedPrivateTool>,
     invoker: ToolInvoker,
     output: ProgramOutputWriter,
     value_limits: ValueLimits,
@@ -67,7 +67,7 @@ struct RunProgramHost {
     cpu_budget: Option<std::time::Duration>,
     stop: Arc<ExecutionStop>,
     /// Each linked Private Tool's path to the definition the Run retained.
-    linked_snapshots: HashMap<String, coral_catalog::CodeExecutionBinding>,
+    linked_snapshots: HashMap<String, crate::types::LinkedPrivateTool>,
     /// What the Program's own calls and its modules' top-level calls go
     /// through.
     invoker: Arc<ToolInvoker>,
@@ -85,7 +85,12 @@ impl RunProgramHost {
         let document = match location.source {
             coral_v8::AuthoredSource::Program => SourceDocument::Program,
             coral_v8::AuthoredSource::SavedFunction { path } => SourceDocument::SavedFunction {
-                saved_function_id: self.linked_snapshots.get(&path)?.definition().to_owned(),
+                saved_function_id: self
+                    .linked_snapshots
+                    .get(&path)?
+                    .binding
+                    .definition()
+                    .to_owned(),
             },
         };
         Some(SourceLocation {
@@ -278,7 +283,7 @@ impl RunProgramHost {
                 let call = call.map_err(|error| self.host_error(error))?;
                 // Only the linker performs a call, and only to a Tool the
                 // Run linked.
-                let Some((relative_path, binding)) = call_path
+                let Some((relative_path, linked)) = call_path
                     .strip_prefix("coral.private.")
                     .and_then(|path| Some((path, self.linked_snapshots.get(path)?.clone())))
                 else {
@@ -292,7 +297,7 @@ impl RunProgramHost {
                     ))
                 })?;
                 match call
-                    .perform(relative_path, binding, arguments, source_location)
+                    .perform(relative_path, linked, arguments, source_location)
                     .await
                 {
                     Ok(performed) => Ok(Box::new(RunToolCompletion {

@@ -115,7 +115,7 @@ pub(super) async fn access_state_in_transaction(
             lock,
         )
         .await?;
-    row.map(|(value,)| ToolAccessState::from_storage_str(&value))
+    row.map(|(value,)| access_state_from_storage(&value))
         .transpose()
 }
 
@@ -142,7 +142,7 @@ pub(super) async fn access_states_in_transaction(
         .map(|(key, state)| {
             let key = ToolKey::parse(&key)
                 .map_err(|_error| Error::CorruptData("Tool rule has invalid Tool Key".into()))?;
-            Ok((key, ToolAccessState::from_storage_str(&state)?))
+            Ok((key, access_state_from_storage(&state)?))
         })
         .collect()
 }
@@ -166,7 +166,7 @@ pub(super) async fn provider_rules_in_transaction(
         .map(|(key, state)| {
             let key = ToolKey::parse(&key)
                 .map_err(|_error| Error::CorruptData("Tool rule has invalid Tool Key".into()))?;
-            Ok((key, ToolAccessState::from_storage_str(&state)?))
+            Ok((key, access_state_from_storage(&state)?))
         })
         .collect()
 }
@@ -198,7 +198,7 @@ pub(super) async fn exact_rules_in_transaction(
         rules
             .entry(provider_id)
             .or_default()
-            .insert(tool_key, ToolAccessState::from_storage_str(&access_state)?);
+            .insert(tool_key, access_state_from_storage(&access_state)?);
     }
     Ok(ExactToolRules::new(rules))
 }
@@ -320,4 +320,12 @@ pub(super) async fn list_lifecycle_events_in_transaction(
         )
         .await?;
     rows.into_iter().map(LifecycleEventRow::decode).collect()
+}
+
+fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
+    ToolAccessState::from_storage_str(value).ok_or_else(|| {
+        Error::CorruptData(format!(
+            "Tool policy has unrecognized access state '{value}'"
+        ))
+    })
 }

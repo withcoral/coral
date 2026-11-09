@@ -1533,6 +1533,7 @@ pub(crate) async fn admitted_private_invocation(
         &tool.workspace_id,
         relative_path,
         coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
+        coral_catalog::ToolAccessState::Enabled,
     )
     .await
     .expect("resolve the Private Tool")

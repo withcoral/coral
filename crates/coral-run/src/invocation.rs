@@ -350,7 +350,7 @@ impl ToolInvoker {
     }
 
     /// Starts one call to the caller's Private Tool at `relative_path`,
-    /// which this Run linked as `binding`: one Invocation, which Coral
+    /// which this Run linked as `linked`: one Invocation, which Coral
     /// performs by running the Tool's body in the Program. It returns once
     /// the enforcement point permits the call, which then stays
     /// `dispatching` until the body's outcome completes it. It holds no slot
@@ -359,13 +359,13 @@ impl ToolInvoker {
         &self,
         child: Option<OpenChild>,
         relative_path: &str,
-        binding: coral_catalog::CodeExecutionBinding,
+        linked: crate::types::LinkedPrivateTool,
         arguments: serde_json::Value,
         source_location: Option<crate::SourceLocation>,
     ) -> Result<PerformedCall, InvocationHostError> {
         let arguments_json = self.arguments_json(&arguments)?;
         let call_path = format!("coral.private.{relative_path}");
-        let (target, policy) = self.resolve_private(relative_path, binding).await?;
+        let (target, policy) = self.resolve_private(relative_path, linked).await?;
         let id = InvocationId::generate();
         let trace = OpenChild::in_parent_span(child.as_ref(), || {
             crate::trace::InvocationTrace::begin(
@@ -438,20 +438,21 @@ impl ToolInvoker {
         Ok(arguments_json)
     }
 
-    /// Resolves the Private Tool the Run linked as `binding` and its policy,
+    /// Resolves the Private Tool the Run linked as `linked` and its policy,
     /// outside the Run: the enforcement point rechecks both before the body
     /// runs.
     async fn resolve_private(
         &self,
         relative_path: &str,
-        binding: coral_catalog::CodeExecutionBinding,
+        linked: crate::types::LinkedPrivateTool,
     ) -> Result<(ResolvedInvocationTool, ToolAccessState), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(target) = coral_provider::resolve_private_tool_in_transaction(
             &mut transaction,
             &self.workspace_id,
             relative_path,
-            binding,
+            linked.binding,
+            linked.declared_default,
         )
         .await?
         else {
@@ -1531,11 +1532,11 @@ impl ToolCall {
     }
 
     /// Starts a call to the caller's Private Tool at `relative_path`,
-    /// which the Run linked as `binding`; see [`ToolInvoker::perform`].
+    /// which the Run linked as `linked`; see [`ToolInvoker::perform`].
     pub(crate) async fn perform(
         self,
         relative_path: &str,
-        binding: coral_catalog::CodeExecutionBinding,
+        linked: crate::types::LinkedPrivateTool,
         arguments: serde_json::Value,
         source_location: Option<crate::SourceLocation>,
     ) -> Result<PerformedCall, InvocationHostError> {
@@ -1543,7 +1544,7 @@ impl ToolCall {
             .perform(
                 self.child,
                 relative_path,
-                binding,
+                linked,
                 arguments,
                 source_location,
             )

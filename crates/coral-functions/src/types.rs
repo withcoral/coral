@@ -1,6 +1,6 @@
 use std::fmt;
 
-use coral_policy::ToolAccessState;
+use coral_catalog::ToolAccessState;
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{TraceId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,18 @@ impl SavedFunctionId {
     /// `revision`.
     fn execution_binding(&self, revision: u64) -> coral_catalog::CodeExecutionBinding {
         coral_catalog::CodeExecutionBinding::new(self.to_string(), revision)
+    }
+
+    /// The Private Tool's Tool Key in the Private Provider: its stable
+    /// identity, which an exact rule names.
+    ///
+    /// # Panics
+    ///
+    /// Never: a canonical UUID is always a valid Tool Key.
+    #[must_use]
+    pub fn tool_key(&self) -> coral_catalog::ToolKey {
+        coral_catalog::ToolKey::parse(&self.to_string())
+            .expect("a canonical UUID is a valid Tool Key")
     }
 }
 
@@ -456,6 +468,7 @@ pub struct SavedFunctionSave {
     description: SavedFunctionDescription,
     source: SavedFunctionSource,
     intent: SaveIntent,
+    declared_default: Option<ToolAccessState>,
 }
 
 /// What a save requires of the function currently at its path.
@@ -479,7 +492,18 @@ impl SavedFunctionSave {
             description,
             source,
             intent: SaveIntent::CreateOrReplace,
+            declared_default: None,
         }
+    }
+
+    /// Declares `state` as the tool's default Tool Access State, which
+    /// applies when no exact rule matches. A save that declares none
+    /// creates an `enabled` tool, or keeps the default of the tool it
+    /// replaces.
+    #[must_use]
+    pub const fn declaring_default(mut self, state: ToolAccessState) -> Self {
+        self.declared_default = Some(state);
+        self
     }
 
     /// Saves only when no function is at the path; otherwise the save fails
@@ -533,6 +557,20 @@ impl SavedFunctionSave {
     pub(crate) const fn source(&self) -> &SavedFunctionSource {
         &self.source
     }
+
+    /// The default the saved tool takes: the declared one, or else
+    /// `previous`, the replaced tool's, or `enabled` for a new tool.
+    pub(crate) fn default_access_state(
+        &self,
+        previous: Option<ToolAccessState>,
+    ) -> ToolAccessState {
+        self.declared_default
+            .or(previous)
+            .unwrap_or(Self::NEW_TOOL_DEFAULT)
+    }
+
+    /// The default of a new tool whose save declares none.
+    pub(crate) const NEW_TOOL_DEFAULT: ToolAccessState = ToolAccessState::Enabled;
 }
 
 /// Authenticated, correlated occurrence evidence for one authoring change.
@@ -983,6 +1021,7 @@ pub struct SavedFunctionSearchMaterial {
     id: SavedFunctionId,
     path: SavedFunctionPath,
     description: SavedFunctionDescription,
+    default_access_state: ToolAccessState,
 }
 
 impl SavedFunctionSearchMaterial {
@@ -990,12 +1029,21 @@ impl SavedFunctionSearchMaterial {
         id: SavedFunctionId,
         path: SavedFunctionPath,
         description: SavedFunctionDescription,
+        default_access_state: ToolAccessState,
     ) -> Self {
         Self {
             id,
             path,
             description,
+            default_access_state,
         }
+    }
+
+    /// Returns the Private Tool's Tool Access State when no exact rule
+    /// matches it.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
     }
 
     /// Returns the Saved Function's stable identity.
@@ -1091,6 +1139,7 @@ impl ExactSavedFunctionAuthoringMaterial {
 /// Complete relevance-independent exact Saved Function description material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactSavedFunctionDescriptionMaterial {
+    id: SavedFunctionId,
     authoring: SavedFunctionAuthoringMaterial,
     detail: ExactSavedFunctionAuthoringMaterial,
     revision: u64,
@@ -1099,17 +1148,25 @@ pub struct ExactSavedFunctionDescriptionMaterial {
 
 impl ExactSavedFunctionDescriptionMaterial {
     pub(crate) const fn new(
+        id: SavedFunctionId,
         authoring: SavedFunctionAuthoringMaterial,
         detail: ExactSavedFunctionAuthoringMaterial,
         revision: u64,
         default_access_state: ToolAccessState,
     ) -> Self {
         Self {
+            id,
             authoring,
             detail,
             revision,
             default_access_state,
         }
+    }
+
+    /// Returns the Private Tool's stable identity, its Tool Key.
+    #[must_use]
+    pub const fn id(&self) -> &SavedFunctionId {
+        &self.id
     }
 
     /// Returns the Private Tool's current definition revision.
@@ -1302,6 +1359,7 @@ pub struct SavedFunctionSelection {
     pub(crate) path: SavedFunctionPath,
     pub(crate) source: SavedFunctionSource,
     pub(crate) revision: u64,
+    pub(crate) default_access_state: ToolAccessState,
 }
 
 impl SavedFunctionSelection {
@@ -1329,6 +1387,13 @@ impl SavedFunctionSelection {
     pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
         self.id.execution_binding(self.revision)
     }
+
+    /// Returns the default Tool Access State the author declared for the
+    /// selected revision.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
+    }
 }
 
 impl SavedFunctionSelection {
@@ -1338,6 +1403,7 @@ impl SavedFunctionSelection {
             path: function.path.clone(),
             source: function.source.clone(),
             revision: function.revision,
+            default_access_state: function.default_access_state,
         }
     }
 }

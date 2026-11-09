@@ -1,8 +1,8 @@
+use coral_catalog::ToolAccessState;
 use coral_db::Transaction;
-use coral_policy::ToolAccessState;
 use coral_workspace::{Principal, PrincipalId, PrincipalKind};
 use coral_workspace::{TraceId, WorkspaceId};
-use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
+use sea_query::{Cond, Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
 
 use crate::Error;
@@ -131,6 +131,7 @@ struct SavedFunctionSearchRow {
     id: String,
     path: String,
     description: String,
+    default_access_state: String,
 }
 
 impl SavedFunctionSearchRow {
@@ -144,7 +145,12 @@ impl SavedFunctionSearchRow {
         let description = SavedFunctionDescription::parse(&self.description).map_err(|_error| {
             Error::CorruptData("Private Tool search target has invalid description".to_string())
         })?;
-        Ok(SavedFunctionSearchMaterial::new(id, path, description))
+        Ok(SavedFunctionSearchMaterial::new(
+            id,
+            path,
+            description,
+            access_state_from_storage(&self.default_access_state)?,
+        ))
     }
 }
 
@@ -295,6 +301,7 @@ impl SavedFunctionAuthoringRow {
 
 #[derive(Debug, FromRow)]
 struct ExactSavedFunctionDescriptionRow {
+    id: String,
     path: String,
     description: String,
     declaration: String,
@@ -316,7 +323,10 @@ impl ExactSavedFunctionDescriptionRow {
         let source = SavedFunctionSource::parse(&self.source)
             .map_err(|_error| Error::CorruptData("Private Tool has invalid source".to_string()))?;
         let diagnostics = decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?;
+        let id = SavedFunctionId::parse(&self.id)
+            .map_err(|_error| Error::CorruptData("Private Tool has an invalid id".to_string()))?;
         Ok(ExactSavedFunctionDescriptionMaterial::new(
+            id,
             authoring,
             ExactSavedFunctionAuthoringMaterial::new(
                 source,
@@ -419,6 +429,60 @@ pub(crate) async fn hold_current_path_in_transaction(
     Ok(transaction.execute(statement).await? == 1)
 }
 
+/// The default Tool Access State of each of `ids` that names a current
+/// Private Tool of the Workspace owned by `reader` or, when `agents`, by
+/// any Agent.
+pub(crate) async fn readable_defaults_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    reader: &Principal,
+    agents: bool,
+    tools: &[coral_catalog::ToolKey],
+) -> Result<std::collections::BTreeMap<coral_catalog::ToolKey, ToolAccessState>, Error> {
+    let mut owners = Cond::any().add(
+        Cond::all()
+            .add(Expr::col(SavedFunctionRecords::PrincipalId).eq(reader.id().as_str()))
+            .add(Expr::col(SavedFunctionRecords::PrincipalKind).eq(reader.kind().as_storage_str())),
+    );
+    if agents {
+        owners = owners.add(
+            Expr::col(SavedFunctionRecords::PrincipalKind)
+                .eq(PrincipalKind::Agent.as_storage_str()),
+        );
+    }
+    let rows: Vec<(String, String)> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    SavedFunctionRecords::Id,
+                    SavedFunctionRecords::DefaultAccessState,
+                ])
+                .from(SavedFunctionRecords::Table)
+                .cond_where(
+                    Cond::all()
+                        .add(
+                            Expr::col(SavedFunctionRecords::WorkspaceId)
+                                .eq(workspace_id.to_string()),
+                        )
+                        .add(
+                            Expr::col(SavedFunctionRecords::Id)
+                                .is_in(tools.iter().map(|key| key.as_str().to_owned())),
+                        )
+                        .add(owners),
+                )
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(id, state)| {
+            let id = SavedFunctionId::parse(&id).map_err(|_error| {
+                Error::CorruptData("Private Tool has an invalid id".to_string())
+            })?;
+            Ok((id.tool_key(), access_state_from_storage(&state)?))
+        })
+        .collect()
+}
+
 pub(crate) async fn list_current_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -505,6 +569,7 @@ pub(crate) async fn list_search_material_in_transaction(
                     SavedFunctionRecords::Id,
                     SavedFunctionRecords::Path,
                     SavedFunctionRecords::Description,
+                    SavedFunctionRecords::DefaultAccessState,
                 ])
                 .from(SavedFunctionRecords::Table)
                 .and_where(
@@ -708,6 +773,7 @@ pub(crate) async fn exact_description_material_in_transaction(
         .fetch_optional(
             Query::select()
                 .columns([
+                    SavedFunctionRecords::Id,
                     SavedFunctionRecords::Path,
                     SavedFunctionRecords::Description,
                     SavedFunctionRecords::Declaration,
@@ -784,7 +850,7 @@ pub(crate) async fn insert_current(
             Expr::val(function.diagnostics_truncated()),
             Expr::val(function.saved_at_unix_nanos()),
             Expr::val(revision),
-            Expr::val(access_state_as_storage(function.default_access_state())),
+            Expr::val(function.default_access_state().as_storage_str()),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -847,6 +913,10 @@ pub(crate) async fn replace_current(
             (
                 SavedFunctionRecords::SavedAtUnixNanos,
                 Expr::val(replacement.saved_at_unix_nanos()),
+            ),
+            (
+                SavedFunctionRecords::DefaultAccessState,
+                Expr::val(replacement.default_access_state().as_storage_str()),
             ),
             (
                 SavedFunctionRecords::DefinitionRevision,
@@ -1131,23 +1201,10 @@ fn stored_revision(revision: u64) -> Result<i64, Error> {
         .map_err(|_error| Error::CorruptData("Private Tool revision overflowed".to_string()))
 }
 
-const fn access_state_as_storage(state: ToolAccessState) -> &'static str {
-    match state {
-        ToolAccessState::Enabled => "enabled",
-        ToolAccessState::ApprovalRequired => "approval_required",
-        ToolAccessState::Disabled => "disabled",
-    }
-}
-
 fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
-    match value {
-        "enabled" => Ok(ToolAccessState::Enabled),
-        "approval_required" => Ok(ToolAccessState::ApprovalRequired),
-        "disabled" => Ok(ToolAccessState::Disabled),
-        _ => Err(Error::CorruptData(
-            "Private Tool has an invalid default Tool Access State".to_string(),
-        )),
-    }
+    ToolAccessState::from_storage_str(value).ok_or_else(|| {
+        Error::CorruptData("Private Tool has an invalid default Tool Access State".to_string())
+    })
 }
 
 fn decode_revision(stored: i64) -> Result<u64, Error> {

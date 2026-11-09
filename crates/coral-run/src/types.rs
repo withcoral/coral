@@ -1069,11 +1069,20 @@ pub(crate) struct AcceptedRun {
     /// The first lease, which the owner renews with every chunk it commits.
     pub(crate) worker_claim_expires_at_unix_nanos: i64,
     /// Each linked Private Tool's path, relative to `coral.private`, to the
-    /// definition that acceptance retained for it, which a call performs.
-    pub(crate) linked_snapshots: HashMap<String, coral_catalog::CodeExecutionBinding>,
+    /// revision that acceptance retained for it, which a call performs.
+    pub(crate) linked_snapshots: HashMap<String, LinkedPrivateTool>,
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+}
+
+/// One Private Tool revision a Run linked: the definition each call to it
+/// performs, and the default Tool Access State its author declared for that
+/// revision, which applies when no exact rule matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkedPrivateTool {
+    pub(crate) binding: coral_catalog::CodeExecutionBinding,
+    pub(crate) declared_default: coral_catalog::ToolAccessState,
 }
 
 impl AcceptedRun {

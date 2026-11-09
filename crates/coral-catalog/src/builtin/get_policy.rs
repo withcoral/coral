@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinAccessState, BuiltinTool, Declared, Definition, NAMESPACE_REASON,
-    derived_schema, tool_result,
+    ArgumentProblem, BuiltinTool, Declared, Definition, NAMESPACE_REASON, derived_schema,
+    tool_result,
 };
 use crate::{ToolHints, ToolPresentation};
 
@@ -115,7 +115,7 @@ pub struct GetPolicyResult {
                        enabled runs a call at once, approval_required waits for a person to \
                        approve it, and disabled refuses it."
     )]
-    pub rules: BTreeMap<String, BuiltinAccessState>,
+    pub rules: BTreeMap<String, crate::ToolAccessState>,
 }
 
 impl GetPolicyResult {

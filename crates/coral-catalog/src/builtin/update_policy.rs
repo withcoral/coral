@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinAccessState, BuiltinTool, Declared, Definition, NAMESPACE_REASON,
-    derived_schema, tool_result,
+    ArgumentProblem, BuiltinTool, Declared, Definition, NAMESPACE_REASON, derived_schema,
+    tool_result,
 };
 use crate::{ToolHints, ToolPresentation};
 
@@ -75,7 +75,7 @@ struct Arguments {
                        disabled refuses it.",
         extend("minProperties" = 1, "maxProperties" = MAX_TOOLS)
     )]
-    tools: BTreeMap<String, BuiltinAccessState>,
+    tools: BTreeMap<String, crate::ToolAccessState>,
 }
 
 /// `updatePolicy`'s arguments, checked by every rule that needs no Workspace
@@ -83,7 +83,7 @@ struct Arguments {
 #[derive(Debug, Clone)]
 pub struct UpdatePolicyArguments {
     namespace: String,
-    tools: BTreeMap<String, BuiltinAccessState>,
+    tools: BTreeMap<String, crate::ToolAccessState>,
 }
 
 impl UpdatePolicyArguments {
@@ -95,7 +95,7 @@ impl UpdatePolicyArguments {
 
     /// 1–100 states, keyed by Call Path relative to the Provider's Call Root.
     #[must_use]
-    pub const fn tools(&self) -> &BTreeMap<String, BuiltinAccessState> {
+    pub const fn tools(&self) -> &BTreeMap<String, crate::ToolAccessState> {
         &self.tools
     }
 
@@ -153,7 +153,7 @@ pub struct UpdatePolicyResult {
         description = "The Tool Access State of each Tool the call named, keyed by its \
                        path under coral.providers.<namespace>."
     )]
-    pub tools: BTreeMap<String, BuiltinAccessState>,
+    pub tools: BTreeMap<String, crate::ToolAccessState>,
 }
 
 impl UpdatePolicyResult {

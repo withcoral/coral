@@ -57,11 +57,8 @@ impl ProviderChange {
     pub(crate) fn permit(self, call_root: &ProviderCallRoot) -> Result<(), Error> {
         let permitted = match call_root {
             ProviderCallRoot::Owner(_) => true,
-            ProviderCallRoot::Builtin => matches!(self, Self::SetState),
-            // Nothing reads the Private Provider's state yet, so a disable
-            // would stop no Private Tool. The kill switch comes with
-            // Private Tool policy (#2977).
-            ProviderCallRoot::Private => false,
+            // Disabling the Private Provider stops every Private Tool.
+            ProviderCallRoot::Builtin | ProviderCallRoot::Private => matches!(self, Self::SetState),
         };
         if permitted {
             Ok(())

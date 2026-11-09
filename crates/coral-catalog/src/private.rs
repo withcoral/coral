@@ -73,9 +73,9 @@ fn json_value_schema() -> Result<(SchemaGraph, SchemaId), Error> {
 
 /// The Tool an Invocation of a Private Tool retains: the Private Tool at
 /// `relative_path` under `coral.private`, keyed by its stable identity and
-/// performed by running the definition `binding` names. Coral's own catalog
-/// declares it `enabled`, as every Private Tool's default is until Private
-/// Tool policy reads the declared one (#2977).
+/// performed by running the definition `binding` names. Its author declared
+/// `declared_default` for that revision, which applies when no exact rule
+/// matches.
 ///
 /// # Errors
 ///
@@ -83,6 +83,7 @@ fn json_value_schema() -> Result<(SchemaGraph, SchemaId), Error> {
 pub fn private_tool(
     relative_path: &str,
     binding: CodeExecutionBinding,
+    declared_default: crate::ToolAccessState,
 ) -> Result<MaterializedTool, Error> {
     let (_graph, input_schema) = json_value_schema()?;
     let key = ToolKey::parse(binding.definition())?;
@@ -104,7 +105,7 @@ pub fn private_tool(
         Vec::new(),
         "[]".to_owned(),
     )
-    .declaring_enabled_by_default(true))
+    .declaring_default(declared_default))
 }
 
 /// The Private Provider's catalog, with no Tools. Its schema graph holds the

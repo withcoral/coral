@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{CatalogSearchTarget, ToolKey, ToolPolicyFacts};
+use coral_catalog::{CatalogSearchTarget, ToolAccessState, ToolKey, ToolPolicyFacts};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -46,58 +46,6 @@ impl ToolPolicyTarget {
     #[must_use]
     pub const fn tool_key(&self) -> &ToolKey {
         &self.tool_key
-    }
-}
-
-/// Workspace decision for one exact Tool through one Provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolAccessState {
-    /// Admission can continue without an Invocation Approval.
-    Enabled,
-    /// Admission requires an exact Invocation Approval.
-    ApprovalRequired,
-    /// Admission is rejected.
-    Disabled,
-}
-
-impl ToolAccessState {
-    pub(crate) const fn as_storage_str(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-            Self::ApprovalRequired => "approval_required",
-            Self::Disabled => "disabled",
-        }
-    }
-
-    pub(crate) fn from_storage_str(value: &str) -> Result<Self, Error> {
-        match value {
-            "enabled" => Ok(Self::Enabled),
-            "approval_required" => Ok(Self::ApprovalRequired),
-            "disabled" => Ok(Self::Disabled),
-            _ => Err(Error::CorruptData(format!(
-                "Tool policy has unrecognized access state '{value}'"
-            ))),
-        }
-    }
-}
-
-impl From<ToolAccessState> for coral_catalog::BuiltinAccessState {
-    fn from(state: ToolAccessState) -> Self {
-        match state {
-            ToolAccessState::Enabled => Self::Enabled,
-            ToolAccessState::ApprovalRequired => Self::ApprovalRequired,
-            ToolAccessState::Disabled => Self::Disabled,
-        }
-    }
-}
-
-impl From<coral_catalog::BuiltinAccessState> for ToolAccessState {
-    fn from(state: coral_catalog::BuiltinAccessState) -> Self {
-        match state {
-            coral_catalog::BuiltinAccessState::Enabled => Self::Enabled,
-            coral_catalog::BuiltinAccessState::ApprovalRequired => Self::ApprovalRequired,
-            coral_catalog::BuiltinAccessState::Disabled => Self::Disabled,
-        }
     }
 }
 

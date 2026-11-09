@@ -219,7 +219,10 @@ impl RunModule {
                     .map(|snapshot| {
                         (
                             snapshot.path().as_str().to_string(),
-                            snapshot.execution_binding(),
+                            crate::types::LinkedPrivateTool {
+                                binding: snapshot.execution_binding(),
+                                declared_default: snapshot.default_access_state(),
+                            },
                         )
                     })
                     .collect(),

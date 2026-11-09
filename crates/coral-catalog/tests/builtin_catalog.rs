@@ -151,7 +151,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // A second add at the path fails, and it replaces nothing.
             ToolHints::new(Some(false), Some(false), Some(false), Some(false)),
             &[
-                r#"export default function (input: { "description": string; "path": string; "source": (...args: never[]) => unknown })"#,
+                r#"export default function (input: { "description": string; "path": string; "policy"?: "enabled" | "approval_required" | "disabled"; "source": (...args: never[]) => unknown })"#,
                 r#""revision": number"#,
                 r#""declaration": string"#,
                 "metadata: { kind: \"builtin\" }",
@@ -162,7 +162,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // A replace discards the previous source and adds a revision.
             ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
             &[
-                r#"export default function (input: { "description": string; "expectedRevision"?: number; "path": string; "source": (...args: never[]) => unknown })"#,
+                r#"export default function (input: { "description": string; "expectedRevision"?: number; "path": string; "policy"?: "enabled" | "approval_required" | "disabled"; "source": (...args: never[]) => unknown })"#,
                 r#""revision": number"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],

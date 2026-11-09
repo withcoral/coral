@@ -193,8 +193,8 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
             .decision(&owner, &target(provider, tool))
             .await
             .expect("decision");
-        assert_eq!(decision.access_state(), expected, "{tool}");
-        assert!(!decision.is_explicit(), "{tool}");
+        assert_eq!(decision.access_state(), expected, "{tool:?}");
+        assert!(!decision.is_explicit(), "{tool:?}");
     }
 
     // Pending-approval queries select with the SQL mirror; it agrees with
@@ -2066,3 +2066,271 @@ async fn test_modules() -> (
 }
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
+
+/// A Workspace with its Private Provider, an Owner, a Member and an Agent,
+/// each with one Private Tool. The Owner's tool declares `approval_required`.
+struct PrivateTools {
+    policies: ToolPolicyModule,
+    workspace: coral_workspace::WorkspaceId,
+    provider: coral_provider::ProviderId,
+    owner: AuthenticatedUser,
+    member: AuthenticatedUser,
+    owners_tool: ToolKey,
+    members_tool: ToolKey,
+    agents_tool: ToolKey,
+    _fixture: TestDatabase,
+}
+
+impl PrivateTools {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one Workspace gets each kind of Principal and its Private Tool"
+    )]
+    async fn new() -> Self {
+        let (fixture, workspaces, providers, policies) = test_modules().await;
+        let database = policies.database.clone();
+        let owner = organization_user(
+            database.clone(),
+            "user:private-owner",
+            OrganizationRole::Member,
+        )
+        .await;
+        let member = organization_user(
+            database.clone(),
+            "user:private-member",
+            OrganizationRole::Member,
+        )
+        .await;
+        let workspace = workspaces
+            .create(
+                &change(owner.clone(), 10, '1'),
+                WorkspaceDisplayName::parse("Private Tool policy").expect("display name"),
+            )
+            .await
+            .expect("create Workspace");
+        let workspace = workspace.id().clone();
+        workspaces
+            .set_membership(
+                &change(owner.clone(), 11, '2'),
+                &workspace,
+                &member,
+                coral_workspace::WorkspaceRole::Member,
+            )
+            .await
+            .expect("add the Member");
+        let mut transaction = database.begin().await.expect("begin install");
+        let provider = providers
+            .install_private_in_transaction(
+                &mut transaction,
+                &change(owner.clone(), 12, '3'),
+                &workspace,
+            )
+            .await
+            .expect("install the Private Provider")
+            .id()
+            .clone();
+        transaction.commit().await.expect("commit install");
+        let issued = workspaces
+            .create_agent(
+                &change(owner.clone(), 13, '4'),
+                &workspace,
+                coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
+                None,
+            )
+            .await
+            .expect("create Agent");
+        let agent = workspaces
+            .authenticate_agent(&workspace, issued.credential.expose(), 14)
+            .await
+            .expect("authenticate Agent");
+        let functions = coral_functions::SavedFunctionModule::new(
+            database,
+            workspaces,
+            coral_functions::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .expect("the Private Tool module");
+        let mut keys = Vec::new();
+        for (principal, declared) in [
+            (
+                AuthenticatedPrincipal::user(owner.clone()),
+                Some(ToolAccessState::ApprovalRequired),
+            ),
+            (AuthenticatedPrincipal::user(member.clone()), None),
+            (agent, None),
+        ] {
+            let save = coral_functions::SavedFunctionSave::new(
+                coral_functions::SavedFunctionPath::parse("people.greet").expect("path"),
+                coral_functions::SavedFunctionDescription::parse("Greet").expect("description"),
+                coral_functions::SavedFunctionSource::parse("export default async () => 1;")
+                    .expect("source"),
+            );
+            let save = match declared {
+                Some(state) => save.declaring_default(state),
+                None => save,
+            };
+            let saved = functions
+                .save(
+                    &coral_functions::SavedFunctionChangeContext::new(
+                        principal,
+                        20,
+                        coral_workspace::TraceId::parse(&"5".repeat(32)).expect("trace"),
+                    ),
+                    &workspace,
+                    save,
+                )
+                .await
+                .expect("save the Private Tool");
+            keys.push(ToolKey::parse(&saved.id().to_string()).expect("Tool Key"));
+        }
+        let [owners_tool, members_tool, agents_tool] = keys.try_into().expect("three tools");
+        Self {
+            policies,
+            workspace,
+            provider,
+            owner,
+            member,
+            owners_tool,
+            members_tool,
+            agents_tool,
+            _fixture: fixture,
+        }
+    }
+
+    fn target(&self, tool: &ToolKey) -> ToolPolicyTarget {
+        ToolPolicyTarget::new(self.workspace.clone(), self.provider.clone(), tool.clone())
+    }
+
+    async fn events(&self) -> usize {
+        self.policies
+            .list_lifecycle_events(&self.owner, &self.workspace)
+            .await
+            .expect("list policy Events")
+            .len()
+    }
+}
+
+// Catches: an Owner who cannot read or set a rule on their own or an
+// Agent's Private Tool, a Private Tool whose declared default does not
+// decide without a rule, or an Owner who reads or sets a rule on a
+// Member's, or whose refused batch changes anything.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario covers each reader, a refused batch and an accepted one"
+)]
+async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_members() {
+    let tools = PrivateTools::new().await;
+    let decision = |actor: AuthenticatedUser, tool: ToolKey| {
+        let (policies, target) = (tools.policies.clone(), tools.target(&tool));
+        async move {
+            policies
+                .decision(&actor, &target)
+                .await
+                .map(|decision| (decision.access_state(), decision.is_explicit()))
+        }
+    };
+    // Reads: each Principal's own, and the Owner's of an Agent's. The
+    // declared default decides while no rule matches.
+    for (actor, tool, read) in [
+        (
+            &tools.owner,
+            &tools.owners_tool,
+            Some((ToolAccessState::ApprovalRequired, false)),
+        ),
+        (
+            &tools.owner,
+            &tools.agents_tool,
+            Some((ToolAccessState::Enabled, false)),
+        ),
+        (&tools.owner, &tools.members_tool, None),
+        (
+            &tools.member,
+            &tools.members_tool,
+            Some((ToolAccessState::Enabled, false)),
+        ),
+        (&tools.member, &tools.agents_tool, None),
+        (&tools.member, &tools.owners_tool, None),
+    ] {
+        let found = decision(actor.clone(), tool.clone()).await;
+        match read {
+            Some(read) => assert_eq!(found.expect("a readable tool"), read, "{tool:?}"),
+            None => assert!(
+                matches!(found, Err(crate::Error::ToolNotFound)),
+                "{tool:?}: {found:?}"
+            ),
+        }
+    }
+
+    // A batch that names a Member's tool is refused whole.
+    let before = tools.events().await;
+    for refused in [
+        vec![(tools.target(&tools.members_tool), ToolAccessState::Disabled)],
+        vec![
+            (tools.target(&tools.owners_tool), ToolAccessState::Enabled),
+            (tools.target(&tools.members_tool), ToolAccessState::Disabled),
+        ],
+    ] {
+        assert!(matches!(
+            tools
+                .policies
+                .set_access_states(&change(tools.owner.clone(), 30, '6'), refused)
+                .await,
+            Err(crate::Error::ToolNotFound)
+        ));
+    }
+    assert_eq!(
+        tools.events().await,
+        before,
+        "a refused batch records nothing"
+    );
+    assert_eq!(
+        decision(tools.owner.clone(), tools.owners_tool.clone())
+            .await
+            .expect("unchanged"),
+        (ToolAccessState::ApprovalRequired, false)
+    );
+
+    // The Owner's rules override each declared default, one Event each.
+    let before = tools.events().await;
+    tools
+        .policies
+        .set_access_states(
+            &change(tools.owner.clone(), 40, '7'),
+            vec![
+                (tools.target(&tools.owners_tool), ToolAccessState::Enabled),
+                (tools.target(&tools.agents_tool), ToolAccessState::Disabled),
+            ],
+        )
+        .await
+        .expect("set the Owner's rules");
+    assert_eq!(tools.events().await, before + 2);
+    let before = tools.events().await;
+    for (tool, state) in [
+        (&tools.owners_tool, ToolAccessState::Enabled),
+        (&tools.agents_tool, ToolAccessState::Disabled),
+    ] {
+        assert_eq!(
+            decision(tools.owner.clone(), tool.clone())
+                .await
+                .expect("a rule"),
+            (state, true),
+            "{tool:?}"
+        );
+    }
+    // A Member sets no rule, even on their own tool.
+    assert!(matches!(
+        tools
+            .policies
+            .set_access_state(
+                &change(tools.member.clone(), 50, '8'),
+                tools.target(&tools.members_tool),
+                ToolAccessState::Disabled,
+            )
+            .await,
+        Err(crate::Error::Workspace(
+            coral_workspace::Error::PermissionDenied(_)
+        ))
+    ));
+    assert_eq!(tools.events().await, before);
+}

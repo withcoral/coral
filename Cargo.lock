@@ -776,7 +776,6 @@ dependencies = [
  "async-trait",
  "coral-catalog",
  "coral-db",
- "coral-policy",
  "coral-run-executor",
  "coral-telemetry",
  "coral-test-support",
@@ -897,6 +896,7 @@ version = "1.6.0"
 dependencies = [
  "coral-catalog",
  "coral-db",
+ "coral-functions",
  "coral-outbound",
  "coral-provider",
  "coral-telemetry",

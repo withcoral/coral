@@ -74,7 +74,11 @@ impl SaveTool {
         let source = SavedFunctionSource::parse(arguments.source());
         match (path, description, source) {
             (Ok(path), Ok(description), Ok(source)) => {
-                Ok(SavedFunctionSave::new(path, description, source))
+                let save = SavedFunctionSave::new(path, description, source);
+                Ok(match arguments.policy() {
+                    Some(policy) => save.declaring_default(policy),
+                    None => save,
+                })
             }
             (path, description, source) => Err(Rejection::invalid_inputs(
                 [

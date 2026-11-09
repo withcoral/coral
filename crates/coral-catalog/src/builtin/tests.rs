@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{
-    AUTHENTICATION_KINDS, AddProviderResult, BuiltinAccessState, BuiltinArguments,
-    BuiltinCredentialRoute, BuiltinTool, ConfigurationOutput, GetPolicyResult, GetProviderResult,
-    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
-    ProviderFacts, ProviderSourceOutput, UpdatePolicyResult, UpdateProviderResult, definition,
+    AUTHENTICATION_KINDS, AddProviderResult, BuiltinArguments, BuiltinCredentialRoute, BuiltinTool,
+    ConfigurationOutput, GetPolicyResult, GetProviderResult, ListProvidersResult, ListedProvider,
+    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceOutput,
+    UpdatePolicyResult, UpdateProviderResult, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
@@ -288,11 +288,11 @@ fn setup_tool_results() -> Vec<(BuiltinTool, serde_json::Value)> {
 /// rule of each state, and what `updatePolicy` returns when it sets them.
 fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
     let states = BTreeMap::from([
-        ("repos.get".to_owned(), BuiltinAccessState::Disabled),
-        ("issues.create".to_owned(), BuiltinAccessState::Enabled),
+        ("repos.get".to_owned(), crate::ToolAccessState::Disabled),
+        ("issues.create".to_owned(), crate::ToolAccessState::Enabled),
         (
             "issues.close".to_owned(),
-            BuiltinAccessState::ApprovalRequired,
+            crate::ToolAccessState::ApprovalRequired,
         ),
     ]);
     [BTreeMap::new(), states.clone()]
@@ -525,6 +525,56 @@ fn update_tool_refuses_a_revision_below_one_naming_expected_revision() {
             [("expectedRevision", reason)],
             "{revision}"
         );
+    }
+}
+
+// Catches: a save that loses the default its author declared, reads an
+// omitted policy as a state, or accepts a word that is no Tool Access
+// State, or `null`, without naming `policy`.
+#[test]
+fn a_save_reads_its_declared_policy_and_refuses_any_other_word_naming_policy() {
+    type Parse = fn(&Value) -> Result<super::ToolSaveArguments, Vec<super::ArgumentProblem>>;
+    let parsers: [(&str, Parse); 2] = [
+        ("addTool", super::ToolSaveArguments::parse_add),
+        ("updateTool", super::ToolSaveArguments::parse_update),
+    ];
+    let save = json!({ "path": "a.b", "description": "d", "source": "export default 1" });
+    for (tool, parse) in parsers {
+        for (policy, declared) in [
+            (None, Ok(None)),
+            (
+                Some(json!("enabled")),
+                Ok(Some(crate::ToolAccessState::Enabled)),
+            ),
+            (
+                Some(json!("approval_required")),
+                Ok(Some(crate::ToolAccessState::ApprovalRequired)),
+            ),
+            (
+                Some(json!("disabled")),
+                Ok(Some(crate::ToolAccessState::Disabled)),
+            ),
+            (Some(json!("ask")), Err("policy")),
+            (Some(json!(null)), Err("policy")),
+        ] {
+            let mut arguments = save.clone();
+            if let (Some(fields), Some(policy)) = (arguments.as_object_mut(), policy.clone()) {
+                fields.insert("policy".to_owned(), policy);
+            }
+            let parsed = parse(&arguments)
+                .map(|parsed| parsed.policy())
+                .map_err(|problems| {
+                    problems
+                        .iter()
+                        .map(|problem| problem.field().to_owned())
+                        .collect::<Vec<_>>()
+                });
+            assert_eq!(
+                parsed,
+                declared.map_err(|field| vec![field.to_owned()]),
+                "{tool}: {policy:?}"
+            );
+        }
     }
 }
 

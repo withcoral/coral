@@ -26,11 +26,7 @@ impl UpdatePolicy {
             .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
         Ok(Self {
             namespace,
-            tools: arguments
-                .tools()
-                .iter()
-                .map(|(path, state)| (path.clone(), (*state).into()))
-                .collect(),
+            tools: arguments.tools().clone(),
         })
     }
 
@@ -73,10 +69,7 @@ impl UpdatePolicy {
             })?;
         Ok(UpdatePolicyResult {
             namespace: self.namespace.as_str().to_owned(),
-            tools: states
-                .into_iter()
-                .map(|(path, state)| (path, state.into()))
-                .collect(),
+            tools: states,
         }
         .into_tool_result())
     }

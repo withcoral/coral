@@ -56,10 +56,11 @@ use coral_workspace::{
     WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
+pub use coral_catalog::ToolAccessState;
 pub use error::Error;
 pub use types::{
     AdministrativeLifecycleEvent, ExactToolRules, LifecycleAction, LifecycleOutcome,
-    ToolAccessState, ToolPolicyDecision, ToolPolicyTarget,
+    ToolPolicyDecision, ToolPolicyTarget,
 };
 
 /// Exact Workspace Tool-policy Module.
@@ -97,6 +98,8 @@ impl ToolPolicyModule {
 
     /// Returns 1–100 distinct current decisions from one Provider in request order.
     /// Authority, current catalog hints and explicit rules share one read snapshot.
+    /// In the Private Provider, `actor` reads only the Private Tools it can
+    /// read: its own, and an Owner's every Agent's.
     /// # Errors
     /// Rejects invalid batches, absent targets, lost authority and persistence failures.
     pub async fn decisions(
@@ -116,7 +119,8 @@ impl ToolPolicyModule {
             return Err(Error::InvalidBatch);
         }
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.workspaces
+        let evidence = self
+            .workspaces
             .check_in_transaction(
                 &mut transaction,
                 actor,
@@ -128,9 +132,10 @@ impl ToolPolicyModule {
             .iter()
             .map(|target| target.tool_key().clone())
             .collect();
-        let policy_facts = coral_provider::tool_policy_facts_batch_in_transaction(
+        let policy_facts = ruled_tool_facts_in_transaction(
             &mut transaction,
-            first.workspace_id(),
+            actor,
+            &evidence,
             first.provider_id(),
             &keys,
         )
@@ -300,7 +305,8 @@ impl ToolPolicyModule {
             .await?;
         let mut decisions = Vec::with_capacity(updates.len());
         for (target, access_state) in updates {
-            require_tool_in_transaction(&mut transaction, &target).await?;
+            require_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target)
+                .await?;
             decisions.push(
                 write_access_state_in_transaction(
                     &mut transaction,
@@ -461,17 +467,66 @@ async fn write_access_state_in_transaction(
 
 async fn require_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
+    actor: &AuthenticatedUser,
+    evidence: &WorkspaceEvidence,
     target: &ToolPolicyTarget,
 ) -> Result<(), Error> {
-    coral_provider::tool_policy_facts_in_transaction(
+    ruled_tool_facts_in_transaction(
         transaction,
-        target.workspace_id(),
+        actor,
+        evidence,
         target.provider_id(),
-        target.tool_key(),
+        std::slice::from_ref(target.tool_key()),
     )
     .await?
-    .map(|_| ())
+    .contains_key(target.tool_key())
+    .then_some(())
     .ok_or(Error::ToolNotFound)
+}
+
+/// The policy facts of each of `keys` that names a Tool of `provider` on
+/// which `actor`, with `evidence` in its Workspace, may read or set a rule:
+/// a Tool of the Provider's current catalog or, in the Workspace's Private
+/// Provider, a Private Tool `actor` can read. That is its own and, for an
+/// Owner, every Agent's, never another User's (ADR 0033). A Private Tool's
+/// facts are the default its author declared. Keys that name no such Tool
+/// are left out.
+async fn ruled_tool_facts_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    actor: &AuthenticatedUser,
+    evidence: &WorkspaceEvidence,
+    provider: &coral_provider::ProviderId,
+    keys: &[ToolKey],
+) -> Result<BTreeMap<ToolKey, ToolPolicyFacts>, Error> {
+    let workspace_id = evidence.workspace().id();
+    let private = coral_provider::private_provider_in_transaction(transaction, workspace_id)
+        .await?
+        .is_some_and(|private| private.id() == provider);
+    if !private {
+        return Ok(coral_provider::tool_policy_facts_batch_in_transaction(
+            transaction,
+            workspace_id,
+            provider,
+            keys,
+        )
+        .await?);
+    }
+    let reader = AuthenticatedPrincipal::user(actor.clone());
+    Ok(coral_functions::readable_defaults_in_transaction(
+        transaction,
+        workspace_id,
+        reader.principal(),
+        evidence.effective_role() == WorkspaceRole::Owner,
+        keys,
+    )
+    .await
+    .map_err(|error| match error {
+        coral_functions::Error::Database(error) => Error::Database(error),
+        other => Error::CorruptData(other.to_string()),
+    })?
+    .into_iter()
+    .map(|(key, declared)| (key, ToolPolicyFacts::default().declaring_default(declared)))
+    .collect())
 }
 
 /// Reads one exact current Tool decision without holding it.
@@ -556,15 +611,16 @@ pub fn reads_only(facts: ToolPolicyFacts) -> bool {
     facts.hints().declares_read_only() || facts.http_method().is_some_and(HttpMethod::is_safe)
 }
 
-/// A Tool runs without approval when it only reads, or when its catalog
-/// declares it `enabled`: Coral's own catalog does for the Tools that change
-/// only the caller's own state (ADR 0031). Any other Tool takes the cautious
-/// default.
+/// A Tool takes the state its catalog or author declares: Coral's own
+/// catalog declares `enabled` for the Tools that change only the caller's
+/// own state (ADR 0031), and a Private Tool's author declares any state
+/// (ADR 0033). Otherwise a Tool that only reads runs without approval, and
+/// any other Tool takes the cautious default.
 pub(crate) fn default_access_state(facts: ToolPolicyFacts) -> ToolAccessState {
-    if facts.declares_enabled_by_default() || reads_only(facts) {
-        ToolAccessState::Enabled
-    } else {
-        ToolAccessState::ApprovalRequired
+    match facts.declared_default() {
+        Some(declared) => declared,
+        None if reads_only(facts) => ToolAccessState::Enabled,
+        None => ToolAccessState::ApprovalRequired,
     }
 }
 

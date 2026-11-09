@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use coral_db::{Database, Transaction};
-use coral_policy::ToolAccessState;
 use coral_telemetry::safe;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
@@ -326,24 +325,31 @@ impl SavedFunctionModule {
             )
             .await?;
         save.admits(previous.as_ref().map(SavedFunction::revision))?;
-        // A new Private Tool is enabled by default, and a replacement keeps
-        // the default its Tool had.
-        let (id, revision, action, default_access_state) = match previous.as_ref() {
-            None => (
-                SavedFunctionId::generate(),
-                1,
-                LifecycleAction::Created,
-                ToolAccessState::Enabled,
-            ),
+        let (id, revision, action) = match previous.as_ref() {
+            None => (SavedFunctionId::generate(), 1, LifecycleAction::Created),
             Some(previous) => (
                 previous.id().clone(),
                 previous.revision.checked_add(1).ok_or_else(|| {
                     Error::CorruptData("Private Tool revision overflowed".to_string())
                 })?,
                 LifecycleAction::Replaced,
-                previous.default_access_state(),
             ),
         };
+        // A new tool's default is `enabled` unless the save declares
+        // another, and a replacement keeps its tool's unless the save
+        // declares another. The Event names the default only when it moves.
+        let previous_default = previous.as_ref().map(SavedFunction::default_access_state);
+        let default_access_state = save.default_access_state(previous_default);
+        let mut changed_field_paths = vec![
+            "source",
+            "description",
+            "declaration",
+            "declaration_fields",
+            "diagnostics",
+        ];
+        if default_access_state != previous_default.unwrap_or(SavedFunctionSave::NEW_TOOL_DEFAULT) {
+            changed_field_paths.push("default_access_state");
+        }
         let function = SavedFunction::new(
             id,
             workspace_id.clone(),
@@ -377,13 +383,7 @@ impl SavedFunctionModule {
                 action,
                 target_id: function.id(),
                 target_path: function.path(),
-                changed_field_paths: &[
-                    "source",
-                    "description",
-                    "declaration",
-                    "declaration_fields",
-                    "diagnostics",
-                ],
+                changed_field_paths: &changed_field_paths,
                 occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
                 trace_id: context.trace_id(),
             },

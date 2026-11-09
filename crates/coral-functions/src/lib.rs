@@ -62,6 +62,29 @@ pub use types::{
     SavedFunctionSummary,
 };
 
+/// The declared default Tool Access State of each of `tools` that names a
+/// current Private Tool of the Workspace that `reader` may read a rule on:
+/// its own and, when `agents` (a Workspace Owner reads), every Agent's. A
+/// Member's Private Tool is never another Principal's to read, so its key
+/// is left out like any key that names no Private Tool.
+///
+/// The caller owns Workspace authority and the coherent read transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn readable_defaults_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    reader: &Principal,
+    agents: bool,
+    tools: &[coral_catalog::ToolKey],
+) -> Result<std::collections::BTreeMap<coral_catalog::ToolKey, coral_catalog::ToolAccessState>, Error>
+{
+    repository::readable_defaults_in_transaction(transaction, workspace_id, reader, agents, tools)
+        .await
+}
+
 /// Loads source-free metadata without consulting declaration relevance material.
 ///
 /// # Errors

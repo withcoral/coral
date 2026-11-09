@@ -46,10 +46,7 @@ impl GetPolicy {
             })?;
         Ok(GetPolicyResult {
             namespace: self.namespace.as_str().to_owned(),
-            rules: rules
-                .into_iter()
-                .map(|(path, state)| (path, state.into()))
-                .collect(),
+            rules,
         }
         .into_tool_result())
     }

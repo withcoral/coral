@@ -357,6 +357,79 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
     );
 }
 
+// Catches: a Private Tool's description that ignores an Owner's rule over
+// its declared default, or a search or describe that shows a tool a rule or
+// a disabled Private Provider stops.
+#[tokio::test]
+async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state() {
+    let fixture = TestModules::new().await;
+    let scope = TracerScope::new(&fixture).await;
+    let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
+    let provider =
+        coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
+            .await
+            .unwrap()
+            .expect("the Workspace's Private Provider");
+    transaction.rollback().await.unwrap();
+    let target = ToolPolicyTarget::new(
+        scope.workspace_id.clone(),
+        provider.id().clone(),
+        ToolKey::parse(&scope.saved.id().to_string()).unwrap(),
+    );
+    let found = || async {
+        scope
+            .query(&fixture, "formatForecast")
+            .await
+            .hits()
+            .iter()
+            .any(|hit| hit.call_path().as_str() == TracerScope::FUNCTION)
+    };
+    let approval = || async {
+        match scope.describe(&fixture, TracerScope::FUNCTION).await {
+            Ok(described) => match described.authoring() {
+                AuthoringDescription::PrivateTool(private) => Some(private.approval_requirement()),
+                AuthoringDescription::Tool(_) => panic!("the tracer function is a Private Tool"),
+            },
+            Err(Error::AuthoringDescriptionNotFound) => None,
+            Err(error) => panic!("describe failed: {error:?}"),
+        }
+    };
+    for (at, state, described) in [
+        (
+            40,
+            ToolAccessState::ApprovalRequired,
+            Some(ApprovalRequirement::Required),
+        ),
+        (41, ToolAccessState::Disabled, None),
+        (
+            42,
+            ToolAccessState::Enabled,
+            Some(ApprovalRequirement::NotRequired),
+        ),
+    ] {
+        fixture
+            .policies
+            .set_access_state(&change(scope.user.clone(), at, 'c'), target.clone(), state)
+            .await
+            .expect("set the Owner's rule");
+        assert_eq!(approval().await, described, "{state:?}");
+        assert_eq!(found().await, described.is_some(), "{state:?}");
+    }
+    fixture
+        .providers
+        .disable_provider(
+            &change(scope.user.clone(), 50, 'd')
+                .with_etag(&provider.etag())
+                .unwrap(),
+            &scope.workspace_id,
+            provider.id(),
+        )
+        .await
+        .expect("disable the Private Provider");
+    assert_eq!(approval().await, None, "a disabled Private Provider");
+    assert!(!found().await, "a disabled Private Provider");
+}
+
 #[tokio::test]
 async fn describe_returns_exact_descriptions_and_only_owned_source() {
     let fixture = TestModules::new().await;
