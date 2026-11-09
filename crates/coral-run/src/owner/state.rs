@@ -369,8 +369,9 @@ pub(crate) struct OwnerState {
     /// requests answer only once recorded, until one does.
     suspect: bool,
     /// Slots held under the Fan-out Limit: one per enforcement request the
-    /// owner has batched whose dispatch it has not seen end. Owner memory only;
-    /// a recovered owner never dispatches, so nothing recomputes it from rows.
+    /// owner has batched that holds one and whose dispatch it has not seen
+    /// end. Owner memory only; a recovered owner never dispatches, so nothing
+    /// recomputes it from rows.
     slots_held: usize,
     /// Ready Invocations waiting for a slot, in readiness order (their
     /// mailbox arrival order). Each one stays `pending`, with no Event, and
@@ -675,15 +676,16 @@ impl OwnerState {
     }
 
     /// An upstream result the owner applies ends the dispatch that produced
-    /// it: its slot under the Fan-out Limit goes to the Invocation that has
-    /// waited longest, whose enforcement request joins the chunk after this
-    /// row's end. A result the owner refuses (over budget, or no longer taking
-    /// work) leaves the row `dispatching` and the slot with the Invocation
-    /// task, which frees it once the row's end is recorded.
+    /// it: when it `frees_slot`, its slot under the Fan-out Limit goes to the
+    /// Invocation that has waited longest, whose enforcement request joins the
+    /// chunk after this row's end. A result the owner refuses (over budget, or
+    /// no longer taking work) leaves the row `dispatching` and the slot with
+    /// the Invocation task, which frees it once the row's end is recorded.
     fn invocation_result(
         &mut self,
         bytes: usize,
         work: Box<dyn ChunkWork>,
+        frees_slot: bool,
         reply: Reply,
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
@@ -715,7 +717,9 @@ impl OwnerState {
         self.output_total = self.output_total.saturating_add(bytes);
         self.push(ChunkItem::Work(work), 1, bytes);
         let mut effects = self.answer(reply);
-        effects.extend(self.dispatch_ended(now_unix_nanos));
+        if frees_slot {
+            effects.extend(self.dispatch_ended(now_unix_nanos));
+        }
         effects
     }
 
@@ -733,7 +737,9 @@ impl OwnerState {
     /// Fan-out Limit it takes a slot and joins the batch of the open chunk,
     /// which commits when free; at the limit it waits in memory, in readiness
     /// order, with no Event and no required action, until an earlier
-    /// dispatch ends. A Run that no longer takes Program requests (stopped,
+    /// dispatch ends. An Invocation that holds no slot (one Coral performs in
+    /// the Program, whose body's calls take slots of their own) joins the
+    /// batch at once. A Run that no longer takes Program requests (stopped,
     /// past its deadline in owner memory) answers at once, without the
     /// database.
     fn enforce(&mut self, request: Box<EnforcementRequest>, now_unix_nanos: i64) -> Vec<Effect> {
@@ -743,11 +749,13 @@ impl OwnerState {
                 Error::ProgramHostTerminated,
             )];
         }
-        if self.slots_held >= self.limits.fan_out_invocations {
-            self.waiting.push_back(request);
-            return Vec::new();
+        if request.holds_fan_out_slot() {
+            if self.slots_held >= self.limits.fan_out_invocations {
+                self.waiting.push_back(request);
+                return Vec::new();
+            }
+            self.slots_held += 1;
         }
-        self.slots_held += 1;
         self.open.push_enforcement(*request);
         if self.open.is_full() {
             self.close_open();
@@ -1655,9 +1663,12 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             now_unix_nanos,
         ),
         Message::Admit { work, reply } => state.admit(work, reply, now_unix_nanos),
-        Message::InvocationResult { bytes, work, reply } => {
-            state.invocation_result(bytes, work, reply, now_unix_nanos)
-        }
+        Message::InvocationResult {
+            bytes,
+            work,
+            frees_slot,
+            reply,
+        } => state.invocation_result(bytes, work, frees_slot, reply, now_unix_nanos),
         Message::Work(work) => state.work(work),
         Message::Enforce(request) => state.enforce(request, now_unix_nanos),
         Message::DispatchEnded => state.dispatch_ended(now_unix_nanos),

@@ -32,6 +32,7 @@ mod scoping;
 mod search;
 mod summary;
 mod support;
+mod tool_bodies;
 mod trace;
 mod updates;
 mod upgrade;

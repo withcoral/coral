@@ -431,6 +431,21 @@ pub async fn tool_exists_in_transaction(
     repository::tool_exists(transaction, generation_id, tool_key).await
 }
 
+/// Reports whether a Generation's Tools have code Execution Bindings, as
+/// the Private Provider's do: Coral performs each one by running the
+/// definition its Invocation retains in the Run, so no catalog stores them.
+///
+/// # Errors
+///
+/// Returns a persistence failure, or corrupt data for a Generation that is
+/// not stored.
+pub async fn generation_binds_code_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    repository::generation_binds_code(transaction, generation_id).await
+}
+
 /// Loads one Tool from an exact private Generation package.
 ///
 /// # Errors

@@ -519,6 +519,62 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
     transaction.rollback().await.unwrap();
 }
 
+// Catches: a Generation other than the Private Provider's reported as code
+// bound, which would end its dispatches in flight as `run_terminated` with
+// their Run, or the Private Provider's reported as not.
+#[tokio::test]
+async fn only_the_private_providers_generation_binds_code() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    let input = ProviderSetupInput::from(
+        OpenApiDocument::parse(include_str!(
+            "../../tests/fixtures/openapi-http-corpus.yaml"
+        ))
+        .expect("HTTP input"),
+    );
+    let MaterializationOutcome::Ready(prepared) =
+        crate::materialize(DestinationPolicy::default(), &input, &[])
+    else {
+        panic!("fixture must materialize");
+    };
+    let mut transaction = database.begin().await.unwrap();
+    let openapi = publish_generation(
+        &mut transaction,
+        GenerationInput::Setup(&input),
+        &ProviderSetupInputDigest::of_setup_input(&input),
+        prepared,
+        "code-binding-fixture",
+        1,
+    )
+    .await
+    .unwrap();
+    let builtin = crate::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        &crate::BuiltinCatalog::running().unwrap(),
+        2,
+    )
+    .await
+    .unwrap();
+    let private = crate::publish_private_generation_in_transaction(&mut transaction, 3)
+        .await
+        .unwrap();
+    for (generation, binds_code) in [(&openapi, false), (&builtin, false), (&private, true)] {
+        assert_eq!(
+            crate::generation_binds_code_in_transaction(&mut transaction, generation)
+                .await
+                .unwrap(),
+            binds_code,
+            "{generation}"
+        );
+    }
+    let absent = ProviderGenerationId::generate();
+    assert!(matches!(
+        crate::generation_binds_code_in_transaction(&mut transaction, &absent).await,
+        Err(Error::CorruptData(_))
+    ));
+    transaction.rollback().await.unwrap();
+}
+
 /// An OpenAPI document whose operations each request their own scope of one
 /// authorization-code scheme.
 fn scoped_document(operations: usize) -> String {

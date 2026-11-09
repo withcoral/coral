@@ -14,7 +14,8 @@
 //! closed [`CoralFailure`] code and safe [`Rejection`] message projected to the
 //! Program, even during child shutdown. Only shutdown and recovery record lost
 //! dispatching work as indeterminate; a stop that reaches the owner before a
-//! permitted Invocation sends ends it as `run_terminated` instead.
+//! permitted Invocation sends ends it as `run_terminated` instead, as Run
+//! termination ends a Private Tool call whose body was still running.
 
 use std::fmt;
 use std::sync::Arc;
@@ -326,8 +327,9 @@ impl ToolInvoker {
     /// Starts one call to the caller's Private Tool at `relative_path`,
     /// which this Run linked as `binding`: one Invocation, which Coral
     /// performs by running the Tool's body in the Program. It returns once
-    /// the enforcement point permits the call, which then holds its slot
-    /// under the Fan-out Limit until the body's outcome completes it.
+    /// the enforcement point permits the call, which then stays
+    /// `dispatching` until the body's outcome completes it. It holds no slot
+    /// under the Fan-out Limit: the calls its body makes take their own.
     pub(crate) async fn perform(
         &self,
         relative_path: &str,
@@ -843,10 +845,7 @@ impl ToolInvoker {
         if let Some(call) = builtin {
             return Ok(Dispatch::Builtin(Box::new(call.clone())));
         }
-        if matches!(
-            admitted.target.tool().execution_binding(),
-            coral_catalog::ExecutionBinding::Code(_)
-        ) {
+        if admitted.performed_in_program() {
             return Ok(Dispatch::Performed);
         }
         self.plan(&admitted.target, arguments)
@@ -1328,9 +1327,10 @@ impl ToolInvoker {
     /// Asks the owner for the Policy Enforcement Point: the request joins the
     /// batch of a chunk commit and answers once that chunk is recorded, with
     /// the slot the Invocation holds under the Fan-out Limit. A decision comes
-    /// only from a batch that committed, and every request of a batch holds a
-    /// slot; a request the owner never batched (the Run ending, the owner
-    /// gone) answers with an error and held none.
+    /// only from a batch that committed, and every request of a batch that
+    /// [holds one](AdmittedInvocation::holds_fan_out_slot) holds a slot; a
+    /// request the owner never batched (the Run ending, the owner gone)
+    /// answers with an error and held none.
     async fn enforce(
         &self,
         admitted: &Arc<AdmittedInvocation>,
@@ -1352,7 +1352,7 @@ impl ToolInvoker {
                 .span
                 .record("coral.invocation.dispatch_started", true);
         }
-        Ok((outcome, DispatchSlot::new(self.owner.clone())))
+        Ok((outcome, DispatchSlot::new(self.owner.clone(), admitted)))
     }
 
     pub(crate) fn enforcement_scope(&self) -> EnforcementScope<'_> {
@@ -1394,10 +1394,10 @@ impl ToolInvoker {
             },
             reply: None,
         };
-        slot.carry_with_result();
+        let frees_slot = slot.carry_with_result();
         let applied = self
             .owner
-            .invocation_result(result_json.len(), Box::new(work))
+            .invocation_result(result_json.len(), Box::new(work), frees_slot)
             .instrument(step_span(&admitted.span, Step::Persist))
             .await;
         if applied.is_err() {
@@ -1480,8 +1480,8 @@ impl ToolInvoker {
 }
 
 /// A permitted call to a Private Tool whose body runs in the Program. Its
-/// Invocation is dispatching, and holds its slot under the Fan-out Limit,
-/// until [`Self::complete`] records how the body ended.
+/// Invocation is dispatching until [`Self::complete`] records how the body
+/// ended, and holds no slot under the Fan-out Limit meanwhile.
 pub(crate) struct PerformedCall {
     invoker: ToolInvoker,
     admitted: Arc<AdmittedInvocation>,
@@ -1529,6 +1529,21 @@ impl PerformedCall {
         self.trace.end(ended.as_ref().map(drop));
         ended
     }
+
+    /// The Program ended before the body did, so nothing will complete the
+    /// call: its Invocation ends as `run_terminated` in the owner's next
+    /// chunk, which the Program's end reaches only after this. A Run that
+    /// commits nothing more ends it with its termination instead.
+    pub(crate) fn abandon(self) {
+        let (sender, _unwatched) = oneshot::channel();
+        let _queued = self.invoker.owner.work(Box::new(EndBeforeSendWork {
+            admitted: self.admitted,
+            reply: Replier::new(sender),
+        }));
+        self.trace.end(Err(&InvocationHostError::Fatal(
+            Error::ProgramHostTerminated,
+        )));
+    }
 }
 
 /// One slot under the Run's Fan-out Limit, held from the enforcement point's
@@ -1537,23 +1552,28 @@ impl PerformedCall {
 /// Invocation that has waited longest meets the enforcement point in the same
 /// chunk the ended row rides. Every other end (denied, superseded, parked on a
 /// refresh, a failure, the Run ending) frees it on drop, which tells the owner.
+/// An Invocation that holds no slot has one that frees nothing.
 struct DispatchSlot {
-    owner: OwnerHandle,
+    /// The owner the slot is held from; `None` when the Invocation holds none.
+    owner: Option<OwnerHandle>,
     carried_by_result: bool,
 }
 
 impl DispatchSlot {
-    fn new(owner: OwnerHandle) -> Self {
+    /// The slot the enforcement point's decision on `admitted` gave it.
+    fn new(owner: OwnerHandle, admitted: &AdmittedInvocation) -> Self {
         Self {
-            owner,
+            owner: admitted.holds_fan_out_slot().then_some(owner),
             carried_by_result: false,
         }
     }
 
-    /// The upstream result about to reach the owner frees the slot as it is
-    /// applied; the drop then tells the owner nothing more.
-    fn carry_with_result(&mut self) {
-        self.carried_by_result = true;
+    /// The upstream result about to reach the owner frees the slot, if one is
+    /// held, as it is applied; the drop then tells the owner nothing more.
+    /// Returns whether it frees one.
+    fn carry_with_result(&mut self) -> bool {
+        self.carried_by_result = self.owner.is_some();
+        self.carried_by_result
     }
 
     /// The owner refused the result and freed nothing: the slot is this
@@ -1565,8 +1585,10 @@ impl DispatchSlot {
 
 impl Drop for DispatchSlot {
     fn drop(&mut self) {
-        if !self.carried_by_result {
-            self.owner.dispatch_ended();
+        if let Some(owner) = &self.owner
+            && !self.carried_by_result
+        {
+            owner.dispatch_ended();
         }
     }
 }
@@ -1634,6 +1656,25 @@ pub(crate) struct AdmittedInvocation {
     /// The Invocation's `coral.invocation` span. Its gates that run inside
     /// the owner's chunk commits are its children too.
     pub(crate) span: tracing::Span,
+}
+
+impl AdmittedInvocation {
+    /// Whether Coral performs the Tool by running its body in the Program:
+    /// its Execution Binding is code.
+    fn performed_in_program(&self) -> bool {
+        matches!(
+            self.target.tool().execution_binding(),
+            coral_catalog::ExecutionBinding::Code(_)
+        )
+    }
+
+    /// Whether the permitted Invocation holds a slot under the Fan-out Limit
+    /// until its dispatch is over: every one but a Tool that Coral performs
+    /// in the Program. The calls that body makes take slots of their own, so
+    /// a body never waits for the slot its own call would hold.
+    pub(crate) fn holds_fan_out_slot(&self) -> bool {
+        !self.performed_in_program()
+    }
 }
 
 /// What one Invocation's lifecycle has settled so far: its account wait, its
@@ -2158,6 +2199,12 @@ impl fmt::Debug for EnforcementRequest {
 }
 
 impl EnforcementRequest {
+    /// Whether the Invocation holds a slot under the Fan-out Limit once
+    /// permitted.
+    pub(crate) fn holds_fan_out_slot(&self) -> bool {
+        self.pending.admitted.holds_fan_out_slot()
+    }
+
     /// A request for the owner's in-memory tests, which never run it.
     #[cfg(test)]
     pub(crate) fn for_apply_test(

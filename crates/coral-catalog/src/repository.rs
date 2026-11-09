@@ -938,6 +938,26 @@ pub(super) async fn load_setup_input(
     Ok(Some(input))
 }
 
+/// Reports whether a Generation's Tools have code Execution Bindings: it
+/// pins the Private Provider's catalog, the one whose Tools Coral performs.
+pub(super) async fn generation_binds_code(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    let row: Option<(String,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(ProviderGenerations::InputKind)
+                .from(ProviderGenerations::Table)
+                .and_where(Expr::col(ProviderGenerations::Id).eq(generation_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    let (kind,) =
+        row.ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))?;
+    Ok(kind == PRIVATE_INPUT_KIND)
+}
+
 /// Reads the catalog identity a built-in Generation pins, checked against
 /// the Generation's input digest.
 pub(super) async fn load_builtin_identity(

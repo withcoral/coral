@@ -1500,12 +1500,52 @@ pub(crate) async fn admitted_invocation(
     .expect("resolve the fixture Tool")
     .expect("the fixture Tool resolves");
     transaction.rollback().await.expect("end resolution");
+    admitted(tool, run_id, target, tool.call_path.clone(), now)
+}
+
+/// An admitted call to the Private Tool at `coral.private.<relative_path>`
+/// of `tool`'s Workspace, which Coral performs in the Program, for tests
+/// that drive the owner's pieces directly.
+pub(crate) async fn admitted_private_invocation(
+    fixture: &TestModules,
+    tool: &ToolFixture,
+    run_id: &crate::RunId,
+    relative_path: &str,
+) -> Arc<crate::invocation::AdmittedInvocation> {
+    let now = fixture.clock.now_unix_nanos().expect("clock");
+    let mut transaction = fixture.database.begin().await.expect("begin resolution");
+    let target = coral_provider::resolve_private_tool_in_transaction(
+        &mut transaction,
+        &tool.workspace_id,
+        relative_path,
+        coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
+    )
+    .await
+    .expect("resolve the Private Tool")
+    .expect("the Private Provider is active");
+    transaction.rollback().await.expect("end resolution");
+    admitted(
+        tool,
+        run_id,
+        target,
+        format!("coral.private.{relative_path}"),
+        now,
+    )
+}
+
+fn admitted(
+    tool: &ToolFixture,
+    run_id: &crate::RunId,
+    target: coral_provider::ResolvedInvocationTool,
+    call_path: String,
+    now: i64,
+) -> Arc<crate::invocation::AdmittedInvocation> {
     Arc::new(crate::invocation::AdmittedInvocation {
         id: crate::InvocationId::generate(),
         workspace_id: tool.workspace_id.clone(),
         run_id: run_id.clone(),
         target,
-        call_path: tool.call_path.clone(),
+        call_path,
         arguments_json: "{}".to_string(),
         source_location: None,
         admitted_at_unix_nanos: now,

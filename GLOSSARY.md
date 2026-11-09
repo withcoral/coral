@@ -507,7 +507,9 @@ dispatch-start record, `dispatching` after that record and before it ends, and `
 records `upstream_outcome`, `coral_failure`, `run_terminated`, or `indeterminate`; Run-level termination bypasses the
 Program's Tool interface, while `indeterminate` means dispatch started but Coral could not durably save a complete
 local result, or the Coral Instance that held the Run's stream was lost with the dispatch in flight; the Program then
-sees a Tool Error with code `upstream_incomplete`. At admission it retains the exact Provider identity and account-setting version, Credential Route, private
+sees a Tool Error with code `upstream_incomplete`. A Private or Shared Tool call whose body still runs when its Run
+ends records `run_terminated`, even after a lost Coral Instance, and the calls its body made keep their own outcomes.
+At admission it retains the exact Provider identity and account-setting version, Credential Route, private
 Provider Generation, and Tool Key that it resolved. The Program Run remains `running` during waits but does not pin
 a generation for later Invocations. Workspaces and callers cannot list, select, restore, or pin Provider generations.
 The Invocation references the higher-level Program Run and its stored Program context instead of copying the Program
@@ -542,8 +544,9 @@ Fence, dispatch recheck, held fence, versioned decision, authorization cache
 `dispatching` at the same time. Coral admits every call as an Invocation at once; a ready Invocation above the limit
 stays `pending` and starts its dispatch, in the order it became ready, when an earlier one ends. Waits for account
 connection or approval do not count toward the limit, so every Approval Request a Run needs is visible at once. A
-waiting Invocation has no separate deadline; Run termination ends it as `run_terminated`. _Avoid_: fan-out budget,
-admitted-count quota, dispatch rate, per-Workspace fan-out
+Private or Shared Tool call does not count either: Coral performs it by running its body in the Program, and the calls
+that body makes count instead. A waiting Invocation has no separate deadline; Run termination ends it as `run_terminated`.
+_Avoid_: fan-out budget, admitted-count quota, dispatch rate, per-Workspace fan-out
 
 **Tool Availability**: Whether a cataloged Tool can be invoked while preserving its upstream-native semantics.
 Caller credentials, approval, quotas, and upstream outages do not change it. Principal-facing discovery omits an

@@ -122,15 +122,29 @@ impl RunProgramHost {
     }
 }
 
-/// Completes one permitted Private Tool call with how its body ended.
+/// Completes one permitted Private Tool call with how its body ended. One
+/// the Program drops uncompleted (it ended while the body still waited)
+/// abandons its call.
 struct RunToolCompletion {
     host: Arc<RunProgramHost>,
-    performed: PerformedCall,
+    /// The call, until its body's outcome completes it.
+    performed: Option<PerformedCall>,
+}
+
+impl Drop for RunToolCompletion {
+    fn drop(&mut self) {
+        if let Some(performed) = self.performed.take() {
+            performed.abandon();
+        }
+    }
 }
 
 impl coral_v8::ToolCompletion for RunToolCompletion {
-    fn complete(self: Box<Self>, outcome: coral_v8::ToolBodyOutcome) -> coral_v8::ToolFuture {
-        let Self { host, performed } = *self;
+    fn complete(mut self: Box<Self>, outcome: coral_v8::ToolBodyOutcome) -> coral_v8::ToolFuture {
+        let Some(performed) = self.performed.take() else {
+            return Box::pin(async { Err(coral_v8::ToolHostError::Fatal) });
+        };
+        let host = self.host.clone();
         let runtime = host.runtime.clone();
         let span = host.span.clone();
         let completion = runtime.spawn(
@@ -250,7 +264,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                 {
                     Ok(performed) => Ok(Box::new(RunToolCompletion {
                         host: self.clone(),
-                        performed,
+                        performed: Some(performed),
                     })
                         as Box<dyn coral_v8::ToolCompletion>),
                     Err(error) => Err(self.host_error(error)),
