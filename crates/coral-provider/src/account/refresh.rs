@@ -221,19 +221,22 @@ impl AccountModule {
         )
         .await;
         let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
-        if result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration)) {
-            self.record_client_result(
-                &workspace.clone(),
-                provider,
-                &evidence.contract,
-                client_secret.as_ref(),
-                result.is_err(),
-            )
-            .await?;
-        }
+        let application_failed = super::oauth_client::application_failed(&result);
         let completed_at = now.saturating_add(elapsed);
-        self.complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
-            .await
+        // The renewed token is stored and the claim released before diagnostics
+        // run: a claim left held requires reconnection once its deadline passes.
+        let completion = self
+            .complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
+            .await;
+        self.note_application_result(
+            workspace,
+            provider,
+            &evidence.contract,
+            client_secret.as_ref(),
+            application_failed,
+        )
+        .await;
+        completion
             .map(CredentialValues::token)
             .map(CredentialResolution::Ready)
     }
