@@ -1275,7 +1275,7 @@ impl MaterializedTool {
     pub(crate) fn with_oauth_client(
         mut self,
         policy: &crate::OAuthClientPolicy,
-        stamped: &mut SharedContracts,
+        stamped: &mut DerivedContracts,
     ) -> Result<Self, Error> {
         match &mut self.execution_binding {
             ExecutionBinding::Http(binding) => {
@@ -1373,7 +1373,7 @@ impl MaterializedTool {
 /// Contracts derived from the contracts Tools share, so a change to the one
 /// shared contract is made once and every Tool keeps sharing the result.
 #[derive(Default)]
-pub(crate) struct SharedContracts {
+pub(crate) struct DerivedContracts {
     /// Keyed by the source's address; each entry keeps its source alive, so
     /// an address is never reused while it is a key.
     derived: std::collections::HashMap<
@@ -1385,20 +1385,20 @@ pub(crate) struct SharedContracts {
     >,
 }
 
-impl SharedContracts {
-    /// The contract `derive` makes from `slot`'s, made once per shared source.
+impl DerivedContracts {
+    /// The contract `make` derives from `slot`'s, made once per shared source.
     /// A source matches by identity, so the lookup never compares scopes.
     fn derive(
         &mut self,
         slot: &crate::HttpCredentialSlot,
-        derive: impl FnOnce(&crate::ProviderCredentialContract) -> crate::ProviderCredentialContract,
+        make: impl FnOnce(&crate::ProviderCredentialContract) -> crate::ProviderCredentialContract,
     ) -> std::sync::Arc<crate::ProviderCredentialContract> {
         let source = slot.shared_contract();
         let (_, derived) = self
             .derived
             .entry(std::sync::Arc::as_ptr(&source))
             .or_insert_with(|| {
-                let derived = std::sync::Arc::new(derive(&source));
+                let derived = std::sync::Arc::new(make(&source));
                 (source, derived)
             });
         std::sync::Arc::clone(derived)
@@ -1585,7 +1585,7 @@ impl PreparedProviderCatalog {
             .into_iter()
             .collect::<Vec<_>>();
         // Every Tool shares one contract, so bind it once and share the result.
-        let mut bound = SharedContracts::default();
+        let mut bound = DerivedContracts::default();
         for tool in &mut self.tools {
             if let ExecutionBinding::Http(binding) = &mut tool.execution_binding {
                 let slots = binding
@@ -1638,7 +1638,7 @@ impl PreparedProviderCatalog {
     /// # Errors
     /// Returns a catalog error if a retained recipe cannot be re-encoded.
     pub fn with_oauth_client(mut self, policy: &crate::OAuthClientPolicy) -> Result<Self, Error> {
-        let mut stamped = SharedContracts::default();
+        let mut stamped = DerivedContracts::default();
         self.tools = self
             .tools
             .into_iter()

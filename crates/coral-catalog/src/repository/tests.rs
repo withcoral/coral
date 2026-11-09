@@ -572,6 +572,10 @@ async fn stored_http_definitions(
 // Coral did before, no longer decoding or no longer matching the Generation
 // prepared today.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Generation is checked as stored now, as stored before, and without a contract"
+)]
 async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
@@ -619,15 +623,7 @@ async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
         .await
         .unwrap();
     assert_eq!(loaded, tools);
-    for tool in &loaded {
-        let ExecutionBinding::Http(binding) = tool.execution_binding() else {
-            panic!("an OpenAPI Tool runs over HTTP");
-        };
-        let [slot] = binding.credential_slots() else {
-            panic!("each Tool has one credential slot");
-        };
-        assert_eq!(slot.contract(), &contract);
-    }
+    assert_eq!(*shared_contract(&loaded), contract);
     assert_eq!(
         generation_fingerprint(&mut transaction, &generation)
             .await
@@ -636,8 +632,11 @@ async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
     );
     transaction.rollback().await.unwrap();
 
-    // What Coral stored before: every slot carried its own contract.
-    let embedded = serde_json::to_string(&contract).unwrap();
+    // What Coral stored before: every slot carried its own contract. A copy
+    // that disagrees with the Generation's loses to it.
+    let embedded = serde_json::to_string(&contract)
+        .unwrap()
+        .replace("\"scope00\"", "\"stale00\"");
     fixture
         .execute_fixture_sql(&format!(
             "UPDATE materialized_tools SET definition_json = REPLACE(definition_json, \
@@ -652,15 +651,14 @@ async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
         stored_http_definitions(&mut transaction, &generation)
             .await
             .iter()
-            .all(|definition| definition.contains("scope00")),
+            .all(|definition| definition.contains("stale00")),
         "the fixture restores the earlier encoding"
     );
-    assert_eq!(
-        load_catalog_tools(&mut transaction, &generation)
-            .await
-            .unwrap(),
-        tools
-    );
+    let loaded = load_catalog_tools(&mut transaction, &generation)
+        .await
+        .unwrap();
+    assert_eq!(loaded, tools);
+    assert_eq!(*shared_contract(&loaded), contract);
     assert_eq!(
         generation_fingerprint(&mut transaction, &generation)
             .await
@@ -668,4 +666,52 @@ async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
         fingerprint
     );
     transaction.rollback().await.unwrap();
+
+    // A Generation that names no contract cannot give its Tools one.
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_generations SET credential_contract = 'none' WHERE id = '{generation}'"
+        ))
+        .await
+        .unwrap();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let Err(Error::CorruptData(message)) = load_catalog_tools(&mut transaction, &generation).await
+    else {
+        panic!("a credential slot without a contract is corrupt data");
+    };
+    assert_eq!(message, "HTTP credential slot has no contract to restore");
+    assert_eq!(
+        stored_http_definitions(&mut transaction, &generation)
+            .await
+            .len(),
+        operations,
+        "the failed load changes nothing"
+    );
+    transaction.rollback().await.unwrap();
+}
+
+/// The one contract every loaded HTTP Tool shares, by identity, not by copy.
+fn shared_contract(
+    tools: &[MaterializedTool],
+) -> std::sync::Arc<crate::ProviderCredentialContract> {
+    let contracts = tools
+        .iter()
+        .map(|tool| {
+            let ExecutionBinding::Http(binding) = tool.execution_binding() else {
+                panic!("an OpenAPI Tool runs over HTTP");
+            };
+            let [slot] = binding.credential_slots() else {
+                panic!("each Tool has one credential slot");
+            };
+            slot.shared_contract()
+        })
+        .collect::<Vec<_>>();
+    let first = contracts.first().expect("the Generation has Tools");
+    assert!(
+        contracts
+            .iter()
+            .all(|contract| std::sync::Arc::ptr_eq(contract, first)),
+        "every Tool shares one contract"
+    );
+    std::sync::Arc::clone(first)
 }

@@ -556,35 +556,22 @@ pub enum HttpRedirectPolicy {
 /// it by reference and its stored binding leaves it out: the Provider
 /// Generation keeps it once, and loading a Tool restores it from there. An
 /// OAuth contract can name any number of scopes, so a copy per Tool would grow
-/// as Tools × scopes. A slot stored before this keeps its own copy, and that
-/// copy still wins.
+/// as Tools × scopes. A binding stored before this embeds a copy; decoding
+/// ignores it, and the Generation's contract replaces it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpCredentialSlot {
     scheme_name: String,
-    #[serde(
-        default = "unrestored_contract",
-        skip_serializing,
-        deserialize_with = "deserialize_retained_contract"
-    )]
+    #[serde(skip, default = "unrestored_contract")]
     contract: std::sync::Arc<crate::ProviderCredentialContract>,
 }
 
-/// Marks a slot decoded without a contract until its Generation's contract
-/// replaces it. It reads as no credential, never as a panic.
+/// A decoded slot's contract until its Generation's contract replaces it. It
+/// reads as no credential, never as a panic.
 static UNRESTORED: std::sync::LazyLock<std::sync::Arc<crate::ProviderCredentialContract>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(crate::ProviderCredentialContract::NONE));
 
 fn unrestored_contract() -> std::sync::Arc<crate::ProviderCredentialContract> {
     std::sync::Arc::clone(&UNRESTORED)
-}
-
-fn deserialize_retained_contract<'de, D>(
-    deserializer: D,
-) -> Result<std::sync::Arc<crate::ProviderCredentialContract>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    crate::ProviderCredentialContract::deserialize(deserializer).map(std::sync::Arc::new)
 }
 
 impl HttpCredentialSlot {
@@ -744,24 +731,25 @@ impl HttpExecutionBinding {
         self.credential_slots = slots;
     }
 
-    /// Restores the contract the stored binding left out of each slot.
+    /// Gives every slot its Generation's contract, which the stored binding
+    /// leaves out.
     ///
     /// # Errors
-    /// Returns corrupt data when a slot has no contract and the Provider
-    /// Generation names none.
+    /// Returns corrupt data when the binding has a slot and the Provider
+    /// Generation names no contract.
     pub(crate) fn restore_credential_contract(
         &mut self,
         contract: &std::sync::Arc<crate::ProviderCredentialContract>,
     ) -> Result<(), Error> {
+        if !self.credential_slots.is_empty()
+            && **contract == crate::ProviderCredentialContract::NONE
+        {
+            return Err(Error::CorruptData(
+                "HTTP credential slot has no contract to restore".to_string(),
+            ));
+        }
         for slot in &mut self.credential_slots {
-            if std::sync::Arc::ptr_eq(&slot.contract, &UNRESTORED) {
-                if **contract == crate::ProviderCredentialContract::NONE {
-                    return Err(Error::CorruptData(
-                        "HTTP credential slot has no contract to restore".to_string(),
-                    ));
-                }
-                slot.contract = std::sync::Arc::clone(contract);
-            }
+            slot.contract = std::sync::Arc::clone(contract);
         }
         Ok(())
     }

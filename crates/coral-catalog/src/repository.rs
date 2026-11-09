@@ -1432,18 +1432,9 @@ async fn require_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<(), Error> {
-    let generation: Option<(String,)> = transaction
-        .fetch_optional(
-            Query::select()
-                .column(ProviderGenerations::Id)
-                .from(ProviderGenerations::Table)
-                .and_where(Expr::col(ProviderGenerations::Id).eq(generation_id.to_string()))
-                .to_owned(),
-        )
-        .await?;
-    generation
-        .map(|_| ())
-        .ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))
+    retained_credential_contract(transaction, generation_id)
+        .await
+        .map(|_contract| ())
 }
 
 async fn load_one_tool(

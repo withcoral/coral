@@ -12,8 +12,8 @@ scope list, so storage and load work grew as Tools × scopes.
 
 So the Provider Generation keeps the contract once, and an HTTP Tool's stored definition names only its security
 scheme. Loading a Tool restores the contract from its Generation, and the Tools share one copy in memory. A definition
-stored before this keeps its own copy, and that copy still wins. The Generation's fingerprint states the contract once,
-so an unchanged Provider still reuses its Generation.
+stored before this still carries a copy; loading ignores it, so the Generation's contract is the only one a Tool runs
+with. The Generation's fingerprint states the contract once, so an unchanged Provider still reuses its Generation.
 
 ## Considered options
 
