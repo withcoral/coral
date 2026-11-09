@@ -117,6 +117,20 @@ impl coral_app::RunErrorTelemetry for ProcessError {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // SPIKE (coral#2867), throwaway: `coral embed-spike ...`.
+    #[cfg(feature = "embed-spike")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("embed-spike") {
+            return match coral_embed_spike::run(args.get(2..).unwrap_or_default()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("Error: {error:?}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
     let ProcessArgs { command } = ProcessArgs::parse();
     if let Some(Command::RunExecutor(args)) = command {
         return match run_executor(args).await {

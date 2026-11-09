@@ -22,6 +22,11 @@ tracing-subscriber.workspace = true
 coral-app.workspace = true
 coral-mcp.workspace = true
 coral-run-executor.workspace = true
+coral-embed-spike = { path = "../coral-embed-spike", optional = true }
+
+[features]
+# SPIKE (coral#2867), throwaway: the hidden `embed-spike` argument.
+embed-spike = ["dep:coral-embed-spike"]
 
 [dev-dependencies]
 coral-run-executor = { workspace = true, features = ["test-support"] }

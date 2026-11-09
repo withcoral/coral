@@ -1,0 +1,15 @@
+[package]
+name = "coral-embed-spike"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SPIKE (coral#2867), throwaway: bge-small-en-v1.5 fp32 through ort, timed."
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+libc = "0.2"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24"] }
+serde_json.workspace = true
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
