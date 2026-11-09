@@ -25,7 +25,7 @@ pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from o
 
 Find provider tools and Saved Functions with `coral.workspace.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`. When the user names a service, pass all its namespaces in `provider`, as one string or an array; otherwise leave it out. `coral.workspace` holds Coral's own tools. A wrong namespace is refused with the full list.
 ```ts
-const { data } = await coral.workspace.search({ query: "list pull requests", provider: "github", limit: 5 });
+const { data } = await coral.workspace.search({ query: "list pull requests", provider: "acme_code", limit: 5 });
 const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);
 const read = paths.length ? (await coral.workspace.search({ paths })).data : undefined;
 return {
@@ -36,7 +36,7 @@ return {
 ```
 Then call it in a later Program by its literal Call Path:
 ```ts
-return (await coral.providers.github.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
+return (await coral.providers.acme_code.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
 ```
 A non-empty `required_actions` means the Run waits for a person: for an `invoking_user` entry, write its `url` as reply text, then keep calling `wait`, whose description has the steps."#;
 

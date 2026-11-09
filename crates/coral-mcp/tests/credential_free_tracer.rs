@@ -418,10 +418,11 @@ impl Tracer {
             .await
     }
 
-    /// Publishes and indexes a `github` Provider in Workspace A. Its
-    /// `createPullRequest` takes a body whose type the signature line names
-    /// but does not show, so that hit is never complete.
-    async fn publish_github(&self) {
+    /// Publishes and indexes `acme_code`, the Provider `exec`'s example
+    /// searches, in Workspace A. Its `createPullRequest` takes a body whose
+    /// type the signature line names but does not show, so that hit is never
+    /// complete.
+    async fn publish_example_provider(&self) {
         let operation = |id: &str, summary: &str| {
             json!({
                 "operationId": id,
@@ -443,7 +444,7 @@ impl Tracer {
         );
         let document = json!({
             "openapi": "3.1.0",
-            "info": {"title": "GitHub Tracer", "version": "1"},
+            "info": {"title": "Acme Code Tracer", "version": "1"},
             "servers": [{"url": self.upstream.url()}],
             "security": [],
             "paths": {"/pulls": {
@@ -457,7 +458,7 @@ impl Tracer {
             &self.local_user,
             &self.workspace_a,
             &Publication {
-                namespace: "github",
+                namespace: "acme_code",
                 request_id: "54000000-0000-4000-8000-000000000002",
                 document,
                 tool_keys: &["listPullRequests", "createPullRequest"],
@@ -1669,9 +1670,9 @@ async fn a_failed_namespace_lookup_still_lists_every_tool() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_exec_example_type_checks_and_reads_a_real_search() {
     let tracer = Tracer::start().await;
-    // The example searches `provider: "github"`, a namespace the caller must
-    // be able to search.
-    tracer.publish_github().await;
+    // The example searches `provider: "acme_code"`, a namespace the caller
+    // must be able to search.
+    tracer.publish_example_provider().await;
     let client = tracer.sdk().await;
     let tools = client.list_all_tools().await.expect("list MCP tools");
     let description = tools
@@ -1712,7 +1713,7 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         list.lines()
             .map(|line| line.split('\t').next().expect("a namespace"))
             .collect::<Vec<_>>(),
-        ["coral.workspace", "github", "weather"],
+        ["acme_code", "coral.workspace", "weather"],
         "{list}"
     );
 
@@ -1743,10 +1744,11 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         else {
             panic!("three fields of a hit: {hit}");
         };
-        // The filter keeps GitHub's tools and Saved Functions.
+        // The filter keeps `acme_code`'s tools and Saved Functions.
         assert!(
             call_path.as_str().is_some_and(|path| {
-                path.starts_with("coral.providers.github.") || path.starts_with("coral.functions.")
+                path.starts_with("coral.providers.acme_code.")
+                    || path.starts_with("coral.functions.")
             }),
             "{hit}"
         );
