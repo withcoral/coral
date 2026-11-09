@@ -1,5 +1,5 @@
 -- Saved Functions are now the Private Tools of each Workspace's Private
--- Provider (ADR 0032). Each keeps its path, source, declaration, diagnostics
+-- Provider (ADR 0033). Each keeps its path, source, declaration, diagnostics
 -- and revision, and gains the Tool Access State that applies when no exact
 -- rule matches it. Every existing row, and every row an older Coral writes,
 -- is `enabled`.

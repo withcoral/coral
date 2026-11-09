@@ -110,7 +110,7 @@ runtime.
   an Emit or a Log: the Run Executor checks the value against the package's value limits, counts the Run Output Budget
   and fails the Run when it is exceeded, and pauses the Program's next request while more than the Applied cap is
   unconfirmed; Coral confirms at commit. Every kind of Run Executor settles Emit and Log the same way.
-- **A Private or Shared Tool call is a code-performed Invoke ([ADR 0032](0032-every-callable-is-a-tool.md)).**
+- **A Private or Shared Tool call is a code-performed Invoke ([ADR 0033](0033-every-callable-is-a-tool.md)).**
   - **The Invoke** names the tool and, for a Shared Tool, its revision. Every Invoke that a tool's body makes carries
     its parent Invocation; an Invoke from the Program itself or from module-level code carries none. Coral refuses an
     Invoke whose parent has ended.
@@ -237,7 +237,7 @@ it; a compile that waits past a bound fails as a missing compiler fails today, a
 local children on and below their limit, a compile with no child running starts one and waits for it. A compile carries no authority, and a Run Executor cannot call Coral back
 during one. The compiler has its Run Executor's release, so a global takes three release steps. A compile carries the
 names of the Workspace's Built-in Tools as admission reads them, and the compiled Program adds exactly those to
-`coral` (ADR 0032). A Run calls the Built-in Tools it was admitted with, and a new Built-in Tool needs no release
+`coral` (ADR 0033). A Run calls the Built-in Tools it was admitted with, and a new Built-in Tool needs no release
 steps: one this release cannot perform fails as `tool_unavailable` when called.
 
 ## Resources

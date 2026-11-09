@@ -679,7 +679,7 @@ impl SavedFunctionModule {
         let prepared = timeout_at(deadline.into(), preparation)
             .await
             .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)??;
-        // Every call crosses to Coral and back, so only data can (ADR 0032).
+        // Every call crosses to Coral and back, so only data can (ADR 0033).
         if let Some(reason) = prepared.not_data {
             return Err(Error::PrivateToolNotData(format!(
                 "{source_name}: {reason}"

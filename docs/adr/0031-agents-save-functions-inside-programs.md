@@ -7,7 +7,7 @@ status: accepted
 An agent creates, replaces and removes its own Private Tools by calling the Built-in Tools `coral.addTool`,
 `coral.updateTool` and `coral.removeTool` from a Program, not through MCP `save_function` and `delete_function`. They
 act only on the caller's own Private Tools at `coral.private`, and every Principal that authors in the Workspace
-reaches them, Agents included (ADR 0032 decides their arguments). With ADR 0026, Coral's MCP surface keeps only the tools that run Programs, observe Runs and end Tasks.
+reaches them, Agents included (ADR 0033 decides their arguments). With ADR 0026, Coral's MCP surface keeps only the tools that run Programs, observe Runs and end Tasks.
 
 A Program saves a function by reference: `source` names a function that the calling source declares at its top level,
 as a function declaration or as a `const` bound to an arrow or function expression. The Program declares the reusable

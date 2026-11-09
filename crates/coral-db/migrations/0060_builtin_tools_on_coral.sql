@@ -1,5 +1,5 @@
 -- The Built-in Provider's Tools now sit directly on `coral`, and Private
--- Tools, which were Saved Functions, are called at `coral.private` (ADR 0032).
+-- Tools, which were Saved Functions, are called at `coral.private` (ADR 0033).
 -- Each Provider row stores its full Call Root, so the Built-in Provider's
 -- moves from `coral.workspace` to `coral`. Universal Search stores each
 -- indexed Call Path as it returns it, so the rows of Built-in Tools and

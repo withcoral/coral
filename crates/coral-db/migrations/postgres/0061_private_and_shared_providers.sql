@@ -1,5 +1,5 @@
 -- Every Workspace has a Private Provider at `coral.private`, and will have a
--- Shared Provider at `coral.shared` (ADR 0032). Coral performs their Tools
+-- Shared Provider at `coral.shared` (ADR 0033). Coral performs their Tools
 -- itself, so each pins a Generation of input kind 'private' or 'shared' that
 -- holds no materialized Tools, and installing one records the lifecycle
 -- action 'provider.private_installed' or 'provider.shared_installed'.
