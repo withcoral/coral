@@ -1,7 +1,7 @@
 //! The accepted Program package, its linked source snapshots, and `run.started`.
 
 use coral_db::Transaction;
-use coral_tools::PrivateToolSelection;
+use coral_tools::{PrivateToolSelection, SharedToolSelection};
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 use sqlx::FromRow;
@@ -9,7 +9,7 @@ use sqlx::FromRow;
 use super::events::{NewEvent, insert_events};
 use super::{ChunkEvent, ProgramRunRecords};
 use crate::CoralInstanceId;
-use crate::engine::ProgramPackage;
+use crate::engine::{LinkedSource, ProgramPackage};
 use crate::types::AcceptedRun;
 use crate::{
     EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES, ProgramSource, RunId, RunState,
@@ -73,7 +73,7 @@ pub(crate) async fn insert_acceptance(
     holder: &CoralInstanceId,
     source: &ProgramSource,
     package: &ProgramPackage,
-    linked: &[PrivateToolSelection],
+    linked: &[LinkedSource],
     compilation_timeout: std::time::Duration,
 ) -> Result<bool, Error> {
     let program_source_max_bytes = stored_usize(PROGRAM_SOURCE_MAX_BYTES)?;
@@ -125,7 +125,14 @@ pub(crate) async fn insert_acceptance(
         .to_owned();
     transaction.execute(statement).await?;
     for snapshot in linked {
-        insert_run_snapshot(transaction, run, snapshot).await?;
+        match snapshot {
+            LinkedSource::Private(selection) => {
+                insert_run_snapshot(transaction, run, selection).await?;
+            }
+            LinkedSource::Shared(selection) => {
+                insert_shared_run_snapshot(transaction, run, selection).await?;
+            }
+        }
     }
 
     // Acceptance creates the Run Ledger at head 0 with its first Event. There
@@ -259,6 +266,49 @@ async fn insert_run_snapshot(
             Expr::val(run.workspace_id.to_string()),
             Expr::val(snapshot.id().to_string()),
             Expr::val(snapshot.path().as_str()),
+            Expr::val(snapshot.source().as_str()),
+        ])
+        .to_owned();
+    transaction.execute(statement).await?;
+    Ok(())
+}
+
+#[derive(Iden)]
+enum ProgramRunSharedToolSnapshots {
+    Table,
+    RunId,
+    WorkspaceId,
+    SharedToolId,
+    Path,
+    Revision,
+    Source,
+}
+
+/// Records the Shared Tool revision the Run linked, with the source it runs.
+async fn insert_shared_run_snapshot(
+    transaction: &mut Transaction<'_>,
+    run: &AcceptedRun,
+    snapshot: &SharedToolSelection,
+) -> Result<(), Error> {
+    let revision = i64::try_from(snapshot.revision()).map_err(|_error| {
+        Error::CorruptData("Shared Tool revision exceeds durable range".to_string())
+    })?;
+    let statement = Query::insert()
+        .into_table(ProgramRunSharedToolSnapshots::Table)
+        .columns([
+            ProgramRunSharedToolSnapshots::RunId,
+            ProgramRunSharedToolSnapshots::WorkspaceId,
+            ProgramRunSharedToolSnapshots::SharedToolId,
+            ProgramRunSharedToolSnapshots::Path,
+            ProgramRunSharedToolSnapshots::Revision,
+            ProgramRunSharedToolSnapshots::Source,
+        ])
+        .values_panic([
+            Expr::val(run.id.to_string()),
+            Expr::val(run.workspace_id.to_string()),
+            Expr::val(snapshot.id().to_string()),
+            Expr::val(snapshot.path().as_str()),
+            Expr::val(revision),
             Expr::val(snapshot.source().as_str()),
         ])
         .to_owned();

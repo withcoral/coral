@@ -30,6 +30,7 @@ mod resilience;
 mod run_inbox;
 mod scoping;
 mod search;
+mod shared_tools;
 mod summary;
 mod support;
 mod tool_bodies;

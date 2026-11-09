@@ -107,6 +107,46 @@ pub(crate) async fn sources(
             .collect(),
     ))
 }
+/// The Shared Tool Revisions the Run linked, in path order.
+pub(crate) async fn shared_sources(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+) -> Result<Vec<crate::SharedSourceSnapshot>, Error> {
+    let mut snapshots = scoped(
+        "program_run_shared_tool_snapshots",
+        workspace,
+        "run_id",
+        run.to_string(),
+    );
+    snapshots
+        .columns([
+            Alias::new("shared_tool_id"),
+            Alias::new("path"),
+            Alias::new("revision"),
+            Alias::new("source"),
+        ])
+        .order_by(Alias::new("path"), Order::Asc)
+        .limit(crate::LINKED_PRIVATE_TOOL_MAX_COUNT as u64 + 1);
+    let rows: Vec<(String, String, i64, String)> = tx.fetch_all(snapshots).await?;
+    if rows.len() > crate::LINKED_PRIVATE_TOOL_MAX_COUNT {
+        return Err(Error::CorruptData(
+            "accepted linked source exceeds its admission bound".into(),
+        ));
+    }
+    rows.into_iter()
+        .map(|(shared_tool_id, path, revision, source)| {
+            Ok(crate::SharedSourceSnapshot {
+                shared_tool_id,
+                path,
+                revision: u64::try_from(revision).map_err(|_error| {
+                    Error::CorruptData("invalid linked Shared Tool revision".into())
+                })?,
+                source,
+            })
+        })
+        .collect()
+}
 pub(crate) async fn invocation_run(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,

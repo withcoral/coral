@@ -39,6 +39,19 @@ pub struct SourceSnapshot {
     /// Exact accepted TypeScript source.
     pub source: String,
 }
+/// The Shared Tool Revision a Run linked, with the exact source it ran;
+/// never today's current revision.
+#[derive(Debug)]
+pub struct SharedSourceSnapshot {
+    /// Retained Shared Tool identity.
+    pub shared_tool_id: String,
+    /// Retained path relative to `coral.shared`.
+    pub path: String,
+    /// The revision that was current when the Run was accepted.
+    pub revision: u64,
+    /// Exact accepted TypeScript source.
+    pub source: String,
+}
 /// Where an ended Run's Context Impact comes from. `final_value_bytes` plus
 /// `output_bytes` minus `tool_result_bytes` is the Run's `context_impact_bytes`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +75,8 @@ pub struct RunDetail {
     pub submitted_source: String,
     /// Admission-bounded linked snapshots.
     pub linked_private_tools: Vec<SourceSnapshot>,
+    /// The Shared Tool Revisions the Run linked, in path order.
+    pub linked_shared_tools: Vec<SharedSourceSnapshot>,
     /// One bounded chronological Event page.
     pub events: Vec<RunEvent>,
     /// More Events exist after this page.
@@ -244,6 +259,8 @@ impl RunModule {
         };
         let (submitted_source, linked_private_tools) =
             crate::inspection_repository::sources(tx, workspace, id).await?;
+        let linked_shared_tools =
+            crate::inspection_repository::shared_sources(tx, workspace, id).await?;
         let (events, has_more_events) = crate::run_repository::event_page_in_transaction(
             tx,
             workspace,
@@ -259,6 +276,7 @@ impl RunModule {
             context_impact,
             submitted_source,
             linked_private_tools,
+            linked_shared_tools,
             events,
             has_more_events,
             trace_id: run.diagnostic_trace_id(),

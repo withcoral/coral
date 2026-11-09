@@ -7,13 +7,12 @@ use std::time::{Duration, Instant};
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
 use coral_telemetry::safe;
-use coral_tools::{PrivateToolPath, PrivateToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
 use uuid::Uuid;
 
-use crate::engine::{PrivateToolReference, ProgramEngine, ProgramPackage, ProgramReferences};
+use crate::engine::{LinkedPath, LinkedSource, ProgramEngine, ProgramPackage, ProgramReferences};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
@@ -32,22 +31,67 @@ const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
 /// makes a Program time out that would have compiled without it.
 const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
+/// The source that names a linked Tool: the submitted Program, or a
+/// linked Private or Shared Tool.
 #[derive(Clone)]
-enum PrivateToolReferenceSource {
+enum ReferenceSource {
     SubmittedProgram,
-    PrivateTool(PrivateToolPath),
+    Linked(LinkedPath),
 }
 
-/// The Private Tools a Program links, in initialization order, and the
-/// literal Tool chains each one's source names.
+impl ReferenceSource {
+    fn name(&self) -> String {
+        match self {
+            Self::SubmittedProgram => "Program".to_string(),
+            Self::Linked(path) => path.source_name(),
+        }
+    }
+}
+
+/// The Private and Shared Tools a Program links, in initialization order,
+/// and the literal Tool chains each one's source names.
 type LinkedClosure = (
-    Vec<PrivateToolSelection>,
-    Vec<(PrivateToolPath, coral_v8::ToolReferences)>,
+    Vec<LinkedSource>,
+    Vec<(LinkedPath, coral_v8::ToolReferences)>,
 );
 
-struct PendingPrivateToolReference {
-    source: PrivateToolReferenceSource,
-    reference: PrivateToolReference,
+/// One literal reference to a linked Tool, and where its source names it.
+struct PendingReference {
+    source: ReferenceSource,
+    path: LinkedPath,
+    line: u64,
+    column: u64,
+}
+
+/// The linked Tools `named` names, as references from `source`.
+fn pending_references(
+    source: &ReferenceSource,
+    named: &ProgramReferences,
+) -> impl Iterator<Item = PendingReference> {
+    let private_tools = named.private_tools.iter().map(|reference| {
+        (
+            LinkedPath::Private(reference.path.clone()),
+            reference.line,
+            reference.column,
+        )
+    });
+    let shared_tools = named.shared_tools.iter().map(|reference| {
+        (
+            LinkedPath::Shared(reference.path.clone()),
+            reference.line,
+            reference.column,
+        )
+    });
+    private_tools
+        .chain(shared_tools)
+        .map(|(path, line, column)| PendingReference {
+            source: source.clone(),
+            path,
+            line,
+            column,
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 /// Opaque compiled submission, bound to the exact submitting scope.
@@ -56,7 +100,7 @@ pub struct PreparedRun {
     workspace_id: WorkspaceId,
     submission: RunSubmission,
     package: ProgramPackage,
-    linked: Vec<PrivateToolSelection>,
+    linked: Vec<LinkedSource>,
 }
 
 /// Scope-bound evidence of staged acceptance, not proof that its transaction committed.
@@ -173,20 +217,36 @@ impl RunModule {
             .workspaces
             .check_run_admission_in_transaction(transaction, actor, workspace_id, self.now()?)
             .await?;
+        // Private Tools sort before Shared Tools, so every acceptance takes
+        // its holds in one order. A Shared Tool row is held shared, so a
+        // popular Shared Tool does not serialize acceptance across Members.
         let mut snapshots_by_path = linked.iter().collect::<Vec<_>>();
-        snapshots_by_path.sort_by(|left, right| left.path().cmp(right.path()));
+        snapshots_by_path.sort_by_key(|linked| linked.path());
         for snapshot in snapshots_by_path {
-            if !coral_tools::hold_source_selection_in_transaction(
-                transaction,
-                workspace_id,
-                actor.principal(),
-                snapshot,
-            )
-            .await?
-            {
-                return Err(Error::ProgramAdmission(
-                    "Private Tool changed during Program admission".to_string(),
-                ));
+            let held = match snapshot {
+                LinkedSource::Private(selection) => {
+                    coral_tools::hold_source_selection_in_transaction(
+                        transaction,
+                        workspace_id,
+                        actor.principal(),
+                        selection,
+                    )
+                    .await?
+                }
+                LinkedSource::Shared(selection) => {
+                    coral_tools::hold_shared_selection_in_transaction(
+                        transaction,
+                        workspace_id,
+                        selection,
+                    )
+                    .await?
+                }
+            };
+            if !held {
+                return Err(Error::ProgramAdmission(format!(
+                    "{} changed during Program admission",
+                    snapshot.path().kind_name()
+                )));
             }
         }
         let accepted_at_unix_nanos = self.now()?;
@@ -216,15 +276,7 @@ impl RunModule {
                 worker_claim_expires_at_unix_nanos,
                 linked_snapshots: linked
                     .iter()
-                    .map(|snapshot| {
-                        (
-                            snapshot.path().as_str().to_string(),
-                            crate::types::LinkedPrivateTool {
-                                binding: snapshot.execution_binding(),
-                                declared_default: snapshot.default_access_state(),
-                            },
-                        )
-                    })
+                    .map(|snapshot| (snapshot.path().call_path(), snapshot.linked_tool()))
                     .collect(),
                 trace: trace.clone(),
             };
@@ -298,7 +350,7 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
-    ) -> Result<(ProgramPackage, Vec<PrivateToolSelection>), Error> {
+    ) -> Result<(ProgramPackage, Vec<LinkedSource>), Error> {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
         let compiled = self
@@ -331,7 +383,7 @@ impl RunModule {
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
         compilation_deadline: Instant,
-    ) -> Result<(ProgramPackage, Vec<PrivateToolSelection>), Error> {
+    ) -> Result<(ProgramPackage, Vec<LinkedSource>), Error> {
         let source = submitted_source.as_str().to_string();
         let named = self
             .analyze_program(source.clone(), compilation_deadline)
@@ -340,37 +392,29 @@ impl RunModule {
             self.check_tool_calls(actor, workspace_id, "Program", tools, compilation_deadline)
                 .await?;
         }
+        let roots = pending_references(&ReferenceSource::SubmittedProgram, &named).collect();
         let (linked, linked_tools) = self
-            .read_source_closure(
-                actor,
-                workspace_id,
-                named.private_tools,
-                compilation_deadline,
-            )
+            .read_source_closure(actor, workspace_id, roots, compilation_deadline)
             .await?;
         // A stored source is checked as the Program is, at every admission
         // that links it: an old root fails here, not when called.
         for (path, tools) in &linked_tools {
-            let source_name = format!("Private Tool coral.private.{}", path.as_str());
             self.check_tool_calls(
                 actor,
                 workspace_id,
-                &source_name,
+                &path.source_name(),
                 tools,
                 compilation_deadline,
             )
             .await?;
         }
 
-        validate_source_closure(
-            &source,
-            linked.iter().map(|snapshot| snapshot.source().as_str()),
-        )?;
+        validate_source_closure(&source, linked.iter().map(LinkedSource::source))?;
         let builtin_tools = self.builtin_tools(workspace_id).await?;
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
-            engine.compile_with_private_tools(
+            engine.compile_linked(
                 compilation_deadline,
                 &source,
                 &compile_linked,
@@ -387,11 +431,15 @@ impl RunModule {
         Ok((package, linked))
     }
 
+    /// Reads the closure of Tools the Program links: each Private Tool is
+    /// the caller's own current definition, wherever it is named, including
+    /// inside a Shared Tool, and each Shared Tool is the Workspace's current
+    /// revision (ADR 0033).
     async fn read_source_closure(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        roots: Vec<PrivateToolReference>,
+        roots: Vec<PendingReference>,
         compilation_deadline: Instant,
     ) -> Result<LinkedClosure, Error> {
         if roots.is_empty() {
@@ -403,38 +451,44 @@ impl RunModule {
             .map(|reference| reference.path.clone())
             .collect::<Vec<_>>();
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let mut pending = roots
-            .into_iter()
-            .map(|reference| PendingPrivateToolReference {
-                source: PrivateToolReferenceSource::SubmittedProgram,
-                reference,
-            })
-            .collect::<VecDeque<_>>();
+        let mut pending = roots.into_iter().collect::<VecDeque<_>>();
         let mut snapshots = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
         let mut tools = Vec::new();
         while let Some(pending_reference) = pending.pop_front() {
-            let path = &pending_reference.reference.path;
+            let path = &pending_reference.path;
             if snapshots.contains_key(path) {
                 continue;
             }
             if snapshots.len() == LINKED_PRIVATE_TOOL_MAX_COUNT {
                 return Err(Error::ProgramAdmission(format!(
-                    "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private Tools"
+                    "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private and Shared Tools"
                 )));
             }
-            let snapshot = coral_tools::select_source_in_transaction(
-                &mut transaction,
-                workspace_id,
-                actor.principal(),
-                path,
-            )
-            .await?;
+            let snapshot = match path {
+                LinkedPath::Private(private_path) => coral_tools::select_source_in_transaction(
+                    &mut transaction,
+                    workspace_id,
+                    actor.principal(),
+                    private_path,
+                )
+                .await?
+                .map(LinkedSource::Private),
+                LinkedPath::Shared(shared_path) => {
+                    coral_tools::select_shared_source_in_transaction(
+                        &mut transaction,
+                        workspace_id,
+                        shared_path,
+                    )
+                    .await?
+                    .map(LinkedSource::Shared)
+                }
+            };
             let Some(snapshot) = snapshot else {
                 // The lookup for suggestions reads in its own snapshot.
                 transaction.rollback().await?;
                 return Err(self
-                    .missing_private_tool(
+                    .missing_linked_tool(
                         actor,
                         workspace_id,
                         &pending_reference,
@@ -442,38 +496,32 @@ impl RunModule {
                     )
                     .await);
             };
-            let ProgramReferences {
-                private_tools: referenced,
-                tools: named_tools,
-            } = self
-                .analyze_private_tool(
-                    snapshot.source().as_str().to_string(),
+            let named = self
+                .analyze_linked_tool(
+                    snapshot.source().to_string(),
                     path.clone(),
                     compilation_deadline,
                 )
                 .await?;
-            if let Some(named_tools) = named_tools {
+            let referenced = pending_references(&ReferenceSource::Linked(path.clone()), &named)
+                .collect::<Vec<_>>();
+            if let Some(named_tools) = named.tools {
                 tools.push((path.clone(), named_tools));
             }
-            pending.extend(referenced.iter().cloned().map(|reference| {
-                PendingPrivateToolReference {
-                    source: PrivateToolReferenceSource::PrivateTool(path.clone()),
-                    reference,
-                }
-            }));
             dependencies.insert(
                 path.clone(),
                 referenced
-                    .into_iter()
-                    .map(|reference| reference.path)
+                    .iter()
+                    .map(|reference| reference.path.clone())
                     .collect(),
             );
+            pending.extend(referenced);
             snapshots.insert(path.clone(), snapshot);
         }
         transaction.commit().await?;
 
         Ok((
-            order_private_tool_closure(&root_paths, &dependencies, &snapshots)?,
+            order_linked_closure(&root_paths, &dependencies, &snapshots)?,
             tools,
         ))
     }
@@ -603,24 +651,20 @@ impl RunModule {
         ))
     }
 
-    /// Refuses a Program that calls, in its body or in a Private Tool it
-    /// links, a Private Tool the caller does not have: like any path that
-    /// names no Tool, with the caller's nearest Private Tools, which a
-    /// lookup bounded by the compilation deadline finds.
-    async fn missing_private_tool(
+    /// Refuses a Program that calls, in its body or in a Tool it links, a
+    /// Private Tool the caller does not have or a Shared Tool the Workspace
+    /// does not have: like any path that names no Tool, with the nearest
+    /// paths the caller can call, which a lookup bounded by the compilation
+    /// deadline finds.
+    async fn missing_linked_tool(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        pending: &PendingPrivateToolReference,
+        pending: &PendingReference,
         compilation_deadline: Instant,
     ) -> Error {
-        let source_name = match &pending.source {
-            PrivateToolReferenceSource::SubmittedProgram => "Program".to_string(),
-            PrivateToolReferenceSource::PrivateTool(path) => {
-                format!("Private Tool coral.private.{}", path.as_str())
-            }
-        };
-        let call_path = format!("coral.private.{}", pending.reference.path.as_str());
+        let source_name = pending.source.name();
+        let call_path = pending.path.call_path();
         let search = coral_search::UniversalSearchModule::new(
             self.database.clone(),
             self.workspaces.clone(),
@@ -638,8 +682,8 @@ impl RunModule {
         .unwrap_or_default();
         Error::ProgramAdmission(coral_v8::bounded_diagnostic_message(&format!(
             "{source_name}:{}:{}: {}",
-            pending.reference.line,
-            pending.reference.column,
+            pending.line,
+            pending.column,
             coral_catalog::unknown_call_path_message(
                 &call_path,
                 suggestions.get(&call_path).map_or(&[][..], Vec::as_slice),
@@ -688,14 +732,15 @@ impl RunModule {
         Ok(callable)
     }
 
-    async fn analyze_private_tool(
+    async fn analyze_linked_tool(
         &self,
         source: String,
-        path: PrivateToolPath,
+        path: LinkedPath,
         compilation_deadline: Instant,
     ) -> Result<ProgramReferences, Error> {
-        self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.private_tool_references(deadline, &path, &source)
+        self.analyze(compilation_deadline, move |engine, deadline| match &path {
+            LinkedPath::Private(path) => engine.private_tool_references(deadline, path, &source),
+            LinkedPath::Shared(path) => engine.shared_tool_references(deadline, path, &source),
         })
         .await
     }
@@ -786,24 +831,24 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
     )
 }
 
-fn order_private_tool_closure(
-    roots: &[PrivateToolPath],
-    dependencies: &BTreeMap<PrivateToolPath, Vec<PrivateToolPath>>,
-    snapshots: &BTreeMap<PrivateToolPath, PrivateToolSelection>,
-) -> Result<Vec<PrivateToolSelection>, Error> {
+fn order_linked_closure(
+    roots: &[LinkedPath],
+    dependencies: &BTreeMap<LinkedPath, Vec<LinkedPath>>,
+    snapshots: &BTreeMap<LinkedPath, LinkedSource>,
+) -> Result<Vec<LinkedSource>, Error> {
     fn visit(
-        path: &PrivateToolPath,
-        dependencies: &BTreeMap<PrivateToolPath, Vec<PrivateToolPath>>,
-        snapshots: &BTreeMap<PrivateToolPath, PrivateToolSelection>,
-        visiting: &mut BTreeSet<PrivateToolPath>,
-        visited: &mut BTreeSet<PrivateToolPath>,
-        ordered: &mut Vec<PrivateToolSelection>,
+        path: &LinkedPath,
+        dependencies: &BTreeMap<LinkedPath, Vec<LinkedPath>>,
+        snapshots: &BTreeMap<LinkedPath, LinkedSource>,
+        visiting: &mut BTreeSet<LinkedPath>,
+        visited: &mut BTreeSet<LinkedPath>,
+        ordered: &mut Vec<LinkedSource>,
     ) -> Result<(), Error> {
         if visited.contains(path) || !visiting.insert(path.clone()) {
             return Ok(());
         }
         let referenced = dependencies.get(path).ok_or_else(|| {
-            Error::CorruptData("Private Tool closure lost dependency evidence".to_string())
+            Error::CorruptData("linked Tool closure lost dependency evidence".to_string())
         })?;
         for dependency in referenced {
             visit(
@@ -821,7 +866,7 @@ fn order_private_tool_closure(
             snapshots
                 .get(path)
                 .ok_or_else(|| {
-                    Error::CorruptData("Private Tool closure lost source evidence".to_string())
+                    Error::CorruptData("linked Tool closure lost source evidence".to_string())
                 })?
                 .clone(),
         );
@@ -856,7 +901,7 @@ fn validate_source_closure<'a>(
     }
     if linked_count > LINKED_PRIVATE_TOOL_MAX_COUNT {
         return Err(Error::ProgramAdmission(format!(
-            "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private Tools"
+            "Program may link at most {LINKED_PRIVATE_TOOL_MAX_COUNT} Private and Shared Tools"
         )));
     }
     if combined_bytes > COMBINED_TYPESCRIPT_MAX_BYTES {

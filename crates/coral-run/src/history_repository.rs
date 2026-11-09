@@ -354,6 +354,8 @@ struct InvocationRow {
     requires_action: bool,
     parent_id: Option<String>,
     parent_call_path: Option<String>,
+    shared_tool_revision: Option<i64>,
+    parent_shared_tool_revision: Option<i64>,
     #[sqlx(flatten)]
     source_location: crate::source_location_repository::StoredSourceLocation,
 }
@@ -373,11 +375,16 @@ impl InvocationRow {
             provider: coral_provider::ProviderId::parse(&self.provider_id)?,
             tool: self.tool_key,
             tool_kind: crate::ToolKind::of_call_path(&self.call_path),
+            shared_tool_revision: linked_revision(&self.call_path, self.shared_tool_revision)?,
             call_path: self.call_path,
             parent: match (self.parent_id, self.parent_call_path) {
                 (Some(id), Some(call_path)) => Some(crate::InvocationParent {
                     id: crate::InvocationId::parse(&id)?,
                     tool_kind: crate::ToolKind::of_call_path(&call_path),
+                    shared_tool_revision: linked_revision(
+                        &call_path,
+                        self.parent_shared_tool_revision,
+                    )?,
                     call_path,
                 }),
                 (None, None) => None,
@@ -403,6 +410,53 @@ impl InvocationRow {
         })
     }
 }
+/// The Shared Tool Revision a call at `call_path` ran: the one its Run
+/// linked. `None` for a call to any other kind of Tool.
+fn linked_revision(call_path: &str, linked: Option<i64>) -> Result<Option<u64>, Error> {
+    if crate::ToolKind::of_call_path(call_path) != crate::ToolKind::Shared {
+        return Ok(None);
+    }
+    linked
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_error| Error::CorruptData("invalid linked Shared Tool revision".into()))
+}
+
+/// The revision of the Shared Tool that the Run of the Invocation aliased
+/// `invocation` linked under that Invocation's Tool Key; null when it
+/// linked none.
+fn linked_shared_tool_revision(invocation: &'static str) -> SimpleExpr {
+    let select = Query::select()
+        .column(Alias::new("revision"))
+        .from(Alias::new("program_run_shared_tool_snapshots"))
+        .and_where(
+            Expr::col((
+                Alias::new("program_run_shared_tool_snapshots"),
+                Alias::new("workspace_id"),
+            ))
+            .eq(col(invocation, "workspace_id")),
+        )
+        .and_where(
+            Expr::col((
+                Alias::new("program_run_shared_tool_snapshots"),
+                Alias::new("run_id"),
+            ))
+            .eq(col(invocation, "run_id")),
+        )
+        .and_where(
+            Expr::col((
+                Alias::new("program_run_shared_tool_snapshots"),
+                Alias::new("shared_tool_id"),
+            ))
+            .eq(col(invocation, "tool_key")),
+        )
+        .to_owned();
+    Expr::SubQuery(
+        None,
+        Box::new(sea_query::SubQueryStatement::SelectStatement(select)),
+    )
+}
+
 pub(crate) async fn exact_invocation(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
@@ -448,6 +502,14 @@ pub(crate) async fn exact_invocation(
         )
         .expr_as(col("p", "id"), Alias::new("parent_id"))
         .expr_as(col("p", "call_path"), Alias::new("parent_call_path"))
+        .expr_as(
+            linked_shared_tool_revision("i"),
+            Alias::new("shared_tool_revision"),
+        )
+        .expr_as(
+            linked_shared_tool_revision("p"),
+            Alias::new("parent_shared_tool_revision"),
+        )
         .expr_as(col("i", "admitted_at_unix_nanos"), Alias::new("started_at"))
         .expr_as(col("i", "ended_at_unix_nanos"), Alias::new("ended_at"))
         .expr_as(

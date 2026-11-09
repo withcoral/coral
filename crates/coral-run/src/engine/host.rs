@@ -22,7 +22,7 @@ use super::{ExecutionCompletion, ProgramEngine, ProgramPackage};
 pub(crate) async fn execute(
     engine: Arc<dyn ProgramEngine>,
     package: ProgramPackage,
-    linked_snapshots: HashMap<String, crate::types::LinkedPrivateTool>,
+    linked_snapshots: HashMap<String, crate::types::LinkedTool>,
     invoker: ToolInvoker,
     output: ProgramOutputWriter,
     value_limits: ValueLimits,
@@ -66,8 +66,9 @@ struct RunProgramHost {
     /// to its deadline.
     cpu_budget: Option<std::time::Duration>,
     stop: Arc<ExecutionStop>,
-    /// Each linked Private Tool's path to the definition the Run retained.
-    linked_snapshots: HashMap<String, crate::types::LinkedPrivateTool>,
+    /// Each linked Private or Shared Tool's complete Call Path to the
+    /// definition the Run retained.
+    linked_snapshots: HashMap<String, crate::types::LinkedTool>,
     /// What the Program's own calls and its modules' top-level calls go
     /// through.
     invoker: Arc<ToolInvoker>,
@@ -76,7 +77,10 @@ struct RunProgramHost {
 
 impl RunProgramHost {
     /// Names the Run's retained source for one V8 call site. A Private Tool
-    /// path without a retained snapshot gives no location rather than a guess.
+    /// path without a retained snapshot gives no location rather than a
+    /// guess. A call site inside a Shared Tool gives none either: its source
+    /// is the Workspace's, never the caller's own, and no record names a
+    /// Shared Tool's source yet.
     fn source_location(
         &self,
         location: Option<coral_v8::AuthoredLocation>,
@@ -87,11 +91,12 @@ impl RunProgramHost {
             coral_v8::AuthoredSource::PrivateTool { path } => SourceDocument::PrivateTool {
                 private_tool_id: self
                     .linked_snapshots
-                    .get(&path)?
+                    .get(&format!("coral.private.{path}"))?
                     .binding
                     .definition()
                     .to_owned(),
             },
+            coral_v8::AuthoredSource::SharedTool { .. } => return None,
         };
         Some(SourceLocation {
             document,
@@ -283,9 +288,13 @@ impl RunProgramHost {
                 let call = call.map_err(|error| self.host_error(error))?;
                 // Only the linker performs a call, and only to a Tool the
                 // Run linked.
-                let Some((relative_path, linked)) = call_path
-                    .strip_prefix("coral.private.")
-                    .and_then(|path| Some((path, self.linked_snapshots.get(path)?.clone())))
+                let Some((relative_path, linked)) =
+                    self.linked_snapshots.get(&call_path).and_then(|linked| {
+                        let relative = call_path
+                            .strip_prefix(linked.kind.linked_root()?)?
+                            .strip_prefix('.')?;
+                        Some((relative, linked.clone()))
+                    })
                 else {
                     return Err(self.host_error(InvocationHostError::Rejected(
                         Rejection::tool_not_found(&call_path, Vec::new()),

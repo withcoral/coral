@@ -383,7 +383,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         )
         .await,
         Err(Error::ProgramAdmission(message))
-            if message.contains("may link at most 64 Private Tools")
+            if message.contains("may link at most 64 Private and Shared Tools")
     ));
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }

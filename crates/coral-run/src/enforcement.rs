@@ -400,8 +400,10 @@ async fn tool_fact(
 }
 
 /// The decision for `target` now, holding its exact rule as `lock` says: a
-/// Provider Tool's from its retained Generation's facts, and a Private
-/// Tool's from the default its author declared for the linked revision,
+/// Provider Tool's from its retained Generation's facts, a Shared Tool's
+/// from the default its publishing Owner chose for the linked revision, and
+/// a Private Tool's from the default its author declared for the linked
+/// revision,
 /// for `owner`.
 pub(crate) async fn tool_decision_in_transaction(
     transaction: &mut Transaction<'_>,
@@ -412,8 +414,10 @@ pub(crate) async fn tool_decision_in_transaction(
 ) -> Result<coral_policy::ToolPolicyDecision, coral_policy::Error> {
     let policy_target = policy_target(workspace_id, target);
     let facts = target.tool().policy_facts();
+    let private =
+        target.provider_access().call_root() == &coral_provider::ProviderCallRoot::Private;
     match (target.tool().execution_binding(), facts.declared_default()) {
-        (coral_catalog::ExecutionBinding::Code(_), Some(declared)) => {
+        (coral_catalog::ExecutionBinding::Code(_), Some(declared)) if private => {
             coral_policy::private_tool_decision_in_transaction(
                 transaction,
                 &policy_target,
@@ -424,8 +428,11 @@ pub(crate) async fn tool_decision_in_transaction(
             .await
         }
         (coral_catalog::ExecutionBinding::Code(_), None) => Err(coral_policy::Error::CorruptData(
-            "a Private Tool declares no default".to_owned(),
+            "a Tool that Coral performs from its source declares no default".to_owned(),
         )),
+        // A Shared Tool is the Workspace's, so an Owner's exact rule applies
+        // to every caller, and the default its publishing Owner chose applies
+        // otherwise, as a catalog's declared default does.
         _ => {
             coral_policy::invocation_decision_in_transaction(
                 transaction,

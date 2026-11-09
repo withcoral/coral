@@ -156,7 +156,7 @@ mod inspection;
 mod inspection_repository;
 pub use inspection::{
     InvocationDetail, InvocationOutcome, RunContextImpact, RunDetail, RunEventDetail,
-    RunInspection, SourceSnapshot,
+    RunInspection, SharedSourceSnapshot, SourceSnapshot,
 };
 mod invocation;
 mod invocation_lifecycle;

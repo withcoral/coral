@@ -20,16 +20,36 @@ pub enum ToolKind {
     Provider,
     /// A Private Tool, whose body Coral performs in the Program.
     Private,
+    /// A Shared Tool, whose body Coral performs in the Program.
+    Shared,
 }
 impl ToolKind {
     /// The kind of Tool that `call_path` called: the Private Provider's Call
-    /// Root holds only Private Tools. An Invocation retains the Call Path it
-    /// resolved, so its kind never changes after admission.
+    /// Root holds only Private Tools, and the Shared Provider's only Shared
+    /// Tools. An Invocation retains the Call Path it resolved, so its kind
+    /// never changes after admission.
     pub(crate) fn of_call_path(call_path: &str) -> Self {
-        let private = coral_provider::ProviderCallRoot::Private;
-        match call_path.strip_prefix(private.as_str()) {
-            Some(relative) if relative.starts_with('.') => Self::Private,
-            _ => Self::Provider,
+        let under = |root: coral_provider::ProviderCallRoot| {
+            call_path
+                .strip_prefix(root.as_str())
+                .is_some_and(|relative| relative.starts_with('.'))
+        };
+        if under(coral_provider::ProviderCallRoot::Private) {
+            Self::Private
+        } else if under(coral_provider::ProviderCallRoot::Shared) {
+            Self::Shared
+        } else {
+            Self::Provider
+        }
+    }
+
+    /// The Call Root every Tool of this kind is under, for a kind whose
+    /// Tools a Run links from their source; `None` for a Provider Tool.
+    pub(crate) const fn linked_root(self) -> Option<&'static str> {
+        match self {
+            Self::Provider => None,
+            Self::Private => Some("coral.private"),
+            Self::Shared => Some("coral.shared"),
         }
     }
 }
@@ -42,6 +62,8 @@ pub struct InvocationParent {
     pub call_path: String,
     /// The kind of Tool it called.
     pub tool_kind: ToolKind,
+    /// The Shared Tool Revision it ran; `None` for every other kind.
+    pub shared_tool_revision: Option<u64>,
 }
 /// Source-free Run summary.
 #[derive(Clone, Debug)]
@@ -96,6 +118,9 @@ pub struct InvocationSummary {
     pub call_path: String,
     /// The kind of Tool it called.
     pub tool_kind: ToolKind,
+    /// The Shared Tool Revision the Run linked and this call ran; `None`
+    /// for every other kind.
+    pub shared_tool_revision: Option<u64>,
     /// The call whose body made it; absent for the Program's own calls and
     /// for those a module's top-level code made.
     pub parent: Option<InvocationParent>,

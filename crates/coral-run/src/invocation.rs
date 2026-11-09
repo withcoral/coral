@@ -349,9 +349,10 @@ impl ToolInvoker {
         ended
     }
 
-    /// Starts one call to the caller's Private Tool at `relative_path`,
-    /// which this Run linked as `linked`: one Invocation, which Coral
-    /// performs by running the Tool's body in the Program. It returns once
+    /// Starts one call to the caller's Private Tool or the Workspace's
+    /// Shared Tool at `relative_path` under its Call Root, which this Run
+    /// linked as `linked`: one Invocation, which Coral performs by running
+    /// the Tool's body in the Program, with the caller's authority. It returns once
     /// the enforcement point permits the call, which then stays
     /// `dispatching` until the body's outcome completes it. It holds no slot
     /// under the Fan-out Limit: the calls its body makes take their own.
@@ -359,13 +360,16 @@ impl ToolInvoker {
         &self,
         child: Option<OpenChild>,
         relative_path: &str,
-        linked: crate::types::LinkedPrivateTool,
+        linked: crate::types::LinkedTool,
         arguments: serde_json::Value,
         source_location: Option<crate::SourceLocation>,
     ) -> Result<PerformedCall, InvocationHostError> {
         let arguments_json = self.arguments_json(&arguments)?;
-        let call_path = format!("coral.private.{relative_path}");
-        let (target, policy) = self.resolve_private(relative_path, linked).await?;
+        let Some(root) = linked.kind.linked_root() else {
+            return Err(Error::CorruptData("a Run linked a Provider Tool".to_owned()).into());
+        };
+        let call_path = format!("{root}.{relative_path}");
+        let (target, policy) = self.resolve_linked(relative_path, linked).await?;
         let id = InvocationId::generate();
         let trace = OpenChild::in_parent_span(child.as_ref(), || {
             crate::trace::InvocationTrace::begin(
@@ -438,18 +442,18 @@ impl ToolInvoker {
         Ok(arguments_json)
     }
 
-    /// Resolves the Private Tool the Run linked as `linked` and its policy,
-    /// outside the Run: the enforcement point rechecks both before the body
-    /// runs.
-    async fn resolve_private(
+    /// Resolves the Private or Shared Tool the Run linked as `linked` and
+    /// its policy, outside the Run: the enforcement point rechecks both
+    /// before the body runs.
+    async fn resolve_linked(
         &self,
         relative_path: &str,
-        linked: crate::types::LinkedPrivateTool,
+        linked: crate::types::LinkedTool,
     ) -> Result<(ResolvedInvocationTool, ToolAccessState), Error> {
         let mut transaction = self.database.begin().await?;
         // Read the caller's authority before the Provider, the order the
-        // enforcement point holds them in. The Tool is the caller's own, so
-        // its role decides whether an Owner's rule on it applies.
+        // enforcement point holds them in. A Private Tool is the caller's
+        // own, so its role decides whether an Owner's rule on it applies.
         let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
         let authority = match self
             .workspaces
@@ -473,15 +477,29 @@ impl ToolInvoker {
             self.actor.principal().kind(),
             authority.effective_user_role(),
         );
-        let Some(target) = coral_provider::resolve_private_tool_in_transaction(
-            &mut transaction,
-            &self.workspace_id,
-            relative_path,
-            linked.binding,
-            linked.declared_default,
-        )
-        .await?
-        else {
+        let resolved = match linked.kind {
+            crate::ToolKind::Shared => {
+                coral_provider::resolve_shared_tool_in_transaction(
+                    &mut transaction,
+                    &self.workspace_id,
+                    relative_path,
+                    linked.binding,
+                    linked.declared_default,
+                )
+                .await?
+            }
+            crate::ToolKind::Private | crate::ToolKind::Provider => {
+                coral_provider::resolve_private_tool_in_transaction(
+                    &mut transaction,
+                    &self.workspace_id,
+                    relative_path,
+                    linked.binding,
+                    linked.declared_default,
+                )
+                .await?
+            }
+        };
+        let Some(target) = resolved else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(
                 CoralFailure::ProviderUnavailable.into(),
@@ -1558,12 +1576,13 @@ impl ToolCall {
             .await
     }
 
-    /// Starts a call to the caller's Private Tool at `relative_path`,
-    /// which the Run linked as `linked`; see [`ToolInvoker::perform`].
+    /// Starts a call to the Private or Shared Tool at `relative_path`
+    /// under its Call Root, which the Run linked as `linked`; see
+    /// [`ToolInvoker::perform`].
     pub(crate) async fn perform(
         self,
         relative_path: &str,
-        linked: crate::types::LinkedPrivateTool,
+        linked: crate::types::LinkedTool,
         arguments: serde_json::Value,
         source_location: Option<crate::SourceLocation>,
     ) -> Result<PerformedCall, InvocationHostError> {
