@@ -15,10 +15,12 @@ import type {
   WorkspaceOwner,
 } from '@/generated/coral/management/v1/membership_pb'
 import {
-  PrivateToolDiagnosticCategory,
-  type PrivateTool,
-  type PrivateToolDiagnostic,
-  type PrivateToolSummary,
+  AuthoredToolDiagnosticCategory,
+  type AuthoredToolDiagnostic,
+} from '@/generated/coral/management/v1/authored_tool_pb'
+import type {
+  PrivateTool,
+  PrivateToolSummary,
 } from '@/generated/coral/management/v1/private_tool_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type {
@@ -163,13 +165,13 @@ export function privateToolView(f: PrivateTool): PrivateToolView {
     savedAt: isoTime(f.updateTime),
   }
 }
-function diagnosticView(d: PrivateToolDiagnostic): PrivateToolDiagnosticView {
+function diagnosticView(d: AuthoredToolDiagnostic): PrivateToolDiagnosticView {
   return {
     category: enumLabel(d.category, {
-      [PrivateToolDiagnosticCategory.ERROR]: 'error',
-      [PrivateToolDiagnosticCategory.WARNING]: 'warning',
-      [PrivateToolDiagnosticCategory.SUGGESTION]: 'suggestion',
-      [PrivateToolDiagnosticCategory.MESSAGE]: 'message',
+      [AuthoredToolDiagnosticCategory.ERROR]: 'error',
+      [AuthoredToolDiagnosticCategory.WARNING]: 'warning',
+      [AuthoredToolDiagnosticCategory.SUGGESTION]: 'suggestion',
+      [AuthoredToolDiagnosticCategory.MESSAGE]: 'message',
     }) as PrivateToolDiagnosticView['category'],
     code: Number(d.code),
     message: d.message,

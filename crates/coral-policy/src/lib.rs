@@ -194,9 +194,13 @@ impl ToolPolicyModule {
             .workspaces
             .check_in_transaction(&mut transaction, actor, workspace, WorkspaceAction::Inspect)
             .await?;
-        let private = coral_provider::private_provider_in_transaction(&mut transaction, workspace)
-            .await?
-            .is_some_and(|private| private.id() == provider);
+        let private = coral_provider::authored_tool_provider_in_transaction(
+            &mut transaction,
+            workspace,
+            coral_catalog::AuthoredToolKind::Private,
+        )
+        .await?
+        .is_some_and(|private| private.id() == provider);
         let (listings, rules_apply) = if private {
             if !(1..=coral_catalog::MAX_TOOL_LISTING_PAGE).contains(&page_size) {
                 return Err(coral_provider::Error::InvalidInput(
@@ -592,9 +596,13 @@ async fn ruled_tool_facts_in_transaction(
     keys: &[ToolKey],
 ) -> Result<RuledTools, Error> {
     let workspace_id = evidence.workspace().id();
-    let private = coral_provider::private_provider_in_transaction(transaction, workspace_id)
-        .await?
-        .is_some_and(|private| private.id() == provider);
+    let private = coral_provider::authored_tool_provider_in_transaction(
+        transaction,
+        workspace_id,
+        coral_catalog::AuthoredToolKind::Private,
+    )
+    .await?
+    .is_some_and(|private| private.id() == provider);
     if !private {
         return Ok(RuledTools {
             facts: coral_provider::tool_policy_facts_batch_in_transaction(

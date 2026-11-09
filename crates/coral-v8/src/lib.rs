@@ -2,7 +2,7 @@
 //!
 //! This private Adapter crate gives `coral-run` narrow compiler and execution
 //! Interfaces. [`ProgramCompiler::compile`] lowers one TypeScript async-function
-//! body; [`ProgramCompiler::prepare_private_tool`] emits one self-contained
+//! body; [`ProgramCompiler::prepare_authored_tool`] emits one self-contained
 //! callable declaration; linked compilation packages one exact current Private
 //! Tool source closure. [`ProgramExecutor::execute`] runs emitted JavaScript in a
 //! fresh V8 isolate. Run execution installs one narrow [`ProgramHost`] through
@@ -606,9 +606,9 @@ pub struct LinkedToolSource {
 
 impl LinkedToolSource {
     /// Builds one validated-domain Private Tool source input for the
-    /// compiler Adapter.
+    /// compiler Adapter, at `path_segments` under `coral.private`.
     #[must_use]
-    pub const fn new(path_segments: Vec<String>, source: String) -> Self {
+    pub const fn private(path_segments: Vec<String>, source: String) -> Self {
         Self {
             root: LinkedToolRoot::Private,
             path_segments,
@@ -839,7 +839,7 @@ impl CoralDeclarations {
 
     /// Types `coral.providers` and the Built-in Tools on `coral` from the Tools the
     /// caller can call. `references` are what
-    /// [`ProgramCompiler::private_tool_call_paths`] found in the same
+    /// [`ProgramCompiler::authored_tool_call_paths`] found in the same
     /// source.
     #[must_use]
     pub fn with_tools(

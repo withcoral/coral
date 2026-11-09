@@ -1198,11 +1198,14 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
 /// The Workspace's Private Provider, in any state.
 async fn private_provider(scope: &AdminScope) -> coral_provider::Provider {
     let mut transaction = scope.fixture.database.begin().await.unwrap();
-    let private =
-        coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
-            .await
-            .unwrap()
-            .expect("the Private Provider");
+    let private = coral_provider::authored_tool_provider_in_transaction(
+        &mut transaction,
+        &scope.workspace_id,
+        coral_catalog::AuthoredToolKind::Private,
+    )
+    .await
+    .unwrap()
+    .expect("the Private Provider");
     transaction.rollback().await.unwrap();
     private
 }

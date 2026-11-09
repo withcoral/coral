@@ -24,16 +24,16 @@ function hasTypeOnlyDefaultExport(sourceFile) {
 
 function validateDefaultCallable(program, sourceFile) {
   if (hasTypeOnlyDefaultExport(sourceFile)) {
-    return 'Private Tool default export must be a runtime value';
+    return 'Tool default export must be a runtime value';
   }
   const checker = program.getTypeChecker();
   const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
   if (!moduleSymbol) {
-    return 'Private Tool source must be a TypeScript module with one default export';
+    return 'Tool source must be a TypeScript module with one default export';
   }
   const exports = checker.getExportsOfModule(moduleSymbol);
   if (exports.length !== 1 || exports[0].escapedName !== 'default') {
-    return 'Private Tool source must export exactly one default callable';
+    return 'Tool source must export exactly one default callable';
   }
   let defaultExport = exports[0];
   if (defaultExport.flags & ts.SymbolFlags.Alias) {
@@ -51,11 +51,11 @@ function validateDefaultCallable(program, sourceFile) {
     hasModifierInAncestors(declaration, ts.SyntaxKind.DeclareKeyword, sourceFile) ||
     (ts.isFunctionDeclaration(declaration) && !declaration.body)
   ) {
-    return 'Private Tool default export must have a runtime implementation';
+    return 'Tool default export must have a runtime implementation';
   }
   const type = checker.getTypeOfSymbolAtLocation(defaultExport, declaration);
   if (checker.getSignaturesOfType(type, ts.SignatureKind.Call).length === 0) {
-    return 'Private Tool default export must be callable';
+    return 'Tool default export must be callable';
   }
   return undefined;
 }
@@ -430,9 +430,7 @@ function privateToolDeclarationResult(emitted, diagnostics, { references, shared
     declarationProjectionError:
       analysis.declarationFields === undefined ? 'declaration_field_projection_failed' : null,
     validationError:
-      unresolved.length === 0
-        ? null
-        : 'Private Tool declaration contains unresolved public type names',
+      unresolved.length === 0 ? null : 'Tool declaration contains unresolved public type names',
     blockingDiagnostics: unresolved.map((diagnostic) => diagnosticPayload(diagnostic)),
     diagnostics,
     references,

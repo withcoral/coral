@@ -347,7 +347,7 @@ impl ProgramEngine for V8ProgramEngine {
         let sources = linked
             .iter()
             .map(|linked| match linked {
-                LinkedSource::Private(snapshot) => coral_v8::LinkedToolSource::new(
+                LinkedSource::Private(snapshot) => coral_v8::LinkedToolSource::private(
                     snapshot.path().segments(),
                     snapshot.source().as_str().to_string(),
                 ),

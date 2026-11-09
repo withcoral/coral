@@ -1538,9 +1538,10 @@ pub(crate) async fn admitted_private_invocation(
 ) -> Arc<crate::invocation::AdmittedInvocation> {
     let now = fixture.clock.now_unix_nanos().expect("clock");
     let mut transaction = fixture.database.begin().await.expect("begin resolution");
-    let target = coral_provider::resolve_private_tool_in_transaction(
+    let target = coral_provider::resolve_authored_tool_in_transaction(
         &mut transaction,
         &tool.workspace_id,
+        coral_catalog::AuthoredToolKind::Private,
         relative_path,
         coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
         coral_catalog::ToolAccessState::Enabled,

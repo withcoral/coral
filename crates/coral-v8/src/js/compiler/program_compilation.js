@@ -86,7 +86,7 @@ function compileProgram(body, builtinTools, fileName, targetName) {
 function compileLinkedProgram(body, privateTools, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   if (!Array.isArray(privateTools)) {
-    throw new Error('Private Tool closure must be an array');
+    throw new Error('Linked Tool closure must be an array');
   }
   const wrapped = wrapProgramBody(body);
   const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
@@ -108,7 +108,7 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
   }
   const modules = privateTools.map((privateTool, index) => {
     if (typeof privateTool?.source !== 'string') {
-      throw new Error('Private Tool closure contains an invalid source entry');
+      throw new Error('Linked Tool closure contains an invalid source entry');
     }
     const { program: moduleProgram, sourceFile } = virtualTypeScriptProgram(
       `private_tool_${index}.ts`,
@@ -116,7 +116,7 @@ function compileLinkedProgram(body, privateTools, builtinTools, fileName, target
       compilerOptions,
     );
     if (!sourceFile) {
-      throw new Error('Private Tool virtual source is missing');
+      throw new Error('Linked Tool virtual source is missing');
     }
     return {
       program: moduleProgram,

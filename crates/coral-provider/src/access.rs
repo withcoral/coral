@@ -145,6 +145,15 @@ impl ProviderCallRoot {
         }
     }
 
+    /// The Call Root of the Workspace's Provider for Tools of `kind`.
+    #[must_use]
+    pub const fn of_authored_tools(kind: coral_catalog::AuthoredToolKind) -> Self {
+        match kind {
+            coral_catalog::AuthoredToolKind::Private => Self::Private,
+            coral_catalog::AuthoredToolKind::Shared => Self::Shared,
+        }
+    }
+
     /// Whether Coral performs the Provider's Tools from authored source
     /// that coral-tools keeps: the Private and the Shared Provider. Such a
     /// Provider's Generation holds no Tool, and it has no Accounts.

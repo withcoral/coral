@@ -216,7 +216,7 @@ impl ProgramCompiler {
     /// # Errors
     ///
     /// Returns a blocking authoring or compiler-isolate failure.
-    pub fn prepare_private_tool(
+    pub fn prepare_authored_tool(
         &self,
         deadline: Instant,
         source: &str,
@@ -224,11 +224,11 @@ impl ProgramCompiler {
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
-            compiler.prepare_private_tool(&source, &builtin_tools, "null")
+            compiler.prepare_authored_tool(&source, &builtin_tools, "null")
         })
     }
 
-    /// Prepares one Private Tool as [`Self::prepare_private_tool`] does,
+    /// Prepares one Private Tool as [`Self::prepare_authored_tool`] does,
     /// with the Call Paths it names typed by `declarations`.
     ///
     /// A result type from `declarations` is inlined into the declaration. When
@@ -239,7 +239,7 @@ impl ProgramCompiler {
     /// # Errors
     ///
     /// Returns a blocking authoring or compiler-isolate failure.
-    pub fn prepare_typed_private_tool(
+    pub fn prepare_typed_authored_tool(
         &self,
         deadline: Instant,
         source: &str,
@@ -250,7 +250,7 @@ impl ProgramCompiler {
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::PrivateTool, deadline, move |compiler| {
-            compiler.prepare_private_tool(&source, &builtin_tools, &declarations_json)
+            compiler.prepare_authored_tool(&source, &builtin_tools, &declarations_json)
         })
     }
 
@@ -261,14 +261,14 @@ impl ProgramCompiler {
     ///
     /// Rejects computed or aliased `coral.private` access and malformed
     /// module source.
-    pub fn private_tool_call_paths(
+    pub fn authored_tool_call_paths(
         &self,
         deadline: Instant,
         source: &str,
     ) -> Result<NamedCallPaths, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.private_tool_call_paths(&source)
+            compiler.authored_tool_call_paths(&source)
         })
     }
 
@@ -360,7 +360,7 @@ impl ProgramCompiler {
     /// Returns blocking compiler diagnostics, invalid linked source, a save
     /// whose source names no top-level function, or a compiler-isolate
     /// failure.
-    pub fn compile_with_private_tools(
+    pub fn compile_linked(
         &self,
         deadline: Instant,
         source: &str,
@@ -371,7 +371,7 @@ impl ProgramCompiler {
         let source = source.to_string();
         let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile_with_private_tools(&source, &private_tools_json, &builtin_tools)
+            compiler.compile_linked(&source, &private_tools_json, &builtin_tools)
         })
     }
 
@@ -641,7 +641,7 @@ impl CompilerIsolate {
         decode_compiled_program(&json)
     }
 
-    fn prepare_private_tool(
+    fn prepare_authored_tool(
         &mut self,
         source: &str,
         builtin_tools: &str,
@@ -695,7 +695,7 @@ impl CompilerIsolate {
         ))
     }
 
-    fn private_tool_call_paths(&mut self, source: &str) -> Result<NamedCallPaths, Error> {
+    fn authored_tool_call_paths(&mut self, source: &str) -> Result<NamedCallPaths, Error> {
         self.call_paths(
             "__coralAnalyzePrivateToolCallPaths",
             PRIVATE_TOOL_FILE_NAME,
@@ -761,7 +761,7 @@ impl CompilerIsolate {
         }
     }
 
-    fn compile_with_private_tools(
+    fn compile_linked(
         &mut self,
         source: &str,
         private_tools_json: &str,
@@ -924,7 +924,7 @@ mod tests {
             let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
                 .expect("authoring compiler");
             authoring
-                .prepare_private_tool(deadline(), "export default () => 1;")
+                .prepare_authored_tool(deadline(), "export default () => 1;")
                 .expect("authoring queue remains available");
             let depths = metrics.named("coral.compiler.queue.depth");
             for (role, expected) in [("run", 32.0), ("authoring", 0.0)] {
@@ -937,7 +937,7 @@ mod tests {
                 assert!((point.value - expected).abs() < f64::EPSILON);
             }
             assert!(matches!(
-                compiler.prepare_private_tool(Instant::now(), "export default () => 1;"),
+                compiler.prepare_authored_tool(Instant::now(), "export default () => 1;"),
                 Err(Error::CompilerBusy)
             ));
             assert_eq!(
@@ -980,7 +980,7 @@ mod tests {
         let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
             .expect("authoring compiler");
         authoring
-            .prepare_private_tool(
+            .prepare_authored_tool(
                 deadline(),
                 "export default function answer() { return 42; }",
             )

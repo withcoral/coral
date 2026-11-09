@@ -18,6 +18,7 @@ inputs:
       - ../../crates/coral-grpc/proto/coral/management/v1/account.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/policy.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/activity.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/authored_tool.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/private_tool.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/release.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/usage_data.proto

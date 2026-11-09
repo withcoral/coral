@@ -89,8 +89,8 @@ fn prepare(
     tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
 ) -> Result<AuthoredToolCompilation, coral_v8::Error> {
-    let named = compiler.private_tool_call_paths(deadline(), source)?;
-    compiler.prepare_typed_private_tool(
+    let named = compiler.authored_tool_call_paths(deadline(), source)?;
+    compiler.prepare_typed_authored_tool(
         deadline(),
         source,
         &CoralDeclarations::new(declaration_max_bytes)
@@ -397,7 +397,7 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 fn call_path_analysis_names_every_candidate_tool_call_path() {
     let compiler = compiler();
     let named = compiler
-        .private_tool_call_paths(
+        .authored_tool_call_paths(
             deadline(),
             "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.listProviders();\n  const e = await coral.search({});\n  return [a, b, c, d, e, coral.providers, coral.private.weather.forecast];\n}",
         )

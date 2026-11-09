@@ -330,9 +330,13 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
         assert_eq!(events().await.len(), before, "{change:?} records no event");
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         let current = if provider.call_root() == &ProviderCallRoot::Private {
-            crate::private_provider_in_transaction(&mut transaction, workspace.id())
-                .await
-                .unwrap()
+            crate::authored_tool_provider_in_transaction(
+                &mut transaction,
+                workspace.id(),
+                coral_catalog::AuthoredToolKind::Private,
+            )
+            .await
+            .unwrap()
         } else {
             crate::active_providers_in_transaction(&mut transaction, workspace.id())
                 .await

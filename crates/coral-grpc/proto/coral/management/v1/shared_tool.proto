@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package coral.management.v1;
 
+import "coral/management/v1/authored_tool.proto";
 import "coral/management/v1/policy.proto";
-import "coral/management/v1/private_tool.proto";
 import "google/protobuf/timestamp.proto";
 
 // The Shared Tools of one Workspace: the Tools at coral.shared that a
@@ -101,7 +101,7 @@ message SharedToolRevision {
   // Exact published TypeScript source.
   string source = 4;
   // Advisory diagnostics retained from the publish.
-  repeated PrivateToolDiagnostic diagnostics = 5;
+  repeated AuthoredToolDiagnostic diagnostics = 5;
   // True when Coral omitted diagnostics beyond its retention bound.
   bool diagnostics_truncated = 6;
   // Lowercase hex SHA-256 of the description and source.
@@ -208,7 +208,7 @@ message SharedToolReview {
   // The declaration the publish emits.
   string declaration = 2;
   // Advisory diagnostics of the reviewed source.
-  repeated PrivateToolDiagnostic diagnostics = 3;
+  repeated AuthoredToolDiagnostic diagnostics = 3;
   // True when Coral omitted diagnostics beyond its retention bound.
   bool diagnostics_truncated = 4;
   // Every Call Path the source calls by a literal path, in path order.

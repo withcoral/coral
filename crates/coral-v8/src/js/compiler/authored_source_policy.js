@@ -510,7 +510,7 @@ function referenceAnalysisProgram(source, fileName, targetName) {
     types: [],
   };
   const { program, sourceFile } = virtualTypeScriptProgram(fileName, source, compilerOptions);
-  if (!sourceFile) throw new Error('Private Tool analysis source is missing');
+  if (!sourceFile) throw new Error('Tool analysis source is missing');
   return { program, sourceFile };
 }
 
@@ -563,7 +563,7 @@ function privateToolDependencyAnalysis(sourceFile, program) {
     return {
       references: [],
       validationError: {
-        message: 'Private Tool source has syntax errors under the current TypeScript Profile',
+        message: 'Tool source has syntax errors under the current TypeScript Profile',
         line: position.line + 1,
         column: position.character + 1,
       },

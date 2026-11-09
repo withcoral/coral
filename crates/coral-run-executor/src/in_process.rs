@@ -76,7 +76,7 @@ impl CompilerClient for InProcessCompiler {
         if private_tools.is_empty() {
             run.compile(deadline, source)
         } else {
-            run.compile_with_private_tools(deadline, source, private_tools)
+            run.compile_linked(deadline, source, private_tools)
         }
         .map_err(compile_error)
     }
@@ -87,7 +87,7 @@ impl CompilerClient for InProcessCompiler {
         source: &str,
     ) -> Result<NamedCallPaths, CompileError> {
         self.authoring
-            .private_tool_call_paths(deadline(time_left), source)
+            .authored_tool_call_paths(deadline(time_left), source)
             .map_err(compile_error)
     }
 
@@ -102,9 +102,9 @@ impl CompilerClient for InProcessCompiler {
         let authoring = self.authoring.with_builtin_tools(builtin_tools);
         match declarations {
             Some(declarations) => {
-                authoring.prepare_typed_private_tool(deadline, source, declarations)
+                authoring.prepare_typed_authored_tool(deadline, source, declarations)
             }
-            None => authoring.prepare_private_tool(deadline, source),
+            None => authoring.prepare_authored_tool(deadline, source),
         }
         .map_err(compile_error)
     }

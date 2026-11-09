@@ -69,9 +69,19 @@ async fn each_workspace_has_one_private_and_one_shared_provider_installed_at_cre
 
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         let found = if call_root == ProviderCallRoot::Private {
-            crate::private_provider_in_transaction(&mut transaction, created.id()).await
+            crate::authored_tool_provider_in_transaction(
+                &mut transaction,
+                created.id(),
+                coral_catalog::AuthoredToolKind::Private,
+            )
+            .await
         } else {
-            crate::shared_provider_in_transaction(&mut transaction, created.id()).await
+            crate::authored_tool_provider_in_transaction(
+                &mut transaction,
+                created.id(),
+                coral_catalog::AuthoredToolKind::Shared,
+            )
+            .await
         }
         .unwrap();
         transaction.rollback().await.unwrap();

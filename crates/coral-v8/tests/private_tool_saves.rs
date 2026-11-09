@@ -41,7 +41,7 @@ fn deadline() -> std::time::Instant {
 }
 
 fn linked(path: &str, source: &str) -> LinkedToolSource {
-    LinkedToolSource::new(
+    LinkedToolSource::private(
         path.split('.').map(str::to_string).collect(),
         source.to_string(),
     )
@@ -54,7 +54,7 @@ fn admit(body: &str, modules: &[LinkedToolSource]) -> Result<CompiledProgram, Er
     if modules.is_empty() {
         compiler().compile(deadline(), body)
     } else {
-        compiler().compile_with_private_tools(deadline(), body, modules)
+        compiler().compile_linked(deadline(), body, modules)
     }
 }
 

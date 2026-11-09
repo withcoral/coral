@@ -211,12 +211,15 @@ async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_
     // step applies first, because today's code publishes the tracer Provider
     // and may read any of them. A later step needs no change to this range
     // unless it depends on one of the held-back steps: 0065 rebuilds the
-    // search tables on SQLite, so it waits with 0066, and the publish reads
-    // none of what they rename.
+    // search tables on SQLite, so it waits with 0066, and 0068 rebuilds the
+    // location columns that 0065 renames, so it waits too. The publish reads
+    // none of what they change.
     let modules = TestModules::with_plan(&coral_test_support::edited_migration_plan(|steps| {
         steps
             .into_iter()
-            .filter(|step| !(48..55).contains(&step.version) && !(65..67).contains(&step.version))
+            .filter(|step| {
+                !(48..55).contains(&step.version) && ![65, 66, 68].contains(&step.version)
+            })
             .collect()
     }))
     .await;

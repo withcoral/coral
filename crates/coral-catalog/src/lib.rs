@@ -43,7 +43,7 @@ mod openapi;
 mod paths;
 pub use authored::{
     AuthoredToolKind, CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME,
-    SHARED_PROVIDER_DISPLAY_NAME, private_tool, shared_tool,
+    SHARED_PROVIDER_DISPLAY_NAME, authored_tool,
 };
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors

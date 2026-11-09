@@ -28,7 +28,7 @@ fn compilation_deadline() -> std::time::Instant {
 }
 
 fn linked_source(path: &[&str], source: &str) -> LinkedToolSource {
-    LinkedToolSource::new(
+    LinkedToolSource::private(
         path.iter().map(|segment| (*segment).to_string()).collect(),
         source.to_string(),
     )
@@ -76,7 +76,7 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
     );
 
     let module = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             "export default async function remind(): Promise<number> { return coral.shared.mail.send(); }",
         )
@@ -473,7 +473,7 @@ fn private_tool_reference_analysis_is_static_and_runtime_only() {
     assert!(shadowed_global.is_empty());
 
     let shadowed = compiler
-        .prepare_private_tool(compilation_deadline(),
+        .prepare_authored_tool(compilation_deadline(),
             "export default function local(coral: { private: { local: { value(): number } } }): number { return coral.private.local.value(); }",
         )
         .expect("prepare a callable with a local coral parameter");
@@ -532,7 +532,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let error = compiler
-        .compile_with_private_tools(compilation_deadline(),
+        .compile_linked(compilation_deadline(),
             "__coralPrivateToolDefaults[0] = () => (() => 'changed'); return coral.private.safe.value();",
             &[linked_source(
                 &["safe", "value"],
@@ -549,7 +549,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
         "unexpected private-binding error: {error:?}"
     );
     compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             "export default function value() { return __coralPrivateToolDefaults[0]; }",
         )
@@ -559,7 +559,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
         "const captured = { __coralPrivateToolDefaults }; return captured;",
     ] {
         compiler
-            .compile_with_private_tools(
+            .compile_linked(
                 compilation_deadline(),
                 source,
                 &[linked_source(
@@ -571,7 +571,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     }
 
     let local_private_name = compiler
-        .compile_with_private_tools(compilation_deadline(),
+        .compile_linked(compilation_deadline(),
             "const __coralPrivateToolDefaults = 42; void coral.private.safe.value; return __coralPrivateToolDefaults;",
             &[linked_source(
                 &["safe", "value"],
@@ -585,7 +585,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
     assert_eq!(output.final_value_json(), Some("42"));
 
     let prototype_probe = compiler
-        .compile_with_private_tools(
+        .compile_linked(
             compilation_deadline(),
             r#"
                 const captured = globalThis.capturedLinkedDefault;
@@ -656,7 +656,7 @@ fn forbidden_capabilities_block_programs_and_private_tools() {
         )
         .expect("an erased unresolved type is ordinary non-blocking semantic advice");
     compiler
-        .prepare_private_tool(compilation_deadline(),
+        .prepare_authored_tool(compilation_deadline(),
             "type BrowserFile = File; export default function available(): boolean { return true; }",
         )
         .expect("a private erased unresolved type must not block Private Tool authoring");
@@ -668,7 +668,7 @@ fn forbidden_capabilities_block_programs_and_private_tools() {
         "export default function values() { return new Float64Array(8); }",
     ] {
         compiler
-            .prepare_private_tool(compilation_deadline(), source)
+            .prepare_authored_tool(compilation_deadline(), source)
             .expect_err("forbidden Private Tool capability must be rejected");
     }
 }
@@ -677,7 +677,7 @@ fn forbidden_capabilities_block_programs_and_private_tools() {
 fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_private_tools(compilation_deadline(),
+        .compile_linked(compilation_deadline(),
             "return coral.private.safe.value();",
             &[
                 linked_source(
@@ -706,7 +706,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = compiler
-        .prepare_private_tool(compilation_deadline(),
+        .prepare_authored_tool(compilation_deadline(),
             r#"
                 interface RecursiveNode {
                     label: string;
@@ -759,7 +759,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
     );
 
     let nested_and_rest = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             r"
                 interface Item { id: string }
@@ -798,7 +798,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
         ),
     ] {
         let projected = compiler
-            .prepare_private_tool(compilation_deadline(), source)
+            .prepare_authored_tool(compilation_deadline(), source)
             .unwrap_or_else(|error| panic!("prepare {case}: {error}"));
         let paths = projected
             .declaration_fields()
@@ -814,7 +814,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
     }
 
     let destructured = compiler
-        .prepare_private_tool(compilation_deadline(),
+        .prepare_authored_tool(compilation_deadline(),
             "export default function inspect({ label }: { label: string }): string { return label; }",
         )
         .expect("prepare destructured Private Tool");
@@ -832,7 +832,7 @@ fn private_tool_authoring_types_the_coral_host_root() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let typed = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             r"
         export default async function report(id: string): Promise<string> {
@@ -866,7 +866,7 @@ fn private_tool_authoring_types_the_coral_host_root() {
     assert_eq!(reference_paths(typed.references()), ["reports.title"]);
 
     let misused = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); return coral.missing; }",
         )
@@ -888,7 +888,7 @@ fn private_tool_authoring_types_the_coral_host_root() {
     }
 
     let error = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             "export default function leak(error: coral.ToolError): string { return error.code; }",
         )
@@ -904,7 +904,7 @@ fn declaration_projection_uses_resolved_public_instance_types() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             compilation_deadline(),
             r#"
         interface Item {
@@ -1710,7 +1710,7 @@ fn failure_stacks_name_only_authored_locations() {
     ];
     for (source, functions, message, frames) in cases {
         let program = compiler
-            .compile_with_private_tools(compilation_deadline(), source, &functions)
+            .compile_linked(compilation_deadline(), source, &functions)
             .expect(source);
         let error = ProgramExecutor::new(IsolateLimits::default())
             .execute_with_host(&program, Arc::new(RejectingToolHost))
@@ -2400,7 +2400,7 @@ fn run_linked_with_recording_host(
 ) -> (Option<String>, Arc<RecordingHost>) {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_private_tools(compilation_deadline(), source, functions)
+        .compile_linked(compilation_deadline(), source, functions)
         .expect("compile output probe");
     let host = RecordingHost::new(
         coral_value::ValueLimits::new(1024, HOST_BYTES, 1024, 1024).expect("limits"),
@@ -3016,7 +3016,7 @@ fn reading_a_program_error_runs_no_program_code() {
 fn private_linker_source_maps_to_no_authored_source() {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_private_tools(
+        .compile_linked(
             compilation_deadline(),
             "coral.private.a(); coral.private.b(); coral.private.c();",
             &[
@@ -3260,7 +3260,7 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
     );
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
-        .compile_with_private_tools(
+        .compile_linked(
             compilation_deadline(),
             "await coral.providers.demo.top({});\n\
              const labels = await Promise.all([\n\

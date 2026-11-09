@@ -168,51 +168,17 @@ fn json_value_schema(catalog: AuthoredToolKind) -> Result<(SchemaGraph, SchemaId
     Ok((schemas.finish().map_err(invalid)?, schema))
 }
 
-/// The Tool an Invocation of a Private Tool retains: the Private Tool at
-/// `relative_path` under `coral.private`, keyed by its stable identity and
-/// performed by running the definition `binding` names. Its author declared
-/// `declared_default` for that revision, which applies when no exact rule
-/// matches.
+/// The Tool an Invocation of a Private or Shared Tool retains: the Tool of
+/// `kind` at `relative_path` under its Call Root, keyed by its stable
+/// identity and performed by running the definition `binding` names.
+/// `declared_default` is the default Tool Access State of that revision,
+/// which its author declared for a Private Tool and its publishing Owner
+/// chose for a Shared Tool; it applies when no exact rule matches.
 ///
 /// # Errors
 ///
 /// Returns an invalid-input failure when the binding names no identity.
-pub fn private_tool(
-    relative_path: &str,
-    binding: CodeExecutionBinding,
-    declared_default: crate::ToolAccessState,
-) -> Result<MaterializedTool, Error> {
-    code_tool(
-        AuthoredToolKind::Private,
-        relative_path,
-        binding,
-        declared_default,
-    )
-}
-
-/// The Tool an Invocation of a Shared Tool retains: the Shared Tool at
-/// `relative_path` under `coral.shared`, keyed by its stable identity and
-/// performed by running the revision `binding` names. The Owner chose
-/// `declared_default` when publishing that revision, which applies when no
-/// exact rule matches.
-///
-/// # Errors
-///
-/// Returns an invalid-input failure when the binding names no identity.
-pub fn shared_tool(
-    relative_path: &str,
-    binding: CodeExecutionBinding,
-    declared_default: crate::ToolAccessState,
-) -> Result<MaterializedTool, Error> {
-    code_tool(
-        AuthoredToolKind::Shared,
-        relative_path,
-        binding,
-        declared_default,
-    )
-}
-
-fn code_tool(
+pub fn authored_tool(
     catalog: AuthoredToolKind,
     relative_path: &str,
     binding: CodeExecutionBinding,

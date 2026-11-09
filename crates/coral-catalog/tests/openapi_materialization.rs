@@ -396,7 +396,7 @@ fn strict_program_errors(declaration: &str, body: &str) -> Vec<u32> {
     );
     let compilation = ProgramCompiler::new(coral_v8::IsolateLimits::default(), CompilerRole::Run)
         .expect("pinned TypeScript compiler")
-        .prepare_private_tool(
+        .prepare_authored_tool(
             std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT,
             &source,
         )
@@ -3030,7 +3030,7 @@ fn assert_strict_compiling_declaration(declaration: &str) {
     let compiler = ProgramCompiler::new(coral_v8::IsolateLimits::default(), CompilerRole::Run)
         .expect("pinned TypeScript compiler");
     let compilation = compiler
-        .prepare_private_tool(
+        .prepare_authored_tool(
             std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT,
             &source,
         )

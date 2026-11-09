@@ -11293,6 +11293,67 @@ pub(crate) mod agent_registration_service_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+/// One bounded advisory diagnostic retained with an accepted Private Tool
+/// save or Shared Tool Publish.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AuthoredToolDiagnostic {
+    /// Diagnostic category.
+    #[prost(enumeration = "AuthoredToolDiagnosticCategory", tag = "1")]
+    pub category: i32,
+    /// Official TypeScript diagnostic code.
+    #[prost(uint64, tag = "2")]
+    pub code: u64,
+    /// Bounded compiler message.
+    #[prost(string, tag = "3")]
+    pub message: ::prost::alloc::string::String,
+    /// One-based source line, when known.
+    #[prost(uint64, optional, tag = "4")]
+    pub line: ::core::option::Option<u64>,
+    /// One-based source column, when known.
+    #[prost(uint64, optional, tag = "5")]
+    pub column: ::core::option::Option<u64>,
+}
+/// Category of one advisory TypeScript diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AuthoredToolDiagnosticCategory {
+    /// Not supplied or not recognized by this client.
+    Unspecified = 0,
+    /// Informational compiler message.
+    Message = 1,
+    /// Non-blocking warning.
+    Warning = 2,
+    /// Strict semantic error retained without rejecting the save or publish.
+    Error = 3,
+    /// Non-blocking authoring suggestion.
+    Suggestion = 4,
+}
+impl AuthoredToolDiagnosticCategory {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED",
+            Self::Message => "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE",
+            Self::Warning => "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_WARNING",
+            Self::Error => "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_ERROR",
+            Self::Suggestion => "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED" => Some(Self::Unspecified),
+            "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE" => Some(Self::Message),
+            "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_WARNING" => Some(Self::Warning),
+            "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_ERROR" => Some(Self::Error),
+            "AUTHORED_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION" => Some(Self::Suggestion),
+            _ => None,
+        }
+    }
+}
 /// Identifies a Task without selecting the authenticated Principal.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTaskRequest {
@@ -14377,73 +14438,13 @@ pub struct PrivateTool {
     pub source: ::prost::alloc::string::String,
     /// Advisory diagnostics retained from the latest accepted save.
     #[prost(message, repeated, tag = "5")]
-    pub diagnostics: ::prost::alloc::vec::Vec<PrivateToolDiagnostic>,
+    pub diagnostics: ::prost::alloc::vec::Vec<AuthoredToolDiagnostic>,
     /// True when Coral omitted diagnostics beyond its retention bound.
     #[prost(bool, tag = "6")]
     pub diagnostics_truncated: bool,
     /// Occurrence time of the latest accepted save.
     #[prost(message, optional, tag = "7")]
     pub update_time: ::core::option::Option<::prost_types::Timestamp>,
-}
-/// One bounded advisory diagnostic retained with an accepted save.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PrivateToolDiagnostic {
-    /// Diagnostic category.
-    #[prost(enumeration = "PrivateToolDiagnosticCategory", tag = "1")]
-    pub category: i32,
-    /// Official TypeScript diagnostic code.
-    #[prost(uint64, tag = "2")]
-    pub code: u64,
-    /// Bounded compiler message.
-    #[prost(string, tag = "3")]
-    pub message: ::prost::alloc::string::String,
-    /// One-based source line, when known.
-    #[prost(uint64, optional, tag = "4")]
-    pub line: ::core::option::Option<u64>,
-    /// One-based source column, when known.
-    #[prost(uint64, optional, tag = "5")]
-    pub column: ::core::option::Option<u64>,
-}
-/// Category of one advisory TypeScript diagnostic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum PrivateToolDiagnosticCategory {
-    /// Not supplied or not recognized by this client.
-    Unspecified = 0,
-    /// Informational compiler message.
-    Message = 1,
-    /// Non-blocking warning.
-    Warning = 2,
-    /// Strict semantic error retained without rejecting the save.
-    Error = 3,
-    /// Non-blocking authoring suggestion.
-    Suggestion = 4,
-}
-impl PrivateToolDiagnosticCategory {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED",
-            Self::Message => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE",
-            Self::Warning => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_WARNING",
-            Self::Error => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_ERROR",
-            Self::Suggestion => "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_UNSPECIFIED" => Some(Self::Unspecified),
-            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_MESSAGE" => Some(Self::Message),
-            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_WARNING" => Some(Self::Warning),
-            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_ERROR" => Some(Self::Error),
-            "PRIVATE_TOOL_DIAGNOSTIC_CATEGORY_SUGGESTION" => Some(Self::Suggestion),
-            _ => None,
-        }
-    }
 }
 /// Generated client implementations.
 pub mod private_tool_service_client {
@@ -15345,7 +15346,7 @@ pub struct SharedToolRevision {
     pub source: ::prost::alloc::string::String,
     /// Advisory diagnostics retained from the publish.
     #[prost(message, repeated, tag = "5")]
-    pub diagnostics: ::prost::alloc::vec::Vec<PrivateToolDiagnostic>,
+    pub diagnostics: ::prost::alloc::vec::Vec<AuthoredToolDiagnostic>,
     /// True when Coral omitted diagnostics beyond its retention bound.
     #[prost(bool, tag = "6")]
     pub diagnostics_truncated: bool,
@@ -15494,7 +15495,7 @@ pub struct SharedToolReview {
     pub declaration: ::prost::alloc::string::String,
     /// Advisory diagnostics of the reviewed source.
     #[prost(message, repeated, tag = "3")]
-    pub diagnostics: ::prost::alloc::vec::Vec<PrivateToolDiagnostic>,
+    pub diagnostics: ::prost::alloc::vec::Vec<AuthoredToolDiagnostic>,
     /// True when Coral omitted diagnostics beyond its retention bound.
     #[prost(bool, tag = "4")]
     pub diagnostics_truncated: bool,

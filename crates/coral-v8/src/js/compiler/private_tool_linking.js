@@ -29,7 +29,7 @@ function privateToolRuntimeBody(source, target, extraEdits) {
       (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
     )
   ) {
-    throw new Error('Private Tool source has syntax errors under the current TypeScript Profile');
+    throw new Error('Tool source has syntax errors under the current TypeScript Profile');
   }
   const capabilityError = forbiddenCapabilityError(sourceFile);
   if (capabilityError !== undefined) {
@@ -73,7 +73,7 @@ function privateToolRuntimeBody(source, target, extraEdits) {
 
     if (ts.isFunctionDeclaration(statement) && isDefault && isExported) {
       if (!statement.body) {
-        throw new Error('Private Tool default export must have a runtime implementation');
+        throw new Error('Tool default export must have a runtime implementation');
       }
       for (const modifier of exportModifiers) {
         edits.push({ start: modifier.getStart(sourceFile), end: modifier.end });
@@ -131,11 +131,11 @@ function privateToolRuntimeBody(source, target, extraEdits) {
       continue;
     }
     if (isDefault || isExported || ts.isExportDeclaration(statement)) {
-      throw new Error('Private Tool source has an unsupported export shape');
+      throw new Error('Tool source has an unsupported export shape');
     }
   }
   if (defaultName === undefined) {
-    throw new Error('Private Tool source has no runtime default export');
+    throw new Error('Tool source has no runtime default export');
   }
   edits.push(...extraEdits);
   edits.sort((left, right) => left.start - right.start);
@@ -262,11 +262,11 @@ function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
       privateTool.pathSegments.some((segment) => typeof segment !== 'string') ||
       typeof privateTool.source !== 'string'
     ) {
-      throw new Error('Private Tool closure contains an invalid source entry');
+      throw new Error('Linked Tool closure contains an invalid source entry');
     }
     const key = privateTool.pathSegments.join('.');
     if (pathKeys[privateTool.root].has(key)) {
-      throw new Error('Private Tool closure contains a duplicate path');
+      throw new Error('Linked Tool closure contains a duplicate path');
     }
     pathKeys[privateTool.root].add(key);
   }
@@ -274,7 +274,7 @@ function linkedProgramSource(body, privateTools, builtinTools, target, saves) {
     for (const key of keys) {
       for (const other of keys) {
         if (key !== other && other.startsWith(`${key}.`)) {
-          throw new Error('Private Tool closure contains a callable namespace conflict');
+          throw new Error('Linked Tool closure contains a callable namespace conflict');
         }
       }
     }
@@ -317,7 +317,7 @@ ${coralRootPrelude(builtinTools, privateTools)}
       typeof __coralPrivateToolDefaults[${module.index}] !== "function"
       || typeof __coralPrivateToolDefaults[${module.index}]() !== "function"
     ) {
-      throw new TypeError("Private Tool default export is not callable");
+      throw new TypeError("Tool default export is not callable");
     }
 `);
   }

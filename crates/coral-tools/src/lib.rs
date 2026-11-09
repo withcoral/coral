@@ -1,5 +1,8 @@
 //! The Tools that Coral performs from authored source: each Principal's current
-//! Private Tools, their authoring and their discovery material.
+//! Private Tools and the Workspace's Shared Tools, their authoring and their
+//! discovery material. The two kinds share one authoring seam: the same
+//! compiler prepares either source, and the same types hold its description,
+//! source, declaration and diagnostics.
 //!
 //! [`PrivateToolModule`] owns current definitions, validation, visibility, and
 //! atomic Administrative Lifecycle Events. It uses canonical Workspace authority

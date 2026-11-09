@@ -2,7 +2,7 @@ import { ConnectError, Code } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
-import { PrivateToolDiagnosticCategory } from '@/generated/coral/management/v1/private_tool_pb'
+import { AuthoredToolDiagnosticCategory } from '@/generated/coral/management/v1/authored_tool_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport, type ManagementHandlers } from '@/lib/management.test-support'
 import { action as functionAction, loader as functionLoader } from './function'
@@ -160,14 +160,14 @@ it('loads one function with its source, declaration, and saved diagnostics', asy
         source: 'export default () => missing;',
         diagnostics: [
           {
-            category: PrivateToolDiagnosticCategory.ERROR,
+            category: AuthoredToolDiagnosticCategory.ERROR,
             code: 2304n,
             message: "Cannot find name 'missing'.",
             line: 1n,
             column: 22n,
           },
           {
-            category: PrivateToolDiagnosticCategory.SUGGESTION,
+            category: AuthoredToolDiagnosticCategory.SUGGESTION,
             code: 80004n,
             message: 'Consider a type annotation.',
           },

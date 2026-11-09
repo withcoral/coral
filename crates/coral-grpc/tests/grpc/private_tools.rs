@@ -108,7 +108,7 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
     assert!(matches!(
         function.diagnostics.as_slice(),
         [diagnostic]
-            if diagnostic.category() == management::PrivateToolDiagnosticCategory::Error
+            if diagnostic.category() == management::AuthoredToolDiagnosticCategory::Error
                 && diagnostic.message.contains("missing")
                 && diagnostic.line == Some(1)
     ));

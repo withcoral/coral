@@ -357,6 +357,21 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
     );
 }
 
+/// The Private Provider of `scope`'s Workspace.
+async fn private_provider(fixture: &TestModules, scope: &TracerScope) -> coral_provider::Provider {
+    let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
+    let provider = coral_provider::authored_tool_provider_in_transaction(
+        &mut transaction,
+        &scope.workspace_id,
+        coral_catalog::AuthoredToolKind::Private,
+    )
+    .await
+    .unwrap()
+    .expect("the Workspace's Private Provider");
+    transaction.rollback().await.unwrap();
+    provider
+}
+
 // Catches: a Private Tool's description that ignores an Owner's rule over
 // its declared default, or a search or describe that shows a Private Tool a rule or
 // a disabled Private Provider stops.
@@ -364,13 +379,7 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
 async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
-    let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
-    let provider =
-        coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
-            .await
-            .unwrap()
-            .expect("the Workspace's Private Provider");
-    transaction.rollback().await.unwrap();
+    let provider = private_provider(&fixture, &scope).await;
     let target = ToolPolicyTarget::new(
         scope.workspace_id.clone(),
         provider.id().clone(),
@@ -488,13 +497,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     let AuthoringDescription::PrivateTool(private) = described_private_tool.authoring() else {
         panic!("the tracer function is a Private Tool");
     };
-    let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
-    let provider =
-        coral_provider::private_provider_in_transaction(&mut transaction, &scope.workspace_id)
-            .await
-            .unwrap()
-            .expect("the Workspace's Private Provider");
-    transaction.rollback().await.unwrap();
+    let provider = private_provider(&fixture, &scope).await;
     assert_eq!(private.provider_id(), provider.id());
     assert_eq!(private.provider_display_name(), "Private");
     assert_eq!(

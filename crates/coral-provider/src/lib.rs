@@ -731,42 +731,23 @@ pub async fn provider_tool_paths_in_transaction(
     Ok(Some((active.provider.id().clone(), paths)))
 }
 
-/// The Workspace's Private Provider, in any state; `None` when the Workspace
-/// has none yet. Its Tools are the Private Tools coral-tools keeps, so
-/// the caller owns authority and decides which of them a Principal reaches.
+/// The Workspace's Provider for Tools of `kind`, the Private or the Shared
+/// Provider, in any state; `None` when the Workspace has none yet. Its Tools
+/// are rows coral-tools keeps, so the caller owns authority and decides
+/// which of them a Principal reaches.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt Provider failure.
-pub async fn private_provider_in_transaction(
+pub async fn authored_tool_provider_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
+    kind: coral_catalog::AuthoredToolKind,
 ) -> Result<Option<Provider>, Error> {
     Ok(repository::current_provider(
         transaction,
         workspace_id,
-        repository::ProviderKey::CallRoot(&ProviderCallRoot::Private),
-        repository::ProviderHold::None,
-    )
-    .await?
-    .map(|active| active.provider))
-}
-
-/// The Workspace's Shared Provider, in any state; `None` when the Workspace
-/// has none yet. Its Tools are the Shared Tools coral-tools keeps, which
-/// every Principal in the Workspace reaches.
-///
-/// # Errors
-///
-/// Returns a persistence or corrupt Provider failure.
-pub async fn shared_provider_in_transaction(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-) -> Result<Option<Provider>, Error> {
-    Ok(repository::current_provider(
-        transaction,
-        workspace_id,
-        repository::ProviderKey::CallRoot(&ProviderCallRoot::Shared),
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
         repository::ProviderHold::None,
     )
     .await?
@@ -895,64 +876,31 @@ pub async fn resolve_invocation_tool_in_transaction(
     resolved(transaction, reached).await
 }
 
-/// Resolves one of the caller's Private Tools to the Tool its Invocation
-/// retains: the Tool at `relative_path` under `coral.private` that Coral
-/// performs by running the definition `binding` names, with the default its
-/// author declared for that revision, in the Workspace's
-/// Private Provider, which this holds shared as the Policy Enforcement
-/// Point does. The caller decides which Private Tools a Principal reaches:
-/// a Run links only its own, and binds each call to the definition it
-/// linked. `None` when the Private Provider is not active.
+/// Resolves one Private or Shared Tool to the Tool its Invocation retains:
+/// the Tool of `kind` at `relative_path` under its Call Root that Coral
+/// performs by running the definition `binding` names, with the default
+/// Tool Access State of that revision, in the Workspace's Provider for the
+/// kind, which this holds shared as the Policy Enforcement Point does. The
+/// caller decides which Tools a Principal reaches: a Run links only its own
+/// Private Tools and the Workspace's Shared Tools, and binds each call to
+/// the definition it linked. `None` when that Provider is not active.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-package failure.
-pub async fn resolve_private_tool_in_transaction(
+pub async fn resolve_authored_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
+    kind: coral_catalog::AuthoredToolKind,
     relative_path: &str,
     binding: coral_catalog::CodeExecutionBinding,
     declared_default: coral_catalog::ToolAccessState,
 ) -> Result<Option<ResolvedInvocationTool>, Error> {
-    let tool = coral_catalog::private_tool(relative_path, binding, declared_default)?;
-    resolve_code_tool(transaction, workspace_id, &ProviderCallRoot::Private, tool).await
-}
-
-/// Resolves one of the Workspace's Shared Tools to the Tool its Invocation
-/// retains: the Tool at `relative_path` under `coral.shared` that Coral
-/// performs by running the revision `binding` names, with the default its
-/// publishing Owner chose for that revision, in the Workspace's Shared
-/// Provider, which this holds shared as the Policy Enforcement Point does.
-/// Every Principal in the Workspace reaches every Shared Tool, and a Run
-/// binds each call to the revision it linked. `None` when the Shared
-/// Provider is not active.
-///
-/// # Errors
-///
-/// Returns a persistence or corrupt-package failure.
-pub async fn resolve_shared_tool_in_transaction(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    relative_path: &str,
-    binding: coral_catalog::CodeExecutionBinding,
-    declared_default: coral_catalog::ToolAccessState,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
-    let tool = coral_catalog::shared_tool(relative_path, binding, declared_default)?;
-    resolve_code_tool(transaction, workspace_id, &ProviderCallRoot::Shared, tool).await
-}
-
-/// Resolves `tool`, which Coral performs from its source, in the active
-/// Provider at `call_root`, held shared.
-async fn resolve_code_tool(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    call_root: &ProviderCallRoot,
-    tool: coral_catalog::MaterializedTool,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let tool = coral_catalog::authored_tool(kind, relative_path, binding, declared_default)?;
     let Some(stored) = repository::current_provider(
         transaction,
         workspace_id,
-        repository::ProviderKey::CallRoot(call_root),
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
         coral_db::RowLock::Shared.into(),
     )
     .await?

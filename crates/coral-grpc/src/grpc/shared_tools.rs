@@ -190,7 +190,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         };
         let shared_provider = self
             .providers
-            .inspect_shared_provider(&user, &w)
+            .inspect_authored_tool_provider(&user, &w, coral_catalog::AuthoredToolKind::Shared)
             .await
             .map_err(super::providers::error)?;
         let page = self

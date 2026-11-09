@@ -290,11 +290,13 @@ impl PrivateToolPolicy {
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
     ) -> Result<Option<Self>, Error> {
-        let Some(provider) =
-            coral_provider::private_provider_in_transaction(transaction, context.workspace_id)
-                .await?
-                .filter(|provider| provider.state() == coral_provider::ProviderState::Active)
-        else {
+        let Some(provider) = coral_provider::authored_tool_provider_in_transaction(
+            transaction,
+            context.workspace_id,
+            coral_catalog::AuthoredToolKind::Private,
+        )
+        .await?
+        .filter(|provider| provider.state() == coral_provider::ProviderState::Active) else {
             return Ok(None);
         };
         Ok(Some(Self {

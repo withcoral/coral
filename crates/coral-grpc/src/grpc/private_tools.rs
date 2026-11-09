@@ -57,16 +57,16 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
     }
 }
 
-pub(super) fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> wire::PrivateToolDiagnostic {
+pub(super) fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> wire::AuthoredToolDiagnostic {
     let category = match diagnostic.category() {
-        AuthoredToolDiagnosticCategory::Message => wire::PrivateToolDiagnosticCategory::Message,
-        AuthoredToolDiagnosticCategory::Warning => wire::PrivateToolDiagnosticCategory::Warning,
-        AuthoredToolDiagnosticCategory::Error => wire::PrivateToolDiagnosticCategory::Error,
+        AuthoredToolDiagnosticCategory::Message => wire::AuthoredToolDiagnosticCategory::Message,
+        AuthoredToolDiagnosticCategory::Warning => wire::AuthoredToolDiagnosticCategory::Warning,
+        AuthoredToolDiagnosticCategory::Error => wire::AuthoredToolDiagnosticCategory::Error,
         AuthoredToolDiagnosticCategory::Suggestion => {
-            wire::PrivateToolDiagnosticCategory::Suggestion
+            wire::AuthoredToolDiagnosticCategory::Suggestion
         }
     };
-    wire::PrivateToolDiagnostic {
+    wire::AuthoredToolDiagnostic {
         category: category.into(),
         code: diagnostic.code(),
         message: diagnostic.message().to_owned(),
@@ -106,7 +106,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         };
         let private_provider = self
             .providers
-            .inspect_private_provider(&user, &w)
+            .inspect_authored_tool_provider(&user, &w, coral_catalog::AuthoredToolKind::Private)
             .await
             .map_err(super::providers::error)?;
         let page = self

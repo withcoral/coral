@@ -474,28 +474,15 @@ impl ToolInvoker {
             self.actor.principal().kind(),
             authority.effective_user_role(),
         );
-        let resolved = match linked.kind {
-            coral_catalog::AuthoredToolKind::Shared => {
-                coral_provider::resolve_shared_tool_in_transaction(
-                    &mut transaction,
-                    &self.workspace_id,
-                    relative_path,
-                    linked.binding,
-                    linked.declared_default,
-                )
-                .await?
-            }
-            coral_catalog::AuthoredToolKind::Private => {
-                coral_provider::resolve_private_tool_in_transaction(
-                    &mut transaction,
-                    &self.workspace_id,
-                    relative_path,
-                    linked.binding,
-                    linked.declared_default,
-                )
-                .await?
-            }
-        };
+        let resolved = coral_provider::resolve_authored_tool_in_transaction(
+            &mut transaction,
+            &self.workspace_id,
+            linked.kind,
+            relative_path,
+            linked.binding,
+            linked.declared_default,
+        )
+        .await?;
         let Some(target) = resolved else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(
