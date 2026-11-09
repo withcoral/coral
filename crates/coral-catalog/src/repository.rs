@@ -1045,8 +1045,7 @@ async fn retained_credential_contract(
                 .to_owned(),
         )
         .await?;
-    let (value,) =
-        row.ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))?;
+    let (value,) = row.ok_or_else(no_retained_generation)?;
     crate::ProviderCredentialContract::from_storage(&value).map(std::sync::Arc::new)
 }
 
@@ -1432,9 +1431,20 @@ async fn require_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<(), Error> {
-    retained_credential_contract(transaction, generation_id)
-        .await
-        .map(|_contract| ())
+    let generation: Option<(String,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(ProviderGenerations::Id)
+                .from(ProviderGenerations::Table)
+                .and_where(Expr::col(ProviderGenerations::Id).eq(generation_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    generation.map(|_| ()).ok_or_else(no_retained_generation)
+}
+
+fn no_retained_generation() -> Error {
+    Error::CorruptData("Provider has no retained Generation".to_string())
 }
 
 async fn load_one_tool(
