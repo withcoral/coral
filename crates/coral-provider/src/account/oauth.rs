@@ -621,7 +621,8 @@ pub(super) async fn form_request(
         .map_err(token_transport_error)?;
     let status = response.status();
     // The body carries tokens. The shared reader reserves its whole limit up
-    // front, so no copy of them is left in a freed allocation as it fills.
+    // front, so its buffer never grows and leaves no copy behind. The network
+    // chunks it copies from are freed without a wipe; that is out of reach here.
     let body = coral_outbound::read_bounded_body(response, TOKEN_RESPONSE_LIMIT)
         .await
         .map_err(|error| match error {
