@@ -64,15 +64,13 @@ pub(crate) enum Namespaces<'a> {
 /// `exec`'s description for one caller: the fixed text, then the namespaces
 /// its `provider` filter takes, each with its display name when that says
 /// more than the namespace. Whole lines only: when the list does not fit, it
-/// ends with how many it leaves out, which a wrong namespace's refusal lists.
+/// ends with how many it leaves out and where to read them. When Coral cannot
+/// list them, the description says to leave `provider` out.
 pub(crate) fn exec_description(namespaces: &Namespaces<'_>) -> String {
     let mut description = String::from(EXEC_TOOL_DESCRIPTION);
     let providers = match namespaces {
         Namespaces::Unavailable => {
-            description.push_str(
-                "\n\nCoral could not list your namespaces. A wrong `provider` is refused with \
-                 the full list.",
-            );
+            description.push_str("\n\nCoral could not list your namespaces. Leave `provider` out.");
             return description;
         }
         Namespaces::Listed([]) => return description,
@@ -82,7 +80,10 @@ pub(crate) fn exec_description(namespaces: &Namespaces<'_>) -> String {
         if count == 0 {
             String::new()
         } else {
-            format!("\nand {count} more; a wrong `provider` is refused with all of them.")
+            format!(
+                "\nand {count} more: read them with `coral.workspace.listProviders` (its active \
+                 ones), or pass one and a wrong `provider` is refused with all of them."
+            )
         }
     };
     description.push_str("\n\nNamespaces for `provider`:");
@@ -561,8 +562,8 @@ mod tests {
         assert_eq!(
             exec_description(&Namespaces::Unavailable),
             format!(
-                "{EXEC_TOOL_DESCRIPTION}\n\nCoral could not list your namespaces. A wrong \
-                 `provider` is refused with the full list."
+                "{EXEC_TOOL_DESCRIPTION}\n\nCoral could not list your namespaces. Leave \
+                 `provider` out."
             )
         );
         assert_eq!(
@@ -602,7 +603,8 @@ mod tests {
         assert_eq!(
             tail,
             format!(
-                "and {} more; a wrong `provider` is refused with all of them.",
+                "and {} more: read them with `coral.workspace.listProviders` (its active ones), \
+                 or pass one and a wrong `provider` is refused with all of them.",
                 providers.len() - shown.len()
             )
         );
@@ -611,8 +613,9 @@ mod tests {
             .expect("the count ends the list");
         let left = providers.len() - shown.len();
         let one_more = format!(
-            "{uncounted}\nprovider_{:03}\tA Provider\nand {} more; a wrong `provider` is refused \
-             with all of them.",
+            "{uncounted}\nprovider_{:03}\tA Provider\nand {} more: read them with \
+             `coral.workspace.listProviders` (its active ones), or pass one and a wrong \
+             `provider` is refused with all of them.",
             shown.len(),
             left - 1
         );

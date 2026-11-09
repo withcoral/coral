@@ -1655,10 +1655,7 @@ async fn a_failed_namespace_lookup_still_lists_every_tool() {
         .and_then(|tool| tool.description.as_deref())
         .expect("exec description");
     assert!(
-        description.ends_with(
-            "\n\nCoral could not list your namespaces. A wrong `provider` is refused with the \
-             full list."
-        ),
+        description.ends_with("\n\nCoral could not list your namespaces. Leave `provider` out."),
         "{description}"
     );
 }
