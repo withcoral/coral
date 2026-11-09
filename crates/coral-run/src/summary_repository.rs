@@ -6,7 +6,9 @@ use crate::summary::{
 use crate::{CoralFailure, Error, InvocationResultKind};
 use coral_db::{Transaction, col, column};
 use coral_workspace::HistoryAuthority;
-use sea_query::{Alias, Expr, ExprTrait as _, Func, JoinType, Order, Query, SelectStatement};
+use sea_query::{
+    Alias, Asterisk, Expr, ExprTrait as _, Func, JoinType, Order, Query, SelectStatement,
+};
 
 /// Authorized Runs as `r`, each joined to its rows of `table` as `alias`.
 fn authorized_runs_with(authority: &HistoryAuthority, table: &str, alias: &str) -> SelectStatement {
@@ -65,6 +67,9 @@ fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> 
 }
 
 /// Ended Invocations grouped by invoking Principal, Tool, Call Path and native outcome.
+/// Only an ended Invocation holds an ended time, by the lifecycle constraint. So
+/// the read names neither `state` nor `id`. Migration 0058 indexes ended times;
+/// Tool identity still requires row reads. The query never selects payloads.
 pub(crate) async fn call_outcomes(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
@@ -82,15 +87,12 @@ pub(crate) async fn call_outcomes(
     grouped
         .columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
         .columns(invocations.map(|name| (Alias::new("i"), Alias::new(name))))
-        .expr_as(
-            Expr::col((Alias::new("i"), Alias::new("id"))).count(),
-            Alias::new("calls"),
-        )
+        .expr_as(Expr::col(Asterisk).count(), Alias::new("calls"))
         .expr_as(
             Expr::col((Alias::new("i"), Alias::new("ended_at_unix_nanos"))).max(),
             Alias::new("last_ended_at_unix_nanos"),
         )
-        .and_where(ended_since(since))
+        .and_where(col("i", "ended_at_unix_nanos").gte(since))
         .group_by_columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
         .group_by_columns(invocations.map(|name| (Alias::new("i"), Alias::new(name))));
     // The label reads one Agent row per group, not per Invocation.
@@ -239,11 +241,13 @@ struct ActorRow {
     principal_id: String,
     principal_kind: String,
     agent_label: Option<String>,
-    bytes: i64,
+    bytes: Option<i64>,
 }
 
 /// Net bytes of measured Runs that ended in the window, per invoking Principal.
-/// Running and indeterminate Runs have no total and add nothing.
+/// Running and indeterminate Runs have no total and add nothing. `SUM` skips them,
+/// so a Principal with only such Runs sums to NULL and has no row in the result. A
+/// SQL filter on `m.bytes` would run the measurement's subqueries a second time.
 pub(crate) async fn actor_context(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
@@ -274,17 +278,18 @@ pub(crate) async fn actor_context(
             Alias::new("agent_label"),
         )
         .expr_as(big_sum(col("m", "bytes")), Alias::new("bytes"))
-        .and_where(col("m", "bytes").is_not_null())
         .group_by_columns(fields.map(|name| (Alias::new("m"), Alias::new(name))))
         .to_owned();
     let rows: Vec<ActorRow> = tx.fetch_all(select).await?;
     rows.into_iter()
-        .map(|row| {
-            Ok(ActorContext {
-                principal: principal(&row.principal_id, &row.principal_kind)?,
+        .filter_map(|row| {
+            let bytes = row.bytes?;
+            let principal = principal(&row.principal_id, &row.principal_kind);
+            Some(principal.map(|principal| ActorContext {
+                principal,
                 agent_label: row.agent_label,
-                bytes: row.bytes,
-            })
+                bytes,
+            }))
         })
         .collect()
 }

@@ -28,13 +28,14 @@ async fn finish(
     actor: &AuthenticatedPrincipal,
     workspace: &coral_workspace::WorkspaceId,
     source: &str,
-) {
+) -> crate::RunId {
     let run = fixture
         .runs
         .start(actor, workspace, submission(source))
         .await
         .unwrap();
     wait_for_terminal(&fixture.runs, actor, workspace, run.run_id()).await;
+    run.run_id().clone()
 }
 
 /// Starts a Run whose call waits on approval, with the request that holds it.
@@ -441,6 +442,250 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
         "the unmeasured Run adds nothing"
     );
     assert_eq!(added(after.calls, measured.calls).failed, 1);
+}
+
+/// Sets a one-call Run's net bytes to `-spent` by rewriting its call's result size.
+async fn set_net_bytes(fixture: &TestModules, run: &crate::RunId, spent: i64) {
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET result_bytes = {spent} + \
+             (SELECT SUM(e.output_bytes) FROM program_run_events e WHERE e.run_id = '{run}') \
+             WHERE run_id = '{run}'"
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+}
+
+async fn make_unmeasured(fixture: &TestModules, run: &crate::RunId) {
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET result_kind = 'indeterminate', result_json = NULL \
+             WHERE run_id = '{run}'"
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+}
+
+/// A Principal's total sums only measured Runs. Without one the Principal has no
+/// total, and a total of zero is still a total.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_totals_only_each_principals_measured_runs() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (owner, workspace) = (&tool.principal, &tool.workspace_id);
+    let agent = registered_agent(&fixture.workspaces, owner, workspace).await;
+    let member = AuthenticatedPrincipal::user(
+        fixture
+            .workspace_user(
+                workspace,
+                &tool.user,
+                "user:summary-measured-member",
+                WorkspaceRole::Member,
+            )
+            .await,
+    );
+    let actors = |seen: &ActivitySummary| {
+        seen.actors
+            .iter()
+            .map(|share| {
+                (
+                    share.principal.clone(),
+                    share.agent_label.clone(),
+                    share.bytes,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let owner_bytes = |bytes| (owner.principal().clone(), None, bytes);
+    let agent_bytes = |bytes| (agent.principal().clone(), Some("Worker".to_string()), bytes);
+
+    let measured = finish(&fixture, owner, workspace, CALL).await;
+    set_net_bytes(&fixture, &measured, 7).await;
+    let only_unmeasured = finish(&fixture, &agent, workspace, CALL).await;
+    make_unmeasured(&fixture, &only_unmeasured).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [owner_bytes(-7)], "the Agent has no total");
+    assert_eq!(seen.context_impact_bytes, Some(-7));
+    assert!(seen.context_impact_partial);
+    assert_eq!(seen.calls.failed, 1, "the Agent's call still counts");
+
+    let mixed = finish(&fixture, owner, workspace, CALL).await;
+    make_unmeasured(&fixture, &mixed).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [owner_bytes(-7)], "the new Run adds nothing");
+
+    set_net_bytes(&fixture, &measured, 0).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [owner_bytes(0)], "zero is still a total");
+    assert_eq!(seen.context_impact_bytes, Some(0));
+
+    let agent_measured = finish(&fixture, &agent, workspace, CALL).await;
+    set_net_bytes(&fixture, &agent_measured, 5).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [agent_bytes(-5), owner_bytes(0)]);
+    assert_eq!(seen.context_impact_bytes, Some(-5));
+
+    let hidden = summary(&fixture, &member, workspace).await;
+    assert!(hidden.actors.is_empty());
+    assert_eq!(hidden.context_impact_bytes, None);
+}
+
+/// A call counts only once it ended: pending and dispatching calls add nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_counts_a_call_only_once_it_ended() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    fixture.require_approval(&tool).await;
+    let waiting = waiting_run(&fixture, actor, workspace).await;
+    let pending = summary(&fixture, actor, workspace).await;
+    assert_eq!(pending.calls, CallOutcomes::default());
+    assert!(pending.tools.is_empty() && pending.callers.is_empty());
+
+    let run = &waiting.0;
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET state = 'dispatching', \
+             dispatch_started_at_unix_nanos = admitted_at_unix_nanos WHERE run_id = '{run}'"
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+    let dispatching = summary(&fixture, actor, workspace).await;
+    assert_eq!(dispatching.calls, CallOutcomes::default());
+    assert!(dispatching.tools.is_empty() && dispatching.callers.is_empty());
+
+    fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET state = 'pending', \
+             dispatch_started_at_unix_nanos = NULL WHERE run_id = '{run}'"
+        ))
+        .await;
+    decide(
+        &fixture,
+        actor,
+        workspace,
+        &waiting,
+        ApprovalDecision::Decline,
+    )
+    .await;
+    let ended = summary(&fixture, actor, workspace).await;
+    assert_eq!(
+        ended.calls,
+        CallOutcomes {
+            not_allowed: 1,
+            ..CallOutcomes::default()
+        }
+    );
+}
+
+/// The summary reads an ended time as an ended call, without reading the state.
+/// The lifecycle constraint is what makes that true on both databases.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_ended_call_can_hold_an_ended_time() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    finish(&fixture, actor, workspace, CALL).await;
+    fixture.require_approval(&tool).await;
+    let waiting = waiting_run(&fixture, actor, workspace).await;
+    let before = summary(&fixture, actor, workspace).await;
+
+    let pending = format!("state = 'pending' AND run_id = '{}'", waiting.0);
+    for (case, set, row) in [
+        (
+            "pending",
+            "ended_at_unix_nanos = admitted_at_unix_nanos",
+            pending.as_str(),
+        ),
+        (
+            "dispatching",
+            "state = 'dispatching', dispatch_started_at_unix_nanos = admitted_at_unix_nanos, \
+             ended_at_unix_nanos = admitted_at_unix_nanos",
+            pending.as_str(),
+        ),
+        ("reopened", "state = 'pending'", "state = 'ended'"),
+        (
+            "redispatched",
+            "state = 'dispatching', result_kind = NULL, result_json = NULL",
+            "state = 'ended'",
+        ),
+    ] {
+        let error = fixture
+            .test_database
+            .execute_fixture_sql(&format!("UPDATE tool_invocations SET {set} WHERE {row}"))
+            .await
+            .expect_err(case)
+            .to_string();
+        assert!(
+            error.contains("tool_invocations_lifecycle_consistent"),
+            "{case}: {error}"
+        );
+    }
+
+    let after = summary(&fixture, actor, workspace).await;
+    assert_eq!(
+        after.calls, before.calls,
+        "a rejected write changes nothing"
+    );
+    assert_eq!(after.tools, before.tools);
+}
+
+/// The window starts exactly at `since`, whichever way the call began.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_window_includes_a_call_that_ended_at_its_start() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let run = fixture
+        .runs
+        .start(actor, workspace, submission(CALL))
+        .await
+        .unwrap();
+    wait_for_terminal(&fixture.runs, actor, workspace, run.run_id()).await;
+    let ended_at = 1_000;
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET admitted_at_unix_nanos = 0, \
+             dispatch_started_at_unix_nanos = 0, ended_at_unix_nanos = {ended_at} \
+             WHERE run_id = '{}'",
+            run.run_id()
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+
+    for (since, answered) in [(ended_at, 1), (ended_at + 1, 0)] {
+        let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
+        let authority = fixture
+            .workspaces
+            .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+            .await
+            .unwrap();
+        let seen = crate::summary_repository::call_outcomes(&mut tx, &authority, since)
+            .await
+            .unwrap();
+        assert_eq!(
+            seen.iter().map(|row| row.calls).sum::<i64>(),
+            answered,
+            "since {since}"
+        );
+    }
+}
+
+/// The caller's own work in another Workspace stays out of this one's totals.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_counts_one_workspace() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    finish(&fixture, actor, workspace, CALL).await;
+    let other = fixture
+        .workspaces
+        .create(
+            &change(tool.user.clone(), 41, '4'),
+            coral_workspace::WorkspaceDisplayName::parse("Other").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let seen = summary(&fixture, actor, other.id()).await;
+    assert_eq!(seen.calls, CallOutcomes::default());
+    assert!(seen.tools.is_empty() && seen.callers.is_empty());
+    assert_eq!(summary(&fixture, actor, workspace).await.calls.answered, 1);
 }
 
 #[tokio::test]
