@@ -203,7 +203,15 @@ describe('starting Coral', () => {
       },
     ],
     ['start', async (quit: QuitLifecycle) => quit.start()],
-    ['resumeAfterUpdate', async (quit: QuitLifecycle) => quit.resumeAfterUpdate()],
+    [
+      'resumeAfterUpdate',
+      async (quit: QuitLifecycle, stopAll: () => Promise<void>) => {
+        const stopping = quit.stopForUpdate()
+        await stopAll()
+        await stopping
+        quit.resumeAfterUpdate()
+      },
+    ],
   ] as const)('passes a failed start in %s to onStartFailure', async (_name, act) => {
     const { quit, starts, startFailures, stopAll } = setup()
     const failure = new Error('port taken')
@@ -223,7 +231,7 @@ describe('an update', () => {
 
     const stopping = quit.stopForUpdate()
     expect(quit.quitting()).toBe(true)
-    // A quit from the Dock or Command+Q waits until both processes stop.
+    // A quit before both processes stop is held back.
     expect(quitApp()).toBe(true)
     expect(app.ended).toBe(false)
     stops[0].resolve()
@@ -248,5 +256,90 @@ describe('an update', () => {
     expect(quitApp()).toBe(true)
     expect(calls.closeWindows).toBe(1)
     expect(app.ended).toBe(false)
+  })
+
+  // Catches: a Quit during the update's stop being dropped, so a failed
+  // hand-off started Coral again instead of ending the app.
+  it.each([
+    ['on macOS, Quit Completely', 'darwin', (quit: QuitLifecycle) => quit.quitCompletely()],
+    [
+      'on macOS, a quit as the session ends',
+      'darwin',
+      (quit: QuitLifecycle, quitApp: () => void) => {
+        quit.sessionEnding()
+        quitApp()
+      },
+    ],
+    ['on Linux, a quit', 'linux', (_quit: QuitLifecycle, quitApp: () => void) => quitApp()],
+  ] as const)(
+    '%s while the update stops Coral ends the app when the hand-off fails',
+    async (_name, platform, act) => {
+      const { quit, quitApp, app, stops, starts, calls } = setup(platform)
+      const stopping = quit.stopForUpdate()
+      act(quit, quitApp)
+      expect(app.ended).toBe(false)
+      stops[0].resolve()
+      await stopping
+
+      quit.resumeAfterUpdate()
+
+      expect(app.ended).toBe(true)
+      expect(starts).toHaveLength(0)
+      expect(stops).toHaveLength(1)
+      expect(calls.closeWindows).toBe(0)
+    },
+  )
+
+  it('on macOS, a Dock quit while the update stops Coral only closes the windows', async () => {
+    const { quit, quitApp, app, stops, starts, calls } = setup('darwin')
+    const stopping = quit.stopForUpdate()
+    expect(quitApp()).toBe(true)
+    stops[0].resolve()
+    await stopping
+
+    quit.resumeAfterUpdate()
+
+    expect(calls.closeWindows).toBe(1)
+    expect(starts).toHaveLength(1)
+    expect(app.ended).toBe(false)
+  })
+
+  it('ends the app at once on Quit Completely while the installer takes over', async () => {
+    const { quit, app, stops, calls } = setup('darwin')
+    const stopping = quit.stopForUpdate()
+    stops[0].resolve()
+    await stopping
+
+    quit.quitCompletely()
+
+    expect(calls.exit).toBe(1)
+    expect(app.ended).toBe(true)
+    expect(stops).toHaveLength(1)
+  })
+
+  // Catches: an update whose stop failed leaving Quit prevented forever, so
+  // the app could not end.
+  it.each([
+    ['starts Coral again, and a later quit ends the app', false],
+    ['ends the app when Quit was asked during it', true],
+  ] as const)('a failed update stop %s', async (_name, quitDuringStop) => {
+    const { quit, quitApp, app, stops, starts, stopAll } = setup('linux')
+    const failure = new Error('reef did not exit')
+    const stopping = quit.stopForUpdate()
+    if (quitDuringStop) quitApp()
+    stops[0].reject(failure)
+
+    await expect(stopping).rejects.toBe(failure)
+
+    if (quitDuringStop) {
+      expect(app.ended).toBe(true)
+      expect(starts).toHaveLength(0)
+      return
+    }
+    expect(starts).toHaveLength(1)
+    expect(quit.quitting()).toBe(false)
+    quitApp()
+    await stopAll()
+    expect(app.ended).toBe(true)
   })
 })
