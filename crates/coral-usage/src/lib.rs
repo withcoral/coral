@@ -14,8 +14,7 @@
 //!
 //! - Sharing is on until an Organization Owner turns it off. Off drops the
 //!   reports not yet sent, and stops the next send. On starts again with
-//!   today's report, whose counts start at that moment. A milestone is
-//!   always its first date in history, even from while sharing was off.
+//!   today's report.
 //! - A report holds counts, UTC dates, values from fixed lists, the random
 //!   install ID and the release version. It never holds a Program, an
 //!   argument, a result, a credential or a name.
@@ -26,12 +25,14 @@
 //!   environment variable bootstrap read, or a source build. A day gets a
 //!   report only when a process that may send checked on it, so a day that
 //!   only blocked processes saw is never reported.
-//! - Reports count activity from when the install row is made.
+//! - A day's counts start at the latest of the day's start, when the
+//!   install row was made, and when sharing last turned on.
 //! - A missed day keeps its report until the collector answers. A 4xx but
 //!   408 or 429 drops it, since the same report can never succeed. Only the
 //!   last report sent is kept.
-//! - Each milestone's first day is kept once found, because Run history is
-//!   deleted.
+//! - A milestone is the earliest date in the history Coral keeps, even
+//!   from while sharing was off. A report keeps it once found, because Run
+//!   history is deleted.
 //! - Several Coral Instances may check at once: a day's report is made once,
 //!   and the collector stores a repeated report once.
 

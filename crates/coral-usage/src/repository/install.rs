@@ -40,8 +40,8 @@ pub(crate) struct Install {
     /// The last day a process that may send checked for due reports.
     pub last_check_day: Option<NaiveDate>,
     /// When the setting last changed, or the row was made. While sharing is
-    /// on, a day's counts start then. Milestones keep their first date in
-    /// history.
+    /// on, a day's counts start then. Milestones do not: they are the
+    /// earliest date in the history Coral keeps.
     pub sharing_since: i64,
     pub milestones: MilestoneDays,
 }
