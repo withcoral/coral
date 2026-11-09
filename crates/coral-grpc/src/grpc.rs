@@ -209,7 +209,7 @@ impl GrpcServices {
                     coral_task::Error::TaskClosed => Status::failed_precondition("Task closed"),
                     coral_task::Error::SnapshotTooLarge
                     | coral_task::Error::Search(_)
-                    | coral_task::Error::Functions(_)
+                    | coral_task::Error::Tools(_)
                     | coral_task::Error::Run(_)
                     | coral_task::Error::Clock
                     | coral_task::Error::IdentifierIssuance(_)

@@ -61,7 +61,7 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
         approverLabel: 'You',
       },
       source: 'return null;',
-      linkedFunctions: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -83,7 +83,7 @@ function runDetail(actions: typeof run.actionPage, request: typeof approvalReque
       run: { ...run, actionPage: actions },
       request,
       source: 'return null;',
-      linkedFunctions: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -124,7 +124,7 @@ it('shows purpose and caller once, with nothing but the call to decide on', () =
       run: selected,
       request: approvalRequest,
       source: 'exact-program-source',
-      linkedFunctions: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -169,7 +169,7 @@ it.each([true, false])(
           kind: 'run',
           run,
           source: 'return null;',
-          linkedFunctions: [],
+          linkedPrivateTools: [],
           terminal: { kind: 'unavailable' },
         },
         invocation: call,
@@ -234,7 +234,7 @@ it.each([true, false])(
               kind: 'run',
               run,
               source: 'exact-source',
-              linkedFunctions: [],
+              linkedPrivateTools: [],
               terminal: { kind: 'unavailable' },
             }
           : undefined,
@@ -680,7 +680,7 @@ const runPanel = (overrides: Partial<typeof run>, submission?: InteractionRow): 
   submission,
   request: null,
   source: 'return null;',
-  linkedFunctions: [],
+  linkedPrivateTools: [],
   terminal: { kind: 'unavailable' },
 })
 const invocationPanel = (overrides: Partial<InvocationRow>): InvocationDetail => ({
@@ -900,7 +900,7 @@ it.each<[string, RunDetail, string | null]>([
         name: `${workspace}/tasks/one/interactions/exec`,
       },
       source: 'exact-accepted-source',
-      linkedFunctions: [
+      linkedPrivateTools: [
         { privateTool: 'snapshot-id', path: 'billing.remind', source: 'exact-snapshot' },
       ],
     }
@@ -1930,7 +1930,7 @@ it('lists what the Run waits on as cards, each opening its exact review', () => 
             run: waiting,
             request: null,
             source: 'return null;',
-            linkedFunctions: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           },
         }}
@@ -2000,7 +2000,7 @@ it('says how many actions loaded when a page of them failed, and offers to try a
             run: waiting,
             request: null,
             source: 'return null;',
-            linkedFunctions: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           },
         }}
@@ -2046,7 +2046,7 @@ function showActions(
             run: waiting,
             request,
             source: 'return null;',
-            linkedFunctions: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           },
         }}
@@ -2247,7 +2247,7 @@ describe('an account connection the Run waits on', () => {
                 run: selected,
                 request,
                 source: 'return null;',
-                linkedFunctions: [],
+                linkedPrivateTools: [],
                 terminal: ended ?? { kind: 'unavailable' },
               },
             }}
@@ -2347,7 +2347,7 @@ describe('an account connection the Run waits on', () => {
               run: waiting,
               request: null,
               source: 'return null;',
-              linkedFunctions: [],
+              linkedPrivateTools: [],
               terminal: { kind: 'unavailable' },
             },
           }}
@@ -2423,7 +2423,7 @@ describe('an account connection the Run waits on', () => {
                 kind: 'run',
                 run: waiting,
                 source: 'return null;',
-                linkedFunctions: [],
+                linkedPrivateTools: [],
                 terminal: { kind: 'unavailable' },
               },
             },
@@ -2625,7 +2625,7 @@ it('says the run is canceling until the live read shows it ended', async () => {
       run: current,
       request: null,
       source: 'return null;',
-      linkedFunctions: [],
+      linkedPrivateTools: [],
       terminal,
     },
   })

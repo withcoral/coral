@@ -95,7 +95,7 @@ fn prepare(
         source,
         &CoralDeclarations::new(declaration_max_bytes)
             .with_tools(named.tools(), tools)
-            .with_functions(vec![tool("weather.forecast", FORECAST)]),
+            .with_private_tools(vec![tool("weather.forecast", FORECAST)]),
     )
 }
 

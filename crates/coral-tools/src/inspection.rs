@@ -57,8 +57,8 @@ impl PrivateToolInspection {
         Ok(function)
     }
 
-    /// Lists one page of the authenticated Principal's own current Saved
-    /// Functions in one Workspace, in path order after `after`.
+    /// Lists one page of the authenticated Principal's own current Private
+    /// Tools in one Workspace, in path order after `after`.
     ///
     /// Summaries carry no source, declaration, or diagnostics. Another
     /// Principal's functions, including a Workspace-owned Agent's for a

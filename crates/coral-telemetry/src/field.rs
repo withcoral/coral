@@ -81,8 +81,8 @@ const CORAL: &[&str] = &[
     // What one search index reconcile pass did.
     "coral.search.reconcile.generations_indexed",
     "coral.search.reconcile.generations_failed",
-    "coral.search.reconcile.functions_indexed",
-    "coral.search.reconcile.functions_failed",
+    "coral.search.reconcile.private_tools_indexed",
+    "coral.search.reconcile.private_tools_failed",
     "coral.search.reconcile.workspaces_checked",
     "coral.search.reconcile.workspaces_recounted",
     "coral.search.reconcile.rows_written",

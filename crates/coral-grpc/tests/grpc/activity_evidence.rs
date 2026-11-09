@@ -1607,7 +1607,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
     )
     .await;
     let detail = terminal(&f, &run).await;
-    let [snapshot] = detail.linked_functions.as_slice() else {
+    let [snapshot] = detail.linked_private_tools.as_slice() else {
         panic!("one linked snapshot")
     };
     let program = |line, column| located(Document::Program(wire::ActivityEmpty {}), line, column);

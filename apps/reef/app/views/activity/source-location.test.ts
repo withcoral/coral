@@ -30,7 +30,7 @@ function context(overrides: Partial<RunDetail> = {}): RunDetail {
     kind: 'run',
     run,
     source: acceptedSource,
-    linkedFunctions: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
   }
@@ -68,7 +68,7 @@ function failed(frame: { source: string; line: number; column: number }, overrid
 it('lists the accepted program and every linked Private Tool as its own document', () => {
   const documents = sourceDocumentsFor(
     context({
-      linkedFunctions: [
+      linkedPrivateTools: [
         {
           privateTool: 'functions/abc',
           path: 'billing.calculate',
@@ -114,7 +114,7 @@ it.each(['coral.private', 'coral.functions'])(
       failed(
         { source: `Private Tool ${root}.billing.calculate`, line: 1, column: 8 },
         {
-          linkedFunctions: [
+          linkedPrivateTools: [
             {
               privateTool: 'functions/abc',
               path: 'billing.calculate',
@@ -137,7 +137,7 @@ it('never guesses a document for an unrecognized frame source', () => {
   const location = sourceLocationFor(
     failed(
       { source: 'Private Tool coral.private.billing.calculate', line: 1, column: 1 },
-      { linkedFunctions: [] },
+      { linkedPrivateTools: [] },
     ),
   )
   expect(location).toBeNull()
@@ -207,7 +207,7 @@ const program = [
 ].join('\n')
 const retained = context({
   source: program,
-  linkedFunctions: [
+  linkedPrivateTools: [
     {
       privateTool,
       path: 'billing.notify',

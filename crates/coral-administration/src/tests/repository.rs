@@ -7,7 +7,7 @@ use sqlx::SqlSafeStr as _;
 pub(super) enum EventFault {
     AuthorizationCompleted,
     AccountDeleted,
-    FunctionDeleted,
+    PrivateToolDeleted,
     MembershipRemoved,
     AgentDeleted,
     SetupCanceled,
@@ -19,7 +19,7 @@ impl EventFault {
     const ALL: [Self; 9] = [
         Self::AuthorizationCompleted,
         Self::AccountDeleted,
-        Self::FunctionDeleted,
+        Self::PrivateToolDeleted,
         Self::MembershipRemoved,
         Self::AgentDeleted,
         Self::SetupCanceled,
@@ -36,7 +36,9 @@ impl EventFault {
                 'b',
             ),
             Self::AccountDeleted => ("provider_lifecycle_events", "provider_account.deleted", 'c'),
-            Self::FunctionDeleted => ("private_tool_lifecycle_events", "private_tool.deleted", 'd'),
+            Self::PrivateToolDeleted => {
+                ("private_tool_lifecycle_events", "private_tool.deleted", 'd')
+            }
             Self::MembershipRemoved => (
                 "workspace_lifecycle_events",
                 "workspace_membership.removed",
@@ -69,11 +71,8 @@ impl EventFault {
                     crate::Error::Provider(coral_provider::Error::Database(_))
                 )
             }
-            Self::FunctionDeleted => {
-                matches!(
-                    error,
-                    crate::Error::Functions(coral_tools::Error::Database(_))
-                )
+            Self::PrivateToolDeleted => {
+                matches!(error, crate::Error::Tools(coral_tools::Error::Database(_)))
             }
             Self::MembershipRemoved
             | Self::AgentDeleted

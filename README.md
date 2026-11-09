@@ -31,8 +31,8 @@ Coral replaces that with one server:
   answer needs.
 - **Agents build on what already worked.** When a program works, the agent
   saves it as a function. The next time, it calls that function in one step
-  instead of finding the tools and writing the program again. Saved
-  functions are typed and appear in search alongside provider tools.
+  instead of finding the tools and writing the program again. Private
+  tools are typed and appear in search alongside provider tools.
 - **Agents never hold credentials.** Coral stores your tokens and adds them to
   each call. Programs run in an isolated sandbox with no secrets, no network
   access, and no imports.

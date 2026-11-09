@@ -1101,8 +1101,8 @@ impl ExactAuthoringDescription {
     }
 
     /// The same description, with its declaration abridged, or cut to the
-    /// `types` it names. A description cut to `types` leaves out a Saved
-    /// Function's source and diagnostics, which the caller already has.
+    /// `types` it names. A description cut to `types` leaves out a Private
+    /// Tool's source and diagnostics, which the caller already has.
     pub(crate) fn abridge(mut self, types: &[String]) -> Result<Self, crate::Error> {
         if !types.is_empty() {
             self.private_tool_detail = None;

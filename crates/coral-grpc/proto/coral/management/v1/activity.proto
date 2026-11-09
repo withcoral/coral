@@ -308,7 +308,7 @@ message ActivitySourceLocation {
     // The Run's submitted Program source.
     ActivityEmpty program = 1;
     // workspaces/{workspace}/privateTools/{private_tool}: the private_tool of
-    // exactly one of the Run's linked_functions snapshots.
+    // exactly one of the Run's linked_private_tools snapshots.
     string private_tool = 2;
   }
   // Line number, starting at 1. Lines end at every ECMAScript line terminator:
@@ -527,7 +527,7 @@ message InspectRunResponse {
   // TypeScript the caller submitted, as accepted.
   string submitted_source = 2;
   // Source of each Private Tool the Run used, as accepted.
-  repeated ActivitySourceSnapshot linked_functions = 3;
+  repeated ActivitySourceSnapshot linked_private_tools = 3;
   // A page of Events in order: output, logs, cancellation requests and so on.
   repeated ActivityRunEvent events = 4;
   // Pass as event_after for the next page. Equals the request's event_after if the page is empty.

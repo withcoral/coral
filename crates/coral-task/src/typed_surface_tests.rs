@@ -77,7 +77,7 @@ fn located(diagnostics: &[coral_tools::PrivateToolDiagnostic]) -> Located {
 async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_tools::PrivateTool {
     let goal = fixture.goal().await;
     fixture
-        .save_function(
+        .save_private_tool(
             &fixture.call(&goal, "Save a typed function"),
             path,
             "Typed",

@@ -164,7 +164,7 @@ export interface RunDetail {
   run: ExecutionRow
   submission?: InteractionRow
   source: string
-  linkedFunctions: { privateTool: string; path: string; source: string }[]
+  linkedPrivateTools: { privateTool: string; path: string; source: string }[]
   terminal: RunTerminal
   /** The parts of the Run's context impact, in exact bytes. Absent while the total is. */
   contextImpact?: RunContextImpact

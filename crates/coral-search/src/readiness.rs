@@ -9,8 +9,8 @@ use coral_workspace::{
 use std::collections::BTreeSet;
 
 impl UniversalSearchModule {
-    /// Inspects the User's Providers in one consistent snapshot, without Saved
-    /// Functions or search candidates. Account selection is for this exact User.
+    /// Inspects the User's Providers in one consistent snapshot, without Private
+    /// Tools or search candidates. Account selection is for this exact User.
     /// # Errors
     /// Requires Workspace inspection authority; archived Workspaces remain inspectable.
     pub async fn inspect_provider_readiness(

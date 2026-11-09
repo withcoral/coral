@@ -1132,7 +1132,7 @@ pub async fn select_source_in_transaction(
 /// The caller must hold current Workspace authority in this write transaction and
 /// pass the same Workspace and Principal used for selection. `false` means the
 /// definition was replaced or deleted; admission must reject without a Run.
-/// The revision and locking mechanics remain private to Functions.
+/// The revision and locking mechanics remain private to Tools.
 ///
 /// # Errors
 ///

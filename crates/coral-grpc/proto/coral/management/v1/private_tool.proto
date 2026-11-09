@@ -8,14 +8,14 @@ import "google/protobuf/timestamp.proto";
 //
 // A Private Tool Path names a definition only for its owning Principal in
 // one Workspace, so requests carry the Workspace and path rather than a
-// resource name. Another Principal's function and an absent path return the
-// same NOT_FOUND. Workspace-owned Agent functions never appear.
+// resource name. Another Principal's Private Tool and an absent path return the
+// same NOT_FOUND. Workspace-owned Agent Private Tools never appear.
 service PrivateToolService {
-  // Lists one page of the caller's own functions in path order, without source or diagnostics.
+  // Lists one page of the caller's own Private Tools in path order, without source or diagnostics.
   rpc ListPrivateTools(ListPrivateToolsRequest) returns (ListPrivateToolsResponse);
-  // Returns one of the caller's own functions with its source and saved diagnostics.
+  // Returns one of the caller's own Private Tools with its source and saved diagnostics.
   rpc GetPrivateTool(GetPrivateToolRequest) returns (PrivateTool);
-  // Deletes one of the caller's own functions and records its lifecycle Event.
+  // Deletes one of the caller's own Private Tools and records its lifecycle Event.
   // Coral keeps no reverse references: Programs that call the path fail at admission.
   rpc DeletePrivateTool(DeletePrivateToolRequest) returns (google.protobuf.Empty);
 }
@@ -32,12 +32,12 @@ message ListPrivateToolsRequest {
 
 // One scoped page of source-free Private Tool summaries in path order.
 message ListPrivateToolsResponse {
-  // The caller's own functions on this page.
+  // The caller's own Private Tools on this page.
   repeated PrivateToolSummary private_tools = 1;
   // Empty when no further page remains.
   string next_page_token = 2;
   // The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
-  // ToolPolicyService lists and sets the policy of these functions under it.
+  // ToolPolicyService lists and sets the policy of these Private Tools under it.
   string private_provider = 3;
 }
 

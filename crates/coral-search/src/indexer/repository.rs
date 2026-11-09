@@ -562,7 +562,7 @@ pub(super) async fn delete_provider(
     Ok(removed)
 }
 
-/// The columns a Private Tool row sets, in [`FunctionRow::values`] order.
+/// The columns a Private Tool row sets, in [`PrivateToolRow::values`] order.
 /// The first two are the key.
 const FUNCTION_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::WorkspaceId,
@@ -583,11 +583,11 @@ const FUNCTION_COLUMNS: [SearchEntities; 15] = [
 ];
 
 /// One Private Tool's row in `search_entities`. The document id is the
-/// function id; the fingerprint is [`function_fingerprint`] of the
+/// function id; the fingerprint is [`private_tool_fingerprint`] of the
 /// definition revision. The write stamps the row when it upserts it.
-pub(crate) struct FunctionRow<'a> {
+pub(crate) struct PrivateToolRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
-    pub(super) function_id: &'a PrivateToolId,
+    pub(super) private_tool_id: &'a PrivateToolId,
     pub(super) principal: &'a Principal,
     pub(super) call_path: CallPath,
     pub(super) qualified_name: &'a str,
@@ -596,14 +596,14 @@ pub(crate) struct FunctionRow<'a> {
     pub(super) revision: u64,
 }
 
-impl FunctionRow<'_> {
+impl PrivateToolRow<'_> {
     fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; FUNCTION_COLUMNS.len()] {
-        let function_id = self.function_id.to_string();
+        let private_tool_id = self.private_tool_id.to_string();
         [
             self.workspace_id.to_string().into(),
-            function_id.clone().into(),
+            private_tool_id.clone().into(),
             PRIVATE_TOOL.into(),
-            function_id.into(),
+            private_tool_id.into(),
             self.principal.id().as_str().into(),
             self.principal.kind().as_storage_str().into(),
             self.call_path.as_str().into(),
@@ -613,7 +613,7 @@ impl FunctionRow<'_> {
             "".into(),
             self.searchable_text.clone().into(),
             false.into(),
-            function_fingerprint(self.revision).into(),
+            private_tool_fingerprint(self.revision).into(),
             indexed_at_unix_nanos.into(),
         ]
     }
@@ -623,14 +623,14 @@ impl FunctionRow<'_> {
 /// indexer revision, as `3.1`. A row that an older indexer revision wrote
 /// holds another fingerprint, so a reconcile pass indexes it again. A Coral
 /// without indexer revisions wrote the definition revision alone.
-pub(super) fn function_fingerprint(revision: u64) -> String {
+pub(super) fn private_tool_fingerprint(revision: u64) -> String {
     format!("{revision}.{INDEXER_REVISION}")
 }
 
 /// One failed Private Tool attempt's row in `search_index_states`.
-pub(super) struct FailedFunctionState<'a> {
+pub(super) struct FailedPrivateToolState<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
-    pub(super) function_id: &'a PrivateToolId,
+    pub(super) private_tool_id: &'a PrivateToolId,
     pub(super) principal: &'a Principal,
     pub(super) attempted_at_unix_nanos: i64,
     pub(super) error: String,
@@ -643,9 +643,9 @@ pub(super) struct FailedFunctionState<'a> {
 /// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
 /// never `INSERT OR REPLACE`, for the reason [`upsert_tool_rows`]
 /// gives.
-pub(super) async fn upsert_function_row(
+pub(super) async fn upsert_private_tool_row(
     transaction: &mut Transaction<'_>,
-    row: &FunctionRow<'_>,
+    row: &PrivateToolRow<'_>,
     indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     let on_conflict = changed_rows_only(FUNCTION_COLUMNS);
@@ -664,44 +664,47 @@ pub(super) async fn upsert_function_row(
 
 /// Deletes a Private Tool's row and state row. Returns the rows it
 /// deleted from the search table.
-pub(super) async fn delete_function_entry(
+pub(super) async fn delete_private_tool_entry(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    function_id: &PrivateToolId,
+    private_tool_id: &PrivateToolId,
 ) -> Result<u64, Error> {
     let removed = transaction
-        .execute(function_row(workspace_id, function_id))
+        .execute(private_tool_row(workspace_id, private_tool_id))
         .await?;
-    delete_function_state(transaction, workspace_id, function_id).await?;
+    delete_private_tool_state(transaction, workspace_id, private_tool_id).await?;
     Ok(removed)
 }
 
-fn function_row(workspace_id: &WorkspaceId, function_id: &PrivateToolId) -> DeleteStatement {
+fn private_tool_row(
+    workspace_id: &WorkspaceId,
+    private_tool_id: &PrivateToolId,
+) -> DeleteStatement {
     Query::delete()
         .from_table(SearchEntities::Table)
         .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
+        .and_where(Expr::col(SearchEntities::DocId).eq(private_tool_id.to_string()))
         .and_where(Expr::col(SearchEntities::Kind).eq(PRIVATE_TOOL))
         .to_owned()
 }
 
 /// Deletes a Private Tool's row. Returns the rows it deleted.
-pub(super) async fn delete_function_row(
+pub(super) async fn delete_private_tool_row(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    function_id: &PrivateToolId,
+    private_tool_id: &PrivateToolId,
 ) -> Result<u64, Error> {
     transaction
-        .execute(function_row(workspace_id, function_id))
+        .execute(private_tool_row(workspace_id, private_tool_id))
         .await
 }
 
 /// Upserts a Private Tool's `failed` state row.
-pub(super) async fn write_failed_function_state(
+pub(super) async fn write_failed_private_tool_state(
     transaction: &mut Transaction<'_>,
-    state: FailedFunctionState<'_>,
+    state: FailedPrivateToolState<'_>,
 ) -> Result<(), Error> {
-    let function_id = state.function_id.to_string();
+    let private_tool_id = state.private_tool_id.to_string();
     transaction
         .execute(
             Query::insert()
@@ -721,9 +724,9 @@ pub(super) async fn write_failed_function_state(
                 .values_panic(
                     [
                         state.workspace_id.to_string().into(),
-                        function_id.clone().into(),
+                        private_tool_id.clone().into(),
                         PRIVATE_TOOL.into(),
-                        function_id.into(),
+                        private_tool_id.into(),
                         state.principal.id().as_str().into(),
                         state.principal.kind().as_storage_str().into(),
                         FAILED.into(),
@@ -816,14 +819,14 @@ pub(super) async fn failed_generation_retry_rule(
 }
 
 /// The failure a Private Tool's state row records.
-pub(super) struct FunctionFailure {
+pub(super) struct PrivateToolFailure {
     pub(super) retry: RetryRule,
     /// The definition revision the attempt tried. `None` on a row written
     /// before Coral recorded it.
     pub(super) revision: Option<u64>,
 }
 
-impl From<FailedStateRow> for FunctionFailure {
+impl From<FailedStateRow> for PrivateToolFailure {
     fn from(row: FailedStateRow) -> Self {
         Self {
             retry: row.retry.into(),
@@ -836,26 +839,26 @@ impl From<FailedStateRow> for FunctionFailure {
 
 /// Reads the failure of the Private Tool's state row, when its last
 /// attempt failed.
-pub(super) async fn failed_function(
+pub(super) async fn failed_private_tool(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    function_id: &PrivateToolId,
-) -> Result<Option<FunctionFailure>, Error> {
+    private_tool_id: &PrivateToolId,
+) -> Result<Option<PrivateToolFailure>, Error> {
     let row = failed_state(
         transaction,
         workspace_id,
         PRIVATE_TOOL,
-        function_id.to_string(),
+        private_tool_id.to_string(),
     )
     .await?;
-    Ok(row.map(FunctionFailure::from))
+    Ok(row.map(PrivateToolFailure::from))
 }
 
 /// Deletes a Private Tool's state row, if an earlier attempt left one.
-pub(super) async fn delete_function_state(
+pub(super) async fn delete_private_tool_state(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    function_id: &PrivateToolId,
+    private_tool_id: &PrivateToolId,
 ) -> Result<(), Error> {
     transaction
         .execute(
@@ -863,7 +866,7 @@ pub(super) async fn delete_function_state(
                 .from_table(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(SearchIndexStates::Kind).eq(PRIVATE_TOOL))
-                .and_where(Expr::col(SearchIndexStates::TargetId).eq(function_id.to_string()))
+                .and_where(Expr::col(SearchIndexStates::TargetId).eq(private_tool_id.to_string()))
                 .to_owned(),
         )
         .await?;
@@ -1210,22 +1213,22 @@ pub(super) async fn delete_generation_in_workspace(
 
 /// One Private Tool in its Workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct WorkspaceFunction {
+pub(super) struct WorkspacePrivateTool {
     pub(super) workspace_id: WorkspaceId,
-    pub(super) function_id: PrivateToolId,
+    pub(super) private_tool_id: PrivateToolId,
 }
 
 /// One Private Tool's row, as a reconcile pass compares it.
-pub(super) struct RecordedFunction {
-    pub(super) function: WorkspaceFunction,
-    /// The row's fingerprint, as [`function_fingerprint`] writes it.
+pub(super) struct RecordedPrivateTool {
+    pub(super) function: WorkspacePrivateTool,
+    /// The row's fingerprint, as [`private_tool_fingerprint`] writes it.
     pub(super) fingerprint: String,
 }
 
 /// Reads every Private Tool row in every Workspace.
-pub(super) async fn recorded_functions(
+pub(super) async fn recorded_private_tools(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<RecordedFunction>, IndexError> {
+) -> Result<Vec<RecordedPrivateTool>, IndexError> {
     let rows: Vec<(String, String, String)> = transaction
         .fetch_all(
             Query::select()
@@ -1240,9 +1243,9 @@ pub(super) async fn recorded_functions(
         )
         .await?;
     rows.into_iter()
-        .map(|(workspace_id, function_id, fingerprint)| {
-            Ok(RecordedFunction {
-                function: workspace_function(&workspace_id, &function_id)?,
+        .map(|(workspace_id, private_tool_id, fingerprint)| {
+            Ok(RecordedPrivateTool {
+                function: workspace_private_tool(&workspace_id, &private_tool_id)?,
                 fingerprint,
             })
         })
@@ -1251,10 +1254,10 @@ pub(super) async fn recorded_functions(
 
 /// Reads the fingerprint of one Private Tool's row, `None` when it has no
 /// row.
-pub(super) async fn recorded_function_fingerprint(
+pub(super) async fn recorded_private_tool_fingerprint(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    function_id: &PrivateToolId,
+    private_tool_id: &PrivateToolId,
 ) -> Result<Option<String>, IndexError> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
@@ -1263,7 +1266,7 @@ pub(super) async fn recorded_function_fingerprint(
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(SearchEntities::Kind).eq(PRIVATE_TOOL))
-                .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
+                .and_where(Expr::col(SearchEntities::DocId).eq(private_tool_id.to_string()))
                 .to_owned(),
         )
         .await?;
@@ -1272,13 +1275,13 @@ pub(super) async fn recorded_function_fingerprint(
 
 /// One Private Tool whose last attempt failed, as a reconcile pass
 /// compares it.
-pub(super) struct FailedFunction {
-    pub(super) function: WorkspaceFunction,
-    pub(super) failure: FunctionFailure,
+pub(super) struct FailedPrivateTool {
+    pub(super) function: WorkspacePrivateTool,
+    pub(super) failure: PrivateToolFailure,
 }
 
 #[derive(sqlx::FromRow)]
-struct FailedFunctionRow {
+struct FailedPrivateToolRow {
     workspace_id: String,
     private_tool_id: String,
     #[sqlx(flatten)]
@@ -1286,10 +1289,10 @@ struct FailedFunctionRow {
 }
 
 /// Reads every Private Tool whose last attempt failed.
-pub(super) async fn failed_functions(
+pub(super) async fn failed_private_tools(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<FailedFunction>, IndexError> {
-    let rows: Vec<FailedFunctionRow> = transaction
+) -> Result<Vec<FailedPrivateTool>, IndexError> {
+    let rows: Vec<FailedPrivateToolRow> = transaction
         .fetch_all(
             Query::select()
                 .columns(with_retry_columns([
@@ -1304,8 +1307,8 @@ pub(super) async fn failed_functions(
         .await?;
     rows.into_iter()
         .map(|row| {
-            Ok(FailedFunction {
-                function: workspace_function(&row.workspace_id, &row.private_tool_id)?,
+            Ok(FailedPrivateTool {
+                function: workspace_private_tool(&row.workspace_id, &row.private_tool_id)?,
                 failure: row.failure.into(),
             })
         })
@@ -1455,13 +1458,13 @@ fn workspace_generation(
     })
 }
 
-fn workspace_function(
+fn workspace_private_tool(
     workspace_id: &str,
-    function_id: &str,
-) -> Result<WorkspaceFunction, IndexError> {
-    Ok(WorkspaceFunction {
+    private_tool_id: &str,
+) -> Result<WorkspacePrivateTool, IndexError> {
+    Ok(WorkspacePrivateTool {
         workspace_id: parse_workspace_id(workspace_id)?,
-        function_id: PrivateToolId::parse(function_id).map_err(|_error| {
+        private_tool_id: PrivateToolId::parse(private_tool_id).map_err(|_error| {
             IndexError::Corrupt("a search index row has an invalid Private Tool id")
         })?,
     })

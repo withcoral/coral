@@ -510,7 +510,7 @@ describe('live mode', () => {
                 kind: 'run',
                 run: ended,
                 source: '',
-                linkedFunctions: [],
+                linkedPrivateTools: [],
                 terminal: { kind: 'unavailable' },
               },
             }),
@@ -728,7 +728,7 @@ describe('live scopes', () => {
     kind: 'run',
     run: { ...running, state, endedAt: state === 'running' ? null : first.endedAt },
     source: '',
-    linkedFunctions: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
   })
   const invocationDetail = (state: 'running' | 'succeeded' | 'failed'): ActivityPage['detail'] => ({

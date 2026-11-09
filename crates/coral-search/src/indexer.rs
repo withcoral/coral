@@ -5,7 +5,7 @@
 //! reads nothing but those tables. It joins the caller's transaction;
 //! [`crate::SearchIndex`] owns when each transaction begins and ends.
 
-pub(crate) mod functions;
+pub(crate) mod private_tools;
 mod repository;
 mod retry;
 pub(crate) mod tools;
@@ -365,7 +365,7 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
 /// A snapshot of all non-current projections, including catalogs awaiting first visibility.
 pub(crate) struct ProjectionBacklog {
     pub catalogs: u64,
-    pub functions: u64,
+    pub private_tools: u64,
     /// None when a legacy failed row has unknown visibility history.
     pub first_visibility: Option<Vec<coral_catalog::ProviderGenerationId>>,
 }
@@ -402,24 +402,24 @@ pub(crate) async fn projection_backlog(
             Some(repository::RecordedVisibility::Visible { .. }) => {}
         }
     }
-    let recorded = repository::recorded_functions(transaction)
+    let recorded = repository::recorded_private_tools(transaction)
         .await?
         .into_iter()
         .map(|row| (row.function, row.fingerprint))
         .collect::<std::collections::HashMap<_, _>>();
-    let missing_functions = functions
+    let missing_private_tools = functions
         .iter()
         .filter(|entry| {
-            let key = repository::WorkspaceFunction {
+            let key = repository::WorkspacePrivateTool {
                 workspace_id: entry.workspace_id().clone(),
-                function_id: entry.id().clone(),
+                private_tool_id: entry.id().clone(),
             };
-            recorded.get(&key) != Some(&repository::function_fingerprint(entry.revision()))
+            recorded.get(&key) != Some(&repository::private_tool_fingerprint(entry.revision()))
         })
         .count();
     Ok(ProjectionBacklog {
         catalogs,
-        functions: u64::try_from(missing_functions).unwrap_or(u64::MAX),
+        private_tools: u64::try_from(missing_private_tools).unwrap_or(u64::MAX),
         first_visibility,
     })
 }

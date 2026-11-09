@@ -105,7 +105,7 @@ async fn catalog() -> (TestModules, AuthenticatedPrincipal, WorkspaceId) {
         ),
     ] {
         modules
-            .save_function(&principal, &workspace, path, description, at)
+            .save_private_tool(&principal, &workspace, path, description, at)
             .await;
     }
     modules.converge().await;
@@ -231,8 +231,8 @@ const OPS: &str = r#"{
 /// description. `deployments.listStatuses` leads its window by its score:
 /// its name and title start words with both query words, though neither is
 /// a whole word there. `status.get` holds `status` whole in its name. A
-/// merge that compares whole-word counts across kinds puts the Saved
-/// Function first, since it holds more whole words than the window's head,
+/// merge that compares whole-word counts across kinds puts the Private
+/// Tool first, since it holds more whole words than the window's head,
 /// and so above `status.get`, which holds more than the Private Tool.
 #[tokio::test]
 async fn a_private_tool_between_two_tools_follows_both_when_it_is_weak() {
@@ -244,7 +244,7 @@ async fn a_private_tool_between_two_tools_follows_both_when_it_is_weak() {
         .publish_openapi(&user, &workspace, OPS, "ops", 20)
         .await;
     modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &workspace,
             "alerts.notify",

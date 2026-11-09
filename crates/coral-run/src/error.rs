@@ -387,7 +387,7 @@ pub enum Error {
     ProgramAdmission(String),
     /// Current Private Tool selection or cleanup failed.
     #[error(transparent)]
-    Functions(#[from] coral_tools::Error),
+    Tools(#[from] coral_tools::Error),
     /// Current Principal authority does not permit this staged operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
@@ -497,7 +497,7 @@ impl Error {
             Self::RunNotFound { .. } => "run_not_found",
             Self::ApprovalNotFound { .. } => "approval_not_found",
             Self::ProgramAdmission { .. } => "program_admission",
-            Self::Functions { .. } => "functions",
+            Self::Tools { .. } => "tools",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
@@ -574,7 +574,7 @@ impl Error {
                 coral_policy::Error::Workspace(error) => workspace(error),
                 _ => None,
             },
-            Self::Functions(error) => match error {
+            Self::Tools(error) => match error {
                 coral_tools::Error::Database(error) => Some(error),
                 coral_tools::Error::Workspace(error) => workspace(error),
                 _ => None,
@@ -604,7 +604,7 @@ impl Error {
             Self::CompilationTimedOut => PROGRAM_COMPILATION_TIMED_OUT,
             Self::CompilerBusy => "program_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
-            Self::Functions(error) => return error.safe_rejection(),
+            Self::Tools(error) => return error.safe_rejection(),
             Self::PermissionDenied(_) => "permission_denied",
             Self::ShuttingDown => "shutting_down",
             _ => return None,
@@ -665,7 +665,7 @@ mod tests {
             ),
             (
                 |error| {
-                    Error::Functions(coral_tools::Error::Workspace(
+                    Error::Tools(coral_tools::Error::Workspace(
                         coral_workspace::Error::Database(error),
                     ))
                 },

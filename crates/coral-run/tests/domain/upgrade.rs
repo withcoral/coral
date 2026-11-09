@@ -143,8 +143,8 @@ async fn upgrade_renames_the_tool_failures_runs_and_private_tools_stored() {
     );
 }
 
-/// A database from before the Built-in Tools moved onto `coral` and Saved
-/// Functions to `coral.private`: the upgrade moves the Built-in Provider's
+/// A database from before the Built-in Tools moved onto `coral` and Private
+/// Tools to `coral.private`: the upgrade moves the Built-in Provider's
 /// Call Root and every indexed Call Path to the new roots, so search returns
 /// each callable where a Program calls it.
 #[tokio::test]

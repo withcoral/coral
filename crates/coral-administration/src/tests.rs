@@ -319,7 +319,7 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
         .get(&f.author, f.workspace.id(), &path)
         .await
         .unwrap();
-    let function_events = f
+    let private_tool_events = f
         .functions
         .list_lifecycle_events(&f.author, f.workspace.id())
         .await
@@ -337,7 +337,7 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
     let attempts = RemovalAttempt::cases(&[
         EventFault::AuthorizationCompleted,
         EventFault::AccountDeleted,
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::MembershipRemoved,
     ]);
     for attempt in attempts {
@@ -369,7 +369,7 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
                 .list_lifecycle_events(&f.author, f.workspace.id())
                 .await
                 .unwrap(),
-            function_events
+            private_tool_events
         );
         assert_eq!(
             f.workspaces
@@ -807,7 +807,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         ))
     ));
     let attempts = RemovalAttempt::cases(&[
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::MembershipRemoved,
         EventFault::OrganizationMembershipRemoved,
     ]);
@@ -925,7 +925,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         lifecycle
             .remove_organization_member(&fault, member.user_id(), 1, None)
             .await,
-        Err(Error::Functions(_))
+        Err(Error::Tools(_))
     ));
     for account in &account_scopes {
         account.assert_unchanged(&member).await;
@@ -1142,7 +1142,7 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
     let path = PrivateToolPath::parse("answer").unwrap();
     let saved = functions.get(&agent, workspace.id(), &path).await.unwrap();
     let inspector = AuthenticatedPrincipal::user(owner.clone());
-    let function_events = functions
+    let private_tool_events = functions
         .list_lifecycle_events(&inspector, workspace.id())
         .await
         .unwrap();
@@ -1150,7 +1150,7 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
     let attempts = RemovalAttempt::cases(&[
         EventFault::AuthorizationCompleted,
         EventFault::AccountDeleted,
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::AgentDeleted,
     ]);
     for attempt in attempts {
@@ -1212,7 +1212,7 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
                 .list_lifecycle_events(&inspector, workspace.id())
                 .await
                 .unwrap(),
-            function_events
+            private_tool_events
         );
         assert_eq!(
             workspaces

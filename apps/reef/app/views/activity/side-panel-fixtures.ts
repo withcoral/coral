@@ -156,7 +156,7 @@ export function runDetail(row: RunRow, overrides: Partial<RunDetail> = {}): RunD
     run: row,
     submission: row.submission,
     source,
-    linkedFunctions: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
   }
@@ -511,8 +511,8 @@ export const searched: Extract<DiscoveryContext, { kind: 'search' }> = {
 }
 
 /**
- * A retained untrimmed page, searched within one provider, so Coral skips Saved
- * Functions. Trimmed pages state only partial or failed coverage.
+ * A retained untrimmed page, searched within one provider, so Coral skips Private
+ * Tools. Trimmed pages state only partial or failed coverage.
  */
 export const providerFilteredSearch = JSON.stringify({
   ...JSON.parse(stored.untrimmed),

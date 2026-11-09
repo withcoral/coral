@@ -249,7 +249,7 @@ async fn private_tool_access(
         .collect()
 }
 
-// Catches: a Functions listing that does not name the Private Provider; a
+// Catches: a Private Tool listing that does not name the Private Provider; a
 // Private Tool policy route that refuses the Private Provider, does not name
 // an Agent's row, or maps a Member's Private Tool to anything but NOT_FOUND;
 // or a kill switch that answers anything but the Provider it changed.

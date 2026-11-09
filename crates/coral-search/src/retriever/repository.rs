@@ -184,7 +184,7 @@ pub(super) struct RankedTool {
 
 /// One ranked Private Tool: its identity, its Call Path, and what its
 /// statement saw.
-pub(super) struct RankedFunction {
+pub(super) struct RankedPrivateTool {
     pub(super) private_tool_id: PrivateToolId,
     pub(super) call_path: CallPath,
     pub(super) matched: RowMatch,
@@ -268,13 +268,13 @@ pub(super) async fn rank_tools(
 
 /// Ranks the Principal's own Private Tools for the plan, best first, at
 /// most `limit`.
-pub(super) async fn rank_functions(
+pub(super) async fn rank_private_tools(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
     plan: &QueryPlan,
     limit: usize,
-) -> Result<Ranking<RankedFunction>, RetrievalError> {
+) -> Result<Ranking<RankedPrivateTool>, RetrievalError> {
     let scope = Scope::PrivateTools {
         workspace_id,
         principal,
@@ -286,7 +286,7 @@ pub(super) async fn rank_functions(
             let private_tool_id = row.private_tool_id.ok_or(RetrievalError::Corrupt(
                 "a Private Tool row has no function id",
             ))?;
-            Ok(RankedFunction {
+            Ok(RankedPrivateTool {
                 private_tool_id: PrivateToolId::parse(&private_tool_id)
                     .map_err(|_invalid| RetrievalError::Corrupt("invalid Private Tool id"))?,
                 call_path: call_path(&row.call_path)?,
@@ -667,7 +667,7 @@ pub(super) async fn complete_generations(
 }
 
 /// The Principal's Private Tools that have a row in the index.
-pub(super) async fn indexed_functions(
+pub(super) async fn indexed_private_tools(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,

@@ -6,8 +6,8 @@
 //! abridged, or the types of it that the caller names.
 //! It owns its index end to end: the committing workflows notify it, it
 //! writes a search-owned table, and it ranks inside the database. It composes
-//! Provider readiness, exact Tool policy, Principal-owned Saved
-//! Functions, and Workspace authority, and stores none of them. It has no
+//! Provider readiness, exact Tool policy, Principal-owned Private
+//! Tools, and Workspace authority, and stores none of them. It has no
 //! upstream sender, Program Run data input, or observed-value input.
 //!
 //! # Interface
@@ -32,8 +32,8 @@
 //!   search's filter accepts from the caller, each with its display name. A
 //!   filter that names another is refused with those namespaces.
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
-//!   from the Tool eligibility rule discovery uses, without reading Saved
-//!   Functions or the index.
+//!   from the Tool eligibility rule discovery uses, without reading Private
+//!   Tools or the index.
 //! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
 //!   the index holds each Provider's active Generation, apart from readiness.
 //! - [`prepare_storage`] runs at boot before `Database::migrate` applies
@@ -78,7 +78,7 @@ use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
 use page::{Ranked, hydrate_page_in_transaction};
-use retriever::functions::PrivateToolRetriever;
+use retriever::private_tools::PrivateToolRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
     Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,

@@ -89,7 +89,7 @@ impl Corpus {
             .publish_openapi(&user, &workspace, GITHUB, "github", 20)
             .await;
         modules
-            .save_function(
+            .save_private_tool(
                 &principal,
                 &workspace,
                 "triage.openIssues",
@@ -98,7 +98,7 @@ impl Corpus {
             )
             .await;
         modules
-            .save_function(
+            .save_private_tool(
                 &principal,
                 &workspace,
                 "reports.weekly",
@@ -333,7 +333,7 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
     let agent = corpus.agent().await;
     corpus
         .modules
-        .save_function(
+        .save_private_tool(
             &agent,
             &corpus.workspace,
             "agent.issueDigest",
@@ -605,7 +605,7 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
                 .search
                 .search(&corpus.principal, &corpus.workspace, &issues)
                 .await,
-            Err(crate::Error::Functions(coral_tools::Error::Database(_)))
+            Err(crate::Error::Tools(coral_tools::Error::Database(_)))
         ),
         "a shared read failure fails the request, not one retriever"
     );
@@ -806,7 +806,7 @@ async fn a_stale_match_without_evidence_leaves_an_empty_page() {
     // holds `closed`.
     corpus
         .modules
-        .save_function(
+        .save_private_tool(
             &corpus.principal,
             &corpus.workspace,
             "reports.weekly",

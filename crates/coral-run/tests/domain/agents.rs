@@ -77,7 +77,7 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         saved
             .get_agent(&owner, &workspace, agent.principal().id(), &path)
             .await,
-        Err(FunctionsError::PrivateToolNotFound)
+        Err(ToolsError::PrivateToolNotFound)
     ));
     release.send(()).unwrap();
     let terminal = wait_for_terminal(&fixture.runs, &owner, &workspace, run.run_id()).await;

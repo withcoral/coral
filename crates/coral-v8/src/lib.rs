@@ -3,8 +3,8 @@
 //! This private Adapter crate gives `coral-run` narrow compiler and execution
 //! Interfaces. [`ProgramCompiler::compile`] lowers one TypeScript async-function
 //! body; [`ProgramCompiler::prepare_private_tool`] emits one self-contained
-//! callable declaration; linked compilation packages one exact current Saved
-//! Function source closure. [`ProgramExecutor::execute`] runs emitted JavaScript in a
+//! callable declaration; linked compilation packages one exact current Private
+//! Tool source closure. [`ProgramExecutor::execute`] runs emitted JavaScript in a
 //! fresh V8 isolate. Run execution installs one narrow [`ProgramHost`] through
 //! [`ProgramExecutor::execute_with_host`]. Compiler and execution
 //! isolates never share mutable state.
@@ -772,7 +772,7 @@ impl CoralDeclarations {
 
     /// Types `coral.private` from stored Private Tool declarations.
     #[must_use]
-    pub fn with_functions(mut self, functions: Vec<CallableDeclaration>) -> Self {
+    pub fn with_private_tools(mut self, functions: Vec<CallableDeclaration>) -> Self {
         self.functions = Some(functions);
         self
     }
@@ -884,7 +884,7 @@ pub enum Error {
     /// function its source declares at the top level. The message starts with the
     /// authored source and location.
     #[error("{0}")]
-    InvalidFunctionSave(String),
+    InvalidPrivateToolSave(String),
     /// The private compiler bridge returned an invalid payload.
     #[error("TypeScript compiler protocol failed: {0}")]
     CompilerProtocol(String),
@@ -940,7 +940,7 @@ impl Error {
             Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
             Self::InvalidPrivateToolReference { .. } => "invalid_private_tool_reference",
-            Self::InvalidFunctionSave { .. } => "invalid_function_save",
+            Self::InvalidPrivateToolSave { .. } => "invalid_private_tool_save",
             Self::CompilerProtocol { .. } => "compiler_protocol",
             Self::InvalidSourceMap { .. } => "invalid_source_map",
             Self::Engine { .. } => "engine",
@@ -988,7 +988,7 @@ impl From<Error> for CompileFailure {
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
             | Error::InvalidPrivateToolReference { .. }
-            | Error::InvalidFunctionSave(_)
+            | Error::InvalidPrivateToolSave(_)
             | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
             other => Self::Failed(other.code()),
         }

@@ -229,7 +229,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
     // The last two faults fire after the new Owner Memberships are written.
     for attempt in RemovalAttempt::cases(&[
         EventFault::AccountDeleted,
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::MembershipRemoved,
         EventFault::OrganizationMembershipRemoved,
     ]) {

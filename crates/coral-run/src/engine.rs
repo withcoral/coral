@@ -63,8 +63,8 @@ pub(crate) trait ProgramEngine: Send + Sync {
     }
 
     /// The Private Tools and Tools one Program body names, from one
-    /// analysis. An engine that finds no Tool chains names its Saved
-    /// Functions alone, and admission checks no Call Path.
+    /// analysis. An engine that finds no Tool chains names its Private
+    /// Tools alone, and admission checks no Call Path.
     fn program_references(
         &self,
         deadline: Instant,

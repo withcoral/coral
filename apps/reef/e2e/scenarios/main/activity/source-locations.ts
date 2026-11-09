@@ -165,8 +165,8 @@ export async function sourceLocations(context: TestContext) {
     // leaves the other's evidence recorded.
     await step('Read the program’s stored locations back through the management API', async () => {
       const accepted = await api.activity.inspectRun({ name: run, pageSize: 100 })
-      expect(accepted.linkedFunctions).toHaveLength(1)
-      privateTool = accepted.linkedFunctions[0]!.privateTool
+      expect(accepted.linkedPrivateTools).toHaveLength(1)
+      privateTool = accepted.linkedPrivateTools[0]!.privateTool
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 100 })
       tools = entries.entries.flatMap(({ record }) =>
         record.case === 'invocation' ? [record.value] : [],
@@ -213,7 +213,7 @@ export async function sourceLocations(context: TestContext) {
         ).isError,
       ).not.toBe(true)
       const accepted = await api.activity.inspectRun({ name: run, pageSize: 1 })
-      expect(accepted.linkedFunctions.map(({ path, source }) => ({ path, source }))).toEqual([
+      expect(accepted.linkedPrivateTools.map(({ path, source }) => ({ path, source }))).toEqual([
         { path: 'locations.notify', source: savedSource(snapshot, 'notify') },
       ])
     })

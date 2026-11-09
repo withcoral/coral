@@ -235,7 +235,7 @@ impl PrivateToolModule {
     ///
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
-    /// `SearchIndex::sync_function` after its commit, as
+    /// `SearchIndex::sync_private_tool` after its commit, as
     /// `coral.addTool` and `coral.updateTool` do. Until then, the reconcile task
     /// indexes the function.
     ///
@@ -258,8 +258,8 @@ impl PrivateToolModule {
 
     /// Prepares non-executing authoring work outside the final write transaction.
     ///
-    /// The source is typed against the current declarations of the Saved
-    /// Functions it names and, through `tools`, of the Tools it names
+    /// The source is typed against the current declarations of the Private
+    /// Tools it names and, through `tools`, of the Tools it names
     /// that the caller can discover. Without `tools`, `coral.providers`
     /// and the Built-in Tools stay untyped. A source that cannot be analyzed is
     /// prepared untyped, so preparation reports its own failure. Type
@@ -489,7 +489,7 @@ impl PrivateToolModule {
         self.workspaces
             .check_configuration_in_transaction(&mut transaction, user, workspace_id)
             .await
-            .map_err(conceal_agent_function_error)?;
+            .map_err(conceal_agent_private_tool_error)?;
         let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
         let function =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
@@ -582,10 +582,10 @@ impl PrivateToolModule {
             .await?;
         // The Workspace hold acquired above serializes namespace decisions for
         // both absent and existing paths across SQLite and Postgres.
-        let current_functions =
+        let current_private_tools =
             repository::list_current_in_transaction(transaction, workspace_id, actor.principal())
                 .await?;
-        if current_functions
+        if current_private_tools
             .iter()
             .any(|function| private_tool_paths_overlap(function.path(), path))
         {
@@ -615,7 +615,7 @@ impl PrivateToolModule {
                 return Err(missing_private_tool_dependency(path, reference));
             }
         }
-        let previous = current_functions
+        let previous = current_private_tools
             .into_iter()
             .find(|function| function.path() == path);
         Ok((authority, previous))
@@ -688,8 +688,8 @@ impl PrivateToolModule {
         Ok(prepared)
     }
 
-    /// The declarations that type `source`: the current ones of the Saved
-    /// Functions it names and, through `tools`, of the Tools it
+    /// The declarations that type `source`: the current ones of the Private
+    /// Tools it names and, through `tools`, of the Tools it
     /// names that the caller can discover. `None` leaves it untyped.
     ///
     /// Typing stops by its own deadline, so a compile due by `deadline`
@@ -717,7 +717,7 @@ impl PrivateToolModule {
             else {
                 return Ok(None);
             };
-            let Some(function_paths) = named
+            let Some(private_tool_paths) = named
                 .functions()
                 .iter()
                 .map(|reference| PrivateToolPath::parse(reference.path()).ok())
@@ -725,10 +725,10 @@ impl PrivateToolModule {
             else {
                 return Ok(None);
             };
-            let functions = if function_paths.is_empty() {
+            let functions = if private_tool_paths.is_empty() {
                 None
             } else {
-                self.function_declarations(actor, workspace_id, &function_paths)
+                self.private_tool_declarations(actor, workspace_id, &private_tool_paths)
                     .await
                     .inspect_err(|error| {
                         tracing::warn!(
@@ -749,7 +749,7 @@ impl PrivateToolModule {
             }
             let mut declarations = CoralDeclarations::new(PRIVATE_TOOL_DECLARATION_MAX_BYTES);
             if let Some(functions) = functions {
-                declarations = declarations.with_functions(functions);
+                declarations = declarations.with_private_tools(functions);
             }
             if let Some(tools) = tools {
                 declarations = declarations.with_tools(named.tools(), tools);
@@ -765,7 +765,7 @@ impl PrivateToolModule {
     }
 
     /// The current declaration of each named Private Tool the caller owns.
-    async fn function_declarations(
+    async fn private_tool_declarations(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
@@ -947,7 +947,7 @@ pub(crate) fn conceal_inspection_error(error: Error) -> Error {
     }
 }
 
-fn conceal_agent_function_error(error: coral_workspace::Error) -> Error {
+fn conceal_agent_private_tool_error(error: coral_workspace::Error) -> Error {
     match error {
         coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_) => {
             Error::PrivateToolNotFound

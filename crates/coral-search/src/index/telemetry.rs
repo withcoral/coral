@@ -120,7 +120,7 @@ impl SearchIndex {
             Ok::<_, crate::indexer::IndexError>(Snapshot {
                 backlog: metric::SearchBacklog {
                     generations: backlog.catalogs,
-                    functions: backlog.functions,
+                    private_tools: backlog.private_tools,
                     first_visibility,
                     sample_age: Duration::ZERO,
                 },

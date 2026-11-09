@@ -11,7 +11,6 @@ mod credentials;
 mod emissions;
 mod enforcement;
 mod fan_out;
-mod functions;
 mod history;
 mod invocations;
 mod ledger;
@@ -22,6 +21,7 @@ mod metrics;
 mod observation;
 mod output;
 mod owner;
+mod private_tools;
 mod provider_setup;
 mod provider_update;
 mod refresh;
@@ -74,7 +74,7 @@ use crate::{
     RunTimeout,
 };
 use coral_tools::{
-    Error as FunctionsError, PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule,
+    Error as ToolsError, PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule,
     PrivateToolPath, PrivateToolSave, PrivateToolSelection, PrivateToolSource,
 };
 use support::*;

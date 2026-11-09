@@ -6004,7 +6004,7 @@ pub mod activity_source_location {
         #[prost(message, tag = "1")]
         Program(super::ActivityEmpty),
         /// workspaces/{workspace}/privateTools/{private_tool}: the private_tool of
-        /// exactly one of the Run's linked_functions snapshots.
+        /// exactly one of the Run's linked_private_tools snapshots.
         #[prost(string, tag = "2")]
         PrivateTool(::prost::alloc::string::String),
     }
@@ -6230,7 +6230,7 @@ pub struct InspectRunResponse {
     pub submitted_source: ::prost::alloc::string::String,
     /// Source of each Private Tool the Run used, as accepted.
     #[prost(message, repeated, tag = "3")]
-    pub linked_functions: ::prost::alloc::vec::Vec<ActivitySourceSnapshot>,
+    pub linked_private_tools: ::prost::alloc::vec::Vec<ActivitySourceSnapshot>,
     /// A page of Events in order: output, logs, cancellation requests and so on.
     #[prost(message, repeated, tag = "4")]
     pub events: ::prost::alloc::vec::Vec<ActivityRunEvent>,
@@ -14207,14 +14207,14 @@ pub struct ListPrivateToolsRequest {
 /// One scoped page of source-free Private Tool summaries in path order.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListPrivateToolsResponse {
-    /// The caller's own functions on this page.
+    /// The caller's own Private Tools on this page.
     #[prost(message, repeated, tag = "1")]
     pub private_tools: ::prost::alloc::vec::Vec<PrivateToolSummary>,
     /// Empty when no further page remains.
     #[prost(string, tag = "2")]
     pub next_page_token: ::prost::alloc::string::String,
     /// The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
-    /// ToolPolicyService lists and sets the policy of these functions under it.
+    /// ToolPolicyService lists and sets the policy of these Private Tools under it.
     #[prost(string, tag = "3")]
     pub private_provider: ::prost::alloc::string::String,
 }
@@ -14351,8 +14351,8 @@ pub mod private_tool_service_client {
     ///
     /// A Private Tool Path names a definition only for its owning Principal in
     /// one Workspace, so requests carry the Workspace and path rather than a
-    /// resource name. Another Principal's function and an absent path return the
-    /// same NOT_FOUND. Workspace-owned Agent functions never appear.
+    /// resource name. Another Principal's Private Tool and an absent path return the
+    /// same NOT_FOUND. Workspace-owned Agent Private Tools never appear.
     #[derive(Debug, Clone)]
     pub struct PrivateToolServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -14433,7 +14433,7 @@ pub mod private_tool_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Lists one page of the caller's own functions in path order, without source or diagnostics.
+        /// Lists one page of the caller's own Private Tools in path order, without source or diagnostics.
         pub async fn list_private_tools(
             &mut self,
             request: impl tonic::IntoRequest<super::ListPrivateToolsRequest>,
@@ -14463,7 +14463,7 @@ pub mod private_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Returns one of the caller's own functions with its source and saved diagnostics.
+        /// Returns one of the caller's own Private Tools with its source and saved diagnostics.
         pub async fn get_private_tool(
             &mut self,
             request: impl tonic::IntoRequest<super::GetPrivateToolRequest>,
@@ -14490,7 +14490,7 @@ pub mod private_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Deletes one of the caller's own functions and records its lifecycle Event.
+        /// Deletes one of the caller's own Private Tools and records its lifecycle Event.
         /// Coral keeps no reverse references: Programs that call the path fail at admission.
         pub async fn delete_private_tool(
             &mut self,
@@ -14534,7 +14534,7 @@ pub(crate) mod private_tool_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with PrivateToolServiceServer.
     #[async_trait]
     pub trait PrivateToolService: std::marker::Send + std::marker::Sync + 'static {
-        /// Lists one page of the caller's own functions in path order, without source or diagnostics.
+        /// Lists one page of the caller's own Private Tools in path order, without source or diagnostics.
         async fn list_private_tools(
             &self,
             request: tonic::Request<super::ListPrivateToolsRequest>,
@@ -14542,12 +14542,12 @@ pub(crate) mod private_tool_service_server {
             tonic::Response<super::ListPrivateToolsResponse>,
             tonic::Status,
         >;
-        /// Returns one of the caller's own functions with its source and saved diagnostics.
+        /// Returns one of the caller's own Private Tools with its source and saved diagnostics.
         async fn get_private_tool(
             &self,
             request: tonic::Request<super::GetPrivateToolRequest>,
         ) -> std::result::Result<tonic::Response<super::PrivateTool>, tonic::Status>;
-        /// Deletes one of the caller's own functions and records its lifecycle Event.
+        /// Deletes one of the caller's own Private Tools and records its lifecycle Event.
         /// Coral keeps no reverse references: Programs that call the path fail at admission.
         async fn delete_private_tool(
             &self,
@@ -14558,8 +14558,8 @@ pub(crate) mod private_tool_service_server {
     ///
     /// A Private Tool Path names a definition only for its owning Principal in
     /// one Workspace, so requests carry the Workspace and path rather than a
-    /// resource name. Another Principal's function and an absent path return the
-    /// same NOT_FOUND. Workspace-owned Agent functions never appear.
+    /// resource name. Another Principal's Private Tool and an absent path return the
+    /// same NOT_FOUND. Workspace-owned Agent Private Tools never appear.
     #[derive(Debug)]
     pub struct PrivateToolServiceServer<T> {
         inner: Arc<T>,

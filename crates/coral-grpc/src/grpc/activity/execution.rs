@@ -34,7 +34,7 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         coral_run::Error::ShuttingDown => Status::unavailable("server is shutting down; retry"),
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_run::Error::ProgramAdmission(_)
-        | coral_run::Error::Functions(_)
+        | coral_run::Error::Tools(_)
         | coral_run::Error::CompilationTimedOut
         | coral_run::Error::CompilerBusy
         | coral_run::Error::PackageTooLarge { .. }
@@ -281,7 +281,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             .map(|location| source_location(&value.workspace, location)),
     }
 }
-/// Names a snapshot exactly as `InspectRunResponse.linked_functions` does.
+/// Names a snapshot exactly as `InspectRunResponse.linked_private_tools` does.
 fn private_tool_name(workspace: &WorkspaceId, private_tool_id: &str) -> String {
     format!("workspaces/{workspace}/privateTools/{private_tool_id}")
 }
@@ -476,8 +476,8 @@ pub(super) async fn inspect_run(
         submission: history.submission.as_ref().map(submission),
         run: Some(summary),
         submitted_source: detail.submitted_source,
-        linked_functions: detail
-            .linked_functions
+        linked_private_tools: detail
+            .linked_private_tools
             .into_iter()
             .map(|s| wire::ActivitySourceSnapshot {
                 private_tool: private_tool_name(&workspace, &s.private_tool_id),

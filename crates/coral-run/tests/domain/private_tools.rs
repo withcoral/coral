@@ -14,7 +14,7 @@ const SOURCE: &str = "const saved = (name: string): string => `hello ${name}`;";
 /// either Tool, and the index each save notifies.
 async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) {
     let mut scope = AdminScope::new(user).await;
-    let module = functions_module(&scope);
+    let module = private_tool_module(&scope);
     let index =
         coral_search::SearchIndex::new(scope.fixture.database.clone(), Duration::from_secs(3_600));
     scope.fixture.runs = scope
@@ -26,7 +26,7 @@ async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) 
 }
 
 /// The module that stores `scope`'s Private Tools.
-fn functions_module(scope: &AdminScope) -> PrivateToolModule {
+fn private_tool_module(scope: &AdminScope) -> PrivateToolModule {
     PrivateToolModule::new(
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
@@ -524,7 +524,7 @@ async fn lifecycle_actions(
 async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_their_codes() {
     use coral_tools::LifecycleAction::{Created, Deleted, Replaced};
     let (scope, _index) = authoring_scope("user:tools-intents").await;
-    let functions = functions_module(&scope);
+    let functions = private_tool_module(&scope);
     let before = lifecycle_actions(&scope, &functions, &scope.owner).await;
     let added = outcome(
         &scope,
@@ -836,7 +836,7 @@ async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_t
 #[tokio::test]
 async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
     let (scope, _index) = authoring_scope("user:functions-old-roots").await;
-    let module = functions_module(&scope);
+    let module = private_tool_module(&scope);
     for (path, body) in [
         ("old.workspace", "coral.workspace.search({ query: 'x' })"),
         ("old.functions", "coral.functions.people.greet('Ada')"),
@@ -1101,7 +1101,7 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
         match row.gate {
             Nothing => {}
             Rule(state) | RuleThenDemote(state) => {
-                let tool = functions_module(&scope)
+                let tool = private_tool_module(&scope)
                     .get(
                         &author,
                         &scope.workspace_id,

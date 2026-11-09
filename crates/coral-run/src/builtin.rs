@@ -27,10 +27,10 @@ use crate::{
 };
 
 mod add_provider;
-mod functions;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod private_tools;
 mod search;
 mod setup_tool;
 mod update_policy;
@@ -46,11 +46,11 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
-    SaveTool(Box<functions::SaveTool>),
-    RemoveTool(functions::RemoveTool),
+    SaveTool(Box<private_tools::SaveTool>),
+    RemoveTool(private_tools::RemoveTool),
 }
 
-pub use functions::PrivateTools;
+pub use private_tools::PrivateTools;
 
 impl BuiltinCall {
     /// The Built-in Tool an admitted target names, with its input checked
@@ -91,14 +91,16 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
-                    BuiltinArguments::AddTool(arguments) => functions::SaveTool::add(&arguments)
-                        .map(|call| Self::SaveTool(Box::new(call))),
+                    BuiltinArguments::AddTool(arguments) => {
+                        private_tools::SaveTool::add(&arguments)
+                            .map(|call| Self::SaveTool(Box::new(call)))
+                    }
                     BuiltinArguments::UpdateTool(arguments) => {
-                        functions::SaveTool::update(&arguments)
+                        private_tools::SaveTool::update(&arguments)
                             .map(|call| Self::SaveTool(Box::new(call)))
                     }
                     BuiltinArguments::RemoveTool(arguments) => {
-                        functions::RemoveTool::new(&arguments).map(Self::RemoveTool)
+                        private_tools::RemoveTool::new(&arguments).map(Self::RemoveTool)
                     }
                 }),
         )

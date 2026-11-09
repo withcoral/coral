@@ -110,7 +110,7 @@ async fn read_locations(
         )
         .await
         .expect("inspect Run");
-    let [snapshot] = detail.linked_functions.as_slice() else {
+    let [snapshot] = detail.linked_private_tools.as_slice() else {
         panic!("one linked snapshot expected")
     };
     let events = detail

@@ -182,7 +182,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
             run: selectedRun,
             request: exact,
             source: selectedRun.name === accountRun.name ? linearProgram : remindersProgram,
-            linkedFunctions: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           }
         : null),
@@ -212,7 +212,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
         kind: 'run',
         run: accountRun,
         source: linearProgram,
-        linkedFunctions: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
       },
     }
@@ -360,7 +360,7 @@ export const SingleAction: Story = {
           }),
         },
         source: 'return await coral.providers.linear.listIssues({ assignee: "me" });',
-        linkedFunctions: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
       },
     },
@@ -376,7 +376,7 @@ export const LargeArguments: Story = {
         kind: 'run',
         run,
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: {
           ...request,
@@ -401,7 +401,7 @@ export const NonObjectArguments: Story = {
         kind: 'run',
         run,
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: { ...request, arguments: '["owner@example.com","INV-4171"]' },
       },
@@ -418,7 +418,7 @@ export const ResolvedSelection: Story = {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: {
           ...request,
@@ -448,7 +448,7 @@ const reviewHeaderOverArguments: Story = {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: {
           ...request,

@@ -62,7 +62,7 @@ fn admit(body: &str, modules: &[LinkedPrivateToolSource]) -> Result<CompiledProg
 /// naming what it returned instead.
 fn save_refusal(body: &str, modules: &[LinkedPrivateToolSource]) -> String {
     match admit(body, modules) {
-        Err(Error::InvalidFunctionSave(message)) => message,
+        Err(Error::InvalidPrivateToolSave(message)) => message,
         other => panic!("a save refusal: {:?}", other.map(drop)),
     }
 }

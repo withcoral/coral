@@ -60,7 +60,7 @@ impl Fixture {
     /// Saves a function as `call`'s Principal the way a Program's
     /// `coral.addTool` or `coral.updateTool` does: typed from the Tools it can
     /// discover, then the index is told. No Task Attempt records it.
-    async fn save_function(
+    async fn save_private_tool(
         &self,
         call: &AttributedCommand,
         path: &str,
@@ -81,7 +81,7 @@ impl Fixture {
         let prepared = self
             .functions
             .prepare_save(
-                &function_context(call),
+                &private_tool_context(call),
                 &call.workspace_id,
                 save,
                 Some(&declarations),
@@ -94,13 +94,13 @@ impl Fixture {
             .await?;
         transaction.commit().await?;
         self.index
-            .sync_function(call.workspace_id.clone(), function.id().clone());
+            .sync_private_tool(call.workspace_id.clone(), function.id().clone());
         Ok(function)
     }
 
     /// Deletes `call`'s Principal's function at `path` the way a Program's
     /// `coral.removeTool` does, then tells the index.
-    async fn delete_function(
+    async fn delete_private_tool(
         &self,
         call: &AttributedCommand,
         path: &str,
@@ -108,13 +108,13 @@ impl Fixture {
         let deleted = self
             .functions
             .delete(
-                &function_context(call),
+                &private_tool_context(call),
                 &call.workspace_id,
                 &coral_tools::PrivateToolPath::parse(path)?,
             )
             .await?;
         self.index
-            .sync_function(call.workspace_id.clone(), deleted.clone());
+            .sync_private_tool(call.workspace_id.clone(), deleted.clone());
         Ok(deleted)
     }
 
@@ -321,7 +321,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Describe my retained function");
     fixture
-        .save_function(&call, "answer", "Answer", "export default () => 42;")
+        .save_private_tool(&call, "answer", "Answer", "export default () => 42;")
         .await
         .unwrap();
     let change = ChangeContext::new(
@@ -495,7 +495,7 @@ async fn private_tool_descriptions_survive_replacement_and_deletion() {
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Keep this exact description");
     fixture
-        .save_function(&call, "answer", "Answer", "export default () => 41;")
+        .save_private_tool(&call, "answer", "Answer", "export default () => 41;")
         .await
         .unwrap();
     fixture
@@ -504,10 +504,10 @@ async fn private_tool_descriptions_survive_replacement_and_deletion() {
         .await
         .unwrap();
     fixture
-        .save_function(&call, "answer", "Changed", "export default () => 42;")
+        .save_private_tool(&call, "answer", "Changed", "export default () => 42;")
         .await
         .unwrap();
-    fixture.delete_function(&call, "answer").await.unwrap();
+    fixture.delete_private_tool(&call, "answer").await.unwrap();
     let history = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -1180,7 +1180,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
     let call = fixture.call(&goal, "Retain the whole goal");
     // A function saved while the goal is open outlives the goal's expiry.
     fixture
-        .save_function(&call, "current", "Keep current", "export default () => 42;")
+        .save_private_tool(&call, "current", "Keep current", "export default () => 42;")
         .await
         .unwrap();
     let ended_at = wall_time() + 1_000_000_000;
@@ -1907,7 +1907,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
     // Equal names in length, so equal matches tie and follow Call Path order.
     for path in ["alpha", "bravo", "gamma"] {
         fixture
-            .save_function(&call, path, "Find an answer", "export default () => 42;")
+            .save_private_tool(&call, path, "Find an answer", "export default () => 42;")
             .await
             .unwrap();
     }
@@ -1946,7 +1946,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         "coral.private.bravo"
     );
     fixture
-        .save_function(
+        .save_private_tool(
             &call,
             "alpha",
             "Changed",
@@ -1954,7 +1954,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         )
         .await
         .unwrap();
-    fixture.delete_function(&call, "bravo").await.unwrap();
+    fixture.delete_private_tool(&call, "bravo").await.unwrap();
     let entries = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -2245,7 +2245,7 @@ impl Fixture {
 }
 
 /// `call`'s Principal at the wall clock, as a Private Tool change names it.
-fn function_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
+fn private_tool_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
     coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
         wall_time(),

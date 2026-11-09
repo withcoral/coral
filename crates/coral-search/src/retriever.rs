@@ -8,8 +8,8 @@
 //! of its kind. Every method joins the caller's read snapshot and opens no
 //! connection of its own.
 
-pub(crate) mod functions;
 pub(crate) mod plan;
+pub(crate) mod private_tools;
 mod repository;
 pub(crate) mod tools;
 

@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use crate::indexer::functions::{self, FunctionSync, PrivateToolIndexer};
+use crate::indexer::private_tools::{self, PrivateToolIndexer, PrivateToolSync};
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
@@ -42,8 +42,8 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// the caller: a failed write is logged, a failed Generation or Private Tool
 /// attempt leaves a `failed` state row, and the reconcile task converges what a notification
 /// missed. Each notified write is the root of a trace of its own, linked to
-/// the span that notified it, such as the request that saved a Saved
-/// Function, and a failed write marks its span. Notified writes run in the
+/// the span that notified it, such as the request that saved a Private
+/// Tool, and a failed write marks its span. Notified writes run in the
 /// order of the notifications. One in-process mutex serializes every write,
 /// and a reconcile pass takes it for one item at a time. A write that runs
 /// past its limit is rolled back and counts as failed. On Postgres, a write
@@ -390,13 +390,13 @@ impl SearchIndex {
     /// row an earlier attempt left, or removes both when the function is gone.
     /// A failed attempt rolls back, removes the function's row, and leaves a
     /// `failed` state row.
-    pub fn sync_function(&self, workspace_id: WorkspaceId, function_id: PrivateToolId) {
-        let span = function_span(&workspace_id, &function_id);
+    pub fn sync_private_tool(&self, workspace_id: WorkspaceId, private_tool_id: PrivateToolId) {
+        let span = private_tool_span(&workspace_id, &private_tool_id);
         let index = self.clone();
         self.spawn(span, async move {
             let _write = index.writes.lock().await;
             index
-                .sync_function_held(&workspace_id, &function_id)
+                .sync_private_tool_held(&workspace_id, &private_tool_id)
                 .await
                 .map(drop)
         });
@@ -404,16 +404,16 @@ impl SearchIndex {
 
     /// Brings the index in line with one Private Tool. The caller holds the
     /// mutex. Answers whether it indexed the function.
-    async fn sync_function_held(
+    async fn sync_private_tool_held(
         &self,
         workspace_id: &WorkspaceId,
-        function_id: &PrivateToolId,
+        private_tool_id: &PrivateToolId,
     ) -> Result<bool, IndexError> {
         let now = crate::unix_now_nanos().ok_or(IndexError::Clock)?;
         let sync = self
             .read_snapshot(async |transaction| {
                 PrivateToolIndexer
-                    .sync(transaction, workspace_id, function_id, now)
+                    .sync(transaction, workspace_id, private_tool_id, now)
                     .await
             })
             .await;
@@ -421,28 +421,28 @@ impl SearchIndex {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
                 coral.workspace.id = safe::id(&workspace_id),
-                coral.private_tool.id = safe::id(&function_id),
+                coral.private_tool.id = safe::id(&private_tool_id),
                 error.type = safe::kind(error.code()),
                 "failed to read a Private Tool before syncing it"
             );
         })?;
         match sync {
-            FunctionSync::Index(entry) => self.write_function(&entry).await.map(|()| true),
-            FunctionSync::Remove(removal) => {
+            PrivateToolSync::Index(entry) => self.write_private_tool(&entry).await.map(|()| true),
+            PrivateToolSync::Remove(removal) => {
                 self.erase(&PrivateToolIndexer, &removal)
                     .await
                     .inspect_err(|error| {
                         // TODO: an error monitor for failed index writes is still to be set up.
                         tracing::error!(
                             coral.workspace.id = safe::id(&workspace_id),
-                            coral.private_tool.id = safe::id(&function_id),
+                            coral.private_tool.id = safe::id(&private_tool_id),
                             error.type = safe::kind(error.code()),
                             "failed to remove a Private Tool from the search index"
                         );
                     })?;
                 Ok(false)
             }
-            FunctionSync::Nothing => {
+            PrivateToolSync::Nothing => {
                 skipped("nothing_to_sync");
                 Ok(false)
             }
@@ -580,7 +580,7 @@ impl SearchIndex {
 
     /// Writes one Private Tool's entry. A failure is logged and recorded,
     /// then returned. The caller holds the mutex.
-    async fn write_function(&self, entry: &PrivateToolEntry) -> Result<(), IndexError> {
+    async fn write_private_tool(&self, entry: &PrivateToolEntry) -> Result<(), IndexError> {
         let Err(error) = self.write(&PrivateToolIndexer, entry).await else {
             return Ok(());
         };
@@ -591,7 +591,7 @@ impl SearchIndex {
             error.type = safe::kind(error.code()),
             "failed to index a Private Tool"
         );
-        if let Err(record_error) = self.record_failed_function(entry, &error).await {
+        if let Err(record_error) = self.record_failed_private_tool(entry, &error).await {
             tracing::error!(
                 coral.workspace.id = safe::id(&entry.workspace_id()),
                 coral.private_tool.id = safe::id(&entry.id()),
@@ -863,7 +863,7 @@ impl SearchIndex {
         }
         Ok(())
     }
-    async fn record_failed_function(
+    async fn record_failed_private_tool(
         &self,
         entry: &PrivateToolEntry,
         error: &IndexError,
@@ -871,7 +871,7 @@ impl SearchIndex {
         let removed = self
             .within_limit(async {
                 let mut transaction = self.begin_when_writer_free().await?;
-                let removed = functions::record_failed_attempt(
+                let removed = private_tools::record_failed_attempt(
                     &mut transaction,
                     entry,
                     error,
@@ -915,12 +915,12 @@ fn generation_span(
 /// The span of one Private Tool's sync, notified or made by a reconcile
 /// pass. The sync records how long it waited for the writer and wrote, or why
 /// it wrote nothing.
-fn function_span(workspace_id: &WorkspaceId, function_id: &PrivateToolId) -> tracing::Span {
+fn private_tool_span(workspace_id: &WorkspaceId, private_tool_id: &PrivateToolId) -> tracing::Span {
     tracing::info_span!(
         parent: None,
-        "coral.search.sync_function",
+        "coral.search.sync_private_tool",
         coral.workspace.id = safe::id(&workspace_id),
-        coral.private_tool.id = safe::id(&function_id),
+        coral.private_tool.id = safe::id(&private_tool_id),
         coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,

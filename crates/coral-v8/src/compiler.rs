@@ -495,7 +495,7 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
             | Error::InvalidPrivateToolReference { .. }
-            | Error::InvalidFunctionSave(_),
+            | Error::InvalidPrivateToolSave(_),
         ) => CompilerOutcome::Rejected,
         Err(_) => CompilerOutcome::Failed,
     }
@@ -858,7 +858,7 @@ fn decode_compiled_program(json: &str) -> Result<CompiledProgram, Error> {
         return Err(Error::ForbiddenCapability(message));
     }
     if let Some(message) = output.save_refusal {
-        return Err(Error::InvalidFunctionSave(message));
+        return Err(Error::InvalidPrivateToolSave(message));
     }
     if !output.wrapper_valid {
         return Err(Error::InvalidProgramBody);

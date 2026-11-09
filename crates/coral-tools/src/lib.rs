@@ -1,4 +1,5 @@
-//! Current Private Tool authoring and discovery material for Coral.
+//! The Tools that Coral performs from authored source: each Principal's current
+//! Private Tools, their authoring and their discovery material.
 //!
 //! [`PrivateToolModule`] owns current definitions, validation, visibility, and
 //! atomic Administrative Lifecycle Events. It uses canonical Workspace authority

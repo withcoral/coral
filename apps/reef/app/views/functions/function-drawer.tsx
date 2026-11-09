@@ -67,12 +67,7 @@ export interface FunctionDrawerProps {
 }
 
 /** One of the current User's Private Tools, as Coral saved it. You can read or delete it. */
-export function FunctionDrawer({
-  listPath,
-  privateTool: f,
-  form,
-  canDelete,
-}: FunctionDrawerProps) {
+export function FunctionDrawer({ listPath, privateTool: f, form, canDelete }: FunctionDrawerProps) {
   const callPath = `coral.private.${f.path}`
   return (
     <Drawer listPath={listPath} title={f.path}>

@@ -24,7 +24,7 @@
 //!
 //! Workspace authorizes and locks the mutation and prepares transaction-bound
 //! lost-access evidence. Provider retires credentials and pending workflows;
-//! Functions removes current definitions and writes private deletion evidence;
+//! Tools removes current Private Tools and writes private deletion evidence;
 //! Auth retires the Refresh Grants for the access being removed.
 //! Workspace then removes authority in the caller's transaction. Standalone
 //! commands open and commit that transaction; [`AccessLifecycleModule::apply_in_transaction`]
@@ -33,7 +33,7 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
-//! This Module depends on Workspace, Provider, Functions, Auth, and the private database
+//! This Module depends on Workspace, Provider, Tools, Auth, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
 //! sufficient to block later dispatch at the Policy Enforcement Point; no
@@ -180,7 +180,7 @@ pub enum Error {
     Provider(#[from] coral_provider::Error),
     /// Current function cleanup failed.
     #[error(transparent)]
-    Functions(#[from] coral_tools::Error),
+    Tools(#[from] coral_tools::Error),
     /// Refresh Grant retirement failed.
     #[error(transparent)]
     Auth(#[from] coral_auth::Error),

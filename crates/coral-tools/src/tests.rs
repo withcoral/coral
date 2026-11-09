@@ -19,9 +19,9 @@ use crate::{
 
 #[test]
 fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
-    let maximum_function = "f".repeat(crate::PRIVATE_TOOL_SOURCE_MAX_BYTES);
-    PrivateToolSource::parse(&maximum_function).expect("maximum Private Tool source");
-    PrivateToolSource::parse(&format!("{maximum_function}f"))
+    let maximum_private_tool = "f".repeat(crate::PRIVATE_TOOL_SOURCE_MAX_BYTES);
+    PrivateToolSource::parse(&maximum_private_tool).expect("maximum Private Tool source");
+    PrivateToolSource::parse(&format!("{maximum_private_tool}f"))
         .expect_err("oversized Private Tool source");
 
     let maximum_declaration = "d".repeat(crate::PRIVATE_TOOL_DECLARATION_MAX_BYTES);
@@ -363,7 +363,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
         30,
     )
     .await;
-    let agent_function = save(
+    let agent_private_tool = save(
         &agent,
         &workspace_id,
         "agent.answer",
@@ -465,9 +465,9 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     );
     for (entries, saved) in [
         (&workspace_entries, &replaced),
-        (&workspace_entries, &agent_function),
+        (&workspace_entries, &agent_private_tool),
         (&every_entry, &replaced),
-        (&every_entry, &agent_function),
+        (&every_entry, &agent_private_tool),
         (&every_entry, &elsewhere),
     ] {
         let read = entries
@@ -491,7 +491,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     crate::test_fixtures_repository::corrupt_declaration_fields(
         &fixture.database,
         &workspace_id,
-        agent_function.id(),
+        agent_private_tool.id(),
     )
     .await;
     let mut transaction = fixture.database.begin().await.expect("begin entry read");
@@ -501,7 +501,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     transaction.rollback().await.expect("finish entry read");
     let corrupt = entries
         .iter()
-        .find(|entry| entry.id() == agent_function.id())
+        .find(|entry| entry.id() == agent_private_tool.id())
         .expect("the function stays readable by path and description");
     assert_eq!(corrupt.declaration_fields(), None);
     assert_eq!(corrupt.description().as_str(), "Answer a question");
@@ -577,7 +577,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
     let agent = registered_agent(&fixture.workspaces, &workspace_owner, &workspace_id).await;
     let agent_id = agent.principal().id().clone();
     let path = PrivateToolPath::parse("private.answer").expect("path");
-    let agent_function = fixture
+    let agent_private_tool = fixture
         .private_tools
         .save(
             &private_tool_change(agent.clone(), 20, '7'),
@@ -598,7 +598,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .await
             .expect("Workspace Owner inspects Agent function")
             .id(),
-        agent_function.id()
+        agent_private_tool.id()
     );
     assert_eq!(
         fixture
@@ -607,10 +607,10 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .await
             .expect("Workspace Owner lists Agent functions")
             .as_slice(),
-        std::slice::from_ref(&agent_function)
+        std::slice::from_ref(&agent_private_tool)
     );
 
-    let owner_function = fixture
+    let owner_private_tool = fixture
         .private_tools
         .save(
             &private_tool_change(workspace_owner.clone(), 30, '8'),
@@ -623,7 +623,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
         )
         .await
         .expect("Owner authors only as the Owner's User");
-    assert_ne!(owner_function.id(), agent_function.id());
+    assert_ne!(owner_private_tool.id(), agent_private_tool.id());
     assert_eq!(
         fixture
             .private_tools
@@ -631,7 +631,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .await
             .expect("Agent definition remains unchanged")
             .id(),
-        agent_function.id()
+        agent_private_tool.id()
     );
 
     let member_user = organization_user(
@@ -727,7 +727,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .await
             .expect("denied deletions leave the Agent function current")
             .id(),
-        agent_function.id()
+        agent_private_tool.id()
     );
 
     fixture
@@ -755,7 +755,7 @@ async fn only_designated_owners_inspect_and_delete_agent_functions_without_autho
             .await
             .expect("Owner's User function stays private and current")
             .id(),
-        owner_function.id()
+        owner_private_tool.id()
     );
 }
 
@@ -1176,12 +1176,12 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
     let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:authoring-race").await;
     let (compiler, compiling, release) = GatedPrivateToolCompiler::held();
-    let blocked_functions = PrivateToolModule::with_compiler(
+    let blocked_private_tools = PrivateToolModule::with_compiler(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         Arc::new(compiler),
     );
-    let saving_module = blocked_functions.clone();
+    let saving_module = blocked_private_tools.clone();
     let saving_workspace = workspace_id.clone();
     let saving_principal = principal.clone();
     let save = tokio::spawn(async move {
@@ -1219,7 +1219,7 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
         Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
     ));
     assert!(matches!(
-        blocked_functions
+        blocked_private_tools
             .get(
                 &principal,
                 &workspace_id,
@@ -1229,7 +1229,7 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
         Err(Error::PrivateToolNotFound)
     ));
     assert!(
-        blocked_functions
+        blocked_private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
             .expect("list rejected authoring evidence")

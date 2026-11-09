@@ -37,7 +37,7 @@ fn error(error: coral_task::Error) -> Status {
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_task::Error::SnapshotTooLarge
         | coral_task::Error::Search(_)
-        | coral_task::Error::Functions(_)
+        | coral_task::Error::Tools(_)
         | coral_task::Error::Clock
         | coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::Workspace(_)

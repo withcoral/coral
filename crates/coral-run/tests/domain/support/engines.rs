@@ -536,8 +536,8 @@ impl ProgramEngine for CompileGateEngine {
     }
 }
 
-/// Finds `coral.private.<path>` references by scanning source text, so Saved
-/// Function closure rules run without TypeScript compilation time. A linked
+/// Finds `coral.private.<path>` references by scanning source text, so Private
+/// Tool closure rules run without TypeScript compilation time. A linked
 /// Program returns how many Private Tools it linked.
 #[derive(Clone, Default)]
 pub(crate) struct ReferenceScanningEngine;

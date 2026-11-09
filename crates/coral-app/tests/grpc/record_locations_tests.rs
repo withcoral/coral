@@ -150,7 +150,7 @@ async fn recorded_locations_survive_a_restart_on_the_private_listener() {
         .await
         .unwrap()
         .into_inner();
-    let [snapshot] = detail.linked_functions.as_slice() else {
+    let [snapshot] = detail.linked_private_tools.as_slice() else {
         panic!("one linked snapshot")
     };
     let at = |document: Document, line, column| {

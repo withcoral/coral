@@ -95,7 +95,7 @@ async fn sqlite_text_index_follows_a_private_tool_removal() {
     tracer
         .modules
         .index
-        .sync_function(tracer.workspace.clone(), saved.id().clone());
+        .sync_private_tool(tracer.workspace.clone(), saved.id().clone());
     tracer.modules.index.settled().await;
 
     assert!(
@@ -249,8 +249,8 @@ async fn private_tool_rows_without_a_principal_kind_fail_their_check() {
         ),
         (
             "search_index_states",
-            failed_function_state(&tracer.workspace, &doc, None),
-            failed_function_state(&tracer.workspace, &doc, Some("user")),
+            failed_private_tool_state(&tracer.workspace, &doc, None),
+            failed_private_tool_state(&tracer.workspace, &doc, Some("user")),
         ),
     ] {
         let error = database
@@ -690,7 +690,7 @@ fn private_tool_row(
         .to_owned()
 }
 
-fn failed_function_state(
+fn failed_private_tool_state(
     workspace: &WorkspaceId,
     doc: &str,
     principal_kind: Option<&str>,

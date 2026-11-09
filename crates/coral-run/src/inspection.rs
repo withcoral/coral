@@ -61,7 +61,7 @@ pub struct RunDetail {
     /// Exact submitted TypeScript body.
     pub submitted_source: String,
     /// Admission-bounded linked snapshots.
-    pub linked_functions: Vec<SourceSnapshot>,
+    pub linked_private_tools: Vec<SourceSnapshot>,
     /// One bounded chronological Event page.
     pub events: Vec<RunEvent>,
     /// More Events exist after this page.
@@ -242,7 +242,7 @@ impl RunModule {
             }
             None => None,
         };
-        let (submitted_source, linked_functions) =
+        let (submitted_source, linked_private_tools) =
             crate::inspection_repository::sources(tx, workspace, id).await?;
         let (events, has_more_events) = crate::run_repository::event_page_in_transaction(
             tx,
@@ -258,7 +258,7 @@ impl RunModule {
             summary,
             context_impact,
             submitted_source,
-            linked_functions,
+            linked_private_tools,
             events,
             has_more_events,
             trace_id: run.diagnostic_trace_id(),

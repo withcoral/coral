@@ -38,7 +38,7 @@ export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
       code: context.source,
       fileName: `program-${context.run.name.split('/').at(-1)}.ts`,
     },
-    ...context.linkedFunctions.map((linked) => ({
+    ...context.linkedPrivateTools.map((linked) => ({
       id: privateToolDocumentId(linked.privateTool),
       label: `Private tool snapshot: ${linked.path}`,
       code: linked.source,
@@ -106,7 +106,7 @@ export function recordedLocationFor(context: RunDetail, row: ActivityRow): Sourc
   const documentId =
     source.kind === 'program'
       ? ACCEPTED_PROGRAM_DOCUMENT_ID
-      : context.linkedFunctions.some((linked) => linked.privateTool === source.privateTool)
+      : context.linkedPrivateTools.some((linked) => linked.privateTool === source.privateTool)
         ? privateToolDocumentId(source.privateTool)
         : null
   if (documentId === null) return null
@@ -121,6 +121,6 @@ function documentIdForFrameSource(frameSource: string, context: RunDetail): stri
     ? privateToolPath(frameSource.slice(PRIVATE_TOOL_FRAME_SOURCE_PREFIX.length))
     : null
   if (path === null) return null
-  const linked = context.linkedFunctions.find((candidate) => candidate.path === path)
+  const linked = context.linkedPrivateTools.find((candidate) => candidate.path === path)
   return linked ? privateToolDocumentId(linked.privateTool) : null
 }

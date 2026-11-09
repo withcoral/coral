@@ -46,7 +46,7 @@ pub enum Error {
     Policy(#[from] coral_policy::Error),
     /// Private Tool authoring material could not be resolved.
     #[error(transparent)]
-    Functions(#[from] coral_tools::Error),
+    Tools(#[from] coral_tools::Error),
     /// Workspace authority rejected discovery.
     #[error(transparent)]
     Workspace(#[from] coral_workspace::Error),

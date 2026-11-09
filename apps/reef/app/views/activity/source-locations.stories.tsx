@@ -160,7 +160,7 @@ const context: RunDetail = {
   request: null,
   requestUnavailable: false,
   source,
-  linkedFunctions: [{ privateTool, path: 'billing.notify', source: snapshot }],
+  linkedPrivateTools: [{ privateTool, path: 'billing.notify', source: snapshot }],
   terminal: {
     kind: 'failed',
     code: 'program_execution_failed',

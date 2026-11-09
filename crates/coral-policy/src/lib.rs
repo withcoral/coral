@@ -219,7 +219,7 @@ impl ToolPolicyModule {
                 page_size,
             )
             .await
-            .map_err(functions_error)?;
+            .map_err(tools_error)?;
             (
                 page.iter().map(private_tool_listing).collect::<Vec<_>>(),
                 owner,
@@ -506,7 +506,7 @@ fn private_tool_listing(
 }
 
 /// A coral-tools read failure: only persistence or corrupt data.
-fn functions_error(error: coral_tools::Error) -> Error {
+fn tools_error(error: coral_tools::Error) -> Error {
     match error {
         coral_tools::Error::Database(error) => Error::Database(error),
         other => Error::CorruptData(other.to_string()),
@@ -621,7 +621,7 @@ async fn ruled_tool_facts_in_transaction(
         keys,
     )
     .await
-    .map_err(functions_error)?
+    .map_err(tools_error)?
     .into_iter()
     .map(|(key, declared)| {
         (

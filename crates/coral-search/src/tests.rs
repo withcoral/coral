@@ -20,7 +20,7 @@ use coral_provider::{
     ProviderRegenerationRequest, WorkspaceProviderPublicationRequest,
 };
 use coral_test_support::TestDatabase;
-use coral_tools::test_fixtures_repository as function_faults;
+use coral_tools::test_fixtures_repository as tool_faults;
 use coral_tools::{
     PrivateToolChangeContext, PrivateToolDescription, PrivateToolModule, PrivateToolPath,
     PrivateToolSave, PrivateToolSource,
@@ -336,9 +336,9 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
             "query {query:?}: guidance and tags appear only where a term matched"
         );
     }
-    let function_results = scope.query(&fixture, "formatForecast").await;
+    let private_tool_results = scope.query(&fixture, "formatForecast").await;
     assert_eq!(
-        function_results
+        private_tool_results
             .hits()
             .first()
             .map(|result| result.call_path().as_str()),
@@ -461,11 +461,11 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     assert!(declaration.ends_with(", 200, \"application/json\">>;"));
     assert!(described_tool.private_tool_detail().is_none());
 
-    let described_function = scope
+    let described_private_tool = scope
         .describe(&fixture, TracerScope::FUNCTION)
         .await
         .expect("describe exact Private Tool");
-    let declaration = described_function.authoring().typescript_declaration();
+    let declaration = described_private_tool.authoring().typescript_declaration();
     assert_eq!(
         declaration,
         scope.saved.declaration().as_str(),
@@ -473,7 +473,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     );
     assert!(declaration.contains("interface Forecast"));
     assert!(!declaration.contains(SAVED_SOURCE_CANARY));
-    let editable = described_function
+    let editable = described_private_tool
         .private_tool_detail()
         .expect("owned Private Tool editable detail");
     assert!(editable.source().as_str().contains(SAVED_SOURCE_CANARY));
@@ -485,7 +485,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
 
     // A Private Tool's description is a Tool Description of the
     // Workspace's Private Provider.
-    let AuthoringDescription::PrivateTool(private) = described_function.authoring() else {
+    let AuthoringDescription::PrivateTool(private) = described_private_tool.authoring() else {
         panic!("the tracer function is a Private Tool");
     };
     let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
@@ -502,7 +502,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
         ApprovalRequirement::NotRequired
     );
     assert_eq!(private.revision(), scope.saved.revision());
-    let projected = crate::projection::exact_description(&described_function);
+    let projected = crate::projection::exact_description(&described_private_tool);
     for (field, expected) in [
         ("/kind", serde_json::json!("private_tool")),
         ("/provider_id", serde_json::json!(provider.id().to_string())),
@@ -633,7 +633,7 @@ async fn function_replacement_and_corrupt_relevance_keep_exact_descriptions() {
         replaced.declaration().as_str()
     );
 
-    function_faults::corrupt_declaration_fields(
+    tool_faults::corrupt_declaration_fields(
         &fixture.search.database,
         &scope.workspace_id,
         replaced.id(),
@@ -1947,7 +1947,7 @@ async fn ordinary_private_tool_search_never_loads_source() {
     let saved = fixture
         .save_tracer(&principal, &workspace_id, "Source-free metadata", 20)
         .await;
-    function_faults::corrupt_source(&fixture.search.database, &workspace_id, saved.id()).await;
+    tool_faults::corrupt_source(&fixture.search.database, &workspace_id, saved.id()).await;
 
     fixture.converge().await;
     let page = fixture
@@ -1970,7 +1970,7 @@ async fn ordinary_private_tool_search_never_loads_source() {
                 &[],
             )
             .await,
-        Err(Error::Functions(coral_tools::Error::CorruptData(_)))
+        Err(Error::Tools(coral_tools::Error::CorruptData(_)))
     ));
 }
 
@@ -2048,7 +2048,7 @@ async fn a_page_of_fifty_hits_fits_the_budget_with_bounded_text() {
     let workspace_id = fixture.create_workspace(&user).await;
     for index in 0..50 {
         fixture
-            .save_large_function(&principal, &workspace_id, index)
+            .save_large_private_tool(&principal, &workspace_id, index)
             .await;
     }
     fixture.converge().await;
@@ -3633,8 +3633,8 @@ async fn exact_provider_readiness_does_not_read_unrelated_providers() {
 
 #[tokio::test]
 async fn readiness_inspection_does_not_require_private_tool_persistence() {
-    // Drop Functions' schema and the search index: any accidental
-    // repository read must fail, even when no Functions exist. Readiness
+    // Drop the Private Tool schema and the search index: any accidental
+    // repository read must fail, even when no Private Tools exist. Readiness
     // depends only on Tool domains and reads no index.
     let fixture = TestModules::new().await;
     fixture
@@ -3723,8 +3723,7 @@ async fn readiness_ignores_unreadable_private_tools_for_the_same_caller() {
         .await
         .unwrap();
     for function in &saved {
-        function_faults::corrupt_description(&fixture.search.database, &workspace, function.id())
-            .await;
+        tool_faults::corrupt_description(&fixture.search.database, &workspace, function.id()).await;
     }
     assert!(
         matches!(
@@ -3732,7 +3731,7 @@ async fn readiness_ignores_unreadable_private_tools_for_the_same_caller() {
                 .search
                 .search(&principal, &workspace, &SearchRequest::list())
                 .await,
-            Err(Error::Functions(coral_tools::Error::CorruptData(_)))
+            Err(Error::Tools(coral_tools::Error::CorruptData(_)))
         ),
         "the fault must affect real Private Tool repository reads"
     );
@@ -3878,7 +3877,7 @@ impl TestModules {
     }
 
     /// Saves one small Private Tool at `path` with `description`.
-    async fn save_function(
+    async fn save_private_tool(
         &self,
         principal: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
@@ -3927,7 +3926,7 @@ impl TestModules {
 
     /// Deletes the Private Tool at `path`. Its row stays in the index, and
     /// no index write follows: a reconcile pass removes it.
-    async fn delete_function(
+    async fn delete_private_tool(
         &self,
         principal: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
@@ -4220,7 +4219,7 @@ impl TestModules {
         }
     }
 
-    async fn save_large_function(
+    async fn save_large_private_tool(
         &self,
         principal: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,

@@ -618,8 +618,8 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         detail.submitted_source,
         "return coral.private.snapshots.value();"
     );
-    assert_eq!(detail.linked_functions.len(), 1);
-    let snapshot = detail.linked_functions.first().unwrap();
+    assert_eq!(detail.linked_private_tools.len(), 1);
+    let snapshot = detail.linked_private_tools.first().unwrap();
     assert_eq!(snapshot.path, "snapshots.value");
     assert_eq!(snapshot.source, original_source);
     release.send(()).expect("release accepted package");

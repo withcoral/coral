@@ -1490,26 +1490,26 @@ return { found: found.data, read: read.data };"#,
     assert!(saved.get("declaration").is_some_and(Value::is_string));
     // The save notifies search; wait for its write, with no reconcile pass.
     tracer.index.settled().await;
-    let searched_function = program_value(
+    let searched_private_tool = program_value(
         &client_a,
         &task_id,
         r#"return (await coral.search({ query: "currentTemperature", limit: 1 })).data;"#,
     )
     .await;
-    let searched_function = &searched_function;
-    let function_result = searched_function["hits"]
+    let searched_private_tool = &searched_private_tool;
+    let private_tool_result = searched_private_tool["hits"]
         .as_array()
         .and_then(|items| items.first())
         .expect("Private Tool search result");
     assert_eq!(
-        function_result["call_path"],
+        private_tool_result["call_path"],
         "coral.private.weather.currentTemperature"
     );
-    assert!(function_result.get("source").is_none());
-    assert!(function_result["signature_line"].is_string());
+    assert!(private_tool_result.get("source").is_none());
+    assert!(private_tool_result["signature_line"].is_string());
     for absent in ["provider_display_name", "hints", "typescript_declaration"] {
         assert!(
-            function_result.get(absent).is_none(),
+            private_tool_result.get(absent).is_none(),
             "a Private Tool hit has no {absent}"
         );
     }
@@ -1573,7 +1573,7 @@ return { found: found.data, read: read.data };"#,
     })).await;
     assert_eq!(structured(&oversized)["code"], "invalid_input");
     // A function that does not compile fails the Program that saves it.
-    let invalid_function = call(
+    let invalid_private_tool = call(
         &client_a,
         "exec",
         json!({
@@ -1589,9 +1589,9 @@ return { found: found.data, read: read.data };"#,
     )
     .await;
     assert_eq!(
-        structured(&invalid_function)["code"],
+        structured(&invalid_private_tool)["code"],
         "program_admission_failed",
-        "{invalid_function:?}"
+        "{invalid_private_tool:?}"
     );
     for invalid in [" ".to_string(), "bad\0text".to_string(), "🪸".repeat(4097)] {
         let rejected = call(

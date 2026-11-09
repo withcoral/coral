@@ -280,7 +280,7 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     let search = observe_search_backlog(|| {
         Some(SearchBacklog {
             generations: 2,
-            functions: 1,
+            private_tools: 1,
             first_visibility: Some(FirstVisibilityBacklog {
                 waiting: 1,
                 oldest_age: Some(Duration::from_secs(5)),
@@ -413,7 +413,7 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
     let known = observe_search_backlog(|| {
         Some(SearchBacklog {
             generations: 0,
-            functions: 0,
+            private_tools: 0,
             first_visibility: Some(FirstVisibilityBacklog {
                 waiting: 0,
                 oldest_age: None,

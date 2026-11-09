@@ -498,7 +498,7 @@ impl Metrics {
                         let snapshots = search_snapshots(&sources);
                         if !snapshots.is_empty() {
                             gauge.observe(snapshots.iter().map(|s| s.generations).sum(), &[KeyValue::new("search.projection.kind", "provider_catalog")]);
-                            gauge.observe(snapshots.iter().map(|s| s.functions).sum(), &[KeyValue::new("search.projection.kind", "private_tool")]);
+                            gauge.observe(snapshots.iter().map(|s| s.private_tools).sum(), &[KeyValue::new("search.projection.kind", "private_tool")]);
                         }
                     }).build()
             },
@@ -793,7 +793,7 @@ pub struct SearchBacklog {
     /// Active Provider Generations without a current projection.
     pub generations: u64,
     /// Current Private Tool revisions without a current projection.
-    pub functions: u64,
+    pub private_tools: u64,
     /// None when a legacy failed projection has unknown visibility history.
     pub first_visibility: Option<FirstVisibilityBacklog>,
     /// Time since the snapshot was read successfully.

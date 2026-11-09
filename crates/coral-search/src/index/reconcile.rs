@@ -12,8 +12,10 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use super::{SearchIndex, WriteTrigger, function_span, generation_span, in_write_span, skipped};
-use crate::indexer::functions::PrivateToolIndexer;
+use super::{
+    SearchIndex, WriteTrigger, generation_span, in_write_span, private_tool_span, skipped,
+};
+use crate::indexer::private_tools::PrivateToolIndexer;
 use crate::indexer::tools::ToolIndexer;
 use crate::indexer::{self, EntityIndexer, IndexError, Recount};
 
@@ -154,7 +156,7 @@ impl SearchIndex {
     /// two items may index, replace or delete what the pass read as stale, so
     /// the pass reads each Generation and function again under the mutex and
     /// skips what changed; a function goes through
-    /// [`SearchIndex::sync_function`]'s one rule. A failed removal is logged and the pass goes on
+    /// [`SearchIndex::sync_private_tool`]'s one rule. A failed removal is logged and the pass goes on
     /// without further removals; a failed write is logged and
     /// recorded like a notified write's, and the pass goes on. Passes in two
     /// processes write the same idempotent rows.
@@ -169,7 +171,7 @@ impl SearchIndex {
     /// to do, so the default trace filter exports none of them. Each write
     /// the pass makes runs in an info root span of its own, which the
     /// default filter exports, linked to its step's span when that is traced:
-    /// `coral.search.index_generation` and `coral.search.sync_function`, as
+    /// `coral.search.index_generation` and `coral.search.sync_private_tool`, as
     /// a notified write's, and `coral.search.refresh_statistics`.
     /// A failed write or step marks its span and the pass's span as failed.
     /// The pass's span records what it indexed and what failed, and the
@@ -182,8 +184,8 @@ impl SearchIndex {
             "coral.search.reconcile",
             coral.search.reconcile.generations_indexed = Empty,
             coral.search.reconcile.generations_failed = Empty,
-            coral.search.reconcile.functions_indexed = Empty,
-            coral.search.reconcile.functions_failed = Empty,
+            coral.search.reconcile.private_tools_indexed = Empty,
+            coral.search.reconcile.private_tools_failed = Empty,
             coral.search.reconcile.workspaces_checked = Empty,
             coral.search.reconcile.workspaces_recounted = Empty,
             coral.search.reconcile.rows_written = Empty,
@@ -207,11 +209,11 @@ impl SearchIndex {
             safe::number(work.generations.failed),
         );
         pass.record(
-            "coral.search.reconcile.functions_indexed",
+            "coral.search.reconcile.private_tools_indexed",
             safe::number(work.functions.indexed),
         );
         pass.record(
-            "coral.search.reconcile.functions_failed",
+            "coral.search.reconcile.private_tools_failed",
             safe::number(work.functions.failed),
         );
         if work.failed() {
@@ -241,7 +243,7 @@ impl SearchIndex {
         .is_err();
         work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_orphaned"),
-            self.remove_orphaned_functions(),
+            self.remove_orphaned_private_tools(),
         )
         .await
         .is_err();
@@ -256,7 +258,7 @@ impl SearchIndex {
         }
         match step(
             step_span!("coral.search.reconcile.functions"),
-            self.reconcile_functions(now),
+            self.reconcile_private_tools(now),
         )
         .await
         {
@@ -311,7 +313,7 @@ impl SearchIndex {
 
     /// Step 3 of a pass, run first: syncs every Private Tool the index
     /// holds that no longer exists, in one transaction each. Best effort.
-    async fn remove_orphaned_functions(&self) -> Result<(), ()> {
+    async fn remove_orphaned_private_tools(&self) -> Result<(), ()> {
         let removed = async {
             let orphaned = self
                 .read_snapshot(async |transaction| {
@@ -324,9 +326,9 @@ impl SearchIndex {
             for orphan in &orphaned {
                 let _write = self.writes.lock().await;
                 in_write_span(
-                    function_span(&orphan.workspace_id, &orphan.function_id),
+                    private_tool_span(&orphan.workspace_id, &orphan.private_tool_id),
                     WriteTrigger::Reconcile,
-                    self.sync_function_held(&orphan.workspace_id, &orphan.function_id),
+                    self.sync_private_tool_held(&orphan.workspace_id, &orphan.private_tool_id),
                 )
                 .await?;
             }
@@ -449,7 +451,7 @@ impl SearchIndex {
     /// has a retry due at `now_unix_nanos` or another revision, and each
     /// without a failure that the index lacks or holds at another revision.
     /// A failure of the current revision not yet due waits.
-    async fn reconcile_functions(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
+    async fn reconcile_private_tools(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
         let stale = self
             .read_snapshot(async |transaction| {
                 let expected =
@@ -469,9 +471,9 @@ impl SearchIndex {
                 for entry in &stale {
                     let _write = self.writes.lock().await;
                     let indexed = in_write_span(
-                        function_span(entry.workspace_id(), entry.id()),
+                        private_tool_span(entry.workspace_id(), entry.id()),
                         WriteTrigger::Reconcile,
-                        self.sync_function_held(entry.workspace_id(), entry.id()),
+                        self.sync_private_tool_held(entry.workspace_id(), entry.id()),
                     )
                     .await;
                     work.count(&indexed);
@@ -563,8 +565,8 @@ impl StatisticsWork {
     }
 }
 
-/// The items one step of a pass tried to index: Generations or Saved
-/// Functions it found unindexed or due for a retry.
+/// The items one step of a pass tried to index: Generations or Private
+/// Tools it found unindexed or due for a retry.
 #[derive(Debug, Default, Clone, Copy)]
 struct ItemWork {
     /// The items it indexed.

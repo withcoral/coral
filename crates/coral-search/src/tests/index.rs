@@ -652,7 +652,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
     ] {
         world
             .modules
-            .save_function(&principal, &world.workspace, path, description, at)
+            .save_private_tool(&principal, &world.workspace, path, description, at)
             .await;
     }
     let hold = world.index.hold_row_building();
@@ -664,7 +664,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
 
     let newer = world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.second",
@@ -674,7 +674,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
         .await;
     world
         .index
-        .sync_function(newer.workspace_id().clone(), newer.id().clone());
+        .sync_private_tool(newer.workspace_id().clone(), newer.id().clone());
     // The notified write queues for the mutex ahead of the pass's next item.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(hold);
@@ -1191,7 +1191,7 @@ async fn a_pass_corrects_the_statistics_a_private_tool_delete_leaves() {
     let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.summarizeTides",
@@ -1206,7 +1206,7 @@ async fn a_pass_corrects_the_statistics_a_private_tool_delete_leaves() {
     // The delete leaves the function's row and notifies nothing.
     world
         .modules
-        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .delete_private_tool(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
     assert!(world.has_term("tides").await, "nothing recounted yet");
     world.index.reconcile().await;
@@ -1222,7 +1222,7 @@ async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
     let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.summarizeTides",
@@ -1249,17 +1249,17 @@ async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
 
     world
         .modules
-        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .delete_private_tool(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
 
     assert_eq!(
-        world.function_rows().await,
+        world.private_tool_rows().await,
         1,
         "the row outlives the function"
     );
     assert_eq!(hits().await, 0);
     world.index.reconcile().await;
-    assert_eq!(world.function_rows().await, 0);
+    assert_eq!(world.private_tool_rows().await, 0);
 }
 
 #[tokio::test]
@@ -1269,7 +1269,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.summarizeTides",
@@ -1317,7 +1317,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
         write_names(&writes),
         [
             "coral.search.index_generation",
-            "coral.search.sync_function"
+            "coral.search.sync_private_tool"
         ]
         .into_iter()
         .chain(recount)
@@ -1325,7 +1325,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
         "the first pass indexes the Provider and the function, then counts them"
     );
     assert_eq!(item_work(&pass, "generations"), (1, 0));
-    assert_eq!(item_work(&pass, "functions"), (1, 0));
+    assert_eq!(item_work(&pass, "private_tools"), (1, 0));
     assert_eq!(statistics_work(&pass), (checked, checked, checked > 0));
     let (pass, writes) = split_pass(world.traced_pass().await);
     assert!(writes.is_empty(), "a pass that changed nothing: {writes:?}");
@@ -1333,7 +1333,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
 
     world
         .modules
-        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .delete_private_tool(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
     let (pass, writes) = split_pass(world.traced_pass().await);
     assert_eq!(
@@ -2922,7 +2922,7 @@ impl World {
     }
 
     /// How many Private Tool rows the index holds in the Workspace.
-    async fn function_rows(&self) -> usize {
+    async fn private_tool_rows(&self) -> usize {
         let rows: Vec<(String,)> = self
             .modules
             .search

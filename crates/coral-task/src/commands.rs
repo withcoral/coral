@@ -281,7 +281,7 @@ impl TaskCommands {
 
     async fn reject(&self, call: &AttributedCommand, id: &InteractionId, error: Error) -> Error {
         let failure = match &error {
-            Error::Functions(error) => error.safe_rejection(),
+            Error::Tools(error) => error.safe_rejection(),
             Error::Run(error) => error.safe_rejection(),
             Error::Search(error) => error.safe_rejection(),
             _ => None,

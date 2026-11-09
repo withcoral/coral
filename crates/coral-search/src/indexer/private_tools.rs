@@ -15,7 +15,7 @@ use coral_tools::{PrivateToolEntry, PrivateToolId, PrivateToolIndexRevision};
 use coral_workspace::WorkspaceId;
 
 use super::repository::{
-    self, FailedFunctionState, FunctionFailure, FunctionRow, WorkspaceFunction,
+    self, FailedPrivateToolState, PrivateToolFailure, PrivateToolRow, WorkspacePrivateTool,
 };
 use super::retry::RetryRule;
 use super::{DistinctWords, EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
@@ -27,18 +27,18 @@ pub(crate) struct PrivateToolIndexer;
 
 /// The search rows of one Private Tool that no longer exists.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FunctionRemoval {
+pub(crate) struct PrivateToolRemoval {
     pub(crate) workspace_id: WorkspaceId,
-    pub(crate) function_id: PrivateToolId,
+    pub(crate) private_tool_id: PrivateToolId,
 }
 
 /// What it takes to bring the index in line with one Private Tool.
-pub(crate) enum FunctionSync {
+pub(crate) enum PrivateToolSync {
     /// The function exists and the index lacks it, holds another revision of
     /// it, or holds a failure of it that is due again.
     Index(Box<PrivateToolEntry>),
     /// The function is gone and the index still holds rows of it.
-    Remove(FunctionRemoval),
+    Remove(PrivateToolRemoval),
     /// The index already agrees with the function.
     Nothing,
 }
@@ -46,26 +46,27 @@ pub(crate) enum FunctionSync {
 #[async_trait]
 impl EntityIndexer for PrivateToolIndexer {
     type Entry = PrivateToolEntry;
-    type Rows<'e> = FunctionRow<'e>;
-    type Removal = FunctionRemoval;
+    type Rows<'e> = PrivateToolRow<'e>;
+    type Removal = PrivateToolRemoval;
     type Expected = PrivateToolEntry;
 
     fn workspace_id<'e>(&self, entry: &'e PrivateToolEntry) -> &'e WorkspaceId {
         entry.workspace_id()
     }
 
-    fn rows<'e>(&self, entry: &'e PrivateToolEntry) -> Result<FunctionRow<'e>, IndexError> {
-        function_row(entry)
+    fn rows<'e>(&self, entry: &'e PrivateToolEntry) -> Result<PrivateToolRow<'e>, IndexError> {
+        private_tool_row(entry)
     }
 
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entry: &PrivateToolEntry,
-        row: &FunctionRow<'_>,
+        row: &PrivateToolRow<'_>,
     ) -> Result<super::IndexEffect, IndexError> {
-        repository::upsert_function_row(transaction, row, now_unix_nanos()?).await?;
-        repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
+        repository::upsert_private_tool_row(transaction, row, now_unix_nanos()?).await?;
+        repository::delete_private_tool_state(transaction, entry.workspace_id(), entry.id())
+            .await?;
         Ok(super::IndexEffect::Updated)
     }
 
@@ -74,12 +75,12 @@ impl EntityIndexer for PrivateToolIndexer {
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
-        removal: &FunctionRemoval,
+        removal: &PrivateToolRemoval,
     ) -> Result<Option<WorkspaceId>, IndexError> {
-        let removed = repository::delete_function_entry(
+        let removed = repository::delete_private_tool_entry(
             transaction,
             &removal.workspace_id,
-            &removal.function_id,
+            &removal.private_tool_id,
         )
         .await?;
         Ok((removed > 0).then(|| removal.workspace_id.clone()))
@@ -89,7 +90,7 @@ impl EntityIndexer for PrivateToolIndexer {
     /// - one with a `failed` state row that another definition revision
     ///   recorded, or whose retry rule is due at `now_unix_nanos`;
     /// - one without such a row whose row is missing, or whose fingerprint is
-    ///   not [`repository::function_fingerprint`] of its definition revision.
+    ///   not [`repository::private_tool_fingerprint`] of its definition revision.
     ///
     /// A failure of the current definition revision that is not yet due
     /// waits for a later pass, whatever the function's row holds.
@@ -106,12 +107,12 @@ impl EntityIndexer for PrivateToolIndexer {
         expected: &'e [PrivateToolEntry],
         now_unix_nanos: i64,
     ) -> Result<Vec<&'e PrivateToolEntry>, IndexError> {
-        let fingerprints = repository::recorded_functions(transaction)
+        let fingerprints = repository::recorded_private_tools(transaction)
             .await?
             .into_iter()
             .map(|row| (row.function, row.fingerprint))
             .collect::<HashMap<_, _>>();
-        let failures = repository::failed_functions(transaction)
+        let failures = repository::failed_private_tools(transaction)
             .await?
             .into_iter()
             .map(|failed| (failed.function, failed.failure))
@@ -119,9 +120,9 @@ impl EntityIndexer for PrivateToolIndexer {
         Ok(expected
             .iter()
             .filter(|entry| {
-                let key = WorkspaceFunction {
+                let key = WorkspacePrivateTool {
                     workspace_id: entry.workspace_id().clone(),
-                    function_id: entry.id().clone(),
+                    private_tool_id: entry.id().clone(),
                 };
                 needs_indexing(
                     failures.get(&key),
@@ -137,7 +138,7 @@ impl EntityIndexer for PrivateToolIndexer {
 /// The rule of [`PrivateToolIndexer::reconcile`] for one function, its
 /// failure, if any, and its row's fingerprint, if it has a row.
 fn needs_indexing(
-    failure: Option<&FunctionFailure>,
+    failure: Option<&PrivateToolFailure>,
     fingerprint: Option<&str>,
     entry: &PrivateToolEntry,
     now_unix_nanos: i64,
@@ -146,7 +147,9 @@ fn needs_indexing(
         Some(failure) => {
             failure.revision != Some(entry.revision()) || failure.retry.is_due(now_unix_nanos)
         }
-        None => fingerprint != Some(repository::function_fingerprint(entry.revision()).as_str()),
+        None => {
+            fingerprint != Some(repository::private_tool_fingerprint(entry.revision()).as_str())
+        }
     }
 }
 
@@ -159,16 +162,23 @@ impl PrivateToolIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         workspace_id: &WorkspaceId,
-        function_id: &PrivateToolId,
+        private_tool_id: &PrivateToolId,
         now_unix_nanos: i64,
-    ) -> Result<FunctionSync, IndexError> {
-        let entry =
-            coral_tools::private_tool_entry_in_transaction(transaction, workspace_id, function_id)
-                .await?;
-        let failure = repository::failed_function(transaction, workspace_id, function_id).await?;
-        let fingerprint =
-            repository::recorded_function_fingerprint(transaction, workspace_id, function_id)
-                .await?;
+    ) -> Result<PrivateToolSync, IndexError> {
+        let entry = coral_tools::private_tool_entry_in_transaction(
+            transaction,
+            workspace_id,
+            private_tool_id,
+        )
+        .await?;
+        let failure =
+            repository::failed_private_tool(transaction, workspace_id, private_tool_id).await?;
+        let fingerprint = repository::recorded_private_tool_fingerprint(
+            transaction,
+            workspace_id,
+            private_tool_id,
+        )
+        .await?;
         Ok(match entry {
             Some(entry)
                 if needs_indexing(
@@ -178,15 +188,15 @@ impl PrivateToolIndexer {
                     now_unix_nanos,
                 ) =>
             {
-                FunctionSync::Index(Box::new(entry))
+                PrivateToolSync::Index(Box::new(entry))
             }
             None if failure.is_some() || fingerprint.is_some() => {
-                FunctionSync::Remove(FunctionRemoval {
+                PrivateToolSync::Remove(PrivateToolRemoval {
                     workspace_id: workspace_id.clone(),
-                    function_id: function_id.clone(),
+                    private_tool_id: private_tool_id.clone(),
                 })
             }
-            Some(_) | None => FunctionSync::Nothing,
+            Some(_) | None => PrivateToolSync::Nothing,
         })
     }
 
@@ -201,21 +211,21 @@ impl PrivateToolIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         current: &[PrivateToolIndexRevision],
-    ) -> Result<Vec<FunctionRemoval>, IndexError> {
+    ) -> Result<Vec<PrivateToolRemoval>, IndexError> {
         let current = current
             .iter()
             .map(|function| (function.workspace_id(), function.id()))
             .collect::<HashSet<_>>();
-        let recorded = repository::recorded_functions(transaction).await?;
-        let failed = repository::failed_functions(transaction).await?;
+        let recorded = repository::recorded_private_tools(transaction).await?;
+        let failed = repository::failed_private_tools(transaction).await?;
         Ok(recorded
             .into_iter()
             .map(|row| row.function)
             .chain(failed.into_iter().map(|failed| failed.function))
-            .filter(|held| !current.contains(&(&held.workspace_id, &held.function_id)))
-            .map(|held| FunctionRemoval {
+            .filter(|held| !current.contains(&(&held.workspace_id, &held.private_tool_id)))
+            .map(|held| PrivateToolRemoval {
                 workspace_id: held.workspace_id,
-                function_id: held.function_id,
+                private_tool_id: held.private_tool_id,
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -237,18 +247,18 @@ pub(crate) async fn record_failed_attempt(
     reconcile_interval: Duration,
 ) -> Result<bool, IndexError> {
     // A failure of another revision starts the count again.
-    let prior = repository::failed_function(transaction, entry.workspace_id(), entry.id())
+    let prior = repository::failed_private_tool(transaction, entry.workspace_id(), entry.id())
         .await?
         .filter(|failure| failure.revision == Some(entry.revision()))
         .map(|failure| failure.retry);
     let removed =
-        repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
+        repository::delete_private_tool_row(transaction, entry.workspace_id(), entry.id()).await?;
     let attempted_at = now_unix_nanos()?;
-    repository::write_failed_function_state(
+    repository::write_failed_private_tool_state(
         transaction,
-        FailedFunctionState {
+        FailedPrivateToolState {
             workspace_id: entry.workspace_id(),
-            function_id: entry.id(),
+            private_tool_id: entry.id(),
             principal: entry.principal(),
             attempted_at_unix_nanos: attempted_at,
             error: error.to_string(),
@@ -265,13 +275,13 @@ pub(crate) async fn record_failed_attempt(
     Ok(removed > 0)
 }
 
-fn function_row(entry: &PrivateToolEntry) -> Result<FunctionRow<'_>, IndexError> {
+fn private_tool_row(entry: &PrivateToolEntry) -> Result<PrivateToolRow<'_>, IndexError> {
     let qualified_name = entry.path().as_str();
     let call_path = CallPath::private_tool(qualified_name)
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
-    Ok(FunctionRow {
+    Ok(PrivateToolRow {
         workspace_id: entry.workspace_id(),
-        function_id: entry.id(),
+        private_tool_id: entry.id(),
         principal: entry.principal(),
         call_path,
         qualified_name,

@@ -147,7 +147,7 @@ impl SaveTool {
         functions
             .inner
             .index
-            .sync_function(host.workspace_id.clone(), function.id().clone());
+            .sync_private_tool(host.workspace_id.clone(), function.id().clone());
         Ok(result.into_tool_result())
     }
 }
@@ -187,7 +187,7 @@ impl RemoveTool {
         functions
             .inner
             .index
-            .sync_function(host.workspace_id.clone(), deleted);
+            .sync_private_tool(host.workspace_id.clone(), deleted);
         Ok(RemovedToolResult {
             call_path: call_path(&self.path),
         }

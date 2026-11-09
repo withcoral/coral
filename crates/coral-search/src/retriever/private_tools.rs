@@ -1,5 +1,5 @@
-//! The Private Tool retriever: the requesting Principal's own Saved
-//! Functions, ranked inside the database.
+//! The Private Tool retriever: the requesting Principal's own Private
+//! Tools, ranked inside the database.
 //!
 //! coral-tools decides that a Private Tool is visible to its owner
 //! only; the statement holds that as a condition on the row's own Principal
@@ -50,10 +50,10 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         _provider_filter: &ProviderFilter,
     ) -> Result<Listing, Error> {
-        let entities = current_functions(transaction, context)
+        let entities = current_private_tools(transaction, context)
             .await?
             .into_iter()
-            .map(function_ref)
+            .map(private_tool_ref)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Listing {
             units: entities.len(),
@@ -67,7 +67,7 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         request: &QueryRequest<'_>,
     ) -> Result<Answer, QueryError> {
-        let functions = current_functions(transaction, context)
+        let functions = current_private_tools(transaction, context)
             .await?
             .into_iter()
             .map(|function| (function.id().clone(), function))
@@ -80,7 +80,7 @@ impl EntityRetriever for PrivateToolRetriever {
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
             });
         };
-        let indexed = repository::indexed_functions(
+        let indexed = repository::indexed_private_tools(
             transaction,
             context.workspace_id,
             context.actor.principal(),
@@ -100,7 +100,7 @@ impl EntityRetriever for PrivateToolRetriever {
         }
 
         let ranked = if searched > 0 {
-            repository::rank_functions(
+            repository::rank_private_tools(
                 transaction,
                 context.workspace_id,
                 context.actor.principal(),
@@ -130,7 +130,7 @@ impl EntityRetriever for PrivateToolRetriever {
                     call_path: function.call_path,
                     near_spellings: Arc::clone(&near_spellings),
                 }),
-                strong: strong_function(&plan, &function.matched),
+                strong: strong_private_tool(&plan, &function.matched),
             });
         }
         Ok(Answer {
@@ -269,7 +269,7 @@ impl EntityRetriever for PrivateToolRetriever {
 /// rule: a field holds the query's words in order, or a word of its path
 /// starts with a content word of the query. One that shares only description
 /// words with the query is weak, so it follows every strong Tool.
-fn strong_function(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
+fn strong_private_tool(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
     matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
 }
 
@@ -327,7 +327,7 @@ impl PrivateToolPolicy {
 /// The Principal's current Private Tools that policy lets it call: none
 /// while the Private Provider is disabled, and none that policy disables.
 /// Reads no source or declaration.
-async fn current_functions(
+async fn current_private_tools(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
 ) -> Result<Vec<PrivateToolSearchMaterial>, Error> {
@@ -348,7 +348,7 @@ async fn current_functions(
     .collect())
 }
 
-fn function_ref(material: PrivateToolSearchMaterial) -> Result<EntityRef, Error> {
+fn private_tool_ref(material: PrivateToolSearchMaterial) -> Result<EntityRef, Error> {
     Ok(EntityRef::PrivateTool(PrivateToolRef {
         call_path: CallPath::private_tool(material.path().as_str())?,
         material,

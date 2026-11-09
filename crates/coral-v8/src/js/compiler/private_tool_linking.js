@@ -23,13 +23,7 @@ function editedPrivateToolBody(sourceFile, edits, defaultName) {
 
 // `extraEdits` carry the functions the module saves, at module offsets.
 function privateToolRuntimeBody(source, target, extraEdits) {
-  const sourceFile = ts.createSourceFile(
-    'private_tool.ts',
-    source,
-    target,
-    true,
-    ts.ScriptKind.TS,
-  );
+  const sourceFile = ts.createSourceFile('private_tool.ts', source, target, true, ts.ScriptKind.TS);
   if (
     sourceFile.parseDiagnostics.some(
       (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
@@ -167,9 +161,7 @@ function coralRootPrelude(builtinTools, privateTools) {
   ) {
     throw new Error('Built-in Tools must be identifiers');
   }
-  const linkedPaths = JSON.stringify(
-    privateTools.map((privateTool) => privateTool.pathSegments),
-  );
+  const linkedPaths = JSON.stringify(privateTools.map((privateTool) => privateTool.pathSegments));
   return `    const __coralCompleteRoot = globalThis.${COMPLETE_ROOT_GLOBAL};
     Reflect.deleteProperty(globalThis, "${COMPLETE_ROOT_GLOBAL}");
     const __coralLinkedPaths = ${linkedPaths};

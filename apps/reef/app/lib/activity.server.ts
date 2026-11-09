@@ -644,7 +644,7 @@ function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail 
     run,
     source: value.submittedSource,
     submission: value.submission ? interactionView(value.submission) : undefined,
-    linkedFunctions: value.linkedFunctions.map(({ privateTool, path, source }) => ({
+    linkedPrivateTools: value.linkedPrivateTools.map(({ privateTool, path, source }) => ({
       privateTool,
       path,
       source,
