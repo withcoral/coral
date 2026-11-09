@@ -262,7 +262,7 @@ pub(super) fn validate(
             let scopes = format.normalize(scopes).map_err(|_invalid| {
                 field_error(
                     "authentication.scopes",
-                    "Enter up to 100 valid scopes. Keep each scope separate.",
+                    "Enter valid scopes. Keep each scope separate.",
                 )
             })?;
             let expected = detected

@@ -756,7 +756,7 @@ fn oauth(scopes: Vec<String>) -> AuthenticationConfiguration {
 }
 
 #[test]
-fn oauth_configuration_normalizes_exact_scopes_and_rejects_unsafe_or_unbounded_fields() {
+fn oauth_configuration_normalizes_exact_scopes_and_rejects_unsafe_or_oversized_fields() {
     let document = simple_document();
     let mut configuration = document.configuration_review().unwrap().suggested;
     configuration.authentication = Some(oauth(vec!["write".into(), "read".into(), "read".into()]));
@@ -783,7 +783,6 @@ fn oauth_configuration_normalizes_exact_scopes_and_rejects_unsafe_or_unbounded_f
         oauth(vec!["quote\"".into()]),
         oauth(vec!["slash\\".into()]),
         oauth(vec!["x".repeat(257)]),
-        oauth((0..101).map(|n| format!("scope{n}")).collect()),
     ]
     .into_iter()
     .map(|contract| (contract, "authentication.scopes"))
@@ -889,7 +888,7 @@ fn configuration_reports_each_invalid_authentication_field_without_rejected_valu
 }
 
 #[test]
-fn oauth_review_does_not_suggest_unbounded_or_secret_bearing_declarations() {
+fn oauth_review_does_not_suggest_oversized_or_secret_bearing_declarations() {
     use serde_json::json;
     for (endpoint, scopes) in [
         (
@@ -901,10 +900,6 @@ fn oauth_review_does_not_suggest_unbounded_or_secret_bearing_declarations() {
             vec!["read".into()],
         ),
         ("https://auth.test/authorize".into(), vec!["x".repeat(257)]),
-        (
-            "https://auth.test/authorize".into(),
-            (0..101).map(|n| format!("scope{n}")).collect(),
-        ),
     ] {
         let mut source: serde_json::Value =
             serde_json::from_str(simple_document().as_str()).unwrap();
