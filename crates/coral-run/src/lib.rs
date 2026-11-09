@@ -147,7 +147,7 @@ mod error;
 mod execution;
 mod history;
 mod human_interface;
-pub use history::{InvocationStatus, InvocationSummary, RunSummary};
+pub use history::{InvocationParent, InvocationStatus, InvocationSummary, RunSummary, ToolKind};
 pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
 mod instance;
 pub use instance::CoralInstanceId;

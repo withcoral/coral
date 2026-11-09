@@ -5938,6 +5938,32 @@ pub struct ActivityInvocation {
     /// Where the Run's accepted source made the call. Absent if not recorded.
     #[prost(message, optional, tag = "18")]
     pub source_location: ::core::option::Option<ActivitySourceLocation>,
+    /// The kind of Tool the call called.
+    #[prost(enumeration = "ActivityToolKind", tag = "19")]
+    pub tool_kind: i32,
+    /// The Shared Tool Revision the call ran, from 1. Zero for every other kind.
+    #[prost(uint64, tag = "20")]
+    pub shared_tool_revision: u64,
+    /// The Private or Shared Tool call whose body made this call. Absent for
+    /// the Program's own calls and for calls a module's top-level code made.
+    #[prost(message, optional, tag = "21")]
+    pub parent: ::core::option::Option<ActivityInvocationParent>,
+}
+/// The Tool call whose body made another call, in the same Run.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityInvocationParent {
+    /// workspaces/{workspace}/invocations/{invocation}.
+    #[prost(string, tag = "1")]
+    pub invocation: ::prost::alloc::string::String,
+    /// Path the caller called it by, such as coral.private.weather.today.
+    #[prost(string, tag = "2")]
+    pub call_path: ::prost::alloc::string::String,
+    /// The kind of Tool it called.
+    #[prost(enumeration = "ActivityToolKind", tag = "3")]
+    pub tool_kind: i32,
+    /// The Shared Tool Revision it ran, from 1. Zero for every other kind.
+    #[prost(uint64, tag = "4")]
+    pub shared_tool_revision: u64,
 }
 /// Selects one Run. List filters do not apply.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6998,6 +7024,43 @@ pub struct InspectRunEventResponse {
     /// Summary of its Run, with a Task link if the caller can see the Task.
     #[prost(message, optional, tag = "2")]
     pub run: ::core::option::Option<ActivityRun>,
+}
+/// The kind of Tool a call called.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityToolKind {
+    /// A kind unknown to this client.
+    Unspecified = 0,
+    /// A Provider Tool, including a Built-in Tool, such as coral.search.
+    Provider = 1,
+    /// A Private Tool at coral.private.
+    Private = 2,
+    /// A Shared Tool at coral.shared.
+    Shared = 3,
+}
+impl ActivityToolKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_TOOL_KIND_UNSPECIFIED",
+            Self::Provider => "ACTIVITY_TOOL_KIND_PROVIDER",
+            Self::Private => "ACTIVITY_TOOL_KIND_PRIVATE",
+            Self::Shared => "ACTIVITY_TOOL_KIND_SHARED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_TOOL_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_TOOL_KIND_PROVIDER" => Some(Self::Provider),
+            "ACTIVITY_TOOL_KIND_PRIVATE" => Some(Self::Private),
+            "ACTIVITY_TOOL_KIND_SHARED" => Some(Self::Shared),
+            _ => None,
+        }
+    }
 }
 /// Run lifecycle states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

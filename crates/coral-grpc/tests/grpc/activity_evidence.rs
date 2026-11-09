@@ -1709,6 +1709,107 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
     assert_eq!(row_locations, expected_rows);
 }
 
+#[tokio::test]
+async fn a_tool_call_names_its_tool_kind_and_the_call_whose_body_made_it() {
+    // coral-run owns which call is whose child. This asserts the wire
+    // projection: the kind, and the parent's name, path and kind.
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let provider = publish_http(&f, &server.uri()).await;
+    policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
+    f.private_tools
+        .save(
+            &coral_tools::PrivateToolChangeContext::new(
+                AuthenticatedPrincipal::user(f.member.clone()),
+                1_700_000_000_000_000_007,
+                coral_workspace::TraceId::current_or_new(),
+            ),
+            f.workspace.id(),
+            coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
+                coral_tools::PrivateToolDescription::parse("Forecast one city").unwrap(),
+                coral_tools::PrivateToolSource::parse(
+                    "export default async () => (await coral.providers.evidence.read({ body: {} })).data;",
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let run = start(&f, "return await coral.private.report.forecast();").await;
+    terminal(&f, &run).await;
+
+    let mut client = f.activity();
+    let token = f.token(&f.member, "reef");
+    let rows: Vec<_> = client
+        .browse_run_entries(request(
+            wire::BrowseRunEntriesRequest {
+                name: format!("workspaces/{}/runs/{run}", f.workspace.id()),
+                page_size: 100,
+                ..Default::default()
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry.record {
+            Some(wire::activity_run_entry::Record::Invocation(row)) => Some(row),
+            _ => None,
+        })
+        .collect();
+    let [outer, inner] = rows.as_slice() else {
+        panic!("two calls: {rows:?}")
+    };
+    assert_eq!(
+        (outer.call_path.as_str(), outer.tool_kind(), &outer.parent),
+        (
+            "coral.private.report.forecast",
+            wire::ActivityToolKind::Private,
+            &None
+        )
+    );
+    assert_eq!(
+        (inner.tool_kind(), &inner.parent),
+        (
+            wire::ActivityToolKind::Provider,
+            &Some(wire::ActivityInvocationParent {
+                invocation: outer.name.clone(),
+                call_path: outer.call_path.clone(),
+                tool_kind: wire::ActivityToolKind::Private.into(),
+                shared_tool_revision: 0,
+            })
+        )
+    );
+    assert_eq!(
+        (outer.shared_tool_revision, inner.shared_tool_revision),
+        (0, 0)
+    );
+
+    // InspectInvocation projects the same parent.
+    let exact = client
+        .inspect_invocation(request(
+            wire::InspectInvocationRequest {
+                name: inner.name.clone(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .invocation
+        .unwrap();
+    assert_eq!(exact.parent, inner.parent);
+}
+
 /// A summary needs one Workspace, reports a rejected window as an invalid argument, hides
 /// a Workspace the caller cannot read, and names its rows for Reef. `coral-run` owns
 /// which windows it accepts.

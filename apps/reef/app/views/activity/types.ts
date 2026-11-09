@@ -93,6 +93,18 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
   waitingNanos: string
   /** Where the author's code made this call; absent when Coral stored none. */
   sourceLocation?: RecordSourceLocation
+  /** The tool call whose body made this call. Absent for the program's own calls and for
+   * calls a module's top-level code made. */
+  parent?: ParentInvocation
+}
+export type ToolKind = 'provider' | 'private' | 'shared' | 'unknown'
+/** A private or shared tool call whose body made another call. */
+export interface ParentInvocation {
+  invocation: string
+  callPath: string
+  toolKind: ToolKind
+  /** The shared tool revision it ran; absent for every other kind. */
+  sharedToolRevision?: string
 }
 /**
  * Where in its Run's accepted source the author's code made a record. Line and

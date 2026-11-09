@@ -15,6 +15,7 @@ import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
   ActivityRow,
+  ParentInvocation,
   DiscoveryContext,
   InvocationDetail,
   RunDetail,
@@ -605,6 +606,74 @@ export const ProviderTools: Story = {
       within(table).getByRole('link', { name: 'coral.providers.retired.lookup' }),
     ).toBeVisible()
     await expect(within(table).getAllByRole('img', { name: 'tool' })).toHaveLength(1)
+  },
+}
+/** A call a tool's body made sits one level under that call while it follows it, and always
+ * names it. A call that another call parts from its caller sits at the top. A shared tool's
+ * call names the revision that ran. */
+const remind: ParentInvocation = {
+  invocation: `${workspace}/invocations/remind`,
+  callPath: 'coral.private.billing.remind',
+  toolKind: 'private',
+}
+const ownerLookup: ParentInvocation = {
+  invocation: `${workspace}/invocations/owner`,
+  callPath: 'coral.shared.crm.owner',
+  toolKind: 'shared',
+  sharedToolRevision: '4',
+}
+const nestedCall = (
+  name: string,
+  callPath: string,
+  parent?: ParentInvocation,
+): ActivityRow & { kind: 'invocation' } => ({
+  ...call,
+  name: `${workspace}/invocations/${name}`,
+  state: 'ended',
+  outcome: 'upstream_outcome',
+  requiresAction: false,
+  callPath,
+  parent,
+  // A list layout only; nothing opens it beside a program.
+  sourceLocation: undefined,
+})
+export const NestedCalls: Story = {
+  args: {
+    page: {
+      ...StatusMarkers.args!.page!,
+      branches: {
+        ...StatusMarkers.args!.page!.branches,
+        [run]: {
+          rows: [
+            nestedCall('remind', remind.callPath),
+            nestedCall('send', 'coral.providers.mail.send', remind),
+            nestedCall('owner', ownerLookup.callPath, remind),
+            nestedCall('lookup', 'coral.providers.crm.getOwner', ownerLookup),
+            nestedCall('issues', 'coral.providers.linear.listIssues'),
+            nestedCall('archive', 'coral.providers.mail.archive', remind),
+          ],
+          next: '',
+          unavailable: false,
+        },
+      },
+    },
+  },
+  play: async ({ canvas }) => {
+    const table = canvas.getByRole('table', { name: 'Activity records' })
+    const row = (path: string) =>
+      within(table)
+        .getAllByRole('row')
+        .find((candidate) => within(candidate).queryByRole('link', { name: path }))!
+    // Each nested call names the call that made it; the program's own calls name none.
+    for (const [path, caller] of [
+      ['coral.providers.mail.send', 'Called from coral.private.billing.remind'],
+      [ownerLookup.callPath, 'Called from coral.private.billing.remind'],
+      ['coral.providers.crm.getOwner', 'Called from coral.shared.crm.owner, revision 4'],
+      ['coral.providers.mail.archive', 'Called from coral.private.billing.remind'],
+    ])
+      await expect(row(path)).toHaveTextContent(caller)
+    for (const path of [remind.callPath, 'coral.providers.linear.listIssues'])
+      await expect(row(path)).not.toHaveTextContent('Called from')
   },
 }
 export const Collapsed: Story = {
@@ -1661,6 +1730,45 @@ export const PendingApproval: Story = {
     ])
     const header = within(selected).getByRole('heading', { name: 'mail.send' }).closest('header')
     await expect(header).toContainElement(close)
+  },
+}
+/** An approval for a call a shared tool's body made names that tool and its revision. */
+export const PendingApprovalCalledFromSharedTool: Story = {
+  args: {
+    page: (() => {
+      const review = pendingApproval({ recipient: 'owner@example.com' })
+      const selected = review.detail as InvocationDetail
+      return {
+        ...review,
+        detail: {
+          ...selected,
+          invocation: {
+            ...selected.invocation,
+            parent: {
+              invocation: `${workspace}/invocations/remind`,
+              callPath: 'coral.shared.billing.remind',
+              toolKind: 'shared',
+              sharedToolRevision: '3',
+            },
+          },
+        },
+      }
+    })(),
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    const list = within(dialog).getByText('Requested by', { selector: 'dt' }).closest('dl')!
+    await expect(
+      within(list)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['Task intent', 'Run intent', 'Requested by', 'Called from', 'Call started'])
+    const called = within(list)
+      .getAllByRole('term')
+      .findIndex((term) => term.textContent === 'Called from')
+    await expect(within(list).getAllByRole('definition')[called]).toHaveTextContent(
+      'coral.shared.billing.remind, revision 3',
+    )
   },
 }
 /** Evidence that fits its pane leaves no fade, and the decision shows whole. */

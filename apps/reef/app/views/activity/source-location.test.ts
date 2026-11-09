@@ -267,6 +267,33 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     { ...logRow, eventKind: 'run.ended', sourceLocation: at({ kind: 'program' }, 2, 31) },
     null,
   ],
+  // Catches: a call a tool's body made shown as a line of the program that called the tool.
+  [
+    'a call a tool made, at a place in the program',
+    {
+      ...invocationRow,
+      parent: {
+        invocation: 'workspaces/finance/invocations/notify',
+        callPath: 'coral.private.billing.notify',
+        toolKind: 'private',
+      },
+      sourceLocation: at({ kind: 'program' }, 2, 31),
+    },
+    null,
+  ],
+  [
+    'a call a tool made, in that tool’s snapshot',
+    {
+      ...invocationRow,
+      parent: {
+        invocation: 'workspaces/finance/invocations/notify',
+        callPath: 'coral.private.billing.notify',
+        toolKind: 'private',
+      },
+      sourceLocation: at({ kind: 'private_tool', privateTool }, 2, 11),
+    },
+    { documentId: `private-tool:${privateTool}`, highlight: { startLine: 2, endLine: 2 } },
+  ],
   ['a zero line', { ...invocationRow, sourceLocation: at({ kind: 'program' }, 0, 1) }, null],
   [
     'a line past the end',

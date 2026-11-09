@@ -9,6 +9,7 @@ import {
   ActivityLogLevel,
   ActivityPrincipalKind,
   ActivityRunFailureCode,
+  ActivityToolKind,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
   ActivityTask,
@@ -17,6 +18,7 @@ import type {
   InspectTaskInteractionResponse,
   ActivityRun,
   ActivityInvocation,
+  ActivityInvocationParent,
   ActivityProgramError,
   ActivityDiscovery,
   InspectApprovalResponse,
@@ -44,6 +46,8 @@ import type {
   DiscoveryContext,
   RunState,
   InvocationState,
+  ParentInvocation,
+  ToolKind,
   InvocationOutcome,
   RequestReference,
   ApprovalDetail,
@@ -114,6 +118,11 @@ const invocationOutcomes = {
   run_terminated: ActivityInvocationOutcome.RUN_TERMINATED,
   indeterminate: ActivityInvocationOutcome.INDETERMINATE,
 } satisfies Record<Exclude<InvocationOutcome, 'unknown'>, ActivityInvocationOutcome>
+const toolKinds = {
+  provider: ActivityToolKind.PROVIDER,
+  private: ActivityToolKind.PRIVATE,
+  shared: ActivityToolKind.SHARED,
+} satisfies Record<Exclude<ToolKind, 'unknown'>, ActivityToolKind>
 function enumLabel<T extends string>(values: Record<T, number>, value: number): T | 'unknown' {
   return (Object.keys(values) as T[]).find((key) => values[key] === value) ?? 'unknown'
 }
@@ -377,6 +386,19 @@ function invocationView(value: ActivityInvocation): InvocationRow {
     callPath: value.callPath,
     outcome: enumLabel(invocationOutcomes, value.outcome),
     sourceLocation: sourceLocationView(value.sourceLocation),
+    parent: value.parent && parentView(value.parent),
+  }
+}
+function parentView(value: ActivityInvocationParent): ParentInvocation {
+  const toolKind = enumLabel(toolKinds, value.toolKind)
+  return {
+    invocation: value.invocation,
+    callPath: value.callPath,
+    toolKind,
+    sharedToolRevision:
+      toolKind === 'shared' && value.sharedToolRevision
+        ? value.sharedToolRevision.toString()
+        : undefined,
   }
 }
 /** A stored location in a document this client knows; anything else is unavailable. */

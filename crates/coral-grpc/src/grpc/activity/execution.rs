@@ -279,6 +279,24 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             .source_location
             .as_ref()
             .map(|location| source_location(&value.workspace, location)),
+        tool_kind: tool_kind(value.tool_kind).into(),
+        // Shared Tools arrive with #2979; no other kind has a revision.
+        shared_tool_revision: 0,
+        parent: value
+            .parent
+            .as_ref()
+            .map(|parent| wire::ActivityInvocationParent {
+                invocation: format!("workspaces/{}/invocations/{}", value.workspace, parent.id),
+                call_path: parent.call_path.clone(),
+                tool_kind: tool_kind(parent.tool_kind).into(),
+                shared_tool_revision: 0,
+            }),
+    }
+}
+const fn tool_kind(value: coral_run::ToolKind) -> wire::ActivityToolKind {
+    match value {
+        coral_run::ToolKind::Provider => wire::ActivityToolKind::Provider,
+        coral_run::ToolKind::Private => wire::ActivityToolKind::Private,
     }
 }
 /// Names a snapshot exactly as `InspectRunResponse.linked_private_tools` does.

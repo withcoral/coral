@@ -352,8 +352,56 @@ struct InvocationRow {
     dispatched_at: Option<i64>,
     duration: i64,
     requires_action: bool,
+    parent_id: Option<String>,
+    parent_call_path: Option<String>,
     #[sqlx(flatten)]
     source_location: crate::source_location_repository::StoredSourceLocation,
+}
+impl InvocationRow {
+    fn decode(self) -> Result<InvocationSummary, Error> {
+        Ok(InvocationSummary {
+            context_impact_bytes: (self.state == "ended"
+                && self.result_kind.as_deref() != Some("indeterminate"))
+            .then_some(-self.result_bytes),
+            principal: coral_workspace::Principal::from_parts(
+                coral_workspace::PrincipalId::parse(&self.principal_id)?,
+                coral_workspace::PrincipalKind::from_storage_str(&self.principal_kind)?,
+            ),
+            workspace: WorkspaceId::parse(&self.workspace_id)?,
+            id: crate::InvocationId::parse(&self.id)?,
+            run: crate::RunId::parse(&self.run_id)?,
+            provider: coral_provider::ProviderId::parse(&self.provider_id)?,
+            tool: self.tool_key,
+            tool_kind: crate::ToolKind::of_call_path(&self.call_path),
+            call_path: self.call_path,
+            parent: match (self.parent_id, self.parent_call_path) {
+                (Some(id), Some(call_path)) => Some(crate::InvocationParent {
+                    id: crate::InvocationId::parse(&id)?,
+                    tool_kind: crate::ToolKind::of_call_path(&call_path),
+                    call_path,
+                }),
+                (None, None) => None,
+                _ => return Err(Error::CorruptData("incomplete parent Invocation".into())),
+            },
+            state: match self.state.as_str() {
+                "pending" => InvocationStatus::Pending,
+                "dispatching" => InvocationStatus::Dispatching,
+                "ended" => InvocationStatus::Ended,
+                _ => return Err(Error::CorruptData("invalid Invocation state".into())),
+            },
+            outcome: self
+                .result_kind
+                .as_deref()
+                .map(crate::InvocationResultKind::from_storage_str)
+                .transpose()?,
+            started_at: self.started_at,
+            ended_at: self.ended_at,
+            dispatched_at: self.dispatched_at,
+            duration: self.duration,
+            requires_action: self.requires_action,
+            source_location: self.source_location.decode()?,
+        })
+    }
 }
 pub(crate) async fn exact_invocation(
     tx: &mut Transaction<'_>,
@@ -372,6 +420,15 @@ pub(crate) async fn exact_invocation(
                 .eq(col("r", "workspace_id"))
                 .and(col("i", "run_id").eq(col("r", "id"))),
         )
+        .join_as(
+            JoinType::LeftJoin,
+            Alias::new("tool_invocations"),
+            Alias::new("p"),
+            col("p", "workspace_id")
+                .eq(col("i", "workspace_id"))
+                .and(col("p", "run_id").eq(col("i", "run_id")))
+                .and(col("p", "id").eq(col("i", "parent_invocation_id"))),
+        )
         .columns(["principal_id", "principal_kind"].map(|name| (Alias::new("r"), Alias::new(name))))
         .columns(
             [
@@ -389,6 +446,8 @@ pub(crate) async fn exact_invocation(
             .chain(crate::source_location_repository::COLUMNS)
             .map(|name| (Alias::new("i"), Alias::new(name))),
         )
+        .expr_as(col("p", "id"), Alias::new("parent_id"))
+        .expr_as(col("p", "call_path"), Alias::new("parent_call_path"))
         .expr_as(col("i", "admitted_at_unix_nanos"), Alias::new("started_at"))
         .expr_as(col("i", "ended_at_unix_nanos"), Alias::new("ended_at"))
         .expr_as(
@@ -408,36 +467,5 @@ pub(crate) async fn exact_invocation(
         .and_where(col("i", "id").eq(id.to_string()))
         .to_owned();
     let row: InvocationRow = tx.fetch_optional(query).await?.ok_or(Error::RunNotFound)?;
-    Ok(InvocationSummary {
-        context_impact_bytes: (row.state == "ended"
-            && row.result_kind.as_deref() != Some("indeterminate"))
-        .then_some(-row.result_bytes),
-        principal: coral_workspace::Principal::from_parts(
-            coral_workspace::PrincipalId::parse(&row.principal_id)?,
-            coral_workspace::PrincipalKind::from_storage_str(&row.principal_kind)?,
-        ),
-        workspace: WorkspaceId::parse(&row.workspace_id)?,
-        id: crate::InvocationId::parse(&row.id)?,
-        run: crate::RunId::parse(&row.run_id)?,
-        provider: coral_provider::ProviderId::parse(&row.provider_id)?,
-        tool: row.tool_key,
-        call_path: row.call_path,
-        state: match row.state.as_str() {
-            "pending" => InvocationStatus::Pending,
-            "dispatching" => InvocationStatus::Dispatching,
-            "ended" => InvocationStatus::Ended,
-            _ => return Err(Error::CorruptData("invalid Invocation state".into())),
-        },
-        outcome: row
-            .result_kind
-            .as_deref()
-            .map(crate::InvocationResultKind::from_storage_str)
-            .transpose()?,
-        started_at: row.started_at,
-        ended_at: row.ended_at,
-        dispatched_at: row.dispatched_at,
-        duration: row.duration,
-        requires_action: row.requires_action,
-        source_location: row.source_location.decode()?,
-    })
+    row.decode()
 }

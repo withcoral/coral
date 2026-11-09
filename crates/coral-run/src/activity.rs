@@ -44,7 +44,7 @@ pub enum RunEntryWindow {
 /// One child row; Invocation end Events do not duplicate Tool rows.
 pub enum RunEntry {
     /// Current Tool state, without arguments or result.
-    Invocation(InvocationSummary),
+    Invocation(Box<InvocationSummary>),
     /// Immutable Event identity, without its payload.
     Event {
         /// Stable sequence in the Run.
@@ -156,7 +156,7 @@ impl RunModule {
         for row in page.rows.into_iter().take(usize::from(limit)) {
             next_after = row.sequence;
             entries.push(if let Some(invocation) = row.invocation {
-                RunEntry::Invocation(
+                RunEntry::Invocation(Box::new(
                     crate::history_repository::exact_invocation(
                         tx,
                         workspace,
@@ -165,7 +165,7 @@ impl RunModule {
                         now,
                     )
                     .await?,
-                )
+                ))
             } else {
                 RunEntry::Event {
                     sequence: row.sequence,

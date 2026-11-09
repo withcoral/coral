@@ -61,6 +61,8 @@ import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { dayLabel, UtcTime } from './instant'
 import { CallTool, ProviderMarksContext, type ProviderMark } from './call-tool'
+import { CalledFrom } from './called-from'
+import { callDepths } from './nesting'
 import { toolOwner } from '@/lib/call-root'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
@@ -359,6 +361,9 @@ const RecordRow = memo(function RecordRow({
           disabled={!expanded && scope.full}
           onToggle={expandable ? () => actions.toggle(row.name) : undefined}
           marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
+          metadata={
+            row.kind === 'invocation' && row.parent ? <CalledFrom parent={row.parent} /> : undefined
+          }
         >
           <Link
             to={scope.href(row)}
@@ -386,6 +391,8 @@ const RecordRow = memo(function RecordRow({
   if (!branch || (row.kind !== 'task' && row.kind !== 'run'))
     return <Table.Row {...recordRowProps}>{cells}</Table.Row>
   const children = childWindow(branch)
+  // A call a tool's body made sits under the call that made it.
+  const nesting = callDepths(branch.rows)
   // The expanded record heads its children and pins while they scroll.
   return (
     <Table.Group label={rowLabel(row)} heading={cells} headingRow={recordRowProps}>
@@ -407,7 +414,7 @@ const RecordRow = memo(function RecordRow({
             content: (
               <RecordRow
                 row={child}
-                depth={depth + 1}
+                depth={depth + 1 + (nesting.get(child.name) ?? 0)}
                 branches={branches?.[child.name] ? branches : undefined}
                 scope={scope}
               />

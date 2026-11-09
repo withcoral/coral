@@ -29,6 +29,7 @@ import { Bytes, ContextImpact } from './context-impact'
 import { Instant } from './instant'
 import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
+import { ParentInvocationName } from './called-from'
 import { Panel } from './panel'
 import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
@@ -134,6 +135,7 @@ function ExecutionDetail({
       <RunActions
         context={detail}
         callStartedAt={tool?.invocation.startedAt}
+        calledFrom={tool?.invocation.parent}
         connectionContext={runContext}
         page={detail.run.actionPage}
         request={request}
@@ -255,6 +257,11 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
         {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
+        {call.parent && (
+          <DescriptionList.Row label="Called from">
+            <ParentInvocationName parent={call.parent} />
+          </DescriptionList.Row>
+        )}
         <DescriptionList.Row label="Dispatch">
           {detail.invocation.dispatchedAt ? (
             <Instant value={detail.invocation.dispatchedAt} />

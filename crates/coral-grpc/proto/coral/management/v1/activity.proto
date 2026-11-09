@@ -271,6 +271,35 @@ message ActivityInvocation {
   string agent = 16;
   // Where the Run's accepted source made the call. Absent if not recorded.
   ActivitySourceLocation source_location = 18;
+  // The kind of Tool the call called.
+  ActivityToolKind tool_kind = 19;
+  // The Shared Tool Revision the call ran, from 1. Zero for every other kind.
+  uint64 shared_tool_revision = 20;
+  // The Private or Shared Tool call whose body made this call. Absent for
+  // the Program's own calls and for calls a module's top-level code made.
+  ActivityInvocationParent parent = 21;
+}
+// The kind of Tool a call called.
+enum ActivityToolKind {
+  // A kind unknown to this client.
+  ACTIVITY_TOOL_KIND_UNSPECIFIED = 0;
+  // A Provider Tool, including a Built-in Tool, such as coral.search.
+  ACTIVITY_TOOL_KIND_PROVIDER = 1;
+  // A Private Tool at coral.private.
+  ACTIVITY_TOOL_KIND_PRIVATE = 2;
+  // A Shared Tool at coral.shared.
+  ACTIVITY_TOOL_KIND_SHARED = 3;
+}
+// The Tool call whose body made another call, in the same Run.
+message ActivityInvocationParent {
+  // workspaces/{workspace}/invocations/{invocation}.
+  string invocation = 1;
+  // Path the caller called it by, such as coral.private.weather.today.
+  string call_path = 2;
+  // The kind of Tool it called.
+  ActivityToolKind tool_kind = 3;
+  // The Shared Tool Revision it ran, from 1. Zero for every other kind.
+  uint64 shared_tool_revision = 4;
 }
 // Selects one Run. List filters do not apply.
 message InspectRunRequest {

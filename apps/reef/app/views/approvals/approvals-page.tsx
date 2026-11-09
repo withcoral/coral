@@ -378,6 +378,7 @@ function ReviewRail({
                     detail={shown.detail}
                     context={shown.context}
                     callStartedAt={shown.call.startedAt}
+                    calledFrom={shown.call.parent}
                     variant="approvals"
                   />
                 </Panel>

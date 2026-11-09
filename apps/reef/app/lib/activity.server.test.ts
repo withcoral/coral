@@ -12,6 +12,7 @@ import {
   ActivityInvocationState,
   ActivityInvocationOutcome,
   ActivityLogLevel,
+  ActivityToolKind,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
@@ -88,6 +89,9 @@ type StoredLocation = {
   line: number
   column: number
 }
+// The tool call whose body made a call, as Coral sends it.
+type ActivityParent = { callPath: string; toolKind: ActivityToolKind; sharedToolRevision: bigint }
+const callerInvocation = `${workspace}/invocations/00000000-0000-4000-8000-000000000010`
 const linkedSnapshot = `${workspace}/privateTools/00000000-0000-4000-8000-000000000009`
 const inSnapshot: StoredLocation = {
   document: { case: 'privateTool', value: linkedSnapshot },
@@ -533,6 +537,8 @@ function invocationDetail(
     /** Retains a shared account connection request instead of an approval. */
     connection?: boolean
     location?: StoredLocation
+    /** The tool call whose body made this one, as Coral sends it. */
+    parent?: ActivityParent
     invocationUnavailable?: Code
   } = {},
 ): Handlers {
@@ -550,6 +556,7 @@ function invocationDetail(
             outcome: options.resolved ? ActivityInvocationOutcome.UPSTREAM_OUTCOME : undefined,
             requiresAction: !options.ordinary,
             sourceLocation: options.location,
+            parent: options.parent && { invocation: callerInvocation, ...options.parent },
           },
           argumentsJson: '{"to":"private@example.com"}',
           outcome: options.resolved
@@ -1423,6 +1430,47 @@ describe('hierarchical activity through the private server interface', () => {
     expect(page.selectedRow?.kind === 'invocation' && page.selectedRow.sourceLocation).toEqual(
       expected,
     )
+  })
+  // Catches: a call a tool's body made that reads as the program's own, or a revision shown
+  // for a tool that has none.
+  it.each<[string, ActivityParent | undefined, unknown]>([
+    [
+      'a private tool',
+      {
+        callPath: 'coral.private.mail.remind',
+        toolKind: ActivityToolKind.PRIVATE,
+        sharedToolRevision: 0n,
+      },
+      { invocation: callerInvocation, callPath: 'coral.private.mail.remind', toolKind: 'private' },
+    ],
+    [
+      'a shared tool',
+      {
+        callPath: 'coral.shared.mail.remind',
+        toolKind: ActivityToolKind.SHARED,
+        sharedToolRevision: 3n,
+      },
+      {
+        invocation: callerInvocation,
+        callPath: 'coral.shared.mail.remind',
+        toolKind: 'shared',
+        sharedToolRevision: '3',
+      },
+    ],
+    [
+      'a tool kind this client does not know',
+      { callPath: 'coral.later.remind', toolKind: 99 as ActivityToolKind, sharedToolRevision: 3n },
+      { invocation: callerInvocation, callPath: 'coral.later.remind', toolKind: 'unknown' },
+    ],
+    ['the program itself', undefined, undefined],
+  ])('reads a tool called from %s', async (_, parent, expected) => {
+    const { api } = coral(
+      list(),
+      invocationDetail({ resolved: true, ordinary: true, parent }),
+      runDetail(),
+    )
+    const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
+    expect(page.selectedRow?.kind === 'invocation' && page.selectedRow.parent).toEqual(expected)
   })
   // Catches: an optional Run read that takes the selected record down on a passing fault, or
   // that hides an expired session, a refused request or a cancelled load behind the record.

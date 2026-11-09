@@ -571,6 +571,73 @@ async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
     spans_nest_as_rows_do(&run, &rows).await;
 }
 
+// Catches: an Invocation summary that names no parent for a call a tool
+// body made, names one for a module's top-level call, or names the wrong
+// kind of Tool for the call or its parent, so that a reader labels a
+// tool's calls as the Program's own.
+#[tokio::test]
+async fn an_invocation_summary_names_its_tool_kind_and_the_call_that_made_it() {
+    let scope = BodyScope::new("user:tool-bodies-summaries").await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope
+        .save(
+            "weather.inner",
+            "async () => (await coral.providers.weather.getForecast()).data",
+        )
+        .await;
+    scope
+        .save_module(
+            "weather.outer",
+            "await coral.providers.weather.getForecast();
+            export default async () => coral.private.weather.inner();",
+        )
+        .await;
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission("return await coral.private.weather.outer();"),
+        )
+        .await;
+    assert_eq!(scope.terminal(&run).await.state(), RunState::Succeeded);
+
+    let mut summaries = Vec::new();
+    for row in scope.rows(&run).await {
+        let summary = scope
+            .fixture
+            .runs
+            .inspect_invocation(&scope.tool.principal, &scope.tool.workspace_id, &row.id)
+            .await
+            .expect("inspect the call")
+            .summary;
+        if let Some(parent) = &summary.parent {
+            assert_eq!(Some(&parent.id), row.parent_id.as_ref(), "{summary:?}");
+        }
+        summaries.push((
+            summary.call_path.clone(),
+            summary.tool_kind,
+            summary
+                .parent
+                .map(|parent| (parent.call_path, parent.tool_kind)),
+        ));
+    }
+    summaries.sort();
+    let (outer, inner) = ("coral.private.weather.outer", "coral.private.weather.inner");
+    let private = |path: &str| Some((path.to_string(), crate::ToolKind::Private));
+    let mut expected = vec![
+        (outer.to_string(), crate::ToolKind::Private, None),
+        (inner.to_string(), crate::ToolKind::Private, private(outer)),
+        // The module's top-level call.
+        (WEATHER.to_string(), crate::ToolKind::Provider, None),
+        (
+            WEATHER.to_string(),
+            crate::ToolKind::Provider,
+            private(inner),
+        ),
+    ];
+    expected.sort();
+    assert_eq!(summaries, expected);
+}
+
 // Catches: a parent link that blocks deleting a retained Run, so that its
 // nested Invocations outlive it or the deletion fails.
 #[tokio::test]

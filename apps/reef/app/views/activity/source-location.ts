@@ -96,13 +96,16 @@ export function madeByCall(
  * Run's accepted program or one of its linked Private Tool snapshots. Null
  * for any other record, a record with no stored location, a record of another Run, a snapshot
  * this Run did not link, or a line or column outside the document. A column
- * counts UTF-16 code units and may sit one past the end of its line.
+ * counts UTF-16 code units and may sit one past the end of its line. A call a
+ * tool's body made is never in the program: no callback crosses a tool call, so
+ * such a location is not shown as the program's.
  */
 export function recordedLocationFor(context: RunDetail, row: ActivityRow): SourceLocation | null {
   if (!madeByCall(row) || row.run !== context.run.name) return null
   const location = row.sourceLocation
   if (!location) return null
   const { document: source } = location
+  if (row.kind === 'invocation' && row.parent && source.kind === 'program') return null
   const documentId =
     source.kind === 'program'
       ? ACCEPTED_PROGRAM_DOCUMENT_ID

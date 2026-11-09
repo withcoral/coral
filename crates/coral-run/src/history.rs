@@ -12,6 +12,37 @@ pub enum InvocationStatus {
     /// Durable outcome recorded.
     Ended,
 }
+/// The kind of Tool an Invocation called. A Built-in Tool is a Provider
+/// Tool of the Built-in Provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ToolKind {
+    /// A Provider Tool, which Coral dispatches to its Provider.
+    Provider,
+    /// A Private Tool, whose body Coral performs in the Program.
+    Private,
+}
+impl ToolKind {
+    /// The kind of Tool that `call_path` called: the Private Provider's Call
+    /// Root holds only Private Tools. An Invocation retains the Call Path it
+    /// resolved, so its kind never changes after admission.
+    pub(crate) fn of_call_path(call_path: &str) -> Self {
+        let private = coral_provider::ProviderCallRoot::Private;
+        match call_path.strip_prefix(private.as_str()) {
+            Some(relative) if relative.starts_with('.') => Self::Private,
+            _ => Self::Provider,
+        }
+    }
+}
+/// The performed call whose body made an Invocation, in the same Run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationParent {
+    /// Stable Invocation identity.
+    pub id: InvocationId,
+    /// Retained Program call path.
+    pub call_path: String,
+    /// The kind of Tool it called.
+    pub tool_kind: ToolKind,
+}
 /// Source-free Run summary.
 #[derive(Clone, Debug)]
 pub struct RunSummary {
@@ -63,6 +94,11 @@ pub struct InvocationSummary {
     pub tool: String,
     /// Retained Program call path.
     pub call_path: String,
+    /// The kind of Tool it called.
+    pub tool_kind: ToolKind,
+    /// The call whose body made it; absent for the Program's own calls and
+    /// for those a module's top-level code made.
+    pub parent: Option<InvocationParent>,
     /// Native lifecycle state.
     pub state: InvocationStatus,
     /// Native ended outcome kind.
