@@ -20,11 +20,12 @@ const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or 
 /// `exec`'s description, with the one example of discovery an agent reads.
 /// A test runs its first Program against a real `coral.workspace.search` and
 /// saves it as a Saved Function to type-check it, so keep that Program whole.
+/// [`exec_description`] adds the caller's namespaces after it.
 pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find provider tools and Saved Functions with `coral.workspace.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`.
+Find provider tools and Saved Functions with `coral.workspace.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`. When the user names a service, pass all its namespaces in `provider`, as one string or an array; otherwise leave it out. `coral.workspace` holds Coral's own tools. A wrong namespace is refused with the full list.
 ```ts
-const { data } = await coral.workspace.search({ query: "list pull requests", limit: 5 });
+const { data } = await coral.workspace.search({ query: "list pull requests", provider: "acme_code", limit: 5 });
 const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);
 const read = paths.length ? (await coral.workspace.search({ paths })).data : undefined;
 return {
@@ -35,14 +36,103 @@ return {
 ```
 Then call it in a later Program by its literal Call Path:
 ```ts
-return (await coral.providers.github.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
+return (await coral.providers.acme_code.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
 ```
 A non-empty `required_actions` means the Run waits for a person: for an `invoking_user` entry, write its `url` as reply text, then keep calling `wait`, whose description has the steps."#;
 
-// Claude Code 2.1.296 keeps the first 4096 characters of a tool's
-// description. `exec` stays within 2048, the budget the server instructions
-// keep, so a client with a smaller limit still reads the example whole.
+// Claude Code 2.1.296 and later keep the first 4096 characters of a tool's
+// description, and 2.1.292 kept 2048. The fixed text stays within 2048, so a
+// client with the smaller limit still reads the example whole; the namespace
+// list after it fills the rest, up to EXEC_DESCRIPTION_MAX_BYTES.
 const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2048);
+
+/// The most UTF-8 bytes `exec`'s description takes with its namespace list.
+/// A client counts characters or UTF-16 units, and neither ever exceeds the
+/// bytes, so the description stays within a 4096-character limit.
+const EXEC_DESCRIPTION_MAX_BYTES: usize = 4096;
+/// The most characters of a display name the namespace list shows.
+const DISPLAY_NAME_MAX_CHARS: usize = 40;
+
+/// The namespaces `exec`'s description lists for one caller.
+pub(crate) enum Namespaces<'a> {
+    /// The Providers the caller can search, by namespace.
+    Listed(&'a [coral_search::SearchableProvider]),
+    /// Coral could not list them.
+    Unavailable,
+}
+
+/// `exec`'s description for one caller: the fixed text, then the namespaces
+/// its `provider` filter takes, each with its display name when that says
+/// more than the namespace. Whole lines only: when the list does not fit, it
+/// ends with how many it leaves out and where to read them. When Coral cannot
+/// list them, the description says to leave `provider` out.
+pub(crate) fn exec_description(namespaces: &Namespaces<'_>) -> String {
+    let mut description = String::from(EXEC_TOOL_DESCRIPTION);
+    let providers = match namespaces {
+        Namespaces::Unavailable => {
+            description.push_str("\n\nCoral could not list your namespaces. Leave `provider` out.");
+            return description;
+        }
+        Namespaces::Listed([]) => return description,
+        Namespaces::Listed(providers) => providers,
+    };
+    let more = |count: usize| {
+        if count == 0 {
+            String::new()
+        } else {
+            format!(
+                "\nand {count} more: read them with `coral.workspace.listProviders` (its active \
+                 ones), or pass one and a wrong `provider` is refused with all of them."
+            )
+        }
+    };
+    description.push_str("\n\nNamespaces for `provider`:");
+    for (index, provider) in providers.iter().enumerate() {
+        let line = namespace_line(provider);
+        let after = providers.len() - index - 1;
+        if description.len() + 1 + line.len() + more(after).len() > EXEC_DESCRIPTION_MAX_BYTES {
+            description.push_str(&more(after + 1));
+            return description;
+        }
+        description.push('\n');
+        description.push_str(&line);
+    }
+    description
+}
+
+/// One line of the namespace list: the namespace, then a tab and the
+/// display name unless the name only repeats the namespace. A display name
+/// is text a Workspace member wrote, so it keeps to one line and
+/// [`DISPLAY_NAME_MAX_CHARS`].
+fn namespace_line(provider: &coral_search::SearchableProvider) -> String {
+    let namespace = provider.namespace();
+    let display_name = provider
+        .display_name()
+        .chars()
+        .map(|character| {
+            // Display names refuse control and format characters, but not
+            // the Unicode line and paragraph separators.
+            if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let display_name = display_name.trim();
+    if display_name.is_empty() || display_name.to_lowercase().replace(' ', "_") == namespace {
+        return namespace.to_owned();
+    }
+    let mut shown = display_name
+        .chars()
+        .take(DISPLAY_NAME_MAX_CHARS)
+        .collect::<String>();
+    if display_name.chars().count() > DISPLAY_NAME_MAX_CHARS {
+        shown.pop();
+        shown.push('…');
+    }
+    format!("{namespace}\t{shown}")
+}
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
@@ -230,9 +320,17 @@ fn argument_problem(name: &str, arguments: &Value, failed_field: Option<&str>) -
     }
 }
 
-/// Every tool this Adapter serves, as `tools/list` advertises them.
-pub(crate) fn tools() -> Vec<Tool> {
-    TOOLS.clone()
+/// Every tool this Adapter serves, as `tools/list` advertises them to one
+/// caller: `exec` with that caller's description.
+pub(crate) fn tools(exec_description: String) -> Vec<Tool> {
+    let mut tools = TOOLS.clone();
+    if let Some(exec) = tools
+        .iter_mut()
+        .find(|tool| tool.name == <ExecArguments as ToolArguments>::NAME)
+    {
+        exec.description = Some(exec_description.into());
+    }
+    tools
 }
 
 /// The served tool named `name`. The name returned is Coral's own, never the
@@ -410,7 +508,7 @@ mod tests {
     /// deferred. A new tool fails here until it picks a side.
     #[test]
     fn only_the_core_tools_load_in_the_first_request() {
-        let advertised: BTreeMap<String, Option<Value>> = tools()
+        let advertised: BTreeMap<String, Option<Value>> = tools(EXEC_TOOL_DESCRIPTION.to_owned())
             .iter()
             .map(|tool| {
                 let advertised = serde_json::to_value(tool).expect("tool as JSON");
@@ -429,6 +527,106 @@ mod tests {
         ]
         .map(|(name, always_load)| (name.to_owned(), always_load));
         assert_eq!(advertised, BTreeMap::from(expected));
+    }
+
+    fn searchable(namespace: &str, display_name: &str) -> coral_search::SearchableProvider {
+        let call_root = if namespace == "coral.workspace" {
+            coral_search::ProviderCallRoot::Builtin
+        } else {
+            coral_search::ProviderCallRoot::parse(&format!("coral.providers.{namespace}")).unwrap()
+        };
+        coral_search::SearchableProvider::new(call_root, display_name.to_owned())
+    }
+
+    // Catches: a display name that repeats its namespace wasting the budget,
+    // one that breaks the list with a line break, a Unicode line or paragraph
+    // separator or a tab, or runs past its bound; a failed lookup or an empty
+    // Workspace changing the fixed text.
+    #[test]
+    fn exec_names_each_namespace_with_a_display_name_that_says_more() {
+        let providers = [
+            searchable("aws_sandbox", "AWS Sandbox"),
+            searchable("coral.workspace", "Coral"),
+            searchable("github", "GitHub"),
+            searchable("hackernews", "Hacker News"),
+            searchable("notes", "Team\nnotes\t(shared)"),
+            searchable("wiki", "Team\u{2028}wiki\u{2029}pages"),
+            searchable("slack", ""),
+            searchable("long", &"x".repeat(60)),
+        ];
+        assert_eq!(
+            exec_description(&Namespaces::Listed(&providers)),
+            format!(
+                "{EXEC_TOOL_DESCRIPTION}\n\nNamespaces for `provider`:\naws_sandbox\
+                 \ncoral.workspace\tCoral\ngithub\nhackernews\tHacker News\nnotes\tTeam notes \
+                 (shared)\nwiki\tTeam wiki pages\nslack\nlong\t{}…",
+                "x".repeat(39)
+            )
+        );
+        assert_eq!(
+            exec_description(&Namespaces::Unavailable),
+            format!(
+                "{EXEC_TOOL_DESCRIPTION}\n\nCoral could not list your namespaces. Leave \
+                 `provider` out."
+            )
+        );
+        assert_eq!(
+            exec_description(&Namespaces::Listed(&[])),
+            EXEC_TOOL_DESCRIPTION
+        );
+    }
+
+    // Catches: a long list pushing `exec`'s description past the 4096
+    // characters a client keeps, cutting a namespace in half, or miscounting
+    // the namespaces it leaves out.
+    #[test]
+    fn a_list_past_the_budget_ends_with_how_many_it_leaves_out() {
+        let providers = (0..400)
+            .map(|index| searchable(&format!("provider_{index:03}"), "A Provider"))
+            .collect::<Vec<_>>();
+        let description = exec_description(&Namespaces::Listed(&providers));
+        assert!(
+            description.len() <= EXEC_DESCRIPTION_MAX_BYTES,
+            "{}",
+            description.len()
+        );
+        let list = description
+            .strip_prefix(&format!(
+                "{EXEC_TOOL_DESCRIPTION}\n\nNamespaces for `provider`:\n"
+            ))
+            .expect("the fixed text, then the list");
+        let (kept, tail) = list.rsplit_once('\n').expect("several lines");
+        let shown = kept.lines().collect::<Vec<_>>();
+        assert!(
+            shown
+                .iter()
+                .enumerate()
+                .all(|(index, line)| *line == format!("provider_{index:03}\tA Provider")),
+            "whole lines, in order"
+        );
+        assert_eq!(
+            tail,
+            format!(
+                "and {} more: read them with `coral.workspace.listProviders` (its active ones), \
+                 or pass one and a wrong `provider` is refused with all of them.",
+                providers.len() - shown.len()
+            )
+        );
+        let uncounted = description
+            .strip_suffix(&format!("\n{tail}"))
+            .expect("the count ends the list");
+        let left = providers.len() - shown.len();
+        let one_more = format!(
+            "{uncounted}\nprovider_{:03}\tA Provider\nand {} more: read them with \
+             `coral.workspace.listProviders` (its active ones), or pass one and a wrong \
+             `provider` is refused with all of them.",
+            shown.len(),
+            left - 1
+        );
+        assert!(
+            one_more.len() > EXEC_DESCRIPTION_MAX_BYTES,
+            "the list stops only when the next name does not fit"
+        );
     }
 
     /// Task history keeps the `search` and `describe` responses agents
