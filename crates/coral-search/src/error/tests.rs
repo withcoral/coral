@@ -1,11 +1,13 @@
 use super::{DECLARED_NAMES_SHOWN, Error, undeclared_types_message};
 use crate::ProviderCallRoot;
 
+// Catches: the refusal listing namespaces in Call Root order, which differs
+// from the namespace order `exec`'s description lists them in.
 #[test]
 fn an_unknown_provider_filter_is_refused_with_only_the_searchable_namespaces() {
     for (searchable, message) in [
         (
-            &["coral.workspace", "coral.providers.github"][..],
+            &["coral.providers.github", "coral.workspace"][..],
             "No Provider you can search has this namespace. Use one of: coral.workspace, github.",
         ),
         (
@@ -25,6 +27,52 @@ fn an_unknown_provider_filter_is_refused_with_only_the_searchable_namespaces() {
             Some(("invalid_input", message.to_string())),
             "{searchable:?}"
         );
+    }
+}
+
+// Catches: a lookup failure that every later request repeats being served
+// as a missing list, or a passing fault (an archived Workspace, a corrupt row)
+// denying the whole request.
+#[test]
+fn only_a_lost_workspace_counts_as_lost_authority() {
+    for (error, lost) in [
+        (Error::PermissionDenied("discovery"), true),
+        (
+            Error::Workspace(coral_workspace::Error::WorkspaceNotFound),
+            true,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::PermissionDenied("inspect")),
+            true,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::AgentNotFound),
+            true,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::InvalidAgentCredential),
+            true,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::AgentDisabled),
+            true,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::AgentRegistrationExpired),
+            true,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+            false,
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::CorruptData("row".to_owned())),
+            false,
+        ),
+        (Error::ServiceUnavailable, false),
+        (Error::InvalidInput("query".to_owned()), false),
+    ] {
+        assert_eq!(error.lost_workspace_authority(), lost, "{error:?}");
     }
 }
 

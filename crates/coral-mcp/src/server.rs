@@ -9,7 +9,7 @@ use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
     ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerCapabilities, ServerConfig,
+    ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
@@ -72,6 +72,36 @@ impl McpServer {
         let name = display_name.chars().take(NAME_CHARS).collect::<String>();
         self.title = Some(format!("Coral · {name}"));
         self
+    }
+
+    /// The tools this caller is served. `exec` names the namespaces the
+    /// caller can search, so an agent passes `provider` from its first
+    /// Program on. A caller that lost the Workspace meets that on every call,
+    /// so the list fails too. Any other failure only costs the namespaces:
+    /// `exec`'s description says so and tells the agent to leave `provider`
+    /// out.
+    async fn listed_tools(&self) -> Result<Vec<Tool>, ErrorData> {
+        let searchable = self
+            .runtime
+            .modules
+            .search
+            .searchable_providers(&self.runtime.principal, &self.workspace_id)
+            .await;
+        let namespaces = match &searchable {
+            Ok(providers) => arguments::Namespaces::Listed(providers),
+            Err(error) if error.lost_workspace_authority() => {
+                return Err(ErrorData::invalid_request("Permission was denied", None));
+            }
+            Err(error) => {
+                tracing::error!(
+                    coral.workspace.id = safe::id(&self.workspace_id),
+                    error.type = safe::kind(lookup_error_kind(error)),
+                    "failed to list the namespaces for exec's description"
+                );
+                arguments::Namespaces::Unavailable
+            }
+        };
+        Ok(arguments::tools(arguments::exec_description(&namespaces)))
     }
 
     async fn dispatch(
@@ -396,32 +426,7 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        // `exec` names the namespaces this caller can search, so an agent
-        // passes `provider` from its first Program on. A caller that lost the
-        // Workspace meets that on every call, so the list fails too. Any
-        // other failure only costs the list: the description says so, and a
-        // wrong namespace's refusal still lists them.
-        let searchable = self
-            .runtime
-            .modules
-            .search
-            .searchable_providers(&self.runtime.principal, &self.workspace_id)
-            .await;
-        let namespaces = match &searchable {
-            Ok(providers) => arguments::Namespaces::Listed(providers),
-            Err(error) if lost_authority(error) => {
-                return Err(ErrorData::invalid_request("Permission was denied", None));
-            }
-            Err(error) => {
-                tracing::error!(
-                    coral.workspace.id = safe::id(&self.workspace_id),
-                    error.type = safe::kind(lookup_error_kind(error)),
-                    "failed to list the namespaces for exec's description"
-                );
-                arguments::Namespaces::Unavailable
-            }
-        };
-        let tools = arguments::tools(arguments::exec_description(&namespaces));
+        let tools = self.listed_tools().await?;
         // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
         // and Claude Code rejects a tools/list result that omits them. Older
         // versions ignore the extra fields, so the hints are not version-gated.
@@ -539,22 +544,6 @@ fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
         DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
         protocol @ DispatchError::Protocol(_) => protocol,
     }
-}
-
-/// Whether a failed namespace lookup means the caller lost the Workspace.
-fn lost_authority(error: &coral_search::Error) -> bool {
-    matches!(
-        error,
-        coral_search::Error::PermissionDenied(_)
-            | coral_search::Error::Workspace(
-                coral_workspace::Error::WorkspaceNotFound
-                    | coral_workspace::Error::PermissionDenied(_)
-                    | coral_workspace::Error::AgentNotFound
-                    | coral_workspace::Error::InvalidAgentCredential
-                    | coral_workspace::Error::AgentDisabled
-                    | coral_workspace::Error::AgentRegistrationExpired
-            )
-    )
 }
 
 /// The kind of a failed namespace lookup, as a log names it.

@@ -56,6 +56,26 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the caller lost the Workspace: it is gone, or the caller may
+    /// no longer inspect it. Every later request of this caller fails the
+    /// same way, so a failed [`crate::UniversalSearchModule::searchable_providers`]
+    /// with it denies the request instead of serving it without the list.
+    #[must_use]
+    pub const fn lost_workspace_authority(&self) -> bool {
+        matches!(
+            self,
+            Self::PermissionDenied(_)
+                | Self::Workspace(
+                    coral_workspace::Error::WorkspaceNotFound
+                        | coral_workspace::Error::PermissionDenied(_)
+                        | coral_workspace::Error::AgentNotFound
+                        | coral_workspace::Error::InvalidAgentCredential
+                        | coral_workspace::Error::AgentDisabled
+                        | coral_workspace::Error::AgentRegistrationExpired
+                )
+        )
+    }
+
     /// Returns a safe definite rejection, excluding uncertain persistence or host errors.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
@@ -116,20 +136,18 @@ fn unknown_call_root_message(searchable: &[ProviderCallRoot]) -> String {
 }
 
 /// The namespaces a refused Provider filter can use instead, as one
-/// sentence.
+/// sentence, sorted as `exec`'s description lists them.
 #[must_use]
 pub fn searchable_namespaces(searchable: &[ProviderCallRoot]) -> String {
     if searchable.is_empty() {
         return "You can search no Provider.".to_owned();
     }
-    format!(
-        "Use one of: {}.",
-        searchable
-            .iter()
-            .map(crate::provider_filter_value)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    let mut namespaces = searchable
+        .iter()
+        .map(crate::provider_filter_value)
+        .collect::<Vec<_>>();
+    namespaces.sort_unstable();
+    format!("Use one of: {}.", namespaces.join(", "))
 }
 
 /// The most declared names an `undeclared_types` rejection lists.

@@ -102,8 +102,8 @@ struct QueryInput {
         description = "When the user names a service, all its namespaces from \
                        coral.providers.<namespace>, or coral.workspace for Coral's own tools. \
                        Otherwise leave it out. It narrows provider tools to those Providers; \
-                       Saved Functions stay. A namespace that no Provider you can search has \
-                       is refused with the full list."
+                       Saved Functions stay. A namespace you cannot search is refused with \
+                       the full list."
     )]
     provider: Option<String>,
     #[serde(default)]

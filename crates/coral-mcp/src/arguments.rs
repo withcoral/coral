@@ -110,7 +110,9 @@ fn namespace_line(provider: &coral_search::SearchableProvider) -> String {
         .display_name()
         .chars()
         .map(|character| {
-            if character.is_control() {
+            // Display names refuse control and format characters, but not
+            // the Unicode line and paragraph separators.
+            if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
                 ' '
             } else {
                 character
@@ -537,8 +539,9 @@ mod tests {
     }
 
     // Catches: a display name that repeats its namespace wasting the budget,
-    // one that breaks the list with a line break or tab, or runs past its
-    // bound; a failed lookup or an empty Workspace changing the fixed text.
+    // one that breaks the list with a line break, a Unicode line or paragraph
+    // separator or a tab, or runs past its bound; a failed lookup or an empty
+    // Workspace changing the fixed text.
     #[test]
     fn exec_names_each_namespace_with_a_display_name_that_says_more() {
         let providers = [
@@ -547,6 +550,7 @@ mod tests {
             searchable("github", "GitHub"),
             searchable("hackernews", "Hacker News"),
             searchable("notes", "Team\nnotes\t(shared)"),
+            searchable("wiki", "Team\u{2028}wiki\u{2029}pages"),
             searchable("slack", ""),
             searchable("long", &"x".repeat(60)),
         ];
@@ -555,7 +559,7 @@ mod tests {
             format!(
                 "{EXEC_TOOL_DESCRIPTION}\n\nNamespaces for `provider`:\naws_sandbox\
                  \ncoral.workspace\tCoral\ngithub\nhackernews\tHacker News\nnotes\tTeam notes \
-                 (shared)\nslack\nlong\t{}…",
+                 (shared)\nwiki\tTeam wiki pages\nslack\nlong\t{}…",
                 "x".repeat(39)
             )
         );

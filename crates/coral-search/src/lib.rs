@@ -28,9 +28,9 @@
 //! - [`projection`] turns what discovery found into the result types
 //!   coral-catalog declares for `coral.workspace.search`, the shape the
 //!   `search` and `describe` records in Task history retain.
-//! - [`UniversalSearchModule::searchable_providers`] lists the Provider
-//!   Call Roots a search's filter accepts from the caller. A filter that names
-//!   another is refused with that list.
+//! - [`UniversalSearchModule::searchable_providers`] lists the namespaces a
+//!   search's filter accepts from the caller, each with its display name. A
+//!   filter that names another is refused with those namespaces.
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
 //!   from the Tool eligibility rule discovery uses, without reading Saved
 //!   Functions or the index.
