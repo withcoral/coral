@@ -1,8 +1,8 @@
 use super::*;
 use coral_test_support::TestDatabase;
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedUser, ChangeContext, OrganizationRole, TraceId, UserId,
-    WorkspaceDisplayName, WorkspaceRole,
+    AgentDisplayName, AuthenticatedUser, ChangeContext, IssuedAgentCredential, OrganizationRole,
+    Principal, TraceId, UserId, WorkspaceDisplayName, WorkspaceRole,
 };
 use std::time::Duration;
 
@@ -142,16 +142,7 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
         assert_eq!(&accepted.1, chosen);
         assert_eq!(accepted.0.principal().id().as_str(), "owner");
 
-        let agent = fixture
-            .workspaces
-            .create_agent(
-                &fixture.owner,
-                chosen,
-                AgentDisplayName::parse("Worker").unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
+        let agent = fixture.agent(chosen).await;
         let accepted = fixture
             .authentication
             .authenticate(
@@ -208,16 +199,7 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
 #[tokio::test]
 async fn agent_authentication_uses_workspace_registration_not_user_authority() {
     let fixture = Fixture::new().await;
-    let issued = fixture
-        .workspaces
-        .create_agent(
-            &fixture.owner,
-            &fixture.workspace,
-            AgentDisplayName::parse("Worker").unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    let issued = fixture.agent(&fixture.workspace).await;
     let token = issued.credential.expose();
     let principal = fixture.authenticate(Some(token)).await.unwrap();
     assert_eq!(principal.principal(), issued.agent.principal());
@@ -277,10 +259,129 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
 async fn unavailable_authority_is_a_bounded_error_not_an_authentication_success() {
     let fixture = Fixture::new().await;
     let token = fixture.token("owner", AUDIENCE);
+    let agent = fixture.agent(&fixture.workspace).await;
     fixture.database.database().close().await;
-    let error = fixture.authenticate(Some(&token)).await.unwrap_err();
-    assert_eq!(error, AuthenticationError::Unavailable);
-    assert_eq!(error.to_string(), "authentication unavailable");
+    for (case, authentication, bearer) in [
+        (
+            "a User token with sign-in",
+            &fixture.authentication,
+            token.as_str(),
+        ),
+        (
+            "an Agent credential in local mode",
+            &fixture.local,
+            agent.credential.expose(),
+        ),
+    ] {
+        let error = authentication
+            .authenticate(
+                WorkspaceFixedBy::Url(&fixture.workspace),
+                Some(bearer),
+                AUDIENCE,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, AuthenticationError::Unavailable, "{case}");
+        assert_eq!(error.to_string(), "authentication unavailable", "{case}");
+    }
+}
+
+/// Without sign-in, a missing credential is the local Owner wherever a URL fixes
+/// the Workspace, and every presented credential must be an Agent's. With
+/// sign-in, a missing credential stays `Unauthenticated` everywhere (the "no
+/// credential" row of `the_credential_alone_fixes_the_workspace_at_the_organization_endpoint`).
+#[tokio::test]
+async fn local_mode_admits_the_local_owner_without_a_credential_and_agents_with_one() {
+    use AuthenticationError::{Unauthenticated, WorkspaceUrlRequired};
+    let fixture = Fixture::new().await;
+    assert!(fixture.authentication.signs_in());
+    assert!(!fixture.local.signs_in());
+    let workspace = &fixture.workspace;
+    let second = fixture
+        .workspaces
+        .create(
+            &fixture.owner,
+            WorkspaceDisplayName::parse("Second").unwrap(),
+        )
+        .await
+        .unwrap()
+        .id()
+        .clone();
+    let here = fixture.agent(workspace).await;
+    let there = fixture.agent(&second).await;
+    let user_token = fixture.token("owner", AUDIENCE);
+    let owner = AuthenticatedPrincipal::user(coral_workspace::local_organization_owner())
+        .principal()
+        .clone();
+    let own_agent = here.agent.principal().clone();
+    let foreign_agent = there.agent.principal().clone();
+    let accepted = |principal: &Principal, workspace: Option<&WorkspaceId>| {
+        Ok((principal.clone(), workspace.cloned()))
+    };
+    // Each row: [Url(workspace), Credential, authenticate_scoped, authenticate_user].
+    for (case, bearer, expected) in [
+        (
+            "no credential",
+            None,
+            [
+                accepted(&owner, Some(workspace)),
+                Err(WorkspaceUrlRequired),
+                accepted(&owner, None),
+                accepted(&owner, None),
+            ],
+        ),
+        (
+            "this Workspace's Agent credential",
+            Some(here.credential.expose()),
+            [
+                accepted(&own_agent, Some(workspace)),
+                accepted(&own_agent, Some(workspace)),
+                accepted(&own_agent, None),
+                Err(Unauthenticated),
+            ],
+        ),
+        (
+            "another Workspace's Agent credential",
+            Some(there.credential.expose()),
+            [
+                Err(Unauthenticated),
+                accepted(&foreign_agent, Some(&second)),
+                Err(Unauthenticated),
+                Err(Unauthenticated),
+            ],
+        ),
+        (
+            "a garbage string",
+            Some("not-a-credential"),
+            [const { Err(Unauthenticated) }; 4],
+        ),
+        (
+            "a signed User token, which never falls back to the local Owner",
+            Some(user_token.as_str()),
+            [const { Err(Unauthenticated) }; 4],
+        ),
+    ] {
+        let local = &fixture.local;
+        let observed: [Result<(Principal, Option<WorkspaceId>), AuthenticationError>; 4] = [
+            local
+                .authenticate(WorkspaceFixedBy::Url(workspace), bearer, AUDIENCE)
+                .await
+                .map(|(principal, workspace)| (principal.principal().clone(), Some(workspace))),
+            local
+                .authenticate(WorkspaceFixedBy::Credential, bearer, ORGANIZATION_AUDIENCE)
+                .await
+                .map(|(principal, workspace)| (principal.principal().clone(), Some(workspace))),
+            local
+                .authenticate_scoped(workspace, bearer, AUDIENCE)
+                .await
+                .map(|principal| (principal.principal().clone(), None)),
+            local
+                .authenticate_user(bearer, AUDIENCE)
+                .await
+                .map(|principal| (principal.principal().clone(), None)),
+        ];
+        assert_eq!(observed, expected, "{case}");
+    }
 }
 
 struct Fixture {
@@ -292,6 +393,8 @@ struct Fixture {
     workspace: WorkspaceId,
     issuer: SessionTokenIssuer,
     authentication: PrincipalAuthentication,
+    /// The same authority without sign-in.
+    local: PrincipalAuthentication,
 }
 
 impl Fixture {
@@ -322,6 +425,7 @@ impl Fixture {
         .unwrap();
         let authentication =
             PrincipalAuthentication::new(&issuer, organization.clone(), workspaces.clone());
+        let local = PrincipalAuthentication::local(workspaces.clone());
         Self {
             database,
             organization,
@@ -331,7 +435,20 @@ impl Fixture {
             workspace,
             issuer,
             authentication,
+            local,
         }
+    }
+
+    async fn agent(&self, workspace: &WorkspaceId) -> IssuedAgentCredential {
+        self.workspaces
+            .create_agent(
+                &self.owner,
+                workspace,
+                AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap()
     }
 
     fn token(&self, user: &str, audience: &str) -> String {

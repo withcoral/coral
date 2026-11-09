@@ -160,8 +160,11 @@ impl Fixture {
             .await
             .unwrap();
         let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
-        let authentication = enabled
-            .then(|| PrincipalAuthentication::new(&issuer, organization, workspaces.clone()));
+        let authentication = if enabled {
+            PrincipalAuthentication::new(&issuer, organization, workspaces.clone())
+        } else {
+            PrincipalAuthentication::local(workspaces.clone())
+        };
         let vault_dir = tempfile::tempdir().unwrap();
         let vault =
             coral_credentials::CredentialVault::open(&vault_dir.path().join("key")).unwrap();

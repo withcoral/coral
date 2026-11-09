@@ -195,6 +195,25 @@ it('reports each tool on its own when one provider batch fails', async () => {
   expect(result.data.message).toContain('1 tool not saved')
 })
 
+// Catches: a lapsed sign-in in one batch reported as that tool's failure
+// with 200, so the protected layout never signs the reader in again.
+it('fails the whole change with 401 when a batch meets a lapsed sign-in', async () => {
+  mocks.updateToolPolicies.mockImplementation(({ parent }: { parent: string }) =>
+    parent.endsWith(providerB)
+      ? Promise.reject(new ConnectError('expired', Code.Unauthenticated))
+      : Promise.resolve({}),
+  )
+
+  const result = (await post(
+    policyForm([
+      { provider: providerA, tool: 'a' },
+      { provider: providerB, tool: 'b' },
+    ]),
+  )) as unknown as { init: { status: number } | null }
+
+  expect(result.init?.status).toBe(401)
+})
+
 // Catches: a malformed or repeated entry updating fewer or other tools
 // than the reader selected.
 it('rejects a selection with a malformed or repeated tool', async () => {

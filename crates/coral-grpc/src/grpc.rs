@@ -53,8 +53,9 @@ pub struct Dependencies {
 
 /// Resolved transport context supplied by application composition.
 pub struct TransportContext {
-    /// `None` selects local authentication; the application must bind to loopback.
-    pub authentication: Option<PrincipalAuthentication>,
+    /// Principal authentication. With [`PrincipalAuthentication::local`] the
+    /// application must bind to loopback.
+    pub authentication: PrincipalAuthentication,
     /// Canonical, validated MCP origin, published once after the companion binds.
     /// Until publication, Workspace responses contain an empty MCP endpoint.
     pub mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -157,7 +158,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
 #[derive(Clone)]
 struct GrpcServices {
     organization: coral_workspace::OrganizationModule,
-    authentication: Option<PrincipalAuthentication>,
+    authentication: PrincipalAuthentication,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     workspaces: WorkspaceModule,
     providers: coral_provider::ProviderModule,
@@ -245,55 +246,33 @@ impl GrpcServices {
                     .ok_or_else(|| Status::unauthenticated("invalid authentication metadata"))
             })
             .transpose()?;
-        let principal = match &self.authentication {
-            Some(authentication) => {
-                let authenticated = match audience {
-                    PrivateAudience::Mcp => {
-                        authentication
-                            .authenticate_scoped(
-                                workspace.ok_or_else(|| {
-                                    Status::invalid_argument("Workspace required")
-                                })?,
-                                bearer,
-                                audience.as_str(),
-                            )
-                            .await
-                    }
-                    PrivateAudience::Reef => {
-                        authentication
-                            .authenticate_user(bearer, audience.as_str())
-                            .await
-                    }
-                };
-                authenticated.map_err(authentication_error)
+        // An opaque Registration has one fixed access surface: mcp. The reef
+        // audience authenticates Users only, whatever the caller's metadata.
+        match audience {
+            PrivateAudience::Mcp => {
+                self.authentication
+                    .authenticate_scoped(
+                        workspace.ok_or_else(|| Status::invalid_argument("Workspace required"))?,
+                        bearer,
+                        audience.as_str(),
+                    )
+                    .await
             }
-            None if bearer.is_none() => Ok(AuthenticatedPrincipal::user(
-                coral_workspace::local_organization_owner(),
-            )),
-            None if audience == PrivateAudience::Mcp => self
-                .workspaces
-                .authenticate_agent(
-                    workspace.ok_or_else(|| Status::invalid_argument("Workspace required"))?,
-                    bearer.unwrap_or_default(),
-                    now()?,
-                )
-                .await
-                .map_err(coral_auth::AuthenticationError::from)
-                .map_err(authentication_error),
-            None => Err(Status::unauthenticated("authentication required")),
-        }?;
-        // An opaque Registration has one fixed access surface: mcp. It never
-        // becomes a reef token because of caller-supplied metadata.
-        if audience == PrivateAudience::Reef && principal.authenticated_user().is_none() {
-            return Err(Status::unauthenticated("User token required"));
+            PrivateAudience::Reef => {
+                self.authentication
+                    .authenticate_user(bearer, audience.as_str())
+                    .await
+            }
         }
-        Ok(principal)
+        .map_err(authentication_error)
     }
 }
 
 fn authentication_error(error: coral_auth::AuthenticationError) -> Status {
     match error {
-        coral_auth::AuthenticationError::Unauthenticated => {
+        // Neither entry point lets the credential fix the Workspace.
+        coral_auth::AuthenticationError::Unauthenticated
+        | coral_auth::AuthenticationError::WorkspaceUrlRequired => {
             Status::unauthenticated("authentication required")
         }
         coral_auth::AuthenticationError::Unavailable => {

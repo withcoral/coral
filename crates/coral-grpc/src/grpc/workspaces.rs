@@ -41,7 +41,7 @@ impl GrpcServices {
             format!("{origin}/workspaces/{id}/mcp")
         });
         // Only a deployment with sign-in can ask which Workspace `/mcp` serves.
-        if self.authentication.is_some()
+        if self.authentication.signs_in()
             && let Some(origin) = self.mcp_origin.get()
         {
             view.organization_mcp_endpoint = format!("{origin}/mcp");

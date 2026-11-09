@@ -450,6 +450,7 @@ const reasons: Record<string, string> = {
   INVALID_PROVIDER_INPUT: 'Coral cannot use this document. Check the fields.',
 }
 const statuses: Partial<Record<Code, number>> = {
+  [Code.Unauthenticated]: 401,
   [Code.PermissionDenied]: 403,
   [Code.NotFound]: 404,
   [Code.InvalidArgument]: 400,
@@ -477,11 +478,13 @@ export function providerFailure(error: unknown, tool = 'Coral could not apply th
     reason ??
     (status === 503
       ? 'Reload the page to check whether Coral applied the change before you submit it again.'
-      : status === 403
-        ? 'You do not have permission for this action.'
-        : status === 404
-          ? 'Coral cannot find this item. Reload the page.'
-          : 'Check the form fields. Correct any errors before you try again.')
+      : status === 401
+        ? 'Sign in again to continue.'
+        : status === 403
+          ? 'You do not have permission for this action.'
+          : status === 404
+            ? 'Coral cannot find this item. Reload the page.'
+            : 'Check the form fields. Correct any errors before you try again.')
   return data(
     {
       error: reason ? message : `${tool}${message}`,
