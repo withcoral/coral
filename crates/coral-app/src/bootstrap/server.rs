@@ -195,6 +195,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Supplies the variables, read at process bootstrap, that stop this
+    /// process from sending usage data.
+    #[must_use]
+    pub fn with_usage_environment(mut self, environment: coral_usage::SendEnvironment) -> Self {
+        self.launcher.usage_environment = environment;
+        self
+    }
+
     /// Marks a Desktop launch: local auth support then defaults to Desktop's
     /// fixed Provider OAuth callback port. An explicit `listeners.auth.bind` wins.
     #[must_use]
@@ -315,6 +323,10 @@ impl PreparedServerBuilder {
     ///
     /// Returns [`AppError`] if configuration, credential initialization, or
     /// gRPC startup fails.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "process composition prepares each dependency once, in order"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let Self {
             builder,
@@ -390,6 +402,12 @@ impl PreparedServerBuilder {
                     })
             })
             .transpose()?;
+        let usage = UsageReporting::new(
+            &coral_db,
+            &builder.launcher,
+            authorization_server.is_some(),
+            policy,
+        )?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
@@ -410,6 +428,7 @@ impl PreparedServerBuilder {
             runtime_limits,
             reconcile_interval,
             releases,
+            Some(usage),
             readiness,
             state_lock,
             instance,
@@ -524,6 +543,7 @@ pub struct RunningServer {
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
     release_check: Option<JoinHandle<()>>,
+    usage_check: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
@@ -616,6 +636,9 @@ impl RunningServer {
         }
         self.search_reconcile.abort();
         if let Some(check) = &self.release_check {
+            check.abort();
+        }
+        if let Some(check) = &self.usage_check {
             check.abort();
         }
         if let Some(accounts) = &self.accounts
@@ -718,6 +741,9 @@ impl Drop for RunningServer {
         if let Some(check) = &self.release_check {
             check.abort();
         }
+        if let Some(check) = &self.usage_check {
+            check.abort();
+        }
         if let Some(accounts) = &self.accounts {
             accounts.abort_device_authorizations();
         }
@@ -733,6 +759,52 @@ impl Drop for RunningServer {
             )]
             let _ = shutdown_tx.send(());
         }
+    }
+}
+
+/// The usage data module and the outbound client it sends with.
+pub(crate) struct UsageReporting {
+    data: coral_usage::UsageData,
+    client: coral_outbound::Client,
+}
+
+impl UsageReporting {
+    fn new(
+        database: &Arc<Database>,
+        launcher: &Launcher,
+        signs_in: bool,
+        policy: coral_outbound::DestinationPolicy,
+    ) -> Result<Self, AppError> {
+        let host = coral_usage::Host {
+            version: launcher
+                .service_version
+                .unwrap_or(env!("CARGO_PKG_VERSION"))
+                .to_owned(),
+            kind: if launcher.desktop {
+                coral_usage::HostKind::Desktop
+            } else {
+                coral_usage::HostKind::Server
+            },
+            auth: if signs_in {
+                coral_usage::HostAuth::Required
+            } else {
+                coral_usage::HostAuth::Disabled
+            },
+            database: database.system(),
+        };
+        Ok(Self {
+            data: coral_usage::UsageData::new(
+                Arc::clone(database),
+                host,
+                coral_usage::Build::from_marker(option_env!("CORAL_RELEASE_BUILD")),
+                &launcher.usage_environment,
+            ),
+            client: coral_outbound::Client::new(policy, coral_usage::REQUEST_TIMEOUT).map_err(
+                |_error| {
+                    AppError::FailedPrecondition("usage data client initialization failed".into())
+                },
+            )?,
+        })
     }
 }
 
@@ -755,6 +827,7 @@ pub(crate) async fn start_server(
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
     releases: Option<coral_release::ReleaseCheck>,
+    usage: Option<UsageReporting>,
     readiness: EngineReadiness,
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
@@ -857,6 +930,7 @@ pub(crate) async fn start_server(
             saved_function_deletion,
             runs: runs.clone(),
             releases: releases.clone(),
+            usage: usage.as_ref().map(|usage| usage.data.clone()),
         },
         coral_grpc::TransportContext {
             authentication,
@@ -915,6 +989,8 @@ pub(crate) async fn start_server(
     });
     let search_reconcile = search_index.spawn_reconcile_task();
     let release_check = releases.map(|releases| releases.spawn(coral_release::CHECK_INTERVAL));
+    let usage_check =
+        usage.map(|usage| usage.data.spawn(usage.client, coral_usage::CHECK_INTERVAL));
     Ok(RunningServer {
         providers,
         readiness,
@@ -923,6 +999,7 @@ pub(crate) async fn start_server(
         search_index,
         search_reconcile,
         release_check,
+        usage_check,
         accounts,
         runs,
         compiler,

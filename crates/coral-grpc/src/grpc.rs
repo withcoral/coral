@@ -9,6 +9,7 @@ mod policies;
 mod providers;
 mod releases;
 mod saved_functions;
+mod usage_data;
 mod workspaces;
 use std::sync::Arc;
 
@@ -49,6 +50,8 @@ pub struct Dependencies {
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
     pub releases: Option<coral_release::ReleaseCheck>,
+    /// The deployment's usage data; absent where the application composes none.
+    pub usage: Option<coral_usage::UsageData>,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -87,6 +90,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
+        usage: dependencies.usage,
     };
     let mut routes = tonic::service::Routes::default()
         .add_service(
@@ -134,6 +138,9 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             services.clone(),
         ))
         .add_service(
+            management::usage_data_service_server::UsageDataServiceServer::new(services.clone()),
+        )
+        .add_service(
             management::saved_function_service_server::SavedFunctionServiceServer::new(
                 services.clone(),
             ),
@@ -173,6 +180,7 @@ struct GrpcServices {
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
+    usage: Option<coral_usage::UsageData>,
 }
 
 impl GrpcServices {

@@ -4,8 +4,8 @@ use std::env::VarError;
 use std::path::PathBuf;
 
 use super::consts::{
-    CORAL_CONFIG_DIR, CORAL_DESKTOP, CORAL_LOCAL_WEB_URL, CORAL_STOP_ON_STDIN_CLOSE,
-    CORAL_TRACE_PARENT,
+    CI, CORAL_CONFIG_DIR, CORAL_DESKTOP, CORAL_LOCAL_WEB_URL, CORAL_STOP_ON_STDIN_CLOSE,
+    CORAL_TELEMETRY, CORAL_TRACE_PARENT, DO_NOT_TRACK,
 };
 use super::error::AppError;
 use super::runtime::Launch;
@@ -101,6 +101,7 @@ impl Launch {
     /// closing its stdin sets `CORAL_STOP_ON_STDIN_CLOSE=1`; it is opt-in
     /// because a container without an attached stdin starts with stdin closed.
     /// `CORAL_LOCAL_WEB_URL` is a local launcher's web origin.
+    /// `DO_NOT_TRACK`, `CORAL_TELEMETRY` and `CI` can stop usage data.
     ///
     /// # Errors
     ///
@@ -121,6 +122,15 @@ impl Launch {
             stop_on_stdin_close: flag(CORAL_STOP_ON_STDIN_CLOSE),
             service_version: None,
             config_dir: None,
+            usage_environment: coral_usage::SendEnvironment {
+                do_not_track: env_var(DO_NOT_TRACK).ok().flatten(),
+                coral_telemetry: env_var(CORAL_TELEMETRY).ok().flatten(),
+                // A CI variable that is not Unicode is still set.
+                ci: match env_var(CI) {
+                    Ok(value) => value,
+                    Err(_not_unicode) => Some("set".to_owned()),
+                },
+            },
         })
     }
 }

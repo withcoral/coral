@@ -40,6 +40,8 @@ pub struct Launch {
     /// A config directory the launcher selects. Without one, the environment
     /// or the platform default selects it.
     pub config_dir: Option<std::path::PathBuf>,
+    /// The variables that stop this process from sending usage data.
+    pub usage_environment: coral_usage::SendEnvironment,
 }
 
 impl Launch {
@@ -57,6 +59,7 @@ impl Launch {
             Some(config_dir) => builder.with_config_dir(config_dir),
             None => builder,
         };
+        let builder = builder.with_usage_environment(self.usage_environment);
         if self.desktop {
             // Desktop owns this launch default even if its operator configures sign-in.
             builder

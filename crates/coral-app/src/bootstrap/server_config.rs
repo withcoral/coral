@@ -47,6 +47,8 @@ pub(crate) struct Launcher {
     pub(crate) local_web_url: Option<coral_mcp::HumanInterfaceUrl>,
     /// The launching binary's version, for telemetry's `service.version`.
     pub(crate) service_version: Option<&'static str>,
+    /// The variables that stop this process from sending usage data.
+    pub(crate) usage_environment: coral_usage::SendEnvironment,
 }
 
 /// Local auth support's default port under Desktop, which registers it as a

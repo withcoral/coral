@@ -1,0 +1,68 @@
+syntax = "proto3";
+package coral.management.v1;
+
+// The deployment's anonymous usage data: the one sharing setting, and the
+// Usage Reports Coral sends.
+service UsageDataService {
+  // Any Organization Member can read the setting and the reports.
+  rpc GetUsageData(GetUsageDataRequest) returns (UsageData);
+  // Only an Organization Owner can change the setting.
+  rpc SetUsageDataSharing(SetUsageDataSharingRequest) returns (UsageData);
+}
+
+// Asks for the deployment's usage data.
+message GetUsageDataRequest {}
+
+// Turns sharing on or off for the whole deployment.
+message SetUsageDataSharingRequest {
+  // True turns sharing on; false turns it off.
+  bool sharing = 1;
+}
+
+// The deployment's usage data, as the Usage data page shows it.
+message UsageData {
+  // On until an Organization Owner turns it off.
+  bool sharing = 1;
+  // Whether the caller is an Organization Owner, who can change `sharing`.
+  bool can_change = 2;
+  // What stops this process from sending, whatever `sharing` says.
+  UsageSendBlock block = 3;
+  // Where Coral runs.
+  UsageHostKind kind = 4;
+  // The next report, as the exact JSON Coral sends.
+  string next_report_json = 5;
+  // The last report the collector stored, when there is one.
+  SentUsageReport last_sent = 6;
+}
+
+// What stops this process from sending.
+enum UsageSendBlock {
+  // Nothing: the process sends while sharing is on.
+  USAGE_SEND_BLOCK_UNSPECIFIED = 0;
+  // `DO_NOT_TRACK` is set.
+  USAGE_SEND_BLOCK_DO_NOT_TRACK = 1;
+  // `CORAL_TELEMETRY` is `0` or `false`.
+  USAGE_SEND_BLOCK_CORAL_TELEMETRY = 2;
+  // `CI` is set.
+  USAGE_SEND_BLOCK_CI = 3;
+  // A source or development build.
+  USAGE_SEND_BLOCK_SOURCE_BUILD = 4;
+}
+
+// Where Coral runs.
+enum UsageHostKind {
+  // Unknown: a newer runtime may send a kind this client does not know.
+  USAGE_HOST_KIND_UNSPECIFIED = 0;
+  // Coral Desktop on one computer.
+  USAGE_HOST_KIND_DESKTOP = 1;
+  // A shared server.
+  USAGE_HOST_KIND_SERVER = 2;
+}
+
+// A report the collector stored.
+message SentUsageReport {
+  // The exact JSON Coral sent.
+  string json = 1;
+  // When the collector answered, in RFC 3339 UTC.
+  string sent_at = 2;
+}
