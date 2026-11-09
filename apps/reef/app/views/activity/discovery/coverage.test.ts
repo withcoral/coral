@@ -30,7 +30,7 @@ it.each([
   ],
   [
     row('private_tool', 'partial', { searched: 1, failed: 2 }),
-    ['Private tools', '2 of 3 functions failed', 'warning', 'Results may be missing.'],
+    ['Private tools', '2 of 3 private tools failed', 'warning', 'Results may be missing.'],
   ],
   [
     row('provider_tool', 'partial', { searched: 2 }),

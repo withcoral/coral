@@ -17,7 +17,7 @@ struct Departure {
     workspaces: WorkspaceModule,
     organization: OrganizationModule,
     lifecycle: AccessLifecycleModule,
-    functions: PrivateToolModule,
+    private_tools: PrivateToolModule,
     administrator: AuthenticatedUser,
     departing: AuthenticatedUser,
     target: AuthenticatedUser,
@@ -47,7 +47,7 @@ impl Departure {
             .set_enabled(&change(&administrator), disabled.user_id(), 1, false)
             .await
             .unwrap();
-        let functions = PrivateToolModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
             coral_tools::IsolateLimits::default(),
@@ -74,7 +74,7 @@ impl Departure {
                     .await
                     .unwrap();
             }
-            save_answer(&functions, &author, workspace.id()).await;
+            save_answer(&private_tools, &author, workspace.id()).await;
             let connected = accounts::ConnectedScope::new(
                 database.clone(),
                 workspaces.clone(),
@@ -99,7 +99,7 @@ impl Departure {
             lifecycle: AccessLifecycleModule::new(database, workspaces.clone()),
             workspaces,
             organization,
-            functions,
+            private_tools,
             administrator,
             departing,
             target,
@@ -141,8 +141,11 @@ impl Departure {
                     .list_lifecycle_events(&self.departing, workspace)
                     .await
                     .unwrap(),
-                self.functions.get(&author, workspace, &path).await.unwrap(),
-                self.functions
+                self.private_tools
+                    .get(&author, workspace, &path)
+                    .await
+                    .unwrap(),
+                self.private_tools
                     .list_lifecycle_events(&author, workspace)
                     .await
                     .unwrap(),
@@ -324,7 +327,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
             .await
             .unwrap();
         assert!(matches!(
-            f.functions
+            f.private_tools
                 .get(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace,

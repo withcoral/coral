@@ -95,7 +95,7 @@ impl EntityRef {
 }
 
 /// Every Entity of one kind the Principal may see, and how many units they
-/// come from: Providers for Tools, Private Tools for functions.
+/// come from: Providers for Tools, and each Private Tool for itself.
 pub(crate) struct Listing {
     pub(crate) entities: Vec<EntityRef>,
     pub(crate) units: usize,

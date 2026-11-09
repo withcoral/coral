@@ -669,7 +669,7 @@ mod tests {
                         coral_workspace::Error::Database(error),
                     ))
                 },
-                "functions workspace",
+                "tools workspace",
             ),
         ];
         for (wrap, label) in wrapped {

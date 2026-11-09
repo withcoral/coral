@@ -67,14 +67,14 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         request: &QueryRequest<'_>,
     ) -> Result<Answer, QueryError> {
-        let functions = current_private_tools(transaction, context)
+        let private_tools = current_private_tools(transaction, context)
             .await?
             .into_iter()
-            .map(|function| (function.id().clone(), function))
+            .map(|private_tool| (private_tool.id().clone(), private_tool))
             .collect::<HashMap<_, _>>();
         let Some(plan) = QueryPlan::build(request.terms) else {
             // No term can select anything, so no unit waits on the index.
-            let eligible = count(functions.len());
+            let eligible = count(private_tools.len());
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
@@ -87,7 +87,7 @@ impl EntityRetriever for PrivateToolRetriever {
         )
         .await
         .map_err(QueryError::retrieval)?;
-        let searched = functions
+        let searched = private_tools
             .keys()
             .filter(|id| indexed.contains(&id.to_string()))
             .count();
@@ -118,24 +118,24 @@ impl EntityRetriever for PrivateToolRetriever {
         let has_more = ranked.entities.len() > request.window;
         let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
-        for function in ranked.entities.into_iter().take(request.window) {
+        for private_tool in ranked.entities.into_iter().take(request.window) {
             // A function's delete leaves its row for a later write, so only
             // what the owner holds now may answer.
-            let Some(material) = functions.get(&function.private_tool_id) else {
+            let Some(material) = private_tools.get(&private_tool.private_tool_id) else {
                 continue;
             };
             window.push(WindowEntry {
                 entity: EntityRef::PrivateTool(PrivateToolRef {
                     material: material.clone(),
-                    call_path: function.call_path,
+                    call_path: private_tool.call_path,
                     near_spellings: Arc::clone(&near_spellings),
                 }),
-                strong: strong_private_tool(&plan, &function.matched),
+                strong: strong_private_tool(&plan, &private_tool.matched),
             });
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
-                count(functions.len()),
+                count(private_tools.len()),
                 count(searched),
                 count(window.len()),
                 has_more,
@@ -150,14 +150,14 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         entity: &EntityRef,
     ) -> Result<Hydrated, Error> {
-        let EntityRef::PrivateTool(function) = entity else {
+        let EntityRef::PrivateTool(private_tool) = entity else {
             return Ok(Hydrated::Dropped);
         };
         let material = match coral_tools::hydrate_private_tool_search_material_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
-            &function.material,
+            &private_tool.material,
         )
         .await
         {
@@ -170,7 +170,7 @@ impl EntityRetriever for PrivateToolRetriever {
         let hit_material = HitMaterial {
             declaration: material.declaration().as_str(),
             callable: Callable::PrivateTool {
-                leaf: function.call_path.leaf(),
+                leaf: private_tool.call_path.leaf(),
             },
             description: material.description().as_str(),
             guidance: None,
@@ -178,21 +178,21 @@ impl EntityRetriever for PrivateToolRetriever {
         };
         let Some(terms) = context.terms else {
             return Ok(Hydrated::Hit(Box::new(SearchHit::from_private_tool(
-                function.call_path.clone(),
+                private_tool.call_path.clone(),
                 hit_text(&hit_material, None),
                 SearchEvidence::default(),
             ))));
         };
-        let terms = EvidenceTerms::new(terms, &function.near_spellings);
+        let terms = EvidenceTerms::new(terms, &private_tool.near_spellings);
         let mut evidence = EvidenceBuilder::new(&terms);
         evidence
-            .field("call_path", [function.call_path.as_str()])
+            .field("call_path", [private_tool.call_path.as_str()])
             .field("description", [hit_material.description]);
         let declaration = coral_tools::private_tool_declaration_search_material_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
-            function.material.path(),
+            private_tool.material.path(),
         )
         .await?;
         for field in declaration
@@ -205,14 +205,14 @@ impl EntityRetriever for PrivateToolRetriever {
         let Some(matched) = evidence.build() else {
             tracing::debug!(
                 coral.private_tool.call_path =
-                    safe::id(&super::RankedCallPath(&function.call_path)),
+                    safe::id(&super::RankedCallPath(&private_tool.call_path)),
                 "a ranked Private Tool has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);
         };
         let text = hit_text(&hit_material, Some((&terms, &matched)));
         Ok(Hydrated::Hit(Box::new(SearchHit::from_private_tool(
-            function.call_path.clone(),
+            private_tool.call_path.clone(),
             text,
             matched.evidence,
         ))))
@@ -341,8 +341,8 @@ async fn current_private_tools(
     )
     .await?
     .into_iter()
-    .filter(|function| {
-        policy.access_state(function.id(), function.default_access_state())
+    .filter(|private_tool| {
+        policy.access_state(private_tool.id(), private_tool.default_access_state())
             != coral_policy::ToolAccessState::Disabled
     })
     .collect())

@@ -95,11 +95,11 @@ impl SaveTool {
     /// the write, under the module's own deadline; a Run that ended
     /// meanwhile commits nothing.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
-        let functions = authoring(host)?;
+        let private_tools = authoring(host)?;
         let context = change_context(host)?;
         let declarations =
             coral_search::CallerToolDeclarations::new(host.search, host.actor, host.workspace_id);
-        let prepared = functions
+        let prepared = private_tools
             .inner
             .module
             .prepare_save(
@@ -116,23 +116,23 @@ impl SaveTool {
             return Err(Error::ProgramHostTerminated);
         }
         let mut transaction = host.database.begin().await?;
-        let function = functions
+        let private_tool = private_tools
             .inner
             .module
             .save_in_transaction(&mut transaction, prepared)
             .await
             .map_err(|error| failure("source", error))?;
         let result = SavedToolResult {
-            call_path: call_path(function.path()),
-            description: function.description().as_str().to_owned(),
-            declaration: function.declaration().as_str().to_owned(),
-            diagnostics: function
+            call_path: call_path(private_tool.path()),
+            description: private_tool.description().as_str().to_owned(),
+            declaration: private_tool.declaration().as_str().to_owned(),
+            diagnostics: private_tool
                 .diagnostics()
                 .iter()
                 .map(coral_search::projection::diagnostic)
                 .collect(),
-            diagnostics_truncated: function.diagnostics_truncated(),
-            revision: function.revision(),
+            diagnostics_truncated: private_tool.diagnostics_truncated(),
+            revision: private_tool.revision(),
         };
         // As `search` does: fail rather than hand the Program a number V8
         // rounds, and save nothing. Only corrupt compiler output or a
@@ -144,10 +144,10 @@ impl SaveTool {
         }
         transaction.commit().await?;
         // Indexing never undoes or rejects a committed save.
-        functions
+        private_tools
             .inner
             .index
-            .sync_private_tool(host.workspace_id.clone(), function.id().clone());
+            .sync_private_tool(host.workspace_id.clone(), private_tool.id().clone());
         Ok(result.into_tool_result())
     }
 }
@@ -169,13 +169,13 @@ impl RemoveTool {
     /// Deletes the invoking Principal's function at the path, then tells
     /// Universal Search.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
-        let functions = authoring(host)?;
+        let private_tools = authoring(host)?;
         let context = change_context(host)?;
         if !host.run.still_current().await? {
             return Err(Error::ProgramHostTerminated);
         }
         let mut transaction = host.database.begin().await?;
-        let deleted = functions
+        let deleted = private_tools
             .inner
             .module
             .delete_in_transaction(&mut transaction, &context, host.workspace_id, &self.path)
@@ -184,7 +184,7 @@ impl RemoveTool {
         transaction.commit().await?;
         // The delete never touches the search tables; this removes the
         // function's rows sooner than a reconcile pass.
-        functions
+        private_tools
             .inner
             .index
             .sync_private_tool(host.workspace_id.clone(), deleted);

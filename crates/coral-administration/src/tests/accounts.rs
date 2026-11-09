@@ -490,7 +490,7 @@ async fn initial_connection_without_credentials_is_canceled_and_cannot_fill_a_re
 #[tokio::test(flavor = "multi_thread")]
 async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_connect() {
     let mut f = AccountFixture::new().await;
-    let functions = PrivateToolModule::new(
+    let private_tools = PrivateToolModule::new(
         f.db.database(),
         f.workspaces.clone(),
         coral_tools::IsolateLimits::default(),
@@ -498,7 +498,7 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
     )
     .unwrap();
     let principal = AuthenticatedPrincipal::user(f.member.clone());
-    save_answer(&functions, &principal, f.workspace.id()).await;
+    save_answer(&private_tools, &principal, f.workspace.id()).await;
     let gate = Arc::new(RemovalGate::default());
     f.lifecycle.pause_after_prepare = Some(gate.clone());
     let removal = {
@@ -527,7 +527,7 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
     // The release is the final branch, so no sleeps or scheduler guesses order it.
     let (save, grant, connect, ()) = tokio::join!(
         biased;
-        functions.save(&authoring, f.workspace.id(), source),
+        private_tools.save(&authoring, f.workspace.id(), source),
         f.workspaces.set_membership(&administrator, f.workspace.id(), &f.member, coral_workspace::WorkspaceRole::Member),
         f.accounts.start_user_authorization(&context, f.workspace.id(), &f.provider, request(), None),
         async { gate.proceed.notify_one(); },
@@ -548,7 +548,7 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         .unwrap();
     for path in ["answer", "late"] {
         assert!(matches!(
-            functions
+            private_tools
                 .get(
                     &principal,
                     f.workspace.id(),

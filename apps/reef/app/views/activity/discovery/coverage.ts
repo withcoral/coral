@@ -10,8 +10,8 @@ export interface CoverageLine {
 }
 
 const subjects = { provider_tool: 'Tools', private_tool: 'Private tools' }
-/** What Coral counts as searched: a provider's tools, or one function. */
-const units = { provider_tool: 'providers', private_tool: 'functions' }
+/** What Coral counts as searched: a provider's tools, or one private tool. */
+const units = { provider_tool: 'providers', private_tool: 'private tools' }
 
 /** A count says when more matched than Coral returned; only missing results keep a sentence. */
 export function coverageLine(coverage: SearchCoverage): CoverageLine {

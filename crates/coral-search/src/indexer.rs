@@ -373,7 +373,7 @@ pub(crate) struct ProjectionBacklog {
 pub(crate) async fn projection_backlog(
     transaction: &mut Transaction<'_>,
     providers: &[coral_provider::ActiveGeneration],
-    functions: &[coral_tools::PrivateToolIndexRevision],
+    private_tools: &[coral_tools::PrivateToolIndexRevision],
 ) -> Result<ProjectionBacklog, IndexError> {
     let generations = repository::recorded_generations(transaction)
         .await?
@@ -407,7 +407,7 @@ pub(crate) async fn projection_backlog(
         .into_iter()
         .map(|row| (row.function, row.fingerprint))
         .collect::<std::collections::HashMap<_, _>>();
-    let missing_private_tools = functions
+    let missing_private_tools = private_tools
         .iter()
         .filter(|entry| {
             let key = repository::WorkspacePrivateTool {

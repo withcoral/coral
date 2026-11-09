@@ -127,7 +127,7 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
         )
         .await
         .unwrap();
-    let functions = PrivateToolModule::new(
+    let private_tools = PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
         coral_tools::IsolateLimits::default(),
@@ -153,7 +153,7 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
     let owner =
         AuthenticatedUser::organization_member(owner.user_id().clone(), OrganizationRole::Owner);
     let author = AuthenticatedPrincipal::user(owner.clone());
-    save_answer(&functions, &author, workspace.id()).await;
+    save_answer(&private_tools, &author, workspace.id()).await;
     let state = async || {
         (
             workspaces
@@ -164,8 +164,11 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
                 .list_lifecycle_events(&owner, workspace.id())
                 .await
                 .unwrap(),
-            functions.get(&author, workspace.id(), &path).await.unwrap(),
-            functions
+            private_tools
+                .get(&author, workspace.id(), &path)
+                .await
+                .unwrap(),
+            private_tools
                 .list_lifecycle_events(&author, workspace.id())
                 .await
                 .unwrap(),
@@ -207,7 +210,7 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
     // A new Membership cannot restore the deleted definition.
     join_as_owner(&workspaces, &owner, workspace.id()).await;
     assert!(matches!(
-        functions.get(&author, workspace.id(), &path).await,
+        private_tools.get(&author, workspace.id(), &path).await,
         Err(coral_tools::Error::PrivateToolNotFound)
     ));
 }
@@ -221,7 +224,7 @@ struct MemberRemoval {
     db: coral_test_support::TestDatabase,
     workspaces: WorkspaceModule,
     lifecycle: AccessLifecycleModule,
-    functions: PrivateToolModule,
+    private_tools: PrivateToolModule,
     owner: AuthenticatedUser,
     member: AuthenticatedUser,
     author: AuthenticatedPrincipal,
@@ -264,7 +267,7 @@ impl MemberRemoval {
             workspace.id(),
         )
         .await;
-        let functions = PrivateToolModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
             coral_tools::IsolateLimits::default(),
@@ -272,12 +275,12 @@ impl MemberRemoval {
         )
         .unwrap();
         let author = AuthenticatedPrincipal::user(member.clone());
-        save_answer(&functions, &author, workspace.id()).await;
+        save_answer(&private_tools, &author, workspace.id()).await;
         Self {
             db,
             lifecycle: AccessLifecycleModule::new(database, workspaces.clone()),
             workspaces,
-            functions,
+            private_tools,
             owner,
             member,
             author,
@@ -315,12 +318,12 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
     let f = MemberRemoval::new().await;
     let path = PrivateToolPath::parse("answer").unwrap();
     let saved = f
-        .functions
+        .private_tools
         .get(&f.author, f.workspace.id(), &path)
         .await
         .unwrap();
     let private_tool_events = f
-        .functions
+        .private_tools
         .list_lifecycle_events(&f.author, f.workspace.id())
         .await
         .unwrap();
@@ -358,14 +361,14 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
         );
         f.connected.assert_unchanged(&f.member).await;
         assert_eq!(
-            f.functions
+            f.private_tools
                 .get(&f.author, f.workspace.id(), &path)
                 .await
                 .unwrap(),
             saved
         );
         assert_eq!(
-            f.functions
+            f.private_tools
                 .list_lifecycle_events(&f.author, f.workspace.id())
                 .await
                 .unwrap(),
@@ -399,7 +402,7 @@ async fn member_removal_retires_current_work(role: OrganizationRole) {
     // `losing_a_workspace_removes_only_that_principals_private_tools`
     // covers which Private Tools go; this checks who the deletion names.
     let deletions = f
-        .functions
+        .private_tools
         .list_lifecycle_events(&f.author, f.workspace.id())
         .await
         .unwrap();
@@ -408,7 +411,7 @@ async fn member_removal_retires_current_work(role: OrganizationRole) {
             && event.actor().id().as_str() == f.owner.user_id().as_str()
     ));
     assert!(
-        f.functions
+        f.private_tools
             .list_lifecycle_events(
                 &AuthenticatedPrincipal::user(f.owner.clone()),
                 f.workspace.id()
@@ -595,7 +598,7 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
         let db = fixture().await;
         let database = db.database();
         let workspaces = WorkspaceModule::new(database.clone());
-        let functions = PrivateToolModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
             coral_tools::IsolateLimits::default(),
@@ -642,10 +645,13 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
         let owner_principal = AuthenticatedPrincipal::user(owner.clone());
         let member_principal = AuthenticatedPrincipal::user(member.clone());
         for author in [&owner_principal, &member_principal, &agent] {
-            save_answer(&functions, author, workspace.id()).await;
+            save_answer(&private_tools, author, workspace.id()).await;
         }
         let tool = async |author: &AuthenticatedPrincipal| {
-            functions.get(author, workspace.id(), &path).await.unwrap()
+            private_tools
+                .get(author, workspace.id(), &path)
+                .await
+                .unwrap()
         };
         let (owner_tool, member_tool, agent_tool) = (
             tool(&owner_principal).await,
@@ -690,7 +696,7 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
                     )
                     .await
                     .unwrap();
-                let gone = functions
+                let gone = private_tools
                     .get(
                         &AuthenticatedPrincipal::user(returned),
                         workspace.id(),
@@ -705,7 +711,7 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
             AccessLoss::AgentDeletion => {
                 assert_eq!(tool(&member_principal).await, member_tool, "{loss:?}");
                 // The Owner reads the deletion of the Agent's Private Tool.
-                let deleted = functions
+                let deleted = private_tools
                     .list_lifecycle_events(&owner_principal, workspace.id())
                     .await
                     .unwrap()
@@ -720,11 +726,11 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
 }
 
 async fn save_answer(
-    functions: &PrivateToolModule,
+    private_tools: &PrivateToolModule,
     actor: &AuthenticatedPrincipal,
     workspace: &WorkspaceId,
 ) {
-    functions
+    private_tools
         .save(
             &PrivateToolChangeContext::new(
                 actor.clone(),
@@ -755,7 +761,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Owner).await;
     let member = provision_user(database.clone(), "user:member", OrganizationRole::Member).await;
     let author = AuthenticatedPrincipal::user(member.clone());
-    let functions = PrivateToolModule::new(
+    let private_tools = PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
         coral_tools::IsolateLimits::default(),
@@ -771,7 +777,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             .unwrap();
         // A second designated Owner: removal needs no transfer target.
         join_as_owner(&workspaces, &owner, workspace.id()).await;
-        save_answer(&functions, &author, workspace.id()).await;
+        save_answer(&private_tools, &author, workspace.id()).await;
         account_scopes.push(
             accounts::ConnectedScope::new(
                 database.clone(),
@@ -826,7 +832,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 .list_lifecycle_events(&owner, workspace.id())
                 .await
                 .unwrap(),
-            functions
+            private_tools
                 .get(
                     &author,
                     workspace.id(),
@@ -834,7 +840,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 )
                 .await
                 .unwrap(),
-            functions
+            private_tools
                 .list_lifecycle_events(&author, workspace.id())
                 .await
                 .unwrap(),
@@ -879,7 +885,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 before.1
             );
             assert_eq!(
-                functions
+                private_tools
                     .get(
                         &author,
                         workspace.id(),
@@ -890,14 +896,14 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 before.2
             );
             assert_eq!(
-                functions
+                private_tools
                     .list_lifecycle_events(&author, workspace.id())
                     .await
                     .unwrap(),
                 before.3
             );
             assert!(
-                functions
+                private_tools
                     .list_lifecycle_events(
                         &AuthenticatedPrincipal::user(owner.clone()),
                         workspace.id()
@@ -935,7 +941,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         .await
         .unwrap();
     for workspace in &scopes {
-        functions
+        private_tools
             .get(
                 &author,
                 workspace.id(),
@@ -944,7 +950,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             .await
             .unwrap();
         assert!(
-            functions
+            private_tools
                 .list_lifecycle_events(&AuthenticatedPrincipal::user(owner.clone()), workspace.id())
                 .await
                 .unwrap()
@@ -985,7 +991,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             .await
             .unwrap();
         assert!(matches!(
-            functions
+            private_tools
                 .get(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace.id(),
@@ -995,7 +1001,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             Err(coral_tools::Error::PrivateToolNotFound)
         ));
         assert_eq!(
-            functions
+            private_tools
                 .list_lifecycle_events(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace.id()
@@ -1123,14 +1129,14 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
         .list_lifecycle_events(&owner, workspace.id())
         .await
         .unwrap();
-    let functions = PrivateToolModule::new(
+    let private_tools = PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
         coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    save_answer(&functions, &agent, workspace.id()).await;
+    save_answer(&private_tools, &agent, workspace.id()).await;
     let before = workspaces
         .list_lifecycle_events(&owner, workspace.id())
         .await
@@ -1140,9 +1146,12 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
         .await
         .unwrap();
     let path = PrivateToolPath::parse("answer").unwrap();
-    let saved = functions.get(&agent, workspace.id(), &path).await.unwrap();
+    let saved = private_tools
+        .get(&agent, workspace.id(), &path)
+        .await
+        .unwrap();
     let inspector = AuthenticatedPrincipal::user(owner.clone());
-    let private_tool_events = functions
+    let private_tool_events = private_tools
         .list_lifecycle_events(&inspector, workspace.id())
         .await
         .unwrap();
@@ -1204,11 +1213,14 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
             provider_events
         );
         assert_eq!(
-            functions.get(&agent, workspace.id(), &path).await.unwrap(),
+            private_tools
+                .get(&agent, workspace.id(), &path)
+                .await
+                .unwrap(),
             saved
         );
         assert_eq!(
-            functions
+            private_tools
                 .list_lifecycle_events(&inspector, workspace.id())
                 .await
                 .unwrap(),

@@ -138,8 +138,8 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
             "list teams",
             "coral.providers.linear.listTeams",
             0,
-            "a Tool whose name and title hold the whole query outranks a Saved \
-             Function whose description holds only `list`",
+            "a Tool whose name and title hold the whole query outranks a Private \
+             Tool whose description holds only `list`",
         ),
         (
             "channel messages",

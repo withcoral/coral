@@ -101,7 +101,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         .await
         .unwrap();
     let author = AuthenticatedPrincipal::user(returned);
-    let functions = PrivateToolModule::new(
+    let private_tools = PrivateToolModule::new(
         database,
         workspaces.clone(),
         coral_tools::IsolateLimits::default(),
@@ -109,7 +109,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
     )
     .unwrap();
     let path = PrivateToolPath::parse("fresh").unwrap();
-    let saved = functions
+    let saved = private_tools
         .save(
             &PrivateToolChangeContext::new(author.clone(), 100, change(&owner).trace_id().clone()),
             workspace.id(),
@@ -176,7 +176,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         rejoined
     );
     assert_eq!(
-        functions
+        private_tools
             .get(&author, workspace.id(), &path)
             .await
             .unwrap()
@@ -184,7 +184,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         saved.id()
     );
     assert_eq!(
-        functions
+        private_tools
             .list_lifecycle_events(&author, workspace.id())
             .await
             .unwrap()
@@ -200,7 +200,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         events_before
     );
     assert!(
-        functions
+        private_tools
             .list_lifecycle_events(&AuthenticatedPrincipal::user(owner), workspace.id())
             .await
             .unwrap()

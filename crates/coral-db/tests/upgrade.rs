@@ -228,12 +228,22 @@ const ROWS_BEFORE_TOOL_NAMES: &str = r#"
            ('scope-limit', FALSE, 1, 'regenerate-scopes', 'workspace', 'provider', 'setup',
             'failed', 'credentials_not_supported',
             'the Provider''s Operations together request more OAuth scopes than one grant can hold', 2);
+    INSERT INTO saved_function_records
+        (id, workspace_id, principal_id, principal_kind, path, description, source, declaration,
+         declaration_fields_format, declaration_fields_status, declaration_fields_json,
+         diagnostics_json, diagnostics_truncated, saved_at_unix_nanos, definition_revision)
+    VALUES ('tool', 'workspace', 'user:upgrade', 'user', 'upgrade.code', 'Return a failure code',
+            'export default async function code() { try { await coral.providers.weather.getForecast({}); } catch (error) { return error instanceof coral.OperationError ? error.code : ''other''; } }',
+            'export default function code(): Promise<string>;',
+            'saved-function-declaration-fields-v1', 'ready', '[]', '[]', FALSE, 2, 1);
 "#;
 
 /// The data step rewrites what Coral wrote about Operations: a Coral failure
 /// a Run or an Invocation kept, a Tool Result's decode diagnostic, a Task's
-/// evidence and each Publication's diagnostic. A Run whose error holds no
-/// Coral failure keeps a Program's own `OperationError` as it was written.
+/// evidence, each Publication's diagnostic and the error class a Saved
+/// Function catches, which the later steps keep as its Private Tool's source.
+/// A Run whose error holds no Coral failure keeps a Program's own
+/// `OperationError` as it was written.
 #[tokio::test]
 async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program_wrote() {
     let before = coral_test_support::migration_plan_before(TOOL_NAMES);
@@ -321,6 +331,14 @@ async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program
                     "scope-limit",
                     "credentials_not_supported",
                     "the Provider's Tools together request more OAuth scopes than one grant can hold",
+                ],
+            ),
+            (
+                "SELECT id, path, source FROM private_tool_records",
+                [
+                    "tool",
+                    "upgrade.code",
+                    "export default async function code() { try { await coral.providers.weather.getForecast({}); } catch (error) { return error instanceof coral.ToolError ? error.code : 'other'; } }",
                 ],
             ),
         ],

@@ -427,8 +427,8 @@ impl RunModule {
     /// invoking Principal's Private Tools. Without it, such a call fails
     /// with `tool_unavailable`.
     #[must_use]
-    pub fn with_private_tools(mut self, functions: PrivateTools) -> Self {
-        self.private_tools = Some(functions);
+    pub fn with_private_tools(mut self, private_tools: PrivateTools) -> Self {
+        self.private_tools = Some(private_tools);
         self
     }
 

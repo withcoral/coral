@@ -100,8 +100,8 @@ struct QueryInput {
     #[schemars(
         with = "String",
         description = "A namespace from coral.providers.<namespace>, or coral for Coral's own \
-                       tools. It narrows provider tools to one Provider; Saved \
-                       Functions stay. Omit it unless you know which service holds the data."
+                       tools. It narrows provider tools to one Provider; your \
+                       private tools stay. Omit it unless you know which service holds the data."
     )]
     provider: Option<String>,
     #[serde(default)]
