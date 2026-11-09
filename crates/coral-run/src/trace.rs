@@ -244,7 +244,8 @@ pub(crate) struct InvocationTrace {
 
 impl InvocationTrace {
     /// The Invocation of the Tool at `call_path`, a Tool of `provider`: a
-    /// span that is a child of the current span (the Run's execute phase).
+    /// span that is a child of the current span (the Run's execute phase,
+    /// or the Invocation whose body made the call).
     pub(crate) fn begin(
         id: &crate::InvocationId,
         call_path: coral_provider::ResolvedCallPath<'_>,

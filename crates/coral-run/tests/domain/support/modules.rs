@@ -361,6 +361,8 @@ impl TestModules {
             Option<String>,
             Option<String>,
             Option<i64>,
+            Option<String>,
+            Option<String>,
         );
         let rows: Vec<Row> = self
             .database
@@ -374,6 +376,8 @@ impl TestModules {
                         Alias::new("failure_code"),
                         Alias::new("result_kind"),
                         Alias::new("ended_at_unix_nanos"),
+                        Alias::new("parent_invocation_id"),
+                        Alias::new("source_saved_function_id"),
                     ])
                     .from(Alias::new("tool_invocations"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
@@ -394,6 +398,8 @@ impl TestModules {
                     failure_code,
                     result_kind,
                     ended_at_unix_nanos,
+                    parent_id,
+                    source_saved_function_id,
                 )| {
                     InvocationRow {
                         id: crate::InvocationId::parse(&id).expect("Invocation id"),
@@ -406,6 +412,10 @@ impl TestModules {
                                 .expect("a stored result kind")
                         }),
                         ended_at_unix_nanos,
+                        parent_id: parent_id.map(|id| {
+                            crate::InvocationId::parse(&id).expect("parent Invocation id")
+                        }),
+                        source_saved_function_id,
                     }
                 },
             )
@@ -1224,6 +1234,10 @@ pub(crate) struct InvocationRow {
     pub(crate) failure_code: Option<String>,
     pub(crate) result_kind: Option<crate::InvocationResultKind>,
     pub(crate) ended_at_unix_nanos: Option<i64>,
+    /// The Invocation of the performed call whose body made this one.
+    pub(crate) parent_id: Option<crate::InvocationId>,
+    /// The Private Tool whose source made the call, if one did.
+    pub(crate) source_saved_function_id: Option<String>,
 }
 
 pub(crate) struct ToolFixture {
@@ -1548,6 +1562,7 @@ fn admitted(
         call_path,
         arguments_json: "{}".to_string(),
         source_location: None,
+        parent_invocation_id: None,
         admitted_at_unix_nanos: now,
         span: tracing::Span::none(),
     })

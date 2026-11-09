@@ -22,6 +22,7 @@
           "__coralToolInvoke",
           "__coralToolPerform",
           "__coralToolComplete",
+          "__coralToolRunBody",
           "__coralPrepareSavedFunction",
           "__coralProgramEmit",
           "__coralProgramLog",

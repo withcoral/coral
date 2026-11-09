@@ -28,7 +28,7 @@ use coral_telemetry::{metric, safe};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tracing::Instrument as _;
 
 use crate::enforcement::{
@@ -283,8 +283,30 @@ impl ToolInvoker {
             .map(|trace| trace.trace_id().as_str().to_string())
     }
 
-    pub(crate) async fn invoke(
+    /// Starts one Tool call when the Program makes it, on the Program's
+    /// thread. A call that `body` makes opens as its child here, so the body
+    /// cannot end first; once the body has ended, the call is refused. The
+    /// Program's own calls and its modules' top-level calls have no body.
+    pub(crate) fn start(
+        self: &Arc<Self>,
+        body: Option<&Arc<ToolBody>>,
+    ) -> Result<ToolCall, InvocationHostError> {
+        let child = body
+            .map(|body| {
+                body.open_child().ok_or_else(|| {
+                    InvocationHostError::Rejected(CoralFailure::ParentInvocationEnded.into())
+                })
+            })
+            .transpose()?;
+        Ok(ToolCall {
+            invoker: self.clone(),
+            child,
+        })
+    }
+
+    async fn invoke(
         &self,
+        child: Option<OpenChild>,
         call_path: &str,
         arguments: serde_json::Value,
         source_location: Option<crate::SourceLocation>,
@@ -292,11 +314,13 @@ impl ToolInvoker {
         let arguments_json = self.arguments_json(&arguments)?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
         let id = InvocationId::generate();
-        let trace = crate::trace::InvocationTrace::begin(
-            &id,
-            target.call_path(),
-            target.provider_access().id(),
-        );
+        let trace = OpenChild::in_parent_span(child.as_ref(), || {
+            crate::trace::InvocationTrace::begin(
+                &id,
+                target.call_path(),
+                target.provider_access().id(),
+            )
+        });
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),
@@ -305,6 +329,7 @@ impl ToolInvoker {
             call_path: call_path.to_string(),
             arguments_json,
             source_location,
+            parent_invocation_id: child.as_ref().map(OpenChild::parent),
             admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
             span: trace.span().clone(),
         });
@@ -330,8 +355,9 @@ impl ToolInvoker {
     /// the enforcement point permits the call, which then stays
     /// `dispatching` until the body's outcome completes it. It holds no slot
     /// under the Fan-out Limit: the calls its body makes take their own.
-    pub(crate) async fn perform(
+    async fn perform(
         &self,
+        child: Option<OpenChild>,
         relative_path: &str,
         binding: coral_catalog::CodeExecutionBinding,
         arguments: serde_json::Value,
@@ -341,11 +367,13 @@ impl ToolInvoker {
         let call_path = format!("coral.private.{relative_path}");
         let (target, policy) = self.resolve_private(relative_path, binding).await?;
         let id = InvocationId::generate();
-        let trace = crate::trace::InvocationTrace::begin(
-            &id,
-            target.call_path(),
-            target.provider_access().id(),
-        );
+        let trace = OpenChild::in_parent_span(child.as_ref(), || {
+            crate::trace::InvocationTrace::begin(
+                &id,
+                target.call_path(),
+                target.provider_access().id(),
+            )
+        });
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),
@@ -354,6 +382,7 @@ impl ToolInvoker {
             call_path,
             arguments_json,
             source_location,
+            parent_invocation_id: child.as_ref().map(OpenChild::parent),
             admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
             span: trace.span().clone(),
         });
@@ -381,10 +410,12 @@ impl ToolInvoker {
         match permitted {
             Ok((slot, progress)) => Ok(PerformedCall {
                 invoker: self.clone(),
+                body: ToolBody::new(admitted.id.clone(), admitted.span.clone()),
                 admitted,
                 progress,
                 slot,
                 trace,
+                _open_in_parent: child,
             }),
             Err(error) => {
                 trace.end(Err(&error));
@@ -1479,24 +1510,99 @@ impl ToolInvoker {
     }
 }
 
+/// One Tool call that [`ToolInvoker::start`] started: a body's call is
+/// that body's open child until it ends.
+pub(crate) struct ToolCall {
+    invoker: Arc<ToolInvoker>,
+    child: Option<OpenChild>,
+}
+
+impl ToolCall {
+    /// Invokes the Tool at `call_path` to the Invocation's end.
+    pub(crate) async fn invoke(
+        self,
+        call_path: &str,
+        arguments: serde_json::Value,
+        source_location: Option<crate::SourceLocation>,
+    ) -> Result<String, InvocationHostError> {
+        self.invoker
+            .invoke(self.child, call_path, arguments, source_location)
+            .await
+    }
+
+    /// Starts a call to the caller's Private Tool at `relative_path`,
+    /// which the Run linked as `binding`; see [`ToolInvoker::perform`].
+    pub(crate) async fn perform(
+        self,
+        relative_path: &str,
+        binding: coral_catalog::CodeExecutionBinding,
+        arguments: serde_json::Value,
+        source_location: Option<crate::SourceLocation>,
+    ) -> Result<PerformedCall, InvocationHostError> {
+        self.invoker
+            .perform(
+                self.child,
+                relative_path,
+                binding,
+                arguments,
+                source_location,
+            )
+            .await
+    }
+}
+
 /// A permitted call to a Private Tool whose body runs in the Program. Its
 /// Invocation is dispatching until [`Self::complete`] records how the body
 /// ended, and holds no slot under the Fan-out Limit meanwhile.
 pub(crate) struct PerformedCall {
     invoker: ToolInvoker,
+    /// The call's body, whose calls are this call's children.
+    body: Arc<ToolBody>,
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     slot: DispatchSlot,
     trace: crate::trace::InvocationTrace,
+    /// This call as a child of the body that made it: dropping it, once
+    /// the call has ended, lets that body's call end.
+    _open_in_parent: Option<OpenChild>,
 }
 
 impl PerformedCall {
+    /// The call's body, whose calls [`ToolInvoker::start`] opens as this
+    /// call's children until the body ends.
+    pub(crate) fn body(&self) -> Arc<ToolBody> {
+        self.body.clone()
+    }
+
     /// Records how the body ended and returns, once that is durable, the
     /// value its caller receives: what the body returned, within the
     /// Run's result limits. A throw ends the Invocation as `tool_failed`
     /// with its message, and a value that is not JSON as
     /// `invalid_tool_result`.
-    pub(crate) async fn complete(
+    ///
+    /// The body ends on this call, so its leftover work starts no child
+    /// from here on. The Invocation ends only after the children it
+    /// started, unless the Run stops first, which ends it as
+    /// `run_terminated`.
+    pub(crate) fn complete(
+        self,
+        outcome: coral_v8::ToolBodyOutcome,
+    ) -> impl Future<Output = Result<String, InvocationHostError>> + Send + 'static {
+        self.body.end();
+        async move {
+            let stopped = tokio::select! {
+                () = self.body.children_ended() => false,
+                () = self.invoker.stop.requested() => true,
+            };
+            if stopped {
+                self.abandon();
+                return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
+            }
+            self.finish(outcome).await
+        }
+    }
+
+    async fn finish(
         mut self,
         outcome: coral_v8::ToolBodyOutcome,
     ) -> Result<String, InvocationHostError> {
@@ -1545,6 +1651,85 @@ impl PerformedCall {
             }));
             self.trace.run_terminated();
         });
+    }
+}
+
+/// The body of one performed call, as the calls it makes see it. Each is
+/// that call's child: the call ends only after its open children, and once
+/// the body has ended it opens no more.
+#[derive(Debug)]
+pub(crate) struct ToolBody {
+    /// The performed call's Invocation: each child's parent.
+    id: InvocationId,
+    /// That Invocation's span: each child's span is its child.
+    span: tracing::Span,
+    state: watch::Sender<BodyState>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BodyState {
+    ended: bool,
+    open_children: usize,
+}
+
+impl ToolBody {
+    fn new(id: InvocationId, span: tracing::Span) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            span,
+            state: watch::Sender::new(BodyState::default()),
+        })
+    }
+
+    /// Opens one child, or `None` once the body has ended.
+    fn open_child(self: &Arc<Self>) -> Option<OpenChild> {
+        self.state
+            .send_if_modified(|state| {
+                if state.ended {
+                    return false;
+                }
+                state.open_children += 1;
+                true
+            })
+            .then(|| OpenChild(self.clone()))
+    }
+
+    fn end(&self) {
+        self.state.send_modify(|state| state.ended = true);
+    }
+
+    async fn children_ended(&self) {
+        // The sender lives as long as `self`, so the wait ends only on the
+        // last child.
+        let mut state = self.state.subscribe();
+        let _ended = state.wait_for(|state| state.open_children == 0).await;
+    }
+}
+
+/// One open child of a [`ToolBody`]; it ends when dropped, once the
+/// child's Invocation has ended.
+#[derive(Debug)]
+struct OpenChild(Arc<ToolBody>);
+
+impl OpenChild {
+    /// The child's parent Invocation.
+    fn parent(&self) -> InvocationId {
+        self.0.id.clone()
+    }
+
+    /// Runs `begin` in the span of `child`'s parent, if any, so that the
+    /// child's Invocation span is a child of its parent's.
+    fn in_parent_span<T>(child: Option<&Self>, begin: impl FnOnce() -> T) -> T {
+        match child {
+            Some(child) => child.0.span.in_scope(begin),
+            None => begin(),
+        }
+    }
+}
+
+impl Drop for OpenChild {
+    fn drop(&mut self) {
+        self.0.state.send_modify(|state| state.open_children -= 1);
     }
 }
 
@@ -1654,6 +1839,8 @@ pub(crate) struct AdmittedInvocation {
     pub(crate) call_path: String,
     pub(crate) arguments_json: String,
     pub(crate) source_location: Option<crate::SourceLocation>,
+    /// The performed call whose body made this one.
+    pub(crate) parent_invocation_id: Option<InvocationId>,
     pub(crate) admitted_at_unix_nanos: i64,
     /// The Invocation's `coral.invocation` span. Its gates that run inside
     /// the owner's chunk commits are its children too.

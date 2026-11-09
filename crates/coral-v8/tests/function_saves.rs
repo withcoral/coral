@@ -110,7 +110,7 @@ impl ProgramHost for ToolCalls {
         _arguments_json: String,
         _location: Option<AuthoredLocation>,
     ) -> coral_v8::PermitFuture {
-        support::permit_at_once()
+        support::permit_at_once(support::host_calls(self))
     }
 
     fn emit(

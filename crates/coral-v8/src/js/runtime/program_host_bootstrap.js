@@ -3,11 +3,13 @@
   const invoke = globalThis.__coralToolInvoke;
   const perform = globalThis.__coralToolPerform;
   const complete = globalThis.__coralToolComplete;
+  const runBody = globalThis.__coralToolRunBody;
   const appendEmission = globalThis.__coralProgramEmit;
   const appendLog = globalThis.__coralProgramLog;
   Reflect.deleteProperty(globalThis, '__coralToolInvoke');
   Reflect.deleteProperty(globalThis, '__coralToolPerform');
   Reflect.deleteProperty(globalThis, '__coralToolComplete');
+  Reflect.deleteProperty(globalThis, '__coralToolRunBody');
   Reflect.deleteProperty(globalThis, '__coralProgramEmit');
   Reflect.deleteProperty(globalThis, '__coralProgramLog');
 
@@ -24,6 +26,8 @@
   const keys = Object.keys;
   const isArray = Array.isArray;
   const NativeProxy = Proxy;
+  const NativePromise = Promise;
+  const nativePromiseResolve = Promise.resolve;
 
   class ToolError extends NativeError {
     // oxlint-disable-next-line constructor-super -- Programs must not construct a ToolError.
@@ -126,6 +130,10 @@
   // The call crosses to Coral and back, so its arguments and result are
   // copied as JSON, and it settles only once its completion is durable.
   // Admission and approval come first; the body runs only once permitted.
+  // The body runs as the body of `handle`, so every Tool call it makes,
+  // after any await, is that call's own; this function's own awaits stay
+  // the caller's. A returned thenable is resolved there too, so its `then`
+  // runs as the body.
   const performTool = async (callPath, body, args) => {
     let encoded;
     try {
@@ -139,7 +147,11 @@
     const handle = await permitted;
     let returned;
     try {
-      const value = await reflectApply(body(), undefined, nativeParse(encoded));
+      const value = await runBody(handle, () =>
+        reflectApply(nativePromiseResolve, NativePromise, [
+          reflectApply(body(), undefined, nativeParse(encoded)),
+        ]),
+      );
       try {
         returned = value === undefined ? 'null' : nativeStringify(value);
       } catch {

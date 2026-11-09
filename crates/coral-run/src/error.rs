@@ -94,6 +94,9 @@ coral_failures! {
     /// The body of a Tool that Coral performs in the Program returned a
     /// value that is not JSON.
     InvalidToolResult => "invalid_tool_result",
+    /// A Tool body's leftover work called a Tool after the body's own call
+    /// ended.
+    ParentInvocationEnded => "parent_invocation_ended",
 }
 
 impl CoralFailure {
@@ -156,6 +159,7 @@ impl CoralFailure {
             Self::RunOutputTooLarge => "Run output exceeds its limit",
             Self::ToolFailed => "Tool failed",
             Self::InvalidToolResult => "Tool result is not a JSON value",
+            Self::ParentInvocationEnded => "The Tool call that made this call has ended",
         }
     }
 }

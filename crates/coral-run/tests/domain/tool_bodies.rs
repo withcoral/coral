@@ -64,6 +64,12 @@ impl BodyScope {
     /// Saves the User's Private Tool at `path`, whose module exports
     /// `body` as its default.
     async fn save(&self, path: &str, body: &str) {
+        self.save_module(path, &format!("export default {body};"))
+            .await;
+    }
+
+    /// Saves the User's Private Tool at `path` with the module `source`.
+    async fn save_module(&self, path: &str, source: &str) {
         Self::functions(&self.fixture)
             .save(
                 &SavedFunctionChangeContext::new(
@@ -75,8 +81,7 @@ impl BodyScope {
                 SavedFunctionSave::new(
                     SavedFunctionPath::parse(path).expect("a path"),
                     SavedFunctionDescription::parse("A tool body").expect("a description"),
-                    SavedFunctionSource::parse(&format!("export default {body};"))
-                        .expect("a source"),
+                    SavedFunctionSource::parse(source).expect("a source"),
                 ),
             )
             .await
@@ -461,4 +466,325 @@ async fn a_call_that_ends_with_its_program_is_traced_as_run_terminated_when_it_e
         traced >= spinning,
         "the span ends when the call did, not when it was permitted: {traced:?}"
     );
+}
+
+/// The Call Path of `row`'s parent, another of `rows`.
+fn parent_path<'a>(rows: &'a [InvocationRow], row: &InvocationRow) -> Option<&'a str> {
+    let parent = row.parent_id.as_ref()?;
+    rows.iter()
+        .find(|row| &row.id == parent)
+        .map(|row| row.call_path.as_str())
+        .or_else(|| panic!("the parent is a row of the Run: {rows:?}"))
+}
+
+/// Each row of `rows` as (Call Path, its parent's Call Path, its children's
+/// Call Paths), sorted.
+fn tree(rows: &[InvocationRow]) -> Vec<(&str, Option<&str>, Vec<&str>)> {
+    let mut tree: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            let mut children: Vec<_> = rows
+                .iter()
+                .filter(|child| child.parent_id.as_ref() == Some(&row.id))
+                .map(|child| child.call_path.as_str())
+                .collect();
+            children.sort_unstable();
+            (row.call_path.as_str(), parent_path(rows, row), children)
+        })
+        .collect();
+    tree.sort();
+    tree
+}
+
+// Catches: a call a tool body makes that is recorded with no parent, or
+// with the wrong one: after an await, inside another tool's body, or when
+// two calls of one tool run at once; a module's top-level call recorded
+// under a call's Invocation, or not named for its module; or a child whose
+// span is not its parent's child in the trace.
+#[tokio::test]
+async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
+    super::trace::capture();
+    let scope = BodyScope::new("user:tool-bodies-children").await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope
+        .save(
+            "weather.inner",
+            "async () => (await coral.providers.weather.getForecast()).data",
+        )
+        .await;
+    scope
+        .save_module(
+            "weather.outer",
+            "await coral.providers.weather.getForecast();
+            export default async function outer() {
+                await Promise.resolve();
+                return Promise.all([
+                    coral.providers.weather.getForecast().then((result) => result.data),
+                    coral.private.weather.inner(),
+                ]);
+            }",
+        )
+        .await;
+
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission(
+                "return await Promise.all([coral.private.weather.outer(), coral.private.weather.outer()]);",
+            ),
+        )
+        .await;
+
+    let terminal = scope.terminal(&run).await;
+    assert_eq!(terminal.state(), RunState::Succeeded, "{terminal:?}");
+    let rows = scope.rows(&run).await;
+    let (outer, inner) = ("coral.private.weather.outer", "coral.private.weather.inner");
+    let mut expected = vec![
+        // The module's top-level call.
+        (WEATHER, None, vec![]),
+        (outer, None, vec![inner, WEATHER]),
+        (outer, None, vec![inner, WEATHER]),
+        (WEATHER, Some(outer), vec![]),
+        (WEATHER, Some(outer), vec![]),
+        (inner, Some(outer), vec![WEATHER]),
+        (inner, Some(outer), vec![WEATHER]),
+        (WEATHER, Some(inner), vec![]),
+        (WEATHER, Some(inner), vec![]),
+    ];
+    expected.sort();
+    assert_eq!(tree(&rows), expected);
+
+    // The top-level call names the module that made it: the one whose
+    // body's calls the outer calls' are, not the inner tool's.
+    let module_of = |parent: Option<&str>| {
+        let sources: std::collections::BTreeSet<_> = rows
+            .iter()
+            .filter(|row| row.call_path == WEATHER && parent_path(&rows, row) == parent)
+            .map(|row| row.source_saved_function_id.clone())
+            .collect();
+        assert_eq!(sources.len(), 1, "{parent:?}: {sources:?}");
+        sources.into_iter().next().flatten().expect("a module")
+    };
+    assert_eq!(module_of(None), module_of(Some(outer)));
+    assert_ne!(module_of(None), module_of(Some(inner)));
+
+    spans_nest_as_rows_do(&run, &rows).await;
+}
+
+// Catches: a parent link that blocks deleting a retained Run, so that its
+// nested Invocations outlive it or the deletion fails.
+#[tokio::test]
+async fn retention_deletes_a_run_with_its_nested_invocations() {
+    let scope = BodyScope::new("user:tool-bodies-retention").await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope
+        .save(
+            "weather.inner",
+            "async () => (await coral.providers.weather.getForecast()).data",
+        )
+        .await;
+    scope
+        .save("weather.outer", "async () => coral.private.weather.inner()")
+        .await;
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission("return await coral.private.weather.outer();"),
+        )
+        .await;
+    assert_eq!(scope.terminal(&run).await.state(), RunState::Succeeded);
+    assert_eq!(scope.rows(&run).await.len(), 3);
+
+    let mut cleanup = scope.fixture.database.begin().await.expect("begin");
+    crate::retention::delete_in_transaction(
+        &mut cleanup,
+        &scope.tool.workspace_id,
+        &run,
+        scope.tool.principal.principal(),
+    )
+    .await
+    .expect("delete the retained Run");
+    cleanup.commit().await.expect("commit the deletion");
+
+    assert_eq!(scope.rows(&run).await, []);
+}
+
+// Pins: a call whose body left a nested tool call running whose own body
+// never settles waits for that child, so its Run runs until its deadline and
+// times out, and both calls end as `run_terminated`. Without the wait, the
+// Program would end at once; a change to that is a deliberate one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_deadline() {
+    let scope = BodyScope::new("user:tool-bodies-held").await;
+    scope
+        .save("stuck.hang", "async () => { await new Promise(() => {}); }")
+        .await;
+    scope
+        .save(
+            "stuck.leave",
+            "async () => { void coral.private.stuck.hang(); return 1; }",
+        )
+        .await;
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            RunSubmission::new(
+                ProgramSource::parse("return await coral.private.stuck.leave();")
+                    .expect("Program source"),
+                RunTimeout::from_millis(1_000).expect("Run timeout"),
+            ),
+        )
+        .await;
+
+    let terminal = scope.terminal(&run).await;
+    assert_eq!(terminal.state(), RunState::TimedOut, "{terminal:?}");
+    let terminated = Some(InvocationResultKind::RunTerminated);
+    assert_eq!(
+        outcomes(&scope.rows(&run).await),
+        [
+            ("coral.private.stuck.hang", terminated),
+            ("coral.private.stuck.leave", terminated),
+        ]
+    );
+}
+
+/// Asserts that each Invocation's span in `run`'s trace is a child of its
+/// parent's span, or of the Run's execute span when it has no parent.
+async fn spans_nest_as_rows_do(run: &crate::RunId, rows: &[InvocationRow]) {
+    wait_until(|| {
+        super::trace::named(&super::trace::of_run(run), "coral.invocation").len() == rows.len()
+    })
+    .await;
+    let spans = super::trace::of_run(run);
+    let span_of = |id: &crate::InvocationId| {
+        super::trace::named(&spans, "coral.invocation")
+            .into_iter()
+            .find(|span| {
+                coral_telemetry::testing::attribute(span, "coral.invocation.id").as_deref()
+                    == Some(id.to_string().as_str())
+            })
+            .unwrap_or_else(|| panic!("the span of {id}"))
+    };
+    let [execute] = super::trace::named(&spans, "coral.run.execute")[..] else {
+        panic!("one execute span");
+    };
+    for row in rows {
+        let expected = row
+            .parent_id
+            .as_ref()
+            .map_or(execute.span_context.span_id(), |parent| {
+                span_of(parent).span_context.span_id()
+            });
+        assert_eq!(
+            span_of(&row.id).parent_span_id,
+            expected,
+            "{} under {:?}",
+            row.call_path,
+            row.parent_id
+        );
+    }
+}
+
+// Catches: a call that a tool body's leftover work makes after the body
+// ended, admitted as the ended call's child or refused under any code but
+// `parent_invocation_ended`; or a call that ends before a child its body
+// left running.
+#[tokio::test]
+async fn a_call_made_after_its_tool_body_ended_is_refused() {
+    let scope = BodyScope::new("user:tool-bodies-late").await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope
+        .save(
+            "stray.fire",
+            "async () => {
+                void (async () => {
+                    await coral.providers.weather.getForecast();
+                    try {
+                        await coral.providers.weather.getForecast();
+                    } catch (error) {
+                        await coral.emit((error as { code: string }).code);
+                    }
+                })();
+                return 1;
+            }",
+        )
+        .await;
+
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission("return await coral.private.stray.fire();"),
+        )
+        .await;
+
+    let terminal = scope.terminal(&run).await;
+    assert!(
+        matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
+            final_value: FinalValue::Present(value)
+        }) if value.as_json() == &serde_json::json!(1)),
+        "{terminal:?}"
+    );
+    let emitted: Vec<_> = terminal
+        .events()
+        .iter()
+        .filter_map(|event| match event.kind() {
+            RunEventKind::ProgramEmitted { value } => Some(value.as_json().clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(emitted, [serde_json::json!("parent_invocation_ended")]);
+    let rows = scope.rows(&run).await;
+    let upstream = Some(InvocationResultKind::UpstreamOutcome);
+    assert_eq!(
+        outcomes(&rows),
+        [("coral.private.stray.fire", upstream), (WEATHER, upstream)]
+    );
+    let [fire, child] = rows.as_slice() else {
+        panic!("two rows: {rows:?}");
+    };
+    assert_eq!(child.parent_id.as_ref(), Some(&fire.id));
+    assert!(
+        fire.ended_at_unix_nanos >= child.ended_at_unix_nanos,
+        "{rows:?}"
+    );
+}
+
+// Catches: a call whose body ended but whose child still runs that the
+// Run's cancellation leaves waiting for the child, or ends as anything but
+// `run_terminated`; or a cancellation that changes the child's outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_terminated() {
+    let scope = BodyScope::new("user:tool-bodies-waiting").await;
+    scope
+        .save(
+            "weather.leave",
+            "async () => { void coral.providers.weather.getForecast(); return 1; }",
+        )
+        .await;
+    let run = scope
+        .start(
+            &scope.fixture.runs,
+            submission("return await coral.private.weather.leave();"),
+        )
+        .await;
+    wait_until(|| scope.upstream.entered.load(Ordering::SeqCst)).await;
+
+    let cancel = scope.end(Ending::Canceled, &run).await.expect("a cancel");
+    scope.termination_is_recorded(&run).await;
+    scope.upstream.release.store(true, Ordering::SeqCst);
+
+    let terminal = scope.terminal(&run).await;
+    assert_eq!(terminal.state(), RunState::Canceled, "{terminal:?}");
+    assert_eq!(
+        outcomes(&scope.rows(&run).await),
+        [
+            (
+                "coral.private.weather.leave",
+                Some(InvocationResultKind::RunTerminated)
+            ),
+            (WEATHER, Some(InvocationResultKind::UpstreamOutcome)),
+        ]
+    );
+    let canceled = cancel.await.expect("join").expect("cancel the Run");
+    assert_eq!(canceled.state(), RunState::Canceled);
 }

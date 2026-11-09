@@ -7,7 +7,7 @@ use tracing::Instrument as _;
 use tracing::instrument::WithSubscriber as _;
 
 use crate::execution::ExecutionStop;
-use crate::invocation::{InvocationHostError, PerformedCall, ToolInvoker};
+use crate::invocation::{InvocationHostError, PerformedCall, ToolBody, ToolInvoker};
 use crate::program_output::{ProgramOutputWriteError, ProgramOutputWriter};
 use crate::{
     CoralFailure, ProgramLogLevel, Rejection, SourceDocument, SourceLocation, ValueLimits,
@@ -37,7 +37,7 @@ pub(crate) async fn execute(
         cpu_budget,
         stop: stop.clone(),
         linked_snapshots,
-        invoker,
+        invoker: Arc::new(invoker),
         output,
     });
     // The Program's thread records its telemetry where this task does. Where
@@ -68,7 +68,9 @@ struct RunProgramHost {
     stop: Arc<ExecutionStop>,
     /// Each linked Private Tool's path to the definition the Run retained.
     linked_snapshots: HashMap<String, coral_catalog::CodeExecutionBinding>,
-    invoker: ToolInvoker,
+    /// What the Program's own calls and its modules' top-level calls go
+    /// through.
+    invoker: Arc<ToolInvoker>,
     output: ProgramOutputWriter,
 }
 
@@ -129,6 +131,37 @@ struct RunToolCompletion {
     host: Arc<RunProgramHost>,
     /// The call, until its body's outcome completes it.
     performed: Option<PerformedCall>,
+    body_calls: Arc<RunBodyCalls>,
+}
+
+/// The Tool calls one permitted call's body makes, each the call's child.
+struct RunBodyCalls {
+    host: Arc<RunProgramHost>,
+    body: Arc<ToolBody>,
+}
+
+impl coral_v8::ToolCalls for RunBodyCalls {
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        self.host
+            .clone()
+            .invoke_as(Some(&self.body), call_path, arguments_json, location)
+    }
+
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        self.host
+            .clone()
+            .perform_as(Some(&self.body), call_path, arguments_json, location)
+    }
 }
 
 impl Drop for RunToolCompletion {
@@ -140,6 +173,10 @@ impl Drop for RunToolCompletion {
 }
 
 impl coral_v8::ToolCompletion for RunToolCompletion {
+    fn body_calls(&self) -> Arc<dyn coral_v8::ToolCalls> {
+        self.body_calls.clone()
+    }
+
     fn complete(mut self: Box<Self>, outcome: coral_v8::ToolBodyOutcome) -> coral_v8::ToolFuture {
         let Some(performed) = self.performed.take() else {
             return Box::pin(async { Err(coral_v8::ToolHostError::Fatal) });
@@ -147,13 +184,13 @@ impl coral_v8::ToolCompletion for RunToolCompletion {
         let host = self.host.clone();
         let runtime = host.runtime.clone();
         let span = host.span.clone();
+        // Here, on the Program's thread, so the body has ended before any
+        // later call of its leftover work reaches Coral.
+        let completes = performed.complete(outcome);
         let completion = runtime.spawn(
             async move {
                 let _panic_guard = StopPanickingInvocation(host.stop.clone());
-                performed
-                    .complete(outcome)
-                    .await
-                    .map_err(|error| host.host_error(error))
+                completes.await.map_err(|error| host.host_error(error))
             }
             .instrument(span)
             .with_current_subscriber(),
@@ -178,6 +215,106 @@ impl Drop for StopPanickingInvocation {
     }
 }
 
+impl RunProgramHost {
+    /// [`coral_v8::ProgramHost::invoke`] for a call that `body` makes, or
+    /// the Program's own when `None`.
+    fn invoke_as(
+        self: Arc<Self>,
+        body: Option<&Arc<ToolBody>>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        let source_location = self.source_location(location);
+        let call = self.invoker.start(body);
+        let runtime = self.runtime.clone();
+        let span = self.span.clone();
+        let trace_id = self.trace_id.clone();
+        // Start independently of V8 polling. Run termination owns cancellation
+        // and durable child shutdown even if execution drops this JoinHandle.
+        let invocation = runtime.spawn(
+            async move {
+                let _panic_guard = StopPanickingInvocation(self.stop.clone());
+                let call = call.map_err(|error| self.host_error(error))?;
+                let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
+                    coral_v8::ToolHostError::Rejected {
+                        code: CoralFailure::InvalidInput.code(),
+                        message: CoralFailure::InvalidInput.message().into(),
+                        trace_id: trace_id.clone(),
+                        suggestions: Vec::new(),
+                    }
+                })?;
+                call.invoke(&call_path, arguments, source_location)
+                    .await
+                    .map_err(|error| self.host_error(error))
+            }
+            .instrument(span)
+            // Records its telemetry where the Program's thread does.
+            .with_current_subscriber(),
+        );
+        Box::pin(async move {
+            invocation
+                .await
+                .unwrap_or(Err(coral_v8::ToolHostError::Fatal))
+        })
+    }
+
+    /// [`coral_v8::ProgramHost::perform`] for a call that `body` makes, or
+    /// the Program's own when `None`.
+    fn perform_as(
+        self: Arc<Self>,
+        body: Option<&Arc<ToolBody>>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        let source_location = self.source_location(location);
+        let call = self.invoker.start(body);
+        let runtime = self.runtime.clone();
+        let span = self.span.clone();
+        let permit = runtime.spawn(
+            async move {
+                let _panic_guard = StopPanickingInvocation(self.stop.clone());
+                let call = call.map_err(|error| self.host_error(error))?;
+                // Only the linker performs a call, and only to a Tool the
+                // Run linked.
+                let Some((relative_path, binding)) = call_path
+                    .strip_prefix("coral.private.")
+                    .and_then(|path| Some((path, self.linked_snapshots.get(path)?.clone())))
+                else {
+                    return Err(self.host_error(InvocationHostError::Rejected(
+                        Rejection::tool_not_found(&call_path, Vec::new()),
+                    )));
+                };
+                let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
+                    self.host_error(InvocationHostError::Rejected(
+                        CoralFailure::InvalidInput.into(),
+                    ))
+                })?;
+                match call
+                    .perform(relative_path, binding, arguments, source_location)
+                    .await
+                {
+                    Ok(performed) => Ok(Box::new(RunToolCompletion {
+                        body_calls: Arc::new(RunBodyCalls {
+                            host: self.clone(),
+                            body: performed.body(),
+                        }),
+                        host: self.clone(),
+                        performed: Some(performed),
+                    })
+                        as Box<dyn coral_v8::ToolCompletion>),
+                    Err(error) => Err(self.host_error(error)),
+                }
+            }
+            .instrument(span)
+            // Records its telemetry where the Program's thread does.
+            .with_current_subscriber(),
+        );
+        Box::pin(async move { permit.await.unwrap_or(Err(coral_v8::ToolHostError::Fatal)) })
+    }
+}
+
 impl coral_v8::ProgramHost for RunProgramHost {
     fn value_limits(&self) -> ValueLimits {
         self.value_limits
@@ -197,37 +334,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
         arguments_json: String,
         location: Option<coral_v8::AuthoredLocation>,
     ) -> coral_v8::ToolFuture {
-        let source_location = self.source_location(location);
-        let runtime = self.runtime.clone();
-        let span = self.span.clone();
-        let trace_id = self.trace_id.clone();
-        // Start independently of V8 polling. Run termination owns cancellation
-        // and durable child shutdown even if execution drops this JoinHandle.
-        let invocation = runtime.spawn(
-            async move {
-                let _panic_guard = StopPanickingInvocation(self.stop.clone());
-                let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
-                    coral_v8::ToolHostError::Rejected {
-                        code: CoralFailure::InvalidInput.code(),
-                        message: CoralFailure::InvalidInput.message().into(),
-                        trace_id: trace_id.clone(),
-                        suggestions: Vec::new(),
-                    }
-                })?;
-                self.invoker
-                    .invoke(&call_path, arguments, source_location)
-                    .await
-                    .map_err(|error| self.host_error(error))
-            }
-            .instrument(span)
-            // Records its telemetry where the Program's thread does.
-            .with_current_subscriber(),
-        );
-        Box::pin(async move {
-            invocation
-                .await
-                .unwrap_or(Err(coral_v8::ToolHostError::Fatal))
-        })
+        self.invoke_as(None, call_path, arguments_json, location)
     }
 
     fn perform(
@@ -236,45 +343,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
         arguments_json: String,
         location: Option<coral_v8::AuthoredLocation>,
     ) -> coral_v8::PermitFuture {
-        let source_location = self.source_location(location);
-        let runtime = self.runtime.clone();
-        let span = self.span.clone();
-        let permit = runtime.spawn(
-            async move {
-                let _panic_guard = StopPanickingInvocation(self.stop.clone());
-                // Only the linker performs a call, and only to a Tool the
-                // Run linked.
-                let Some((relative_path, binding)) = call_path
-                    .strip_prefix("coral.private.")
-                    .and_then(|path| Some((path, self.linked_snapshots.get(path)?.clone())))
-                else {
-                    return Err(self.host_error(InvocationHostError::Rejected(
-                        Rejection::tool_not_found(&call_path, Vec::new()),
-                    )));
-                };
-                let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
-                    self.host_error(InvocationHostError::Rejected(
-                        CoralFailure::InvalidInput.into(),
-                    ))
-                })?;
-                match self
-                    .invoker
-                    .perform(relative_path, binding, arguments, source_location)
-                    .await
-                {
-                    Ok(performed) => Ok(Box::new(RunToolCompletion {
-                        host: self.clone(),
-                        performed: Some(performed),
-                    })
-                        as Box<dyn coral_v8::ToolCompletion>),
-                    Err(error) => Err(self.host_error(error)),
-                }
-            }
-            .instrument(span)
-            // Records its telemetry where the Program's thread does.
-            .with_current_subscriber(),
-        );
-        Box::pin(async move { permit.await.unwrap_or(Err(coral_v8::ToolHostError::Fatal)) })
+        self.perform_as(None, call_path, arguments_json, location)
     }
 
     fn emit(

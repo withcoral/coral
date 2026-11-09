@@ -35,6 +35,7 @@ enum ToolInvocations {
     ResultBytes,
     FailureCode,
     FailureMessage,
+    ParentInvocationId,
 }
 
 impl InvocationState {
@@ -84,6 +85,7 @@ pub(super) async fn insert_admission(
                 ToolInvocations::ArgumentsJson,
                 ToolInvocations::State,
                 ToolInvocations::AdmittedAtUnixNanos,
+                ToolInvocations::ParentInvocationId,
             ]
             .into_iter()
             .map(IntoIden::into_iden)
@@ -109,6 +111,12 @@ pub(super) async fn insert_admission(
                 Expr::val(&admitted.arguments_json),
                 Expr::val(InvocationState::Pending.as_storage_str()),
                 Expr::val(admitted.admitted_at_unix_nanos),
+                Expr::val(
+                    admitted
+                        .parent_invocation_id
+                        .as_ref()
+                        .map(ToString::to_string),
+                ),
             ]
             .into_iter()
             .chain(location_values),

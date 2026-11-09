@@ -8,7 +8,7 @@ use crate::v8_support::{evaluate_script, run_script};
 use crate::{
     AuthoredLocation, CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits,
     PermitFuture, ProgramExecutionControl, ProgramHost, ProgramOutputHostError, ToolBodyOutcome,
-    ToolCompletion, ToolFuture, ToolHostError,
+    ToolCalls, ToolCompletion, ToolFuture, ToolHostError,
 };
 
 const FORBIDDEN_AMBIENT_GLOBALS: &str = include_str!("js/forbidden_ambient_globals.js");
@@ -143,6 +143,7 @@ impl ProgramExecutor {
                 unhandled_tool_reasons: RefCell::new(HashMap::new()),
                 pending_tools: Vec::new(),
                 permitted: HashMap::new(),
+                body_calls: HashMap::new(),
                 next_permitted: 0,
                 tool_error_factory: None,
             });
@@ -246,6 +247,10 @@ struct ProgramHostSlot {
     /// The permitted calls whose bodies run, by the handle each body
     /// completes through.
     permitted: HashMap<u32, Permitted>,
+    /// The calls each permitted call's body makes, by its handle. A body
+    /// can start work that calls a Tool after the body ended, so these stay
+    /// for the execution, and the ended call refuses what reaches it.
+    body_calls: HashMap<u32, Arc<dyn ToolCalls>>,
     next_permitted: u32,
     tool_error_factory: Option<v8::Global<v8::Function>>,
 }
@@ -334,6 +339,7 @@ fn drain_program_work(
                         .expect("host installed");
                     let handle = slot.next_permitted;
                     slot.next_permitted = handle.wrapping_add(1);
+                    slot.body_calls.insert(handle, completion.body_calls());
                     slot.permitted.insert(
                         handle,
                         Permitted {
@@ -550,6 +556,10 @@ fn install_program_host(
             v8::Function::new(scope, complete_callback),
         ),
         (
+            "__coralToolRunBody",
+            v8::Function::new(scope, run_body_callback),
+        ),
+        (
             "__coralProgramEmit",
             v8::Function::new(scope, program_emission_callback),
         ),
@@ -600,7 +610,9 @@ fn tool_callback(
         scope,
         &arguments,
         return_value,
-        |host, path, arguments, location| Settles::Result(host.invoke(path, arguments, location)),
+        |caller, path, arguments, location| {
+            Settles::Result(caller.invoke(path, arguments, location))
+        },
     );
 }
 
@@ -620,7 +632,9 @@ fn perform_callback(
         scope,
         &arguments,
         return_value,
-        |host, path, arguments, location| Settles::Permit(host.perform(path, arguments, location)),
+        |caller, path, arguments, location| {
+            Settles::Permit(caller.perform(path, arguments, location))
+        },
     );
 }
 
@@ -695,13 +709,100 @@ fn complete_callback(
         });
 }
 
+/// `__coralToolRunBody(handle, body)`: calls `body` as the body of the
+/// permitted call `handle`. V8 carries the handle with every continuation
+/// that `body` schedules, so each Tool call that runs from it reaches that
+/// call's [`ToolCalls`]. No Program can read or set the handle.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn run_body_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let handle = arguments.get(0);
+    let Ok(body) = v8::Local::<v8::Function>::try_from(arguments.get(1)) else {
+        // Only the bootstrap runs a body, with a handle it was given.
+        terminate_program_host(scope);
+        return;
+    };
+    if !handle.is_uint32() {
+        terminate_program_host(scope);
+        return;
+    }
+    let caller = scope.get_continuation_preserved_embedder_data();
+    scope.set_continuation_preserved_embedder_data(handle);
+    let receiver = v8::undefined(scope).into();
+    let returned = body.call(scope, receiver, &[]);
+    scope.set_continuation_preserved_embedder_data(caller);
+    // A throw stays pending, so it reaches the bootstrap.
+    if let Some(returned) = returned {
+        return_value.set(returned);
+    }
+}
+
+/// Whose Tool call starts: the Program's own, or the body's of the
+/// permitted call whose continuation makes it.
+enum Caller {
+    Program(Arc<dyn ProgramHost>),
+    Body(Arc<dyn ToolCalls>),
+}
+
+impl Caller {
+    /// The caller of the call that runs now: the body whose handle V8
+    /// carries to it, if any. `None` for a handle no permitted call was
+    /// given, which only a host defect sets.
+    fn current(scope: &v8::PinScope<'_, '_>, host: Arc<dyn ProgramHost>) -> Option<Self> {
+        let handle = scope.get_continuation_preserved_embedder_data();
+        if !handle.is_uint32() {
+            return Some(Self::Program(host));
+        }
+        handle
+            .uint32_value(scope)
+            .and_then(|handle| {
+                scope
+                    .get_slot::<ProgramHostSlot>()?
+                    .body_calls
+                    .get(&handle)
+                    .cloned()
+            })
+            .map(Self::Body)
+    }
+
+    fn invoke(
+        self,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> ToolFuture {
+        match self {
+            Self::Program(host) => host.invoke(call_path, arguments_json, location),
+            Self::Body(calls) => calls.invoke(call_path, arguments_json, location),
+        }
+    }
+
+    fn perform(
+        self,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> PermitFuture {
+        match self {
+            Self::Program(host) => host.perform(call_path, arguments_json, location),
+            Self::Body(calls) => calls.perform(call_path, arguments_json, location),
+        }
+    }
+}
+
 /// Starts one Tool call by Call Path and encoded arguments, which `start`
 /// hands to the host, and returns its pending Promise.
 fn start_tool_call(
     scope: &mut v8::PinScope<'_, '_>,
     arguments: &v8::FunctionCallbackArguments<'_>,
     mut return_value: v8::ReturnValue,
-    start: impl FnOnce(Arc<dyn ProgramHost>, String, String, Option<AuthoredLocation>) -> Settles,
+    start: impl FnOnce(Caller, String, String, Option<AuthoredLocation>) -> Settles,
 ) {
     let Some(path) = arguments.get(0).to_string(scope) else {
         reject_tool_promise(
@@ -723,9 +824,10 @@ fn start_tool_call(
         return;
     };
     let arguments_json = arguments_json.to_rust_string_lossy(scope);
-    let Some(host) = scope
+    let Some((host, caller)) = scope
         .get_slot::<ProgramHostSlot>()
         .map(|slot| slot.host.clone())
+        .and_then(|host| Some((host.clone(), Caller::current(scope, host)?)))
     else {
         terminate_program_host(scope);
         return;
@@ -760,7 +862,7 @@ fn start_tool_call(
         );
         return;
     }
-    let settles = start(host, path, arguments_json, location);
+    let settles = start(caller, path, arguments_json, location);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")

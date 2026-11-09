@@ -159,11 +159,39 @@ pub enum ToolBodyOutcome {
 
 /// Completes one permitted Tool call that Coral performs in the Program.
 pub trait ToolCompletion: Send {
+    /// The Tool calls this call's body makes, bound to this call. Each call
+    /// the body starts reaches them, across every `await` and helper, and
+    /// never through a stack frame; so does a call the body started work
+    /// for that runs after the body ended. The Program's own calls and its
+    /// modules' top-level calls reach the [`ProgramHost`] instead.
+    fn body_calls(&self) -> Arc<dyn ToolCalls>;
+
     /// Records how the call's body ended and settles once that is durable:
     /// with the native-JSON value its caller receives, or a rejection. A
     /// body that threw a Tool Error rejects its caller with that error
     /// whatever rejection this settles with.
     fn complete(self: Box<Self>, outcome: ToolBodyOutcome) -> ToolFuture;
+}
+
+/// The Tool calls that the body of one permitted call makes, as
+/// [`ProgramHost::invoke`] and [`ProgramHost::perform`] are the Program's.
+pub trait ToolCalls: Send + Sync {
+    /// Invokes one Tool for the body, as [`ProgramHost::invoke`] does.
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> ToolFuture;
+
+    /// Starts one performed call for the body, as [`ProgramHost::perform`]
+    /// does.
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> PermitFuture;
 }
 
 /// Host seam used by one fresh execution isolate.

@@ -210,7 +210,8 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 | F::ResultTooLarge
                 | F::RunOutputTooLarge
                 | F::ToolFailed
-                | F::InvalidToolResult,
+                | F::InvalidToolResult
+                | F::ParentInvocationEnded,
             )
             | None,
         )
@@ -521,6 +522,7 @@ mod tests {
             (failure(F::RunOutputTooLarge), O::Failed),
             (failure(F::ToolFailed), O::Failed),
             (failure(F::InvalidToolResult), O::Failed),
+            (failure(F::ParentInvocationEnded), O::Failed),
             ((K::CoralFailure, None), O::Failed),
             ((K::Indeterminate, None), O::Failed),
             ((K::RunTerminated, None), O::Canceled),

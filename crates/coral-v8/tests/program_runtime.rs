@@ -1294,7 +1294,7 @@ impl ProgramHost for RejectingToolHost {
         _arguments_json: String,
         _location: Option<AuthoredLocation>,
     ) -> coral_v8::PermitFuture {
-        support::permit_at_once()
+        support::permit_at_once(support::host_calls(self))
     }
 
     fn invoke(
@@ -2291,7 +2291,7 @@ impl ProgramHost for RecordingHost {
         location: Option<AuthoredLocation>,
     ) -> coral_v8::PermitFuture {
         self.record("perform", location);
-        support::permit_at_once()
+        support::permit_at_once(support::host_calls(self))
     }
 
     fn invoke(
@@ -3038,4 +3038,202 @@ fn source_maps_name_only_authored_sources_and_embed_no_text() {
             "{invalid}"
         );
     }
+}
+
+/// Who made one Tool call: the Program host itself (`None`), or the body of
+/// the performed call this names.
+type Caller = Option<String>;
+
+/// Records every Tool call with the caller it reached: the host for the
+/// Program's own calls and module-level code, and each performed call's
+/// bound calls for the calls its body makes.
+#[derive(Default)]
+struct AttributingHost {
+    calls: Mutex<Vec<(Caller, String, String)>>,
+}
+
+impl AttributingHost {
+    fn record(&self, caller: Caller, call_path: String, arguments_json: String) {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((caller, call_path, arguments_json));
+    }
+
+    /// A permit whose body's calls reach a caller named for this call.
+    fn permit(self: Arc<Self>, call_path: &str, arguments_json: &str) -> coral_v8::PermitFuture {
+        support::permit_at_once(Arc::new(BodyCalls {
+            name: format!("{call_path}{arguments_json}"),
+            host: self,
+        }))
+    }
+}
+
+/// The calls one performed call's body makes.
+struct BodyCalls {
+    name: String,
+    host: Arc<AttributingHost>,
+}
+
+impl coral_v8::ToolCalls for BodyCalls {
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        self.host
+            .record(Some(self.name.clone()), call_path, arguments_json);
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        self.host.record(
+            Some(self.name.clone()),
+            call_path.clone(),
+            arguments_json.clone(),
+        );
+        self.host.clone().permit(&call_path, &arguments_json)
+    }
+}
+
+impl ProgramHost for AttributingHost {
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        self.record(None, call_path, arguments_json);
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        self.record(None, call_path.clone(), arguments_json.clone());
+        self.permit(&call_path, &arguments_json)
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+}
+
+// Catches: a call a body makes that reaches the Program host instead of its
+// own performed call, once the body has awaited, when two calls of one tool
+// interleave, through a helper the body calls, or from the `then` of a
+// thenable the body returns; a body's call to another
+// tool performed by anything but the outer call; or a Program or module-level
+// call, before or after a body ran, that reaches a body's calls.
+#[test]
+fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
+    let echo = linked_source(
+        &["tag", "echo"],
+        "await coral.providers.demo.init({});\n\
+         async function helper(label: string) {\n\
+             await coral.providers.demo.second({ label });\n\
+         }\n\
+         export default async function echo(label: string) {\n\
+             await coral.providers.demo.first({ label });\n\
+             await Promise.all([helper(label), Promise.resolve()]);\n\
+             return label;\n\
+         }",
+    );
+    let outer = linked_source(
+        &["tag", "outer"],
+        "export default async function outer() {\n\
+             await coral.providers.demo.before({});\n\
+             return await coral.private.tag.echo(\"z\");\n\
+         }",
+    );
+    // A body that returns a thenable runs its `then` as the body too.
+    let thenable = linked_source(
+        &["tag", "thenable"],
+        "export default function thenable(label: string): any {\n\
+             return { then(resolve: (value: string) => void) {\n\
+                 coral.providers.demo.first({ label }).then(() => resolve(label));\n\
+             } };\n\
+         }",
+    );
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .compile_with_saved_functions(
+            compilation_deadline(),
+            "await coral.providers.demo.top({});\n\
+             const labels = await Promise.all([\n\
+                 coral.private.tag.echo(\"x\"),\n\
+                 coral.private.tag.echo(\"y\"),\n\
+                 coral.private.tag.outer(),\n\
+                 coral.private.tag.thenable(\"t\"),\n\
+             ]);\n\
+             await coral.providers.demo.after({});\n\
+             return labels;",
+            &[echo, outer, thenable],
+        )
+        .expect("compile the Program");
+    let host = Arc::new(AttributingHost::default());
+
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("execute the Program");
+
+    assert_eq!(output.final_value_json(), Some(r#"["x","y","z","t"]"#));
+    let mut calls = host
+        .calls
+        .lock()
+        .expect("recorded calls")
+        .iter()
+        .map(|(caller, path, arguments)| (caller.clone(), path.clone(), arguments.clone()))
+        .collect::<Vec<_>>();
+    calls.sort();
+    let x = Some(r#"coral.private.tag.echo["x"]"#.to_string());
+    let y = Some(r#"coral.private.tag.echo["y"]"#.to_string());
+    let z = Some(r#"coral.private.tag.echo["z"]"#.to_string());
+    let outer = Some("coral.private.tag.outer[]".to_string());
+    let thenable = Some(r#"coral.private.tag.thenable["t"]"#.to_string());
+    let call = |caller: &Caller, path: &str, arguments: &str| {
+        (caller.clone(), path.to_string(), arguments.to_string())
+    };
+    let mut expected = vec![
+        call(&None, "coral.providers.demo.init", "{}"),
+        call(&None, "coral.providers.demo.top", "{}"),
+        call(&None, "coral.private.tag.echo", r#"["x"]"#),
+        call(&None, "coral.private.tag.echo", r#"["y"]"#),
+        call(&None, "coral.private.tag.outer", "[]"),
+        call(&None, "coral.private.tag.thenable", r#"["t"]"#),
+        call(&thenable, "coral.providers.demo.first", r#"{"label":"t"}"#),
+        call(&None, "coral.providers.demo.after", "{}"),
+        call(&x, "coral.providers.demo.first", r#"{"label":"x"}"#),
+        call(&x, "coral.providers.demo.second", r#"{"label":"x"}"#),
+        call(&y, "coral.providers.demo.first", r#"{"label":"y"}"#),
+        call(&y, "coral.providers.demo.second", r#"{"label":"y"}"#),
+        call(&outer, "coral.providers.demo.before", "{}"),
+        call(&outer, "coral.private.tag.echo", r#"["z"]"#),
+        call(&z, "coral.providers.demo.first", r#"{"label":"z"}"#),
+        call(&z, "coral.providers.demo.second", r#"{"label":"z"}"#),
+    ];
+    expected.sort();
+    assert_eq!(calls, expected);
 }
