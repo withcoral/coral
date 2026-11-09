@@ -141,6 +141,13 @@ impl Embedder {
             "max-efficiency" => builder,
             other => bail!("unknown --ep {other}"),
         };
+        // SPIKE_PROFILE=<prefix> writes ONNX Runtime's per-node profile (it names each node's EP).
+        let builder = match std::env::var("SPIKE_PROFILE") {
+            Ok(prefix) => builder
+                .with_profiling(prefix)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            Err(_) => builder,
+        };
         let session = builder
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| anyhow::anyhow!("{e}"))?
