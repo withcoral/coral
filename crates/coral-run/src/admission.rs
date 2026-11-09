@@ -217,38 +217,7 @@ impl RunModule {
             .workspaces
             .check_run_admission_in_transaction(transaction, actor, workspace_id, self.now()?)
             .await?;
-        // Private Tools sort before Shared Tools, so every acceptance takes
-        // its holds in one order. A Shared Tool row is held shared, so a
-        // popular Shared Tool does not serialize acceptance across Members.
-        let mut snapshots_by_path = linked.iter().collect::<Vec<_>>();
-        snapshots_by_path.sort_by_key(|linked| linked.path());
-        for snapshot in snapshots_by_path {
-            let held = match snapshot {
-                LinkedSource::Private(selection) => {
-                    coral_tools::hold_source_selection_in_transaction(
-                        transaction,
-                        workspace_id,
-                        actor.principal(),
-                        selection,
-                    )
-                    .await?
-                }
-                LinkedSource::Shared(selection) => {
-                    coral_tools::hold_shared_selection_in_transaction(
-                        transaction,
-                        workspace_id,
-                        selection,
-                    )
-                    .await?
-                }
-            };
-            if !held {
-                return Err(Error::ProgramAdmission(format!(
-                    "{} changed during Program admission",
-                    snapshot.path().kind_name()
-                )));
-            }
-        }
+        hold_linked_sources(transaction, workspace_id, actor, &linked).await?;
         let accepted_at_unix_nanos = self.now()?;
         authority.require_current_at(accepted_at_unix_nanos)?;
         let deadline_at_unix_nanos = accepted_at_unix_nanos
@@ -761,6 +730,50 @@ impl RunModule {
             Ok(Ok(Ok(analyzed))) => Ok(analyzed),
         }
     }
+}
+
+/// Holds every source the Run links as it was selected, through the
+/// acceptance commit, or refuses the admission when one changed.
+///
+/// Private Tools sort before Shared Tools, so every acceptance takes its
+/// holds in one order. A Shared Tool row is held shared, so a popular Shared
+/// Tool does not serialize acceptance across Members.
+async fn hold_linked_sources(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    actor: &AuthenticatedPrincipal,
+    linked: &[LinkedSource],
+) -> Result<(), Error> {
+    let mut snapshots_by_path = linked.iter().collect::<Vec<_>>();
+    snapshots_by_path.sort_by_key(|linked| linked.path());
+    for snapshot in snapshots_by_path {
+        let held = match snapshot {
+            LinkedSource::Private(selection) => {
+                coral_tools::hold_source_selection_in_transaction(
+                    transaction,
+                    workspace_id,
+                    actor.principal(),
+                    selection,
+                )
+                .await?
+            }
+            LinkedSource::Shared(selection) => {
+                coral_tools::hold_shared_selection_in_transaction(
+                    transaction,
+                    workspace_id,
+                    selection,
+                )
+                .await?
+            }
+        };
+        if !held {
+            return Err(Error::ProgramAdmission(format!(
+                "{} changed during Program admission",
+                snapshot.path().kind_name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The nearest Discoverable Call Paths to the first [`SEARCH_PATHS_MAX`]

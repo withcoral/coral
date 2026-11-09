@@ -63,6 +63,11 @@
   Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
   creators.
+- Program acceptance holds each Shared Tool row it links with
+  `RowLock::Shared`, so one popular Shared Tool does not serialize acceptance
+  across Members; the publish that moves its current revision holds the row
+  exclusively. A Private Tool row keeps the exclusive hold: only its owner
+  links it.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

@@ -49,8 +49,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn creating_a_workspace_creates_its_builtin_and_private_providers_with_the_creator_as_actor()
-{
+async fn creating_a_workspace_creates_its_coral_defined_providers_with_the_creator_as_actor() {
     let f = Fixture::new().await;
     let context = change(&f.creator);
     let workspace = f
@@ -80,11 +79,17 @@ async fn creating_a_workspace_creates_its_builtin_and_private_providers_with_the
             }
         );
     }
-    assert_eq!(events.len(), 2, "one Provider event records each install");
-    for installed in [
+    let installs = [
         LifecycleAction::BuiltinProviderInstalled,
         LifecycleAction::PrivateProviderInstalled,
-    ] {
+        LifecycleAction::SharedProviderInstalled,
+    ];
+    assert_eq!(
+        events.len(),
+        installs.len(),
+        "one Provider event records each install"
+    );
+    for installed in installs {
         assert!(
             events.iter().any(|event| event.action() == installed),
             "{installed:?}: {events:?}"

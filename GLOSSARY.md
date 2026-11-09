@@ -659,9 +659,10 @@ discover. V1 one-time Program admission parses and emits source but does not com
 exposes no DOM, Web Worker, Node, npm, filesystem, authored import, or module-resolution surface. _Avoid_: Runtime
 TypeScript, client-selected compiler, Node TypeScript profile
 
-**Program Authoring Limits**: The fixed v1 bounds applied before a Private Tool save or Program Run is accepted. A
-Private Tool Path is at most 256 UTF-8 bytes and 16 segments. A submitted Program or one Private Tool source is at
-most 64 KiB. One Run links at most 64 Private Tools, and its submitted plus linked TypeScript source is at most 512
+**Program Authoring Limits**: The fixed v1 bounds applied before a Private Tool save, a Shared Tool Publish, or a
+Program Run is accepted. A Private Tool Path or Shared Tool Path is at most 256 UTF-8 bytes and 16 segments. A
+submitted Program or one Private or Shared Tool source is at most 64 KiB. One Run links at most 64 Private and Shared
+Tools together, and its submitted plus linked TypeScript source is at most 512
 KiB. Its emitted JavaScript is at most 1 MiB and its source maps are at most 2 MiB. One Private Tool Declaration is at
 most 256 KiB. One save or Run compilation has a two-second deadline. Exceeding a bound returns a safe error, creates no
 partial Run, and leaves an existing Private Tool unchanged. _Avoid_: Deployment-selected authoring limit, unbounded
@@ -691,7 +692,7 @@ combine pages. _Avoid_: Transparent pagination, automatic pagination
 
 **Execution Binding**: The upstream-specific invocation recipe attached to a Tool behind Coral's common Tool
 interface. A v1 binding describes HTTP, MCP, a Built-in Provider Tool, or code: a Private Tool's code binding names the
-definition Coral performs, with no upstream. None exposes routing or credential details to Programs. _Avoid_:
+definition Coral performs, and a Shared Tool's the Shared Tool Revision, with no upstream. None exposes routing or credential details to Programs. _Avoid_:
 Execution attachment, client transport, File Collection binding
 
 **Upstream Outcome**: A complete upstream result received for one Tool Invocation and represented according to its
@@ -814,7 +815,8 @@ keeps its revisions, and is refused while another Shared Tool's current revision
 function, library function, package
 
 **Shared Tool Revision**: One immutable, numbered publication of a Shared Tool's source, description, and declaration.
-Exactly one revision is current; each Run links the current one and records which. _Avoid_: Version, pin, Provider
+Exactly one revision is current; each Run links the current one and records which. Program admission selects it, and
+acceptance refuses the Run if a publish moved it in between. _Avoid_: Version, pin, Provider
 Generation
 
 **Shared Tool Publish**: A Workspace Owner's act in Reef that copies one of their own or an Agent's Private Tools into

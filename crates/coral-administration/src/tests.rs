@@ -725,6 +725,153 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
     }
 }
 
+/// How a Shared Tool's author loses the Workspace or stops existing.
+#[derive(Debug, Clone, Copy)]
+enum AuthorLoss {
+    WorkspaceMembership,
+    OrganizationMembership,
+    UserDisablement,
+    AgentDeletion,
+}
+
+/// A Shared Tool is the Workspace's: its author is attribution only.
+// Catches: a removal, a disablement or an Agent deletion that removes,
+// changes or hides a Shared Tool the departed Principal wrote or published.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers every way a Shared Tool's author is lost"
+)]
+async fn a_shared_tool_survives_the_loss_of_its_author() {
+    for loss in [
+        AuthorLoss::WorkspaceMembership,
+        AuthorLoss::OrganizationMembership,
+        AuthorLoss::UserDisablement,
+        AuthorLoss::AgentDeletion,
+    ] {
+        let db = fixture().await;
+        let database = db.database();
+        let workspaces = WorkspaceModule::new(database.clone());
+        let private_tools = PrivateToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
+        let shared_tools = coral_tools::SharedToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
+        let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Owner).await;
+        let author =
+            provision_user(database.clone(), "user:author", OrganizationRole::Member).await;
+        let workspace = workspaces
+            .create(
+                &change(&owner),
+                WorkspaceDisplayName::parse("Workspace").unwrap(),
+            )
+            .await
+            .unwrap();
+        // The author is a second Owner, so they publish their own tool.
+        workspaces
+            .set_membership(
+                &change(&owner),
+                workspace.id(),
+                &author,
+                coral_workspace::WorkspaceRole::Owner,
+            )
+            .await
+            .unwrap();
+        let issued = workspaces
+            .create_agent(
+                &change(&owner),
+                workspace.id(),
+                coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let agent = workspaces
+            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .await
+            .unwrap();
+        // The publisher and the Principal whose Private Tool it copies: the
+        // author's own, or the Agent's, which the Owner publishes.
+        let (publisher, source_owner) = match loss {
+            AuthorLoss::AgentDeletion => (&owner, agent.clone()),
+            _ => (&author, AuthenticatedPrincipal::user(author.clone())),
+        };
+        save_answer(&private_tools, &source_owner, workspace.id()).await;
+        let path = coral_tools::SharedToolPath::parse("team.answer").unwrap();
+        shared_tools
+            .publish(
+                &change(publisher),
+                workspace.id(),
+                coral_tools::SharedToolPublish::new(
+                    path.clone(),
+                    coral_tools::SharedToolOrigin::PrivateTool {
+                        owner: source_owner.principal().clone(),
+                        path: PrivateToolPath::parse("answer").unwrap(),
+                    },
+                    PrivateToolDescription::parse("Answer").unwrap(),
+                    PrivateToolSource::parse("export default () => 42;").unwrap(),
+                    coral_catalog::ToolAccessState::Enabled,
+                    0,
+                ),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+        let reader = AuthenticatedPrincipal::user(owner.clone());
+        let read = async || {
+            (
+                shared_tools
+                    .get(&reader, workspace.id(), &path)
+                    .await
+                    .unwrap_or_else(|error| panic!("{loss:?}: {error}")),
+                shared_tools
+                    .list_revisions(&reader, workspace.id(), &path)
+                    .await
+                    .unwrap_or_else(|error| panic!("{loss:?}: {error}")),
+            )
+        };
+        let before = read().await;
+        let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());
+
+        match loss {
+            AuthorLoss::WorkspaceMembership => lifecycle
+                .remove_workspace_member(&change(&owner), workspace.id(), author.user_id())
+                .await
+                .unwrap(),
+            AuthorLoss::OrganizationMembership => lifecycle
+                .remove_organization_member(&change(&owner), author.user_id(), 1, None)
+                .await
+                .unwrap(),
+            AuthorLoss::UserDisablement => {
+                coral_workspace::OrganizationModule::new(database.clone())
+                    .set_enabled(&change(&owner), author.user_id(), 1, false)
+                    .await
+                    .unwrap();
+            }
+            AuthorLoss::AgentDeletion => lifecycle
+                .delete_agent(&change(&owner), workspace.id(), agent.principal().id())
+                .await
+                .unwrap(),
+        }
+
+        let after = read().await;
+        assert_eq!(after, before, "{loss:?}");
+        assert_eq!(
+            after.0.current().published_by(),
+            publisher.user_id(),
+            "{loss:?}"
+        );
+    }
+}
+
 async fn save_answer(
     private_tools: &PrivateToolModule,
     actor: &AuthenticatedPrincipal,
