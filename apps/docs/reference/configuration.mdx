@@ -46,9 +46,11 @@ Coral does not start when `config.toml` holds an unknown key, or a value that a 
 
 ### `[credentials]`
 
-| Key       | Description                                                                                                                                                                                                                                                       | Required                                                                                     | Default |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------- |
-| `key_env` | Name of the environment variable that holds the encryption key for provider credentials: 32 bytes in standard base64. Generate it with `openssl rand -base64 32`. Coral does not start if a `credentials.key` file is also in the config folder. Move that key into the variable, then remove the file. | No. Without it, Coral creates a key and saves it in the `credentials.key` file of its config folder. | N/A     |
+| Key       | Description                                                                                                                         | Required                                                                                    | Default |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------- |
+| `key_env` | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32` | No. If not present Coral will autogenerate an encryption key and save it to its config dir. | N/A     |
+
+To switch an existing install to `key_env`, put the key from the config folder's `credentials.key` file in the variable, then delete the file. Coral does not start while both exist.
 
 ### `[outbound]`
 
