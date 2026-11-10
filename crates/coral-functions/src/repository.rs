@@ -1126,3 +1126,76 @@ fn stored_revision(revision: u64) -> Result<i64, Error> {
     i64::try_from(revision)
         .map_err(|_error| Error::CorruptData("Saved Function revision overflowed".to_string()))
 }
+
+/// Counts the Saved Functions created in `[start, end)` unix nanoseconds,
+/// across every Workspace. A replacement is not a new one. The caller
+/// authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn functions_created(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    let created: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(SavedFunctionLifecycleEvents::Id).count())
+                .from(SavedFunctionLifecycleEvents::Table)
+                .and_where(
+                    Expr::col(SavedFunctionLifecycleEvents::Action)
+                        .eq(LifecycleAction::Created.as_storage_str()),
+                )
+                .and_where(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).gte(start))
+                .and_where(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    Ok(created.map_or(0, |(created,)| u64::try_from(created).unwrap_or_default()))
+}
+
+/// When the first Saved Function was created, before `end` unix
+/// nanoseconds. The caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn first_created_before(
+    tx: &mut Transaction<'_>,
+    end: i64,
+) -> Result<Option<i64>, Error> {
+    let first: Option<(Option<i64>,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).min())
+                .from(SavedFunctionLifecycleEvents::Table)
+                .and_where(
+                    Expr::col(SavedFunctionLifecycleEvents::Action)
+                        .eq(LifecycleAction::Created.as_storage_str()),
+                )
+                .and_where(Expr::col(SavedFunctionLifecycleEvents::OccurredAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    Ok(first.and_then(|(at,)| at))
+}
+
+/// Counts the Saved Functions that exist now, across every Workspace. The
+/// caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn function_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
+    let total: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(SavedFunctionRecords::Id).count())
+                .from(SavedFunctionRecords::Table)
+                .to_owned(),
+        )
+        .await?;
+    Ok(total.map_or(0, |(total,)| u64::try_from(total).unwrap_or_default()))
+}

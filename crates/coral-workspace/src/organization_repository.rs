@@ -355,3 +355,18 @@ pub(super) async fn remove_membership(
     }
     Ok(())
 }
+
+/// Counts the Organization Members whose membership is enabled.
+pub(crate) async fn enabled_member_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
+    let total: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(OrganizationAuthorityRecords::UserId).count())
+                .from(OrganizationAuthorityRecords::Table)
+                .and_where(Expr::col(OrganizationAuthorityRecords::Enabled).eq(1_i64))
+                .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
+                .to_owned(),
+        )
+        .await?;
+    Ok(total.map_or(0, |(total,)| u64::try_from(total).unwrap_or_default()))
+}

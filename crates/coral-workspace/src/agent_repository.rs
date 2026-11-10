@@ -392,3 +392,17 @@ pub(super) async fn registration_by_verifier_alone(
         .await?;
     row.ok_or(Error::InvalidAgentCredential)?.decode()
 }
+
+/// Counts the Agents not deleted, in every Workspace.
+pub(crate) async fn agent_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
+    let total: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(WorkspaceAgents::Id).count())
+                .from(WorkspaceAgents::Table)
+                .and_where(Expr::col(WorkspaceAgents::Deleted).eq(0))
+                .to_owned(),
+        )
+        .await?;
+    Ok(total.map_or(0, |(total,)| u64::try_from(total).unwrap_or_default()))
+}

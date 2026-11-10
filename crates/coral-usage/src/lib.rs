@@ -86,7 +86,16 @@ impl From<coral_run::Error> for Error {
     fn from(error: coral_run::Error) -> Self {
         match error {
             coral_run::Error::Database(error) => Self::Database(error),
-            _ => Self::CorruptData("a Run is not what Coral writes"),
+            _ => Self::CorruptData("Run history is not what Coral writes"),
+        }
+    }
+}
+
+impl From<coral_functions::Error> for Error {
+    fn from(error: coral_functions::Error) -> Self {
+        match error {
+            coral_functions::Error::Database(error) => Self::Database(error),
+            _ => Self::CorruptData("a Saved Function is not what Coral writes"),
         }
     }
 }
