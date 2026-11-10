@@ -33,5 +33,6 @@ know.
 
 ## Consequences
 
-- Build a release with `-p coral-ee`, never `--workspace`: Cargo unifies features across every package in a build.
+- Build a release from the released binary's package alone, never from a whole-workspace build: Cargo unifies
+  features across every package in one build.
 - Commit messages, PR descriptions and `ee/` code are all public.
