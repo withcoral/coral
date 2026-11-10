@@ -61,7 +61,7 @@ export function commands(root, config, ambient) {
   return {
     coral: {
       command: 'cargo',
-      args: ['run', '--locked', '-p', 'coral', '--bin', 'coral'],
+      args: ['run', '--locked', '-p', 'coral-ee', '--bin', 'coral-ee'],
       env: {
         ...ambient,
         CORAL_CONFIG_DIR: join(root, '.dev/state'),

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Coral runtime image: the `coral` executable behind docker/entrypoint.sh.
+# It is the released binary, built from ee/crates/coral-ee (ADR 0033).
 #
 # The default build compiles this checkout. A release build repackages a
 # published binary instead: extract it to dist/${TARGETARCH}/coral and pass
@@ -36,8 +37,8 @@ RUN --mount=type=cache,id=coral-cargo-registry,target=/usr/local/cargo/registry,
     --mount=type=cache,id=coral-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=coral-cargo-target-${TARGETARCH},target=/src/target,sharing=locked \
     test -n "$CORAL_GIT_SHA" \
-    && cargo build --locked --release -p coral --bin coral \
-    && install -D -m 0755 target/release/coral /coral
+    && cargo build --locked --release -p coral-ee --bin coral-ee \
+    && install -D -m 0755 target/release/coral-ee /coral
 
 FROM scratch AS prebuilt
 ARG TARGETARCH

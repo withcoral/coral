@@ -1,4 +1,5 @@
-// Builds the coral runtime that Desktop supervises.
+// Builds the coral runtime that Desktop supervises: the released binary,
+// coral-ee, which staging installs as `coral` (ADR 0033).
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
@@ -17,9 +18,9 @@ export function buildRuntime({ release = false, target } = {}) {
       ...(release ? ['--release'] : []),
       ...(target ? ['--target', target] : []),
       '-p',
-      'coral',
+      'coral-ee',
       '--bin',
-      'coral',
+      'coral-ee',
       '--message-format=json-render-diagnostics',
     ],
     {
@@ -34,14 +35,14 @@ export function buildRuntime({ release = false, target } = {}) {
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line))
-    // crates/coral is a library and a binary of one name; only the binary has
-    // an executable.
+    // Only a binary's artifact has an executable; a library of the same name
+    // does not.
     .find(
       (message) =>
         message.reason === 'compiler-artifact' &&
-        message.target?.name === 'coral' &&
+        message.target?.name === 'coral-ee' &&
         message.executable,
     )?.executable
-  if (!executable) throw new Error('cargo did not report the coral executable')
+  if (!executable) throw new Error('cargo did not report the coral-ee executable')
   return executable
 }

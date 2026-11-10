@@ -28,8 +28,11 @@ fi; \
 $(CONTAINER_ENGINE) build "$$@"
 endef
 
+# Installs the released binary, built from ee/crates/coral-ee, as `coral`.
 install:
-	cargo install --path crates/coral --locked
+	cargo build --locked --release -p coral-ee --bin coral-ee
+	install -d "$${CARGO_HOME:-$$HOME/.cargo}/bin"
+	install -m 0755 target/release/coral-ee "$${CARGO_HOME:-$$HOME/.cargo}/bin/coral"
 
 # ----------------------------------------------------------------------------
 # Images
