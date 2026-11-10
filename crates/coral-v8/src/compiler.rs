@@ -271,7 +271,7 @@ impl ProgramCompiler {
     /// applies: a chain is known once a prefix of it is callable, and a
     /// prefix that is only a namespace of a callable path reads on. A called
     /// chain that ends at such a namespace is unknown too: calling it names
-    /// no Tool. A body that [`Self::analyze`] rejects names none.
+    /// no Tool. A body that is not one async-function body names none.
     ///
     /// # Errors
     ///

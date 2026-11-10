@@ -9,14 +9,22 @@ use coral_v8::{
 /// makes a Program time out that would have compiled without it.
 const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
-/// The latest the Tool check for a compile due by `compilation_deadline`
-/// may run, reading the catalog or checking in the compiler, or `None` when
-/// no time is left for it.
+/// The longest each part of the Tool check may take: reading which
+/// candidate Call Paths the caller can call, and checking the Program's
+/// calls against them in the compiler.
+const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
+
+/// The latest one part of the Tool check for a compile due by
+/// `compilation_deadline` may run, starting now, or `None` when no time is
+/// left for it. A part that runs past it leaves the calls to be checked when
+/// called.
 #[must_use]
 pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
+    let now = Instant::now();
     compilation_deadline
         .checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
-        .filter(|deadline| *deadline > Instant::now())
+        .map(|latest| latest.min(now + TOOL_CHECK_BUDGET))
+        .filter(|deadline| *deadline > now)
 }
 
 /// The calls Program Admission and Saved Function save make of one warm
@@ -84,8 +92,8 @@ pub trait CompilerClient: Send + Sync {
 /// Why [`CompilerClient::analyze`] stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalysisError {
-    /// The index of the source it stopped at.
-    pub source: usize,
+    /// The index in `sources` of the source it stopped at.
+    pub index: usize,
     /// Why.
     pub error: CompileError,
 }
@@ -197,6 +205,25 @@ impl From<CompileError> for CompileFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches: a Tool check that outlives its budget, or eats into the
+    // compilation time it must leave.
+    #[test]
+    fn a_tool_check_keeps_its_budget_and_leaves_the_compilation_reserve() {
+        let started = Instant::now();
+        let far = started + Duration::from_secs(10);
+        let checked = tool_check_deadline(far).expect("time left to check");
+        assert!(checked > started && checked <= Instant::now() + TOOL_CHECK_BUDGET);
+
+        let near = started + TOOL_CHECK_COMPILATION_RESERVE + Duration::from_millis(200);
+        assert_eq!(
+            tool_check_deadline(near),
+            near.checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
+        );
+
+        let inside_reserve = Instant::now() + TOOL_CHECK_COMPILATION_RESERVE / 2;
+        assert_eq!(tool_check_deadline(inside_reserve), None);
+    }
 
     #[test]
     fn a_message_from_any_adapter_keeps_the_diagnostic_bound() {

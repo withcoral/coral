@@ -1198,9 +1198,10 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
     }
 }
 
-// Catches: a save that asks the compiler for the source's Call Paths more
-// than once, or sends them back to type it, so the Run Executor link carries
-// the compiler's own analysis.
+// Catches: a save that asks the compiler to analyze or prepare it more than
+// once, so the Run Executor link carries a message for each. Which
+// declarations type it is tested by
+// `a_stalled_declaration_read_saves_untyped_in_time`.
 #[tokio::test]
 async fn a_typed_save_analyzes_once_and_prepares_once() {
     use coral_run_executor::testing::{CompilerCalls, CountingCompiler};

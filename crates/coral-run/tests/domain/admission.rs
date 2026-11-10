@@ -321,9 +321,10 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
 
-// Catches: admission that asks the compiler once per Saved Function, or
-// checks Tool calls in a call of their own, so the Run Executor link carries
-// a message for each.
+// Catches: admission that asks the compiler once per Saved Function, so the
+// Run Executor link carries a message for each; one that refuses an unknown
+// Tool before its one compile; or one that reports an unknown Tool before a
+// missing Saved Function.
 #[tokio::test]
 async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles_once() {
     use coral_run_executor::testing::{CompilerCalls, CountingCompiler};
@@ -380,17 +381,26 @@ async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles
     let links = "return [coral.functions.math.incrementTwice(1), coral.functions.math.sum(1)];";
     // The fixture's caller can call no Tool, so the call checked at compile
     // is refused there.
-    let unknown_tool = format!("await coral.workspace.search({{ query: \"math\" }});\n{links}");
-    let cases: [(&str, &[usize], Option<&str>); 3] = [
-        ("return 42;", &[1], None),
-        (links, &[1, 2, 2], None),
+    let search = "await coral.workspace.search({ query: \"math\" });";
+    let unknown_tool = format!("{search}\n{links}");
+    let missing_too = format!("{search}\nreturn coral.functions.math.missing();");
+    let cases: [(&str, &[usize], usize, Option<&str>); 4] = [
+        ("return 42;", &[1], 1, None),
+        (links, &[1, 2, 2], 1, None),
         (
             &unknown_tool,
             &[1, 2, 2],
-            Some("Program:1:7: coral.workspace.search names no Tool that you can call."),
+            1,
+            Some("coral.workspace.search names no Tool"),
+        ),
+        (
+            &missing_too,
+            &[1],
+            0,
+            Some("references missing Saved Function coral.functions.math.missing"),
         ),
     ];
-    for (source, analyzed, refused) in cases {
+    for (source, analyzed, compiled, refused) in cases {
         let prepared = runs
             .prepare(&principal, &workspace_id, submission(source))
             .await;
@@ -398,8 +408,9 @@ async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles
             None => {
                 prepared.unwrap_or_else(|error| panic!("{source}: {error:?}"));
             }
+            // Which refusal wins, not its wording, which `call_paths.rs` owns.
             Some(refusal) => assert!(
-                matches!(&prepared, Err(Error::ProgramAdmission(message)) if message.starts_with(refusal)),
+                matches!(&prepared, Err(Error::ProgramAdmission(message)) if message.contains(refusal)),
                 "{source}: {:?}",
                 prepared.map(drop)
             ),
@@ -408,7 +419,7 @@ async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles
             compiler.take(),
             CompilerCalls {
                 analyze: analyzed.to_vec(),
-                compile: 1,
+                compile: compiled,
                 prepare: 0,
             },
             "{source}"

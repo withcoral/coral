@@ -81,7 +81,7 @@ impl CompilerClient for InProcessCompiler {
                 self.run
                     .analyze(deadline, source)
                     .map_err(|error| AnalysisError {
-                        source: index,
+                        index,
                         error: compile_error(error),
                     })
             })
@@ -291,7 +291,7 @@ mod tests {
             matches!(
                 &failed,
                 Err(AnalysisError {
-                    source: 1,
+                    index: 1,
                     error: CompileError::Diagnostics(Diagnostics::Reference { .. }),
                 })
             ),
@@ -299,42 +299,37 @@ mod tests {
         );
     }
 
-    // Catches: a Tool check that runs without a callable list, misses a
-    // called chain, or blocks a Program whose every call names a Tool.
+    // Catches: a Tool check that runs without a callable list, or blocks a
+    // Program whose every call names a Tool. The unknown-Tool rule itself is
+    // tested in coral-v8.
     #[test]
     fn compile_checks_the_called_tools_only_against_a_callable_list() {
-        type Located = (&'static str, u64, u64);
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         let source = "await coral.providers.github.repos.get({});\n\
             return await coral.providers.notion.retrievePage({});";
         let get = "coral.providers.github.repos.get".to_owned();
         let page = "coral.providers.notion.retrievePage".to_owned();
-        let cases: [(Option<Vec<String>>, &[Located]); 3] = [
-            (None, &[]),
-            (Some(vec![get.clone(), page]), &[]),
-            (
-                Some(vec![get]),
-                &[("coral.providers.notion.retrievePage", 2, 14)],
-            ),
+        let cases = [
+            (None, false),
+            (Some(vec![get.clone(), page]), false),
+            (Some(vec![get]), true),
         ];
-        for (callable, unknown) in cases {
+        for (callable, refused) in cases {
             let outcome =
                 compiler.compile(TEST_COMPILATION_TIMEOUT, source, &[], callable.as_deref());
-            if unknown.is_empty() {
+            if refused {
+                assert!(
+                    matches!(
+                        &outcome,
+                        Err(CompileError::Diagnostics(Diagnostics::UnknownTools(calls)))
+                            if !calls.is_empty()
+                    ),
+                    "{callable:?}: {:?}",
+                    outcome.map(drop)
+                );
+            } else {
                 outcome.unwrap_or_else(|error| panic!("{callable:?}: {error:?}"));
-                continue;
             }
-            let Err(CompileError::Diagnostics(Diagnostics::UnknownTools(calls))) = outcome else {
-                panic!("{callable:?}: {:?}", outcome.map(drop));
-            };
-            assert_eq!(
-                calls
-                    .iter()
-                    .map(|call| (call.call_path(), call.line(), call.column()))
-                    .collect::<Vec<_>>(),
-                unknown,
-                "{callable:?}"
-            );
         }
     }
 

@@ -191,12 +191,10 @@ impl ProgramEngine for V8ProgramEngine {
         let references = self
             .compiler
             .analyze(time_left(deadline), &analyzed)
-            .map_err(
-                |AnalysisError { source, error }| match sources.get(source) {
-                    Some(source) => compile_failure_for_source(error, &source.name()),
-                    None => CompileFailure::Failed("compiler_protocol"),
-                },
-            )?;
+            .map_err(|AnalysisError { index, error }| match sources.get(index) {
+                Some(source) => compile_failure_for_source(error, &source.name()),
+                None => CompileFailure::Failed("compiler_protocol"),
+            })?;
         if references.len() != sources.len() {
             return Err(CompileFailure::Failed("compiler_protocol"));
         }

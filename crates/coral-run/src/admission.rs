@@ -2,7 +2,7 @@
 //! write transactions, and atomic acceptance of one complete package.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
@@ -28,10 +28,6 @@ use crate::{
 /// The most candidate Call Paths admission checks, as Saved Function typing
 /// bounds them. A Program that names more has its paths checked when called.
 const TOOL_CHECK_MAX_PATHS: usize = 128;
-
-/// The longest admission may take to read which candidate Call Paths the
-/// caller can call.
-const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 enum SavedFunctionReferenceSource {
@@ -412,16 +408,23 @@ impl RunModule {
                     )));
                     break;
                 }
-                let Some(snapshot) = coral_functions::select_source_in_transaction(
+                let snapshot = match coral_functions::select_source_in_transaction(
                     &mut transaction,
                     workspace_id,
                     actor.principal(),
                     path,
                 )
-                .await?
-                else {
-                    stopped = Some(missing_saved_function(pending_reference));
-                    break;
+                .await
+                {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => {
+                        stopped = Some(missing_saved_function(pending_reference));
+                        break;
+                    }
+                    Err(error) => {
+                        stopped = Some(error.into());
+                        break;
+                    }
                 };
                 sources.push(AdmissionSource::SavedFunction {
                     path: path.clone(),
@@ -497,9 +500,7 @@ impl RunModule {
         if candidates.is_empty() || candidates.len() > TOOL_CHECK_MAX_PATHS {
             return None;
         }
-        let Some(deadline) = tool_check_deadline(compilation_deadline)
-            .map(|latest| latest.min(Instant::now() + TOOL_CHECK_BUDGET))
-        else {
+        let Some(deadline) = tool_check_deadline(compilation_deadline) else {
             tracing::warn!("No time is left to check the Program's Call Paths before it runs");
             return None;
         };
