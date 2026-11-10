@@ -24,11 +24,20 @@ mod tests {
                 created_at_unix_nanos, updated_at_unix_nanos) VALUES ('ws1', 'One', 'active', 1, 1, 1)"
                 .to_owned(),
         ];
-        for (id, started) in [("t1", 9), ("t2", 10), ("t3", 19), ("t4", 20)] {
+        // A Task that ends after the window still counts where it started.
+        for (id, started, outcome) in [
+            ("t1", 9, None),
+            ("t2", 10, Some("success")),
+            ("t3", 19, Some("failure")),
+            ("t4", 20, None),
+        ] {
+            let (outcome, ended) = outcome.map_or(("NULL".to_owned(), "NULL"), |outcome| {
+                (format!("'{outcome}'"), "30")
+            });
             fixture.push(format!(
                 "INSERT INTO task_records (id, workspace_id, principal_id, principal_kind, intent, \
-                    started_at_unix_nanos, last_activity_at_unix_nanos) \
-                 VALUES ('{id}', 'ws1', 'tasker', 'user', 'go', {started}, {started})"
+                    outcome, started_at_unix_nanos, ended_at_unix_nanos, last_activity_at_unix_nanos) \
+                 VALUES ('{id}', 'ws1', 'tasker', 'user', 'go', {outcome}, {started}, {ended}, {started})"
             ));
         }
         for statement in &fixture {
