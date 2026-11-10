@@ -242,7 +242,7 @@ Use these signals together to separate database admission, compiler saturation, 
 | Key                 | Description                                                                            | Required | Default |
 | ------------------- | -------------------------------------------------------------------------------------- | -------- | ------- |
 | `allowed_audiences` | Array. Additional audiences for which Coral's auth server can mint tokens              | No       | `[]`    |
-| `trusted_clients`   | Array with client ids for which Coral's auth server will not display a consent screen. Each entry is an `http` or `https` URL. Use a lowercase host and leave out the default port. A URL with no path must end in `/`, as in `https://client.example.com/`. Coral does not start when an entry is written another way, and the error shows the form to use. | No       | `[]`    |
+| `trusted_clients`   | Array with client ids for which Coral's auth server will not display a consent screen. Each entry is an `http` or `https` URL. Use a lowercase host and leave out the default port. A URL with no path must end in `/`, as in `https://client.example.com/`. | No       | `[]`    |
 
 ### `[auth.session]`
 
