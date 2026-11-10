@@ -27,15 +27,20 @@ enum ToolAccessState {
 message ToolPolicy {
   // Canonical Provider Tool resource name, never a Call Path.
   string tool = 1;
-  // Exact decision for the requested Provider.
+  // Exact decision for the requested Provider. In an update, the state the
+  // exact rule takes; unspecified only with `clear`.
   ToolAccessState access_state = 2;
-  // True when an exact stored rule, false when effect-based default.
+  // True when an exact stored rule, false when the Tool's default.
   bool explicit = 3;
+  // Input only. Removes the Tool's exact rule, so the Tool takes its default.
+  // An update that sets it leaves `access_state` unspecified.
+  bool clear = 4;
 }
 
 // Reads one page of a Provider's current administrative catalog. In the
 // Private Provider, the page holds the Private Tools whose rules the caller
-// may read: their own and, for a Workspace Owner, every Agent's.
+// may read: their own and, for a Workspace Owner, every Agent's. In the
+// Shared Provider, it holds the Workspace's live Shared Tools.
 message ListToolAccessRequest {
   // Exact Provider resource.
   string parent = 1;
@@ -62,7 +67,7 @@ message ToolAccess {
   ToolHints hints = 6;
   // Exact decision for the Tool.
   ToolAccessState access_state = 7;
-  // True when an exact stored rule, false when effect-based default.
+  // True when an exact stored rule, false when the Tool's default.
   bool explicit = 8;
   // In the Private Provider, workspaces/{workspace}/agents/{agent} when the
   // Private Tool is that Agent's. Empty for the caller's own Private Tools
@@ -82,12 +87,14 @@ message ListToolAccessResponse {
 message UpdateToolPoliciesRequest {
   // Exact Provider resource name.
   string parent = 1;
-  // 1–100 distinct canonical Tool targets; explicit is output-only.
+  // 1–100 distinct canonical Tool targets, each setting or clearing its
+  // exact rule; explicit is output-only.
   repeated ToolPolicy policies = 2;
 }
 
-// Committed exact decisions.
+// Committed decisions.
 message UpdateToolPoliciesResponse {
-  // All accepted decisions in request order.
+  // Each Tool's decision after the update, in request order. A cleared rule
+  // returns the Tool's default, not explicit.
   repeated ToolPolicy policies = 1;
 }

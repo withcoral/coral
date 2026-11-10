@@ -699,12 +699,17 @@ async fn a_shared_tool_call_follows_the_default_its_owner_chose_at_publish() {
     assert_eq!(value, json!(1));
 }
 
-// Catches: an Owner's exact rule on a Shared Tool that does not apply to a
-// Member's call, a body that runs before its call is approved, or an
-// Approval Request that reads as not actionable because the approval view
-// decided the call as the Member's own Private Tool.
+// Catches: an Owner's exact rule on a Shared Tool that does not override
+// its published default for some caller, that a new revision drops, a body
+// that runs before its call is approved, or an Approval Request that reads
+// as not actionable because the approval view decided the call as the
+// Member's own Private Tool.
 #[tokio::test]
-async fn an_owners_rule_on_a_shared_tool_applies_to_a_members_call_and_its_approval() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario follows a rule through an approval and a new revision"
+)]
+async fn an_owners_rule_on_a_shared_tool_applies_to_every_caller_and_survives_a_new_revision() {
     let shared = SharedScope::new("user:shared-rule").await;
     let owner = shared.scope.owner.clone();
     // The body calls the caller's own Private Tool, so the Run records a
@@ -739,23 +744,25 @@ async fn an_owners_rule_on_a_shared_tool_applies_to_a_members_call_and_its_appro
     .expect("read the Shared Provider")
     .expect("the Shared Provider");
     transaction.commit().await.expect("commit");
-    // No policy surface sets a rule on a Shared Tool yet (issue #3009), so
-    // the rule is written as the policy service will write it.
-    shared
-        .scope
-        .fixture
-        .test_database
-        .execute_fixture_sql(&format!(
-            "INSERT INTO tool_access_rules
-                (workspace_id, provider_id, tool_key, access_state,
-                 created_at_unix_nanos, updated_at_unix_nanos)
-             VALUES ('{}', '{}', '{}', 'approval_required', 80, 80)",
-            shared.scope.workspace_id,
-            provider.id(),
-            tool.id().tool_key().as_str(),
-        ))
-        .await
-        .expect("write the Owner's rule");
+    // The Owner's rule, set as Reef sets it, over the published `enabled`.
+    let set_rule = |state: ToolAccessState, at: i64| {
+        let (policies, context, target) = (
+            shared.scope.fixture.policies.clone(),
+            change(shared.scope.owner_user(), at, '7'),
+            ToolPolicyTarget::new(
+                shared.scope.workspace_id.clone(),
+                provider.id().clone(),
+                tool.id().tool_key(),
+            ),
+        );
+        async move {
+            policies
+                .set_access_state(&context, target, state)
+                .await
+                .expect("set the Owner's rule");
+        }
+    };
+    set_rule(ToolAccessState::ApprovalRequired, 80).await;
 
     let run = shared
         .scope
@@ -800,4 +807,42 @@ async fn an_owners_rule_on_a_shared_tool_applies_to_a_members_call_and_its_appro
     let mut after = called().await;
     after.sort_unstable();
     assert_eq!(after, ["coral.private.contacts.find", REMIND]);
+
+    // The rule is the Shared Tool's, not a revision's: it still decides
+    // every caller's call after a new revision that declares `enabled`.
+    set_rule(ToolAccessState::Disabled, 81).await;
+    shared
+        .publish(REMIND_SOURCE, ToolAccessState::Enabled, 1)
+        .await;
+    // Admission links the Private Tool the body names for each caller.
+    shared
+        .save_private(&shared.agent, "contacts.find", &contacts("agent"))
+        .await;
+    let program = "try { return await coral.shared.mail.remind('Ada'); } catch (error) {
+        if (!(error instanceof coral.ToolError)) throw error;
+        return { code: error.code };
+    }";
+    for (name, caller) in [
+        ("owner", &owner),
+        ("member", &shared.member),
+        ("agent", &shared.agent),
+    ] {
+        let (run, value) = shared.run(caller, program).await;
+        assert_eq!(value, json!({ "code": "tool_disabled" }), "{name}");
+        assert_eq!(
+            shared.linked(caller, &run).await,
+            [("mail.remind".to_owned(), 2)],
+            "{name}"
+        );
+        // The body made no call.
+        let called: Vec<_> = shared
+            .scope
+            .fixture
+            .invocation_rows(&shared.scope.workspace_id, &run)
+            .await
+            .into_iter()
+            .map(|row| row.call_path)
+            .collect();
+        assert_eq!(called, [REMIND], "{name}");
+    }
 }

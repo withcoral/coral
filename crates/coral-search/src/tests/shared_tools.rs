@@ -530,24 +530,20 @@ async fn search_and_describe_read_a_shared_tools_rule_and_its_providers_state() 
             Some(ApprovalRequirement::Required),
         ),
     ] {
-        // No policy surface sets a rule on a Shared Tool yet (issue #3009),
-        // so the rule is written as the policy service will write it.
         shared
             .fixture
-            .fixture
-            .execute_fixture_sql(&format!(
-                "DELETE FROM tool_access_rules WHERE tool_key = '{key}';
-                 INSERT INTO tool_access_rules
-                    (workspace_id, provider_id, tool_key, access_state,
-                     created_at_unix_nanos, updated_at_unix_nanos)
-                 VALUES ('{}', '{}', '{key}', '{}', {at}, {at})",
-                shared.scope.workspace_id,
-                provider.id(),
-                state.as_storage_str(),
-                key = published.id().tool_key().as_str(),
-            ))
+            .policies
+            .set_access_state(
+                &change(shared.scope.user.clone(), at, 'c'),
+                coral_policy::ToolPolicyTarget::new(
+                    shared.scope.workspace_id.clone(),
+                    provider.id().clone(),
+                    published.id().tool_key(),
+                ),
+                state,
+            )
             .await
-            .expect("write the Owner's rule");
+            .expect("set the Owner's rule");
         expect(described, &format!("{state:?}")).await;
     }
     shared

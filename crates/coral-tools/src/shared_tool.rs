@@ -536,6 +536,36 @@ impl SharedToolPage {
     }
 }
 
+/// A live Shared Tool as a policy listing shows it: its Tool Key, its path
+/// and the default Tool Access State of its current revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedToolDefault {
+    pub(crate) key: coral_catalog::ToolKey,
+    pub(crate) path: SharedToolPath,
+    pub(crate) default_access_state: ToolAccessState,
+}
+
+impl SharedToolDefault {
+    /// Returns the Tool Key in the Shared Provider.
+    #[must_use]
+    pub const fn key(&self) -> &coral_catalog::ToolKey {
+        &self.key
+    }
+
+    /// Returns the path relative to `coral.shared`.
+    #[must_use]
+    pub const fn path(&self) -> &SharedToolPath {
+        &self.path
+    }
+
+    /// Returns the default the Owner chose when publishing the current
+    /// revision.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
+    }
+}
+
 /// What one lifecycle Event of a Shared Tool records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SharedToolLifecycleAction {

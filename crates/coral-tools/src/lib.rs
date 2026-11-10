@@ -82,7 +82,7 @@ pub use private_tool::{
     PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
 };
 pub use shared_tool::{
-    SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDependency, SharedToolId,
+    SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDefault, SharedToolDependency, SharedToolId,
     SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
     SharedToolLifecycleEventPage, SharedToolModule, SharedToolOrigin, SharedToolPage,
     SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolReview, SharedToolRevision,
@@ -150,6 +150,49 @@ pub async fn readable_page_in_transaction(
         page_size,
     )
     .await
+}
+
+/// The default Tool Access State of each of `tools` that names a live
+/// Shared Tool of the Workspace: its current revision's. A key that names a
+/// removed Shared Tool is left out like any key that names no Shared Tool.
+/// Every Principal in the Workspace reads its live Shared Tools.
+///
+/// The caller owns Workspace authority and the coherent read transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn shared_tool_defaults_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    tools: &[coral_catalog::ToolKey],
+) -> Result<std::collections::BTreeMap<coral_catalog::ToolKey, coral_catalog::ToolAccessState>, Error>
+{
+    Ok(
+        shared_tool_repository::live_defaults(transaction, workspace_id, tools)
+            .await?
+            .into_iter()
+            .map(|tool| (tool.key, tool.default_access_state))
+            .collect(),
+    )
+}
+
+/// One page of the Workspace's live Shared Tools with their defaults, in
+/// Tool Key order after `after`, with one row more than `page_size` when
+/// another page follows.
+///
+/// The caller owns Workspace authority and the coherent read transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn shared_tool_default_page_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    after: Option<&coral_catalog::ToolKey>,
+    page_size: u32,
+) -> Result<Vec<SharedToolDefault>, Error> {
+    shared_tool_repository::live_default_page(transaction, workspace_id, after, page_size).await
 }
 
 #[cfg(test)]

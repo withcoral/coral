@@ -11,7 +11,7 @@ use sqlx::FromRow;
 use crate::Error;
 use crate::repository::{access_state_from_storage, decode_diagnostics, stored_revision};
 use crate::shared_tool::{
-    SharedTool, SharedToolDependency, SharedToolId, SharedToolLifecycleAction,
+    SharedTool, SharedToolDefault, SharedToolDependency, SharedToolId, SharedToolLifecycleAction,
     SharedToolLifecycleEvent, SharedToolLifecycleEventId, SharedToolLifecycleEventPage,
     SharedToolPage, SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin,
     SharedToolSummary,
@@ -446,6 +446,86 @@ pub(crate) async fn list_live_page(
         summaries,
         next_after,
     })
+}
+
+/// Every live Shared Tool of the Workspace with the default of its current
+/// revision: its id, its path and that default.
+fn live_defaults_statement(workspace_id: &WorkspaceId) -> SelectStatement {
+    Query::select()
+        .column((SharedToolRecords::Table, SharedToolRecords::Id))
+        .column((SharedToolRecords::Table, SharedToolRecords::Path))
+        .column((
+            SharedToolRevisions::Table,
+            SharedToolRevisions::DefaultAccessState,
+        ))
+        .from(SharedToolRecords::Table)
+        .inner_join(SharedToolRevisions::Table, is_current_revision())
+        .and_where(
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
+                .eq(workspace_id.to_string()),
+        )
+        .and_where(
+            Expr::col((
+                SharedToolRecords::Table,
+                SharedToolRecords::RemovedAtUnixNanos,
+            ))
+            .is_null(),
+        )
+        .to_owned()
+}
+
+fn decode_default((id, path, state): (String, String, String)) -> Result<SharedToolDefault, Error> {
+    Ok(SharedToolDefault {
+        key: decode_id(&id)?.tool_key(),
+        path: decode_path(&path)?,
+        default_access_state: access_state_from_storage(&state)?,
+    })
+}
+
+/// One page of the Workspace's live Shared Tools with their defaults, in
+/// Tool Key order after `after`, with one row more than `page_size` when
+/// another page follows.
+pub(crate) async fn live_default_page(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    after: Option<&coral_catalog::ToolKey>,
+    page_size: u32,
+) -> Result<Vec<SharedToolDefault>, Error> {
+    // Match Rust string ordering regardless of the Postgres locale, so the
+    // exclusive cursor predicate agrees with the page order.
+    let id = match transaction.system() {
+        coral_db::DatabaseSystem::Sqlite => {
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::Id))
+        }
+        coral_db::DatabaseSystem::Postgres => {
+            Expr::cust("\"shared_tool_records\".\"id\" COLLATE \"C\"")
+        }
+    };
+    let mut statement = live_defaults_statement(workspace_id);
+    if let Some(after) = after {
+        statement.and_where(id.clone().gt(after.as_str()));
+    }
+    statement
+        .order_by_expr(id, Order::Asc)
+        .limit(u64::from(page_size) + 1);
+    let rows: Vec<(String, String, String)> = transaction.fetch_all(statement).await?;
+    rows.into_iter().map(decode_default).collect()
+}
+
+/// The live Shared Tools of the Workspace that `tools` name, with their
+/// defaults.
+pub(crate) async fn live_defaults(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    tools: &[coral_catalog::ToolKey],
+) -> Result<Vec<SharedToolDefault>, Error> {
+    let mut statement = live_defaults_statement(workspace_id);
+    statement.and_where(
+        Expr::col((SharedToolRecords::Table, SharedToolRecords::Id))
+            .is_in(tools.iter().map(|key| key.as_str().to_owned())),
+    );
+    let rows: Vec<(String, String, String)> = transaction.fetch_all(statement).await?;
+    rows.into_iter().map(decode_default).collect()
 }
 
 /// The current revision of one live Shared Tool, as a Run links it and as

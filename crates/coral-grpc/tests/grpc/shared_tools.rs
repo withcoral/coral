@@ -285,6 +285,162 @@ async fn a_member_reads_the_shared_tool_its_summary_and_its_revisions() {
     assert_eq!(first_revision(&f, &f.member, &tool.name).await, current);
 }
 
+// Catches: a policy route that refuses the Shared Provider or misprojects a
+// Shared Tool's row, a clear that the route does not carry, or a refused
+// update that maps to the wrong status.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey covers the listing and each update the route carries or refuses"
+)]
+async fn the_policy_service_lists_and_updates_shared_tool_policy_through_the_shared_provider() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use management::ToolAccessState as State;
+    let f = Fixture::new().await;
+    save_draft(&f, &f.owner).await;
+    let parent = format!("workspaces/{}", f.workspace.id());
+    let tool = send(&f, &f.owner, publish(&f, "mail.remind", 0))
+        .await
+        .expect("publish")
+        .shared_tool
+        .expect("the Shared Tool");
+    let provider = f
+        .shared_tools()
+        .list_shared_tools(request(
+            management::ListSharedToolsRequest {
+                parent: parent.clone(),
+                page_size: 10,
+                page_token: String::new(),
+            },
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await
+        .expect("list")
+        .into_inner()
+        .shared_provider;
+    let id = tool.name.rsplit('/').next().expect("the Shared Tool id");
+    let name = format!("{provider}/tools/{}", URL_SAFE_NO_PAD.encode(id));
+
+    let listed = f
+        .policies()
+        .list_tool_access(request(
+            management::ListToolAccessRequest {
+                parent: provider.clone(),
+                page_size: 0,
+                page_token: String::new(),
+            },
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await
+        .expect("a Member lists the Shared Provider")
+        .into_inner();
+    assert_eq!(listed.next_page_token, "");
+    assert_eq!(
+        listed.tools,
+        [management::ToolAccess {
+            tool: name.clone(),
+            relative_path: "mail.remind".into(),
+            available: true,
+            diagnostics: Vec::new(),
+            tags: Vec::new(),
+            hints: Some(management::ToolHints::default()),
+            access_state: State::ApprovalRequired.into(),
+            explicit: false,
+            agent: String::new(),
+        }]
+    );
+
+    let update = async |user: &AuthenticatedUser, tool: &str, state: State, clear: bool| {
+        f.policies()
+            .update_tool_policies(request(
+                management::UpdateToolPoliciesRequest {
+                    parent: provider.clone(),
+                    policies: vec![management::ToolPolicy {
+                        tool: tool.to_owned(),
+                        access_state: state.into(),
+                        explicit: false,
+                        clear,
+                    }],
+                },
+                &f.token(user, "reef"),
+                "reef",
+            ))
+            .await
+            .map(|response| {
+                response
+                    .into_inner()
+                    .policies
+                    .into_iter()
+                    .map(|policy| (policy.tool, policy.access_state, policy.explicit))
+                    .collect::<Vec<_>>()
+            })
+    };
+    let unknown = format!(
+        "{provider}/tools/{}",
+        URL_SAFE_NO_PAD.encode("00000000-0000-4000-8000-000000000000")
+    );
+    for (label, user, tool, state, clear, code, reason) in [
+        (
+            "a Member's update",
+            &f.member,
+            &name,
+            State::Enabled,
+            false,
+            tonic::Code::PermissionDenied,
+            "PERMISSION_DENIED",
+        ),
+        (
+            "a key that names no live Shared Tool",
+            &f.owner,
+            &unknown,
+            State::Enabled,
+            false,
+            tonic::Code::NotFound,
+            "NOT_FOUND",
+        ),
+        (
+            "a clear that names a state",
+            &f.owner,
+            &name,
+            State::Enabled,
+            true,
+            tonic::Code::InvalidArgument,
+            "INVALID_ARGUMENT",
+        ),
+        (
+            "neither a state nor a clear",
+            &f.owner,
+            &name,
+            State::Unspecified,
+            false,
+            tonic::Code::InvalidArgument,
+            "INVALID_ARGUMENT",
+        ),
+    ] {
+        let refused = update(user, tool, state, clear).await.expect_err(label);
+        assert_eq!(
+            (refused.code(), error_reason(&refused).as_str()),
+            (code, reason),
+            "{label}"
+        );
+    }
+
+    assert_eq!(
+        update(&f.owner, &name, State::Disabled, false)
+            .await
+            .expect("set the rule"),
+        [(name.clone(), State::Disabled.into(), true)]
+    );
+    assert_eq!(
+        update(&f.owner, &name, State::Unspecified, true)
+            .await
+            .expect("clear the rule"),
+        [(name.clone(), State::ApprovalRequired.into(), false)]
+    );
+}
+
 /// A User of the Organization with no Membership of the Workspace.
 async fn outsider(f: &Fixture) -> AuthenticatedUser {
     let outsider = AuthenticatedUser::organization_member(

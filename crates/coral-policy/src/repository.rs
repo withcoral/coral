@@ -244,6 +244,21 @@ pub(super) async fn upsert_access_state(
     Ok(())
 }
 
+/// Deletes the exact rule and returns whether one was there. A decision
+/// that holds the rule shared makes the delete wait, as it does a change.
+pub(super) async fn delete_access_state(
+    transaction: &mut Transaction<'_>,
+    target: &ToolPolicyTarget,
+) -> Result<bool, Error> {
+    let statement = Query::delete()
+        .from_table(ToolAccessRules::Table)
+        .and_where(Expr::col(ToolAccessRules::WorkspaceId).eq(target.workspace_id().to_string()))
+        .and_where(Expr::col(ToolAccessRules::ProviderId).eq(target.provider_id().to_string()))
+        .and_where(Expr::col(ToolAccessRules::ToolKey).eq(target.tool_key().as_str()))
+        .to_owned();
+    Ok(transaction.execute(statement).await? == 1)
+}
+
 pub(super) struct NewLifecycleEvent<'a> {
     pub(super) target: &'a ToolPolicyTarget,
     pub(super) actor_user_id: &'a UserId,

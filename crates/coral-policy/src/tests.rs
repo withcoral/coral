@@ -16,6 +16,7 @@ use coral_workspace::{
 
 use crate::{
     LifecycleAction, LifecycleOutcome, ToolAccessState, ToolPolicyModule, ToolPolicyTarget,
+    ToolRuleChange,
 };
 
 const EFFECT_MCP: &str = r#"{
@@ -819,7 +820,11 @@ async fn disabled_provider_remains_an_administrative_policy_target() {
 }
 
 #[tokio::test]
-async fn exact_target_supports_all_three_states_without_cross_tool_or_provider_rules() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Tool takes each state, then loses its rule, beside the Tools no rule names"
+)]
+async fn exact_target_supports_all_three_states_and_a_clear_without_cross_tool_or_provider_rules() {
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -909,14 +914,40 @@ async fn exact_target_supports_all_three_states_without_cross_tool_or_provider_r
         assert_eq!(decision.access_state(), ToolAccessState::ApprovalRequired);
         assert!(!decision.is_explicit());
     }
-    assert_eq!(
+    let events = || async {
         policies
             .list_lifecycle_events(&owner, workspace.id())
             .await
             .expect("list exact policy Events")
-            .len(),
-        3
-    );
+            .len()
+    };
+    let before = events().await;
+    assert_eq!(before, 3);
+
+    // Clearing the rule returns the Tool to its default, with one Event.
+    // Clearing it again, or a Tool that has no rule, writes nothing.
+    for (occurred_at_unix_nanos, target) in [(160, &forecast), (170, &forecast), (180, &alerts)] {
+        let cleared = policies
+            .set_access_state(
+                &change(owner.clone(), occurred_at_unix_nanos, '8'),
+                target.clone(),
+                ToolRuleChange::Clear,
+            )
+            .await
+            .expect("clear the exact rule");
+        assert_eq!(
+            (cleared.access_state(), cleared.is_explicit()),
+            (ToolAccessState::ApprovalRequired, false)
+        );
+        assert_eq!(
+            policies
+                .decision(&member, target)
+                .await
+                .expect("the default decides"),
+            cleared
+        );
+    }
+    assert_eq!(events().await, before + 1);
 }
 
 #[tokio::test]
@@ -2085,6 +2116,7 @@ struct PrivateTools {
     policies: ToolPolicyModule,
     workspace: coral_workspace::WorkspaceId,
     provider: coral_provider::ProviderId,
+    shared_provider: coral_provider::ProviderId,
     owner: AuthenticatedUser,
     member: AuthenticatedUser,
     owners_tool: ToolKey,
@@ -2131,18 +2163,27 @@ impl PrivateTools {
             .await
             .expect("add the Member");
         let mut transaction = database.begin().await.expect("begin install");
-        let provider = providers
-            .install_coral_defined_in_transaction(
-                &mut transaction,
-                &change(owner.clone(), 12, '3'),
-                &workspace,
-                coral_provider::CoralDefinedProvider::Private,
-            )
-            .await
-            .expect("install the Private Provider")
-            .skip_search()
-            .id()
-            .clone();
+        let mut installed = Vec::new();
+        for defined in [
+            coral_provider::CoralDefinedProvider::Private,
+            coral_provider::CoralDefinedProvider::Shared,
+        ] {
+            installed.push(
+                providers
+                    .install_coral_defined_in_transaction(
+                        &mut transaction,
+                        &change(owner.clone(), 12, '3'),
+                        &workspace,
+                        defined,
+                    )
+                    .await
+                    .expect("install the Provider")
+                    .skip_search()
+                    .id()
+                    .clone(),
+            );
+        }
+        let [provider, shared_provider] = installed.try_into().expect("two Providers");
         transaction.commit().await.expect("commit install");
         let issued = workspaces
             .create_agent(
@@ -2199,6 +2240,7 @@ impl PrivateTools {
             policies,
             workspace,
             provider,
+            shared_provider,
             owner,
             member,
             owners_tool,
@@ -2329,6 +2371,25 @@ async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_m
             "{tool:?}"
         );
     }
+    // Clearing the Owner's rule returns their Private Tool to the default
+    // it declares.
+    tools
+        .policies
+        .set_access_state(
+            &change(tools.owner.clone(), 45, '7'),
+            tools.target(&tools.owners_tool),
+            ToolRuleChange::Clear,
+        )
+        .await
+        .expect("clear the Owner's rule");
+    assert_eq!(tools.events().await, before + 1);
+    assert_eq!(
+        decision(tools.owner.clone(), tools.owners_tool.clone())
+            .await
+            .expect("the declared default"),
+        (ToolAccessState::ApprovalRequired, false)
+    );
+    let before = tools.events().await;
     // A Member sets no rule, even on their own Private Tool.
     assert!(matches!(
         tools
@@ -2472,4 +2533,352 @@ async fn the_private_provider_lists_the_private_tools_whose_rules_each_reader_ma
             false
         )]
     );
+}
+
+/// The Workspace of [`PrivateTools`], whose Owner publishes Shared Tools to
+/// its Shared Provider from their own Private Tool.
+struct SharedTools {
+    base: PrivateTools,
+    shared: coral_tools::SharedToolModule,
+}
+
+impl SharedTools {
+    async fn new() -> Self {
+        let base = PrivateTools::new().await;
+        let database = base.policies.database.clone();
+        let shared = coral_tools::SharedToolModule::new(
+            database.clone(),
+            WorkspaceModule::new(database),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .expect("the Shared Tool module");
+        Self { base, shared }
+    }
+
+    /// Publishes the revision after `expected_revision` at `path`, with
+    /// `default` as its default, and returns the Shared Tool's Tool Key.
+    async fn publish(
+        &self,
+        path: &str,
+        default: ToolAccessState,
+        expected_revision: u64,
+    ) -> ToolKey {
+        let publish = coral_tools::SharedToolPublish::new(
+            coral_tools::SharedToolPath::parse(path).expect("path"),
+            coral_tools::SharedToolOrigin::PrivateTool {
+                owner: AuthenticatedPrincipal::user(self.base.owner.clone())
+                    .principal()
+                    .clone(),
+                path: coral_tools::PrivateToolPath::parse("people.greet").expect("path"),
+            },
+            coral_tools::AuthoredToolDescription::parse("Greet").expect("description"),
+            coral_tools::AuthoredToolSource::parse("export default async () => 1;")
+                .expect("source"),
+            default,
+            expected_revision,
+        );
+        Box::pin(self.shared.publish(
+            &change(self.base.owner.clone(), 60, '9'),
+            &self.base.workspace,
+            publish,
+            None,
+        ))
+        .await
+        .expect("publish the Shared Tool")
+        .published()
+        .expect("a published Shared Tool")
+        .id()
+        .tool_key()
+    }
+
+    /// Removes the Shared Tool at `path`, whose current revision is the
+    /// first.
+    async fn remove(&self, path: &str) {
+        self.shared
+            .remove(
+                &change(self.base.owner.clone(), 61, 'a'),
+                &self.base.workspace,
+                &coral_tools::SharedToolPath::parse(path).expect("path"),
+                1,
+            )
+            .await
+            .expect("remove the Shared Tool");
+    }
+
+    fn target(&self, tool: &ToolKey) -> ToolPolicyTarget {
+        ToolPolicyTarget::new(
+            self.base.workspace.clone(),
+            self.base.shared_provider.clone(),
+            tool.clone(),
+        )
+    }
+
+    /// The target and the action of the newest policy Event.
+    async fn last_event(&self) -> (ToolPolicyTarget, LifecycleAction) {
+        let events = self
+            .base
+            .policies
+            .list_lifecycle_events(&self.base.owner, &self.base.workspace)
+            .await
+            .expect("list policy Events");
+        let event = events.last().expect("a policy Event");
+        (event.target().clone(), event.action())
+    }
+
+    /// The Shared Provider's listing as `reader` reads it, in page order:
+    /// each Tool's key, path, state and whether a rule decides it.
+    async fn listed(
+        &self,
+        reader: &AuthenticatedUser,
+        after: Option<&ToolKey>,
+        page_size: u32,
+    ) -> Vec<(ToolKey, String, ToolAccessState, bool)> {
+        self.base
+            .policies
+            .listed_decisions(
+                reader,
+                &self.base.workspace,
+                &self.base.shared_provider,
+                after,
+                page_size,
+            )
+            .await
+            .expect("list the Shared Provider")
+            .into_iter()
+            .map(|listed| {
+                assert_eq!(listed.agent, None, "a Shared Tool is no Agent's");
+                (
+                    listed.listing.key,
+                    listed.listing.relative_path,
+                    listed.decision.access_state(),
+                    listed.decision.is_explicit(),
+                )
+            })
+            .collect()
+    }
+}
+
+// Catches: a Shared Provider listing that misses a live Shared Tool, shows
+// a removed one, reads a default other than the current revision's, pages
+// out of Tool Key order, or differs between an Owner and a Member.
+#[tokio::test]
+async fn the_shared_provider_lists_the_live_shared_tools_with_their_defaults_to_every_member() {
+    let tools = SharedTools::new().await;
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let send = tools
+        .publish("mail.send", ToolAccessState::Enabled, 0)
+        .await;
+    tools.publish("old.gone", ToolAccessState::Enabled, 0).await;
+    tools.remove("old.gone").await;
+
+    let mut expected = vec![
+        (
+            remind.clone(),
+            "mail.remind".to_owned(),
+            ToolAccessState::ApprovalRequired,
+            false,
+        ),
+        (
+            send.clone(),
+            "mail.send".to_owned(),
+            ToolAccessState::Enabled,
+            false,
+        ),
+    ];
+    expected.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    for reader in [&tools.base.owner, &tools.base.member] {
+        assert_eq!(tools.listed(reader, None, 1000).await, expected);
+    }
+    // A full page carries one lookahead row, and the next starts after it.
+    assert_eq!(tools.listed(&tools.base.member, None, 1).await, expected);
+    let [first, rest @ ..] = expected.as_slice() else {
+        panic!("two Shared Tools");
+    };
+    assert_eq!(
+        tools.listed(&tools.base.member, Some(&first.0), 1).await,
+        rest
+    );
+
+    // A new revision's default replaces the one before it.
+    tools
+        .publish("mail.remind", ToolAccessState::Disabled, 1)
+        .await;
+    let republished = tools.listed(&tools.base.member, None, 1000).await;
+    assert_eq!(
+        republished
+            .iter()
+            .find(|row| row.0 == remind)
+            .map(|row| (row.2, row.3)),
+        Some((ToolAccessState::Disabled, false))
+    );
+}
+
+// Catches: an Owner who cannot set or clear a rule on a Shared Tool, a rule
+// a Member does not read or a new revision drops, a Member who writes one,
+// a rule accepted for a key that names no live Shared Tool, or a refused
+// update that changes anything.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario sets a rule, refuses each bad update and clears the rule"
+)]
+async fn an_owner_sets_and_clears_a_rule_on_a_shared_tool_and_a_member_only_reads_it() {
+    let tools = SharedTools::new().await;
+    let (owner, member) = (&tools.base.owner, &tools.base.member);
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let gone = tools.publish("old.gone", ToolAccessState::Enabled, 0).await;
+    tools.remove("old.gone").await;
+    let read = |reader: &AuthenticatedUser| {
+        let (policies, reader, target) = (
+            tools.base.policies.clone(),
+            reader.clone(),
+            tools.target(&remind),
+        );
+        async move {
+            let decision = policies
+                .decision(&reader, &target)
+                .await
+                .expect("read the Shared Tool's decision");
+            (decision.access_state(), decision.is_explicit())
+        }
+    };
+
+    // The Owner's rule overrides the published default for every reader,
+    // and still does after a new revision with another default.
+    let before = tools.base.events().await;
+    tools
+        .base
+        .policies
+        .set_access_state(
+            &change(owner.clone(), 70, 'b'),
+            tools.target(&remind),
+            ToolAccessState::Disabled,
+        )
+        .await
+        .expect("set the Owner's rule");
+    assert_eq!(tools.base.events().await, before + 1);
+    assert_eq!(
+        tools.last_event().await,
+        (tools.target(&remind), LifecycleAction::AccessStateUpdated),
+        "the Event any Provider's rule change records"
+    );
+    tools
+        .publish("mail.remind", ToolAccessState::Enabled, 1)
+        .await;
+    for reader in [owner, member] {
+        assert_eq!(read(reader).await, (ToolAccessState::Disabled, true));
+        assert_eq!(
+            tools.listed(reader, None, 1000).await,
+            [(
+                remind.clone(),
+                "mail.remind".to_owned(),
+                ToolAccessState::Disabled,
+                true
+            )]
+        );
+    }
+
+    // A Member writes no rule. A key that names a removed Shared Tool, or
+    // a Private Tool, names no Tool of the Shared Provider. Each refusal
+    // leaves the whole update unwritten.
+    let before = tools.base.events().await;
+    let enable = ToolRuleChange::Set(ToolAccessState::Enabled);
+    let permission_denied: fn(&crate::Error) -> bool = |error| {
+        matches!(
+            error,
+            crate::Error::Workspace(coral_workspace::Error::PermissionDenied(_))
+        )
+    };
+    let tool_not_found: fn(&crate::Error) -> bool =
+        |error| matches!(error, crate::Error::ToolNotFound);
+    for (actor, update, is_the_refusal) in [
+        (
+            member,
+            vec![(tools.target(&remind), enable)],
+            permission_denied,
+        ),
+        (
+            member,
+            vec![(tools.target(&remind), ToolRuleChange::Clear)],
+            permission_denied,
+        ),
+        (owner, vec![(tools.target(&gone), enable)], tool_not_found),
+        (
+            owner,
+            vec![(tools.target(&gone), ToolRuleChange::Clear)],
+            tool_not_found,
+        ),
+        (
+            owner,
+            vec![(tools.target(&tools.base.owners_tool), enable)],
+            tool_not_found,
+        ),
+        (
+            owner,
+            vec![
+                (tools.target(&remind), ToolRuleChange::Clear),
+                (tools.target(&gone), enable),
+            ],
+            tool_not_found,
+        ),
+    ] {
+        let refused = tools
+            .base
+            .policies
+            .set_access_states(&change(actor.clone(), 80, 'c'), update.clone())
+            .await;
+        assert!(
+            refused.as_ref().is_err_and(is_the_refusal),
+            "{update:?}: {refused:?}"
+        );
+        assert_eq!(tools.base.events().await, before, "{update:?}");
+        assert_eq!(
+            read(owner).await,
+            (ToolAccessState::Disabled, true),
+            "{update:?}"
+        );
+    }
+    assert!(
+        matches!(
+            tools
+                .base
+                .policies
+                .decision(owner, &tools.target(&gone))
+                .await,
+            Err(crate::Error::ToolNotFound)
+        ),
+        "a removed Shared Tool has no decision to read"
+    );
+
+    // Clearing the rule returns the Shared Tool to its current revision's
+    // default, with one Event. Clearing it again writes nothing.
+    for at in [90, 91] {
+        let cleared = tools
+            .base
+            .policies
+            .set_access_state(
+                &change(owner.clone(), at, 'd'),
+                tools.target(&remind),
+                ToolRuleChange::Clear,
+            )
+            .await
+            .expect("clear the Owner's rule");
+        assert_eq!(
+            (cleared.access_state(), cleared.is_explicit()),
+            (ToolAccessState::Enabled, false)
+        );
+    }
+    assert_eq!(tools.base.events().await, before + 1);
+    assert_eq!(
+        tools.last_event().await,
+        (tools.target(&remind), LifecycleAction::AccessStateUpdated)
+    );
+    for reader in [owner, member] {
+        assert_eq!(read(reader).await, (ToolAccessState::Enabled, false));
+    }
 }
