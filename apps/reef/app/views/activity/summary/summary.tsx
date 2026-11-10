@@ -1,6 +1,8 @@
 import { useNavigate, useSearchParams } from 'react-router'
 import { Card, Tabs, Typography } from '@/wax/components'
 import { SegmentedControl } from '@/wax/components/segmented-control'
+import { Skeleton } from '@/wax/components/skeleton'
+import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { SUMMARY_DAYS, type ActivitySummaryData, type SummaryDays } from '@/lib/activity-summary'
 import { describeContextImpact } from '../context-impact'
 import { CallsLens } from './calls-lens'
@@ -96,8 +98,8 @@ function metrics(summary: ActivitySummaryData, byAgents: number) {
 }
 
 export interface ActivitySummaryProps {
-  /** Null when the summary is not available. */
-  summary: ActivitySummaryData | null
+  /** Null when the summary is not available. Undefined while the first summary loads. */
+  summary: ActivitySummaryData | null | undefined
   days: SummaryDays
   /** The workspace's providers, which name the rows and open their pages. Without them, rows open nothing. */
   providers?: readonly SummaryProvider[]
@@ -123,11 +125,12 @@ export function ActivitySummary({
 }: ActivitySummaryProps) {
   const [lens, setLens] = useLens()
   const byAgents = summary ? agentCalls(summary, owner) : 0
+  const loading = summary === undefined
   return (
     <section
-      className={pending ? `${styles.root} ${styles.pending}` : styles.root}
+      className={pending && !loading ? `${styles.root} ${styles.pending}` : styles.root}
       aria-label="Activity summary"
-      aria-busy={pending}
+      aria-busy={pending || loading}
     >
       <div className={styles.heading}>
         <Typography.BodySmallStrong as="h2" variant="primary">
@@ -145,7 +148,16 @@ export function ActivitySummary({
           <Typography.BodySmall variant="tertiary">{`Last ${periodName(days)}`}</Typography.BodySmall>
         )}
       </div>
-      {summary ? (
+      {loading ? (
+        <Card.Container>
+          <div className={styles.loading} role="status">
+            <span className={visuallyHidden}>Loading activity…</span>
+            {LENSES.map((value) => (
+              <Skeleton key={value} height="56px" width="100%" />
+            ))}
+          </div>
+        </Card.Container>
+      ) : summary ? (
         <Card.Container flush>
           <Tabs.Root value={lens} onValueChange={(value) => setLens(value as Lens)}>
             <Tabs.MetricList aria-label="Summary">

@@ -16,6 +16,12 @@ export const heading = style({
   justifyContent: 'space-between',
   gap: 12,
 })
+// One placeholder per metric, laid out as the metrics will be.
+export const loading = style({
+  display: 'grid',
+  gap: 12,
+  gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+})
 export const panels = style({ display: 'grid' })
 export const panel = style({
   gridArea: '1 / 1',

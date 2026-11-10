@@ -241,6 +241,12 @@ export const Pending: Story = {
   },
 }
 
+// The first numbers have not arrived. workspace.test.tsx owns when this shows.
+export const Loading: Story = {
+  args: { onDaysChange: () => {} },
+  render: (args) => <ActivitySummary {...args} summary={undefined} />,
+}
+
 export const ContextAdded: Story = {
   args: {
     summary: {
