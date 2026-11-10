@@ -215,7 +215,9 @@ mod tests {
         let checked = tool_check_deadline(far).expect("time left to check");
         assert!(checked > started && checked <= Instant::now() + TOOL_CHECK_BUDGET);
 
-        let near = started + TOOL_CHECK_COMPILATION_RESERVE + Duration::from_millis(200);
+        // Anchored just before the call: the reserve, not the budget, ends this
+        // check, unless the call starts 400 ms late.
+        let near = Instant::now() + TOOL_CHECK_COMPILATION_RESERVE + Duration::from_millis(400);
         assert_eq!(
             tool_check_deadline(near),
             near.checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
