@@ -111,6 +111,7 @@
         "group": "Guides",
         "pages": [
           "guides/concepts",
+          "guides/permissions",
           "guides/providers",
           "guides/database-providers"
         ]
