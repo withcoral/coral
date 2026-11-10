@@ -50,6 +50,8 @@ pub(crate) struct Launcher {
     /// The variables that stop this process from sending usage data. A
     /// launch that supplies none sends nothing.
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
+    /// What the launching binary adds to Coral, such as its Edition check.
+    pub(crate) extensions: super::runtime::Extensions,
 }
 
 /// Local auth support's default port under Desktop, which registers it as a

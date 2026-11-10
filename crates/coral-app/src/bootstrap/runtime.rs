@@ -23,6 +23,17 @@ use coral_run::RuntimeLimits;
 use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
+/// What a launching binary adds to Coral beyond what every build has.
+///
+/// The `coral` binary passes the default. The released binary will pass what
+/// `ee/` registers, and each Enterprise Feature will check [`Self::edition`]
+/// each time it is used (ADR 0033).
+#[derive(Clone, Default)]
+pub struct Extensions {
+    /// Decides the deployment's Edition. The default is always Community.
+    pub edition: coral_edition::EditionCheck,
+}
+
 /// What the launching process says about this launch.
 ///
 /// [`Launch::from_env`] reads it once at process bootstrap.
@@ -43,11 +54,14 @@ pub struct Launch {
     /// The variables that stop this process from sending usage data, as
     /// bootstrap read them. Without them, the process sends nothing.
     pub usage_environment: Option<coral_usage::SendEnvironment>,
+    /// What the launching binary adds to Coral.
+    pub extensions: Extensions,
 }
 
 impl Launch {
     /// Passes this launch to `builder`.
     fn configure(self, builder: ServerBuilder) -> ServerBuilder {
+        let builder = builder.with_extensions(self.extensions);
         let builder = match self.service_version {
             Some(version) => builder.with_service_version(version),
             None => builder,
