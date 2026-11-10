@@ -349,7 +349,6 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
                             tool: tool.to_owned(),
                             access_state: state.into(),
                             explicit: false,
-                            clear: false,
                         }],
                     },
                     &f.token(user, "reef"),

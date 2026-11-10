@@ -2,7 +2,7 @@
 use super::workspaces::{change, invalid, page_of, page_start_within};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use coral_policy::{ToolAccessState, ToolPolicyTarget, ToolRuleChange};
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_provider::ProviderId;
 use tonic::{Request, Response, Status};
 
@@ -29,17 +29,6 @@ pub(super) fn access(state: i32) -> Result<ToolAccessState, Status> {
         _ => Err(invalid("invalid access state")),
     }
 }
-/// What one update does to its Tool's exact rule: it sets a state, or it
-/// clears the rule and names no state.
-fn rule_change(policy: &wire::ToolPolicy) -> Result<ToolRuleChange, Status> {
-    if !policy.clear {
-        return access(policy.access_state).map(ToolRuleChange::Set);
-    }
-    if policy.access_state != i32::from(wire::ToolAccessState::Unspecified) {
-        return Err(invalid("a cleared rule takes no access state"));
-    }
-    Ok(ToolRuleChange::Clear)
-}
 pub(super) fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
     match state {
         ToolAccessState::Enabled => wire::ToolAccessState::Enabled,
@@ -52,7 +41,6 @@ fn view(tool: String, decision: &coral_policy::ToolPolicyDecision) -> wire::Tool
         tool,
         access_state: access_state(decision.access_state()).into(),
         explicit: decision.is_explicit(),
-        clear: false,
     }
 }
 fn tool_access(parent: &str, listed: &coral_policy::ListedTool) -> wire::ToolAccess {
@@ -186,7 +174,7 @@ impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
         let updates = targets
             .into_iter()
             .zip(req.policies)
-            .map(|(target, policy)| Ok((target, rule_change(&policy)?)))
+            .map(|(target, policy)| Ok((target, access(policy.access_state)?)))
             .collect::<Result<Vec<_>, Status>>()?;
         let decisions = self
             .policies

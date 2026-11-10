@@ -13845,17 +13845,12 @@ pub struct ToolPolicy {
     /// Canonical Provider Tool resource name, never a Call Path.
     #[prost(string, tag = "1")]
     pub tool: ::prost::alloc::string::String,
-    /// Exact decision for the requested Provider. In an update, the state the
-    /// exact rule takes; unspecified only with `clear`.
+    /// Exact decision for the requested Provider.
     #[prost(enumeration = "ToolAccessState", tag = "2")]
     pub access_state: i32,
     /// True when an exact stored rule, false when the Tool's default.
     #[prost(bool, tag = "3")]
     pub explicit: bool,
-    /// Input only. Removes the Tool's exact rule, so the Tool takes its default.
-    /// An update that sets it leaves `access_state` unspecified.
-    #[prost(bool, tag = "4")]
-    pub clear: bool,
 }
 /// Reads one page of a Provider's current administrative catalog. In the
 /// Private Provider, the page holds the Private Tools whose rules the caller
@@ -13923,16 +13918,14 @@ pub struct UpdateToolPoliciesRequest {
     /// Exact Provider resource name.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// 1–100 distinct canonical Tool targets, each setting or clearing its
-    /// exact rule; explicit is output-only.
+    /// 1–100 distinct canonical Tool targets; explicit is output-only.
     #[prost(message, repeated, tag = "2")]
     pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
 }
-/// Committed decisions.
+/// Committed exact decisions.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateToolPoliciesResponse {
-    /// Each Tool's decision after the update, in request order. A cleared rule
-    /// returns the Tool's default, not explicit.
+    /// All accepted decisions in request order.
     #[prost(message, repeated, tag = "1")]
     pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
 }

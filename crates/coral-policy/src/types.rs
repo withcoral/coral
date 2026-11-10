@@ -113,21 +113,6 @@ impl PrivateToolOwner {
     }
 }
 
-/// What an update does to one Tool's exact rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolRuleChange {
-    /// Creates the rule, or changes its Tool Access State.
-    Set(ToolAccessState),
-    /// Removes the rule, so the Tool takes its default.
-    Clear,
-}
-
-impl From<ToolAccessState> for ToolRuleChange {
-    fn from(access_state: ToolAccessState) -> Self {
-        Self::Set(access_state)
-    }
-}
-
 /// Every exact Tool rule of one Workspace, read once for discovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExactToolRules {
@@ -243,7 +228,7 @@ impl ToolPolicyDecision {
 /// Accepted Tool-policy lifecycle action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleAction {
-    /// An exact Tool Access State was created, changed or cleared.
+    /// An exact Tool Access State was created or changed.
     AccessStateUpdated,
 }
 

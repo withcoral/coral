@@ -27,14 +27,10 @@ enum ToolAccessState {
 message ToolPolicy {
   // Canonical Provider Tool resource name, never a Call Path.
   string tool = 1;
-  // Exact decision for the requested Provider. In an update, the state the
-  // exact rule takes; unspecified only with `clear`.
+  // Exact decision for the requested Provider.
   ToolAccessState access_state = 2;
   // True when an exact stored rule, false when the Tool's default.
   bool explicit = 3;
-  // Input only. Removes the Tool's exact rule, so the Tool takes its default.
-  // An update that sets it leaves `access_state` unspecified.
-  bool clear = 4;
 }
 
 // Reads one page of a Provider's current administrative catalog. In the
@@ -87,14 +83,12 @@ message ListToolAccessResponse {
 message UpdateToolPoliciesRequest {
   // Exact Provider resource name.
   string parent = 1;
-  // 1–100 distinct canonical Tool targets, each setting or clearing its
-  // exact rule; explicit is output-only.
+  // 1–100 distinct canonical Tool targets; explicit is output-only.
   repeated ToolPolicy policies = 2;
 }
 
-// Committed decisions.
+// Committed exact decisions.
 message UpdateToolPoliciesResponse {
-  // Each Tool's decision after the update, in request order. A cleared rule
-  // returns the Tool's default, not explicit.
+  // All accepted decisions in request order.
   repeated ToolPolicy policies = 1;
 }

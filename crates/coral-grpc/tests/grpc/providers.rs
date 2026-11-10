@@ -1701,7 +1701,6 @@ async fn policy_service_projects_tool_decisions_and_refuses_members() {
                 tool: tool.clone(),
                 access_state: access_state.into(),
                 explicit: false,
-                clear: false,
             }],
         };
     let denied = policies

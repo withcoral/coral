@@ -16,7 +16,6 @@ use coral_workspace::{
 
 use crate::{
     LifecycleAction, LifecycleOutcome, ToolAccessState, ToolPolicyModule, ToolPolicyTarget,
-    ToolRuleChange,
 };
 
 const EFFECT_MCP: &str = r#"{
@@ -820,11 +819,7 @@ async fn disabled_provider_remains_an_administrative_policy_target() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one Tool takes each state, then loses its rule, beside the Tools no rule names"
-)]
-async fn exact_target_supports_all_three_states_and_a_clear_without_cross_tool_or_provider_rules() {
+async fn exact_target_supports_all_three_states_without_cross_tool_or_provider_rules() {
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -914,40 +909,14 @@ async fn exact_target_supports_all_three_states_and_a_clear_without_cross_tool_o
         assert_eq!(decision.access_state(), ToolAccessState::ApprovalRequired);
         assert!(!decision.is_explicit());
     }
-    let events = || async {
+    assert_eq!(
         policies
             .list_lifecycle_events(&owner, workspace.id())
             .await
             .expect("list exact policy Events")
-            .len()
-    };
-    let before = events().await;
-    assert_eq!(before, 3);
-
-    // Clearing the rule returns the Tool to its default, with one Event.
-    // Clearing it again, or a Tool that has no rule, writes nothing.
-    for (occurred_at_unix_nanos, target) in [(160, &forecast), (170, &forecast), (180, &alerts)] {
-        let cleared = policies
-            .set_access_state(
-                &change(owner.clone(), occurred_at_unix_nanos, '8'),
-                target.clone(),
-                ToolRuleChange::Clear,
-            )
-            .await
-            .expect("clear the exact rule");
-        assert_eq!(
-            (cleared.access_state(), cleared.is_explicit()),
-            (ToolAccessState::ApprovalRequired, false)
-        );
-        assert_eq!(
-            policies
-                .decision(&member, target)
-                .await
-                .expect("the default decides"),
-            cleared
-        );
-    }
-    assert_eq!(events().await, before + 1);
+            .len(),
+        3
+    );
 }
 
 #[tokio::test]
@@ -2371,25 +2340,6 @@ async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_m
             "{tool:?}"
         );
     }
-    // Clearing the Owner's rule returns their Private Tool to the default
-    // it declares.
-    tools
-        .policies
-        .set_access_state(
-            &change(tools.owner.clone(), 45, '7'),
-            tools.target(&tools.owners_tool),
-            ToolRuleChange::Clear,
-        )
-        .await
-        .expect("clear the Owner's rule");
-    assert_eq!(tools.events().await, before + 1);
-    assert_eq!(
-        decision(tools.owner.clone(), tools.owners_tool.clone())
-            .await
-            .expect("the declared default"),
-        (ToolAccessState::ApprovalRequired, false)
-    );
-    let before = tools.events().await;
     // A Member sets no rule, even on their own Private Tool.
     assert!(matches!(
         tools
@@ -2716,16 +2666,12 @@ async fn the_shared_provider_lists_the_live_shared_tools_with_their_defaults_to_
     );
 }
 
-// Catches: an Owner who cannot set or clear a rule on a Shared Tool, a rule
-// a Member does not read or a new revision drops, a Member who writes one,
-// a rule accepted for a key that names no live Shared Tool, or a refused
-// update that changes anything.
+// Catches: an Owner who cannot set a rule on a Shared Tool, a rule a Member
+// does not read or a new revision drops, a Member who writes one, a rule
+// accepted for a key that names no live Shared Tool, or a refused update
+// that changes anything.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one scenario sets a rule, refuses each bad update and clears the rule"
-)]
-async fn an_owner_sets_and_clears_a_rule_on_a_shared_tool_and_a_member_only_reads_it() {
+async fn an_owner_sets_a_rule_on_a_shared_tool_and_a_member_only_reads_it() {
     let tools = SharedTools::new().await;
     let (owner, member) = (&tools.base.owner, &tools.base.member);
     let remind = tools
@@ -2783,11 +2729,10 @@ async fn an_owner_sets_and_clears_a_rule_on_a_shared_tool_and_a_member_only_read
         );
     }
 
-    // A Member writes no rule. A key that names a removed Shared Tool, or
-    // a Private Tool, names no Tool of the Shared Provider. Each refusal
-    // leaves the whole update unwritten.
+    // A Member writes no rule. A key that names a removed Shared Tool, a
+    // Shared Tool that never was, or a Private Tool, names no Tool of the
+    // Shared Provider. Each refusal leaves the whole update unwritten.
     let before = tools.base.events().await;
-    let enable = ToolRuleChange::Set(ToolAccessState::Enabled);
     let permission_denied: fn(&crate::Error) -> bool = |error| {
         matches!(
             error,
@@ -2796,36 +2741,14 @@ async fn an_owner_sets_and_clears_a_rule_on_a_shared_tool_and_a_member_only_read
     };
     let tool_not_found: fn(&crate::Error) -> bool =
         |error| matches!(error, crate::Error::ToolNotFound);
+    let never = ToolKey::parse("00000000-0000-4000-8000-000000000000").expect("Tool Key");
+    let enable = |tool: &ToolKey| (tools.target(tool), ToolAccessState::Enabled);
     for (actor, update, is_the_refusal) in [
-        (
-            member,
-            vec![(tools.target(&remind), enable)],
-            permission_denied,
-        ),
-        (
-            member,
-            vec![(tools.target(&remind), ToolRuleChange::Clear)],
-            permission_denied,
-        ),
-        (owner, vec![(tools.target(&gone), enable)], tool_not_found),
-        (
-            owner,
-            vec![(tools.target(&gone), ToolRuleChange::Clear)],
-            tool_not_found,
-        ),
-        (
-            owner,
-            vec![(tools.target(&tools.base.owners_tool), enable)],
-            tool_not_found,
-        ),
-        (
-            owner,
-            vec![
-                (tools.target(&remind), ToolRuleChange::Clear),
-                (tools.target(&gone), enable),
-            ],
-            tool_not_found,
-        ),
+        (member, vec![enable(&remind)], permission_denied),
+        (owner, vec![enable(&gone)], tool_not_found),
+        (owner, vec![enable(&never)], tool_not_found),
+        (owner, vec![enable(&tools.base.owners_tool)], tool_not_found),
+        (owner, vec![enable(&remind), enable(&gone)], tool_not_found),
     ] {
         let refused = tools
             .base
@@ -2854,31 +2777,4 @@ async fn an_owner_sets_and_clears_a_rule_on_a_shared_tool_and_a_member_only_read
         ),
         "a removed Shared Tool has no decision to read"
     );
-
-    // Clearing the rule returns the Shared Tool to its current revision's
-    // default, with one Event. Clearing it again writes nothing.
-    for at in [90, 91] {
-        let cleared = tools
-            .base
-            .policies
-            .set_access_state(
-                &change(owner.clone(), at, 'd'),
-                tools.target(&remind),
-                ToolRuleChange::Clear,
-            )
-            .await
-            .expect("clear the Owner's rule");
-        assert_eq!(
-            (cleared.access_state(), cleared.is_explicit()),
-            (ToolAccessState::Enabled, false)
-        );
-    }
-    assert_eq!(tools.base.events().await, before + 1);
-    assert_eq!(
-        tools.last_event().await,
-        (tools.target(&remind), LifecycleAction::AccessStateUpdated)
-    );
-    for reader in [owner, member] {
-        assert_eq!(read(reader).await, (ToolAccessState::Enabled, false));
-    }
 }

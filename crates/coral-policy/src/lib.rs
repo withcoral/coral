@@ -12,10 +12,10 @@
 //! - [`ToolPolicyModule::decisions`] reads a Provider's bounded selection in one snapshot.
 //! - [`ToolPolicyModule::provider_rules`] reads one Provider's exact rules
 //!   by Call Path for any Principal that inspects the Workspace.
-//! - [`ToolPolicyModule::set_access_state`] creates, changes or clears one
-//!   exact rule for a Workspace Owner.
-//! - [`ToolPolicyModule::set_access_states`] atomically sets or clears 1–100
-//!   distinct exact rules in one Workspace with their lifecycle evidence.
+//! - [`ToolPolicyModule::set_access_state`] creates or changes one exact
+//!   rule for a Workspace Owner.
+//! - [`ToolPolicyModule::set_access_states`] atomically changes 1–100 distinct
+//!   exact decisions in one Workspace with their lifecycle evidence.
 //! - [`ToolPolicyModule::set_provider_access_states`] atomically changes
 //!   1–100 exact decisions of one Provider, each named by its Call Path.
 //! - [`discovery_decision_in_transaction`] reads one exact current decision
@@ -63,7 +63,7 @@ pub use coral_catalog::ToolAccessState;
 pub use error::Error;
 pub use types::{
     AdministrativeLifecycleEvent, ExactToolRules, LifecycleAction, LifecycleOutcome, ListedTool,
-    PrivateToolOwner, ToolPolicyDecision, ToolPolicyTarget, ToolRuleChange,
+    PrivateToolOwner, ToolPolicyDecision, ToolPolicyTarget,
 };
 
 /// Exact Workspace Tool-policy Module.
@@ -286,8 +286,10 @@ impl ToolPolicyModule {
             .collect())
     }
 
-    /// Creates, changes or clears one exact rule, as
-    /// [`Self::set_access_states`] does for a batch of one.
+    /// Creates or changes one exact Tool Access State.
+    ///
+    /// Repeating an already explicit state is a no-op and writes no duplicate
+    /// lifecycle evidence.
     ///
     /// # Errors
     ///
@@ -296,26 +298,23 @@ impl ToolPolicyModule {
         &self,
         context: &ChangeContext,
         target: ToolPolicyTarget,
-        change: impl Into<ToolRuleChange>,
+        access_state: ToolAccessState,
     ) -> Result<ToolPolicyDecision, Error> {
-        self.set_access_states(context, vec![(target, change.into())])
+        self.set_access_states(context, vec![(target, access_state)])
             .await?
             .pop()
             .ok_or(Error::InvalidBatch)
     }
 
-    /// Atomically changes 1–100 distinct exact rules in one Workspace: each
-    /// is set to a Tool Access State, or cleared so its Tool takes its
-    /// default again. Returns each Tool's decision after the change.
+    /// Atomically changes 1–100 distinct exact decisions in one Workspace.
     /// A rejected target leaves every decision and lifecycle Event unchanged.
-    /// A change that leaves a rule as it was writes nothing, including its
-    /// lifecycle evidence: a repeated state, or a clear where no rule is.
+    /// Repeating explicit states is a no-op, including their lifecycle evidence.
     /// # Errors
     /// Rejects empty, oversized, duplicate, cross-Workspace, absent or unauthorized targets.
-    pub async fn set_access_states<C: Into<ToolRuleChange>>(
+    pub async fn set_access_states(
         &self,
         context: &ChangeContext,
-        updates: Vec<(ToolPolicyTarget, C)>,
+        updates: Vec<(ToolPolicyTarget, ToolAccessState)>,
     ) -> Result<Vec<ToolPolicyDecision>, Error> {
         let workspace = updates.first().ok_or(Error::InvalidBatch)?.0.workspace_id();
         let mut seen = std::collections::HashSet::new();
@@ -332,19 +331,19 @@ impl ToolPolicyModule {
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace)
             .await?;
         let mut decisions = Vec::with_capacity(updates.len());
-        for (target, change) in updates {
-            let facts =
-                ruled_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target)
-                    .await?;
-            let rule = write_rule_change_in_transaction(
-                &mut transaction,
-                context,
-                &evidence,
-                &target,
-                change.into(),
-            )
-            .await?;
-            decisions.push(resolved_decision(&target, facts, rule));
+        for (target, access_state) in updates {
+            require_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target)
+                .await?;
+            decisions.push(
+                write_access_state_in_transaction(
+                    &mut transaction,
+                    context,
+                    &evidence,
+                    target,
+                    access_state,
+                )
+                .await?,
+            );
         }
         transaction.commit().await?;
         Ok(decisions)
@@ -409,15 +408,15 @@ impl ToolPolicyModule {
         }
         let mut applied = BTreeMap::new();
         for (path, target, access_state) in updates {
-            write_rule_change_in_transaction(
+            let decision = write_access_state_in_transaction(
                 &mut transaction,
                 context,
                 &evidence,
-                &target,
-                ToolRuleChange::Set(access_state),
+                target,
+                access_state,
             )
             .await?;
-            applied.insert(path.clone(), access_state);
+            applied.insert(path.clone(), decision.access_state());
         }
         transaction.commit().await?;
         Ok(applied)
@@ -594,46 +593,30 @@ fn tools_error(error: coral_tools::Error) -> Error {
     }
 }
 
-/// Applies `change` to one exact rule and writes its lifecycle Event,
-/// unless the rule already is as `change` leaves it. Returns the rule after
-/// the change: `None` once cleared.
-async fn write_rule_change_in_transaction(
+/// Writes one exact rule and its lifecycle Event, unless the rule already
+/// holds `access_state`.
+async fn write_access_state_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     context: &ChangeContext,
     evidence: &WorkspaceEvidence,
-    target: &ToolPolicyTarget,
-    change: ToolRuleChange,
-) -> Result<Option<ToolAccessState>, Error> {
-    let (changed, rule) = match change {
-        ToolRuleChange::Set(access_state) => {
-            let changed = repository::access_state_in_transaction(
-                transaction,
-                target,
-                coral_db::RowLock::None,
-            )
-            .await?
-                != Some(access_state);
-            if changed {
-                repository::upsert_access_state(
-                    transaction,
-                    target,
-                    access_state,
-                    context.occurred_at_unix_nanos(),
-                )
-                .await?;
-            }
-            (changed, Some(access_state))
-        }
-        ToolRuleChange::Clear => (
-            repository::delete_access_state(transaction, target).await?,
-            None,
-        ),
-    };
-    if changed {
+    target: ToolPolicyTarget,
+    access_state: ToolAccessState,
+) -> Result<ToolPolicyDecision, Error> {
+    if repository::access_state_in_transaction(transaction, &target, coral_db::RowLock::None)
+        .await?
+        != Some(access_state)
+    {
+        repository::upsert_access_state(
+            transaction,
+            &target,
+            access_state,
+            context.occurred_at_unix_nanos(),
+        )
+        .await?;
         repository::insert_lifecycle_event(
             transaction,
             repository::NewLifecycleEvent {
-                target,
+                target: &target,
                 actor_user_id: context.actor().user_id(),
                 authority_source: evidence.authority_source(),
                 changed_field_paths: &["access_state"],
@@ -643,17 +626,15 @@ async fn write_rule_change_in_transaction(
         )
         .await?;
     }
-    Ok(rule)
+    Ok(ToolPolicyDecision::new(target, access_state, true))
 }
 
-/// The policy facts of the Tool `target` names, which `actor` may set a
-/// rule on.
-async fn ruled_tool_in_transaction(
+async fn require_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     actor: &AuthenticatedUser,
     evidence: &WorkspaceEvidence,
     target: &ToolPolicyTarget,
-) -> Result<ToolPolicyFacts, Error> {
+) -> Result<(), Error> {
     ruled_tool_facts_in_transaction(
         transaction,
         actor,
@@ -663,7 +644,8 @@ async fn ruled_tool_in_transaction(
     )
     .await?
     .facts
-    .remove(target.tool_key())
+    .contains_key(target.tool_key())
+    .then_some(())
     .ok_or(Error::ToolNotFound)
 }
 
