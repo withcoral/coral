@@ -41,8 +41,8 @@
 [ADR 0033](docs/adr/0033-enterprise-code-lives-in-ee-and-runs-only-in-the-enterprise-edition.md)
 has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 
-- Code that ships outside `ee/` never depends on, imports, feature-gates on,
-  or names code inside it. Build, release and dev tooling may select the
+- Code outside `ee/` never depends on, imports, feature-gates on, or names
+  code inside it, tests included. Build, release and dev tooling may select the
   `coral-ee` package. When an Enterprise Feature needs something new from the
   rest of Coral, add a general extension point outside `ee/` first; the same
   PR is fine. `scripts/check-ee-boundary.sh` checks part of this.
