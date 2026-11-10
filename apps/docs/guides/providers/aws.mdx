@@ -1,13 +1,13 @@
 ---
 title: Using the AWS MCP Server with IAM
 sidebarTitle: AWS
-description: "Connect Coral to the AWS MCP Server with an IAM identity"
+description: "Connect Coral to the AWS MCP Server with an IAM role"
 ---
 
 The [AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html) is a remote MCP server that AWS runs. Coral can connect to it in two ways:
 
 - **OAuth.** The **AWS** provider in Coral's catalog signs each member in with AWS. Use it when each member has an AWS sign-in. AWS keeps a sign-in for [at most 12 hours](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html#oauth-token-lifecycle). After that, you reconnect the account in Coral.
-- **IAM.** Coral calls AWS with one IAM role or user. Use it when you want a fixed identity with its own IAM policies, or access that does not need a new sign-in every 12 hours. This guide covers this option.
+- **IAM.** Coral calls AWS with one IAM role. Use it when you want a fixed identity with its own IAM policies, or access that does not need a new sign-in every 12 hours. This guide covers this option.
 
 With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). You'll need a small bridge next to Coral so requests going to the AWS MCP Server are signed with SigV4.
 
@@ -26,28 +26,26 @@ flowchart LR
 ```
 
 <Warning>
-  Every call through this provider uses the bridge's IAM identity, whoever the
-  Coral member is. Give that identity only the AWS permissions you want every
-  member of the provider to have, and use [permissions](/guides/permissions) to
-  decide who can call which tools.
+  Every call through this provider uses the bridge's IAM role, whoever the Coral
+  member is. Give that role only the AWS permissions you want every member of
+  the provider to have, and use [permissions](/guides/permissions) to decide who
+  can call which tools.
 </Warning>
 
 ## Before you start
 
 - **A self-hosted Coral deployment.** This guide covers [Docker Compose](/getting-started/self-host/docker-compose) and [Kubernetes](/getting-started/self-host/kubernetes).
 - **An AWS Region for the endpoint.** The examples use `https://aws-mcp.us-east-1.api.aws/mcp`. AWS lists the [other Regions](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html#step-2-choose-auth-method).
-- **Permission to create an IAM role or user** in the AWS account that the provider reads.
+- **A place on AWS to run the bridge.** The bridge gets its IAM role from Amazon EC2, ECS or EKS. To run it anywhere else, use [IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html), which this guide does not cover.
+- **Permission to create an IAM role** in the AWS account that the provider reads.
 
 ## Set up the bridge
 
 <Steps titleSize="h3">
-  <Step title="Create the IAM identity">
-    The bridge calls AWS as one IAM identity. The kind of identity depends on where you run the bridge:
+  <Step title="Create the IAM role">
+    [Create an IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create.html) for the bridge. You give the role to the bridge in step 3.
 
-    - **On AWS (Amazon EC2, ECS or EKS):** [create an IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create.html). You give the role to the bridge in step 3.
-    - **Anywhere else:** [create an IAM user](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html) and an [access key](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html) for it. You give the key to the bridge in step 3.
-
-    The AWS MCP Server needs no permissions of its own. Each tool call reaches the AWS service with the bridge's identity, and that service checks the identity's IAM policies. Attach the policies for the access you want. For read-only access, the AWS managed policy `ReadOnlyAccess` is a good start. For a role, attach it with this command:
+    The AWS MCP Server needs no permissions of its own. Each tool call reaches the AWS service with the bridge's role, and that service checks the role's IAM policies. Attach the policies for the access you want. For read-only access, the AWS managed policy `ReadOnlyAccess` is a good start:
 
     ```bash
     aws iam attach-role-policy \
@@ -55,15 +53,7 @@ flowchart LR
       --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
     ```
 
-    For an IAM user, attach the policy to the user:
-
-    ```bash
-    aws iam attach-user-policy \
-      --user-name coral-aws-mcp \
-      --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
-    ```
-
-    AWS adds the condition key `aws:ViaAWSMCPService` to each request that the AWS MCP Server makes. To give the identity different permissions through MCP than through direct API calls, see the [AWS policy examples](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/security_iam_id-based-policy-examples.html).
+    AWS adds the condition key `aws:ViaAWSMCPService` to each request that the AWS MCP Server makes. To give the role different permissions through MCP than through direct API calls, see the [AWS policy examples](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/security_iam_id-based-policy-examples.html).
 
   </Step>
   <Step title="Generate an API key for the bridge">
@@ -103,8 +93,6 @@ flowchart LR
               - none
             environment:
               SUPERGATEWAY_API_KEY: ${AWS_MCP_API_KEY}
-              AWS_ACCESS_KEY_ID: ${AWS_MCP_ACCESS_KEY_ID}
-              AWS_SECRET_ACCESS_KEY: ${AWS_MCP_SECRET_ACCESS_KEY}
 
           aws-mcp-front:
             image: caddy:2
@@ -124,14 +112,12 @@ flowchart LR
               }
         ```
 
-        Set these variables in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file:
+        Set `AWS_MCP_API_KEY` to the key from the previous step, in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file.
 
-        - `AWS_MCP_API_KEY`: the key from the previous step.
-        - `AWS_MCP_ACCESS_KEY_ID` and `AWS_MCP_SECRET_ACCESS_KEY`: the IAM user's access key.
+        Give the role to the bridge:
 
-        These names are not the standard AWS variable names. The bridge then never uses AWS credentials that are already set in your shell.
-
-        On Amazon EC2 or Amazon ECS, remove `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from the service. Keep `SUPERGATEWAY_API_KEY`. On EC2, [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). On ECS, set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). The proxy then uses that role. On EC2, also set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
+        - **Amazon EC2:** [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). Set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
+        - **Amazon ECS:** set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) of the task that runs the bridge.
 
         The bridge's MCP server URL is `http://aws-mcp-front:8080/mcp`.
       </Tab>
@@ -248,29 +234,6 @@ flowchart LR
 
         Keep the Service as `ClusterIP`. Do not add an Ingress for it.
 
-        On a cluster that is not Amazon EKS, use an IAM user's access key instead. Remove the `eks.amazonaws.com/role-arn` annotation. Store the access key in a Secret:
-
-        ```bash
-        kubectl -n coral create secret generic aws-mcp-credentials \
-          --from-literal=access-key-id="<access-key-id>" \
-          --from-literal=secret-access-key="<secret-access-key>"
-        ```
-
-        Then add these variables to the `env` list of the `bridge` container:
-
-        ```yaml
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: aws-mcp-credentials
-              key: access-key-id
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: aws-mcp-credentials
-              key: secret-access-key
-        ```
-
         The bridge's MCP server URL is `http://aws-mcp.coral.svc.cluster.local:8080/mcp`.
       </Tab>
     </Tabs>
@@ -325,7 +288,7 @@ flowchart LR
 
 Open the provider in Coral. It lists the AWS MCP Server's tools, such as `awsRunScript` and `awsSearchDocumentation`.
 
-Then ask your agent which AWS account it uses through Coral. The answer names the bridge's IAM identity.
+Then ask your agent which AWS account it uses through Coral. The answer names the bridge's IAM role.
 
 `awsRunScript` and `awsGetPresignedUrl` are not read-only tools, so each call waits for your approval. To change that, set each tool's policy on the provider's page. See [permissions](/guides/permissions).
 
@@ -339,14 +302,14 @@ When the key is missing, Supergateway answers `401` on every path except its hea
 
 With `--logLevel none`, the bridge logs nothing. Remove the option to see the errors in the bridge's logs.
 
-| Problem                                                    | What to do                                                                                                           |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| "Coral's outbound settings do not allow this address."     | Add the `[outbound]` policy to Coral's configuration, then restart Coral.                                            |
-| "Coral cannot read this server's OAuth resource metadata." | The URL reaches Supergateway directly. Use the Caddy URL, on port `8080`.                                            |
-| The bridge returns `401 Unauthorized`                      | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key.            |
-| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the environment variables, the instance profile or the service account's role. |
-| `InvalidSignatureException` in the bridge's logs           | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong.                         |
-| A tool returns an access denied error                      | The bridge's IAM identity lacks the permission. Attach a policy that grants it.                                      |
-| The first call after a restart is slow                     | The bridge downloads the proxy when it first runs it. Later calls are faster.                                        |
+| Problem                                                    | What to do                                                                                                |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| "Coral's outbound settings do not allow this address."     | Add the `[outbound]` policy to Coral's configuration, then restart Coral.                                 |
+| "Coral cannot read this server's OAuth resource metadata." | The URL reaches Supergateway directly. Use the Caddy URL, on port `8080`.                                 |
+| The bridge returns `401 Unauthorized`                      | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key. |
+| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the instance's role, the task role or the service account's role.   |
+| `InvalidSignatureException` in the bridge's logs           | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong.              |
+| A tool returns an access denied error                      | The bridge's IAM role lacks the permission. Attach a policy that grants it.                               |
+| The first call after a restart is slow                     | The bridge downloads the proxy when it first runs it. Later calls are faster.                             |
 
 For other errors, see [AWS's troubleshooting table](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html#troubleshooting-auth-errors).
