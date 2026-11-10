@@ -20,7 +20,7 @@ import {
 } from '@/generated/coral/management/v1/authored_tool_pb'
 import type { PrivateTool } from '@/generated/coral/management/v1/private_tool_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
-import type { PrivateToolDetailView, PrivateToolDiagnosticView } from '@/views/tools/types'
+import type { PrivateToolDetailView, ToolDiagnosticView } from '@/views/tools/types'
 import { resourcePath } from './management.server'
 
 export function workspaceView(w: Workspace) {
@@ -129,10 +129,17 @@ export function registrationView(r: AgentRegistration) {
   }
 }
 
-/** One of the current User's own Private Tools, with its source and saved diagnostics. */
-export function privateToolView(saved: PrivateTool): PrivateToolDetailView {
+/**
+ * One Private Tool with its source and saved diagnostics: the current User's
+ * own, or that of `agent`, an Agent's identifier.
+ */
+export function privateToolView(
+  saved: PrivateTool,
+  agent: string | null = null,
+): PrivateToolDetailView {
   return {
     kind: 'private',
+    agent,
     relativePath: saved.path,
     description: saved.description,
     declaration: saved.declaration,
@@ -142,14 +149,14 @@ export function privateToolView(saved: PrivateTool): PrivateToolDetailView {
     savedAt: isoTime(saved.updateTime),
   }
 }
-function diagnosticView(d: AuthoredToolDiagnostic): PrivateToolDiagnosticView {
+export function diagnosticView(d: AuthoredToolDiagnostic): ToolDiagnosticView {
   return {
     category: enumLabel(d.category, {
       [AuthoredToolDiagnosticCategory.ERROR]: 'error',
       [AuthoredToolDiagnosticCategory.WARNING]: 'warning',
       [AuthoredToolDiagnosticCategory.SUGGESTION]: 'suggestion',
       [AuthoredToolDiagnosticCategory.MESSAGE]: 'message',
-    }) as PrivateToolDiagnosticView['category'],
+    }) as ToolDiagnosticView['category'],
     code: Number(d.code),
     message: d.message,
     line: d.line === undefined ? null : Number(d.line),

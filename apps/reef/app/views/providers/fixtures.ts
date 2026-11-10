@@ -1,7 +1,7 @@
 // Provider data for unit tests: providers and their tools in the Demo
 // workspace, which the test user owns.
 
-import { CORAL_ICONS, PRIVATE_ICONS } from './coral-icons'
+import { CORAL_ICONS, PRIVATE_ICONS, SHARED_ICONS } from './coral-icons'
 import type { ToolView, ProviderView, WorkspaceView } from './types'
 
 export const workspaceView: WorkspaceView = {
@@ -91,12 +91,28 @@ export function privateProvider(
       // An agent's tool at your own tool's path is another tool, with its own key.
       ...(agent && {
         key: `${agent}/${relativePath}`,
-        agent: { label: agent, path: `/workspaces/demo/agents/${agent.toLowerCase()}` },
+        agent: {
+          id: agent.toLowerCase(),
+          label: agent,
+          path: `/workspaces/demo/agents/${agent.toLowerCase()}`,
+        },
       }),
     }
   })
   view.readyCount = view.totalCount = view.tools.length
   return view
+}
+
+/** The shared group, with a shared tool at each path. */
+export function sharedProvider(id: string, tools: string[] = []): ProviderView {
+  return {
+    ...privateProvider(id, tools),
+    displayName: 'Shared',
+    kind: 'shared',
+    callRoot: 'coral.shared',
+    path: '/workspaces/demo/tools/shared',
+    icons: SHARED_ICONS,
+  }
 }
 
 /** Coral's Built-in Provider, with its tools directly on `coral`. */

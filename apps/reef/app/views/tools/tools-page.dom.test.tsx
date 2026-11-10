@@ -2,6 +2,7 @@
 
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { RouteObject } from 'react-router'
 import { expect, test, vi } from 'vitest'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
@@ -10,12 +11,14 @@ import {
   builtinProvider,
   privateProvider,
   provider,
+  sharedProvider,
   workspaceView,
 } from '@/views/providers/fixtures'
 import { selectionKey } from '@/views/providers/selection'
 import type { ToolCallCounts, ToolView, ProviderView, WorkspaceView } from '@/views/providers/types'
+import { toolPath } from './addresses'
 import { ToolsPage } from './tools-page'
-import type { ToolDetailView } from './types'
+import type { PublishReviewResult, SharedToolDetailView, ToolDetailView } from './types'
 
 // happy-dom lays nothing out, so the virtualizer would mount no tool
 // rows. Give the scroll port a viewport; row heights come from estimates.
@@ -52,6 +55,7 @@ function renderPage({
   entry = '/workspaces/demo/tools',
   providers = [github, weather],
   recipes = [],
+  routes,
   selectedTool = null,
   selectedToolDetail = null,
   toolCalls,
@@ -61,6 +65,8 @@ function renderPage({
   entry?: string
   providers?: ProviderView[]
   recipes?: SourceChoice[]
+  /** Routes beside the page, such as the one a dialog reads. */
+  routes?: RouteObject[]
   selectedTool?: ToolView | null
   selectedToolDetail?: ToolDetailView | null
   toolCalls?: ToolCallCounts | null
@@ -73,6 +79,7 @@ function renderPage({
       recipes={recipes}
       selectedProvider={owner}
       selectedTool={selected?.relativePath ?? null}
+      selectedToolAgent={selected?.agent?.id ?? null}
       selectedToolDetail={selectedToolDetail}
       toolCalls={toolCalls}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
@@ -84,6 +91,7 @@ function renderPage({
   const { router } = renderRoute(() => element, {
     entry,
     action: action ? ({ request }) => action(request) : undefined,
+    routes,
   })
   // The route re-renders the page with what the URL now selects.
   const show = async (selected: ToolView | null, owner = providerOf(selected, providers)) => {
@@ -106,8 +114,7 @@ function renderPage({
 
 const pathOf = (tool: ToolView, providers = [github, weather]) => {
   const owner = providers.find((item) => item.tools.includes(tool))!
-  const name = encodeURIComponent(tool.relativePath)
-  return owner.kind === 'private' ? `${owner.path}/${name}` : `${owner.path}/tools/${name}`
+  return toolPath(owner, tool)
 }
 
 function providerOf(selected: ToolView | null, providers = [github, weather]) {
@@ -599,7 +606,7 @@ test('each group heading counts its tools and opens its page, and one filter sea
     within(groupHeading('Private tools')).getByRole('link', { name: 'Private tools' }),
   ).toHaveAttribute('href', '/workspaces/demo/tools/private')
   // Under `people` and `reports`, each private tool shows the rest of its path.
-  expect(rowNames()).toEqual(['greet', 'total', 'issues.list', 'repos.get', 'getForecast'])
+  expect(rowNames()).toEqual(['greet', 'greet', 'total', 'issues.list', 'repos.get', 'getForecast'])
   expect(screen.getByRole('link', { name: 'people.greet' }).textContent).toBe('greet')
 
   await filterTools('get')
@@ -608,16 +615,17 @@ test('each group heading counts its tools and opens its page, and one filter sea
   // A match can span the namespace the heading shows and the name the row shows.
   await filterTools('people.gr')
   expect(providerGroups()).toEqual(['Private tools'])
-  expect(rowNames()).toEqual(['greet'])
+  expect(rowNames()).toEqual(['greet', 'greet'])
 })
 
-// Catches: an agent's private tool opening a drawer Coral cannot fill, two
-// private tools at one path sharing a row or a control's name, or your own
-// private tool opening at a provider's address.
-test('lists an agent’s private tool beside your own, and opens only your own', async () => {
+// Catches: an agent's private tool opening your own at the same path, so an
+// owner would review and publish the wrong source; two private tools at one
+// path sharing a row or a control's name; or your own private tool opening at
+// a provider's address.
+test('lists an agent’s private tool beside your own, and opens each at its own address', async () => {
   const { router, show } = renderPage({ providers: [github, mine] })
   await show(null, mine.id)
-  expect(rowNames()).toEqual(['greet', 'total'])
+  expect(rowNames()).toEqual(['greet', 'greet', 'total'])
   const rows = within(groupHeading('Private tools'))
     .getAllByRole('row')
     .filter((row) => !row.hasAttribute('aria-level'))
@@ -634,14 +642,19 @@ test('lists an agent’s private tool beside your own, and opens only your own',
     within(rows[1]!).getByRole('radiogroup', { name: 'Policy for people.greet of agent Worker' }),
   ).toBeInTheDocument()
 
+  expect(within(rows[1]!).getByRole('link')).toHaveAccessibleName('people.greet of agent Worker')
+
   await user.click(rows[1]!)
-  expect(router.state.location.pathname).toBe(mine.path)
+  expect(router.state.location.pathname).toBe(
+    '/workspaces/demo/tools/private/people.greet/agents/worker',
+  )
   await user.click(rows[0]!)
   expect(router.state.location.pathname).toBe('/workspaces/demo/tools/private/people.greet')
 })
 
 const greet: ToolDetailView = {
   kind: 'private',
+  agent: null,
   relativePath: 'people.greet',
   description: 'Greets **one** person.',
   declaration: 'declare function greet(name: string): Promise<string>',
@@ -675,6 +688,224 @@ test.each([
   expect(within(drawer).queryAllByRole('button', { name: 'Delete private tool' })).toHaveLength(
     deletes ? 1 : 0,
   )
+})
+
+// Catches: a member offered a publish Coral refuses, with nothing to say an
+// owner can; an owner with no way to publish their own or an agent's private
+// tool; or a publish offered in an archived workspace, which accepts none.
+test.each([
+  ['an owner', { effectiveRole: 'owner' }, mine.tools[0]!, true, false],
+  ['an owner, of an agent’s private tool', { effectiveRole: 'owner' }, mine.tools[1]!, true, false],
+  ['a member', { effectiveRole: 'member' }, mine.tools[0]!, false, true],
+  ['an owner of an archived workspace', { state: 'archived' }, mine.tools[0]!, false, false],
+] as const)('the drawer offers a publish to %s', (_, role, tool, publishes, says) => {
+  renderPage({
+    providers: [github, mine],
+    entry: toolPath(mine, tool),
+    selectedTool: tool,
+    selectedToolDetail: { ...greet, agent: tool.agent?.id ?? null },
+    workspace: { ...workspaceView, ...role },
+  })
+  const drawer = screen.getByRole('dialog')
+  expect(within(drawer).queryAllByRole('button', { name: 'Publish' })).toHaveLength(
+    publishes ? 1 : 0,
+  )
+  expect(within(drawer).queryAllByText('Only an owner can publish to shared tools.')).toHaveLength(
+    says ? 1 : 0,
+  )
+})
+
+const shared = sharedProvider('00000000-0000-4000-8000-0000000000ab', ['mail.remind'])
+const ada = { user: 'users/ada', name: 'Ada', email: 'ada@example.test', local: false }
+const remind: SharedToolDetailView = {
+  kind: 'shared',
+  relativePath: 'mail.remind',
+  description: 'Reminds **one** person.',
+  declaration: 'export default function remind(name: string): Promise<string>;',
+  source: 'export default async (name: string) => `Remember, ${name}`',
+  diagnostics: [],
+  diagnosticsTruncated: false,
+  revision: 2,
+  publisher: ada,
+  publishedAt: '2026-11-09T14:27:03.000Z',
+  revisions: [
+    {
+      revision: 2,
+      description: 'Reminds **one** person.',
+      publisher: ada,
+      publishedAt: '2026-11-09T14:27:03.000Z',
+      restoredFrom: null,
+    },
+    {
+      revision: 1,
+      description: 'Reminds a person.',
+      publisher: null,
+      publishedAt: '2026-11-02T09:00:00.000Z',
+      restoredFrom: null,
+    },
+  ],
+  events: [
+    { id: 'event-2', action: 'published', revision: 2, actor: ada, at: '2026-11-09T14:27:03.000Z' },
+    {
+      id: 'event-1',
+      action: 'published',
+      revision: 1,
+      actor: null,
+      at: '2026-11-02T09:00:00.000Z',
+    },
+  ],
+  eventsTruncated: false,
+}
+const openShared = (options: Parameters<typeof renderPage>[0] = {}) => {
+  const rendered = renderPage({
+    providers: [github, mine, shared],
+    entry: '/workspaces/demo/tools/shared/mail.remind',
+    selectedTool: shared.tools[0]!,
+    selectedToolDetail: remind,
+    ...options,
+  })
+  return { ...rendered, drawer: screen.getByRole('dialog') }
+}
+
+// Catches: the shared and the private group out of their place under Coral's
+// tools, the shared group named as a provider, or an empty shared group that
+// reads as a provider with no tools.
+test('lists the shared tools under Coral’s, and says when there are none', async () => {
+  const coral = builtinProvider('00000000-0000-4000-8000-0000000000c0')
+  const { rerenderProviders } = renderPage({ providers: [github, mine, shared, coral] })
+  expect(providerGroups()).toEqual(['Coral', 'Shared tools', 'Private tools', 'GitHub'])
+  expect(tabLink('Shared tools')).toHaveAttribute('href', '/workspaces/demo/tools/shared')
+  expect(screen.getByRole('link', { name: 'mail.remind' })).toHaveAttribute(
+    'href',
+    '/workspaces/demo/tools/shared/mail.remind',
+  )
+  await rerenderProviders([github, sharedProvider(shared.id)])
+  expect(
+    within(groupHeading('Shared tools')).getByText(
+      'No shared tools yet. Only an owner can publish one.',
+    ),
+  ).toBeInTheDocument()
+})
+
+// Catches: a shared tool's drawer that does not say who published it and at
+// which revision, that names a person who is no longer an owner by an
+// identifier, or that leaves out its revisions or its history.
+test('the drawer shows a shared tool with who published it, its revisions and its history', async () => {
+  const { drawer } = openShared()
+  expect(within(drawer).getByRole('heading', { name: 'mail.remind' })).toBeInTheDocument()
+  expect(within(drawer).getByText('coral.shared.mail.remind')).toBeInTheDocument()
+  expect(within(drawer).getByText('Published by Ada · Revision 2')).toBeInTheDocument()
+  for (const section of ['Policy', 'Declaration', 'Source', 'Diagnostics'])
+    expect(within(drawer).getByRole('heading', { name: section })).toBeInTheDocument()
+
+  await user.click(within(drawer).getByRole('tab', { name: 'Revisions' }))
+  const revisions = within(within(drawer).getByRole('table', { name: 'Revisions' }))
+    .getAllByRole('row')
+    .slice(1)
+    .map((row) => row.textContent)
+  expect(revisions).toEqual([
+    expect.stringMatching(/^Revision 2Current.*Ada.*2026-11-09 14:27 UTC/),
+    // Whoever published revision 1 is no longer an owner of the workspace.
+    expect.stringMatching(/^Revision 1A former owner2026-11-02 09:00 UTC/),
+  ])
+
+  await user.click(within(drawer).getByRole('tab', { name: 'History' }))
+  const history = within(within(drawer).getByRole('table', { name: 'History' }))
+    .getAllByRole('row')
+    .slice(1)
+    .map((row) => row.textContent)
+  expect(history).toEqual([
+    expect.stringMatching(/^Published revision 2Ada/),
+    expect.stringMatching(/^Published revision 1A former owner/),
+  ])
+})
+
+// Catches: a publisher who left shown by name or by identifier on the line
+// that heads the drawer.
+test('the drawer names a publisher who is no longer an owner as a former owner', () => {
+  const { drawer } = openShared({ selectedToolDetail: { ...remind, publisher: null } })
+  expect(within(drawer).getByText('Published by a former owner · Revision 2')).toBeInTheDocument()
+})
+
+const restoreReview: PublishReviewResult = {
+  refusal: null,
+  review: {
+    origin: { kind: 'restore', revision: 1 },
+    path: 'mail.remind',
+    description: 'Reminds a person.',
+    source: 'export default async () => "first"',
+    declaration: 'export default function (): Promise<string>;',
+    diagnostics: [],
+    diagnosticsTruncated: false,
+    previous: {
+      revision: 2,
+      description: remind.description,
+      source: remind.source,
+      declaration: remind.declaration,
+    },
+    calledTools: [],
+    sharedTools: [],
+    runtimeBuiltPaths: [],
+    defaultPolicy: 'enabled',
+  },
+}
+
+// Catches: an owner with no way to restore an earlier revision, a restore
+// offered for the revision that is already current, a restore that reviews
+// another revision or path, or a member offered a restore or a removal.
+test('an owner restores an earlier revision of a shared tool from its revisions', async () => {
+  const reviewed: string[] = []
+  const { drawer } = openShared({
+    routes: [
+      {
+        path: '/workspaces/demo/shared-tools/publish',
+        loader: ({ request }) => {
+          reviewed.push(new URL(request.url).search)
+          return restoreReview
+        },
+      },
+    ],
+  })
+  await user.click(within(drawer).getByRole('tab', { name: 'Revisions' }))
+  expect(within(drawer).queryByRole('button', { name: 'Restore revision 2' })).toBeNull()
+  await user.click(within(drawer).getByRole('button', { name: 'Restore revision 1' }))
+
+  expect(await screen.findByRole('heading', { name: 'Restore revision 1' })).toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: 'Publish revision 3' })).toBeEnabled()
+  expect(reviewed).toEqual(['?path=mail.remind&restore=1'])
+})
+
+// Catches: a member offered a restore or a removal that Coral refuses.
+test('a member reads a shared tool and changes nothing', async () => {
+  const { drawer } = openShared({ workspace: { ...workspaceView, effectiveRole: 'member' } })
+  expect(within(drawer).queryByRole('button', { name: 'Remove shared tool' })).toBeNull()
+  await user.click(within(drawer).getByRole('tab', { name: 'Revisions' }))
+  expect(within(drawer).queryByRole('button', { name: /^Restore/ })).toBeNull()
+})
+
+// Catches: a removal at a revision other than the one on screen, or a
+// refused removal that closes its dialog or does not say which shared tool
+// the owner must deal with first.
+test('a refused removal of a shared tool stays in its dialog with the reason', async () => {
+  const refusal =
+    'The shared tool coral.shared.mail.digest calls this one. Change or remove that shared tool first.'
+  const posted: FormData[] = []
+  const { drawer } = openShared({
+    action: async (request) => {
+      posted.push(await request.formData())
+      return { error: refusal, credential: null }
+    },
+  })
+  await user.click(within(drawer).getByRole('button', { name: 'Remove shared tool' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Remove shared tool' })
+  await user.click(within(dialog).getByRole('button', { name: 'Remove shared tool' }))
+
+  expect(await within(dialog).findByText(refusal)).toBeInTheDocument()
+  expect(Object.fromEntries(posted[0]!)).toMatchObject({
+    intent: 'removeSharedTool',
+    path: 'mail.remind',
+    expectedRevision: '2',
+  })
 })
 
 // Catches: a member offered a policy change on their private tools that

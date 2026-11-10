@@ -7,6 +7,7 @@ import {
   privateHeaders,
 } from '@/lib/management.server'
 import { deletePrivateTool, privateGroup } from '@/lib/private-tools.server'
+import { removeSharedTool, sharedGroup } from '@/lib/shared-tools.server'
 import { providerView, listAllProviders, toolUsage, uuidOr404 } from '@/lib/providers.server'
 import type { SummaryDays } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
@@ -15,7 +16,12 @@ import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import type { PolicyActionResult } from '@/views/providers/types'
-import { addressedTool, PRIVATE_GROUP, toolsPageWorkspace } from '@/views/tools/addresses'
+import {
+  addressedTool,
+  PRIVATE_GROUP,
+  SHARED_GROUP,
+  toolsPageWorkspace,
+} from '@/views/tools/addresses'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
@@ -55,17 +61,20 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     const days: SummaryDays = 30
-    const [listed, personalAccounts, summary, privateToolsGroup] = await Promise.all([
-      listAllProviders(api, w.name),
-      personalAccountStates(api, w.name),
-      glimpseActivitySummary(api, w.name, days, request.signal),
-      privateGroup(api, w),
-    ])
-    // The page orders the groups; the private one is not in Coral's list.
+    const [listed, personalAccounts, summary, sharedToolsGroup, privateToolsGroup] =
+      await Promise.all([
+        listAllProviders(api, w.name),
+        personalAccountStates(api, w.name),
+        glimpseActivitySummary(api, w.name, days, request.signal),
+        sharedGroup(api, w),
+        privateGroup(api, w),
+      ])
+    // The page orders the groups; the shared and the private one are not in Coral's list.
     const providers = [
       ...(await Promise.all(
         listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
       )),
+      sharedToolsGroup,
       privateToolsGroup,
     ]
     // An address that names a group or a tool the catalog does not hold is not found.
@@ -73,11 +82,18 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     const group =
       params.group === PRIVATE_GROUP
         ? privateToolsGroup
-        : params.provider === undefined
-          ? undefined
-          : providers.find((i) => i.id === uuidOr404(params.provider!))
-    const { tool } = params
-    if ((namesGroup && !group) || (tool !== undefined && !(group && addressedTool(group, tool))))
+        : params.group === SHARED_GROUP
+          ? sharedToolsGroup
+          : params.provider === undefined
+            ? undefined
+            : providers.find((i) => i.id === uuidOr404(params.provider!))
+    const { tool, agent } = params
+    // Only the private group holds an agent's tools.
+    if (
+      (namesGroup && !group) ||
+      (agent !== undefined && group !== privateToolsGroup) ||
+      (tool !== undefined && !(group && addressedTool(group, tool, agent ?? null)))
+    )
       throw new Response('Not found', { status: 404, headers: privateHeaders })
     return data(
       {
@@ -96,12 +112,14 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
 
 /**
  * A change from the page. Every member deletes their own private tools; the
- * rest are an owner's changes to providers and policy.
+ * rest are an owner's changes to shared tools, providers and policy.
  */
 export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   if (form.get('intent') === 'deletePrivateTool')
     return deletePrivateTool(context, params.workspace, form)
+  if (form.get('intent') === 'removeSharedTool')
+    return removeSharedTool(context, params.workspace, form)
   return applyProviderChange(context, params, form)
 }
 

@@ -835,7 +835,10 @@ pin, Provider Generation
 
 **Shared Tool Publish**: A Workspace Owner's act in Reef that copies one of their own or an Agent's Private Tools into
 a new Shared Tool Revision and makes it current. The Owner reviews the exact content that is published and chooses the
-Shared Tool's default Tool Access State, and the Private Tool stays as it was. Restoring publishes an earlier revision's content again. No Program, Tool, or Agent publishes.
+Shared Tool's default Tool Access State, and the Private Tool stays as it was. The review shows the declaration the
+source emits, which follows the Tools the source names: Coral refuses a publish that would store another declaration,
+because one of those Tools changed since the review. Restoring publishes an earlier revision's content again. No
+Program, Tool, or Agent publishes.
 _Avoid_: Promote, move, deploy
 
 **Coral Program**: Principal-authored TypeScript lowered to JavaScript and executed by a Coral-owned, secret-free

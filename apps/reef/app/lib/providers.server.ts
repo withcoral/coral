@@ -247,7 +247,17 @@ export function toolHints(hints: ToolHints | undefined): ToolHintsView {
   return view
 }
 
-function accessState(value: ToolAccessState): ToolView['policy'] {
+/** The Tool Access State a form names by its policy, or undefined for any other value. */
+export function accessStateOf(policy: string): ToolAccessState | undefined {
+  const states: Record<string, ToolAccessState> = {
+    enabled: ToolAccessState.ENABLED,
+    approval_required: ToolAccessState.APPROVAL_REQUIRED,
+    disabled: ToolAccessState.DISABLED,
+  }
+  return Object.hasOwn(states, policy) ? states[policy] : undefined
+}
+
+export function policyState(value: ToolAccessState): ToolView['policy'] {
   switch (value) {
     case ToolAccessState.ENABLED:
       return 'enabled'
@@ -275,7 +285,7 @@ export function toolView(o: ToolAccess): ToolView {
     key: toolKey(o.tool),
     relativePath: o.relativePath,
     hints: toolHints(o.hints),
-    policy: accessState(o.accessState),
+    policy: policyState(o.accessState),
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
     group: toolGroup(o),

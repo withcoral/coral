@@ -2,11 +2,15 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 import githubIcon from '../../../recipes/github/github.svg'
-import { CORAL_ICONS, PRIVATE_ICONS } from '@/views/providers/coral-icons'
+import { CORAL_ICONS, PRIVATE_ICONS, SHARED_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderToolDetailView, ProviderView, ToolView } from '@/views/providers/types'
 import { selectionKey } from '@/views/providers/selection'
 import { ToolsPage } from '@/views/tools/tools-page'
-import type { PrivateToolDetailView } from '@/views/tools/types'
+import type {
+  PrivateToolDetailView,
+  PublishReviewResult,
+  SharedToolDetailView,
+} from '@/views/tools/types'
 import { catalogRecipes, form, stripeRecipe, workspace } from '@/views/providers/story-fixtures'
 
 const meta = {
@@ -14,18 +18,21 @@ const meta = {
   parameters: { layout: 'fullscreen' },
   decorators: [
     (Story, context) => {
+      const action = () =>
+        context.parameters.dialogPending
+          ? new Promise(() => {})
+          : {
+              error: context.parameters.dialogError ?? null,
+              credential: null,
+            }
       const Stub = createRoutesStub([
+        // The publish dialog reads its review here and sends its publish here.
         {
-          path: '*',
-          Component: Story,
-          action: () =>
-            context.parameters.dialogPending
-              ? new Promise(() => {})
-              : {
-                  error: context.parameters.dialogError ?? null,
-                  credential: null,
-                },
+          path: '/workspaces/demo/shared-tools/publish',
+          loader: () => context.parameters.review ?? null,
+          action,
         },
+        { path: '*', Component: Story, action },
       ])
       return (
         <div style={{ height: '100vh' }}>
@@ -423,7 +430,7 @@ const privateTools: ProviderView = {
         nameInGroup: 'monthlyTotals',
       }),
       key: 'agent/finance.monthlyTotals',
-      agent: { label: 'Nightly sync', path: '/workspaces/demo/agents/nightly' },
+      agent: { id: 'nightly', label: 'Nightly sync', path: '/workspaces/demo/agents/nightly' },
     },
     op('prov-private', 'linear.completedSince', 'linear', {
       policy: 'enabled',
@@ -433,6 +440,7 @@ const privateTools: ProviderView = {
 }
 const monthlyTotals: PrivateToolDetailView = {
   kind: 'private',
+  agent: null,
   relativePath: 'finance.monthlyTotals',
   description: 'Sums the **paid** invoices of one month, by currency.',
   declaration:
@@ -521,6 +529,310 @@ export const TreePrivateToolSelected: Story = {
   ),
   parameters: { initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals' },
 }
+// An agent's private tool, which only an owner opens.
+export const TreeAgentPrivateToolSelected: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[coral, github, privateTools]}
+      selectedProvider="prov-private"
+      selectedTool="finance.monthlyTotals"
+      selectedToolAgent="nightly"
+      selectedToolDetail={{ ...monthlyTotals, agent: 'nightly' }}
+    />
+  ),
+  parameters: {
+    initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals/agents/nightly',
+  },
+}
+// A member reads that only an owner can publish.
+export const TreePrivateToolSelectedAsMember: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      workspace={member}
+      providers={[
+        coral,
+        github,
+        { ...privateTools, tools: privateTools.tools.filter((tool) => !tool.agent) },
+      ]}
+      selectedProvider="prov-private"
+      selectedTool="finance.monthlyTotals"
+      selectedToolDetail={monthlyTotals}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals' },
+}
+
+// The workspace's shared tools, which every member reads.
+const sharedTools: ProviderView = {
+  ...weather,
+  id: 'prov-shared',
+  displayName: 'Shared',
+  namespace: '',
+  callRoot: 'coral.shared',
+  kind: 'shared',
+  icons: SHARED_ICONS,
+  path: '/workspaces/demo/tools/shared',
+  readyCount: 3,
+  totalCount: 3,
+  tools: [
+    op('prov-shared', 'finance.monthlyTotals', 'finance', {
+      policy: 'enabled',
+      nameInGroup: 'monthlyTotals',
+    }),
+    op('prov-shared', 'finance.refundCustomer', 'finance', { nameInGroup: 'refundCustomer' }),
+    op('prov-shared', 'linear.completedSince', 'linear', {
+      policy: 'enabled',
+      nameInGroup: 'completedSince',
+    }),
+  ],
+}
+const ada = { user: 'users/ada', name: 'Ada Lovelace', email: 'ada@example.test', local: false }
+const firstTotals = [
+  'export default async function monthlyTotals({ month }: { month: string }) {',
+  '  const { data } = await coral.providers.stripe.invoices.list({ month })',
+  '  let total = 0',
+  '  for (const invoice of data) total += invoice.total',
+  '  return total',
+  '}',
+].join('\n')
+const sharedTotals: SharedToolDetailView = {
+  kind: 'shared',
+  relativePath: 'finance.monthlyTotals',
+  description: 'Sums the invoices of one month.',
+  declaration: 'export default function monthlyTotals(input: { month: string }): Promise<number>;',
+  source: firstTotals,
+  diagnostics: [],
+  diagnosticsTruncated: false,
+  revision: 3,
+  publisher: ada,
+  publishedAt: '2026-11-09T14:27:03.000Z',
+  revisions: [
+    {
+      revision: 3,
+      description: 'Sums the invoices of one month.',
+      publisher: ada,
+      publishedAt: '2026-11-09T14:27:03.000Z',
+      restoredFrom: 1,
+    },
+    {
+      revision: 2,
+      description: 'Sums the paid invoices of one month, by currency.',
+      publisher: { ...workspace.profile },
+      publishedAt: '2026-11-05T10:02:41.000Z',
+      restoredFrom: null,
+    },
+    {
+      revision: 1,
+      description: 'Sums the invoices of one month.',
+      // Whoever published it is no longer an owner of the workspace.
+      publisher: null,
+      publishedAt: '2026-10-28T08:15:00.000Z',
+      restoredFrom: null,
+    },
+  ],
+  events: [
+    { id: 'e3', action: 'published', revision: 3, actor: ada, at: '2026-11-09T14:27:03.000Z' },
+    {
+      id: 'e2',
+      action: 'published',
+      revision: 2,
+      actor: { ...workspace.profile },
+      at: '2026-11-05T10:02:41.000Z',
+    },
+    { id: 'e1', action: 'published', revision: 1, actor: null, at: '2026-10-28T08:15:00.000Z' },
+  ],
+  eventsTruncated: false,
+}
+const sharedPage = {
+  ...treeProps,
+  providers: [coral, github, sharedTools, privateTools],
+  selectedProvider: 'prov-shared',
+}
+const sharedDrawer = {
+  ...sharedPage,
+  selectedTool: 'finance.monthlyTotals',
+  selectedToolDetail: sharedTotals,
+}
+const sharedDrawerEntry = '/workspaces/demo/tools/shared/finance.monthlyTotals'
+// The shared page: the tools an owner published for the whole workspace.
+export const TreeSharedTools: Story = {
+  render: () => <ToolsPage {...sharedPage} />,
+  parameters: { initialEntry: '/workspaces/demo/tools/shared' },
+}
+// The shared page before any owner published a tool.
+export const TreeSharedToolsEmpty: Story = {
+  render: () => (
+    <ToolsPage
+      {...sharedPage}
+      providers={[coral, github, { ...sharedTools, tools: [], readyCount: 0, totalCount: 0 }]}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/tools/shared' },
+}
+// One shared tool: who published it, its revision, and its source.
+export const TreeSharedToolSelected: Story = {
+  render: () => <ToolsPage {...sharedDrawer} />,
+  parameters: { initialEntry: sharedDrawerEntry },
+}
+// Every revision, newest first. An owner restores any but the current one.
+export const TreeSharedToolRevisions: Story = {
+  ...TreeSharedToolSelected,
+  play: async () => {
+    await userEvent.click(await screen.findByRole('tab', { name: 'Revisions' }))
+  },
+}
+// Each publish, with who did it. A person who is no longer an owner has no name.
+export const TreeSharedToolHistory: Story = {
+  ...TreeSharedToolSelected,
+  play: async () => {
+    await userEvent.click(await screen.findByRole('tab', { name: 'History' }))
+  },
+}
+// A member reads a shared tool, and restores or removes nothing.
+export const TreeSharedToolRevisionsAsMember: Story = {
+  render: () => <ToolsPage {...sharedDrawer} workspace={member} />,
+  parameters: { initialEntry: sharedDrawerEntry },
+  play: TreeSharedToolRevisions.play,
+}
+// Coral refuses the removal while another shared tool calls this one, and names it.
+export const TreeSharedToolRemovalRefused: Story = {
+  ...TreeSharedToolSelected,
+  parameters: {
+    initialEntry: sharedDrawerEntry,
+    dialogError:
+      'The shared tool coral.shared.finance.yearlyTotals calls this one. Change or remove that shared tool first.',
+  },
+  play: async () => {
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove shared tool' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Remove shared tool' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove shared tool' }))
+    await within(dialog).findByText(/calls this one/)
+  },
+}
+
+const firstReview: PublishReviewResult = {
+  refusal: null,
+  review: {
+    origin: { kind: 'private', path: 'finance.monthlyTotals', agent: null },
+    path: 'finance.monthlyTotals',
+    description: monthlyTotals.description,
+    source: monthlyTotals.source,
+    declaration:
+      'export default function monthlyTotals(input: { month: string }): Promise<Record<string, number>>;',
+    diagnostics: monthlyTotals.diagnostics,
+    diagnosticsTruncated: false,
+    previous: null,
+    calledTools: ['coral.providers.stripe.invoices.list', 'coral.shared.finance.currencies'],
+    sharedTools: [{ path: 'finance.currencies', revision: 4 }],
+    runtimeBuiltPaths: [],
+    defaultPolicy: null,
+  },
+}
+const openPublish = async () => {
+  await userEvent.click(await screen.findByRole('button', { name: 'Publish' }))
+  await screen.findByRole('heading', { name: 'Publish shared tool' })
+}
+// The review of a first publish: the path, the reminder, the full source,
+// what it calls, the diagnostics, and the policy to start with.
+export const PublishFirstRevision: Story = {
+  ...TreePrivateToolSelected,
+  parameters: {
+    initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals',
+    review: firstReview,
+  },
+  play: async () => {
+    await openPublish()
+    await expect(await screen.findByRole('button', { name: 'Publish revision 1' })).toBeEnabled()
+  },
+}
+// The review of a later publish: the source and the declaration as diffs
+// against the revision it replaces, and a path the source builds at runtime.
+export const PublishNextRevision: Story = {
+  ...TreePrivateToolSelected,
+  parameters: {
+    initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals',
+    review: {
+      refusal: null,
+      review: {
+        ...firstReview.review!,
+        previous: {
+          revision: 3,
+          description: sharedTotals.description,
+          source: sharedTotals.source,
+          declaration: sharedTotals.declaration,
+        },
+        runtimeBuiltPaths: ['coral.providers.stripe'],
+        defaultPolicy: 'approval_required',
+      },
+    } satisfies PublishReviewResult,
+  },
+  play: async () => {
+    await openPublish()
+    await expect(await screen.findByRole('button', { name: 'Publish revision 4' })).toBeEnabled()
+    await screen.findByRole('group', { name: 'Source changes' })
+    await screen.findByRole('group', { name: 'Declaration changes' })
+  },
+}
+// Coral refuses the review of a path, and the owner enters another.
+export const PublishPathRefused: Story = {
+  ...TreePrivateToolSelected,
+  parameters: {
+    initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals',
+    review: {
+      review: null,
+      path: 'finance.monthlyTotals',
+      refusal: 'Another shared tool uses this path, or a part of it. Enter another path.',
+    } satisfies PublishReviewResult,
+  },
+  play: async () => {
+    await openPublish()
+    await screen.findByText(/Enter another path/)
+  },
+}
+// Another owner published first: the dialog says so and shows the new review.
+export const PublishRefused: Story = {
+  ...TreePrivateToolSelected,
+  parameters: {
+    initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals',
+    review: firstReview,
+    dialogError: 'Another owner published this shared tool first. Review the changes again.',
+  },
+  play: async () => {
+    await openPublish()
+    await userEvent.click(await screen.findByRole('button', { name: 'Publish revision 1' }))
+    await screen.findByText(/published this shared tool first/)
+  },
+}
+// A restore reviews the earlier revision against the current one, at a fixed path.
+export const RestoreRevision: Story = {
+  ...TreeSharedToolSelected,
+  parameters: {
+    initialEntry: sharedDrawerEntry,
+    review: {
+      refusal: null,
+      review: {
+        ...firstReview.review!,
+        origin: { kind: 'restore', revision: 2 },
+        description: 'Sums the paid invoices of one month, by currency.',
+        previous: {
+          revision: 3,
+          description: sharedTotals.description,
+          source: sharedTotals.source,
+          declaration: sharedTotals.declaration,
+        },
+        defaultPolicy: 'enabled',
+      },
+    } satisfies PublishReviewResult,
+  },
+  play: async () => {
+    await userEvent.click(await screen.findByRole('tab', { name: 'Revisions' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore revision 2' }))
+    await expect(await screen.findByRole('button', { name: 'Publish revision 4' })).toBeEnabled()
+  },
+}
+
 // Too many tool groups to mount: only those near the scroll position do, and
 // the one a reader scrolls through still pins, at the same scroll position.
 const manyGroups: ProviderView = {

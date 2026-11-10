@@ -60,7 +60,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 }
 // A tool's drawer is URL state inside one group of the Tools page: a provider,
-// or the private tools. It must not reload the sidebar/workspace discovery; the
+// the shared tools, or the private tools. It must not reload the sidebar/workspace discovery; the
 // nested route still checks Workspace access.
 export function shouldRevalidate({
   currentUrl,

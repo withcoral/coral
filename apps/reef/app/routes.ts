@@ -16,6 +16,7 @@ export default [
     route('activity/count', 'routes/activity-count.ts'),
     route('activity/resolve', 'routes/activity-resolve.ts'),
     route('workspaces/:workspace/approvals/history', 'routes/approvals-history.ts'),
+    route('workspaces/:workspace/shared-tools/publish', 'routes/shared-tool-publish.ts'),
     route('workspaces/:workspace/providers/:provider/icon', 'routes/provider-icon.ts'),
     route('provider-setup/oauth/callback', 'routes/provider-setup-oauth-callback.ts'),
     route(
@@ -38,7 +39,8 @@ export default [
       route('workspaces/:workspace/agents/:agent/settings', 'routes/agent-settings.tsx'),
       // One table of every tool. The address names what it reveals: every
       // group, one group, or one open tool. A provider's group and tools keep
-      // its resource path; the private group has a fixed one.
+      // its resource path; the shared and the private group each have a fixed
+      // one, and an agent's private tool names the agent after its path.
       layout('routes/tools.tsx', { id: 'tools' }, [
         route('workspaces/:workspace/tools', 'routes/tools-selection.tsx', { id: 'tools-index' }),
         route('workspaces/:workspace/tools/:group', 'routes/tools-selection.tsx', {
@@ -47,6 +49,11 @@ export default [
         route('workspaces/:workspace/tools/:group/:tool', 'routes/tools-selection.tsx', {
           id: 'tools-group-tool',
         }),
+        route(
+          'workspaces/:workspace/tools/:group/:tool/agents/:agent',
+          'routes/tools-selection.tsx',
+          { id: 'tools-group-agent-tool' },
+        ),
         route('workspaces/:workspace/providers/:provider', 'routes/tools-selection.tsx', {
           id: 'tools-provider',
         }),

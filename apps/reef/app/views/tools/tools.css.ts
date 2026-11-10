@@ -154,3 +154,39 @@ export const rankedProvider = style({
   flexShrink: 0,
   gap: 6,
 })
+// The drawer's own actions on a tool, under its facts.
+export const drawerActions = style({ alignItems: 'center', display: 'flex', gap: 8 })
+// The publish dialog's path: its field, then the button that reviews the path.
+export const publishPath = style({ alignItems: 'end', display: 'flex', gap: 8, minWidth: 0 })
+export const publishPathField = style({ display: 'grid', flex: 1, gap: 6, minWidth: 0 })
+// The tools a reviewed source calls, one call path a line.
+export const calledTools = style({
+  display: 'grid',
+  gap: 6,
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+})
+export const calledTool = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  minWidth: 0,
+})
+// A heading with its control at the end of the line, such as a view switch.
+export const reviewHeading = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 12,
+  justifyContent: 'space-between',
+})
+// A revision's number with what sets it apart, which wraps in a narrow column.
+export const revisionCell = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  minWidth: 0,
+})

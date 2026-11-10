@@ -1,11 +1,13 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { redirect, type RouterContextProvider } from 'react-router'
+import type { Provider } from '@/generated/coral/management/v1/provider_pb'
 import { PRIVATE_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderView, ToolView, WorkspaceView } from '@/views/providers/types'
 import { PRIVATE_TOOL_DELETED, privateToolsPath } from '@/views/tools/addresses'
 import type { PrivateToolDetailView } from '@/views/tools/types'
 import {
   actionFailure,
+  agentName,
   field,
   management,
   privateHeaders,
@@ -31,39 +33,55 @@ export async function privateGroup(
     parent: workspace.name,
     pageSize: 1,
   })
-  const [provider, rows] = await Promise.all([
-    api.providers.getProvider({ name }),
-    listAllToolAccess(api, name),
-  ])
+  const { provider, rows } = await authoredToolRows(api, name)
   // Only an owner's rows name agents, and only an owner may list the agents.
   const agents = rows.some((row) => row.agent)
     ? await agentLabels(api, workspace.name)
     : new Map<string, string>()
-  const tools = rows.map((row) => ({
-    ...privateToolRow(toolView(row)),
-    ...(row.agent && {
-      agent: {
-        label: agents.get(row.agent) ?? row.agent.split('/').at(-1)!,
-        path: resourcePath(row.agent),
-      },
-    }),
-  }))
+  const tools = rows.map((row) => {
+    const id = row.agent.split('/').at(-1)!
+    return {
+      ...authoredToolRow(toolView(row)),
+      ...(row.agent && {
+        agent: { id, label: agents.get(row.agent) ?? id, path: resourcePath(row.agent) },
+      }),
+    }
+  })
   return {
-    ...groupView(provider, tools),
+    ...authoredGroupView(provider, tools),
     kind: 'private',
     path: privateToolsPath(workspace.path),
-    personalAccountAction: null,
-    // Search indexes no tool from the Private Provider's own catalog, which holds none.
-    searchIndex: null,
     icons: PRIVATE_ICONS,
   }
 }
 
 /**
- * A private tool's group is the namespace its path starts with, so its row
- * shows only the name inside that namespace.
+ * The Private or the Shared Provider, which Coral's provider list leaves out,
+ * with each of its tools that Coral lists to the reader.
  */
-function privateToolRow(tool: ToolView): ToolView {
+export async function authoredToolRows(api: ManagementApi, name: string) {
+  const [provider, rows] = await Promise.all([
+    api.providers.getProvider({ name }),
+    listAllToolAccess(api, name),
+  ])
+  return { provider, rows }
+}
+
+/** What the private and the shared group have in common: no accounts, and no search state. */
+export function authoredGroupView(provider: Provider, tools: ToolView[]) {
+  return {
+    ...groupView(provider, tools),
+    personalAccountAction: null,
+    // Search indexes no tool from the Provider's own catalog, which holds none.
+    searchIndex: null,
+  }
+}
+
+/**
+ * A private or a shared tool's group is the namespace its path starts with,
+ * so its row shows only the name inside that namespace.
+ */
+export function authoredToolRow(tool: ToolView): ToolView {
   const namespace = `${tool.group}.`
   return tool.group && tool.relativePath.startsWith(namespace)
     ? { ...tool, nameInGroup: tool.relativePath.slice(namespace.length) }
@@ -82,14 +100,19 @@ async function agentLabels(api: Pick<ManagementApi, 'agents'>, parent: string) {
   return labels
 }
 
-/** Reads the one private tool the drawer shows. It is always the reader's own. */
+/**
+ * Reads the one private tool the drawer shows: the reader's own, or the one
+ * of `agent`, an agent's resource name, which Coral shows only to an owner.
+ */
 export async function privateToolDetail(
   api: Pick<ManagementApi, 'privateTools'>,
   workspace: string,
   path: string,
+  agent = '',
 ): Promise<PrivateToolDetailView> {
   try {
-    return privateToolView(await api.privateTools.getPrivateTool({ parent: workspace, path }))
+    const tool = await api.privateTools.getPrivateTool({ parent: workspace, path, agent })
+    return privateToolView(tool, agent ? agent.split('/').at(-1)! : null)
   } catch (error) {
     // A path that Coral cannot parse names no private tool.
     if (error instanceof ConnectError && error.code === Code.InvalidArgument)
@@ -99,8 +122,9 @@ export async function privateToolDetail(
 }
 
 /**
- * Deletes one of the reader's own private tools and returns to the private
- * page. Every member may delete their own, so this needs no owner.
+ * Deletes one private tool and returns to the private page: the reader's own,
+ * or an agent's when the form names the agent. Every member may delete their
+ * own, so this needs no owner. Coral lets only an owner delete an agent's.
  */
 export async function deletePrivateTool(
   context: Readonly<RouterContextProvider>,
@@ -109,8 +133,9 @@ export async function deletePrivateTool(
 ) {
   const parent = workspaceName(workspace)
   const path = field(form, 'path')
+  const agent = form.has('agent') ? agentName(workspace, field(form, 'agent')) : ''
   try {
-    await management(context).privateTools.deletePrivateTool({ parent, path })
+    await management(context).privateTools.deletePrivateTool({ parent, path, agent })
   } catch (error) {
     return actionFailure(
       error,

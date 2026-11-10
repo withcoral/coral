@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   userAccounts: vi.fn(),
   summary: vi.fn(),
   privateTools: vi.fn(),
+  sharedTools: vi.fn(),
   provider: vi.fn(),
 }))
 vi.mock('@/lib/workspace-route.server', () => ({ authorizedWorkspace: mocks.workspace }))
@@ -37,11 +38,13 @@ const providerId = '11111111-1111-4111-8111-111111111111'
 const base = `/workspaces/${workspace}/providers/${providerId}`
 const provider = `workspaces/${workspace}/providers/11111111-1111-4111-8111-111111111111`
 const privateProvider = `workspaces/${workspace}/providers/99999999-9999-4999-8999-999999999999`
+const sharedProvider = `workspaces/${workspace}/providers/88888888-8888-4888-8888-888888888888`
 const tabs = `/workspaces/${workspace}/tools`
 const api = fakeManagement({
   providers: { listProviders: mocks.providers, getTool: mocks.tool, getProvider: mocks.provider },
   policies: { listToolAccess: mocks.tools },
   privateTools: { listPrivateTools: mocks.privateTools },
+  sharedTools: { listSharedTools: mocks.sharedTools },
   accounts: { listUserAccounts: mocks.userAccounts },
   activity: { summarizeActivity: mocks.summary },
 })
@@ -75,9 +78,14 @@ beforeEach(() => {
   })
   mocks.userAccounts.mockResolvedValue({ accounts: [] })
   mocks.summary.mockResolvedValue({})
-  // The private group, which these tests leave empty.
+  // The shared and the private group, which these tests leave empty.
   mocks.privateTools.mockResolvedValue({ privateProvider })
-  mocks.provider.mockResolvedValue({ name: privateProvider, displayName: 'Private', state: 1 })
+  mocks.sharedTools.mockResolvedValue({ sharedProvider })
+  mocks.provider.mockImplementation(({ name }: { name: string }) => ({
+    name,
+    displayName: name === sharedProvider ? 'Shared' : 'Private',
+    state: 1,
+  }))
   mocks.tool.mockImplementation(({ relativePath }: { relativePath: string }) =>
     relativePath.startsWith('actions.tool')
       ? { summary: `Tool ${relativePath}`, description: 'The prose.' }
@@ -94,7 +102,8 @@ beforeEach(() => {
       pageToken: string
       pageSize: number
     }) => {
-      if (parent === privateProvider) return Promise.resolve({ tools: [] })
+      if (parent === privateProvider || parent === sharedProvider)
+        return Promise.resolve({ tools: [] })
       const start = Number(pageToken)
       const end = Math.min(start + pageSize, toolCount)
       return Promise.resolve({
@@ -318,7 +327,7 @@ it('reuses the tree across selection changes on the page, but not on leaving it'
   expect(router.state.errors).toBeNull()
   const tree = router.state.loaderData.tools
   const page = `${base.replace(/\/[^/]+$/, '')}`
-  for (const next of [tabs, `${tabs}/private`, base, tabs]) {
+  for (const next of [tabs, `${tabs}/private`, `${tabs}/shared`, base, tabs]) {
     await router.navigate(next)
     expect(router.state.errors).toBeNull()
     expect(router.state.loaderData.tools).toBe(tree)
@@ -326,6 +335,11 @@ it('reuses the tree across selection changes on the page, but not on leaving it'
   expect(decide(tabs, `${page}/new`)).toBe(true)
   expect(decide(`${page}/new`, tabs)).toBe(true)
   expect(decide(tabs, tabs.replace('tools', 'agents'))).toBe(true)
+  // An agent's private tool is a selection on the page, as your own is.
+  expect(decide(`${tabs}/private`, `${tabs}/private/people.greet/agents/worker`)).toBe(false)
+  expect(decide(`${tabs}/private/people.greet/agents/worker`, `${tabs}/shared/mail.remind`)).toBe(
+    false,
+  )
   // Another workspace's page holds another catalog.
   expect(decide(tabs, tabs.replace(workspace, workspace.replace('2', '3')))).toBe(true)
   // Settings is a page of its own; returning from it reloads the catalog.
@@ -337,8 +351,10 @@ it.each([
   `/workspaces/${workspace}/providers/not-a-uuid`,
   `/workspaces/${workspace}/providers/22222222-2222-4222-8222-222222222222`,
   `${base}/tools/missingTool`,
-  `${tabs}/shared`,
+  `${tabs}/unknown`,
+  `${tabs}/shared/missingTool`,
   `${tabs}/private/missingTool`,
+  `${tabs}/private/missingTool/agents/worker`,
 ])('answers 404 for %s', async (path) => {
   const router = await makeRouter(path)
   const [error] = Object.values(router.state.errors ?? {})

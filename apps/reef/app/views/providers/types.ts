@@ -75,10 +75,10 @@ export interface ToolView extends Omit<ToolNodeView, 'summary' | 'path'> {
    */
   nameInGroup?: string
   /**
-   * The agent that owns a private tool, with its page. Absent for your own
-   * private tools and for every other tool.
+   * The agent that owns a private tool, with its identifier and its page.
+   * Absent for your own private tools and for every other tool.
    */
-  agent?: { label: string; path: string }
+  agent?: { id: string; label: string; path: string }
 }
 
 /** The prose of the one provider tool the drawer shows. */
@@ -116,10 +116,10 @@ export interface ProviderView {
   /** The provider's complete Call Root, such as `coral.providers.github`. */
   callRoot: string
   /**
-   * Which group of the Tools page this is: Coral's own tools, a provider an
-   * owner added, or each person's private tools.
+   * Which group of the Tools page this is: Coral's own tools, the workspace's
+   * shared tools, a provider an owner added, or each person's private tools.
    */
-  kind: 'coral' | 'added' | 'private'
+  kind: 'coral' | 'shared' | 'added' | 'private'
   account: AccountLabel
   /** Coral's provider blockers: provider health, not your own account. */
   blockers: string[]

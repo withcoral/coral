@@ -18,6 +18,7 @@ import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
+import { SharedToolService } from '@/generated/coral/management/v1/shared_tool_pb'
 import { UsageDataService } from '@/generated/coral/management/v1/usage_data_pb'
 import { managementTransportForRequest } from './coral-request.server'
 import { runtimeConfigContext } from './runtime-config.server'
@@ -43,6 +44,7 @@ export function management(context: Readonly<RouterContextProvider>) {
     accounts: createClient(ProviderAccountService, providerTransport),
     policies: createClient(ToolPolicyService, transport),
     privateTools: createClient(PrivateToolService, transport),
+    sharedTools: createClient(SharedToolService, transport),
     releases: createClient(ReleaseService, transport),
     usageData: createClient(UsageDataService, transport),
   }
@@ -84,9 +86,10 @@ export async function mutationForm(request: Request, context: Readonly<RouterCon
   }
   return request.formData()
 }
-export function field(form: FormData, name: string) {
+/** One text field of a form, of at most `max` characters. */
+export function field(form: FormData, name: string, max = 4096) {
   const value = form.get(name)
-  if (typeof value !== 'string' || value.length > 4096)
+  if (typeof value !== 'string' || value.length > max)
     throw new Response('Invalid form', { status: 400, headers: privateHeaders })
   return value
 }

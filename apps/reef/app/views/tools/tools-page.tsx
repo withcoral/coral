@@ -62,8 +62,16 @@ import {
 import { toolCallPath } from '@/lib/call-root'
 import { countLabel } from '@/utils/count-label'
 import { catalogMatches } from '@/views/providers/provider-catalog'
-import { addressedTool, PRIVATE_TOOL_DELETED, providerAddress, toolPath } from './addresses'
+import {
+  addressedTool,
+  PRIVATE_TOOL_DELETED,
+  providerAddress,
+  SHARED_TOOL_PUBLISHED,
+  SHARED_TOOL_REMOVED,
+  toolPath,
+} from './addresses'
 import { PrivateToolDetail } from './private-tool-detail'
+import { publisherName, SharedToolDetail } from './shared-tool-detail'
 import { PolicyMutations, usePolicyMutations } from '@/views/providers/policy-mutations'
 import { useReadRecipe } from '@/views/providers/read-recipe'
 import {
@@ -156,6 +164,7 @@ function ToolsContent({
   recipes = [],
   selectedProvider: selectedProviderRoute,
   selectedTool,
+  selectedToolAgent = null,
   selectedToolDetail = null,
   toolCalls = null,
   form,
@@ -167,7 +176,7 @@ function ToolsContent({
   const canChange = owner && active
   const toolsPath = `${w.path}/tools`
   const newPath = `${w.path}/providers/new`
-  useArrivalToast(ARRIVAL_FLAGS, () => ({ title: 'Private tool deleted' }))
+  useArrivalToast(ARRIVAL_FLAGS, arrivalToast)
   const [railFilter, setRailFilter] = useState('')
   const sortedProviders = useMemo(() => sortProviders(installed), [installed])
   const entry = {
@@ -185,10 +194,14 @@ function ToolsContent({
   const routedId = selectedProviderRoute ?? addressed?.provider ?? null
   const selectedToolPath = selectedTool ?? addressed?.tool ?? null
   const selected = sortedProviders.find((provider) => provider.id === routedId)
-  const tool = selected && selectedToolPath ? addressedTool(selected, selectedToolPath) : undefined
-  // Nothing to list: no provider the reader can use, and no private tool.
+  const tool =
+    selected && selectedToolPath
+      ? addressedTool(selected, selectedToolPath, selectedToolAgent)
+      : undefined
+  // Nothing to list: no provider the reader can use, and no shared or private tool.
   const empty = sortedProviders.every(
-    (provider) => provider.kind === 'private' && provider.tools.length === 0,
+    (provider) =>
+      (provider.kind === 'private' || provider.kind === 'shared') && provider.tools.length === 0,
   )
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
   // The field echoes each keystroke at once; the rail follows with the
@@ -258,9 +271,10 @@ function ToolsContent({
           selectedProvider={selected ?? null}
           selectedTool={tool ?? null}
           selectedToolDetail={
-            selectedToolDetail?.relativePath === tool?.relativePath ? selectedToolDetail : null
+            tool && detailOf(selectedToolDetail, tool) ? selectedToolDetail : null
           }
           setRailFilter={setRailFilter}
+          workspace={w}
           toolCalls={toolCalls}
         />
       )}
@@ -383,10 +397,20 @@ function CatalogMatch({
   )
 }
 
-// The page names the private group by what it holds, as "All tools" does.
+// The page names the shared and the private group by what each holds, as "All tools" does.
 function providerLabel(provider: ProviderView) {
   if (provider.kind === 'private') return 'Private tools'
+  if (provider.kind === 'shared') return 'Shared tools'
   return provider.displayName || provider.namespace
+}
+
+/**
+ * Whether the loaded detail is that of `tool`. Two private tools can share a
+ * path, so a private tool's detail also names whose it is.
+ */
+function detailOf(detail: ToolDetailView | null, tool: ToolView) {
+  if (detail?.relativePath !== tool.relativePath) return false
+  return detail.kind !== 'private' || detail.agent === (tool.agent?.id ?? null)
 }
 
 // Labels sort without regard to case, so "api" and "Zebra" do not split by it.
@@ -394,9 +418,14 @@ function caseFolded(value: string) {
   return value.toLocaleLowerCase()
 }
 
-// Coral's own tools lead, then the private tools. The providers an owner
-// added follow by label.
-const KIND_ORDER: Record<ProviderView['kind'], number> = { coral: 0, private: 1, added: 2 }
+// Coral's own tools lead, then the shared tools and the private tools. The
+// providers an owner added follow by label.
+const KIND_ORDER: Record<ProviderView['kind'], number> = {
+  coral: 0,
+  shared: 1,
+  private: 2,
+  added: 3,
+}
 function sortProviders(providers: ProviderView[]) {
   return providers.toSorted(
     (a, b) =>
@@ -549,6 +578,7 @@ function ToolsTableScreen({
   selectedToolDetail,
   setRailFilter,
   toolCalls,
+  workspace,
 }: {
   /** An info tip beside the title. */
   titleInfo: ReactNode
@@ -573,6 +603,7 @@ function ToolsTableScreen({
   setRailFilter: (value: string) => void
   /** Null hides the Calls column. */
   toolCalls: ToolCallCounts | null
+  workspace: ToolsPageProps['workspace']
 }) {
   const navigate = useNavigate()
   const mutations = usePolicyMutations()
@@ -735,7 +766,9 @@ function ToolsTableScreen({
         section.status =
           provider.kind === 'private'
             ? 'No private tools yet. Ask your agent to create one.'
-            : 'No tools yet. Settings remain available.'
+            : provider.kind === 'shared'
+              ? 'No shared tools yet. Only an owner can publish one.'
+              : 'No tools yet. Settings remain available.'
         section.statusIndex = flat.length
         flat.push({
           kind: 'status',
@@ -972,11 +1005,8 @@ function ToolsTableScreen({
     (event: KeyboardEvent) => {
       if (!cursorKeyApplies(event, { fromFilter: true, overControls: true, inDrawer })) return
       event.preventDefault()
-      // The open drawer shows tools it can open, so it steps over the headings
-      // and over each agent's private tools.
-      const order = drawerKey
-        ? cursorOrder.filter((stop) => stop.kind === 'tool' && !stop.tool.agent)
-        : cursorOrder
+      // The open drawer shows tools, so it steps over the headings.
+      const order = drawerKey ? cursorOrder.filter((stop) => stop.kind === 'tool') : cursorOrder
       const at = activeStop ? order.indexOf(activeStop) : -1
       const next =
         at < 0
@@ -1026,8 +1056,6 @@ function ToolsTableScreen({
     if (!cursorKeyApplies(event, { fromFilter: true, overControls: false })) return
     event.preventDefault()
     if (activeStop.kind === 'heading') return toggleHeading(activeStop)
-    // Reef cannot open an agent's private tool.
-    if (activeStop.tool.agent) return
     markRevealed(activeStop.provider.id, activeStop.tool.key)
     navigate(toolPath(activeStop.provider, activeStop.tool), { preventScrollReset: true })
   }
@@ -1280,6 +1308,7 @@ function ToolsTableScreen({
         provider={selectedProvider ?? undefined}
         canChange={canChange}
         canDelete={active}
+        workspace={workspace}
         form={form}
         onClose={closeSelectedRoute}
         // The dialog keeps arrow keys inside it, so it moves the cursor itself.
@@ -1544,8 +1573,14 @@ const TableSections = memo(function TableSections({
 
 const TOOL_FILTER_ID = 'tool-filter'
 
-// The flags an action's redirect lands on this page with.
-const ARRIVAL_FLAGS = [PRIVATE_TOOL_DELETED] as const
+// The flags an action's redirect lands on this page with, and what each says.
+const ARRIVAL_FLAGS = [PRIVATE_TOOL_DELETED, SHARED_TOOL_PUBLISHED, SHARED_TOOL_REMOVED] as const
+const ARRIVALS: Record<(typeof ARRIVAL_FLAGS)[number], string> = {
+  [PRIVATE_TOOL_DELETED]: 'Private tool deleted',
+  [SHARED_TOOL_PUBLISHED]: 'Shared tool published',
+  [SHARED_TOOL_REMOVED]: 'Shared tool removed',
+}
+const arrivalToast = (flag: (typeof ARRIVAL_FLAGS)[number]) => ({ title: ARRIVALS[flag] })
 
 /** The name that tells a tool apart in a control's label: two private tools can share a path. */
 const toolLabel = (tool: ToolView) =>
@@ -1785,8 +1820,6 @@ const ToolRow = memo(function ToolRow({
   // A click anywhere but a control opens the tool's drawer. The name's
   // link navigates itself, so the row leaves its clicks alone.
   const open = (event: MouseEvent<HTMLDivElement>) => {
-    // Reef cannot open an agent's private tool.
-    if (tool.agent) return
     const control = (event.target as Element).closest(ROW_CONTROLS + ', a')
     // The cursor row takes focus, so its own tabindex is not a control in it.
     if (control && control !== event.currentTarget && event.currentTarget.contains(control)) return
@@ -1826,24 +1859,21 @@ const ToolRow = memo(function ToolRow({
         )}
         <ToolName className={styles.toolNameFace}>
           <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
-            {tool.agent ? (
-              <span className={styles.toolName}>
-                <HighlightedMatches text={shownName} query={query} />
-              </span>
-            ) : (
-              <Link
-                to={toolPath(provider, tool)}
-                prefetch="intent"
-                preventScrollReset
-                onClick={() => onOpen(provider.id, tool.key)}
-                className={styles.toolName}
-                // The link still names the whole path, which tells it apart
-                // from a tool of the same name under another heading.
-                aria-label={shownName === tool.relativePath ? undefined : tool.relativePath}
-              >
-                <HighlightedMatches text={shownName} query={query} />
-              </Link>
-            )}
+            <Link
+              to={toolPath(provider, tool)}
+              prefetch="intent"
+              preventScrollReset
+              onClick={() => onOpen(provider.id, tool.key)}
+              className={styles.toolName}
+              // The link still names the whole path, which tells it apart
+              // from a tool of the same name under another heading, and the
+              // agent, which tells it apart from your own tool at that path.
+              aria-label={
+                shownName === tool.relativePath && !tool.agent ? undefined : toolLabel(tool)
+              }
+            >
+              <HighlightedMatches text={shownName} query={query} />
+            </Link>
           </Tooltip>
         </ToolName>
         {tool.agent && (
@@ -2260,6 +2290,7 @@ function ToolDetailsDrawer({
   provider: routedProvider,
   canChange,
   canDelete,
+  workspace,
   detail: routedDetail,
   form,
   tool: routed,
@@ -2269,9 +2300,10 @@ function ToolDetailsDrawer({
 }: {
   provider: ProviderView | undefined
   canChange: boolean
-  /** The reader may delete their own private tool: the workspace is active. */
+  /** The reader may delete a private tool they can open: the workspace is active. */
   canDelete: boolean
-  /** What the table does not load of `tool`: its prose, or a private tool's source. */
+  workspace: ToolsPageProps['workspace']
+  /** What the table does not load of `tool`: its prose, or the source of a private or a shared tool. */
   detail: ToolDetailView | null
   /** Null shows no usage. */
   toolCalls: ToolCallCounts | null
@@ -2296,6 +2328,8 @@ function ToolDetailsDrawer({
   }
   const { tool, provider, detail } = shown
   const saved = detail?.kind === 'private' ? detail : null
+  const shared = detail?.kind === 'shared' ? detail : null
+  const authored = saved ?? shared
   const prose = detail?.kind === 'provider' ? detail : null
   const summary = prose?.summary.trim() ?? ''
   const description = prose?.description.trim() ?? ''
@@ -2318,16 +2352,17 @@ function ToolDetailsDrawer({
         <Dialog.Backdrop />
         <Dialog.Popup
           ref={popup}
-          // A private tool shows its source, which needs the room.
-          size={provider?.kind === 'private' ? 'xl' : 'm'}
+          // A private or a shared tool shows its source, which needs the room.
+          size={provider?.kind === 'private' || provider?.kind === 'shared' ? 'xl' : 'm'}
           placement="right"
           onKeyDown={(event) => onKeyDown(event.nativeEvent)}
         >
           <Dialog.Title>{tool?.relativePath ?? 'Tool details'}</Dialog.Title>
           {tool && (
-            <div key={callPath} ref={scrollToTop} className={styles.stack}>
-              {saved ? (
-                <Markdown>{saved.description}</Markdown>
+            // Two private tools can have one call path: your own and an agent's.
+            <div key={`${callPath}:${tool.key}`} ref={scrollToTop} className={styles.stack}>
+              {authored ? (
+                <Markdown>{authored.description}</Markdown>
               ) : description && description !== summary ? (
                 <Markdown>{prose!.description}</Markdown>
               ) : (
@@ -2347,6 +2382,11 @@ function ToolDetailsDrawer({
               {saved && (
                 <Typography.BodySmall as="p">
                   Last saved <SavedAt at={saved.savedAt} />
+                </Typography.BodySmall>
+              )}
+              {shared && (
+                <Typography.BodySmall as="p">
+                  {`Published by ${publisherName(shared.publisher, workspace.currentUser)} · Revision ${shared.revision}`}
                 </Typography.BodySmall>
               )}
               {shownHints(tool.hints).length > 0 && (
@@ -2383,6 +2423,23 @@ function ToolDetailsDrawer({
                   callPath={callPath}
                   form={form}
                   canDelete={canDelete}
+                  publish={
+                    canChange
+                      ? { workspacePath: workspace.path, policy: tool.policy }
+                      : workspace.effectiveRole === 'owner'
+                        ? null
+                        : 'owner-only'
+                  }
+                />
+              )}
+              {shared && (
+                <SharedToolDetail
+                  detail={shared}
+                  callPath={callPath}
+                  form={form}
+                  workspace={workspace}
+                  canChange={canChange}
+                  policy={tool.policy}
                 />
               )}
               {usage && <ToolUsageSection usage={usage} />}
