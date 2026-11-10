@@ -174,7 +174,7 @@ try {
   }
   if (!env.E2E_BASE_URL && !installedDesktop) {
     if (!env.E2E_CORAL_BINARY)
-      await run('cargo', ['build', '--locked', '-p', 'coral', '--bin', 'coral'], repoRoot)
+      await run('cargo', ['build', '--locked', '-p', 'coral-ee', '--bin', 'coral-ee'], repoRoot)
     if (desktop) {
       // Package the app as users get it; staging builds its own Reef.
       await run('npm', ['run', 'stage', '--', '--runtime', bootstrap.coralBinary], desktopRoot)
