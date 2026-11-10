@@ -34,8 +34,13 @@ export function buildRuntime({ release = false, target } = {}) {
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line))
+    // crates/coral is a library and a binary of one name; only the binary has
+    // an executable.
     .find(
-      (message) => message.reason === 'compiler-artifact' && message.target?.name === 'coral',
+      (message) =>
+        message.reason === 'compiler-artifact' &&
+        message.target?.name === 'coral' &&
+        message.executable,
     )?.executable
   if (!executable) throw new Error('cargo did not report the coral executable')
   return executable

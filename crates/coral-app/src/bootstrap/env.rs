@@ -134,6 +134,8 @@ impl Launch {
                     CORAL_DISABLE_USAGE_DATA,
                 )),
             }),
+            // The launching binary supplies these, never the environment.
+            extensions: super::runtime::Extensions::default(),
         })
     }
 }
