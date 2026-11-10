@@ -338,23 +338,6 @@ To stop sending from one Coral process, set one of these environment variables. 
 
 When you turn off sharing, Coral stops sending. We keep the reports that Coral sent before.
 
-## Environment variables
-
-Coral reads these variables when it starts. Restart Coral after you change one.
-
-| Variable                    | Description                                                                                                                                                       |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CORAL_CONFIG_DIR`          | The config folder. See the top of this page for the default.                                                                                                     |
-| `CORAL_LOCAL_WEB_URL`       | The web UI's origin. Coral links your users to it. Use it instead of `listeners.web.public_url` when user auth is disabled. Coral does not start when you set it with `[auth]` or with `listeners.web.public_url`. |
-| `CORAL_STOP_ON_STDIN_CLOSE` | Set to `1` to stop Coral when its stdin closes. Use it when your launcher stops Coral by closing a pipe.                                                         |
-| `CORAL_TRACE_PARENT`        | A W3C `traceparent`. Coral starts its process span in that trace.                                                                                                 |
-
-The variables that `*_env` keys name, such as `CORAL_SESSION_SIGNING_KEY`, hold secrets. Coral does not start when one of them is not set.
-
-### Exit status
-
-Coral exits with `0` after a clean stop. It exits with `75` when another Coral process holds its config folder. Your launcher can try again after that process stops. Coral exits with `2` when a command-line argument is not valid, and with `1` on every other error.
-
 ## Container image
 
 The `ghcr.io/withcoral/coral` image prepares `config.toml` before it starts Coral:
