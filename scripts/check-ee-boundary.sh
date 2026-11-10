@@ -2,7 +2,8 @@
 # Fails when code outside ee/ reaches into ee/, or licence headers cross the
 # boundary (ADR 0033):
 #
-#   - a package outside ee/ depends on a package inside it;
+#   - a package outside ee/ depends on a package inside it, or builds a
+#     target from a file inside it;
 #   - a default workspace member sits inside ee/, so a plain `cargo build`
 #     would build enterprise code;
 #   - code outside ee/ has a compile-time enterprise switch, or Rust outside
@@ -12,7 +13,9 @@
 #   - a source file in ee/ lacks the enterprise SPDX header, or a file
 #     outside ee/ carries it.
 #
-# scripts/check-ee-boundary.test.sh tries each breach.
+# It catches likely mistakes, not a determined attempt to cross the
+# boundary; code review guards that. scripts/check-ee-boundary.test.sh tries
+# each breach.
 #
 #   scripts/check-ee-boundary.sh
 set -euo pipefail
@@ -57,6 +60,23 @@ defaults="$(jq -r --arg ee "$root/ee/" '
 report "$outward"
 report "$defaults"
 
+# A target's source can sit in ee/ even when its manifest does not, through
+# [lib] path, [[bin]] path or build. Cargo lists it unresolved, so resolve it.
+sources="$(jq -r --arg ee "$root/ee/" '
+  .packages[]
+  | select(.manifest_path | startswith($ee) | not)
+  | .name as $name
+  | .targets[]
+  | "\($name)\t\(.name)\t\(.src_path)"
+' <<<"$metadata")"
+while IFS=$'\t' read -r package target source; do
+  if [[ -z "$source" ]]; then continue; fi
+  resolved="$(realpath "$source" 2>/dev/null || printf '%s' "$source")"
+  if [[ "$resolved" == "$root/ee/"* ]]; then
+    fail "$package builds its $target target from $resolved; targets outside ee/ must not build ee/ files"
+  fi
+done <<<"$sources"
+
 # Every tracked or new path, minus deleted ones, relative to the root.
 paths() {
   git ls-files --cached --others --exclude-standard -- "$@"
@@ -96,12 +116,13 @@ while IFS= read -r hit; do
 done < <(files "${outside_ee[@]}" '*.rs' '*Cargo.toml' |
   tr '\n' '\0' | xargs -0 grep -nE 'features? *= *\[?[^]]*"(ee|enterprise)"|cfg!? *\( *(ee|enterprise)\b|^ *(ee|enterprise) *= *\[' /dev/null || true)
 
-# A string that holds a path into ee/ catches include!, #[path] and the
-# paths that concat!, env! or a build script would compose.
+# A string that holds a path into ee/, with either separator, catches
+# include!, #[path] and the paths that concat!, env! or a build script would
+# compose.
 while IFS= read -r hit; do
   fail "$hit: Rust outside ee/ names an ee/ crate or path"
 done < <(files "${outside_ee[@]}" '*.rs' | tr '\n' '\0' |
-  xargs -0 grep -nE '\bcoral_ee|"([^"]*/)?ee/' /dev/null || true)
+  xargs -0 grep -nE '\bcoral_ee|"([^"]*[/\])?ee[/\]' /dev/null || true)
 
 while IFS= read -r hit; do
   fail "${hit%%:*}: carries the enterprise licence header outside ee/"

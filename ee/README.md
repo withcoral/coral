@@ -2,7 +2,8 @@
 
 This directory holds the code for Coral's Enterprise Features. It is public,
 but [`LICENSE`](./LICENSE) here covers it, not the Apache License 2.0 that
-covers the rest of the repository.
+covers most of the repository. [`NOTICE`](../NOTICE) says which licence covers
+which files.
 
 - [`crates/coral-ee`](./crates/coral-ee) builds the released binary, which
   packaging installs as `coral`. It runs as the Community Edition until a

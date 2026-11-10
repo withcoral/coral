@@ -80,6 +80,12 @@ expect "a composed include! into ee/" "names an ee/ crate or path"
 write "$core/src/breach.rs" '#[path = "../../../ee/crates/coral-ee/src/main.rs"] mod m;'
 expect "a #[path] into ee/" "names an ee/ crate or path"
 
+write "$core/src/breach.rs" '#[cfg(windows)] include!("..\\..\\..\\ee\\crates\\coral-ee\\src\\main.rs");'
+expect "a Windows path into ee/" "names an ee/ crate or path"
+
+append "$core/Cargo.toml" $'[[bin]]\nname = "breach"\npath = "../../ee/crates/coral-ee/src/main.rs"'
+expect "a Cargo target built from ee/" "target from"
+
 write "$core/src/breach.rs" "// $marker"
 expect "the enterprise header outside ee/" "carries the enterprise licence header outside ee/"
 
