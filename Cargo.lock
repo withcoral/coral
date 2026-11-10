@@ -594,10 +594,12 @@ dependencies = [
  "clap",
  "coral-app",
  "coral-mcp",
+ "coral-run-executor",
  "reqwest",
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -647,10 +649,13 @@ dependencies = [
  "coral-provider",
  "coral-release",
  "coral-run",
+ "coral-run-executor",
  "coral-search",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-usage",
+ "coral-v8",
  "coral-workspace",
  "etcetera",
  "jsonwebtoken",
@@ -771,6 +776,7 @@ dependencies = [
  "async-trait",
  "coral-catalog",
  "coral-db",
+ "coral-run-executor",
  "coral-telemetry",
  "coral-test-support",
  "coral-v8",
@@ -807,6 +813,7 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-usage",
  "coral-workspace",
  "prost",
  "prost-types",
@@ -842,6 +849,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "coral-auth",
  "coral-catalog",
  "coral-db",
  "coral-functions",
@@ -968,6 +976,7 @@ dependencies = [
  "coral-outbound",
  "coral-policy",
  "coral-provider",
+ "coral-run-executor",
  "coral-search",
  "coral-telemetry",
  "coral-test-support",
@@ -990,6 +999,25 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "coral-run-executor"
+version = "1.5.0"
+dependencies = [
+ "coral-credentials",
+ "coral-telemetry",
+ "coral-test-support",
+ "coral-v8",
+ "prost",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-health",
+ "tonic-prost",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1030,7 +1058,6 @@ dependencies = [
 name = "coral-task"
 version = "1.5.0"
 dependencies = [
- "async-trait",
  "coral-administration",
  "coral-catalog",
  "coral-db",
@@ -1118,6 +1145,31 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "coral-usage"
+version = "1.5.0"
+dependencies = [
+ "chrono",
+ "coral-db",
+ "coral-outbound",
+ "coral-provider",
+ "coral-run",
+ "coral-task",
+ "coral-telemetry",
+ "coral-test-support",
+ "coral-workspace",
+ "reqwest",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]

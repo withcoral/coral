@@ -96,18 +96,18 @@ pub enum OAuthScopeFormat {
 impl OAuthScopeFormat {
     /// Validates and canonicalizes independent scope tokens for this encoding.
     /// # Errors
-    /// Rejects invalid tokens, excessive lists, or commas ambiguous in comma encoding.
+    /// Rejects invalid tokens or commas ambiguous in comma encoding. The list
+    /// length is the provider's choice: its own authorization endpoint decides
+    /// what it accepts.
     pub fn normalize(self, values: &[String]) -> Result<Vec<String>, crate::Error> {
-        if values.len() > 100
-            || values.iter().any(|scope| {
-                scope.is_empty()
-                    || scope.len() > 256
-                    || !scope
-                        .bytes()
-                        .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
-                    || (self == Self::Comma && scope.contains(','))
-            })
-        {
+        if values.iter().any(|scope| {
+            scope.is_empty()
+                || scope.len() > 256
+                || !scope
+                    .bytes()
+                    .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+                || (self == Self::Comma && scope.contains(','))
+        }) {
             return Err(crate::Error::InvalidInput(
                 "invalid requested scopes".into(),
             ));

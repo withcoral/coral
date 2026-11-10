@@ -1,12 +1,11 @@
+import { useEffect } from 'react'
 import { useFetcher } from 'react-router'
 import { Button } from '@/wax/components'
+import { addToast } from '@/wax/components/toast'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action as resolve } from '@/routes/activity-resolve'
 
-/** One fetcher per request, so a view can show a decline's outcome away from its button. */
-const useDecline = (request: string) => useFetcher<typeof resolve>({ key: `decline:${request}` })
-
-/** Declines one exact Account Connection Request. */
+/** Declines one exact Account Connection Request. A failure shows in a toast. */
 export function DeclineConnection({
   request,
   ariaLabel,
@@ -18,7 +17,12 @@ export function DeclineConnection({
   disabled?: boolean
 }) {
   const csrf = useShellCsrf()
-  const decline = useDecline(request)
+  const decline = useFetcher<typeof resolve>()
+  // Each finished attempt is a new object, so a repeated failure toasts again.
+  const finished = decline.state === 'idle' ? decline.data : undefined
+  useEffect(() => {
+    if (finished && 'error' in finished) addToast('error', { title: finished.error })
+  }, [finished])
   return (
     <decline.Form method="post" action="/activity/resolve">
       <input type="hidden" name="csrf" value={csrf} />
@@ -34,12 +38,4 @@ export function DeclineConnection({
       </Button.TextButton>
     </decline.Form>
   )
-}
-
-/** Why the last decline of `request` failed, or null. */
-export function useDeclineFailure(request: string): string | null {
-  const decline = useDecline(request)
-  return decline.state === 'idle' && decline.data && 'error' in decline.data
-    ? decline.data.error
-    : null
 }

@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// Stable version of the bounded OpenAPI profile materializer.
-pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v5";
+pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v6";
 
 /// Materializes one exact pinned OpenAPI input and carries forward paths owned
 /// by Tool Keys that remain active in the replacement catalog.
@@ -61,7 +61,7 @@ fn build_openapi(
         Some(contract) => CredentialSelection {
             shared: vec![crate::HttpCredentialSlot::new(
                 "configured".into(),
-                contract.clone().into(),
+                std::sync::Arc::new(contract.clone().into()),
             )],
             by_operation: BTreeMap::new(),
         },
@@ -1234,50 +1234,63 @@ pub(super) fn validate_credential_contract(
         }
     }
     // Differently named schemes that produce the same contract need the same
-    // credential, so only contracts decide compatibility.
-    let mut selected: Option<Vec<crate::HttpCredentialSlot>> = None;
+    // credential, so only contracts decide compatibility. Tools whose one
+    // authorization-code scheme differs only in scopes share one grant that
+    // requests every scope; the union grows in one pass, never re-sorted.
+    let mut first: Option<FirstSelection> = None;
+    let mut scopes = BTreeSet::new();
     let mut by_operation = BTreeMap::new();
     for operation in super::operations::locate_operations(root, document)?.operations {
         let slots = select_credentials(
             operation.object.get("security").or(root.get("security")),
             security_schemes,
         )?;
-        selected = Some(match selected {
-            None => slots.clone(),
-            Some(previous) => shared_contracts(&previous, &slots).map_err(|conflict| {
-                let (message, detail) = match conflict {
-                    ContractConflict::Different => (
-                        "the Provider's Tools require different credential contracts",
-                        format!(
-                            "{} differs from {}",
-                            scheme_names(&slots),
-                            scheme_names(&previous)
-                        ),
-                    ),
-                    ContractConflict::ScopeLimit => (
-                        "the Provider's Tools together request more OAuth scopes than \
-                         one grant can hold",
-                        format!(
-                            "{} and {} together exceed the scope limit",
-                            scheme_names(&slots),
-                            scheme_names(&previous)
-                        ),
-                    ),
-                };
-                diagnostic("credentials_not_supported", message)
-                    .at_location(&format!("{}: {detail}", operation.pointer))
-            })?,
-        });
+        let scopeless_grant = authorization_code_without_scopes(&slots);
+        let compatible = first
+            .as_ref()
+            .is_none_or(|first| match &first.scopeless_grant {
+                Some(grant) => scopeless_grant.as_ref() == Some(grant),
+                None => scopeless_grant.is_none() && same_contracts(&first.slots, &slots),
+            });
+        if !compatible {
+            let previous = first
+                .as_ref()
+                .map(|first| first.slots.as_slice())
+                .unwrap_or_default();
+            return Err(diagnostic(
+                "credentials_not_supported",
+                "the Provider's Tools require different credential contracts",
+            )
+            .at_location(&format!(
+                "{}: {} differs from {}",
+                operation.pointer,
+                scheme_names(&slots),
+                scheme_names(previous)
+            )));
+        }
+        if scopeless_grant.is_some()
+            && let [slot] = slots.as_slice()
+            && let Some((requested, _format)) = slot.contract().authentication().oauth_scopes()
+        {
+            scopes.extend(requested.iter().cloned());
+        }
+        if first.is_none() {
+            first = Some(FirstSelection {
+                slots: slots.clone(),
+                scopeless_grant,
+            });
+        }
         by_operation.insert(operation.key, slots);
     }
-    let shared = selected.unwrap_or_default();
+    let shared = first.map_or_else(Vec::new, |first| first.shared_slots(scopes));
     // Every Tool retains the shared contract under its own scheme name,
-    // so one account grant covers every scope the Tools ask for.
+    // so one account grant covers every scope the Tools ask for. The
+    // contract is shared, not copied.
     for slots in by_operation.values_mut() {
         for (slot, shared) in slots.iter_mut().zip(&shared) {
             *slot = crate::HttpCredentialSlot::new(
                 slot.scheme_name().to_owned(),
-                shared.contract().clone(),
+                shared.shared_contract(),
             );
         }
     }
@@ -1287,69 +1300,60 @@ pub(super) fn validate_credential_contract(
     })
 }
 
-/// Why a Tool cannot join the credential contract its predecessors share.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContractConflict {
-    /// The contracts differ in more than their OAuth scopes.
-    Different,
-    /// The contracts agree, but one grant cannot request every scope they ask for.
-    ScopeLimit,
+/// The first Tool's credential selection, which every later Tool must match.
+struct FirstSelection {
+    /// Its slots, which name its security scheme in a conflict.
+    slots: Vec<crate::HttpCredentialSlot>,
+    /// Its one authorization-code grant with the scopes cleared, when it has
+    /// one: later Tools then need only the same grant, and their scopes join.
+    scopeless_grant: Option<AuthenticationConfiguration>,
 }
 
-/// The one contract the Tools so far and the next one can share: their
-/// common contract, or one OAuth contract requesting every scope when they
-/// differ only in scopes.
-fn shared_contracts(
-    previous: &[crate::HttpCredentialSlot],
-    next: &[crate::HttpCredentialSlot],
-) -> Result<Vec<crate::HttpCredentialSlot>, ContractConflict> {
-    if same_contracts(previous, next) {
-        return Ok(previous.to_vec());
+impl FirstSelection {
+    /// The slots every Tool shares: the first Tool's own, or its grant
+    /// requesting every scope the Tools ask for.
+    fn shared_slots(self, scopes: BTreeSet<String>) -> Vec<crate::HttpCredentialSlot> {
+        let Some(grant) = self.scopeless_grant else {
+            return self.slots;
+        };
+        let format = grant
+            .oauth_scopes()
+            .map_or_else(Default::default, |(_no_scopes, format)| format);
+        let scheme_name = self
+            .slots
+            .first()
+            .map(|slot| slot.scheme_name().to_owned())
+            .unwrap_or_default();
+        vec![crate::HttpCredentialSlot::new(
+            scheme_name,
+            std::sync::Arc::new(
+                grant
+                    .with_oauth_scopes(scopes.into_iter().collect(), format)
+                    .into(),
+            ),
+        )]
     }
-    let ([previous], [next]) = (previous, next) else {
-        return Err(ContractConflict::Different);
-    };
-    let merged = union_oauth_scopes(
-        previous.contract().authentication(),
-        next.contract().authentication(),
-    )?;
-    Ok(vec![crate::HttpCredentialSlot::new(
-        previous.scheme_name().to_owned(),
-        merged.into(),
-    )])
 }
 
-/// One authorization-code contract requesting both scope sets, when the two
-/// agree on everything but the scopes.
-fn union_oauth_scopes(
-    left: &AuthenticationConfiguration,
-    right: &AuthenticationConfiguration,
-) -> Result<AuthenticationConfiguration, ContractConflict> {
-    let mut merged = left.clone();
-    let mut other = right.clone();
-    let (
-        AuthenticationConfiguration::OAuthAuthorizationCode { scopes, .. },
-        AuthenticationConfiguration::OAuthAuthorizationCode {
-            scopes: other_scopes,
-            ..
-        },
-    ) = (&mut merged, &mut other)
+/// A Tool's one authorization-code contract with its scopes cleared, so two
+/// Tools can be compared on everything but the scopes they request. `None`
+/// for any other credential selection.
+fn authorization_code_without_scopes(
+    slots: &[crate::HttpCredentialSlot],
+) -> Option<AuthenticationConfiguration> {
+    let [slot] = slots else {
+        return None;
+    };
+    let authentication = slot.contract().authentication();
+    let AuthenticationConfiguration::OAuthAuthorizationCode { scope_format, .. } = authentication
     else {
-        return Err(ContractConflict::Different);
+        return None;
     };
-    scopes.append(other_scopes);
-    // Each list is already normalized, so only the union counts against the
-    // scope limit, and the limit is the only check the union can fail.
-    scopes.sort();
-    scopes.dedup();
-    *scopes = super::authentication::scopes(scopes)
-        .map_err(|_over_limit| ContractConflict::ScopeLimit)?;
-    other_scopes.clone_from(scopes);
-    if merged == other {
-        Ok(merged)
-    } else {
-        Err(ContractConflict::Different)
-    }
+    Some(
+        authentication
+            .clone()
+            .with_oauth_scopes(Vec::new(), *scope_format),
+    )
 }
 
 fn same_contracts(left: &[crate::HttpCredentialSlot], right: &[crate::HttpCredentialSlot]) -> bool {
@@ -1393,7 +1397,7 @@ pub(super) fn select_credentials(
         let names = requirement.keys().cloned().collect::<Vec<_>>().join("+");
         return Ok(vec![crate::HttpCredentialSlot::new(
             names,
-            api_key_contract(api_keys(requirement, schemes)?).into(),
+            std::sync::Arc::new(api_key_contract(api_keys(requirement, schemes)?).into()),
         )]);
     }
     let (name, scopes) = requirement
@@ -1441,7 +1445,7 @@ pub(super) fn select_credentials(
     };
     Ok(vec![crate::HttpCredentialSlot::new(
         name.clone(),
-        contract.into(),
+        std::sync::Arc::new(contract.into()),
     )])
 }
 

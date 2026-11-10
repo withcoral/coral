@@ -358,7 +358,10 @@ fn validate_authentication(
                 ));
             });
             let scopes = scope_format.normalize(scopes).map_err(|_invalid| {
-                errors.push(field_error("authentication.scopes", "Enter up to 100 valid scopes. Use at most 256 ASCII characters for each scope."));
+                errors.push(field_error(
+                    "authentication.scopes",
+                    "Enter valid scopes. Use at most 256 ASCII characters for each scope.",
+                ));
             });
             if client.as_ref().is_some_and(|policy| {
                 policy

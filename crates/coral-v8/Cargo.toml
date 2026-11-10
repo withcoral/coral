@@ -9,6 +9,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Test-only counts of this process's compilers. Dev-dependencies enable this;
+# production crates never do.
+test-support = []
+
 [dependencies]
 coral-telemetry.workspace = true
 coral-value.workspace = true

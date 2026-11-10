@@ -1,6 +1,5 @@
 //! MCP-owned structured results. Serialization and advertisements use the same types.
 mod diagnostics;
-mod function;
 mod run;
 
 use coral_task::TaskOutcome;
@@ -14,7 +13,6 @@ use schemars::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-pub(crate) use function::{SavedFunctionResult, saved_function};
 pub(crate) use run::{ExecResult, ObservedRun, Reporter, handoff_progress, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
@@ -98,12 +96,6 @@ fn bounded_message(message: &str) -> String {
         .get(..message.floor_char_boundary(MAXIMUM_BYTES.min(message.len())))
         .expect("floor_char_boundary returns a valid UTF-8 boundary")
         .to_string()
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeletedFunction {
-    pub(crate) call_path: String,
 }
 
 #[derive(Serialize, JsonSchema)]

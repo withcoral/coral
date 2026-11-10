@@ -683,3 +683,24 @@ globalStyle(`${scrollTable} ${selectionCell} > label`, {
   paddingBlock: rowPaddingBlock,
   paddingInline: `${scrollRowPaddingInline}px ${scrollRowGap}px`,
 })
+
+// A heading label that sorts its column: it reads as the heading, not as a button.
+export const sortButton = style({
+  alignItems: 'center',
+  background: 'none',
+  border: 0,
+  borderRadius: 4,
+  color: 'inherit',
+  cursor: 'pointer',
+  display: 'inline-flex',
+  font: 'inherit',
+  gap: 4,
+  padding: 0,
+  selectors: {
+    '&:hover': { color: theme.content.primary },
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: 2 },
+  },
+})
+// A heading's text clips its overflow for the ellipsis. A short sortable label
+// needs no ellipsis, so it shows its button's whole focus ring instead.
+globalStyle(`${headingText}:has(${sortButton})`, { overflow: 'visible' })

@@ -383,8 +383,7 @@ async fn tool_fact(
     match coral_policy::invocation_decision_in_transaction(
         transaction,
         &policy_target(workspace_id, target),
-        target.tool().hints(),
-        target.tool().http_method(),
+        target.tool().policy_facts(),
         lock,
     )
     .await

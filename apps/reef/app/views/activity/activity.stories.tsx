@@ -1443,7 +1443,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(current).toBeVisible()
     await expect(current.getAttribute('href')).toMatch(/\/functions\//)
     // Approval shows as the Providers page's named hand; other flags keep their text.
-    await expect(within(merge).getByRole('img', { name: /^Needs approval/ })).toBeVisible()
+    await expect(within(merge).getByRole('img', { name: /^Ask/ })).toBeVisible()
     for (const flag of ['destructive', 'not idempotent', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
     await expect(within(results).queryByText(/Matched declaration paths/)).toBeNull()
@@ -1476,7 +1476,7 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(signature).not.toBeVisible()
     // The link and the approval hand stay in the summary, outside Details.
     await expect(mergeDetails).not.toContainElement(
-      within(merge).getByRole('img', { name: /^Needs approval/ }),
+      within(merge).getByRole('img', { name: /^Ask/ }),
     )
     await expect(functionDetails).not.toContainElement(current)
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.

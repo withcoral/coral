@@ -28,6 +28,8 @@ RUN set -eu; \
 FROM rust:1.98-trixie AS source
 ARG TARGETARCH
 ARG CORAL_GIT_SHA
+# The release workflow passes 1: only a release build sends usage data.
+ARG CORAL_RELEASE_BUILD=
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,id=coral-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \

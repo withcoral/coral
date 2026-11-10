@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{HttpMethod, ToolHints, ToolKey};
+use coral_catalog::{HttpMethod, ToolHints, ToolKey, ToolPolicyFacts};
 use coral_outbound::DestinationPolicy;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
@@ -89,7 +89,7 @@ paths:
     clippy::too_many_lines,
     reason = "one table covers every default input and checks the SQL mirror against it"
 )]
-async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
+async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_default_policy() {
     let (fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -144,6 +144,16 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         .access()
         .id()
         .clone();
+    let builtin_context = change(owner.clone(), 45, '6');
+    let mut transaction = policies.database.begin().await.expect("begin");
+    let builtin = providers
+        .install_builtin_in_transaction(&mut transaction, &builtin_context, workspace.id())
+        .await
+        .expect("install the Built-in Provider")
+        .skip_search()
+        .id()
+        .clone();
+    transaction.commit().await.expect("commit");
     let target = |provider: &coral_provider::ProviderId, key: &str| {
         ToolPolicyTarget::new(
             workspace.id().clone(),
@@ -151,9 +161,20 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
             ToolKey::parse(key).expect("Tool Key"),
         )
     };
-    // A declared read-only hint or an RFC 9110 safe method runs without
-    // approval. Other declared hints are not read-only evidence.
+    // A declared read-only hint, an RFC 9110 safe method or a default its
+    // catalog declares runs without approval. Other declared hints are not
+    // read-only evidence.
     let defaults = [
+        (&builtin, "listProviders", ToolAccessState::Enabled),
+        (&builtin, "saveFunction", ToolAccessState::Enabled),
+        (&builtin, "deleteFunction", ToolAccessState::Enabled),
+        (&builtin, "addProvider", ToolAccessState::ApprovalRequired),
+        (&builtin, "updatePolicy", ToolAccessState::ApprovalRequired),
+        (
+            &builtin,
+            "updateProvider",
+            ToolAccessState::ApprovalRequired,
+        ),
         (&mcp, "read_value", ToolAccessState::Enabled),
         (&mcp, "write_value", ToolAccessState::ApprovalRequired),
         (&mcp, "retry_value", ToolAccessState::ApprovalRequired),
@@ -187,6 +208,17 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         )
         .await
         .expect("set exact rules");
+    // An exact rule overrides a declared default too.
+    policies
+        .set_access_states(
+            &change(owner.clone(), 55, '7'),
+            vec![(
+                target(&builtin, "deleteFunction"),
+                ToolAccessState::ApprovalRequired,
+            )],
+        )
+        .await
+        .expect("set an exact rule on a Built-in Tool");
     let mut by_module = Vec::new();
     for (provider, tool, _) in defaults {
         let decision = policies
@@ -202,11 +234,15 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
     assert_eq!(
         by_sql,
         [
+            "addProvider",
+            "deleteFunction",
             "deleteValue",
             "getValue",
             "patchValue",
             "putValue",
             "retry_value",
+            "updatePolicy",
+            "updateProvider",
             "write_value",
         ],
         "SQL mirror"
@@ -971,52 +1007,80 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         "only this Workspace's disabled rule"
     );
     let read_only = ToolHints::new(Some(true), None, None, None);
-    for (target, hints, expected) in [
-        (&forecast, read_only, ToolAccessState::Disabled),
-        (&alerts, ToolHints::default(), ToolAccessState::Enabled),
-        (&secondary, read_only, ToolAccessState::ApprovalRequired),
+    let enabled_by_default = ToolPolicyFacts::default().declaring_enabled_by_default(true);
+    for (target, facts, expected) in [
+        (
+            &forecast,
+            ToolPolicyFacts::new(read_only, None),
+            ToolAccessState::Disabled,
+        ),
+        (
+            &alerts,
+            ToolPolicyFacts::default(),
+            ToolAccessState::Enabled,
+        ),
+        (
+            &secondary,
+            ToolPolicyFacts::new(read_only, None),
+            ToolAccessState::ApprovalRequired,
+        ),
+        (
+            &secondary,
+            enabled_by_default,
+            ToolAccessState::ApprovalRequired,
+        ),
     ] {
         assert_eq!(
-            rules.access_state(target.provider_id(), target.tool_key(), hints, None),
+            rules.access_state(target.provider_id(), target.tool_key(), facts),
             expected,
-            "an exact rule wins over the hint default"
+            "an exact rule wins over the default"
         );
     }
     let unruled = ToolKey::parse("getAlerts").expect("Tool Key");
     let (get, post) = (Some(HttpMethod::Get), Some(HttpMethod::Post));
-    for (hints, http_method, expected) in [
-        (read_only, None, ToolAccessState::Enabled),
+    for (facts, expected) in [
         (
-            ToolHints::new(Some(true), Some(true), None, None),
-            None,
+            ToolPolicyFacts::new(read_only, None),
             ToolAccessState::Enabled,
         ),
         (
-            ToolHints::new(Some(false), None, None, None),
-            None,
+            ToolPolicyFacts::new(ToolHints::new(Some(true), Some(true), None, None), None),
+            ToolAccessState::Enabled,
+        ),
+        (
+            ToolPolicyFacts::new(ToolHints::new(Some(false), None, None, None), None),
             ToolAccessState::ApprovalRequired,
         ),
         (
-            ToolHints::new(None, Some(false), Some(true), Some(false)),
-            None,
+            ToolPolicyFacts::new(
+                ToolHints::new(None, Some(false), Some(true), Some(false)),
+                None,
+            ),
             ToolAccessState::ApprovalRequired,
         ),
         (
-            ToolHints::default(),
-            None,
+            ToolPolicyFacts::new(ToolHints::default(), None),
             ToolAccessState::ApprovalRequired,
         ),
-        (ToolHints::default(), get, ToolAccessState::Enabled),
         (
-            ToolHints::default(),
-            post,
+            ToolPolicyFacts::new(ToolHints::default(), get),
+            ToolAccessState::Enabled,
+        ),
+        (
+            ToolPolicyFacts::new(ToolHints::default(), post),
             ToolAccessState::ApprovalRequired,
+        ),
+        // A default the catalog declares holds whatever the hints say.
+        (
+            ToolPolicyFacts::new(ToolHints::new(Some(false), Some(true), None, None), None)
+                .declaring_enabled_by_default(true),
+            ToolAccessState::Enabled,
         ),
     ] {
         assert_eq!(
-            rules.access_state(secondary.provider_id(), &unruled, hints, http_method),
+            rules.access_state(secondary.provider_id(), &unruled, facts),
             expected,
-            "a Tool without a rule takes its default: {hints:?} {http_method:?}"
+            "a Tool without a rule takes its default: {facts:?}"
         );
     }
 }

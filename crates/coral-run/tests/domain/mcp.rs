@@ -234,3 +234,152 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
     assert_eq!(observed, terminal);
     server.verify().await;
 }
+
+/// An MCP server that refuses a tool call with 401 or 403 answered it: the
+/// Program gets a catchable Tool Error, as it does for an HTTP Tool's 401,
+/// and the Run is not interrupted as if Coral had a host defect.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real MCP Provider publication and Program per refusal"
+)]
+async fn an_mcp_authentication_refusal_is_a_catchable_tool_error() {
+    let cases: [(u16, Option<&str>); 3] = [
+        (401, Some(r#"Bearer error="invalid_token""#)),
+        (403, None),
+        (401, Some(r#"Basic realm="fixture""#)),
+    ];
+    for (status, challenge) in cases {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let request: Value = request.body_json().expect("MCP request");
+                match request["method"].as_str().expect("method") {
+                    "initialize" => ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0", "id": request["id"], "result": {
+                            "protocolVersion": "2025-11-25", "serverInfo": {"name": "fixture", "version": "1"},
+                            "capabilities": {"tools": {}}
+                        }
+                    })),
+                    "notifications/initialized" => ResponseTemplate::new(202),
+                    unexpected => panic!("unexpected MCP method: {unexpected}"),
+                }
+            })
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let refusal = challenge.map_or_else(
+            || ResponseTemplate::new(status),
+            |challenge| ResponseTemplate::new(status).insert_header("www-authenticate", challenge),
+        );
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(refusal)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let (workspace, principal) = fixture
+            .user_scope("user:mcp-refused", "Observe an MCP authentication refusal")
+            .await;
+        let snapshot = coral_catalog::McpDiscoverySnapshot::parse(&json!({
+            "protocolVersion": "2025-11-25", "serverInfo": {"name": "fixture", "version": "1"},
+            "server": {"transport": "streamable_http", "url": server.uri()},
+            "capabilities": {"tools": {}},
+            "tools": [{"name": "guarded", "inputSchema": {"type": "object"}, "annotations": {"readOnlyHint": true}}]
+        }).to_string()).expect("snapshot");
+        let context = change(
+            principal.authenticated_user().expect("User").clone(),
+            30,
+            '7',
+        );
+        let setup = fixture
+            .providers
+            .prepare_mcp_fixture(&context, &workspace, snapshot)
+            .await
+            .expect("MCP Setup");
+        fixture
+            .providers
+            .publish_workspace_provider(
+                &context,
+                WorkspaceProviderPublicationRequest::new(
+                    ManagementRequestId::parse("00000000-0000-0000-0000-000000000001")
+                        .expect("request id"),
+                    workspace.clone(),
+                    setup.id().clone(),
+                    ProviderNamespace::parse("guarded").expect("namespace"),
+                    CredentialRoute::None,
+                ),
+            )
+            .await
+            .expect("publish")
+            .skip_search()
+            .published_provider()
+            .expect("published MCP Provider");
+        let runs = fixture.live_runs(None);
+        let accepted = runs
+            .start(
+                &principal,
+                &workspace,
+                submission(
+                    r"
+            try { await coral.providers.guarded.guarded({}); }
+            catch (error) {
+              if (!(error instanceof coral.ToolError)) throw error;
+              return error.code;
+            }
+            throw new Error('the refused call resolved');
+        ",
+                ),
+            )
+            .await
+            .expect("accept MCP Program");
+        let terminal = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let update = runs
+                    .observe(
+                        &principal,
+                        &workspace,
+                        accepted.run_id(),
+                        &immediate(None, 100),
+                    )
+                    .await
+                    .expect("observe Run");
+                if update.state().is_terminal() {
+                    break update;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Run ends");
+        let Some(RunTerminalOutcome::Succeeded {
+            final_value: FinalValue::Present(code),
+        }) = terminal.terminal_outcome()
+        else {
+            panic!(
+                "{status} {challenge:?}: the Program must catch the refusal, got {:?}",
+                terminal.terminal_outcome()
+            );
+        };
+        assert_eq!(
+            code.as_json(),
+            &json!("upstream_unauthorized"),
+            "{status} {challenge:?}"
+        );
+        assert!(
+            super::retained_events(&runs, &principal, &workspace, terminal.run_id())
+                .await
+                .iter()
+                .any(|event| matches!(
+                    event.kind(),
+                    RunEventKind::InvocationEnded {
+                        result_kind: crate::InvocationResultKind::CoralFailure,
+                        ..
+                    }
+                )),
+            "{status} {challenge:?}: the Invocation records a Coral Failure"
+        );
+        server.verify().await;
+    }
+}

@@ -864,6 +864,59 @@ impl ToolHints {
     }
 }
 
+/// What a Tool's catalog fixes about its default Tool Access State: its
+/// declared hints, the method of an HTTP Tool, and whether the catalog
+/// declares it `enabled` when no exact rule matches. Policy owns the rule
+/// that turns these into a default; each retained Generation keeps its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolPolicyFacts {
+    hints: ToolHints,
+    http_method: Option<crate::HttpMethod>,
+    enabled_by_default: bool,
+}
+
+impl ToolPolicyFacts {
+    /// Facts from a Tool's hints and HTTP method, declaring no default.
+    #[must_use]
+    pub const fn new(hints: ToolHints, http_method: Option<crate::HttpMethod>) -> Self {
+        Self {
+            hints,
+            http_method,
+            enabled_by_default: false,
+        }
+    }
+
+    /// The same facts, with the catalog declaring, or not, that the Tool is
+    /// `enabled` when no exact rule matches. Only Coral's own catalog
+    /// declares it.
+    #[must_use]
+    pub const fn declaring_enabled_by_default(self, enabled: bool) -> Self {
+        Self {
+            enabled_by_default: enabled,
+            ..self
+        }
+    }
+
+    /// Returns the declared effect hints.
+    #[must_use]
+    pub const fn hints(&self) -> ToolHints {
+        self.hints
+    }
+
+    /// Returns the method of an HTTP Tool; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
+        self.http_method
+    }
+
+    /// Returns whether the catalog declares the Tool `enabled` when no exact
+    /// rule matches.
+    #[must_use]
+    pub const fn declares_enabled_by_default(&self) -> bool {
+        self.enabled_by_default
+    }
+}
+
 /// Maximum raw content bytes in one complete Tool Authoring Description.
 pub const TOOL_AUTHORING_DESCRIPTION_MAX_BYTES: usize = 256 * 1024;
 
@@ -988,22 +1041,19 @@ pub(crate) fn tool_description_too_large(
 pub struct CatalogSearchTarget {
     key: ToolKey,
     relative_path: String,
-    hints: ToolHints,
-    http_method: Option<crate::HttpMethod>,
+    policy_facts: ToolPolicyFacts,
 }
 
 impl CatalogSearchTarget {
     pub(crate) const fn new(
         key: ToolKey,
         relative_path: String,
-        hints: ToolHints,
-        http_method: Option<crate::HttpMethod>,
+        policy_facts: ToolPolicyFacts,
     ) -> Self {
         Self {
             key,
             relative_path,
-            hints,
-            http_method,
+            policy_facts,
         }
     }
 
@@ -1019,16 +1069,10 @@ impl CatalogSearchTarget {
         &self.relative_path
     }
 
-    /// Returns the declared effect hints used by exact policy.
+    /// Returns what the Tool's default Tool Access State is decided from.
     #[must_use]
-    pub const fn hints(&self) -> ToolHints {
-        self.hints
-    }
-
-    /// Returns the method of an HTTP Tool; `None` for other protocols.
-    #[must_use]
-    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
-        self.http_method
+    pub const fn policy_facts(&self) -> ToolPolicyFacts {
+        self.policy_facts
     }
 }
 
@@ -1107,6 +1151,7 @@ pub struct MaterializedTool {
     availability: ToolAvailability,
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostics_json: String,
+    enabled_by_default: bool,
 }
 
 impl MaterializedTool {
@@ -1155,7 +1200,16 @@ impl MaterializedTool {
             availability,
             diagnostics,
             diagnostics_json,
+            enabled_by_default: false,
         }
+    }
+
+    /// The same Tool, with its catalog declaring, or not, that it is
+    /// `enabled` when no exact rule matches. Only Coral's own catalog
+    /// declares it, and storage refuses it for any other Tool.
+    pub(crate) const fn declaring_enabled_by_default(mut self, enabled: bool) -> Self {
+        self.enabled_by_default = enabled;
+        self
     }
 
     /// Returns the Tool Key.
@@ -1203,15 +1257,25 @@ impl MaterializedTool {
         }
     }
 
+    /// Returns what the Tool's default Tool Access State is decided from.
+    #[must_use]
+    pub const fn policy_facts(&self) -> ToolPolicyFacts {
+        ToolPolicyFacts::new(self.hints, self.http_method())
+            .declaring_enabled_by_default(self.enabled_by_default)
+    }
+
     pub(crate) fn binding_json(&self) -> &str {
         &self.binding_json
     }
 
     /// Stamps client ownership into every OAuth credential contract this
-    /// Tool's recipe carries, re-encoding the retained recipe.
+    /// Tool's binding carries, re-encoding the stored binding. HTTP slots
+    /// reuse the contract `stamped` derived from the same source, so Tools
+    /// that shared one contract still share one.
     pub(crate) fn with_oauth_client(
         mut self,
         policy: &crate::OAuthClientPolicy,
+        stamped: &mut DerivedContracts,
     ) -> Result<Self, Error> {
         match &mut self.execution_binding {
             ExecutionBinding::Http(binding) => {
@@ -1221,7 +1285,7 @@ impl MaterializedTool {
                     .map(|slot| {
                         crate::HttpCredentialSlot::new(
                             slot.scheme_name().to_string(),
-                            slot.contract().clone().with_oauth_client(policy),
+                            stamped.derive(slot, |source| source.clone().with_oauth_client(policy)),
                         )
                     })
                     .collect();
@@ -1306,6 +1370,41 @@ impl MaterializedTool {
     }
 }
 
+/// Contracts derived from the contracts Tools share, so a change to the one
+/// shared contract is made once and every Tool keeps sharing the result.
+#[derive(Default)]
+pub(crate) struct DerivedContracts {
+    /// Keyed by the source's address; each entry keeps its source alive, so
+    /// an address is never reused while it is a key.
+    derived: std::collections::HashMap<
+        *const crate::ProviderCredentialContract,
+        (
+            std::sync::Arc<crate::ProviderCredentialContract>,
+            std::sync::Arc<crate::ProviderCredentialContract>,
+        ),
+    >,
+}
+
+impl DerivedContracts {
+    /// The contract `make` derives from `slot`'s, made once per shared source.
+    /// A source matches by identity, so the lookup never compares scopes.
+    fn derive(
+        &mut self,
+        slot: &crate::HttpCredentialSlot,
+        make: impl FnOnce(&crate::ProviderCredentialContract) -> crate::ProviderCredentialContract,
+    ) -> std::sync::Arc<crate::ProviderCredentialContract> {
+        let source = slot.shared_contract();
+        let (_, derived) = self
+            .derived
+            .entry(std::sync::Arc::as_ptr(&source))
+            .or_insert_with(|| {
+                let derived = std::sync::Arc::new(make(&source));
+                (source, derived)
+            });
+        std::sync::Arc::clone(derived)
+    }
+}
+
 /// Opaque equality evidence for one canonical Provider Generation package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderGenerationFingerprint(String);
@@ -1316,9 +1415,19 @@ impl ProviderGenerationFingerprint {
         typescript_view: &str,
         tools: &[MaterializedTool],
         configuration_json: Option<&str>,
+        credential_contract: &crate::ProviderCredentialContract,
     ) -> Self {
         let mut hasher = Sha256::new();
         fingerprint_text(&mut hasher, configuration_json.unwrap_or_default());
+        // Stored HTTP bindings keep no contract, so the Generation states it
+        // once. A Generation with none keeps the fingerprint it had before.
+        if *credential_contract != crate::ProviderCredentialContract::NONE {
+            fingerprint_text(
+                &mut hasher,
+                &serde_json::to_string(credential_contract)
+                    .expect("a credential contract is plain data"),
+            );
+        }
         fingerprint_text(&mut hasher, schema_graph_json);
         fingerprint_text(&mut hasher, typescript_view);
         hasher.update(tools.len().to_be_bytes());
@@ -1352,6 +1461,13 @@ impl ProviderGenerationFingerprint {
                 tool.diagnostics_json.as_str(),
             ] {
                 fingerprint_text(&mut hasher, value);
+            }
+            // Only a Built-in Tool declares a default, so every other
+            // package keeps the fingerprint it had before the declaration.
+            // No text frame starts with this length, so the marker cannot be
+            // read as the next Tool's tag.
+            if tool.enabled_by_default {
+                hasher.update(usize::MAX.to_be_bytes());
             }
         }
         Self(encode_sha256(hasher.finalize()))
@@ -1468,6 +1584,8 @@ impl PreparedProviderCatalog {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        // Every Tool shares one contract, so bind it once and share the result.
+        let mut bound = DerivedContracts::default();
         for tool in &mut self.tools {
             if let ExecutionBinding::Http(binding) = &mut tool.execution_binding {
                 let slots = binding
@@ -1476,9 +1594,9 @@ impl PreparedProviderCatalog {
                     .map(|slot| {
                         crate::HttpCredentialSlot::new(
                             slot.scheme_name().into(),
-                            slot.contract()
-                                .clone()
-                                .at_destinations(destinations.clone()),
+                            bound.derive(slot, |source| {
+                                source.clone().at_destinations(destinations.clone())
+                            }),
                         )
                     })
                     .collect();
@@ -1520,10 +1638,11 @@ impl PreparedProviderCatalog {
     /// # Errors
     /// Returns a catalog error if a retained recipe cannot be re-encoded.
     pub fn with_oauth_client(mut self, policy: &crate::OAuthClientPolicy) -> Result<Self, Error> {
+        let mut stamped = DerivedContracts::default();
         self.tools = self
             .tools
             .into_iter()
-            .map(|tool| tool.with_oauth_client(policy))
+            .map(|tool| tool.with_oauth_client(policy, &mut stamped))
             .collect::<Result<Vec<_>, Error>>()?;
         Ok(self)
     }
@@ -1572,6 +1691,7 @@ impl PreparedProviderCatalog {
             &self.typescript_view,
             &self.tools,
             self.configuration_json.as_deref(),
+            &self.credential_contract(),
         )
     }
 

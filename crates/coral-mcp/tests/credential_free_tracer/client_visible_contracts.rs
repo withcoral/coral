@@ -80,16 +80,20 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
         assert_eq!(continued["isError"], false, "{version}: {continued}");
         // The alias rule applies once the aliased Saved Function exists.
         let saved = session
-            .tool(
-                "save_function",
-                json!({
-                    "task_id":task, "intent":"Save a function to alias",
-                    "path":"linear.inbox", "description":"Count inbox items",
-                    "source":"export default function inbox() { return { total: 0 }; }"
-                }),
+            .saving_value(
+                task.as_str().expect("Task id"),
+                &super::Save {
+                    path: "linear.inbox",
+                    description: "Count inbox items",
+                    declarations: "function inbox() { return { total: 0 }; }",
+                    name: "inbox",
+                },
             )
             .await;
-        assert_eq!(saved["isError"], false, "{version}: {saved}");
+        assert_eq!(
+            saved["call_path"], "coral.functions.linear.inbox",
+            "{version}: {saved}"
+        );
 
         for (program, code, message) in [
             (

@@ -4,8 +4,26 @@ use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context as _, Result, bail};
 
+/// Each crate that owns private protobufs, with the bindings it checks in.
+const CRATES: [(&str, &[&str]); 2] = [
+    (
+        "coral-grpc",
+        &["coral.internal.v1.rs", "coral.management.v1.rs"],
+    ),
+    ("coral-run-executor", &["coral.run_executor.v1.rs"]),
+];
+
 pub(super) fn generate(check: bool) -> Result<bool> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/coral-grpc");
+    for (crate_name, names) in CRATES {
+        generate_crate(crate_name, names, check)?;
+    }
+    Ok(true)
+}
+
+fn generate_crate(crate_name: &str, names: &[&str], check: bool) -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates")
+        .join(crate_name);
     let generated = root.join("src/generated");
     let temp = tempfile::tempdir()?;
     let descriptor = temp.path().join("private.binpb");
@@ -14,9 +32,9 @@ pub(super) fn generate(check: bool) -> Result<bool> {
         .args(["build", "--as-file-descriptor-set", "--output"])
         .arg(&descriptor)
         .status()
-        .context("run Buf to compile private protobufs")?;
+        .with_context(|| format!("run Buf to compile {crate_name}'s private protobufs"))?;
     if !status.success() {
-        bail!("Buf could not compile private protobufs");
+        bail!("Buf could not compile {crate_name}'s private protobufs");
     }
     let descriptors = prost_types::FileDescriptorSet::decode(fs::read(descriptor)?.as_slice())?;
     tonic_prost_build::configure()
@@ -24,7 +42,7 @@ pub(super) fn generate(check: bool) -> Result<bool> {
         .server_mod_attribute(".", "#[allow(dead_code, unreachable_pub)]")
         .compile_fds(descriptors)?;
     fs::create_dir_all(&generated)?;
-    for name in ["coral.internal.v1.rs", "coral.management.v1.rs"] {
+    for name in names {
         // Tonic exposes no server-module visibility option. Keep its wrappers
         // crate-private: callers compose routes, not individual service servers.
         // Wire messages and generated clients retain their normal visibility.
@@ -52,5 +70,5 @@ pub(super) fn generate(check: bool) -> Result<bool> {
             fs::write(target, content)?;
         }
     }
-    Ok(true)
+    Ok(())
 }

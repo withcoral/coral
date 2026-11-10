@@ -821,9 +821,11 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
             AuthenticatedPrincipal::user(arranged.owner.clone()),
             &[
                 "addProvider",
+                "deleteFunction",
                 "getPolicy",
                 "getProvider",
                 "listProviders",
+                "saveFunction",
                 "search",
                 "updatePolicy",
                 "updateProvider",
@@ -831,9 +833,24 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
         ),
         (
             AuthenticatedPrincipal::user(member),
-            &["getPolicy", "listProviders", "search"][..],
+            &[
+                "deleteFunction",
+                "getPolicy",
+                "listProviders",
+                "saveFunction",
+                "search",
+            ][..],
         ),
-        (agent, &["getPolicy", "listProviders", "search"][..]),
+        (
+            agent,
+            &[
+                "deleteFunction",
+                "getPolicy",
+                "listProviders",
+                "saveFunction",
+                "search",
+            ][..],
+        ),
     ] {
         let providers = &arranged.providers;
         let published = crate::tests::published_providers(providers, &principal, workspace)

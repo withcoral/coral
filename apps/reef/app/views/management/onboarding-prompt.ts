@@ -34,8 +34,11 @@ const policyReview =
  * commands use are hints to other Coral servers, which may reach another workspace or the
  * Organization MCP Endpoint, so the person says how each relates before the client reuses or
  * changes it. It goes on to the role's steps only after a call to the server works. An `owner`
- * also adds a provider, which only a workspace owner can do; a member uses the workspace's
- * providers and asks an owner for a new one.
+ * may also add a provider, which only a workspace owner can do, or skip it and finish. The
+ * client suggests one or two services from what it already knows, never from a search of the
+ * person's data, and says that any other service works. A list of choices always offers
+ * another service and a skip, since a choice tool may show only the choices it lists. A member
+ * uses the workspace's providers and asks an owner for a new one.
  * Either role may then review a provider's tool policy, if the person agrees. Only an owner
  * changes it, and only for the tools the person confirms.
  * With `signIn`, the MCP server admits the person only after an OAuth sign-in; without it,
@@ -95,14 +98,15 @@ export function onboardingPrompt({
   const steps = owner
     ? [
         '8. Search the workspace tools for coral.workspace.addProvider. Describe it to read its input. If you cannot find it, this server may not act as me. Ask me if I want to reconnect. If I do, go to step 4.',
-        '9. Ask me which kind of provider or which specific service I want to connect. Give a few examples, such as GitHub, a weather service or Slack. These are only suggestions. I can connect any provider. Do not choose one for me.',
-        '10. Use coral.workspace.addProvider to add that provider. If Coral asks for an approval, guide me through it.',
-        '11. When the status is needs_person, give me the returned link. I review, finish and publish the provider on that page. The call does not wait for me.',
-        "12. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published. Call the provider's tools under its callRoot in that list. I can change its namespace on the page.",
-        '13. When the provider is published, ask me if I want to review its tool policy. Wait for my answer.',
-        `14. ${policyReview}`,
-        '15. If I want a change, propose it. Wait for me to confirm it.',
-        '16. Use coral.workspace.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
+        '9. Ask me if I want to add a provider now. Suggest one or two services for it. Base them only on what you already know about me. Do not search my files, messages or other data for ideas. Do not say that you know my tools when you do not. If you know nothing relevant, give general examples, such as GitHub or a weather service. Tell me that these are only examples. I can name any other service. I can also skip this step. Do not choose one for me. If you give me choices, always include "Another service" and "Skip for now". If I choose another service, ask me which one. If your tool cannot take a typed answer, ask me in this chat.',
+        '10. If I skip, tell me that I can add a provider later. Then stop. Do not use coral.workspace.addProvider.',
+        '11. Use coral.workspace.addProvider to add the provider that I name. If Coral asks for an approval, guide me through it.',
+        '12. When the status is needs_person, give me the returned link. I review, finish and publish the provider on that page. The call does not wait for me.',
+        "13. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published. Call the provider's tools under its callRoot in that list. I can change its namespace on the page.",
+        '14. When the provider is published, ask me if I want to review its tool policy. Wait for my answer.',
+        `15. ${policyReview}`,
+        '16. If I want a change, propose it. Wait for me to confirm it.',
+        '17. Use coral.workspace.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
       ]
     : [
         '8. Use coral.workspace.listProviders to show me the providers in this workspace.',
@@ -113,7 +117,7 @@ export function onboardingPrompt({
         '13. Only a workspace owner can change a tool policy. If I want a change, help me ask a workspace owner for it. Do not call coral.workspace.updatePolicy.',
       ]
   return [
-    `Help me connect to my Coral workspace ${JSON.stringify(displayName)}${owner ? ' and add a provider' : ''}.`,
+    `Help me connect to my Coral workspace ${JSON.stringify(displayName)}.${owner ? ' Then help me add a provider if I want one.' : ''}`,
     '',
     'When you ask me a question, use your tool for structured questions or choices if you have one. If you do not, ask me a short question in this chat. Wait for my answer.',
     '',

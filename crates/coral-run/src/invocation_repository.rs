@@ -330,6 +330,10 @@ fn invocation_id(value: &str) -> Result<InvocationId, Error> {
         .map_err(|_error| Error::CorruptData("Invocation has invalid identity".into()))
 }
 
+// Ending a row adds it to Postgres's `idx_tool_invocations_ended_outcomes`, which
+// stores the Call Path. An unusually long Call Path that does not compress can
+// exceed the index's row limit. This write then fails and can leave the Run
+// running (#2933). No fixed length marks this, because the whole row counts.
 pub(super) async fn finish(
     transaction: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,

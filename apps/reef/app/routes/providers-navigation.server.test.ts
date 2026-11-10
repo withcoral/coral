@@ -12,6 +12,7 @@ import { fakeManagement } from '@/lib/management.test-support'
 import routes from '../routes'
 import * as providers from './providers'
 import { CredentialRoute_Kind } from '@/generated/coral/management/v1/provider_pb'
+import { selectionKey } from '@/views/providers/selection'
 
 const TOOL_COUNT = 1229
 let toolCount = TOOL_COUNT
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   tool: vi.fn(),
   providers: vi.fn(),
   userAccounts: vi.fn(),
+  summary: vi.fn(),
 }))
 vi.mock('@/lib/workspace-route.server', () => ({ authorizedWorkspace: mocks.workspace }))
 vi.mock('@/views/providers/workspace-providers-page', () => ({
@@ -36,6 +38,7 @@ const api = fakeManagement({
   providers: { listProviders: mocks.providers, getTool: mocks.tool },
   policies: { listToolAccess: mocks.tools },
   accounts: { listUserAccounts: mocks.userAccounts },
+  activity: { summarizeActivity: mocks.summary },
 })
 const routers: ReturnType<typeof createMemoryRouter>[] = []
 
@@ -66,6 +69,7 @@ beforeEach(() => {
     nextPageToken: '',
   })
   mocks.userAccounts.mockResolvedValue({ accounts: [] })
+  mocks.summary.mockResolvedValue({})
   mocks.tool.mockImplementation(({ relativePath }: { relativePath: string }) =>
     relativePath.startsWith('actions.tool')
       ? { summary: `Tool ${relativePath}`, description: 'The prose.' }
@@ -149,6 +153,48 @@ it.each([
   expect(tools).toHaveLength(count)
   expect(tools.every((tool: { policy: string }) => tool.policy === 'disabled')).toBe(true)
   expect(mocks.tools).toHaveBeenCalledTimes(reads)
+})
+
+const toolName = (key: string) => `${provider}/tools/${Buffer.from(key).toString('base64url')}`
+const loadTree = async () =>
+  (await providers.loader({
+    request: new Request(`https://reef.test/workspaces/${workspace}/providers`),
+    context: authTestContext(null),
+    params: { workspace },
+  } as never))!.data
+
+// Catches: a tool's calls credited to the tool that holds its Call Path now, a window
+// other than the 30 days the column names, or a failed summary that blanks the catalog
+// or shows zero calls.
+it('counts calls by provider and Tool Key, and leaves them out when the summary is unavailable', async () => {
+  toolCount = 2
+  mocks.summary.mockResolvedValue({
+    tools: [
+      // Called when its path was `actions.tool1`, which another tool holds now.
+      {
+        tool: toolName('actions/tool0'),
+        callPath: 'coral.providers.github.actions.tool1',
+        calls: 5n,
+        daily: [1n, 0n, 4n],
+      },
+    ],
+  })
+  const tree = await loadTree()
+  expect(mocks.summary.mock.lastCall?.[0]).toMatchObject({
+    workspace: `workspaces/${workspace}`,
+    days: 30,
+  })
+  const usage = (key: string) => tree.toolCalls?.tools[selectionKey(providerId, key)]
+  expect(tree.toolCalls?.days).toBe(30)
+  expect([usage('actions/tool0'), usage('actions/tool1')]).toEqual([
+    { calls: 5, daily: [1, 0, 4], callers: [] },
+    undefined,
+  ])
+
+  mocks.summary.mockRejectedValue(new ConnectError('unavailable', Code.Unavailable))
+  const unavailable = await loadTree()
+  expect(unavailable.toolCalls).toBeNull()
+  expect(unavailable.providers[0]!.tools).toHaveLength(2)
 })
 
 // Catches: a failed later page displaying a partial catalog.

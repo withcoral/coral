@@ -133,7 +133,9 @@ coral-outbound = { path = "crates/coral-outbound" }
 coral-policy = { path = "crates/coral-policy" }
 coral-provider = { path = "crates/coral-provider" }
 coral-release = { path = "crates/coral-release" }
+coral-usage = { path = "crates/coral-usage" }
 coral-run = { path = "crates/coral-run" }
+coral-run-executor = { path = "crates/coral-run-executor" }
 coral-search = { path = "crates/coral-search" }
 coral-task = { path = "crates/coral-task" }
 coral-telemetry = { path = "crates/coral-telemetry" }

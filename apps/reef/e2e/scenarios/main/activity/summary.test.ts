@@ -118,12 +118,10 @@ test('The Overview summary counts a declined call as decided, not to fix, reads 
       const policy = page
         .getByRole('dialog', { name: 'read', exact: true })
         .getByRole('radiogroup', { name: 'Policy', exact: true })
-      await policy.getByRole('radio', { name: 'Disabled', exact: true, checked: true }).waitFor()
-      const allow = policy.getByRole('radio', { name: 'Always allow', exact: true })
+      await policy.getByRole('radio', { name: 'Block', exact: true, checked: true }).waitFor()
+      const allow = policy.getByRole('radio', { name: 'Allow', exact: true })
       await allow.click()
-      await policy
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
-        .waitFor()
+      await policy.getByRole('radio', { name: 'Allow', exact: true, checked: true }).waitFor()
       // The toggle stays disabled until the save answers.
       await expect.poll(() => allow.isEnabled()).toBe(true)
       expect(await page.getByText('Not saved', { exact: true }).count()).toBe(0)

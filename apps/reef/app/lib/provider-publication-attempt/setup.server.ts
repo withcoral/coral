@@ -40,6 +40,7 @@ import { field, privateHeaders, type ManagementApi } from '../management.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { toolGroup, providerFailure, routeChoice, uuidOr404 } from '../providers.server'
 import { OPENAPI_DOCUMENT_MAX_BYTES, OPENAPI_DOCUMENT_SIZE_LABEL } from '../provider-input-limits'
+import { authorizationDiscoveryMessage } from '../authorization-discovery'
 import { recipeDocument } from '../provider-recipes/library.server'
 import {
   accountChoice,
@@ -362,6 +363,8 @@ function configurationView(
   review: NonNullable<ProviderSetup['configuration']>,
   kind: ProviderSetupInputKind,
 ): ConfigurationReviewView {
+  // A source Coral read suggests a configuration, even one it cannot publish.
+  const readable = review.suggested !== undefined || !review.diagnostic
   const value = review.confirmed ?? review.suggested ?? create(ProviderConfigurationSchema)
   const draft = configurationDraft(value)
   if (kind === ProviderSetupInputKind.MCP) {
@@ -445,9 +448,10 @@ function configurationView(
       key,
       reasons,
     })),
-    diagnostic: review.diagnostic,
-    // A source Coral read suggests a configuration, even one it cannot publish.
-    readable: review.suggested !== undefined || !review.diagnostic,
+    // A discovery failure on a readable source reads as its cause. An
+    // unreadable source shows its diagnostic as an error code.
+    diagnostic: (readable && authorizationDiscoveryMessage(review.diagnostic)) || review.diagnostic,
+    readable,
     errors: review.errors,
   }
 }

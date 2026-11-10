@@ -83,6 +83,7 @@ pub use coral_catalog::{
 };
 pub use error::Error;
 pub mod history_repository;
+pub mod usage_repository;
 
 pub use publication::{
     ActivatedGeneration, ProviderPublication, ProviderPublicationId, ProviderPublicationOutcome,
@@ -608,13 +609,13 @@ pub async fn provider_search_catalogs_in_transaction(
 /// Returns a persistence or corrupt Provider-package failure. `Ok(None)` means
 /// either the Provider is outside the exact Workspace or its current
 /// catalog has no matching Tool Key.
-pub async fn tool_hints_and_method_in_transaction(
+pub async fn tool_policy_facts_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
     tool_key: &ToolKey,
-) -> Result<Option<(coral_catalog::ToolHints, Option<coral_catalog::HttpMethod>)>, Error> {
-    Ok(tool_hints_and_methods_batch_in_transaction(
+) -> Result<Option<coral_catalog::ToolPolicyFacts>, Error> {
+    Ok(tool_policy_facts_batch_in_transaction(
         transaction,
         workspace_id,
         provider_id,
@@ -624,23 +625,17 @@ pub async fn tool_hints_and_method_in_transaction(
     .remove(tool_key))
 }
 
-/// Resolves hints and HTTP methods for a bounded selection in one Provider's current catalog.
+/// Resolves the policy facts of a bounded selection in one Provider's current catalog.
 /// Missing Providers or keys are omitted. Definitions and schemas stay lazy.
 /// The caller owns authority and the coherent read transaction.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt Provider-package failures.
-pub async fn tool_hints_and_methods_batch_in_transaction(
+pub async fn tool_policy_facts_batch_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
     tool_keys: &[ToolKey],
-) -> Result<
-    std::collections::BTreeMap<
-        ToolKey,
-        (coral_catalog::ToolHints, Option<coral_catalog::HttpMethod>),
-    >,
-    Error,
-> {
+) -> Result<std::collections::BTreeMap<ToolKey, coral_catalog::ToolPolicyFacts>, Error> {
     let Some(provider_id) =
         crate::access::provider_id_in_transaction(transaction, workspace_id, provider_id).await?
     else {
@@ -656,12 +651,8 @@ pub async fn tool_hints_and_methods_batch_in_transaction(
     .map(|stored| stored.generation_id)
     .ok_or_else(|| Error::CorruptData("Provider has no current Provider Generation".to_string()))?;
     Ok(
-        coral_catalog::tool_hints_and_methods_in_transaction(
-            transaction,
-            &generation_id,
-            tool_keys,
-        )
-        .await?,
+        coral_catalog::tool_policy_facts_in_transaction(transaction, &generation_id, tool_keys)
+            .await?,
     )
 }
 

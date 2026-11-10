@@ -426,6 +426,25 @@ async fn the_configured_owner_limits_reach_the_shared_run_module() {
     server.shutdown().await.expect("stop composed server");
 }
 
+/// Program Admission and Saved Function save share one warm compiler, so the
+/// composed process runs one compiler thread. The count is process-wide, so
+/// it is this runtime's alone only when each test runs in its own process, as
+/// under nextest; `cargo test` shares one process and skips the check.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test reads the test runner's execution mode once, at its start"
+)]
+async fn the_runtime_runs_one_warm_compiler_thread() {
+    if std::env::var_os("NEXTEST_EXECUTION_MODE").is_none_or(|mode| mode != "process-per-test") {
+        return;
+    }
+    let (_temp, server, _workspace, client) = runtime_with_mcp_client(WEB).await;
+    assert_eq!(coral_v8::testing::compiler_threads(), 1);
+    client.cancel().await.expect("close MCP client");
+    server.shutdown().await.expect("stop composed server");
+}
+
 /// A Run started over MCP and cancelled from Reef over gRPC stops at once:
 /// both surfaces share one set of Run Owners, so the cancel reaches the owner
 /// instead of waiting out the shutdown grace and forcing the Run to end.

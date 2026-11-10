@@ -503,12 +503,6 @@ async fn untrusted_metadata_is_validated_and_never_followed() {
             authorization_server(&server.uri(), &json!({})),
             "resource_mismatch",
         ),
-        (
-            json!({"resource": mcp, "authorization_servers": [server.uri()],
-                   "scopes_supported": (0..101).map(|i| format!("scope{i}")).collect::<Vec<_>>()}),
-            authorization_server(&server.uri(), &json!({})),
-            "resource_metadata_unavailable",
-        ),
     ];
     for (protected_resource, metadata, expected) in cases {
         server.reset().await;
@@ -560,7 +554,8 @@ async fn larger_provider_scope_sets_are_preserved_without_trimming() {
     let server = MockServer::start().await;
     let mcp = format!("{}/mcp", server.uri());
     let prm = format!("{}/.well-known/oauth-protected-resource/mcp", server.uri());
-    for count in [83, 100] {
+    // PostHog advertises 157; the list length is the server's choice.
+    for count in [157, 1000] {
         server.reset().await;
         let scopes: Vec<String> = (0..count).map(|index| format!("scope{index:03}")).collect();
         mount_json(

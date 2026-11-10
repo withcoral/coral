@@ -10,6 +10,12 @@ pub enum Error {
     /// Source could not become one accepted callable definition.
     #[error("Saved Function authoring failed: {0}")]
     SavedFunctionAdmission(String),
+    /// The path names a namespace that holds the caller's other functions,
+    /// or lies under one of them.
+    #[error(
+        "Saved Function authoring failed: Saved Function Path conflicts with an existing virtual namespace"
+    )]
+    SavedFunctionPathConflict,
     /// Compilation exceeded the fixed authoring deadline.
     #[error("Saved Function compilation exceeded the two-second deadline")]
     SavedFunctionCompilationTimedOut,
@@ -59,6 +65,7 @@ impl Error {
             Self::InvalidInput { .. } => "invalid_input",
             Self::SavedFunctionNotFound { .. } => "saved_function_not_found",
             Self::SavedFunctionAdmission { .. } => "saved_function_admission",
+            Self::SavedFunctionPathConflict => "saved_function_path_conflict",
             Self::SavedFunctionCompilationTimedOut { .. } => "saved_function_compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
@@ -84,7 +91,9 @@ impl Error {
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
             Self::SavedFunctionNotFound => "saved_function_not_found",
-            Self::SavedFunctionAdmission(_) => "saved_function_admission_failed",
+            Self::SavedFunctionAdmission(_) | Self::SavedFunctionPathConflict => {
+                "saved_function_admission_failed"
+            }
             Self::SavedFunctionCompilationTimedOut => "saved_function_compilation_timed_out",
             Self::CompilerBusy => "saved_function_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",

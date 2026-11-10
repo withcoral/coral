@@ -6,9 +6,12 @@ const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ?
 /** A reading aid only: the server, not the browser clock, decides action availability. */
 export function Deadline({
   at,
+  subject,
   variant,
 }: {
   at: string
+  /** What expires, when the deadline stands alone: "Connection request expires in 2 minutes". */
+  subject?: string
   /** Text colour, for a deadline that sits in a line of secondary metadata. */
   variant?: 'secondary' | 'tertiary'
 }) {
@@ -22,14 +25,15 @@ export function Deadline({
     const timer = setTimeout(() => setNow(Date.now()), delay)
     return () => clearTimeout(timer)
   }, [remaining])
+  const expires = subject ? `${subject} expires` : 'Expires'
   const label =
     remaining === undefined
-      ? `Deadline: ${at}`
+      ? `${subject ? `${subject} deadline` : 'Deadline'}: ${at}`
       : remaining <= 0
         ? 'Deadline reached. Check the current state.'
         : remaining <= 60_000
-          ? `Expires in ${plural(Math.ceil(remaining / 1000), 'second')}`
-          : `Expires in ${plural(Math.ceil(remaining / 60_000), 'minute')}`
+          ? `${expires} in ${plural(Math.ceil(remaining / 1000), 'second')}`
+          : `${expires} in ${plural(Math.ceil(remaining / 60_000), 'minute')}`
   return (
     <Typography.BodySmall as="time" dateTime={at} title={at} variant={variant}>
       {label}

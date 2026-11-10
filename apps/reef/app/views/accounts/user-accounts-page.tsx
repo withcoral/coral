@@ -1,5 +1,5 @@
 import { useDeferredValue, useState } from 'react'
-import { Button, Table, Typography } from '@/wax/components'
+import { Button, Table } from '@/wax/components'
 import type { IconName } from '@/wax/components/icon'
 import { Deadline } from '@/wax/components/deadline'
 import { Logo } from '@/wax/components/logo'
@@ -22,7 +22,7 @@ import { DisconnectAccount } from './disconnect-account'
 import * as styles from './accounts.css'
 import { filterQuery } from '@/utils/filter-query'
 import { useFollowRequiredActions } from '@/lib/use-action-signal'
-import { DeclineConnection, useDeclineFailure } from '@/views/actions/decline-connection'
+import { DeclineConnection } from '@/views/actions/decline-connection'
 
 const states: Record<
   PersonalAccountState,
@@ -92,8 +92,13 @@ export function UserAccountsPage({
           { label: 'Provider', width: { fill: 2 } },
           { label: 'Status', width: { fill: 2 } },
           // Fixed for a screen width, so filtering out the widest buttons does not move the
-          // other columns. On a phone it narrows, and Decline wraps above Connect.
-          { ariaLabel: 'Actions', width: 'clamp(124px, 35%, 192px)', align: 'right' },
+          // other columns. It fits a request's deadline, Decline, and Connect on one line; on a
+          // narrow screen the deadline shortens, then hides, and the buttons keep their width.
+          {
+            ariaLabel: 'Actions',
+            width: 'clamp(176px, calc(100% - 300px), 448px)',
+            align: 'right',
+          },
         ]}
       >
         <Table.Head />
@@ -129,11 +134,8 @@ export function UserAccountsPage({
                   </Table.RowLink>
                 </span>
               </Table.Cell>
-              <Table.Cell wrap>
-                <span className={styles.accountStatus}>
-                  <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
-                  {row.connectionRequest && <WaitingRequest request={row.connectionRequest} />}
-                </span>
+              <Table.Cell>
+                <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
               </Table.Cell>
               <Table.Cell>
                 <AccountAction row={row} view={v} pending={pending} />
@@ -146,19 +148,20 @@ export function UserAccountsPage({
   )
 }
 
-/** A waiting connection request, its deadline, and why a decline of it failed. */
+/**
+ * A waiting connection request's deadline. A narrower row drops the subject, and a
+ * phone-width row drops the deadline.
+ */
 function WaitingRequest({ request }: { request: ConnectionRequest }) {
-  const failure = useDeclineFailure(request.name)
   return (
-    <>
-      <span className={styles.actions}>
-        <Typography.BodySmall as="span" variant="secondary">
-          A connection request is waiting.
-        </Typography.BodySmall>
+    <span className={styles.requestNote}>
+      <span className={styles.wideNote}>
+        <Deadline at={request.expiresAt} subject="Connection request" variant="secondary" />
+      </span>
+      <span className={styles.narrowNote}>
         <Deadline at={request.expiresAt} variant="secondary" />
       </span>
-      {failure && <Typography.BodySmall role="alert">{failure}</Typography.BodySmall>}
-    </>
+    </span>
   )
 }
 
@@ -220,16 +223,19 @@ function AccountAction({
       description={audience.onlyYou}
     />
   )
-  // Like an approval: the secondary choice leads, the primary one ends. Connect keeps its
-  // place as a request comes and goes, so an open dialog stays open.
+  // The deadline leads. Like an approval, Decline comes next and the primary choice ends.
+  // Connect keeps its place as a request comes and goes, so an open dialog stays open.
   return (
     <span className={styles.rowActions}>
       {waiting && (
-        <DeclineConnection
-          request={waiting.name}
-          ariaLabel={`Decline ${row.name}`}
-          disabled={pending}
-        />
+        <>
+          <WaitingRequest request={waiting} />
+          <DeclineConnection
+            request={waiting.name}
+            ariaLabel={`Decline ${row.name}`}
+            disabled={pending}
+          />
+        </>
       )}
       {connect}
     </span>

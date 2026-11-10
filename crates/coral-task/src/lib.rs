@@ -66,6 +66,9 @@ mod interaction_repository;
 mod repository;
 mod retention;
 mod types;
+pub mod usage_repository;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use commands::RetainedChange;
 pub use commands::TaskCommands;
 pub use interaction::{
     AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome, AttributedCommand,

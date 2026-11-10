@@ -33,15 +33,18 @@ use crate::{
 };
 
 mod add_provider;
+mod delete_function;
 mod get_policy;
 mod get_provider;
 mod list_providers;
 mod provider_input;
+mod save_function;
 mod search;
 mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
+pub use delete_function::{DeleteFunctionArguments, DeleteFunctionResult};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
@@ -50,11 +53,12 @@ pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
 };
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
+pub use save_function::{SaveFunctionArguments, SaveFunctionResult};
 pub use search::{
-    DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult,
-    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
-    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
-    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
+    DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, ProviderArgument,
+    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SEARCH_PROVIDERS_MAX, SavedDetail, SavedDiagnostic,
+    SavedDiagnosticCategory, SearchArguments, SearchHit, SearchOutput, SearchResult,
+    SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
 };
 pub use update_policy::{UpdatePolicyArguments, UpdatePolicyResult};
 pub use update_provider::{
@@ -66,6 +70,12 @@ pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
 /// Starts the catalog identity a built-in Generation pins as its input.
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";
+
+/// The TypeScript type of each opaque value a Built-in Tool takes.
+pub(crate) const OPAQUE_TYPES: [(&str, &str); 1] = [(
+    save_function::SOURCE_OPAQUE_TYPE,
+    save_function::SOURCE_TYPESCRIPT_TYPE,
+)];
 
 /// The identity a built-in Generation pins: the prefix and the catalog's
 /// fingerprint. A Coral version that changes the catalog pins a different
@@ -127,10 +137,14 @@ pub enum BuiltinTool {
     /// Finds the Tools and Saved Functions the caller can call, ranked by a
     /// query, or reads the exact descriptions of named Call Paths.
     Search,
+    /// Creates or replaces one of the caller's own Saved Functions.
+    SaveFunction,
+    /// Deletes one of the caller's own Saved Functions.
+    DeleteFunction,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -138,6 +152,8 @@ impl BuiltinTool {
         Self::UpdatePolicy,
         Self::UpdateProvider,
         Self::Search,
+        Self::SaveFunction,
+        Self::DeleteFunction,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -151,6 +167,8 @@ impl BuiltinTool {
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
             Self::Search => "search",
+            Self::SaveFunction => "saveFunction",
+            Self::DeleteFunction => "deleteFunction",
         }
     }
 
@@ -173,6 +191,8 @@ impl BuiltinTool {
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
             Self::Search => search::NEEDS,
+            Self::SaveFunction => save_function::NEEDS,
+            Self::DeleteFunction => delete_function::NEEDS,
         }
     }
 }
@@ -225,6 +245,7 @@ impl BuiltinCatalog {
             input: empty_object_schema(),
             output: empty_object_schema(),
             declared: Declared::Once,
+            enabled_by_default: false,
         }));
         Self::from_definitions(definitions)
     }
@@ -322,6 +343,10 @@ pub enum BuiltinArguments {
     UpdateProvider(Box<UpdateProviderArguments>),
     /// `search`'s arguments.
     Search(SearchArguments),
+    /// `saveFunction`'s arguments.
+    SaveFunction(SaveFunctionArguments),
+    /// `deleteFunction`'s arguments.
+    DeleteFunction(DeleteFunctionArguments),
 }
 
 impl BuiltinArguments {
@@ -348,6 +373,12 @@ impl BuiltinArguments {
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
             BuiltinTool::Search => SearchArguments::parse(arguments).map(Self::Search),
+            BuiltinTool::SaveFunction => {
+                SaveFunctionArguments::parse(arguments).map(Self::SaveFunction)
+            }
+            BuiltinTool::DeleteFunction => {
+                DeleteFunctionArguments::parse(arguments).map(Self::DeleteFunction)
+            }
         }
     }
 }
@@ -612,6 +643,10 @@ struct Definition {
     input: Value,
     output: Value,
     declared: Declared,
+    /// Whether the Tool is `enabled` when no exact rule matches, whatever its
+    /// hints give. Only a Tool that changes nothing but the caller's own
+    /// state declares it.
+    enabled_by_default: bool,
 }
 
 /// How a Built-in Tool's declaration pairs its input with its result.
@@ -635,6 +670,8 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
         BuiltinTool::Search => search::definition(),
+        BuiltinTool::SaveFunction => save_function::definition(),
+        BuiltinTool::DeleteFunction => delete_function::definition(),
     }
 }
 
@@ -685,24 +722,27 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
             ));
         }
         let execution_binding = ExecutionBinding::Builtin(binding.clone());
-        tools.push(MaterializedTool::new(
-            key,
-            relative_path,
-            definition.summary.to_string(),
-            definition.presentation,
-            definition.hints,
-            execution_binding,
-            binding
-                .to_storage_json()
-                .map_err(|_error| invalid("a built-in Execution Binding cannot be encoded"))?,
-            binding.input_schema().clone(),
-            encode(&definition.input)?,
-            encode(&definition.output)?,
-            declaration,
-            type_references,
-            Vec::new(),
-            "[]".to_string(),
-        ));
+        tools.push(
+            MaterializedTool::new(
+                key,
+                relative_path,
+                definition.summary.to_string(),
+                definition.presentation,
+                definition.hints,
+                execution_binding,
+                binding
+                    .to_storage_json()
+                    .map_err(|_error| invalid("a built-in Execution Binding cannot be encoded"))?,
+                binding.input_schema().clone(),
+                encode(&definition.input)?,
+                encode(&definition.output)?,
+                declaration,
+                type_references,
+                Vec::new(),
+                "[]".to_string(),
+            )
+            .declaring_enabled_by_default(definition.enabled_by_default),
+        );
     }
     Ok(PreparedProviderCatalog::new(
         BUILTIN_PROVIDER_DISPLAY_NAME.to_string(),

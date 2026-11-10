@@ -355,7 +355,9 @@ function propertyPath(node, checker, sourceFile) {
   return undefined;
 }
 
-function parentContinuesCoralPath(node) {
+// The outermost expression that wraps `node` in transparent syntax only:
+// parentheses, `as`, `satisfies`, angle-bracket and non-null assertions.
+function outermostTransparentExpression(node) {
   let current = node;
   while (
     current.parent &&
@@ -368,6 +370,11 @@ function parentContinuesCoralPath(node) {
   ) {
     current = current.parent;
   }
+  return current;
+}
+
+function parentContinuesCoralPath(node) {
+  const current = outermostTransparentExpression(node);
   return (
     (ts.isPropertyAccessExpression(current.parent) ||
       ts.isElementAccessExpression(current.parent)) &&

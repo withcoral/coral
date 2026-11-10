@@ -19,6 +19,7 @@ mod ledger;
 mod retention;
 mod run_row;
 mod termination;
+mod usage;
 
 pub(crate) use acceptance::{insert_acceptance, load_package_in_transaction};
 #[cfg(test)]
@@ -39,6 +40,7 @@ pub(crate) use termination::{
     Takeover, finish_run, finish_termination, finish_unstarted_run, interrupt_run,
     request_termination,
 };
+pub(crate) use usage::run_endings;
 
 #[derive(Iden)]
 enum ProgramRunRecords {

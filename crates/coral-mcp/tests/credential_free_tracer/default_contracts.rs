@@ -22,17 +22,24 @@ async fn search_defaults_return_ten_visible_descriptions(
 ) {
     for index in 0..12 {
         let saved = session
-            .tool(
-                "save_function",
-                json!({
-                    "task_id":task, "intent":"Prepare default limit evidence",
-                    "path":format!("optionalDefaults.item{index}"),
-                    "description":"optionalDefaults coverage",
-                    "source":if index == 0 { "export default function item(): number { return 'advisory'; }" } else { "export default function item() { return 1; }" }
-                }),
+            .saving_value(
+                task,
+                &super::Save {
+                    path: &format!("optionalDefaults.item{index}"),
+                    description: "optionalDefaults coverage",
+                    declarations: if index == 0 {
+                        "function item(): number { return 'advisory'; }"
+                    } else {
+                        "function item() { return 1; }"
+                    },
+                    name: "item",
+                },
             )
             .await;
-        assert_ne!(saved.get("isError"), Some(&json!(true)));
+        assert!(
+            saved.get("call_path").is_some_and(Value::is_string),
+            "{saved}"
+        );
     }
     index.reconcile().await;
     // Discovery runs in a Program, so these defaults are coral.workspace.search's.
@@ -84,15 +91,16 @@ return { exact: exact.data.descriptions[0], pages };"#,
 async fn remove_default_limit_fixtures(session: &super::RawSession, task: &str) {
     for index in 0..12 {
         let deleted = session
-            .tool(
-                "delete_function",
-                json!({
-                    "task_id":task, "intent":"Remove default limit fixtures",
-                    "path":format!("optionalDefaults.item{index}")
-                }),
+            .authoring_value(
+                task,
+                "deleteFunction",
+                &json!({ "path": format!("optionalDefaults.item{index}") }),
             )
             .await;
-        assert_ne!(deleted.get("isError"), Some(&json!(true)));
+        assert!(
+            deleted.get("call_path").is_some_and(Value::is_string),
+            "{deleted}"
+        );
     }
 }
 

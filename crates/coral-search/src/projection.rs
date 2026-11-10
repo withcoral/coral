@@ -180,7 +180,9 @@ fn authoring(description: &AuthoringDescription) -> DescriptionAuthoring {
     }
 }
 
-fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> SavedDiagnostic {
+/// One saved diagnostic as a Program reads it.
+#[must_use]
+pub fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> SavedDiagnostic {
     SavedDiagnostic {
         category: match diagnostic.category() {
             SavedFunctionDiagnosticCategory::Message => SavedDiagnosticCategory::Message,

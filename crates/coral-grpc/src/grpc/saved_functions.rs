@@ -19,6 +19,7 @@ fn error(error: coral_functions::Error) -> Status {
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
         // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
         E::SavedFunctionAdmission(_)
+        | E::SavedFunctionPathConflict
         | E::SavedFunctionCompilationTimedOut
         | E::CompilerBusy
         | E::PackageTooLarge { .. }

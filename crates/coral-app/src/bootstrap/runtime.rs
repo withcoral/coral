@@ -40,6 +40,9 @@ pub struct Launch {
     /// A config directory the launcher selects. Without one, the environment
     /// or the platform default selects it.
     pub config_dir: Option<std::path::PathBuf>,
+    /// The variables that stop this process from sending usage data, as
+    /// bootstrap read them. Without them, the process sends nothing.
+    pub usage_environment: Option<coral_usage::SendEnvironment>,
 }
 
 impl Launch {
@@ -55,6 +58,10 @@ impl Launch {
         };
         let builder = match self.config_dir {
             Some(config_dir) => builder.with_config_dir(config_dir),
+            None => builder,
+        };
+        let builder = match self.usage_environment {
+            Some(environment) => builder.with_usage_environment(environment),
             None => builder,
         };
         if self.desktop {
@@ -209,8 +216,6 @@ fn write_shutdown_failure(
 enum McpStartError {
     #[error("MCP authentication configuration is missing or invalid")]
     MissingAuthentication,
-    #[error("failed to initialize MCP domain Modules: {0}")]
-    Runtime(#[source] coral_run::Error),
     #[error(transparent)]
     Http(#[from] McpHttpError),
 }
@@ -449,10 +454,10 @@ async fn start_mcp_http(
         grpc.database(),
         grpc.search_index(),
         grpc.runs(),
+        grpc.compiler(),
         runtime_limits,
         human_interface,
-    )
-    .map_err(McpStartError::Runtime)?;
+    );
     let server = match settings {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness).await?
@@ -477,40 +482,37 @@ async fn start_mcp_http(
 }
 
 /// Composes MCP domain Modules without selecting authentication or Principal.
-/// `search_index` and `runs` are the running server's, so the process has one
-/// index and one set of Run Owners that every surface reaches.
+/// `search_index`, `runs` and `compiler` are the running server's, so the
+/// process has one index, one set of Run Owners and one warm compiler that
+/// every surface reaches.
 fn mcp_modules(
     database: Arc<Database>,
     search_index: SearchIndex,
     runs: RunModule,
+    compiler: Arc<dyn coral_run_executor::CompilerClient>,
     runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
-) -> Result<McpModules, coral_run::Error> {
+) -> McpModules {
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
-    let saved_functions = SavedFunctionModule::new(
+    let saved_functions = SavedFunctionModule::with_compiler_client(
         database,
         workspaces.clone(),
-        runtime_limits.isolate(),
+        compiler,
         runtime_limits.compilation_timeout(),
-    )?;
-    // MCP-started Runs link people to Reef; this clone shares the server's Run Owners.
-    let runs = runs.with_human_interface(human_interface.clone());
-    let commands = TaskCommands::new(
-        tasks.clone(),
-        saved_functions,
-        search,
-        search_index,
-        runs.clone(),
     );
-    Ok(McpModules::new(
-        workspaces,
-        tasks,
-        commands,
-        runs,
-        human_interface,
-    ))
+    // MCP-started Runs link people to Reef and save Saved Functions through
+    // the one module, so every save shares its compiler and deadline. This
+    // clone shares the server's Run Owners; no other clone runs a Program.
+    let runs = runs
+        .with_human_interface(human_interface.clone())
+        .with_saved_functions(coral_run::SavedFunctions::new(
+            saved_functions,
+            search_index,
+        ));
+    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
+    McpModules::new(workspaces, tasks, commands, runs, search, human_interface)
 }
 
 #[cfg(test)]

@@ -142,7 +142,7 @@ export const Listing: Story = {
     )
     // Coral runs every function until function policy exists.
     const policy = within(canvas.getByRole('radiogroup', { name: 'Policy for linear.issueBrief' }))
-    await expect(policy.getByRole('radio', { name: 'Always allow' })).toBeChecked()
+    await expect(policy.getByRole('radio', { name: 'Allow' })).toBeChecked()
     for (const radio of policy.getAllByRole('radio')) await expect(radio).toBeDisabled()
   },
 }

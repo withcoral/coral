@@ -38,6 +38,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Marks the binaries this workflow compiles as release builds. Only a
+  # release build sends usage data (crates/coral-usage).
+  CORAL_RELEASE_BUILD: "1"
   # Must match UPDATE_FEED in apps/desktop/electron-builder.config.ts. xtask
   # fails a package whose app-update.yml names another feed.
   DESKTOP_FEED_OWNER: withcoral
@@ -582,6 +585,7 @@ jobs:
           }
           coral="$(build "$CORAL_IMAGE" --file docker/Dockerfile \
             --build-arg "CORAL_GIT_SHA=$(git rev-parse --short HEAD)" \
+            --build-arg "CORAL_RELEASE_BUILD=${CORAL_RELEASE_BUILD}" \
             --label "org.opencontainers.image.source=https://github.com/withcoral/coral" \
             --label "org.opencontainers.image.version=${version}" \
             --label "org.opencontainers.image.revision=${COMMIT_SHA}" \

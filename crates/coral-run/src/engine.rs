@@ -26,12 +26,11 @@
 mod host;
 pub(crate) use host::execute;
 
-use coral_telemetry::metric::CompilerRole;
-
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
+use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
 use coral_v8::CompileFailure;
 
 use crate::execution::ExecutionStop;
@@ -139,17 +138,29 @@ impl Clock for SystemClock {
 }
 
 pub(crate) struct V8ProgramEngine {
-    compiler: coral_v8::ProgramCompiler,
+    compiler: Arc<dyn CompilerClient>,
     executor: coral_v8::ProgramExecutor,
 }
 
 impl V8ProgramEngine {
-    pub(crate) fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
-        Ok(Self {
-            compiler: coral_v8::ProgramCompiler::new(isolate_limits, CompilerRole::Run)
-                .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?,
+    /// Compiles through the process's one warm `compiler` and runs each
+    /// Program in a fresh isolate within `isolate_limits`.
+    pub(crate) fn with_compiler(
+        compiler: Arc<dyn CompilerClient>,
+        isolate_limits: coral_v8::IsolateLimits,
+    ) -> Self {
+        Self {
+            compiler,
             executor: coral_v8::ProgramExecutor::new(isolate_limits),
-        })
+        }
+    }
+
+    /// An engine with a warm compiler of its own, for tests.
+    #[cfg(test)]
+    pub(crate) fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
+        let compiler = coral_run_executor::InProcessCompiler::new(isolate_limits)
+            .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?;
+        Ok(Self::with_compiler(Arc::new(compiler), isolate_limits))
     }
 }
 
@@ -162,7 +173,7 @@ impl ProgramEngine for V8ProgramEngine {
         let source_name = "Program";
         let named = self
             .compiler
-            .program_call_paths(deadline, source)
+            .program_references(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, source_name))?;
         Ok(ProgramReferences {
             functions: parse_saved_function_references(named.functions().to_vec(), source_name)?,
@@ -178,7 +189,7 @@ impl ProgramEngine for V8ProgramEngine {
     ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
         Ok(self
             .compiler
-            .unknown_tool_calls(deadline, tools, callable)?)
+            .unknown_tool_calls(time_left(deadline), tools, callable)?)
     }
 
     fn saved_function_dependency_references(
@@ -190,13 +201,13 @@ impl ProgramEngine for V8ProgramEngine {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
         let references = self
             .compiler
-            .saved_function_dependency_paths(deadline, source)
+            .dependency_references(time_left(deadline), source)
             .map_err(|error| compile_failure_for_source(error, &source_name))?;
         Ok(parse_saved_function_references(references, &source_name)?)
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        let compiled = self.compiler.compile(deadline, source)?;
+        let compiled = self.compiler.compile(time_left(deadline), source, &[])?;
         package_from_compiled(&compiled)
     }
 
@@ -220,7 +231,7 @@ impl ProgramEngine for V8ProgramEngine {
             .collect::<Vec<_>>();
         let compiled = self
             .compiler
-            .compile_with_saved_functions(deadline, source, &sources)?;
+            .compile(time_left(deadline), source, &sources)?;
         package_from_compiled(&compiled)
     }
 
@@ -304,13 +315,13 @@ fn parse_saved_function_references(
         .collect()
 }
 
-fn compile_failure_for_source(error: coral_v8::Error, source_name: &str) -> CompileFailure {
+fn compile_failure_for_source(error: CompileError, source_name: &str) -> CompileFailure {
     match error {
-        coral_v8::Error::InvalidSavedFunctionReference {
+        CompileError::Diagnostics(Diagnostics::Reference {
             message,
             line,
             column,
-        } => CompileFailure::Rejected(format!("{source_name}:{line}:{column}: {message}")),
+        }) => CompileFailure::Rejected(format!("{source_name}:{line}:{column}: {message}")),
         other => other.into(),
     }
 }

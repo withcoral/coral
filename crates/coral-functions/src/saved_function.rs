@@ -1,4 +1,3 @@
-use coral_telemetry::metric::CompilerRole;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,6 +9,7 @@ use coral_workspace::{
 };
 use tokio::time::timeout_at;
 
+use coral_run_executor::{CompilerClient, time_left};
 use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, SavedFunctionCallPaths};
 
 use crate::repository;
@@ -60,22 +60,13 @@ pub(crate) trait SavedFunctionCompiler: Send + Sync {
 }
 
 struct V8SavedFunctionCompiler {
-    compiler: coral_v8::ProgramCompiler,
-}
-
-impl V8SavedFunctionCompiler {
-    fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
-        Ok(Self {
-            compiler: coral_v8::ProgramCompiler::new(isolate_limits, CompilerRole::Authoring)
-                .map_err(|error| Error::CompilerUnavailable(error.to_string()))?,
-        })
-    }
+    compiler: Arc<dyn CompilerClient>,
 }
 
 impl SavedFunctionCompiler for V8SavedFunctionCompiler {
     fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths> {
         self.compiler
-            .saved_function_call_paths(deadline, source)
+            .call_paths(time_left(deadline), source)
             .inspect_err(|error| {
                 tracing::debug!(
                     error.type = safe::kind(error.code()),
@@ -91,13 +82,9 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
         source: &str,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<PreparedSavedFunction, CompileFailure> {
-        let compiled = match declarations {
-            Some(declarations) => {
-                self.compiler
-                    .prepare_typed_saved_function(deadline, source, declarations)
-            }
-            None => self.compiler.prepare_saved_function(deadline, source),
-        }?;
+        let compiled = self
+            .compiler
+            .prepare(time_left(deadline), source, declarations)?;
         let declaration = SavedFunctionDeclaration::from_compiler(compiled.declaration())
             .map_err(|error| error.to_string())?;
         let declaration_field_projection =
@@ -161,9 +148,11 @@ pub struct SavedFunctionModule {
 }
 
 impl SavedFunctionModule {
-    /// Builds the Module with a deployment-selected compiler heap budget.
-    /// `compilation_timeout` bounds each save's preparation; production passes
-    /// [`crate::COMPILATION_TIMEOUT`].
+    /// Builds the Module with a warm compiler of its own, within the
+    /// deployment's compiler heap budget. `compilation_timeout` bounds each
+    /// save's preparation; production passes [`crate::COMPILATION_TIMEOUT`].
+    /// A composed process shares its one compiler through
+    /// [`Self::with_compiler_client`] instead.
     ///
     /// # Errors
     ///
@@ -174,14 +163,33 @@ impl SavedFunctionModule {
         isolate_limits: coral_v8::IsolateLimits,
         compilation_timeout: Duration,
     ) -> Result<Self, Error> {
-        Ok(Self {
+        let compiler = coral_run_executor::InProcessCompiler::new(isolate_limits)
+            .map_err(|error| Error::CompilerUnavailable(error.to_string()))?;
+        Ok(Self::with_compiler_client(
+            database,
+            workspaces,
+            Arc::new(compiler),
+            compilation_timeout,
+        ))
+    }
+
+    /// Builds the Module as [`Self::new`] does, except that it compiles
+    /// through `compiler`, the process's one warm compiler.
+    #[must_use]
+    pub fn with_compiler_client(
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+        compiler: Arc<dyn CompilerClient>,
+        compilation_timeout: Duration,
+    ) -> Self {
+        Self {
             inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
             deletion: SavedFunctionDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
-            compiler: Arc::new(V8SavedFunctionCompiler::new(isolate_limits)?),
+            compiler: Arc::new(V8SavedFunctionCompiler { compiler }),
             compilation_timeout,
-        })
+        }
     }
 
     #[cfg(test)]
@@ -211,8 +219,8 @@ impl SavedFunctionModule {
     ///
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
-    /// `SearchIndex::index_function` after this returns, as the Task command's
-    /// save does. Until then, the reconcile task indexes the function.
+    /// `SearchIndex::sync_function` after its commit, as
+    /// `coral.workspace.saveFunction` does. Until then, the reconcile task indexes the function.
     ///
     /// # Errors
     ///
@@ -547,9 +555,7 @@ impl SavedFunctionModule {
             .iter()
             .any(|function| saved_function_paths_overlap(function.path(), path))
         {
-            return Err(Error::SavedFunctionAdmission(
-                "Saved Function Path conflicts with an existing virtual namespace".to_string(),
-            ));
+            return Err(Error::SavedFunctionPathConflict);
         }
 
         let mut held_paths = references

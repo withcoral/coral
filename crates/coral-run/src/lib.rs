@@ -140,6 +140,7 @@ pub use approval_history::{
 };
 mod approval_repository;
 mod builtin;
+pub use builtin::SavedFunctions;
 mod enforcement;
 mod engine;
 mod error;
@@ -169,6 +170,7 @@ mod required_actions;
 mod required_actions_repository;
 pub mod retention;
 mod run_inbox;
+pub mod usage_repository;
 pub use run_inbox::RunInbox;
 mod run_repository;
 mod shutdown;
@@ -208,7 +210,7 @@ pub use required_actions::{
 };
 pub use summary::{
     ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,
-    StoppedTool, ToolCalls,
+    StoppedTool, SummaryWindow, ToolAddress, ToolCalls,
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,
@@ -243,6 +245,7 @@ pub struct RunModule {
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
+    saved_functions: Option<SavedFunctions>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -277,7 +280,9 @@ impl RunModule {
     /// Built-in Tools prepare Setups through `providers`, the bootstrap's
     /// Provider Module. `instance` is the Coral Instance the process runs as,
     /// which every Run it claims records; `inbox` is where outside Run
-    /// Requests wait for their Run Owner.
+    /// Requests wait for their Run Owner. The runtime starts a warm compiler
+    /// of its own; a composed process shares its one compiler through
+    /// [`Self::with_compiler_client`] instead.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
@@ -289,15 +294,48 @@ impl RunModule {
         instance: CoralInstanceId,
         inbox: RunInbox,
     ) -> Result<Self, Error> {
+        let compiler = coral_run_executor::InProcessCompiler::new(limits.isolate())
+            .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?;
+        Self::with_compiler_client(
+            policy,
+            database,
+            workspaces,
+            providers,
+            limits,
+            Arc::new(compiler),
+            instance,
+            inbox,
+        )
+    }
+
+    /// Builds the runtime as [`Self::new`] does, except that Program
+    /// Admission compiles through `compiler`, the process's one warm compiler.
+    /// # Errors
+    /// Returns an initialization error when the HTTP client cannot start.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bootstrap passes each shared process component"
+    )]
+    pub fn with_compiler_client(
+        policy: coral_outbound::DestinationPolicy,
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
+        limits: RuntimeLimits,
+        compiler: Arc<dyn coral_run_executor::CompilerClient>,
+        instance: CoralInstanceId,
+        inbox: RunInbox,
+    ) -> Result<Self, Error> {
         Ok(Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
+            saved_functions: None,
             human_interface: None,
             database,
             workspaces,
             accounts: None,
-            engine: Arc::new(V8ProgramEngine::new(limits.isolate())?),
+            engine: Arc::new(V8ProgramEngine::with_compiler(compiler, limits.isolate())),
             upstream: Arc::new(ProductionUpstream::new(policy)?),
             clock: Arc::new(SystemClock),
             execution_policy: ExecutionPolicy::production(),
@@ -334,6 +372,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
+            saved_functions: None,
             human_interface: None,
             database,
             workspaces,
@@ -382,6 +421,15 @@ impl RunModule {
     #[cfg(test)]
     pub(crate) const fn instance(&self) -> &CoralInstanceId {
         &self.instance
+    }
+
+    /// Lets `coral.workspace.saveFunction` and `deleteFunction` author the
+    /// invoking Principal's Saved Functions. Without it, such a call fails
+    /// with `tool_unavailable`.
+    #[must_use]
+    pub fn with_saved_functions(mut self, functions: SavedFunctions) -> Self {
+        self.saved_functions = Some(functions);
+        self
     }
 
     /// Names the Reef origin that built-in Tool Results link to. Only the

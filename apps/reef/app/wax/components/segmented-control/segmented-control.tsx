@@ -9,8 +9,12 @@ export interface SegmentedOption<Value extends string> {
   value: Value
   /** The segment's text, or its accessible name and tooltip when it has an icon. */
   label: string
-  /** Shows the icon in place of the label. */
+  /** Shows the icon in place of the label, or before it with `withLabel`. */
   icon?: IconName
+  /** Shows the label beside the icon, for a segment the icon alone cannot name. */
+  withLabel?: boolean
+  /** A count after the label, such as how many items the choice shows. */
+  count?: number
   /** Says what choosing an icon segment does, under its label in the tooltip. */
   description?: string
   disabled?: boolean
@@ -81,36 +85,49 @@ export function SegmentedControl<Value extends string>({
       {name && <input type="hidden" name={name} value={value} />}
       {options.map((option) => {
         const checked = option.value === value
+        // An icon alone names its segment through `aria-label` and a tooltip.
+        const iconOnly = Boolean(option.icon) && !option.withLabel
         const segment = (
           <button
             key={option.value}
             type="button"
             role="radio"
             aria-checked={checked}
-            aria-label={option.icon ? option.label : undefined}
-            aria-description={option.icon ? option.description : undefined}
+            aria-label={
+              iconOnly
+                ? option.count === undefined
+                  ? option.label
+                  : `${option.label} ${option.count.toLocaleString('en-US')}`
+                : undefined
+            }
+            aria-description={option.description}
             tabIndex={checked ? 0 : -1}
             disabled={disabled || option.disabled}
-            className={styles.segment({ checked, icon: Boolean(option.icon), size })}
+            className={styles.segment({ checked, icon: iconOnly, size })}
             onClick={() => select(option.value)}
             ref={(element) => {
               if (element) buttons.current.set(option.value, element)
               else buttons.current.delete(option.value)
             }}
           >
-            {option.icon ? (
+            {option.icon && (
               <Icon
                 name={option.icon}
-                className={styles.icon}
+                className={iconOnly ? styles.icon : `${styles.icon} ${styles.labelIcon}`}
                 color="inherit"
                 size={size === 'small' ? '16' : '18'}
               />
-            ) : (
-              option.label
+            )}
+            {!iconOnly && option.label}
+            {/* A space outside the count's span, so its name reads "Allow 26". */}
+            {option.count !== undefined && ' '}
+            {option.count !== undefined && (
+              <span className={styles.count}>{option.count.toLocaleString('en-US')}</span>
             )}
           </button>
         )
-        return option.icon ? (
+        // A labelled segment needs a tooltip only to say what it does.
+        return iconOnly || option.description ? (
           <Tooltip
             key={option.value}
             maxWidth={260}

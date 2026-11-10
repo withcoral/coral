@@ -50,6 +50,8 @@ coral_failures! {
     ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
+    /// None of the caller's Saved Functions is at the requested path.
+    SavedFunctionNotFound => "saved_function_not_found",
     /// Exact Tool policy disables this Invocation.
     ToolDisabled => "tool_disabled",
     /// The retained Credential Route changed.
@@ -72,6 +74,8 @@ coral_failures! {
     UpstreamIncomplete => "upstream_incomplete",
     /// The upstream peer received the request and answered with a protocol error.
     UpstreamRejected => "upstream_rejected",
+    /// The upstream peer refused the request's credentials or access (HTTP 401 or 403).
+    UpstreamUnauthorized => "upstream_unauthorized",
     // Per-result and cumulative output limits share one durable code; this one decodes.
     /// The upstream result exceeds its accepted bound.
     ResultTooLarge => "upstream_result_too_large",
@@ -117,6 +121,7 @@ impl CoralFailure {
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not change the Provider",
+            Self::SavedFunctionNotFound => "Saved Function was not found",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",
@@ -130,6 +135,7 @@ impl CoralFailure {
             Self::OutboundDestinationRejected => "Provider destination is not permitted",
             Self::UpstreamIncomplete => "Upstream result is incomplete",
             Self::UpstreamRejected => "Upstream rejected the request",
+            Self::UpstreamUnauthorized => "Upstream refused the request's credentials or access",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
         }
@@ -572,6 +578,13 @@ impl Error {
         }
     }
 
+    /// Whether a [`Self::safe_rejection`] code says the Program did not
+    /// compile in time or at all.
+    #[must_use]
+    pub fn is_compile_rejection(code: &str) -> bool {
+        code == PROGRAM_ADMISSION_FAILED || code == PROGRAM_COMPILATION_TIMED_OUT
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
@@ -582,8 +595,8 @@ impl Error {
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
-            Self::ProgramAdmission(_) => "program_admission_failed",
-            Self::CompilationTimedOut => "program_compilation_timed_out",
+            Self::ProgramAdmission(_) => PROGRAM_ADMISSION_FAILED,
+            Self::CompilationTimedOut => PROGRAM_COMPILATION_TIMED_OUT,
             Self::CompilerBusy => "program_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::Functions(error) => return error.safe_rejection(),
@@ -598,9 +611,25 @@ impl Error {
     }
 }
 
+const PROGRAM_ADMISSION_FAILED: &str = "program_admission_failed";
+const PROGRAM_COMPILATION_TIMED_OUT: &str = "program_compilation_timed_out";
+
 #[cfg(test)]
 mod tests {
     use super::{CoralFailure, Error};
+
+    #[test]
+    fn only_a_program_that_did_not_compile_is_a_compile_rejection() {
+        let code = |error: Error| error.safe_rejection().expect("a safe rejection").0;
+        assert!(Error::is_compile_rejection(code(Error::ProgramAdmission(
+            "does not compile".into()
+        ))));
+        assert!(Error::is_compile_rejection(code(
+            Error::CompilationTimedOut
+        )));
+        assert!(!Error::is_compile_rejection(code(Error::CompilerBusy)));
+        assert!(!Error::is_compile_rejection(code(Error::ShuttingDown)));
+    }
 
     #[test]
     fn an_unanswered_database_error_is_operational_through_every_module_wrapper() {

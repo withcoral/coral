@@ -472,13 +472,9 @@ async fn decision_required(
         target.provider_id.clone(),
         target.tool.clone(),
     );
-    let policy = coral_policy::discovery_decision_in_transaction(
-        tx,
-        &policy_target,
-        tool.hints(),
-        tool.http_method(),
-    )
-    .await?;
+    let policy =
+        coral_policy::discovery_decision_in_transaction(tx, &policy_target, tool.policy_facts())
+            .await?;
     Ok(policy.access_state() == coral_policy::ToolAccessState::ApprovalRequired)
 }
 
