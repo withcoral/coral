@@ -42,7 +42,10 @@ flowchart LR
 
 <Steps titleSize="h3">
   <Step title="Create the IAM identity">
-    [Create an IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create.html) for the bridge. The role's trust policy depends on where the bridge runs. Step 3 links to the AWS page for each platform. Outside AWS, [create an IAM user](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html) with an [access key](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html) instead.
+    The bridge calls AWS as one IAM identity. The kind of identity depends on where you run the bridge:
+
+    - **On AWS (Amazon EC2, ECS or EKS):** [create an IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create.html). You give the role to the bridge in step 3.
+    - **Anywhere else:** [create an IAM user](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html) and an [access key](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html) for it. You give the key to the bridge in step 3.
 
     The AWS MCP Server needs no permissions of its own. Each tool call reaches the AWS service with the bridge's identity, and that service checks the identity's IAM policies. Attach the policies for the access you want. For read-only access, the AWS managed policy `ReadOnlyAccess` is a good start. For a role, attach it with this command:
 
