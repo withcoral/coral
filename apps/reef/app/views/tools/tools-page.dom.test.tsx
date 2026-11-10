@@ -567,10 +567,10 @@ test('Coral then the private tools lead the providers you add, and neither has s
     'GitHub settings',
     'Weather settings',
   ])
-  expect(providerGroups()).toEqual(['Coral', 'Private', 'Arcade', 'GitHub', 'Weather'])
+  expect(providerGroups()).toEqual(['Coral', 'Private tools', 'Arcade', 'GitHub', 'Weather'])
   const entries = within(rail()).getAllByRole('link')
-  const positions = ['All tools', 'Coral', 'Private', 'Arcade', 'GitHub', 'Weather'].map((name) =>
-    entries.indexOf(tabLink(name)),
+  const positions = ['All tools', 'Coral', 'Private tools', 'Arcade', 'GitHub', 'Weather'].map(
+    (name) => entries.indexOf(tabLink(name)),
   )
   expect(positions).toEqual(positions.toSorted((a, b) => a - b))
 })
@@ -582,9 +582,9 @@ const groupHeading = (name: string) => within(table()).getByRole('rowgroup', { n
 // its namespace under the heading that already shows it.
 test('each group heading counts its tools and opens its page, and one filter searches them all', async () => {
   renderPage({ providers: [github, weather, mine] })
-  expect(providerGroups()).toEqual(['Private', 'GitHub', 'Weather'])
+  expect(providerGroups()).toEqual(['Private tools', 'GitHub', 'Weather'])
   expect(
-    ['GitHub', 'Weather', 'Private'].map(
+    ['GitHub', 'Weather', 'Private tools'].map(
       // The group's own count comes first; its tool groups follow with theirs.
       (name) => within(groupHeading(name)).getAllByText(/^\d+ tools?$/)[0]!.textContent,
     ),
@@ -595,10 +595,9 @@ test('each group heading counts its tools and opens its page, and one filter sea
     'href',
     github.path,
   )
-  expect(within(groupHeading('Private')).getByRole('link', { name: 'Private' })).toHaveAttribute(
-    'href',
-    '/workspaces/demo/tools/private',
-  )
+  expect(
+    within(groupHeading('Private tools')).getByRole('link', { name: 'Private tools' }),
+  ).toHaveAttribute('href', '/workspaces/demo/tools/private')
   // Under `people` and `reports`, each private tool shows the rest of its path.
   expect(rowNames()).toEqual(['greet', 'total', 'issues.list', 'repos.get', 'getForecast'])
   expect(screen.getByRole('link', { name: 'people.greet' }).textContent).toBe('greet')
@@ -608,7 +607,7 @@ test('each group heading counts its tools and opens its page, and one filter sea
   expect(within(groupHeading('GitHub')).getByText('1 of 2 tools')).toBeInTheDocument()
   // A match can span the namespace the heading shows and the name the row shows.
   await filterTools('people.gr')
-  expect(providerGroups()).toEqual(['Private'])
+  expect(providerGroups()).toEqual(['Private tools'])
   expect(rowNames()).toEqual(['greet'])
 })
 
@@ -619,7 +618,7 @@ test('lists an agent’s private tool beside your own, and opens only your own',
   const { router, show } = renderPage({ providers: [github, mine] })
   await show(null, mine.id)
   expect(rowNames()).toEqual(['greet', 'total'])
-  const rows = within(groupHeading('Private'))
+  const rows = within(groupHeading('Private tools'))
     .getAllByRole('row')
     .filter((row) => !row.hasAttribute('aria-level'))
   // The agent's tool follows your own at the same path, and names its agent.
@@ -689,7 +688,7 @@ test.each([
     workspace: { ...workspaceView, effectiveRole: role },
   })
   await show(null, mine.id)
-  for (const radio of within(groupHeading('Private')).getAllByRole('radio'))
+  for (const radio of within(groupHeading('Private tools')).getAllByRole('radio'))
     expect(radio.hasAttribute('disabled')).toBe(readOnly)
 })
 

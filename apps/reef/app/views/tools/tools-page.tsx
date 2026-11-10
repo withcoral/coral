@@ -383,7 +383,9 @@ function CatalogMatch({
   )
 }
 
+// The page names the private group by what it holds, as "All tools" does.
 function providerLabel(provider: ProviderView) {
+  if (provider.kind === 'private') return 'Private tools'
   return provider.displayName || provider.namespace
 }
 
