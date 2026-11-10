@@ -198,33 +198,29 @@ export const Member: Story = {
   },
 }
 
-/** DO_NOT_TRACK, CORAL_TELEMETRY or CI stops sending from one Coral process, whatever the switch shows. */
+/** DO_NOT_TRACK or CORAL_DISABLE_USAGE_DATA stops sending from one Coral process, whatever the switch shows. */
 export const TurnedOffByDoNotTrack: Story = {
   args: { view: { ...sharing, block: { kind: 'environment', variable: 'DO_NOT_TRACK' } } },
 }
 
-/** CORAL_TELEMETRY is off on 0 or false, so the banner says off, not set. */
-export const TurnedOffByCoralTelemetry: Story = {
+/** On a server, the banner names the variable and this server. */
+export const TurnedOffByCoralDisableUsageData: Story = {
   args: {
     view: {
       ...sharing,
       kind: 'server',
       next: JSON.stringify(onServer(report)),
       lastSent: { ...sharing.lastSent!, json: JSON.stringify(onServer(earlier)) },
-      block: { kind: 'environment', variable: 'CORAL_TELEMETRY' },
+      block: { kind: 'environment', variable: 'CORAL_DISABLE_USAGE_DATA' },
     },
   },
   play: async ({ canvasElement }) => {
     await expect(
       within(canvasElement).getByText(
-        'CORAL_TELEMETRY is off. Coral sends no usage data from this server, even when sharing is on.',
+        'CORAL_DISABLE_USAGE_DATA is set. Coral sends no usage data from this server, even when sharing is on.',
       ),
     ).toBeVisible()
   },
-}
-
-export const TurnedOffByCi: Story = {
-  args: { view: { ...sharing, block: { kind: 'environment', variable: 'CI' } } },
 }
 
 /** A reason from a newer Coral that this Reef cannot name still shows a banner. */

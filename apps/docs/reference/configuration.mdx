@@ -170,35 +170,35 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 - `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet. A run starts right after it is accepted, so this is usually 0. A run that waits for recovery by another Coral instance is not counted.
 - `coral.program.execution.heap.peak` is sampled each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
 
-| Metric                                   | Kind      | Attributes                                                              |
-| ---------------------------------------- | --------- | ----------------------------------------------------------------------- |
-| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                     |
-| `coral.program.compile.duration`         | Histogram | `outcome`                                                               |
-| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                 |
-| `coral.program.execution.heap.peak`      | Histogram | None                                                                    |
-| `coral.program.termination`              | Counter   | `outcome`                                                               |
-| `coral.run.accepted`                     | Counter   | `principal.kind`                                                        |
-| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                            |
-| `coral.run.duration`                     | Histogram | `run.status`                                                            |
-| `coral.run.phase.duration`               | Histogram | `run.phase`                                                             |
-| `coral.run.active`                       | Gauge     | None                                                                    |
-| `coral.run.queue.depth`                  | Gauge     | None                                                                    |
-| `coral.run.recovery`                     | Counter   | `outcome`                                                               |
-| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                  |
-| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                      |
+| Metric                                   | Kind      | Attributes                                                                   |
+| ---------------------------------------- | --------- | ---------------------------------------------------------------------------- |
+| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                          |
+| `coral.program.compile.duration`         | Histogram | `outcome`                                                                    |
+| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                      |
+| `coral.program.execution.heap.peak`      | Histogram | None                                                                         |
+| `coral.program.termination`              | Counter   | `outcome`                                                                    |
+| `coral.run.accepted`                     | Counter   | `principal.kind`                                                             |
+| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                                 |
+| `coral.run.duration`                     | Histogram | `run.status`                                                                 |
+| `coral.run.phase.duration`               | Histogram | `run.phase`                                                                  |
+| `coral.run.active`                       | Gauge     | None                                                                         |
+| `coral.run.queue.depth`                  | Gauge     | None                                                                         |
+| `coral.run.recovery`                     | Counter   | `outcome`                                                                    |
+| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                       |
+| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                           |
 | `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
-| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`            |
-| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                             |
-| `coral.invocation.active`                | Gauge     | None                                                                    |
-| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                          |
-| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                     |
-| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                     |
-| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                  |
-| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                             |
-| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                             |
-| `coral.output.size`                      | Histogram | `output.kind`                                                           |
-| `coral.output.rejections`                | Counter   | `output.kind`                                                           |
-| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
+| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`                 |
+| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                                  |
+| `coral.invocation.active`                | Gauge     | None                                                                         |
+| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                               |
+| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                          |
+| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                          |
+| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                       |
+| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                                  |
+| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                                  |
+| `coral.output.size`                      | Histogram | `output.kind`                                                                |
+| `coral.output.rejections`                | Counter   | `output.kind`                                                                |
+| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                                 |
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 
@@ -315,6 +315,29 @@ Optional section that can be used to require certain values on the OIDC's access
 | `path`    | SQLite only. Path to the db file. A relative path starts at the config folder.         | No                                   | `<config dir>/coral.db` |
 | `url_env` | Postgres only. Name of the environment variable that has the connection URL to the DB. | Yes, when `backend` is `postgres`    | N/A                     |
 
+## Usage data
+
+Self-hosted Coral sends one anonymous usage report for each UTC day on which it runs. Sharing is on by default. Only official release builds send the data: Coral Desktop and the `ghcr.io/withcoral/coral` image.
+
+Coral sends the report to `https://telemetry.withcoral.com/v1/report`. The [`[outbound]`](#outbound) policy still applies.
+
+A report holds a random install ID, facts about your Coral build and where it runs, and dates, counts and totals of activity. It never holds your programs, tool arguments, tool results, credentials, names, email addresses or URLs. [`report.rs`](https://github.com/withcoral/coral/blob/main/crates/coral-usage/src/report.rs) lists every field. To read the exact report before Coral sends it, open **Help and feedback**, then **Usage data**.
+
+Nothing in a report identifies you or your organization. We do not store IP addresses.
+
+### Turn off sharing
+
+If you are an organization owner, open **Usage data** and turn off **Share anonymous usage data**. This setting applies to the full deployment. Other members can read the page but cannot change it.
+
+To stop sending from one Coral process, set one of these environment variables. Coral ignores spaces and letter case. Restart Coral after you change one. The **Usage data** page then shows a banner that names the variable.
+
+| Variable                   | Stops sending when it is                        |
+| -------------------------- | ----------------------------------------------- |
+| `CORAL_DISABLE_USAGE_DATA` | Set to a value other than empty, `0` or `false` |
+| `DO_NOT_TRACK`             | Set to a value other than empty, `0` or `false` |
+
+When you turn off sharing, Coral stops sending. We keep the reports that Coral sent before.
+
 ## Environment variables
 
 Coral reads these variables when it starts. Restart Coral after you change one.
@@ -325,7 +348,6 @@ Coral reads these variables when it starts. Restart Coral after you change one.
 | `CORAL_LOCAL_WEB_URL`       | The web UI's origin. Coral links your users to it. Use it instead of `listeners.web.public_url` when user auth is disabled. Coral does not start when you set it with `[auth]` or with `listeners.web.public_url`. |
 | `CORAL_STOP_ON_STDIN_CLOSE` | Set to `1` to stop Coral when its stdin closes. Use it when your launcher stops Coral by closing a pipe.                                                         |
 | `CORAL_TRACE_PARENT`        | A W3C `traceparent`. Coral starts its process span in that trace.                                                                                                 |
-| `DO_NOT_TRACK`, `CORAL_TELEMETRY`, `CI` | Stop the daily usage report, but only with some values. For example, `DO_NOT_TRACK=0` does not stop it. See [Usage data](/reference/usage-data#with-an-environment-variable) for the values. |
 
 The variables that `*_env` keys name, such as `CORAL_SESSION_SIGNING_KEY`, hold secrets. Coral does not start when one of them is not set.
 

@@ -111,6 +111,7 @@
         "group": "Guides",
         "pages": [
           "guides/concepts",
+          "guides/permissions",
           "guides/providers",
           "guides/database-providers"
         ]
@@ -118,8 +119,7 @@
       {
         "group": "Reference",
         "pages": [
-          "reference/configuration",
-          "reference/usage-data"
+          "reference/configuration"
         ]
       }
     ]
