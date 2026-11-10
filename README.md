@@ -207,7 +207,8 @@ Coral is licensed under the Apache License 2.0. See [`LICENSE`](./LICENSE).
 
 The [`ee/`](./ee) directory holds Enterprise Edition code under its own licence,
 [`ee/LICENSE`](./ee/LICENSE). A plain `cargo build` at the repository root
-builds only Apache-2.0 code.
+builds only Apache-2.0 code. [`NOTICE`](./NOTICE) sets out which licence
+covers which files.
 
 ## Upgrade from Coral 0.x
 

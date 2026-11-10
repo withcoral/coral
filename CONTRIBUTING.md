@@ -1,8 +1,11 @@
 # Contributing to Coral
 
-Thank you for helping. Read [`docs/development.md`](./docs/development.md) to
-set up a local build, and [`docs/workflow.md`](./docs/workflow.md) for how we
-work.
+Thank you for helping. Before we can merge your contribution, we need a signed
+[Contributor License Agreement](https://withcoral.com/docs/legal/cla-corporate)
+on file.
+
+Read [`docs/development.md`](./docs/development.md) to set up a local build,
+and [`docs/workflow.md`](./docs/workflow.md) for how we work.
 
 ## Enterprise code in `ee/`
 
