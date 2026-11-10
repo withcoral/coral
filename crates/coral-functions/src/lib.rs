@@ -32,6 +32,7 @@ mod saved_function;
 pub mod test_fixtures_repository;
 mod tool_typing;
 mod types;
+pub mod usage_repository;
 
 use coral_db::Transaction;
 use coral_workspace::{Principal, WorkspaceId};

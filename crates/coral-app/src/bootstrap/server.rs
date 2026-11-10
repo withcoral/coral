@@ -16,7 +16,9 @@ use zeroize::Zeroizing;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
-use super::server_config::{Launcher, LoadedServerConfig, ServeSettings, SessionAuthSettings};
+use super::server_config::{
+    Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
+};
 use crate::auth::CoralAuthorizationServer;
 use crate::state::DatabaseConfig;
 use crate::state::{AppStateLayout, InitializedState, StateLock, initialize_state};
@@ -352,6 +354,8 @@ impl PreparedServerBuilder {
                 "auth-disabled private gRPC bind must be loopback".to_owned(),
             ));
         }
+        let run_executor_listener = deployment_config
+            .run_executor_listener(session_auth.is_some(), &AppEnvironment::required_env_var)?;
         let workspace_authentication = session_auth
             .as_ref()
             .map(|auth| auth.workspace_authentication(coral_db.clone()));
@@ -433,6 +437,7 @@ impl PreparedServerBuilder {
             readiness,
             state_lock,
             instance,
+            run_executor_listener,
         )
         .await?;
         server.authorization_server = authorization_server
@@ -838,7 +843,9 @@ pub(crate) async fn start_server(
     readiness: EngineReadiness,
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
+    run_executor_listener: RunExecutorListener,
 ) -> Result<RunningServer, AppError> {
+    let coral_instance_id = instance.to_string();
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
     let builtin_catalog = coral_catalog::BuiltinCatalog::running()
@@ -955,13 +962,25 @@ pub(crate) async fn start_server(
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
+    let run_executors = (
+        TcpListener::bind(run_executor_listener.bind).await?,
+        coral_run_executor::LinkServer::new(
+            coral_run_executor::Credentials::new(run_executor_listener.tokens),
+            database.clone(),
+            coral_instance_id,
+        ),
+    );
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (task_finished_tx, task_finished) = watch::channel(false);
 
     let task = match mode {
-        ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => {
-            start_grpc_server(listener, shutdown_rx, routes, task_finished_tx)
-        }
+        ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => start_grpc_server(
+            listener,
+            run_executors,
+            shutdown_rx,
+            routes,
+            task_finished_tx,
+        ),
     };
 
     let run_recovery = {
@@ -1039,8 +1058,11 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) {
     }
 }
 
+/// Serves the private gRPC listener and the Run Executor listener until
+/// shutdown, or until either fails.
 fn start_grpc_server(
     listener: TcpListener,
+    (run_executor_listener, link): (TcpListener, coral_run_executor::LinkServer),
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     task_finished: watch::Sender<bool>,
@@ -1048,13 +1070,21 @@ fn start_grpc_server(
     // `Server::tcp_nodelay` is ignored for a stream that the caller supplies.
     let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
     tokio::spawn(async move {
-        let result = Server::builder()
+        let (stop, stopping) = watch::channel(false);
+        let stopped = |mut stopping: watch::Receiver<bool>| async move {
+            drop(stopping.wait_for(|stopping| *stopping).await);
+        };
+        let grpc = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(routes)
-            .serve_with_incoming_shutdown(incoming, async {
-                drop(shutdown_rx.await);
-            })
-            .await;
+            .serve_with_incoming_shutdown(incoming, stopped(stopping.clone()));
+        let run_executors = link.serve(run_executor_listener, stopped(stopping));
+        let shutdown = async move {
+            drop(shutdown_rx.await);
+            stop.send_replace(true);
+            Ok(())
+        };
+        let result = tokio::try_join!(shutdown, grpc, run_executors).map(drop);
         task_finished.send_replace(true);
         result
     })

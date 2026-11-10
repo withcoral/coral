@@ -11,6 +11,8 @@
 #[path = "organization_repository.rs"]
 mod repository;
 
+pub(crate) use repository::enabled_member_total;
+
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
