@@ -427,10 +427,10 @@ Account identifier, owner, account label, or credential state. Reef can show omi
 reasons to authorized humans. Runtime never interprets the retained raw OpenAPI document or MCP discovery snapshot as
 the catalog. _Avoid_: Raw provider descriptor, live provider catalog, account inventory
 
-**Authoring Description**: The complete Principal-facing TypeScript call view of one currently visible Tool or
-Private Tool. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
+**Authoring Description**: The complete Principal-facing TypeScript call view of one currently visible Tool,
+Private Tool, or Shared Tool. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
 declaration with every public type that the callable signature references. Its declaration can be projected from
-authoritative Provider schemas or emitted from Private Tool source; callers do not receive the different internal
+authoritative Provider schemas or emitted from Private or Shared Tool source; callers do not receive the different internal
 authority formats. Coral stores a Tool's own declaration and declares each named type of its Provider once per
 Provider Generation; a Tool's complete declaration is its own declaration plus every named type it reaches.
 Coral compiles Programs against it and builds Search Hit signature lines from it. Exact Principal-facing description
@@ -438,7 +438,8 @@ returns the complete inputs, the callable, an
 Tool's result wrapper, and the top level of the success data, and the other result types within a fixed byte
 budget: in full, as field-name stubs, or listed by name. Describing the same Call Path with `types` returns the named
 types of its declaration whole, with their own nested types under the same budget. Exact description of the Principal's
-own Private Tool without `types` also returns its source and saved diagnostics for later editing. _Avoid_: JSON Schema discovery result,
+own Private Tool without `types` also returns its source and saved diagnostics for later editing. Exact description of a
+Shared Tool without `types` returns the source, diagnostics and number of its current revision, and never who published it. _Avoid_: JSON Schema discovery result,
 shared storage format
 
 **Tool Description**: The Tool-specific Authoring Description. It also contains the Provider name, identity,

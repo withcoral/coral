@@ -250,6 +250,33 @@ fn assert_describes_revision_1(
         !projected.to_string().contains(owner_id),
         "{name}: the description names its publisher: {projected}"
     );
+    // A description holds these members and no other, so none can say who
+    // published the Shared Tool.
+    let mut members = projected
+        .as_object()
+        .expect("a description is an object")
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    members.sort_unstable();
+    assert_eq!(
+        members,
+        [
+            "approval_required",
+            "call_path",
+            "description",
+            "diagnostics",
+            "diagnostics_truncated",
+            "hints",
+            "kind",
+            "provider_display_name",
+            "provider_id",
+            "revision",
+            "source",
+            "typescript_declaration",
+        ],
+        "{name}"
+    );
 }
 
 // Catches: a Shared Tool that only its publisher finds, a hit or description
@@ -340,6 +367,58 @@ async fn every_principal_finds_and_describes_a_shared_tool_a_pass_indexed() {
     assert!(
         matches!(denied, Err(Error::AuthoringDescriptionNotFound)),
         "{denied:?}"
+    );
+}
+
+// Catches: a Shared Tool that a Principal of another Workspace finds or
+// describes there, through a row or a read that matches the Tool and not its
+// Workspace.
+#[tokio::test]
+async fn a_shared_tool_stays_in_its_workspace() {
+    let shared = SharedScope::new().await;
+    shared
+        .publish("Summarize the tides", ToolAccessState::Enabled, 0)
+        .await;
+    shared.fixture.converge().await;
+    assert_eq!(shared.found(&shared.member, "tides").await, [SHARED]);
+
+    let elsewhere =
+        organization_user(shared.fixture.search.database.clone(), "user:elsewhere").await;
+    let other_workspace = shared.fixture.create_workspace(&elsewhere).await;
+    let elsewhere = AuthenticatedPrincipal::user(elsewhere);
+    shared.fixture.converge().await;
+
+    for request in [
+        SearchRequest::query(SearchQuery::parse("tides").expect("a query")),
+        SearchRequest::list(),
+    ] {
+        let page = shared
+            .fixture
+            .search
+            .search(&elsewhere, &other_workspace, &request)
+            .await
+            .expect("search the other Workspace");
+        assert!(
+            page.hits()
+                .iter()
+                .all(|hit| hit.kind() != EntityKind::SharedTool),
+            "{:?}",
+            page.hits()
+        );
+    }
+    let described = shared
+        .fixture
+        .search
+        .describe(
+            &elsewhere,
+            &other_workspace,
+            &CallPath::parse(SHARED).expect("a Call Path"),
+            &[],
+        )
+        .await;
+    assert!(
+        matches!(described, Err(Error::AuthoringDescriptionNotFound)),
+        "{described:?}"
     );
 }
 
@@ -451,8 +530,8 @@ async fn search_and_describe_read_a_shared_tools_rule_and_its_providers_state() 
             Some(ApprovalRequirement::Required),
         ),
     ] {
-        // An Owner sets this rule in Reef, on the Shared Provider's policy
-        // page.
+        // No policy surface sets a rule on a Shared Tool yet (issue #3009),
+        // so the rule is written as the policy service will write it.
         shared
             .fixture
             .fixture
