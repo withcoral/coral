@@ -201,23 +201,35 @@ impl TestModules {
     /// precheck their parked waits on the test cadence, so a wait that became
     /// moot is found within a test's wait for the Run's end.
     pub(crate) fn live_runs(&self, accounts: Option<AccountModule>) -> RunModule {
-        let mut runs = RunModule::new(
+        let compiler = coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start the real Program compiler");
+        let runs = self.live_runs_compiling_through(Arc::new(compiler));
+        match accounts {
+            Some(accounts) => runs.with_accounts(accounts),
+            None => runs,
+        }
+    }
+
+    /// [`Self::live_runs`] without Accounts, compiling through `compiler`.
+    pub(crate) fn live_runs_compiling_through(
+        &self,
+        compiler: Arc<dyn coral_run_executor::CompilerClient>,
+    ) -> RunModule {
+        let mut runs = RunModule::with_compiler_client(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             self.database.clone(),
             self.workspaces.clone(),
             self.providers.clone(),
             crate::RuntimeLimits::default()
                 .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
+            compiler,
             crate::CoralInstanceId::generate(),
             crate::RunInbox::table(self.database.clone()),
         )
         .expect("start the real Program runtime")
         .with_human_interface(test_reef());
         runs.execution_policy = runs.execution_policy.with_test_wakeups();
-        match accounts {
-            Some(accounts) => runs.with_accounts(accounts),
-            None => runs,
-        }
+        runs
     }
 
     /// Another process over this fixture's database, clock and execution

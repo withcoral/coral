@@ -321,6 +321,101 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
 
+// Catches: admission that asks the compiler once per Saved Function, or
+// checks Tool calls in a call of their own, so the Run Executor link carries
+// a message for each.
+#[tokio::test]
+async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles_once() {
+    use coral_run_executor::testing::{CompilerCalls, CountingCompiler};
+    coral_test_support::database_only!(Sqlite);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let saved_functions = SavedFunctionModule::new(
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+        crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
+    )
+    .expect("start Saved Function compiler");
+    let compiler = Arc::new(CountingCompiler::new(Arc::new(
+        coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start the Program compiler"),
+    )));
+    let runs = fixture.live_runs_compiling_through(compiler.clone());
+    let (workspace_id, principal) = fixture
+        .user_scope("user:counted-admission", "Count compiler calls")
+        .await;
+    // Two levels below the Program: `increment` is reached twice.
+    for (path, source) in [
+        (
+            "math.increment",
+            "export default function increment(value: number): number { return value + 1; }",
+        ),
+        (
+            "math.double",
+            "export default function double(value: number): number { return value * 2; }",
+        ),
+        (
+            "math.incrementTwice",
+            "export default function incrementTwice(value: number): number { return coral.functions.math.increment(coral.functions.math.increment(value)); }",
+        ),
+        (
+            "math.sum",
+            "export default function sum(value: number): number { return coral.functions.math.increment(value) + coral.functions.math.double(value); }",
+        ),
+    ] {
+        saved_functions
+            .save(
+                &saved_function_change(principal.clone(), 30, '1'),
+                &workspace_id,
+                SavedFunctionSave::new(
+                    SavedFunctionPath::parse(path).expect("path"),
+                    SavedFunctionDescription::parse("Counted").expect("description"),
+                    SavedFunctionSource::parse(source).expect("source"),
+                ),
+            )
+            .await
+            .expect("save closure member");
+    }
+
+    let links = "return [coral.functions.math.incrementTwice(1), coral.functions.math.sum(1)];";
+    // The fixture's caller can call no Tool, so the call checked at compile
+    // is refused there.
+    let unknown_tool = format!("await coral.workspace.search({{ query: \"math\" }});\n{links}");
+    let cases: [(&str, &[usize], Option<&str>); 3] = [
+        ("return 42;", &[1], None),
+        (links, &[1, 2, 2], None),
+        (
+            &unknown_tool,
+            &[1, 2, 2],
+            Some("Program:1:7: coral.workspace.search names no Tool that you can call."),
+        ),
+    ];
+    for (source, analyzed, refused) in cases {
+        let prepared = runs
+            .prepare(&principal, &workspace_id, submission(source))
+            .await;
+        match refused {
+            None => {
+                prepared.unwrap_or_else(|error| panic!("{source}: {error:?}"));
+            }
+            Some(refusal) => assert!(
+                matches!(&prepared, Err(Error::ProgramAdmission(message)) if message.starts_with(refusal)),
+                "{source}: {:?}",
+                prepared.map(drop)
+            ),
+        }
+        assert_eq!(
+            compiler.take(),
+            CompilerCalls {
+                analyze: analyzed.to_vec(),
+                compile: 1,
+                prepare: 0,
+            },
+            "{source}"
+        );
+    }
+}
+
 /// Scanning references, rather than compiling 64 functions with V8, keeps the
 /// two-second compilation deadline out of this count rule under load.
 #[tokio::test]

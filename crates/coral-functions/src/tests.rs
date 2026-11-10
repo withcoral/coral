@@ -1198,6 +1198,63 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
     }
 }
 
+// Catches: a save that asks the compiler for the source's Call Paths more
+// than once, or sends them back to type it, so the Run Executor link carries
+// the compiler's own analysis.
+#[tokio::test]
+async fn a_typed_save_analyzes_once_and_prepares_once() {
+    use coral_run_executor::testing::{CompilerCalls, CountingCompiler};
+    let compiler = Arc::new(CountingCompiler::new(Arc::new(
+        coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start Saved Function compiler"),
+    )));
+    let fixture = SavedFunctionTestModules::compiling_through(compiler.clone()).await;
+    let (workspace_id, principal) = fixture.user_workspace("user:counted-save").await;
+    fixture
+        .saved_functions
+        .save(
+            &saved_function_change(principal.clone(), 20, 'a'),
+            &workspace_id,
+            SavedFunctionSave::new(
+                SavedFunctionPath::parse("typing.dependency").expect("path"),
+                SavedFunctionDescription::parse("Dependency").expect("description"),
+                SavedFunctionSource::parse(
+                    "export default function dependency(): number { return 1; }",
+                )
+                .expect("source"),
+            ),
+        )
+        .await
+        .expect("save dependency");
+    compiler.take();
+
+    fixture
+        .saved_functions
+        .prepare_save(
+            &saved_function_change(principal.clone(), 21, 'b'),
+            &workspace_id,
+            SavedFunctionSave::new(
+                SavedFunctionPath::parse("typing.counted").expect("path"),
+                SavedFunctionDescription::parse("Typed").expect("description"),
+                SavedFunctionSource::parse(
+                    "export default async function f() { return [await coral.providers.github.repos.get({ owner: \"a\", nope: 1 }), coral.functions.typing.dependency()]; }",
+                )
+                .expect("source"),
+            ),
+            Some(&DeclaresReposGet),
+        )
+        .await
+        .expect("prepare typed save");
+    assert_eq!(
+        compiler.take(),
+        CompilerCalls {
+            analyze: vec![1],
+            compile: 0,
+            prepare: 1,
+        }
+    );
+}
+
 #[tokio::test]
 async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
     let fixture = SavedFunctionTestModules::new().await;
@@ -1318,11 +1375,11 @@ impl GatedSavedFunctionCompiler {
 }
 
 impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
-    fn call_paths(
+    fn analyze(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Option<coral_v8::SavedFunctionCallPaths> {
+    ) -> Option<coral_v8::SourceReferences> {
         None
     }
 
@@ -1357,18 +1414,23 @@ struct SavedFunctionTestModules {
 
 impl SavedFunctionTestModules {
     async fn new() -> Self {
+        let compiler = coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start Saved Function compiler");
+        Self::compiling_through(Arc::new(compiler)).await
+    }
+
+    async fn compiling_through(compiler: Arc<dyn coral_run_executor::CompilerClient>) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Saved Function test database");
         let database = fixture.database();
         let workspaces = WorkspaceModule::new(database.clone());
-        let saved_functions = SavedFunctionModule::new(
+        let saved_functions = SavedFunctionModule::with_compiler_client(
             database.clone(),
             workspaces.clone(),
-            crate::IsolateLimits::default(),
+            compiler,
             coral_test_support::TEST_COMPILATION_TIMEOUT,
-        )
-        .expect("start Saved Function compiler");
+        );
         Self {
             _fixture: fixture,
             database,

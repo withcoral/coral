@@ -340,8 +340,17 @@ function savedFunctionDeclarationResult(emitted, diagnostics, references) {
   };
 }
 
+// `declarations` with the Tool chains `source` names, which the unknown-Tool
+// diagnostic reads. The caller sends the Tool declarations alone.
+function withToolChains(declarations, source, fileName, targetName) {
+  if (declarations?.tools == null) return declarations;
+  const chains = savedFunctionToolChains(source, fileName, targetName);
+  return { ...declarations, tools: { chains, declarations: declarations.tools } };
+}
+
 // Prepares one Saved Function, typed by `declarations` when they are given.
-function prepareSavedFunction(source, declarations, fileName, targetName) {
+function prepareSavedFunction(source, sentDeclarations, fileName, targetName) {
+  const declarations = withToolChains(sentDeclarations, source, fileName, targetName);
   const compilerOptions = {
     ...PROGRAM_COMPILER_OPTIONS,
     target: resolveTypeScriptTarget(targetName),

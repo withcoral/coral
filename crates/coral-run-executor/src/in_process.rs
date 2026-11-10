@@ -1,16 +1,20 @@
 use std::time::{Duration, Instant};
 
 use coral_telemetry::metric::CompilerRole;
+use coral_telemetry::safe;
 use coral_v8::{
-    CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits, LinkedSavedFunctionSource,
-    ProgramCompiler, SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference,
-    ToolReferences, UnknownToolCall,
+    AnalyzedSource, CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits,
+    LinkedSavedFunctionSource, ProgramCompiler, SavedFunctionCompilation, SourceReferences,
+    UnknownToolCall,
 };
 
-use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
+use crate::{
+    AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, tool_check_deadline,
+};
 
 /// The compiler client's in-process adapter: one warm Program Compiler on its
-/// own thread, which measures each request by the caller it serves.
+/// own thread, which measures each request by the caller it serves. Analysis
+/// serves both callers and is measured as Program Admission's.
 pub struct InProcessCompiler {
     /// Program Admission's handle.
     run: ProgramCompiler,
@@ -30,38 +34,58 @@ impl InProcessCompiler {
         let authoring = run.with_role(CompilerRole::Authoring);
         Ok(Self { run, authoring })
     }
+
+    /// The called chains of `source` that name no Tool among `callable`,
+    /// or none when the check fails or has no time left before the reserve.
+    fn unknown_tool_calls(
+        &self,
+        deadline: Instant,
+        source: &str,
+        callable: &[String],
+    ) -> Vec<UnknownToolCall> {
+        let Some(check_deadline) = tool_check_deadline(deadline) else {
+            tracing::warn!(
+                "The compiler has no time left to check the Program's Call Paths; they are checked only when called"
+            );
+            return Vec::new();
+        };
+        match self
+            .run
+            .unknown_tool_calls(check_deadline, source, callable)
+        {
+            Ok(unknown) => unknown,
+            Err(error) => {
+                tracing::warn!(
+                    error.type = safe::kind(error.code()),
+                    "The compiler could not check the Program's Call Paths; they are checked only when called"
+                );
+                Vec::new()
+            }
+        }
+    }
 }
 
 impl CompilerClient for InProcessCompiler {
-    fn program_references(
+    fn analyze(
         &self,
         time_left: Duration,
-        source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        self.run
-            .program_call_paths(deadline(time_left), source)
-            .map_err(compile_error)
-    }
-
-    fn unknown_tool_calls(
-        &self,
-        time_left: Duration,
-        tools: &ToolReferences,
-        callable: &[String],
-    ) -> Result<Vec<UnknownToolCall>, CompileError> {
-        self.run
-            .unknown_tool_calls(deadline(time_left), tools, callable)
-            .map_err(compile_error)
-    }
-
-    fn dependency_references(
-        &self,
-        time_left: Duration,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileError> {
-        self.run
-            .saved_function_dependency_paths(deadline(time_left), source)
-            .map_err(compile_error)
+        sources: &[AnalyzedSource],
+    ) -> Result<Vec<SourceReferences>, AnalysisError> {
+        let deadline = deadline(time_left);
+        // One request per source, so a source that faults the isolate has it
+        // rebuilt before the next.
+        sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                self.run
+                    .analyze(deadline, source)
+                    .map_err(|error| AnalysisError {
+                        source: index,
+                        error: compile_error(error),
+                    })
+            })
+            .collect()
     }
 
     fn compile(
@@ -69,8 +93,17 @@ impl CompilerClient for InProcessCompiler {
         time_left: Duration,
         source: &str,
         saved_functions: &[LinkedSavedFunctionSource],
+        callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let deadline = deadline(time_left);
+        if let Some(callable) = callable {
+            let unknown = self.unknown_tool_calls(deadline, source, callable);
+            if !unknown.is_empty() {
+                return Err(CompileError::Diagnostics(Diagnostics::UnknownTools(
+                    unknown,
+                )));
+            }
+        }
         if saved_functions.is_empty() {
             self.run.compile(deadline, source)
         } else {
@@ -78,16 +111,6 @@ impl CompilerClient for InProcessCompiler {
                 .compile_with_saved_functions(deadline, source, saved_functions)
         }
         .map_err(compile_error)
-    }
-
-    fn call_paths(
-        &self,
-        time_left: Duration,
-        source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        self.authoring
-            .saved_function_call_paths(deadline(time_left), source)
-            .map_err(compile_error)
     }
 
     fn prepare(
@@ -222,17 +245,110 @@ mod tests {
         }
     }
 
+    // Catches: an analysis that loses which source failed, or that answers
+    // out of order.
+    #[test]
+    fn analysis_answers_each_source_in_order_and_names_the_first_that_fails() {
+        let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
+        let program = AnalyzedSource::Program(
+            "await coral.providers.github.repos.get({});\nreturn coral.functions.math.add();"
+                .to_owned(),
+        );
+        let module = AnalyzedSource::SavedFunction(
+            "export default () => coral.functions.math.double();".to_owned(),
+        );
+        let computed = AnalyzedSource::SavedFunction(
+            "const key = 'double'; export default () => coral.functions.math[key]();".to_owned(),
+        );
+        let analyzed = compiler
+            .analyze(TEST_COMPILATION_TIMEOUT, &[program.clone(), module.clone()])
+            .expect("analyze both sources");
+        assert_eq!(
+            analyzed
+                .iter()
+                .map(|references| (
+                    references
+                        .functions()
+                        .iter()
+                        .map(coral_v8::SavedFunctionReference::path)
+                        .collect::<Vec<_>>(),
+                    references.tool_call_paths().to_vec(),
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    vec!["math.add"],
+                    vec![
+                        "coral.providers.github.repos".to_owned(),
+                        "coral.providers.github.repos.get".to_owned(),
+                    ],
+                ),
+                (vec!["math.double"], Vec::new()),
+            ]
+        );
+        let failed = compiler.analyze(TEST_COMPILATION_TIMEOUT, &[program, computed, module]);
+        assert!(
+            matches!(
+                &failed,
+                Err(AnalysisError {
+                    source: 1,
+                    error: CompileError::Diagnostics(Diagnostics::Reference { .. }),
+                })
+            ),
+            "{failed:?}"
+        );
+    }
+
+    // Catches: a Tool check that runs without a callable list, misses a
+    // called chain, or blocks a Program whose every call names a Tool.
+    #[test]
+    fn compile_checks_the_called_tools_only_against_a_callable_list() {
+        type Located = (&'static str, u64, u64);
+        let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
+        let source = "await coral.providers.github.repos.get({});\n\
+            return await coral.providers.notion.retrievePage({});";
+        let get = "coral.providers.github.repos.get".to_owned();
+        let page = "coral.providers.notion.retrievePage".to_owned();
+        let cases: [(Option<Vec<String>>, &[Located]); 3] = [
+            (None, &[]),
+            (Some(vec![get.clone(), page]), &[]),
+            (
+                Some(vec![get]),
+                &[("coral.providers.notion.retrievePage", 2, 14)],
+            ),
+        ];
+        for (callable, unknown) in cases {
+            let outcome =
+                compiler.compile(TEST_COMPILATION_TIMEOUT, source, &[], callable.as_deref());
+            if unknown.is_empty() {
+                outcome.unwrap_or_else(|error| panic!("{callable:?}: {error:?}"));
+                continue;
+            }
+            let Err(CompileError::Diagnostics(Diagnostics::UnknownTools(calls))) = outcome else {
+                panic!("{callable:?}: {:?}", outcome.map(drop));
+            };
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| (call.call_path(), call.line(), call.column()))
+                    .collect::<Vec<_>>(),
+                unknown,
+                "{callable:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_call_with_no_time_left_times_out() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         assert_eq!(
             compiler
-                .compile(Duration::ZERO, "return 42;", &[])
+                .compile(Duration::ZERO, "return 42;", &[], None)
                 .map(drop),
             Err(CompileError::TimedOut)
         );
         compiler
-            .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
+            .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None)
             .expect("a call with time left compiles");
     }
 }
