@@ -82,12 +82,15 @@ export const Disabled: Story = {
 
 // A button alone stands in for the picker, and the keyboard reaches only the button.
 export const ButtonOnly: Story = {
-  args: { buttonLabel: 'Upload document' },
+  args: { buttonLabel: 'Upload document', ariaDescribedBy: 'document-help' },
   play: async ({ args, canvas, canvasElement }) => {
     const input = picker(canvasElement)
     const button = canvas.getByRole('button', { name: 'Upload document' })
     const clicked = fn((event: Event) => event.preventDefault())
     input.addEventListener('click', clicked)
+    // The description reaches the button, the one control a reader can focus.
+    await expect(button).toHaveAttribute('aria-describedby', 'document-help')
+    await expect(input).not.toHaveAttribute('aria-describedby')
     await userEvent.tab()
     await expect(button).toHaveFocus()
     await userEvent.keyboard('{Enter}')

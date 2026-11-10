@@ -536,3 +536,20 @@ test('the icon picker takes no selection while an upload runs', async () => {
   await settle()
   expect(iconFile()).toBeEnabled()
 })
+
+// Catches: a too-large refusal that a screen reader never hears, because only
+// the hidden picker is marked and the focusable button has no description.
+test('the upload button is described by an announced size error', async () => {
+  await render()
+  const upload = named('button', 'Upload icon')!
+  expect(upload).not.toHaveAttribute('aria-describedby')
+
+  await chooseIcon(tooLargeIcon())
+  const error = byLabel('Icon')!.querySelector('[role="alert"]')!
+  expect(error.textContent).not.toBe('')
+  expect(upload).toHaveAccessibleDescription(error.textContent!)
+
+  await chooseIcon(new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' }))
+  expect(upload).not.toHaveAttribute('aria-describedby')
+  expect(byLabel('Icon')!.querySelector('[role="alert"]')).toBeNull()
+})

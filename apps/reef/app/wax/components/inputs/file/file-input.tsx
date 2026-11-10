@@ -8,6 +8,8 @@ import * as styles from './file-input.css'
 
 export interface FileInputProps {
   ariaLabel?: string
+  /** Describes the control that takes focus: the button when one stands in for the picker. */
+  ariaDescribedBy?: string
   /** Comma-separated accept list, such as ".json,.yaml". */
   accept?: string
   /** Shows only a button with this label that opens the picker. */
@@ -30,6 +32,7 @@ export interface FileInputProps {
 /** An uncontrolled single-file picker. Drops become the native form's file value. */
 export function FileInput({
   ariaLabel,
+  ariaDescribedBy,
   accept,
   buttonLabel,
   busy,
@@ -74,7 +77,7 @@ export function FileInput({
   const input = (
     <input
       aria-label={ariaLabel}
-      aria-describedby={dropLabel ? descriptionId : undefined}
+      aria-describedby={dropLabel ? descriptionId : hidden ? undefined : ariaDescribedBy}
       aria-invalid={invalid || undefined}
       data-invalid={invalid || undefined}
       accept={accept}
@@ -96,6 +99,7 @@ export function FileInput({
   )
   const button = (
     <TextButton
+      aria-describedby={ariaDescribedBy}
       type="button"
       variant="secondary"
       size={dropLabel ? '22' : '32'}

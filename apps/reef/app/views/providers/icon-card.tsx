@@ -1,9 +1,8 @@
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useFetcher, type FetcherWithComponents } from 'react-router'
 
 import { Button, Inputs } from '@/wax/components'
 import { Card } from '@/wax/components/card/card'
-import { ErrorMessage } from '@/wax/components/error-message/error-message'
 import { Logo } from '@/wax/components/logo'
 import {
   PROVIDER_ICON_ACCEPT,
@@ -12,6 +11,7 @@ import {
 } from '@/lib/provider-input-limits'
 import { ActionNotice, Fields } from '@/views/management/forms'
 import type { ActionResult } from '@/views/management/types'
+import { FieldError } from './fields'
 import type { FormContext, ProviderSettingsView } from './types'
 import * as styles from './providers.css'
 
@@ -81,6 +81,7 @@ function UploadForm({
 }) {
   const picker = useRef<HTMLInputElement>(null)
   const [tooLarge, setTooLarge] = useState(false)
+  const errorId = useId()
   const choose = (file: File | null) => {
     const input = picker.current
     if (!file || !input?.form) return
@@ -107,9 +108,14 @@ function UploadForm({
         busy={upload.state !== 'idle'}
         disabled={disabled}
         invalid={tooLarge}
+        ariaDescribedBy={tooLarge ? errorId : undefined}
         onChange={choose}
       />
-      {tooLarge && <ErrorMessage message={`This file is too large. ${PROVIDER_ICON_RULE}`} />}
+      {tooLarge && (
+        <div className={styles.iconError}>
+          <FieldError id={errorId} message={`This file is too large. ${PROVIDER_ICON_RULE}`} />
+        </div>
+      )}
     </upload.Form>
   )
 }
