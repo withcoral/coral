@@ -147,7 +147,12 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
     let builtin_context = change(owner.clone(), 45, '6');
     let mut transaction = policies.database.begin().await.expect("begin");
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &builtin_context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &builtin_context,
+            workspace.id(),
+            coral_provider::CoralDefinedProvider::Builtin,
+        )
         .await
         .expect("install the Built-in Provider")
         .skip_search()
@@ -2127,13 +2132,15 @@ impl PrivateTools {
             .expect("add the Member");
         let mut transaction = database.begin().await.expect("begin install");
         let provider = providers
-            .install_private_in_transaction(
+            .install_coral_defined_in_transaction(
                 &mut transaction,
                 &change(owner.clone(), 12, '3'),
                 &workspace,
+                coral_provider::CoralDefinedProvider::Private,
             )
             .await
             .expect("install the Private Provider")
+            .skip_search()
             .id()
             .clone();
         transaction.commit().await.expect("commit install");

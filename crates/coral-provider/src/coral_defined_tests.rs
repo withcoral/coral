@@ -15,9 +15,10 @@ use super::tests::{
 };
 use crate::access::CredentialRoute;
 use crate::{
-    Error, LifecycleAction, LifecycleActor, ManagementRequestId, OpenApiDocument, ProviderCallRoot,
-    ProviderDisplayName, ProviderModule, ProviderRegenerationRequest, ProviderSetupInputKind,
-    ProviderSetupSource, ProviderState,
+    CoralDefinedProvider, Error, LifecycleAction, LifecycleActor, ManagementRequestId,
+    MissingCoralDefinedProvider, OpenApiDocument, ProviderCallRoot, ProviderDisplayName,
+    ProviderModule, ProviderRegenerationRequest, ProviderSetupInputKind, ProviderSetupSource,
+    ProviderState,
 };
 
 // Catches: discovery and Invocation disagreeing on who reaches a Built-in
@@ -107,7 +108,12 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();
@@ -128,7 +134,12 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
     let mut transaction = database.begin().await.unwrap();
     assert!(matches!(
         providers
-            .install_builtin_in_transaction(&mut transaction, &context, workspace.id(),)
+            .install_coral_defined_in_transaction(
+                &mut transaction,
+                &context,
+                workspace.id(),
+                crate::CoralDefinedProvider::Builtin
+            )
             .await,
         Err(Error::ProviderCallRootConflict)
     ));
@@ -163,10 +174,11 @@ async fn a_member_cannot_install_the_builtin_provider() {
 
     let mut transaction = database.begin().await.unwrap();
     let denied = providers
-        .install_builtin_in_transaction(
+        .install_coral_defined_in_transaction(
             &mut transaction,
             &change_context(member, 11, '2'),
             workspace.id(),
+            crate::CoralDefinedProvider::Builtin,
         )
         .await;
     assert!(
@@ -218,14 +230,25 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();
     let private = providers
-        .install_private_in_transaction(&mut transaction, &context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::CoralDefinedProvider::Private,
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     let document = || {
         ProviderSetupSource::OpenApiDocument(
@@ -406,7 +429,12 @@ async fn only_a_provider_an_owner_adds_has_a_source_to_inspect() {
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();
@@ -495,7 +523,12 @@ impl BuiltinWorkspace {
             .unwrap();
         let mut transaction = database.begin().await.unwrap();
         let builtin = providers
-            .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+            .install_coral_defined_in_transaction(
+                &mut transaction,
+                &context,
+                workspace.id(),
+                crate::CoralDefinedProvider::Builtin,
+            )
             .await
             .unwrap()
             .skip_search();
@@ -978,101 +1011,36 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
     }
 }
 
-/// A Provider Coral defines in every Workspace, which a boot installs where
-/// one is missing.
-#[derive(Debug, Clone, Copy)]
-enum CoralDefined {
-    Builtin,
-    Private,
-    Shared,
+/// One Provider a boot installed in a Workspace, and the change it hands
+/// Universal Search.
+type BootInstall = (
+    WorkspaceId,
+    CoralDefinedProvider,
+    crate::Provider,
+    crate::SearchChange,
+);
+
+/// What `process`'s boot at `at` installed. An install that lost a race
+/// reports no Provider, and it is left out.
+async fn boot_installs(process: &ProviderModule, at: i64) -> Vec<BootInstall> {
+    let installs: Vec<MissingCoralDefinedProvider> =
+        process.install_missing_coral_defined(at).await.unwrap();
+    installs
+        .into_iter()
+        .filter_map(|missing| {
+            let (workspace, provider) = (missing.workspace_id().clone(), missing.provider());
+            let (installed, search) = missing.into_installed().unwrap().into_parts();
+            installed.map(|installed| (workspace, provider, installed, search))
+        })
+        .collect()
 }
 
-impl CoralDefined {
-    async fn workspaces_without(self, providers: &ProviderModule) -> Vec<WorkspaceId> {
-        let mut without = match self {
-            Self::Builtin => providers.workspaces_without_builtin().await,
-            Self::Private => providers.workspaces_without_private().await,
-            Self::Shared => providers.workspaces_without_shared().await,
-        }
-        .unwrap();
-        without.sort();
-        without
-    }
-
-    /// The boot's install, and the change it hands Universal Search.
-    async fn install_missing(
-        self,
-        providers: &ProviderModule,
-        workspace: &WorkspaceId,
-        at: i64,
-    ) -> (Option<crate::Provider>, crate::SearchChange) {
-        match self {
-            Self::Builtin => providers
-                .install_missing_builtin(workspace, at)
-                .await
-                .unwrap()
-                .into_parts(),
-            Self::Private => (
-                providers
-                    .install_missing_private(workspace, at)
-                    .await
-                    .unwrap(),
-                crate::SearchChange::Unchanged,
-            ),
-            Self::Shared => (
-                providers
-                    .install_missing_shared(workspace, at)
-                    .await
-                    .unwrap(),
-                crate::SearchChange::Unchanged,
-            ),
-        }
-    }
-
-    /// Gives `arranged`'s Workspace this Provider as creating the Workspace
-    /// does. `BuiltinWorkspace` already installed the Built-in Provider.
-    async fn install_as_at_creation(
-        self,
-        arranged: &BuiltinWorkspace,
-        context: &coral_workspace::ChangeContext,
-    ) {
-        let database = arranged.fixture.database();
-        let workspace = arranged.workspace.id();
-        let mut transaction = database.begin().await.unwrap();
-        match self {
-            Self::Builtin => {}
-            Self::Private => {
-                arranged
-                    .providers
-                    .install_private_in_transaction(&mut transaction, context, workspace)
-                    .await
-                    .unwrap();
-            }
-            Self::Shared => {
-                arranged
-                    .providers
-                    .install_shared_in_transaction(&mut transaction, context, workspace)
-                    .await
-                    .unwrap();
-            }
-        }
-        transaction.commit().await.unwrap();
-    }
-
-    const fn call_root(self) -> ProviderCallRoot {
-        match self {
-            Self::Builtin => ProviderCallRoot::Builtin,
-            Self::Private => ProviderCallRoot::Private,
-            Self::Shared => ProviderCallRoot::Shared,
-        }
-    }
-
-    const fn installed(self) -> LifecycleAction {
-        match self {
-            Self::Builtin => LifecycleAction::BuiltinProviderInstalled,
-            Self::Private => LifecycleAction::PrivateProviderInstalled,
-            Self::Shared => LifecycleAction::SharedProviderInstalled,
-        }
+/// The lifecycle action that records a Coral-defined Provider's install.
+const fn install_action(provider: CoralDefinedProvider) -> LifecycleAction {
+    match provider {
+        CoralDefinedProvider::Builtin => LifecycleAction::BuiltinProviderInstalled,
+        CoralDefinedProvider::Private => LifecycleAction::PrivateProviderInstalled,
+        CoralDefinedProvider::Shared => LifecycleAction::SharedProviderInstalled,
     }
 }
 
@@ -1082,105 +1050,120 @@ impl CoralDefined {
 // Universal Search without the Built-in Provider's first Generation.
 #[tokio::test]
 async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_none() {
-    for kind in [
-        CoralDefined::Builtin,
-        CoralDefined::Private,
-        CoralDefined::Shared,
-    ] {
-        let arranged = BuiltinWorkspace::new().await;
-        let context = change_context(arranged.owner.clone(), 15, '2');
-        kind.install_as_at_creation(&arranged, &context).await;
-        let mut missing = Vec::new();
-        for name in ["Earlier", "Archived"] {
-            missing.push(
-                arranged
-                    .workspaces
-                    .create(&context, WorkspaceDisplayName::parse(name).unwrap())
-                    .await
-                    .unwrap(),
-            );
-        }
-        let [earlier, archived] = missing.as_slice() else {
-            unreachable!("two Workspaces were created");
-        };
-        arranged
-            .workspaces
-            .archive(&context, archived.id())
-            .await
-            .unwrap();
-        let mut expected = vec![earlier.id().clone(), archived.id().clone()];
-        expected.sort();
-        assert_eq!(
-            kind.workspaces_without(&arranged.providers).await,
-            expected,
-            "{kind:?}"
-        );
-        let before = arranged.events().await.len();
-
-        for workspace in [&arranged.workspace, earlier, archived] {
-            let (installed, search) = kind
-                .install_missing(&arranged.providers, workspace.id(), 20)
-                .await;
-            let name = workspace.display_name().as_str();
-            // Search reads the installed Built-in Provider's first Generation;
-            // the Private and Shared Providers' declare no Tool.
-            match (kind, &installed, &search) {
-                (
-                    CoralDefined::Builtin,
-                    Some(provider),
-                    crate::SearchChange::Activated(activated),
-                ) => {
-                    assert_eq!(activated.workspace(), workspace.id());
-                    assert_eq!(activated.provider(), provider.id());
-                    assert_eq!(activated.replaced(), None);
-                }
-                (CoralDefined::Builtin, None, crate::SearchChange::Unchanged)
-                | (
-                    CoralDefined::Private | CoralDefined::Shared,
-                    _,
-                    crate::SearchChange::Unchanged,
-                ) => {}
-                other => panic!("{name}: an install names what it activated: {other:?}"),
-            }
-            assert_eq!(
-                installed.is_some(),
-                workspace.id() != arranged.workspace.id(),
-                "{kind:?} {name}"
-            );
-            if let Some(provider) = installed {
-                assert_eq!(provider.call_root(), &kind.call_root(), "{kind:?} {name}");
-            }
-        }
-
-        assert!(
-            kind.workspaces_without(&arranged.providers)
+    // `arranged`'s Workspace has only its Built-in Provider, as one created
+    // before Coral had the Private and Shared Providers.
+    let arranged = BuiltinWorkspace::new().await;
+    let context = change_context(arranged.owner.clone(), 15, '2');
+    let mut created = Vec::new();
+    for name in ["Complete", "Earlier", "Archived"] {
+        created.push(
+            arranged
+                .workspaces
+                .create(&context, WorkspaceDisplayName::parse(name).unwrap())
                 .await
-                .is_empty(),
-            "{kind:?}"
+                .unwrap(),
         );
-        assert_eq!(arranged.events().await.len(), before, "{kind:?}");
-        let events = arranged
+    }
+    let [complete, earlier, archived] = created.as_slice() else {
+        unreachable!("three Workspaces were created");
+    };
+    // `complete` has every one, as creating a Workspace installs them.
+    let database = arranged.fixture.database();
+    let mut transaction = database.begin().await.unwrap();
+    let at_creation = arranged
+        .providers
+        .install_every_coral_defined_in_transaction(&mut transaction, &context, complete.id())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    assert_eq!(
+        at_creation
+            .into_iter()
+            .map(|installed| installed.skip_search().call_root().clone())
+            .collect::<Vec<_>>(),
+        CoralDefinedProvider::ALL.map(CoralDefinedProvider::call_root),
+    );
+    arranged
+        .workspaces
+        .archive(&context, archived.id())
+        .await
+        .unwrap();
+    let events = async |workspace: &coral_workspace::Workspace| {
+        arranged
             .providers
-            .list_lifecycle_events(&arranged.owner, earlier.id())
+            .list_lifecycle_events(&arranged.owner, workspace.id())
             .await
-            .unwrap();
-        let [event] = events
+            .unwrap()
+    };
+    let before = events(complete).await.len();
+
+    let boot = boot_installs(&arranged.providers, 20).await;
+
+    let mut lacked = boot
+        .iter()
+        .map(|(workspace, provider, _installed, _search)| (workspace.clone(), *provider))
+        .collect::<Vec<_>>();
+    let mut expected = vec![
+        (
+            arranged.workspace.id().clone(),
+            CoralDefinedProvider::Private,
+        ),
+        (
+            arranged.workspace.id().clone(),
+            CoralDefinedProvider::Shared,
+        ),
+    ];
+    for workspace in [earlier, archived] {
+        expected
+            .extend(CoralDefinedProvider::ALL.map(|provider| (workspace.id().clone(), provider)));
+    }
+    let order = |(workspace, provider): &(WorkspaceId, CoralDefinedProvider)| {
+        (workspace.clone(), provider.call_root().as_str().to_owned())
+    };
+    lacked.sort_by_key(order);
+    expected.sort_by_key(order);
+    assert_eq!(lacked, expected);
+    for (workspace, provider, installed, search) in &boot {
+        assert_eq!(installed.workspace_id(), workspace, "{provider:?}");
+        assert_eq!(installed.call_root(), &provider.call_root(), "{provider:?}");
+        // Search reads the installed Built-in Provider's first Generation;
+        // the Private and Shared Providers' declare no Tool.
+        match (provider, search) {
+            (CoralDefinedProvider::Builtin, crate::SearchChange::Activated(activated)) => {
+                assert_eq!(activated.workspace(), workspace);
+                assert_eq!(activated.provider(), installed.id());
+                assert_eq!(activated.replaced(), None);
+            }
+            (
+                CoralDefinedProvider::Private | CoralDefinedProvider::Shared,
+                crate::SearchChange::Unchanged,
+            ) => {}
+            other => panic!("an install names what it activated: {other:?}"),
+        }
+    }
+
+    // A second boot finds every Workspace complete.
+    assert!(boot_installs(&arranged.providers, 21).await.is_empty());
+    assert_eq!(events(complete).await.len(), before);
+    let recorded = events(earlier).await;
+    for provider in CoralDefinedProvider::ALL {
+        let [event] = recorded
             .iter()
-            .filter(|event| event.action() == kind.installed())
+            .filter(|event| event.action() == install_action(provider))
             .collect::<Vec<_>>()
             .try_into()
             .expect("the install records one event");
         assert!(
             matches!(event.actor(), LifecycleActor::Coral),
-            "{kind:?}: {event:?}"
+            "{provider:?}: {event:?}"
         );
     }
 }
 
-/// Two processes that boot together each try the install; one installs, and
-/// the other then finds the Workspace has one.
+/// Two processes that boot together each try every install; one installs
+/// each Provider, and the other then finds the Workspace has it.
 #[tokio::test]
-async fn two_processes_that_boot_together_install_one_builtin_provider() {
+async fn two_processes_that_boot_together_install_each_coral_defined_provider_once() {
     let (fixture, workspaces, first) = test_modules().await;
     let owner = organization_user(fixture.database(), "user:owner", OrganizationRole::Member).await;
     let workspace = workspaces
@@ -1197,25 +1180,20 @@ async fn two_processes_that_boot_together_install_one_builtin_provider() {
         coral_workspace::WorkspaceModule::new(peer.clone()),
         running(),
     );
-    let install = |process: &ProviderModule, at| {
-        let process = process.clone();
-        let workspace_id = workspace.id().clone();
-        async move {
-            process
-                .install_missing_builtin(&workspace_id, at)
-                .await
-                .unwrap()
-                .skip_search()
-                .is_some()
-        }
-    };
+    let (left, right) = tokio::join!(boot_installs(&first, 20), boot_installs(&second, 21));
 
-    let (left, right) = tokio::join!(install(&first, 20), install(&second, 21),);
-
-    assert_eq!(
-        [left, right].iter().filter(|installed| **installed).count(),
-        1,
-        "{left:?} {right:?}"
+    for provider in CoralDefinedProvider::ALL {
+        let installs = left
+            .iter()
+            .chain(&right)
+            .filter(|(installed_in, installed, _provider, _search)| {
+                installed_in == workspace.id() && *installed == provider
+            })
+            .count();
+        assert_eq!(installs, 1, "{provider:?}: {left:?} {right:?}");
+    }
+    assert!(
+        boot_installs(&first, 22).await.is_empty(),
+        "a later boot finds the Workspace complete"
     );
-    assert!(first.workspaces_without_builtin().await.unwrap().is_empty());
 }

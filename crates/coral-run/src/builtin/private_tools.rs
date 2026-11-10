@@ -235,11 +235,14 @@ fn problem(field: &str, error: &coral_tools::Error) -> InputProblem {
 fn failure(field: &str, error: coral_tools::Error) -> Error {
     use coral_tools::Error as E;
     match error {
-        E::PrivateToolNotFound => {
+        E::NotFound(AuthoredToolKind::Private) => {
             Error::InvocationRejected(CoralFailure::PrivateToolNotFound.into())
         }
         E::PrivateToolExists => Error::InvocationRejected(CoralFailure::PrivateToolExists.into()),
-        E::PrivateToolRevisionConflict { current } => Error::InvocationRejected(Rejection::naming(
+        E::RevisionConflict {
+            kind: AuthoredToolKind::Private,
+            current,
+        } => Error::InvocationRejected(Rejection::naming(
             CoralFailure::PrivateToolRevisionConflict,
             vec![InputProblem::new(
                 "expectedRevision",
@@ -247,19 +250,24 @@ fn failure(field: &str, error: coral_tools::Error) -> Error {
             )],
         )),
         // The path holds or lies under the caller's other functions.
-        E::PrivateToolPathConflict => {
+        E::PathConflict(AuthoredToolKind::Private) => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem("path", &error)]))
         }
-        E::InvalidInput(_) | E::PrivateToolAdmission(_) | E::PrivateToolNotData(_) => {
+        E::InvalidInput(_)
+        | E::Admission(AuthoredToolKind::Private, _)
+        | E::NotData(AuthoredToolKind::Private, _) => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem(field, &error)]))
         }
         E::PackageTooLarge { .. } => Error::InvocationRejected(Rejection::naming(
             CoralFailure::InputTooLarge,
             vec![problem(field, &error)],
         )),
-        E::PrivateToolCompilationTimedOut | E::CompilerBusy => Error::InvocationRejected(
-            Rejection::naming(CoralFailure::ToolUnavailable, vec![problem(field, &error)]),
-        ),
+        E::CompilationTimedOut(AuthoredToolKind::Private) | E::CompilerBusy => {
+            Error::InvocationRejected(Rejection::naming(
+                CoralFailure::ToolUnavailable,
+                vec![problem(field, &error)],
+            ))
+        }
         E::PermissionDenied(_) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
         E::Workspace(error) if crate::enforcement::loses_authority(&error) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())

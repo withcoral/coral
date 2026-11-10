@@ -10,12 +10,11 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use coral_catalog::{AuthoredToolKind, ToolAccessState};
 use coral_db::{Database, Transaction};
 use coral_run_executor::CompilerClient;
-use coral_v8::{CallableDeclaration, CoralDeclarations};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthoritySource, ChangeContext, Principal, PrincipalKind, UserId,
     WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule, WorkspaceRole,
@@ -24,13 +23,14 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::authoring::{
-    AuthoredToolCompiler, PreparedAuthoredTool, now_unix_nanos, prepare_authored_source,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
     tool_paths_overlap, v8_compiler,
 };
+use crate::linking::LinkedToolPath;
+use crate::tool_typing::ToolDeclarationReader;
 use crate::types::{
-    AUTHORED_TOOL_DECLARATION_MAX_BYTES, AuthoredToolDeclaration,
-    AuthoredToolDeclarationFieldProjection, AuthoredToolDescription, AuthoredToolDiagnostic,
-    AuthoredToolSource, PrivateToolId, PrivateToolPath, authored_tool_path,
+    AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDescription,
+    AuthoredToolDiagnostic, AuthoredToolSource, PrivateToolId, PrivateToolPath, authored_tool_path,
 };
 use crate::{Error, repository, shared_tool_repository};
 
@@ -196,7 +196,10 @@ impl SharedToolPublish {
         if current == self.expected_revision {
             Ok(())
         } else {
-            Err(Error::SharedToolRevisionConflict { current })
+            Err(Error::RevisionConflict {
+                kind: AuthoredToolKind::Shared,
+                current,
+            })
         }
     }
 }
@@ -527,104 +530,13 @@ impl SharedToolPage {
     }
 }
 
-/// The current revision of one Shared Tool that a Run links, held through
-/// its acceptance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SharedToolSelection {
-    pub(crate) id: SharedToolId,
-    pub(crate) path: SharedToolPath,
-    pub(crate) revision: u64,
-    pub(crate) source: AuthoredToolSource,
-    pub(crate) default_access_state: ToolAccessState,
-}
-
-impl SharedToolSelection {
-    /// Returns the Shared Tool's stable identity.
-    #[must_use]
-    pub const fn id(&self) -> &SharedToolId {
-        &self.id
-    }
-
-    /// Returns its path relative to `coral.shared`.
-    #[must_use]
-    pub const fn path(&self) -> &SharedToolPath {
-        &self.path
-    }
-
-    /// Returns the revision the Run links.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// Returns that revision's source.
-    #[must_use]
-    pub const fn source(&self) -> &AuthoredToolSource {
-        &self.source
-    }
-
-    /// Returns the default Tool Access State the Owner chose for that
-    /// revision, which applies when no exact rule matches.
-    #[must_use]
-    pub const fn default_access_state(&self) -> ToolAccessState {
-        self.default_access_state
-    }
-
-    /// The code Execution Binding of the linked revision.
-    #[must_use]
-    pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
-        coral_catalog::CodeExecutionBinding::new(self.id.to_string(), self.revision)
-    }
-}
-
-/// Selects the current revision of the live Shared Tool at `path`, for a
-/// Run to link. `None` when no live Shared Tool is there.
-///
-/// The caller owns Workspace authority and the coherent read transaction.
-///
-/// # Errors
-///
-/// Returns a persistence or corrupt-data failure.
-pub async fn select_shared_source_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    path: &SharedToolPath,
-) -> Result<Option<SharedToolSelection>, Error> {
-    shared_tool_repository::select_current_source(transaction, workspace_id, path).await
-}
-
-/// Holds a selected revision current through the caller's acceptance
-/// commit, with a shared row lock, so concurrent acceptances that link the
-/// same Shared Tool read side by side while a publish waits for them.
-/// `false` means the Shared Tool moved or was removed: admission must
-/// reject without a Run.
-///
-/// # Errors
-///
-/// Returns a persistence failure.
-pub async fn hold_shared_selection_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    selection: &SharedToolSelection,
-) -> Result<bool, Error> {
-    shared_tool_repository::hold_current(
-        transaction,
-        workspace_id,
-        selection.id(),
-        selection.path(),
-        selection.revision(),
-    )
-    .await
-}
-
 /// The Workspace's Shared Tools: Owner publishing, and reads for every
 /// Principal in the Workspace.
 #[derive(Clone)]
 pub struct SharedToolModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    compiler: Arc<dyn AuthoredToolCompiler>,
-    compilation_timeout: Duration,
+    authoring: Authoring,
 }
 
 impl SharedToolModule {
@@ -661,10 +573,9 @@ impl SharedToolModule {
         compilation_timeout: Duration,
     ) -> Self {
         Self {
+            authoring: Authoring::new(database.clone(), v8_compiler(compiler), compilation_timeout),
             database,
             workspaces,
-            compiler: v8_compiler(compiler),
-            compilation_timeout,
         }
     }
 
@@ -673,10 +584,15 @@ impl SharedToolModule {
     /// publish that only validates, returns its review and writes nothing.
     ///
     /// The source is compiled outside the write transaction, and never
-    /// executed. The write transaction holds the Owner's authority, the
-    /// source the publish copies and the current revision at the path, then
-    /// writes the revision, the Shared Tools it calls and one lifecycle
-    /// Event together. The Private Tool it copies stays as it was.
+    /// executed. It is typed as a Private Tool save types it: against the
+    /// current Shared Tools it names and, through `tools`, against the
+    /// Provider and Built-in Tools it names that the publishing Owner can
+    /// discover (ADR 0020). Without `tools`, those stay untyped.
+    /// `coral.private` always stays untyped, because it is each caller's
+    /// own. The write transaction holds the Owner's authority, the source
+    /// the publish copies and the current revision at the path, then writes
+    /// the revision, the Shared Tools it calls and one lifecycle Event
+    /// together. The Private Tool it copies stays as it was.
     ///
     /// This publish does not notify Universal Search.
     ///
@@ -687,9 +603,9 @@ impl SharedToolModule {
     /// - [`Error::SharedToolSourceUnreadable`] when the origin is another
     ///   User's Private Tool, a Private Tool that is gone, or a revision that
     ///   never existed.
-    /// - [`Error::SharedToolRevisionConflict`] when the current revision at
+    /// - [`Error::RevisionConflict`] when the current revision at
     ///   the path is not the expected one.
-    /// - [`Error::SharedToolPathConflict`] when the path overlaps another
+    /// - [`Error::PathConflict`] when the path overlaps another
     ///   live Shared Tool's namespace.
     /// - An authoring failure when the source cannot become a Tool.
     ///
@@ -699,8 +615,9 @@ impl SharedToolModule {
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         publish: SharedToolPublish,
+        tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<SharedToolPublication, Error> {
-        let prepared = self.prepare(context, workspace_id, &publish).await?;
+        let prepared = self.prepare(context, workspace_id, &publish, tools).await?;
         if publish.validate_only {
             return Ok(SharedToolPublication {
                 review: prepared.review,
@@ -729,7 +646,7 @@ impl SharedToolModule {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SharedToolNotFound`] when no live Shared Tool is
+    /// Returns [`Error::NotFound`] when no live Shared Tool is
     /// there or the caller cannot inspect the Workspace.
     pub async fn get(
         &self,
@@ -743,7 +660,7 @@ impl SharedToolModule {
         let tool =
             shared_tool_repository::find_live_tool(&mut transaction, workspace_id, path).await?;
         transaction.commit().await?;
-        tool.ok_or(Error::SharedToolNotFound)
+        tool.ok_or(Error::NotFound(AuthoredToolKind::Shared))
     }
 
     /// Lists one page of the Workspace's live Shared Tools in path order
@@ -752,7 +669,7 @@ impl SharedToolModule {
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] unless `page_size` is between one and
-    /// [`SHARED_TOOL_PAGE_MAX_SIZE`], and [`Error::SharedToolNotFound`] when
+    /// [`SHARED_TOOL_PAGE_MAX_SIZE`], and [`Error::NotFound`] when
     /// the caller cannot inspect the Workspace.
     pub async fn list(
         &self,
@@ -785,7 +702,7 @@ impl SharedToolModule {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SharedToolNotFound`] when no live Shared Tool is
+    /// Returns [`Error::NotFound`] when no live Shared Tool is
     /// there or the caller cannot inspect the Workspace.
     pub async fn list_revisions(
         &self,
@@ -799,7 +716,7 @@ impl SharedToolModule {
         let Some(record) =
             shared_tool_repository::find_live_record(&mut transaction, workspace_id, path).await?
         else {
-            return Err(Error::SharedToolNotFound);
+            return Err(Error::NotFound(AuthoredToolKind::Shared));
         };
         let revisions =
             shared_tool_repository::list_revisions(&mut transaction, workspace_id, &record.id)
@@ -813,7 +730,7 @@ impl SharedToolModule {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SharedToolNotFound`] when no live Shared Tool is
+    /// Returns [`Error::NotFound`] when no live Shared Tool is
     /// there, it has no such revision, or the caller cannot inspect the
     /// Workspace.
     pub async fn get_revision(
@@ -829,7 +746,7 @@ impl SharedToolModule {
         let Some(record) =
             shared_tool_repository::find_live_record(&mut transaction, workspace_id, path).await?
         else {
-            return Err(Error::SharedToolNotFound);
+            return Err(Error::NotFound(AuthoredToolKind::Shared));
         };
         let found = shared_tool_repository::find_revision(
             &mut transaction,
@@ -839,7 +756,7 @@ impl SharedToolModule {
         )
         .await?;
         transaction.commit().await?;
-        found.ok_or(Error::SharedToolNotFound)
+        found.ok_or(Error::NotFound(AuthoredToolKind::Shared))
     }
 
     /// The publish's review and compiled source, from read snapshots: the
@@ -849,6 +766,7 @@ impl SharedToolModule {
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         publish: &SharedToolPublish,
+        tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedPublish, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let evidence = self
@@ -867,69 +785,29 @@ impl SharedToolModule {
             .await?;
         transaction.commit().await?;
 
-        let deadline = Instant::now() + self.compilation_timeout;
-        let source = publish.source.as_str();
-        let named = {
-            let compiler = self.compiler.clone();
-            let analyzed = source.to_string();
-            tokio::task::spawn_blocking(move || compiler.call_paths(deadline, &analyzed))
-                .await
-                .map_err(|_join_error| Error::CompilerWorkerStopped)?
-        };
-        let shared_paths = named
-            .as_ref()
-            .map(|named| {
-                named
-                    .shared_tools()
-                    .iter()
-                    .filter_map(|reference| SharedToolPath::parse(reference.path()).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let declarations = self
-            .shared_declarations(workspace_id, publish.path(), &shared_paths)
+        let compiled = self
+            .authoring
+            .prepare(
+                workspace_id,
+                &LinkedToolPath::Shared(publish.path.clone()),
+                publish.source.as_str(),
+                Typing {
+                    private_tools_of: None,
+                    tools,
+                },
+            )
             .await?;
-        let compiled = prepare_authored_source(
-            self.compiler.clone(),
-            deadline,
-            AuthoredToolKind::Shared,
-            publish.path.as_str(),
-            source,
-            declarations,
-        )
-        .await?;
         let shared_tools = self
             .dependencies(workspace_id, publish.path(), &compiled)
             .await?;
-        // A source that compiles but could not be analyzed has no review:
-        // an Owner must not approve a list of calls that Coral could not
-        // read. The analysis shares the compiler's queue, so it is retried.
-        let Some(named) = named else {
-            return Err(Error::CompilerBusy);
-        };
-        let mut called_tools = named.tools().called_paths();
-        called_tools.extend(
-            compiled
-                .private_references
-                .iter()
-                .map(|reference| AuthoredToolKind::Private.call_path(reference.path.as_str())),
-        );
-        called_tools.extend(
-            compiled
-                .shared_references
-                .iter()
-                .map(|reference| AuthoredToolKind::Shared.call_path(reference.path.as_str())),
-        );
-        called_tools.sort();
-        called_tools.dedup();
         let review = SharedToolReview {
             previous,
             declaration: compiled.declaration.clone(),
             diagnostics: compiled.diagnostics.clone(),
             diagnostics_truncated: compiled.diagnostics_truncated,
-            called_tools,
+            called_tools: compiled.called_tools(),
             shared_tools,
-            runtime_built_paths: named.tools().runtime_built_paths(),
+            runtime_built_paths: compiled.tools.runtime_built_paths(),
         };
         Ok(PreparedPublish { review, compiled })
     }
@@ -958,36 +836,6 @@ impl SharedToolModule {
         .await?
         .ok_or_else(|| Error::CorruptData("Shared Tool lost its current revision".to_string()))
         .map(Some)
-    }
-
-    /// The current declarations of the live Shared Tools at `paths`, to type
-    /// the source with; `None` when it names none.
-    async fn shared_declarations(
-        &self,
-        workspace_id: &WorkspaceId,
-        own_path: &SharedToolPath,
-        paths: &[SharedToolPath],
-    ) -> Result<Option<CoralDeclarations>, Error> {
-        if paths.is_empty() {
-            return Ok(None);
-        }
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let mut declarations = Vec::new();
-        for path in paths.iter().filter(|path| *path != own_path) {
-            if let Some(tool) =
-                shared_tool_repository::find_live_tool(&mut transaction, workspace_id, path).await?
-            {
-                declarations.push(CallableDeclaration::new(
-                    path.segments(),
-                    tool.current.declaration.as_str().to_string(),
-                ));
-            }
-        }
-        transaction.commit().await?;
-        Ok(Some(
-            CoralDeclarations::new(AUTHORED_TOOL_DECLARATION_MAX_BYTES)
-                .with_shared_tools(declarations),
-        ))
     }
 
     /// The live Shared Tools the compiled source calls, other than the one
@@ -1040,7 +888,7 @@ impl SharedToolModule {
             if !shared_tool_repository::hold_current(
                 transaction,
                 workspace_id,
-                &dependency.id,
+                &dependency.id.tool_key(),
                 &dependency.path,
                 dependency.revision,
             )
@@ -1119,7 +967,9 @@ impl SharedToolModule {
             .map(drop)
             .map_err(|error| match error {
                 coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_) => Error::SharedToolNotFound,
+                | coral_workspace::Error::PermissionDenied(_) => {
+                    Error::NotFound(AuthoredToolKind::Shared)
+                }
                 other => other.into(),
             })
     }
@@ -1282,7 +1132,7 @@ async fn require_admitted(
         .iter()
         .any(|other| tool_paths_overlap(other.as_str(), publish.path.as_str()))
     {
-        return Err(Error::SharedToolPathConflict);
+        return Err(Error::PathConflict(AuthoredToolKind::Shared));
     }
     Ok(())
 }
@@ -1296,25 +1146,19 @@ async fn current_dependencies(
     own_path: &SharedToolPath,
     compiled: &PreparedAuthoredTool,
 ) -> Result<Vec<SharedToolDependency>, Error> {
+    let own = LinkedToolPath::Shared(own_path.clone());
     let mut dependencies = Vec::new();
-    for reference in &compiled.shared_references {
-        let path = &reference.path;
+    for reference in &compiled.linked {
+        let LinkedToolPath::Shared(path) = reference.path() else {
+            continue;
+        };
         if path == own_path {
             continue;
         }
         let Some(selection) =
             shared_tool_repository::select_current_source(transaction, workspace_id, path).await?
         else {
-            return Err(Error::SharedToolAdmission(format!(
-                "{}:{}:{}: {}",
-                AuthoredToolKind::Shared.source_name(own_path.as_str()),
-                reference.line,
-                reference.column,
-                coral_catalog::unknown_call_path_message(
-                    &AuthoredToolKind::Shared.call_path(path.as_str()),
-                    &[],
-                )
-            )));
+            return Err(missing_linked_tool(&own, reference));
         };
         dependencies.push(SharedToolDependency {
             id: selection.id,

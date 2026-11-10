@@ -6,8 +6,9 @@ use super::*;
 /// each callable where a Program calls it.
 #[tokio::test]
 async fn upgrade_moves_the_builtin_tools_and_private_tools_to_the_new_roots() {
+    // The step that rewrites the stored roots; every other step has run.
     let fixture = TestModules::without_migration(
-        60,
+        61,
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -100,10 +101,11 @@ async fn builtin_tools_a_rule_and_a_private_tool(
     let mut transaction = fixture.database.begin().await.unwrap();
     fixture
         .providers
-        .install_builtin_in_transaction(
+        .install_coral_defined_in_transaction(
             &mut transaction,
             &change(owner.authenticated_user().unwrap().clone(), 11, '2'),
             &workspace_id,
+            coral_provider::CoralDefinedProvider::Builtin,
         )
         .await
         .expect("install the Built-in Provider")

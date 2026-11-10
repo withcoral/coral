@@ -2333,6 +2333,9 @@ fn describe_requires_one_complete_safe_call_path() {
         "coral.emit.value",
         "coral.providers.weather.bad-segment",
         "coral.private.internal.bad-segment",
+        // Universal Search holds no Shared Tool yet.
+        "coral.shared",
+        "coral.shared.internal.formatForecast",
     ] {
         assert!(CallPath::parse(invalid).is_err(), "accepted {invalid:?}");
     }
@@ -4091,13 +4094,15 @@ impl TestModules {
             .clone();
         let mut transaction = self.search.database.begin().await.unwrap();
         self.providers
-            .install_private_in_transaction(
+            .install_coral_defined_in_transaction(
                 &mut transaction,
                 &change(user.clone(), 10, '1'),
                 &workspace_id,
+                coral_provider::CoralDefinedProvider::Private,
             )
             .await
-            .expect("install the Private Provider");
+            .expect("install the Private Provider")
+            .skip_search();
         transaction.commit().await.unwrap();
         workspace_id
     }

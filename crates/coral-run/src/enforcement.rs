@@ -392,57 +392,113 @@ async fn tool_fact(
             return Ok(Err(CoralFailure::AuthorityLost));
         }
     }
-    match tool_decision_in_transaction(transaction, workspace_id, target, owner, lock).await {
+    match resolved_tool_decision_in_transaction(transaction, workspace_id, target, owner, lock)
+        .await
+    {
         Ok(decision) => Ok(Ok(decision.access_state())),
         Err(coral_policy::Error::ToolNotFound) => Ok(Err(CoralFailure::AuthorityLost)),
         Err(error) => Err(error.into()),
     }
 }
 
-/// The decision for `target` now, holding its exact rule as `lock` says: a
-/// Provider Tool's from its retained Generation's facts, a Shared Tool's
-/// from the default its publishing Owner chose for the linked revision, and
-/// a Private Tool's from the default its author declared for the linked
-/// revision,
-/// for `owner`.
+/// What decides the policy of a Tool an Invocation retained, beside an
+/// exact rule: the default of the revision the Run linked, for a Private or
+/// Shared Tool, or the facts of the retained Generation, for any other.
+pub(crate) enum RetainedPolicy {
+    /// A Tool that Coral performs from authored source. No catalog stores
+    /// one, so its Invocation retains the kind, in its Call Path, and the
+    /// default: a Private Tool's author declared it, and a Shared Tool's
+    /// publishing Owner chose it.
+    Authored {
+        kind: coral_catalog::AuthoredToolKind,
+        declared: ToolAccessState,
+    },
+    /// A Provider or Built-in Tool, with its catalog's policy facts.
+    Catalog(coral_catalog::ToolPolicyFacts),
+}
+
+impl RetainedPolicy {
+    /// The policy of the Tool a new or held Invocation resolved.
+    pub(crate) fn of_resolved(
+        target: &ResolvedInvocationTool,
+    ) -> Result<Self, coral_policy::Error> {
+        let facts = target.tool().policy_facts();
+        match target.provider_access().call_root().authored_tool_kind() {
+            Some(kind) => Self::authored(kind, facts.declared_default()),
+            None => Ok(Self::Catalog(facts)),
+        }
+    }
+
+    /// The policy of a Private or Shared Tool of `kind` whose Invocation
+    /// retained `declared_default`.
+    pub(crate) fn authored(
+        kind: coral_catalog::AuthoredToolKind,
+        declared_default: Option<ToolAccessState>,
+    ) -> Result<Self, coral_policy::Error> {
+        declared_default
+            .map(|declared| Self::Authored { kind, declared })
+            .ok_or_else(|| {
+                coral_policy::Error::CorruptData(
+                    "a Tool that Coral performs from its source declares no default".to_owned(),
+                )
+            })
+    }
+}
+
+/// The decision for the Tool at `policy_target` now, holding its exact rule
+/// as `lock` says. Enforcement and the approval view both decide here, so a
+/// parked call and its Approval Request never disagree.
+///
+/// `caller` is the invoking Principal's standing, which decides whether an
+/// Owner's rule applies to a Private Tool: the Tool is the caller's own.
 pub(crate) async fn tool_decision_in_transaction(
     transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    target: &ResolvedInvocationTool,
-    owner: coral_policy::PrivateToolOwner,
+    policy_target: &ToolPolicyTarget,
+    retained: RetainedPolicy,
+    caller: coral_policy::PrivateToolOwner,
     lock: RowLock,
 ) -> Result<coral_policy::ToolPolicyDecision, coral_policy::Error> {
-    let policy_target = policy_target(workspace_id, target);
-    let facts = target.tool().policy_facts();
-    let private =
-        target.provider_access().call_root() == &coral_provider::ProviderCallRoot::Private;
-    match (target.tool().execution_binding(), facts.declared_default()) {
-        (coral_catalog::ExecutionBinding::Code(_), Some(declared)) if private => {
-            coral_policy::private_tool_decision_in_transaction(
+    match retained {
+        RetainedPolicy::Authored { kind, declared } => {
+            coral_policy::authored_tool_decision_in_transaction(
                 transaction,
-                &policy_target,
+                policy_target,
+                kind,
                 declared,
-                owner,
+                caller,
                 lock,
             )
             .await
         }
-        (coral_catalog::ExecutionBinding::Code(_), None) => Err(coral_policy::Error::CorruptData(
-            "a Tool that Coral performs from its source declares no default".to_owned(),
-        )),
-        // A Shared Tool is the Workspace's, so an Owner's exact rule applies
-        // to every caller, and the default its publishing Owner chose applies
-        // otherwise, as a catalog's declared default does.
-        _ => {
+        RetainedPolicy::Catalog(facts) => {
             coral_policy::invocation_decision_in_transaction(
                 transaction,
-                &policy_target,
+                policy_target,
                 facts,
                 lock,
             )
             .await
         }
     }
+}
+
+/// The decision for the Tool an Invocation resolved, as
+/// [`tool_decision_in_transaction`] makes it.
+pub(crate) async fn resolved_tool_decision_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    target: &ResolvedInvocationTool,
+    caller: coral_policy::PrivateToolOwner,
+    lock: RowLock,
+) -> Result<coral_policy::ToolPolicyDecision, coral_policy::Error> {
+    tool_decision_in_transaction(
+        transaction,
+        &policy_target(workspace_id, target),
+        RetainedPolicy::of_resolved(target)?,
+        caller,
+        lock,
+    )
+    .await
 }
 
 /// The known failure a Workspace authority error means (lost authority), or

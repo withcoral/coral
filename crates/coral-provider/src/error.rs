@@ -94,8 +94,8 @@ pub enum Error {
     /// The immutable Call Root is already used in the target Workspace.
     #[error("Provider Call Root is already in use")]
     ProviderCallRootConflict,
-    /// Coral defines and manages the Built-in and Private Providers; an Owner
-    /// can only disable or restore the Built-in Provider.
+    /// Coral defines and manages the Built-in, Private and Shared Providers;
+    /// an Owner can only disable or restore one.
     #[error("Coral manages this Provider")]
     BuiltinProviderManaged,
     /// The Provider version cannot advance further.

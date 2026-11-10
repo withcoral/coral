@@ -178,13 +178,25 @@ impl Fixture {
         // Every Workspace Coral serves has its Private and Shared Providers.
         let mut tx = database.begin().await.unwrap();
         providers
-            .install_private_in_transaction(&mut tx, &change(&owner), workspace.id())
+            .install_coral_defined_in_transaction(
+                &mut tx,
+                &change(&owner),
+                workspace.id(),
+                coral_provider::CoralDefinedProvider::Private,
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         providers
-            .install_shared_in_transaction(&mut tx, &change(&owner), workspace.id())
+            .install_coral_defined_in_transaction(
+                &mut tx,
+                &change(&owner),
+                workspace.id(),
+                coral_provider::CoralDefinedProvider::Shared,
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         tx.commit().await.unwrap();
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_id_metadata_document(
@@ -305,7 +317,12 @@ impl Fixture {
         let database = self.database.database();
         let mut tx = database.begin().await.unwrap();
         self.provider_module
-            .install_builtin_in_transaction(&mut tx, &change(&self.owner), self.workspace.id())
+            .install_coral_defined_in_transaction(
+                &mut tx,
+                &change(&self.owner),
+                self.workspace.id(),
+                coral_provider::CoralDefinedProvider::Builtin,
+            )
             .await
             .unwrap()
             .skip_search();

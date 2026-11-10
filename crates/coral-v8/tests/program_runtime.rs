@@ -38,6 +38,26 @@ fn reference_paths(references: &[LinkedToolReference]) -> Vec<&str> {
     references.iter().map(LinkedToolReference::path).collect()
 }
 
+/// The `coral.private` paths one Program body names directly.
+fn program_private_tools(
+    compiler: &ProgramCompiler,
+    source: &str,
+) -> Result<Vec<LinkedToolReference>, coral_v8::Error> {
+    compiler
+        .program_call_paths(compilation_deadline(), source)
+        .map(|named| named.private_tools().to_vec())
+}
+
+/// The `coral.private` paths one Authored Tool module names directly.
+fn module_private_tools(
+    compiler: &ProgramCompiler,
+    source: &str,
+) -> Result<Vec<LinkedToolReference>, coral_v8::Error> {
+    compiler
+        .authored_tool_call_paths(compilation_deadline(), source)
+        .map(|named| named.private_tools().to_vec())
+}
+
 fn shared_source(path: &[&str], source: &str) -> LinkedToolSource {
     LinkedToolSource::shared(
         path.iter().map(|segment| (*segment).to_string()).collect(),
@@ -403,10 +423,9 @@ fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
 fn private_tool_reference_analysis_is_static_and_runtime_only() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
-    let paths = compiler
-        .private_tool_paths(
-            compilation_deadline(),
-            r"
+    let paths = program_private_tools(
+        &compiler,
+        r"
                 type Erased = typeof coral.private.types.only;
                 interface ErasedHeritage extends coral.private.types.interfaceOnly {}
                 declare class AmbientHeritage extends coral.private.types.ambientOnly {}
@@ -418,8 +437,8 @@ fn private_tool_reference_analysis_is_static_and_runtime_only() {
                 const first = coral.private.alpha.one;
                 return [first, (coral.private.beta.two as () => number)(), RuntimeHeritage, local];
             ",
-        )
-        .expect("analyze literal Program references");
+    )
+    .expect("analyze literal Program references");
     assert_eq!(
         reference_paths(&paths),
         ["alpha.one", "beta.two", "models.base"]
@@ -435,39 +454,38 @@ fn private_tool_reference_analysis_is_static_and_runtime_only() {
         "unexpected references: {paths:?}"
     );
 
-    let dependencies = compiler
-        .private_tool_dependency_paths(
-            compilation_deadline(),
-            r"
+    let dependencies = module_private_tools(
+        &compiler,
+        r"
                 export default function compose(): number {
                     type Erased = typeof coral.private.types.only;
                     return coral.private.alpha.one();
                 }
             ",
-        )
-        .expect("analyze literal Private Tool dependencies");
+    )
+    .expect("analyze literal Private Tool dependencies");
     assert_eq!(reference_paths(&dependencies), ["alpha.one"]);
     assert!(matches!(
         dependencies.as_slice(),
         [reference] if (reference.line(), reference.column()) == (4, 28)
     ));
 
-    let overload_only = compiler
-        .private_tool_dependency_paths(compilation_deadline(),
-            "function coral(value: string): void; export default function compose() { return coral.private.alpha.one(); }",
+    let overload_only = module_private_tools(
+        &compiler,
+        "function coral(value: string): void; export default function compose() { return coral.private.alpha.one(); }",
         )
         .expect("analyze through an erased overload declaration");
     assert_eq!(reference_paths(&overload_only), ["alpha.one"]);
-    let erased_overload = compiler
-        .private_tool_dependency_paths(compilation_deadline(),
-            "function erased(value = coral.private.types.overloadOnly()): void; export default function compose() { return 42; }",
+    let erased_overload = module_private_tools(
+        &compiler,
+        "function erased(value = coral.private.types.overloadOnly()): void; export default function compose() { return 42; }",
         )
         .expect("ignore an erased overload declaration");
     assert!(erased_overload.is_empty());
 
-    let shadowed_global = compiler
-        .private_tool_paths(compilation_deadline(),
-            "const globalThis = { coral: { private: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
+    let shadowed_global = program_private_tools(
+        &compiler,
+        "const globalThis = { coral: { private: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
         )
         .expect("ignore a local globalThis binding");
     assert!(shadowed_global.is_empty());
@@ -496,8 +514,7 @@ fn private_tool_reference_analysis_is_static_and_runtime_only() {
         "const pick = (root: any, key: string) => root[key]; return pick(coral.private, 'alpha')();",
         "const key = 'base'; class RuntimeHeritage extends coral.private.models[key] {} return RuntimeHeritage;",
     ] {
-        compiler
-            .private_tool_paths(compilation_deadline(), source)
+        program_private_tools(&compiler, source)
             .expect_err("computed or aliased Program reference must be rejected");
     }
 }
@@ -511,15 +528,13 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
         "return (coral as any).private.alpha.one();",
         "return (((coral as any))).private.alpha.one();",
     ] {
-        let references = compiler
-            .private_tool_paths(compilation_deadline(), source)
+        let references = program_private_tools(&compiler, source)
             .expect("transparent wrappers preserve a literal reference");
         assert_eq!(reference_paths(&references), ["alpha.one"]);
     }
 
     let source = "type __coralModel = number; const __coralValue: __coralModel = 1; let global = globalThis; return global[\"JSON\"].stringify(__coralValue);";
-    let ordinary_globals = compiler
-        .private_tool_paths(compilation_deadline(), source)
+    let ordinary_globals = program_private_tools(&compiler, source)
         .expect("ordinary globals and local compiler-prefix names remain available");
     assert!(ordinary_globals.is_empty());
     compiler

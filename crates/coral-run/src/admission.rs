@@ -7,12 +7,13 @@ use std::time::{Duration, Instant};
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
 use coral_telemetry::safe;
+use coral_tools::{LinkedToolPath, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
 use uuid::Uuid;
 
-use crate::engine::{LinkedPath, LinkedSource, ProgramEngine, ProgramPackage, ProgramReferences};
+use crate::engine::{ProgramEngine, ProgramPackage, ProgramReferences};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
@@ -36,7 +37,7 @@ const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 enum ReferenceSource {
     SubmittedProgram,
-    Linked(LinkedPath),
+    Linked(LinkedToolPath),
 }
 
 impl ReferenceSource {
@@ -51,14 +52,14 @@ impl ReferenceSource {
 /// The Private and Shared Tools a Program links, in initialization order,
 /// and the literal Tool chains each one's source names.
 type LinkedClosure = (
-    Vec<LinkedSource>,
-    Vec<(LinkedPath, coral_v8::ToolReferences)>,
+    Vec<LinkedToolSelection>,
+    Vec<(LinkedToolPath, coral_v8::ToolReferences)>,
 );
 
 /// One literal reference to a linked Tool, and where its source names it.
 struct PendingReference {
     source: ReferenceSource,
-    path: LinkedPath,
+    path: LinkedToolPath,
     line: u64,
     column: u64,
 }
@@ -68,27 +69,14 @@ fn pending_references(
     source: &ReferenceSource,
     named: &ProgramReferences,
 ) -> impl Iterator<Item = PendingReference> {
-    let private_tools = named.private_tools.iter().map(|reference| {
-        (
-            LinkedPath::Private(reference.path.clone()),
-            reference.line,
-            reference.column,
-        )
-    });
-    let shared_tools = named.shared_tools.iter().map(|reference| {
-        (
-            LinkedPath::Shared(reference.path.clone()),
-            reference.line,
-            reference.column,
-        )
-    });
-    private_tools
-        .chain(shared_tools)
-        .map(|(path, line, column)| PendingReference {
+    named
+        .linked
+        .iter()
+        .map(|reference| PendingReference {
             source: source.clone(),
-            path,
-            line,
-            column,
+            path: reference.path().clone(),
+            line: reference.line(),
+            column: reference.column(),
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -100,7 +88,7 @@ pub struct PreparedRun {
     workspace_id: WorkspaceId,
     submission: RunSubmission,
     package: ProgramPackage,
-    linked: Vec<LinkedSource>,
+    linked: Vec<LinkedToolSelection>,
 }
 
 /// Scope-bound evidence of staged acceptance, not proof that its transaction committed.
@@ -245,7 +233,12 @@ impl RunModule {
                 worker_claim_expires_at_unix_nanos,
                 linked_snapshots: linked
                     .iter()
-                    .map(|snapshot| (snapshot.path().call_path(), snapshot.linked_tool()))
+                    .map(|snapshot| {
+                        (
+                            snapshot.path().call_path(),
+                            crate::types::LinkedTool::of(snapshot),
+                        )
+                    })
                     .collect(),
                 trace: trace.clone(),
             };
@@ -319,7 +312,7 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
-    ) -> Result<(ProgramPackage, Vec<LinkedSource>), Error> {
+    ) -> Result<(ProgramPackage, Vec<LinkedToolSelection>), Error> {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
         let compiled = self
@@ -352,7 +345,7 @@ impl RunModule {
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
         compilation_deadline: Instant,
-    ) -> Result<(ProgramPackage, Vec<LinkedSource>), Error> {
+    ) -> Result<(ProgramPackage, Vec<LinkedToolSelection>), Error> {
         let source = submitted_source.as_str().to_string();
         let named = self
             .analyze_program(source.clone(), compilation_deadline)
@@ -378,7 +371,10 @@ impl RunModule {
             .await?;
         }
 
-        validate_source_closure(&source, linked.iter().map(LinkedSource::source))?;
+        validate_source_closure(
+            &source,
+            linked.iter().map(|linked| linked.source().as_str()),
+        )?;
         let builtin_tools = self.builtin_tools(workspace_id).await?;
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
@@ -434,25 +430,13 @@ impl RunModule {
                     "Program may link at most {LINKED_TOOL_MAX_COUNT} Private and Shared Tools"
                 )));
             }
-            let snapshot = match path {
-                LinkedPath::Private(private_path) => coral_tools::select_source_in_transaction(
-                    &mut transaction,
-                    workspace_id,
-                    actor.principal(),
-                    private_path,
-                )
-                .await?
-                .map(LinkedSource::Private),
-                LinkedPath::Shared(shared_path) => {
-                    coral_tools::select_shared_source_in_transaction(
-                        &mut transaction,
-                        workspace_id,
-                        shared_path,
-                    )
-                    .await?
-                    .map(LinkedSource::Shared)
-                }
-            };
+            let snapshot = coral_tools::select_linked_tool_in_transaction(
+                &mut transaction,
+                workspace_id,
+                actor.principal(),
+                path,
+            )
+            .await?;
             let Some(snapshot) = snapshot else {
                 // The lookup for suggestions reads in its own snapshot.
                 transaction.rollback().await?;
@@ -467,7 +451,7 @@ impl RunModule {
             };
             let named = self
                 .analyze_linked_tool(
-                    snapshot.source().to_string(),
+                    snapshot.source().as_str().to_string(),
                     path.clone(),
                     compilation_deadline,
                 )
@@ -704,12 +688,11 @@ impl RunModule {
     async fn analyze_linked_tool(
         &self,
         source: String,
-        path: LinkedPath,
+        path: LinkedToolPath,
         compilation_deadline: Instant,
     ) -> Result<ProgramReferences, Error> {
-        self.analyze(compilation_deadline, move |engine, deadline| match &path {
-            LinkedPath::Private(path) => engine.private_tool_references(deadline, path, &source),
-            LinkedPath::Shared(path) => engine.shared_tool_references(deadline, path, &source),
+        self.analyze(compilation_deadline, move |engine, deadline| {
+            engine.linked_tool_references(deadline, &path, &source)
         })
         .await
     }
@@ -734,46 +717,26 @@ impl RunModule {
 
 /// Holds every source the Run links as it was selected, through the
 /// acceptance commit, or refuses the admission when one changed.
-///
-/// Private Tools sort before Shared Tools, so every acceptance takes its
-/// holds in one order. A Shared Tool row is held shared, so a popular Shared
-/// Tool does not serialize acceptance across Members.
 async fn hold_linked_sources(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     actor: &AuthenticatedPrincipal,
-    linked: &[LinkedSource],
+    linked: &[LinkedToolSelection],
 ) -> Result<(), Error> {
-    let mut snapshots_by_path = linked.iter().collect::<Vec<_>>();
-    snapshots_by_path.sort_by_key(|linked| linked.path());
-    for snapshot in snapshots_by_path {
-        let held = match snapshot {
-            LinkedSource::Private(selection) => {
-                coral_tools::hold_source_selection_in_transaction(
-                    transaction,
-                    workspace_id,
-                    actor.principal(),
-                    selection,
-                )
-                .await?
-            }
-            LinkedSource::Shared(selection) => {
-                coral_tools::hold_shared_selection_in_transaction(
-                    transaction,
-                    workspace_id,
-                    selection,
-                )
-                .await?
-            }
-        };
-        if !held {
-            return Err(Error::ProgramAdmission(format!(
-                "{} changed during Program admission",
-                snapshot.path().kind().name()
-            )));
-        }
+    match coral_tools::hold_linked_tools_in_transaction(
+        transaction,
+        workspace_id,
+        actor.principal(),
+        linked,
+    )
+    .await?
+    {
+        None => Ok(()),
+        Some(changed) => Err(Error::ProgramAdmission(format!(
+            "{} changed during Program admission",
+            changed.kind().name()
+        ))),
     }
-    Ok(())
 }
 
 /// The nearest Discoverable Call Paths to the first [`SEARCH_PATHS_MAX`]
@@ -845,17 +808,17 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
 }
 
 fn order_linked_closure(
-    roots: &[LinkedPath],
-    dependencies: &BTreeMap<LinkedPath, Vec<LinkedPath>>,
-    snapshots: &BTreeMap<LinkedPath, LinkedSource>,
-) -> Result<Vec<LinkedSource>, Error> {
+    roots: &[LinkedToolPath],
+    dependencies: &BTreeMap<LinkedToolPath, Vec<LinkedToolPath>>,
+    snapshots: &BTreeMap<LinkedToolPath, LinkedToolSelection>,
+) -> Result<Vec<LinkedToolSelection>, Error> {
     fn visit(
-        path: &LinkedPath,
-        dependencies: &BTreeMap<LinkedPath, Vec<LinkedPath>>,
-        snapshots: &BTreeMap<LinkedPath, LinkedSource>,
-        visiting: &mut BTreeSet<LinkedPath>,
-        visited: &mut BTreeSet<LinkedPath>,
-        ordered: &mut Vec<LinkedSource>,
+        path: &LinkedToolPath,
+        dependencies: &BTreeMap<LinkedToolPath, Vec<LinkedToolPath>>,
+        snapshots: &BTreeMap<LinkedToolPath, LinkedToolSelection>,
+        visiting: &mut BTreeSet<LinkedToolPath>,
+        visited: &mut BTreeSet<LinkedToolPath>,
+        ordered: &mut Vec<LinkedToolSelection>,
     ) -> Result<(), Error> {
         if visited.contains(path) || !visiting.insert(path.clone()) {
             return Ok(());

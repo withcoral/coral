@@ -64,9 +64,7 @@ use tokio::sync::{oneshot, watch};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::engine::{
-    Clock, ExecutionCompletion, PrivateToolReference, ProgramEngine, ProgramPackage,
-};
+use crate::engine::{Clock, ExecutionCompletion, ProgramEngine, ProgramPackage};
 use crate::execution::{ExecutionObserver, ExecutionStop, NoopExecutionObserver};
 use crate::invocation::{InvocationObserver, NoopInvocationObserver, UpstreamSender};
 use crate::{

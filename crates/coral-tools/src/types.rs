@@ -1,6 +1,6 @@
 use std::fmt;
 
-use coral_catalog::ToolAccessState;
+use coral_catalog::{AuthoredToolKind, ToolAccessState};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{TraceId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -212,7 +212,8 @@ pub struct AuthoredToolDeclaration(String);
 impl AuthoredToolDeclaration {
     pub(crate) fn from_compiler(value: &str) -> Result<Self, Error> {
         if value.is_empty() {
-            return Err(Error::PrivateToolAdmission(
+            // The caller names the kind of Tool and its source.
+            return Err(Error::InvalidInput(
                 "TypeScript emitted no Tool declaration".to_string(),
             ));
         }
@@ -524,8 +525,8 @@ impl PrivateToolSave {
 
     /// Saves only over a Private Tool at the path, and, with
     /// `expected_revision`, only while that Private Tool is at that revision.
-    /// Otherwise the save fails with [`Error::PrivateToolNotFound`] or
-    /// [`Error::PrivateToolRevisionConflict`].
+    /// Otherwise the save fails with [`Error::NotFound`] or
+    /// [`Error::RevisionConflict`].
     #[must_use]
     pub const fn replace_only(mut self, expected_revision: Option<u64>) -> Self {
         self.intent = SaveIntent::Replace { expected_revision };
@@ -543,13 +544,16 @@ impl PrivateToolSave {
     pub(crate) const fn admits(&self, current_revision: Option<u64>) -> Result<(), Error> {
         match (self.intent, current_revision) {
             (SaveIntent::Create, Some(_)) => Err(Error::PrivateToolExists),
-            (SaveIntent::Replace { .. }, None) => Err(Error::PrivateToolNotFound),
+            (SaveIntent::Replace { .. }, None) => Err(Error::NotFound(AuthoredToolKind::Private)),
             (
                 SaveIntent::Replace {
                     expected_revision: Some(expected),
                 },
                 Some(current),
-            ) if expected != current => Err(Error::PrivateToolRevisionConflict { current }),
+            ) if expected != current => Err(Error::RevisionConflict {
+                kind: AuthoredToolKind::Private,
+                current,
+            }),
             _ => Ok(()),
         }
     }
@@ -1415,64 +1419,5 @@ impl AdministrativeLifecycleEvent {
     #[must_use]
     pub const fn trace_id(&self) -> &TraceId {
         &self.trace_id
-    }
-}
-
-/// Current source selected for compilation in an authorized read snapshot.
-///
-/// Its private revision is only acceptance evidence, not a public version or edit
-/// token. Run retains the identity and source in its own durable accepted package.
-#[derive(Debug, Clone)]
-pub struct PrivateToolSelection {
-    pub(crate) id: PrivateToolId,
-    pub(crate) path: PrivateToolPath,
-    pub(crate) source: AuthoredToolSource,
-    pub(crate) revision: u64,
-    pub(crate) default_access_state: ToolAccessState,
-}
-
-impl PrivateToolSelection {
-    /// Returns the selected stable identity for retained Run attribution.
-    #[must_use]
-    pub const fn id(&self) -> &PrivateToolId {
-        &self.id
-    }
-
-    /// Returns the selected path for static linking.
-    #[must_use]
-    pub const fn path(&self) -> &PrivateToolPath {
-        &self.path
-    }
-
-    /// Returns the exact selected authored source.
-    #[must_use]
-    pub const fn source(&self) -> &AuthoredToolSource {
-        &self.source
-    }
-
-    /// Returns the code Execution Binding of the selected definition: the
-    /// one a Run that links it performs when the Program calls it.
-    #[must_use]
-    pub fn execution_binding(&self) -> coral_catalog::CodeExecutionBinding {
-        self.id.execution_binding(self.revision)
-    }
-
-    /// Returns the default Tool Access State the author declared for the
-    /// selected revision.
-    #[must_use]
-    pub const fn default_access_state(&self) -> ToolAccessState {
-        self.default_access_state
-    }
-}
-
-impl PrivateToolSelection {
-    pub(crate) fn from_current(tool: &PrivateTool) -> Self {
-        Self {
-            id: tool.id.clone(),
-            path: tool.path.clone(),
-            source: tool.source.clone(),
-            revision: tool.revision,
-            default_access_state: tool.default_access_state,
-        }
     }
 }

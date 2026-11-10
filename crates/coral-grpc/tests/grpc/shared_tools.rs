@@ -214,6 +214,38 @@ async fn a_publish_projects_its_review_and_the_shared_tool() {
     );
 }
 
+// Catches: a publish the adapter does not type from the Tools its Owner can
+// discover, so its review shows no diagnostic that a Private Tool save has.
+#[tokio::test]
+async fn a_publish_review_is_typed_from_the_tools_its_owner_can_discover() {
+    let f = Fixture::new().await;
+    f.install_builtin().await;
+    save_draft(&f, &f.owner).await;
+
+    let validated = send(
+        &f,
+        &f.owner,
+        management::PublishSharedToolRequest {
+            // `coral.listProviders` takes no second argument.
+            source: "export default async function listed() { return coral.listProviders({}, 1); }"
+                .into(),
+            validate_only: true,
+            ..publish(&f, "ops.listed", 0)
+        },
+    )
+    .await
+    .expect("validate");
+    let review = validated.review.expect("the review");
+    assert!(
+        review
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == 2554),
+        "{:?}",
+        review.diagnostics
+    );
+}
+
 // Catches: a read that hides a Shared Tool from a Member, or that drops or
 // mislabels its current revision, its summary or its revisions.
 #[tokio::test]

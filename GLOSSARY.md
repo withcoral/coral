@@ -654,8 +654,9 @@ upstream values or gate Program admission. _Avoid_: TypeScript facade, SQL hidde
 MCP `exec`, and server-side Run compilation. It pins one official `typescript.js` version, compiler options, source-map
 behavior, and the ECMAScript declaration libraries supported by Coral's embedded V8. It accepts JavaScript as TypeScript
 source. Reef and Private Tool save report strict semantic diagnostics without making them admission failures. Private
-Tool Save types each Tool and Private Tool that the source names from the declarations that the caller can
-discover. V1 one-time Program admission parses and emits source but does not compute a full semantic check. The profile
+Tool Save types each Tool, Private Tool and Shared Tool that the source names from the declarations that the caller
+can discover. A Shared Tool Publish types its source the same way from what the publishing Owner can discover, except
+the Private Tools it names, which are each caller's own. V1 one-time Program admission parses and emits source but does not compute a full semantic check. The profile
 exposes no DOM, Web Worker, Node, npm, filesystem, authored import, or module-resolution surface. _Avoid_: Runtime
 TypeScript, client-selected compiler, Node TypeScript profile
 

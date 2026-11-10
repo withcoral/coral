@@ -14,7 +14,6 @@ use crate::retriever::{
     EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
     end_query,
 };
-use crate::types::split_written_path;
 use crate::{EntityKind, Error, ProviderCallRoot, query_terms};
 
 /// The most Call Paths one missing path names.
@@ -46,15 +45,16 @@ pub(crate) async fn suggestions(
     retrievers: &[Arc<dyn EntityRetriever>],
     written: &str,
 ) -> Result<Vec<String>, Error> {
-    let Some((call_root, relative_path)) = split_written_path(written) else {
+    let Some((call_root, relative_path)) = ProviderCallRoot::split_call_path(written) else {
         return Ok(Vec::new());
     };
-    // The caller's own Private Tools are the Entities under its Private
-    // root; every other root holds Provider Tools.
-    let kind = if call_root == ProviderCallRoot::Private {
-        EntityKind::PrivateTool
-    } else {
-        EntityKind::ProviderTool
+    let kind = match call_root {
+        ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin => EntityKind::ProviderTool,
+        // The caller's own Private Tools are the Entities under its Private
+        // root.
+        ProviderCallRoot::Private => EntityKind::PrivateTool,
+        // Universal Search holds no Shared Tool yet (#2981), so none is near.
+        ProviderCallRoot::Shared => return Ok(Vec::new()),
     };
     let Some(tools) = retrievers.iter().find(|retriever| retriever.kind() == kind) else {
         return Ok(Vec::new());
@@ -74,7 +74,7 @@ pub(crate) async fn suggestions(
         .map(|entity| entity.call_path().as_str())
         .filter(|path| {
             *path != written
-                && split_written_path(path)
+                && ProviderCallRoot::split_call_path(path)
                     .is_some_and(|(_root, relative)| leaf_words(relative) == leaf)
         })
         .map(str::to_owned)
@@ -126,11 +126,13 @@ pub(crate) async fn suggestions(
     };
     let written_words = path_words(relative_path);
     let (named, others): (Vec<_>, Vec<_>) = window.into_iter().partition(|entry| {
-        split_written_path(entry.entity.call_path().as_str()).is_some_and(|(_root, relative)| {
-            path_words(relative)
-                .iter()
-                .any(|word| written_words.iter().any(|written| same_word(word, written)))
-        })
+        ProviderCallRoot::split_call_path(entry.entity.call_path().as_str()).is_some_and(
+            |(_root, relative)| {
+                path_words(relative)
+                    .iter()
+                    .any(|word| written_words.iter().any(|written| same_word(word, written)))
+            },
+        )
     });
     for entry in named.into_iter().chain(others) {
         let path = entry.entity.call_path().as_str();

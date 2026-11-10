@@ -1,6 +1,7 @@
 mod updates;
 
 use super::*;
+use coral_catalog::AuthoredToolKind;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::account::{AccountModule, AccountScope, AuthorizationState};
 use coral_provider::{
@@ -555,7 +556,7 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
                     &PrivateToolPath::parse(path).unwrap()
                 )
                 .await,
-            Err(coral_tools::Error::PrivateToolNotFound)
+            Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
         ));
     }
     assert!(

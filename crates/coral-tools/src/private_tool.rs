@@ -1,27 +1,24 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
-use coral_telemetry::safe;
+use coral_run_executor::CompilerClient;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
     PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
-use tokio::time::timeout_at;
-
-use coral_catalog::AuthoredToolKind;
-use coral_run_executor::CompilerClient;
-use coral_v8::{CallableDeclaration, CoralDeclarations};
 
 use crate::authoring::{
-    AuthoredToolCompiler, PathReference, PreparedAuthoredTool, now_unix_nanos,
-    prepare_authored_source, tool_paths_overlap, v8_compiler,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
+    tool_paths_overlap, v8_compiler,
 };
+use crate::linking::{LinkedToolPath, LinkedToolReference};
 use crate::repository;
-use crate::tool_typing::{self, ToolDeclarationReader};
+use crate::tool_typing::ToolDeclarationReader;
 use crate::types::{
-    AUTHORED_TOOL_DECLARATION_MAX_BYTES, AdministrativeLifecycleEvent, LifecycleAction,
-    PrivateTool, PrivateToolChangeContext, PrivateToolId, PrivateToolPath, PrivateToolSave,
+    AdministrativeLifecycleEvent, LifecycleAction, PrivateTool, PrivateToolChangeContext,
+    PrivateToolId, PrivateToolPath, PrivateToolSave,
 };
 use crate::{Error, PrivateToolDeletion, PrivateToolInspection};
 
@@ -46,9 +43,7 @@ pub struct PrivateToolModule {
     workspaces: WorkspaceModule,
     inspection: PrivateToolInspection,
     deletion: PrivateToolDeletion,
-    compiler: Arc<dyn AuthoredToolCompiler>,
-    /// The deadline for preparing one save, including typing and queueing.
-    compilation_timeout: Duration,
+    authoring: Authoring,
 }
 
 impl PrivateToolModule {
@@ -89,10 +84,9 @@ impl PrivateToolModule {
         Self {
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
             deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
+            authoring: Authoring::new(database.clone(), v8_compiler(compiler), compilation_timeout),
             database,
             workspaces,
-            compiler: v8_compiler(compiler),
-            compilation_timeout,
         }
     }
 
@@ -100,15 +94,18 @@ impl PrivateToolModule {
     pub(crate) fn with_compiler(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        compiler: Arc<dyn AuthoredToolCompiler>,
+        compiler: Arc<dyn crate::authoring::AuthoredToolCompiler>,
     ) -> Self {
         Self {
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
             deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
+            authoring: Authoring::new(
+                database.clone(),
+                compiler,
+                coral_test_support::TEST_COMPILATION_TIMEOUT,
+            ),
             database,
             workspaces,
-            compiler,
-            compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
         }
     }
 
@@ -170,12 +167,15 @@ impl PrivateToolModule {
             )?;
         }
         let prepared = self
-            .prepare_source(
-                context.actor(),
+            .authoring
+            .prepare(
                 workspace_id,
-                save.path(),
+                &LinkedToolPath::Private(save.path().clone()),
                 save.source().as_str(),
-                tools,
+                Typing {
+                    private_tools_of: Some(context.actor().principal()),
+                    tools,
+                },
             )
             .await?;
         Ok(PreparedSave {
@@ -209,7 +209,7 @@ impl PrivateToolModule {
                 context.actor(),
                 workspace_id,
                 save.path(),
-                &prepared.private_references,
+                &prepared.linked,
             )
             .await?;
         save.admits(previous.as_ref().map(PrivateTool::revision))?;
@@ -284,7 +284,7 @@ impl PrivateToolModule {
     /// # Errors
     ///
     /// An absent, inaccessible, or differently owned path returns
-    /// [`Error::PrivateToolNotFound`].
+    /// [`Error::NotFound`].
     pub async fn get(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -328,7 +328,7 @@ impl PrivateToolModule {
     /// # Errors
     ///
     /// Requires Workspace Owner authority. An absent path remains
-    /// [`Error::PrivateToolNotFound`].
+    /// [`Error::NotFound`].
     pub async fn get_agent(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -338,7 +338,7 @@ impl PrivateToolModule {
     ) -> Result<PrivateTool, Error> {
         let user = actor
             .authenticated_user()
-            .ok_or(Error::PrivateToolNotFound)?;
+            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize_agent_inspection_in_transaction(&mut transaction, user, workspace_id)
             .await
@@ -347,7 +347,7 @@ impl PrivateToolModule {
         let tool =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
                 .await?
-                .ok_or(Error::PrivateToolNotFound)?;
+                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         transaction.commit().await?;
         Ok(tool)
     }
@@ -360,7 +360,7 @@ impl PrivateToolModule {
     /// # Errors
     ///
     /// Requires Workspace Owner authority in an active Workspace. Absence is
-    /// [`Error::PrivateToolNotFound`].
+    /// [`Error::NotFound`].
     pub async fn delete_agent(
         &self,
         context: &PrivateToolChangeContext,
@@ -371,7 +371,7 @@ impl PrivateToolModule {
         let user = context
             .actor()
             .authenticated_user()
-            .ok_or(Error::PrivateToolNotFound)?;
+            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         let mut transaction = self.database.begin().await?;
         self.workspaces
             .check_configuration_in_transaction(&mut transaction, user, workspace_id)
@@ -381,7 +381,7 @@ impl PrivateToolModule {
         let tool =
             repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
                 .await?
-                .ok_or(Error::PrivateToolNotFound)?;
+                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         let deleted_id =
             delete_current_with_event(&mut transaction, context, workspace_id, &tool).await?;
         transaction.commit().await?;
@@ -393,7 +393,7 @@ impl PrivateToolModule {
     /// # Errors
     ///
     /// Requires the owning Principal and an active Workspace. Absence or other
-    /// ownership is concealed as [`Error::PrivateToolNotFound`].
+    /// ownership is concealed as [`Error::NotFound`].
     pub async fn delete(
         &self,
         context: &PrivateToolChangeContext,
@@ -462,7 +462,7 @@ impl PrivateToolModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         path: &PrivateToolPath,
-        references: &[PathReference<PrivateToolPath>],
+        references: &[LinkedToolReference],
     ) -> Result<(PrincipalWorkspaceEvidence, Option<PrivateTool>), Error> {
         let authority = self
             .authorize_active_in_transaction(transaction, actor, workspace_id)
@@ -476,12 +476,21 @@ impl PrivateToolModule {
             .iter()
             .any(|tool| tool_paths_overlap(tool.path().as_str(), path.as_str()))
         {
-            return Err(Error::PrivateToolPathConflict);
+            return Err(Error::PathConflict(AuthoredToolKind::Private));
         }
 
-        let mut held_paths = references
+        // A save holds the caller's own Private Tools that its source names.
+        // A Shared Tool it names is linked, and held, by each Run.
+        let private_references = references
             .iter()
-            .map(|reference| reference.path.clone())
+            .filter_map(|reference| match reference.path() {
+                LinkedToolPath::Private(named) => Some((named, reference)),
+                LinkedToolPath::Shared(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let mut held_paths = private_references
+            .iter()
+            .map(|(named, _reference)| (*named).clone())
             .chain(std::iter::once(path.clone()))
             .collect::<Vec<_>>();
         held_paths.sort();
@@ -495,11 +504,14 @@ impl PrivateToolModule {
             )
             .await?;
             if !exists
-                && let Some(reference) = references
+                && let Some((_named, reference)) = private_references
                     .iter()
-                    .find(|reference| &reference.path == held_path)
+                    .find(|(named, _reference)| *named == held_path)
             {
-                return Err(missing_private_tool_dependency(path, reference));
+                return Err(missing_linked_tool(
+                    &LinkedToolPath::Private(path.clone()),
+                    reference,
+                ));
             }
         }
         let previous = current_private_tools
@@ -524,141 +536,6 @@ impl PrivateToolModule {
             ));
         }
         Ok(())
-    }
-
-    async fn prepare_source(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        path: &PrivateToolPath,
-        source: &str,
-        tools: Option<&dyn ToolDeclarationReader>,
-    ) -> Result<PreparedAuthoredTool, Error> {
-        let deadline = Instant::now() + self.compilation_timeout;
-        let preparation = async {
-            let declarations = self
-                .declarations(actor, workspace_id, source, tools, deadline)
-                .await?;
-            prepare_authored_source(
-                self.compiler.clone(),
-                deadline,
-                AuthoredToolKind::Private,
-                path.as_str(),
-                source,
-                declarations,
-            )
-            .await
-        };
-        timeout_at(deadline.into(), preparation)
-            .await
-            .map_err(|_elapsed| Error::PrivateToolCompilationTimedOut)?
-    }
-
-    /// The declarations that type `source`: the current ones of the Private
-    /// Tools it names and, through `tools`, of the Tools it
-    /// names that the caller can discover. `None` leaves it untyped.
-    ///
-    /// Typing stops by its own deadline, so a compile due by `deadline`
-    /// always keeps its reserve. What typing cannot finish stays untyped.
-    async fn declarations(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        source: &str,
-        tools: Option<&dyn ToolDeclarationReader>,
-        deadline: Instant,
-    ) -> Result<Option<CoralDeclarations>, Error> {
-        let Some(typing_deadline) = tool_typing::typing_deadline(deadline) else {
-            tracing::warn!("No time is left to type the source; it is checked untyped");
-            return Ok(None);
-        };
-        let typing = async {
-            let compiler = self.compiler.clone();
-            let analyzed = source.to_string();
-            let Some(named) = tokio::task::spawn_blocking(move || {
-                compiler.call_paths(typing_deadline, &analyzed)
-            })
-            .await
-            .map_err(|_join_error| Error::CompilerWorkerStopped)?
-            else {
-                return Ok(None);
-            };
-            let Some(private_tool_paths) = named
-                .private_tools()
-                .iter()
-                .map(|reference| PrivateToolPath::parse(reference.path()).ok())
-                .collect::<Option<Vec<_>>>()
-            else {
-                return Ok(None);
-            };
-            let private_tools = if private_tool_paths.is_empty() {
-                None
-            } else {
-                self.private_tool_declarations(actor, workspace_id, &private_tool_paths)
-                    .await
-                    .inspect_err(|error| {
-                        tracing::warn!(
-                            error.type = safe::kind(error.code()),
-                            "Private Tool declarations are unavailable; they are checked untyped"
-                        );
-                    })
-                    .ok()
-            };
-            let tools = match tools {
-                Some(reader) => {
-                    tool_typing::tool_declarations(reader, named.tools().call_paths()).await
-                }
-                None => None,
-            };
-            if private_tools.is_none() && tools.is_none() {
-                return Ok(None);
-            }
-            let mut declarations = CoralDeclarations::new(AUTHORED_TOOL_DECLARATION_MAX_BYTES);
-            if let Some(private_tools) = private_tools {
-                declarations = declarations.with_private_tools(private_tools);
-            }
-            if let Some(tools) = tools {
-                declarations = declarations.with_tools(named.tools(), tools);
-            }
-            Ok(Some(declarations))
-        };
-        timeout_at(typing_deadline.into(), typing)
-            .await
-            .unwrap_or_else(|_elapsed| {
-                tracing::warn!("Typing was too slow; the source is checked untyped");
-                Ok(None)
-            })
-    }
-
-    /// The current declaration of each named Private Tool the caller owns.
-    async fn private_tool_declarations(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        paths: &[PrivateToolPath],
-    ) -> Result<Vec<CallableDeclaration>, Error> {
-        let mut tools = Vec::new();
-        if paths.is_empty() {
-            return Ok(tools);
-        }
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        for path in paths {
-            if let Some(tool) = repository::find_current_in_transaction(
-                &mut transaction,
-                workspace_id,
-                actor.principal(),
-                path,
-            )
-            .await?
-            {
-                tools.push(CallableDeclaration::new(
-                    path.segments(),
-                    tool.declaration().as_str().to_string(),
-                ));
-            }
-        }
-        transaction.commit().await?;
-        Ok(tools)
     }
 
     /// The revision of the actor's Private Tool at `path`, from a snapshot.
@@ -703,24 +580,6 @@ impl PrivateToolModule {
             .await
             .map_err(Into::into)
     }
-}
-
-fn missing_private_tool_dependency(
-    source_path: &PrivateToolPath,
-    reference: &PathReference<PrivateToolPath>,
-) -> Error {
-    // Worded as any path that names no Tool; a save looks up no
-    // suggestions.
-    Error::PrivateToolAdmission(format!(
-        "{}:{}:{}: {}",
-        AuthoredToolKind::Private.source_name(source_path.as_str()),
-        reference.line,
-        reference.column,
-        coral_catalog::unknown_call_path_message(
-            &AuthoredToolKind::Private.call_path(reference.path.as_str()),
-            &[],
-        )
-    ))
 }
 
 /// Removes current definitions in scopes where access ends and records their deletion evidence.
@@ -795,7 +654,7 @@ pub(crate) fn conceal_inspection_error(error: Error) -> Error {
         Error::PermissionDenied(_)
         | Error::Workspace(
             coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::PrivateToolNotFound,
+        ) => Error::NotFound(AuthoredToolKind::Private),
         other => other,
     }
 }
@@ -803,7 +662,7 @@ pub(crate) fn conceal_inspection_error(error: Error) -> Error {
 fn conceal_agent_private_tool_error(error: coral_workspace::Error) -> Error {
     match error {
         coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_) => {
-            Error::PrivateToolNotFound
+            Error::NotFound(AuthoredToolKind::Private)
         }
         other => Error::Workspace(other),
     }

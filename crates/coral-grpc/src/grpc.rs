@@ -2,6 +2,7 @@
 mod accounts;
 mod activity;
 mod agents;
+mod authored_tools;
 mod memberships;
 mod organization_memberships;
 mod organization_workspaces;

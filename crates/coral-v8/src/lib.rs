@@ -489,6 +489,7 @@ pub struct AuthoredToolCompilation {
     diagnostics: Vec<CompilerDiagnostic>,
     references: Vec<LinkedToolReference>,
     shared_references: Vec<LinkedToolReference>,
+    tools: ToolReferences,
     not_data: Option<String>,
 }
 
@@ -499,6 +500,7 @@ impl AuthoredToolCompilation {
         diagnostics: Vec<CompilerDiagnostic>,
         references: Vec<LinkedToolReference>,
         shared_references: Vec<LinkedToolReference>,
+        tools: ToolReferences,
         not_data: Option<String>,
     ) -> Self {
         Self {
@@ -507,8 +509,16 @@ impl AuthoredToolCompilation {
             diagnostics,
             references,
             shared_references,
+            tools,
             not_data,
         }
+    }
+
+    /// Returns the literal Tool chains under `coral` that the prepared
+    /// source names, from the same compile as its declaration.
+    #[must_use]
+    pub const fn tools(&self) -> &ToolReferences {
+        &self.tools
     }
 
     /// Where the declaration's arguments or result hold something other
@@ -659,7 +669,7 @@ impl NamedCallPaths {
 
 /// The literal Tool chains under `coral` one source
 /// names. Aliased roots are not followed.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolReferences {
     call_paths: Vec<String>,

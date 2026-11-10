@@ -120,7 +120,7 @@ pub(super) async fn insert_admission(
                         .map(ToString::to_string),
                 ),
                 Expr::val(
-                    private_tool_default(admitted.target.tool())
+                    authored_tool_default(admitted.target.tool())
                         .map(coral_catalog::ToolAccessState::as_storage_str),
                 ),
             ]
@@ -132,9 +132,11 @@ pub(super) async fn insert_admission(
     Ok(())
 }
 
-/// The default a Private Tool's author declared for the revision the Run
-/// linked; `None` for every other Tool, whose catalog keeps its facts.
-fn private_tool_default(
+/// The default of the revision the Run linked, for a Private or Shared
+/// Tool: its author declared a Private Tool's, and its publishing Owner
+/// chose a Shared Tool's. `None` for every other Tool, whose catalog keeps
+/// its facts.
+fn authored_tool_default(
     tool: &coral_catalog::MaterializedTool,
 ) -> Option<coral_catalog::ToolAccessState> {
     matches!(
@@ -451,8 +453,8 @@ pub(super) async fn end_pending_with_failure(
 
 pub(super) struct ApprovalTarget {
     pub generation: coral_catalog::ProviderGenerationId,
-    /// The default the author of a Private Tool declared for the revision
-    /// the Run linked; `None` for any other Tool.
+    /// The default of the revision the Run linked, for a Private or Shared
+    /// Tool; `None` for any other Tool.
     pub declared_default: Option<coral_catalog::ToolAccessState>,
     pub tool: coral_catalog::ToolKey,
     pub provider_id: coral_provider::ProviderId,

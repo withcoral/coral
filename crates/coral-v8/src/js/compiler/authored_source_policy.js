@@ -575,11 +575,6 @@ function linkedToolDependencyAnalysis(sourceFile, program) {
   return linkedToolPathAnalysis(sourceFile, program);
 }
 
-function analyzeAuthoredToolDependencies(source, fileName, targetName) {
-  const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  return linkedToolDependencyAnalysis(sourceFile, program);
-}
-
 // The members of `coral` that name no Tool: the linked Tools' roots and the
 // Program host's own members.
 const NON_TOOL_MEMBERS = new Set([...LINKED_TOOL_ROOTS, 'emit', 'ToolError']);

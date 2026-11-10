@@ -90,10 +90,11 @@ impl AdminScope {
         let mut transaction = fixture.database.begin().await.unwrap();
         fixture
             .providers
-            .install_builtin_in_transaction(
+            .install_coral_defined_in_transaction(
                 &mut transaction,
                 &change(owner.authenticated_user().unwrap().clone(), 11, '2'),
                 &workspace_id,
+                coral_provider::CoralDefinedProvider::Builtin,
             )
             .await
             .expect("install the Built-in Provider")

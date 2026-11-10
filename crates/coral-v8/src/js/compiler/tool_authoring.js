@@ -410,7 +410,11 @@ function typedDeclarationFailure(emitted, sourceFile, declarationMaxBytes) {
   return undefined;
 }
 
-function privateToolDeclarationResult(emitted, diagnostics, { references, sharedReferences }) {
+function privateToolDeclarationResult(
+  emitted,
+  diagnostics,
+  { references, sharedReferences, tools },
+) {
   const { declarationText, blockingDiagnostics, analysis } = emitted;
   if (blockingDiagnostics.length > 0 || declarationText === undefined) {
     return {
@@ -435,6 +439,7 @@ function privateToolDeclarationResult(emitted, diagnostics, { references, shared
     diagnostics,
     references,
     sharedReferences,
+    tools,
     notData: analysis.notData ?? null,
   };
 }
@@ -507,13 +512,18 @@ function prepareAuthoredTool(source, builtinTools, declarations, fileName, targe
     };
   }
 
+  // The literal Tool chains, from the program that is compiled: a review of
+  // the source names exactly the calls of the source that was prepared.
+  const chains = toolReferenceChains(sourceFile, program);
+  const named = { ...pathAnalysis, tools: { callPaths: candidateToolPaths(chains), chains } };
+
   const emitted = emitPrivateToolDeclaration(program, fileName, compilerOptions);
   const failure =
     declarations === null
       ? undefined
       : typedDeclarationFailure(emitted, sourceFile, declarations.declarationMaxBytes);
   if (failure === undefined) {
-    return privateToolDeclarationResult(emitted, checked.advisoryDiagnostics(), pathAnalysis);
+    return privateToolDeclarationResult(emitted, checked.advisoryDiagnostics(), named);
   }
   // Typing never fails a save. A typed declaration that cannot be saved is
   // emitted again untyped, as it was before callers supplied declarations,
@@ -522,6 +532,6 @@ function prepareAuthoredTool(source, builtinTools, declarations, fileName, targe
   return privateToolDeclarationResult(
     emitPrivateToolDeclaration(untyped.program, fileName, compilerOptions),
     checked.advisoryDiagnostics(failure),
-    pathAnalysis,
+    named,
   );
 }

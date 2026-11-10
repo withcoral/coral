@@ -57,13 +57,6 @@ globalThis.__coralAnalyzeProgramPaths = function analyzeVirtualProgramPaths(
 globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(chainsJson, callPathsJson) {
   return compilerResultJson(unknownToolCalls(JSON.parse(chainsJson), JSON.parse(callPathsJson)));
 };
-globalThis.__coralAnalyzeAuthoredToolDependencies = function analyzeVirtualAuthoredToolDependencies(
-  source,
-  fileName,
-  targetName,
-) {
-  return compilerResultJson(analyzeAuthoredToolDependencies(source, fileName, targetName));
-};
 globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   body,
   linkedToolsJson,

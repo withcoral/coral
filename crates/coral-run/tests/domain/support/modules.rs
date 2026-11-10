@@ -512,21 +512,25 @@ impl TestModules {
         // Every Workspace Coral serves has its Private and Shared Providers.
         let mut transaction = self.database.begin().await.expect("begin");
         self.providers
-            .install_private_in_transaction(
+            .install_coral_defined_in_transaction(
                 &mut transaction,
                 &change(user.clone(), 10, '1'),
                 workspace.id(),
+                coral_provider::CoralDefinedProvider::Private,
             )
             .await
-            .expect("install the Private Provider");
+            .expect("install the Private Provider")
+            .skip_search();
         self.providers
-            .install_shared_in_transaction(
+            .install_coral_defined_in_transaction(
                 &mut transaction,
                 &change(user.clone(), 10, '1'),
                 workspace.id(),
+                coral_provider::CoralDefinedProvider::Shared,
             )
             .await
-            .expect("install the Shared Provider");
+            .expect("install the Shared Provider")
+            .skip_search();
         transaction.commit().await.expect("commit");
         let principal = AuthenticatedPrincipal::user(user);
         (workspace.id().clone(), principal)

@@ -1,6 +1,7 @@
 //! Scripted Program engines that gate or observe execution.
-use crate::engine::LinkedSource;
+use crate::engine::ProgramReferences;
 use crate::tests::*;
+use coral_tools::{LinkedToolPath, LinkedToolReference, LinkedToolSelection};
 
 #[derive(Clone)]
 pub(crate) struct ClosureReadGateEngine {
@@ -22,22 +23,23 @@ impl ClosureReadGateEngine {
 }
 
 impl ProgramEngine for ClosureReadGateEngine {
-    fn program_private_tool_references(
+    fn program_references(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
-        test_private_tool_reference("closure.root").map(|reference| vec![reference])
+    ) -> Result<ProgramReferences, CompileFailure> {
+        test_private_tool_reference("closure.root")
+            .map(|reference| ProgramReferences::linking(vec![reference]))
     }
 
-    fn private_tool_dependency_references(
+    fn linked_tool_references(
         &self,
         _deadline: std::time::Instant,
-        _path: &PrivateToolPath,
+        _path: &LinkedToolPath,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+    ) -> Result<ProgramReferences, CompileFailure> {
         if !source.contains("root-v1") {
-            return Ok(Vec::new());
+            return Ok(ProgramReferences::default());
         }
         self.reading_root.store(true, Ordering::SeqCst);
         self.release
@@ -45,7 +47,8 @@ impl ProgramEngine for ClosureReadGateEngine {
             .map_err(|error| error.to_string())?
             .recv()
             .map_err(|error| error.to_string())?;
-        test_private_tool_reference("closure.dependency").map(|reference| vec![reference])
+        test_private_tool_reference("closure.dependency")
+            .map(|reference| ProgramReferences::linking(vec![reference]))
     }
 
     fn compile(
@@ -60,7 +63,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[LinkedSource],
+        _linked: &[LinkedToolSelection],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -96,12 +99,13 @@ impl SnapshotEngine {
 }
 
 impl ProgramEngine for SnapshotEngine {
-    fn program_private_tool_references(
+    fn program_references(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
-        test_private_tool_reference("snapshots.value").map(|reference| vec![reference])
+    ) -> Result<ProgramReferences, CompileFailure> {
+        test_private_tool_reference("snapshots.value")
+            .map(|reference| ProgramReferences::linking(vec![reference]))
     }
 
     fn compile(
@@ -116,13 +120,13 @@ impl ProgramEngine for SnapshotEngine {
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-        linked: &[LinkedSource],
+        linked: &[LinkedToolSelection],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         let linked = linked
             .first()
             .ok_or_else(|| "Private Tool snapshot is missing".to_string())?;
-        Ok(ProgramPackage::scripted(linked.source()))
+        Ok(ProgramPackage::scripted(linked.source().as_str()))
     }
 
     fn execute(
@@ -216,13 +220,13 @@ impl FailingCompileEngine {
 }
 
 impl ProgramEngine for FailingCompileEngine {
-    fn program_private_tool_references(
+    fn program_references(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+    ) -> Result<ProgramReferences, CompileFailure> {
         Self::fail_at("analysis", source)?;
-        Ok(Vec::new())
+        Ok(ProgramReferences::default())
     }
 
     fn compile(
@@ -544,7 +548,7 @@ impl ProgramEngine for CompileGateEngine {
 pub(crate) struct ReferenceScanningEngine;
 
 impl ReferenceScanningEngine {
-    fn references(source: &str) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+    fn references(source: &str) -> Result<ProgramReferences, CompileFailure> {
         const PREFIX: &str = "coral.private.";
         source
             .match_indices(PREFIX)
@@ -559,25 +563,26 @@ impl ReferenceScanningEngine {
                     .unwrap_or_default();
                 test_private_tool_reference(path)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()
+            .map(ProgramReferences::linking)
     }
 }
 
 impl ProgramEngine for ReferenceScanningEngine {
-    fn program_private_tool_references(
+    fn program_references(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+    ) -> Result<ProgramReferences, CompileFailure> {
         Self::references(source)
     }
 
-    fn private_tool_dependency_references(
+    fn linked_tool_references(
         &self,
         _deadline: std::time::Instant,
-        _path: &PrivateToolPath,
+        _path: &LinkedToolPath,
         source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
+    ) -> Result<ProgramReferences, CompileFailure> {
         Self::references(source)
     }
 
@@ -593,7 +598,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-        linked: &[LinkedSource],
+        linked: &[LinkedToolSelection],
         _builtin_tools: &coral_v8::BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(&linked.len().to_string()))
@@ -614,12 +619,13 @@ impl ProgramEngine for ReferenceScanningEngine {
 
 pub(crate) fn test_private_tool_reference(
     path: &str,
-) -> Result<PrivateToolReference, CompileFailure> {
-    Ok(PrivateToolReference {
-        path: PrivateToolPath::parse(path).map_err(|error| error.to_string())?,
-        line: 1,
-        column: 1,
-    })
+) -> Result<LinkedToolReference, CompileFailure> {
+    let path = PrivateToolPath::parse(path).map_err(|error| error.to_string())?;
+    Ok(LinkedToolReference::new(
+        LinkedToolPath::Private(path),
+        1,
+        1,
+    ))
 }
 
 /// What the test tells a [`ScriptedCallsEngine`] to do next.

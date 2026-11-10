@@ -10,6 +10,7 @@ mod setup;
 mod workspaces;
 
 use super::*;
+use coral_catalog::AuthoredToolKind;
 use coral_test_support::provision_user;
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
@@ -211,7 +212,7 @@ async fn organization_owner_leaving_loses_current_private_tools_once_another_own
     join_as_owner(&workspaces, &owner, workspace.id()).await;
     assert!(matches!(
         private_tools.get(&author, workspace.id(), &path).await,
-        Err(coral_tools::Error::PrivateToolNotFound)
+        Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
     ));
 }
 
@@ -704,7 +705,10 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
                     )
                     .await;
                 assert!(
-                    matches!(gone, Err(coral_tools::Error::PrivateToolNotFound)),
+                    matches!(
+                        gone,
+                        Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
+                    ),
                     "{loss:?}: {gone:?}"
                 );
             }
@@ -822,6 +826,7 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
                     coral_catalog::ToolAccessState::Enabled,
                     0,
                 ),
+                None,
             )
             .await
             .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
@@ -1145,7 +1150,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                     &PrivateToolPath::parse("answer").unwrap()
                 )
                 .await,
-            Err(coral_tools::Error::PrivateToolNotFound)
+            Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
         ));
         assert_eq!(
             private_tools

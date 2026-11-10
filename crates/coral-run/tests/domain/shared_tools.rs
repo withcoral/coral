@@ -113,6 +113,7 @@ impl SharedScope {
                     default,
                     expected_revision,
                 ),
+                None,
             )
             .await
             .expect("publish the Shared Tool");
@@ -450,4 +451,107 @@ async fn a_shared_tool_call_follows_the_default_its_owner_chose_at_publish() {
     shared.publish(source, ToolAccessState::Enabled, 1).await;
     let (_run, value) = shared.run(&shared.member, program).await;
     assert_eq!(value, json!(1));
+}
+
+// Catches: an Owner's exact rule on a Shared Tool that does not apply to a
+// Member's call, a body that runs before its call is approved, or an
+// Approval Request that reads as not actionable because the approval view
+// decided the call as the Member's own Private Tool.
+#[tokio::test]
+async fn an_owners_rule_on_a_shared_tool_applies_to_a_members_call_and_its_approval() {
+    let shared = SharedScope::new("user:shared-rule").await;
+    let owner = shared.scope.owner.clone();
+    // The body calls the caller's own Private Tool, so the Run records a
+    // second Invocation once the body runs.
+    shared
+        .save_private(&owner, "contacts.find", &contacts("owner"))
+        .await;
+    shared.save_private(&owner, "draft", REMIND_SOURCE).await;
+    shared
+        .publish(REMIND_SOURCE, ToolAccessState::Enabled, 0)
+        .await;
+    shared
+        .save_private(&shared.member, "contacts.find", &contacts("member"))
+        .await;
+    let tool = shared
+        .shared_tools
+        .get(
+            &owner,
+            &shared.scope.workspace_id,
+            &SharedToolPath::parse("mail.remind").expect("a path"),
+        )
+        .await
+        .expect("the Shared Tool");
+    let database = shared.scope.fixture.database.clone();
+    let mut transaction = database.begin_read_snapshot().await.expect("begin");
+    let provider = coral_provider::authored_tool_provider_in_transaction(
+        &mut transaction,
+        &shared.scope.workspace_id,
+        coral_catalog::AuthoredToolKind::Shared,
+    )
+    .await
+    .expect("read the Shared Provider")
+    .expect("the Shared Provider");
+    transaction.commit().await.expect("commit");
+    // No policy surface sets a rule on a Shared Tool yet (issue #3009), so
+    // the rule is written as the policy service will write it.
+    shared
+        .scope
+        .fixture
+        .test_database
+        .execute_fixture_sql(&format!(
+            "INSERT INTO tool_access_rules
+                (workspace_id, provider_id, tool_key, access_state,
+                 created_at_unix_nanos, updated_at_unix_nanos)
+             VALUES ('{}', '{}', '{}', 'approval_required', 80, 80)",
+            shared.scope.workspace_id,
+            provider.id(),
+            tool.id().tool_key().as_str(),
+        ))
+        .await
+        .expect("write the Owner's rule");
+
+    let run = shared
+        .scope
+        .start(
+            &shared.member,
+            submission("return await coral.shared.mail.remind('Ada');"),
+        )
+        .await;
+    let approvals = shared.scope.fixture.approvals();
+    let request =
+        wait_for_approval(&approvals, &shared.member, &shared.scope.workspace_id, &run).await;
+    assert!(request.actionable, "the Member can decide the request");
+    let called = || async {
+        shared
+            .scope
+            .fixture
+            .invocation_rows(&shared.scope.workspace_id, &run)
+            .await
+            .into_iter()
+            .map(|row| row.call_path)
+            .collect::<Vec<_>>()
+    };
+    // The call waits on its decision with its body not yet run.
+    assert_eq!(called().await, [REMIND]);
+    approvals
+        .decide(
+            &shared.member,
+            &shared.scope.workspace_id,
+            &request.id,
+            crate::approval::ApprovalDecision::Approve,
+            None,
+            &TraceId::parse(&"d".repeat(32)).unwrap(),
+        )
+        .await
+        .expect("approve the call");
+    let update = shared.scope.terminal(&shared.member, &run).await;
+    assert_eq!(
+        final_value(&update).pointer("/to"),
+        Some(&json!("member:Ada"))
+    );
+    // The approved body ran, and made its own call.
+    let mut after = called().await;
+    after.sort_unstable();
+    assert_eq!(after, ["coral.private.contacts.find", REMIND]);
 }

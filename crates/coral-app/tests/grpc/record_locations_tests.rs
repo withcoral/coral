@@ -66,9 +66,15 @@ async fn record_run(
     // Every Workspace Coral serves has its Private Provider.
     let mut transaction = database.begin().await.unwrap();
     providers
-        .install_private_in_transaction(&mut transaction, &context, &workspace)
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            &workspace,
+            coral_provider::CoralDefinedProvider::Private,
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     let runs = coral_run::RunModule::new(
         coral_outbound::DestinationPolicy::default(),

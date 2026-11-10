@@ -10,12 +10,6 @@ use crate::{
     SchemaSemantics, ToolHints, ToolKey, ToolPresentation,
 };
 
-/// The display name of every Workspace's Private Provider.
-pub const PRIVATE_PROVIDER_DISPLAY_NAME: &str = "Private";
-
-/// The display name of every Workspace's Shared Provider.
-pub const SHARED_PROVIDER_DISPLAY_NAME: &str = "Shared";
-
 /// The kind of a Tool that Coral performs from authored source: a Private
 /// Tool or a Shared Tool. Each kind has one Provider in every Workspace,
 /// whose catalog holds no materialized Tool and whose Tools have code
@@ -104,10 +98,12 @@ impl AuthoredToolKind {
         }
     }
 
-    const fn display_name(self) -> &'static str {
+    /// The display name of the kind's Provider in every Workspace.
+    #[must_use]
+    pub const fn provider_display_name(self) -> &'static str {
         match self {
-            Self::Private => PRIVATE_PROVIDER_DISPLAY_NAME,
-            Self::Shared => SHARED_PROVIDER_DISPLAY_NAME,
+            Self::Private => "Private",
+            Self::Shared => "Shared",
         }
     }
 
@@ -213,7 +209,7 @@ pub(crate) fn prepared(catalog: AuthoredToolKind) -> Result<PreparedProviderCata
     let (schema_graph, _schema) = json_value_schema(catalog)?;
     let schema_graph_json = schema_graph.to_storage_json()?;
     Ok(PreparedProviderCatalog::without_tools(
-        catalog.display_name().to_string(),
+        catalog.provider_display_name().to_string(),
         schema_graph,
         schema_graph_json,
         TYPESCRIPT_VIEW.to_string(),

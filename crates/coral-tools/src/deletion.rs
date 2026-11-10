@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
@@ -34,7 +35,7 @@ impl PrivateToolDeletion {
     /// # Errors
     ///
     /// Requires the owning Principal and an active Workspace. Absence or other
-    /// ownership is concealed as [`Error::PrivateToolNotFound`].
+    /// ownership is concealed as [`Error::NotFound`].
     pub async fn delete(
         &self,
         context: &PrivateToolChangeContext,
@@ -76,7 +77,7 @@ impl PrivateToolDeletion {
             path,
         )
         .await?
-        .ok_or(Error::PrivateToolNotFound)?;
+        .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         authority.require_current_at(now_unix_nanos()?)?;
         delete_current_with_event(transaction, context, workspace_id, &tool).await
     }

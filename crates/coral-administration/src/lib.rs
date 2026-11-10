@@ -7,15 +7,17 @@
 //! # Interface
 //!
 //! [`ProviderWorkflow`] runs each Provider change that search indexes:
-//! publication, regeneration, removal, rename, and the Built-in Provider's
-//! install and catalog update at boot. Provider owns each change's transaction
-//! and returns the [`coral_provider::SearchChange`] it committed. The workflow
+//! publication, regeneration, removal, rename, and at boot the install of
+//! each Provider Coral defines and the Built-in Provider's catalog update.
+//! Provider owns each change's transaction and returns the
+//! [`coral_provider::SearchChange`] it committed. The workflow
 //! hands it to search after the commit, through the one mapping every
 //! workflow here shares.
 //!
 //! [`WorkspaceWorkflow`] owns the transaction that creates a Workspace together
-//! with its Built-in Provider. It is the only production Workspace creation path.
-//! Provider joins that transaction and returns its search change, which the
+//! with the Providers Coral defines in it: the Built-in, Private and Shared
+//! Providers. It is the only production Workspace creation path. Provider
+//! joins that transaction and returns each one's search change, which the
 //! workflow hands on after the commit.
 //!
 //! [`AccessLifecycleModule`] removes Workspace Membership (including self-service

@@ -471,26 +471,28 @@ async fn decision_required(
         target.provider_id.clone(),
         target.tool.clone(),
     );
-    // A Private Tool is the invoking Principal's own, and its Invocation
-    // retains the default its author declared for the linked revision. No
-    // catalog stores a Private Tool.
-    let policy = if let Some(declared) = target.declared_default {
-        coral_policy::private_tool_decision_in_transaction(
-            tx,
-            &policy_target,
-            declared,
-            coral_policy::PrivateToolOwner::of(run.principal.kind(), role),
-            coral_db::RowLock::None,
-        )
-        .await?
-    } else {
-        let tool = coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
-            .await
-            .map_err(coral_provider::Error::from)?
-            .ok_or(Error::ApprovalNotFound)?;
-        coral_policy::discovery_decision_in_transaction(tx, &policy_target, tool.policy_facts())
-            .await?
+    // No catalog stores a Private or Shared Tool: its Invocation retains the
+    // kind, in its Call Path, and the default of the revision the Run
+    // linked. Any other Tool's facts are its retained Generation's.
+    let retained = match coral_catalog::AuthoredToolKind::of_call_path(&target.call_path) {
+        Some(kind) => crate::enforcement::RetainedPolicy::authored(kind, target.declared_default)?,
+        None => crate::enforcement::RetainedPolicy::Catalog(
+            coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
+                .await
+                .map_err(coral_provider::Error::from)?
+                .ok_or(Error::ApprovalNotFound)?
+                .policy_facts(),
+        ),
     };
+    // The decision the enforcement point makes, read without a hold.
+    let policy = crate::enforcement::tool_decision_in_transaction(
+        tx,
+        &policy_target,
+        retained,
+        coral_policy::PrivateToolOwner::of(run.principal.kind(), role),
+        coral_db::RowLock::None,
+    )
+    .await?;
     Ok(policy.access_state() == coral_policy::ToolAccessState::ApprovalRequired)
 }
 

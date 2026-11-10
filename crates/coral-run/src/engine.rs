@@ -31,7 +31,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_catalog::AuthoredToolKind;
 use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
-use coral_tools::{PrivateToolPath, PrivateToolSelection, SharedToolPath, SharedToolSelection};
+use coral_tools::{LinkedToolPath, LinkedToolReference, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 
 use crate::execution::ExecutionStop;
@@ -40,129 +40,47 @@ use crate::{
     SOURCE_MAP_MAX_BYTES,
 };
 
-#[derive(Clone, Debug)]
-pub(crate) struct PrivateToolReference {
-    pub(crate) path: PrivateToolPath,
-    pub(crate) line: u64,
-    pub(crate) column: u64,
-}
-
-/// One literal `coral.shared` reference and where its source names it.
-#[derive(Clone, Debug)]
-pub(crate) struct SharedToolReference {
-    pub(crate) path: SharedToolPath,
-    pub(crate) line: u64,
-    pub(crate) column: u64,
-}
-
-/// What one Program body names: the Private and Shared Tools admission
-/// links and, from an engine that finds them, the Tool chains admission
-/// checks.
+/// What one source names: the Private and Shared Tools admission links
+/// and, from an engine that finds them, the Tool chains admission checks.
+#[derive(Default)]
 pub(crate) struct ProgramReferences {
-    pub(crate) private_tools: Vec<PrivateToolReference>,
-    pub(crate) shared_tools: Vec<SharedToolReference>,
+    pub(crate) linked: Vec<LinkedToolReference>,
     pub(crate) tools: Option<coral_v8::ToolReferences>,
 }
 
-/// The path of one Tool a Run links from its source.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum LinkedPath {
-    /// The caller's own Private Tool, under `coral.private`.
-    Private(PrivateToolPath),
-    /// The Workspace's Shared Tool, under `coral.shared`.
-    Shared(SharedToolPath),
-}
-
-impl LinkedPath {
-    /// The kind of Tool the path names.
-    pub(crate) const fn kind(&self) -> AuthoredToolKind {
-        match self {
-            Self::Private(_) => AuthoredToolKind::Private,
-            Self::Shared(_) => AuthoredToolKind::Shared,
-        }
-    }
-
-    /// The path under the kind's Call Root.
-    fn relative(&self) -> &str {
-        match self {
-            Self::Private(path) => path.as_str(),
-            Self::Shared(path) => path.as_str(),
-        }
-    }
-
-    /// The complete Call Path, such as `coral.shared.mail.remind`.
-    pub(crate) fn call_path(&self) -> String {
-        self.kind().call_path(self.relative())
-    }
-
-    /// How a message names the Tool's source.
-    pub(crate) fn source_name(&self) -> String {
-        self.kind().source_name(self.relative())
-    }
-}
-
-/// The source of one Tool a Run links: the caller's current Private Tool,
-/// or the current revision of a Shared Tool.
-#[derive(Clone, Debug)]
-pub(crate) enum LinkedSource {
-    Private(PrivateToolSelection),
-    Shared(SharedToolSelection),
-}
-
-impl LinkedSource {
-    pub(crate) fn path(&self) -> LinkedPath {
-        match self {
-            Self::Private(selection) => LinkedPath::Private(selection.path().clone()),
-            Self::Shared(selection) => LinkedPath::Shared(selection.path().clone()),
-        }
-    }
-
-    pub(crate) fn source(&self) -> &str {
-        match self {
-            Self::Private(selection) => selection.source().as_str(),
-            Self::Shared(selection) => selection.source().as_str(),
-        }
-    }
-
-    /// The definition the Run performs when the Program calls this Tool.
-    pub(crate) fn linked_tool(&self) -> crate::types::LinkedTool {
-        match self {
-            Self::Private(selection) => crate::types::LinkedTool {
-                kind: AuthoredToolKind::Private,
-                binding: selection.execution_binding(),
-                declared_default: selection.default_access_state(),
-            },
-            Self::Shared(selection) => crate::types::LinkedTool {
-                kind: AuthoredToolKind::Shared,
-                binding: selection.execution_binding(),
-                declared_default: selection.default_access_state(),
-            },
+impl ProgramReferences {
+    /// The references of an engine that finds no Tool chains: it names its
+    /// linked Tools alone, and admission checks no Call Path.
+    #[cfg(test)]
+    pub(crate) const fn linking(linked: Vec<LinkedToolReference>) -> Self {
+        Self {
+            linked,
+            tools: None,
         }
     }
 }
 
 pub(crate) trait ProgramEngine: Send + Sync {
-    fn program_private_tool_references(
+    /// The Private and Shared Tools and the Tools one Program body names,
+    /// from one analysis. An engine that analyzes no source finds none.
+    fn program_references(
         &self,
         _deadline: Instant,
         _source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
-        Ok(Vec::new())
+    ) -> Result<ProgramReferences, CompileFailure> {
+        Ok(ProgramReferences::default())
     }
 
-    /// The Private Tools and Tools one Program body names, from one
-    /// analysis. An engine that finds no Tool chains names its Private
-    /// Tools alone, and admission checks no Call Path.
-    fn program_references(
+    /// The Private and Shared Tools and the Tools the linked module at
+    /// `path` names, from one analysis. An engine that analyzes no source
+    /// finds none.
+    fn linked_tool_references(
         &self,
-        deadline: Instant,
-        source: &str,
+        _deadline: Instant,
+        _path: &LinkedToolPath,
+        _source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
-        Ok(ProgramReferences {
-            private_tools: self.program_private_tool_references(deadline, source)?,
-            shared_tools: Vec::new(),
-            tools: None,
-        })
+        Ok(ProgramReferences::default())
     }
 
     /// The called chains of `tools` that name none of the `callable`
@@ -176,47 +94,6 @@ pub(crate) trait ProgramEngine: Send + Sync {
         Ok(Vec::new())
     }
 
-    fn private_tool_dependency_references(
-        &self,
-        _deadline: Instant,
-        _path: &PrivateToolPath,
-        _source: &str,
-    ) -> Result<Vec<PrivateToolReference>, CompileFailure> {
-        Ok(Vec::new())
-    }
-
-    /// The Private Tools and Tools one linked module at `path` names, from
-    /// one analysis. An engine that finds no Tool chains names its Private
-    /// Tools alone, and admission checks no Call Path in it.
-    fn private_tool_references(
-        &self,
-        deadline: Instant,
-        path: &PrivateToolPath,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        Ok(ProgramReferences {
-            private_tools: self.private_tool_dependency_references(deadline, path, source)?,
-            shared_tools: Vec::new(),
-            tools: None,
-        })
-    }
-
-    /// The Private and Shared Tools and Tools one linked Shared Tool module
-    /// at `path` names, from one analysis. An engine that analyzes no
-    /// source finds none.
-    fn shared_tool_references(
-        &self,
-        _deadline: Instant,
-        _path: &SharedToolPath,
-        _source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        Ok(ProgramReferences {
-            private_tools: Vec::new(),
-            shared_tools: Vec::new(),
-            tools: None,
-        })
-    }
-
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
     /// Compiles `source` with the Private and Shared Tools it links, in
@@ -227,7 +104,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[LinkedSource],
+        linked: &[LinkedToolSelection],
         _builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
@@ -315,22 +192,18 @@ impl ProgramEngine for V8ProgramEngine {
             .unknown_tool_calls(time_left(deadline), tools, callable)?)
     }
 
-    fn private_tool_references(
+    fn linked_tool_references(
         &self,
         deadline: Instant,
-        path: &PrivateToolPath,
+        path: &LinkedToolPath,
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
-        self.module_references(deadline, &LinkedPath::Private(path.clone()), source)
-    }
-
-    fn shared_tool_references(
-        &self,
-        deadline: Instant,
-        path: &SharedToolPath,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        self.module_references(deadline, &LinkedPath::Shared(path.clone()), source)
+        let source_name = path.source_name();
+        let named = self
+            .compiler
+            .module_references(time_left(deadline), source)
+            .map_err(|error| compile_failure_for_source(error, &source_name))?;
+        named_references(&named, &source_name)
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
@@ -341,20 +214,20 @@ impl ProgramEngine for V8ProgramEngine {
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[LinkedSource],
+        linked: &[LinkedToolSelection],
         builtin_tools: &BuiltinTools,
     ) -> Result<ProgramPackage, CompileFailure> {
         let sources = linked
             .iter()
-            .map(|linked| match linked {
-                LinkedSource::Private(snapshot) => coral_v8::LinkedToolSource::private(
-                    snapshot.path().segments(),
-                    snapshot.source().as_str().to_string(),
-                ),
-                LinkedSource::Shared(snapshot) => coral_v8::LinkedToolSource::shared(
-                    snapshot.path().segments(),
-                    snapshot.source().as_str().to_string(),
-                ),
+            .map(|linked| {
+                let source = match linked.kind() {
+                    AuthoredToolKind::Private => coral_v8::LinkedToolSource::private,
+                    AuthoredToolKind::Shared => coral_v8::LinkedToolSource::shared,
+                };
+                source(
+                    linked.path().segments(),
+                    linked.source().as_str().to_string(),
+                )
             })
             .collect::<Vec<_>>();
         let compiled =
@@ -426,62 +299,20 @@ impl ProgramEngine for V8ProgramEngine {
     }
 }
 
-impl V8ProgramEngine {
-    /// The Private and Shared Tools and Tools one linked module names.
-    fn module_references(
-        &self,
-        deadline: Instant,
-        path: &LinkedPath,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        let source_name = path.source_name();
-        let named = self
-            .compiler
-            .call_paths(time_left(deadline), source)
-            .map_err(|error| compile_failure_for_source(error, &source_name))?;
-        named_references(&named, &source_name)
-    }
-}
-
 /// What the compiler found `source_name` to name, with each path parsed.
 fn named_references(
     named: &coral_v8::NamedCallPaths,
     source_name: &str,
 ) -> Result<ProgramReferences, CompileFailure> {
-    let located = |reference: &coral_v8::LinkedToolReference, error: coral_tools::Error| {
-        format!(
-            "{source_name}:{}:{}: {error}",
-            reference.line(),
-            reference.column()
-        )
-    };
-    let private_tools = named
-        .private_tools()
-        .iter()
-        .map(|reference| {
-            Ok(PrivateToolReference {
-                path: PrivateToolPath::parse(reference.path())
-                    .map_err(|error| located(reference, error))?,
-                line: reference.line(),
-                column: reference.column(),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let shared_tools = named
-        .shared_tools()
-        .iter()
-        .map(|reference| {
-            Ok(SharedToolReference {
-                path: SharedToolPath::parse(reference.path())
-                    .map_err(|error| located(reference, error))?,
-                line: reference.line(),
-                column: reference.column(),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let linked = LinkedToolReference::from_compiler(named.private_tools(), named.shared_tools())
+        .map_err(|invalid| {
+            format!(
+                "{source_name}:{}:{}: {}",
+                invalid.line, invalid.column, invalid.error
+            )
+        })?;
     Ok(ProgramReferences {
-        private_tools,
-        shared_tools,
+        linked,
         tools: Some(named.tools().clone()),
     })
 }

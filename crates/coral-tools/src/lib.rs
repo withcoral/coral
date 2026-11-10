@@ -17,26 +17,31 @@
 //!
 //! [`SharedToolModule`] owns the Workspace's Shared Tools: a Workspace Owner
 //! publishes immutable revisions from the exact content they reviewed, and
-//! every Principal in the Workspace reads them. Its admission facets select
-//! the current revision and hold that selection, with a shared row lock, at
-//! final acceptance.
+//! every Principal in the Workspace reads them.
 //!
 //! [`PrivateToolInspection`] reads the caller's own current definitions
 //! without a compiler, for read-only surfaces. [`PrivateToolDeletion`]
 //! deletes them without a compiler, for management surfaces.
 //!
 //! Search facets join the caller's authorized read snapshot and separate metadata,
-//! declaration ranking, hydration, and exact editing material. Admission facets
-//! select current source and hold that selection at final acceptance; Run owns
-//! closure orchestration, compilation, and persistence of accepted snapshots.
-//! These facets do not authorize callers or commit transactions independently.
+//! declaration ranking, hydration, and exact editing material.
 //!
-//! Errors distinguish input, concealment, authority, compilation, and persistence.
+//! The linking facets serve Program admission for both kinds: they select
+//! the current definition of each Private or Shared Tool a source names, as
+//! one [`LinkedToolSelection`], and hold every selection at final
+//! acceptance. They own the order and the strength of those holds. Run owns
+//! closure orchestration, compilation, and persistence of accepted
+//! snapshots. No facet authorizes callers or commits a transaction.
+//!
+//! Errors distinguish input, concealment, authority, compilation, and
+//! persistence, and name the kind of Tool where both kinds can fail the same
+//! way.
 
 mod authoring;
 mod deletion;
 mod error;
 mod inspection;
+mod linking;
 mod private_tool;
 mod repository;
 mod shared_tool;
@@ -54,15 +59,17 @@ pub use coral_v8::IsolateLimits;
 pub use deletion::PrivateToolDeletion;
 pub use error::Error;
 pub use inspection::PrivateToolInspection;
+pub use linking::{
+    InvalidLinkedToolReference, LinkedToolPath, LinkedToolReference, LinkedToolSelection,
+    hold_linked_tools_in_transaction, select_linked_tool_in_transaction,
+};
 pub use private_tool::{
     PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
 };
-pub use repository::{hold_source_selection_in_transaction, select_source_in_transaction};
 pub use shared_tool::{
     SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDependency, SharedToolId, SharedToolModule,
     SharedToolOrigin, SharedToolPage, SharedToolPath, SharedToolPublication, SharedToolPublish,
-    SharedToolReview, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSelection,
-    SharedToolSummary, hold_shared_selection_in_transaction, select_shared_source_in_transaction,
+    SharedToolReview, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSummary,
 };
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{
@@ -78,7 +85,7 @@ pub use types::{
     PrivateToolId, PrivateToolIndexRevision, PrivateToolPage, PrivateToolPath, PrivateToolSave,
     PrivateToolSearchMaterial, PrivateToolSummary,
 };
-pub use types::{PrivateToolScope, PrivateToolSelection, ReadablePrivateTool};
+pub use types::{PrivateToolScope, ReadablePrivateTool};
 
 /// The declared default Tool Access State of each of `tools` that names a
 /// current Private Tool of the Workspace within `scope` of `reader`. No

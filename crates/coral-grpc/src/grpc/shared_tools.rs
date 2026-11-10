@@ -1,8 +1,7 @@
+use super::authored_tools::{diagnostic, error};
 use super::policies::{access, access_state};
-use super::private_tools::diagnostic;
 use super::workspaces::{
-    annotate, error as workspace_error, invalid, page_start, page_token, resource, safe_status,
-    timestamp, workspace_id,
+    annotate, invalid, page_start, page_token, resource, timestamp, workspace_id,
 };
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{
@@ -15,44 +14,6 @@ use coral_workspace::{
     PrincipalKind, TraceId, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
-
-fn error(error: coral_tools::Error) -> Status {
-    use coral_tools::Error as E;
-    let (code, reason) = match error {
-        E::Workspace(error) => return workspace_error(error),
-        E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        E::SharedToolNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
-        E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
-        E::SharedToolRevisionConflict { .. } => (tonic::Code::Aborted, "ABORTED"),
-        E::SharedToolSourceUnreadable => (
-            tonic::Code::FailedPrecondition,
-            "SHARED_TOOL_SOURCE_UNREADABLE",
-        ),
-        E::SharedToolPathConflict => (tonic::Code::FailedPrecondition, "SHARED_TOOL_PATH_TAKEN"),
-        E::SharedToolAdmission(_) | E::SharedToolNotData(_) | E::PackageTooLarge { .. } => {
-            (tonic::Code::InvalidArgument, "SHARED_TOOL_SOURCE_REJECTED")
-        }
-        // The compiler did not judge the source in time; a retry may. No
-        // Shared Tool call saves a Private Tool. Name every variant so a new
-        // one needs a wire decision.
-        E::SharedToolCompilationTimedOut
-        | E::PrivateToolNotFound
-        | E::PrivateToolExists
-        | E::PrivateToolRevisionConflict { .. }
-        | E::PrivateToolAdmission(_)
-        | E::PrivateToolNotData(_)
-        | E::PrivateToolPathConflict
-        | E::PrivateToolCompilationTimedOut
-        | E::CompilerBusy
-        | E::CompilerUnavailable(_)
-        | E::CompilerWorkerStopped
-        | E::Clock(_)
-        | E::Json(_)
-        | E::CorruptData(_)
-        | E::Database(_) => (tonic::Code::Unavailable, "UNAVAILABLE"),
-    };
-    safe_status(code, reason)
-}
 
 fn path(value: &str) -> Result<SharedToolPath, Status> {
     SharedToolPath::parse(value).map_err(|_error| invalid("invalid Shared Tool Path"))
@@ -294,9 +255,14 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             publish = publish.validate_only();
         }
         let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
+        // The source is typed from the Tools its publishing Owner can
+        // discover, as a Private Tool save types it (ADR 0020).
+        let author = AuthenticatedPrincipal::user(context.actor().clone());
+        let declarations =
+            coral_search::CallerToolDeclarations::new(&self.provider_readiness, &author, &w);
         let published = self
             .shared_tools
-            .publish(&context, &w, publish)
+            .publish(&context, &w, publish, Some(&declarations))
             .await
             .map_err(error)?;
         Ok(Response::new(wire::PublishSharedToolResponse {

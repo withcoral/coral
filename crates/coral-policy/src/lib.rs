@@ -50,7 +50,7 @@ use std::sync::Arc;
 
 use coral_catalog::{HttpMethod, ToolKey, ToolPolicyFacts};
 use coral_db::Database;
-use coral_provider::ProviderNamespace;
+use coral_provider::{ProviderCallRoot, ProviderNamespace};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceEvidence,
     WorkspaceId, WorkspaceModule, WorkspaceRole,
@@ -194,57 +194,50 @@ impl ToolPolicyModule {
             .workspaces
             .check_in_transaction(&mut transaction, actor, workspace, WorkspaceAction::Inspect)
             .await?;
-        let private = coral_provider::authored_tool_provider_in_transaction(
-            &mut transaction,
-            workspace,
-            coral_catalog::AuthoredToolKind::Private,
-        )
-        .await?
-        .is_some_and(|private| private.id() == provider);
-        let (listings, rules_apply) = if private {
-            if !(1..=coral_catalog::MAX_TOOL_LISTING_PAGE).contains(&page_size) {
-                return Err(coral_provider::Error::InvalidInput(
-                    "Tool page size is out of range".to_owned(),
-                )
-                .into());
-            }
-            let owner = evidence.effective_role() == WorkspaceRole::Owner;
-            let reader = AuthenticatedPrincipal::user(actor.clone());
-            let page = coral_tools::readable_page_in_transaction(
-                &mut transaction,
-                workspace,
-                reader.principal(),
-                if owner {
-                    coral_tools::PrivateToolScope::OwnAndAgents
-                } else {
-                    coral_tools::PrivateToolScope::Own
-                },
-                after,
-                page_size,
-            )
-            .await
-            .map_err(tools_error)?;
-            (
-                page.iter().map(private_tool_listing).collect::<Vec<_>>(),
-                owner,
-            )
-        } else {
-            let listings = coral_provider::tool_listings_in_transaction(
-                &mut transaction,
-                &evidence,
-                provider,
-                after,
-                page_size,
-            )
-            .await?;
-            (
-                listings
-                    .into_iter()
-                    .map(|listing| (listing, None))
-                    .collect(),
-                true,
-            )
-        };
+        let (listings, rules_apply) =
+            match RuledSource::of(&mut transaction, workspace, provider).await? {
+                RuledSource::PrivateTools => {
+                    if !(1..=coral_catalog::MAX_TOOL_LISTING_PAGE).contains(&page_size) {
+                        return Err(coral_provider::Error::InvalidInput(
+                            "Tool page size is out of range".to_owned(),
+                        )
+                        .into());
+                    }
+                    let reach = PrivateToolReach::of(&evidence);
+                    let reader = AuthenticatedPrincipal::user(actor.clone());
+                    let page = coral_tools::readable_page_in_transaction(
+                        &mut transaction,
+                        workspace,
+                        reader.principal(),
+                        reach.scope,
+                        after,
+                        page_size,
+                    )
+                    .await
+                    .map_err(tools_error)?;
+                    (
+                        page.iter().map(private_tool_listing).collect::<Vec<_>>(),
+                        reach.rules_apply,
+                    )
+                }
+                RuledSource::Generation => {
+                    let listings = coral_provider::tool_listings_in_transaction(
+                        &mut transaction,
+                        &evidence,
+                        provider,
+                        after,
+                        page_size,
+                    )
+                    .await?;
+                    (
+                        listings
+                            .into_iter()
+                            .map(|listing| (listing, None))
+                            .collect(),
+                        true,
+                    )
+                }
+            };
         let keys: Vec<_> = listings
             .iter()
             .map(|(tool, _agent)| tool.key.clone())
@@ -596,15 +589,8 @@ async fn ruled_tool_facts_in_transaction(
     keys: &[ToolKey],
 ) -> Result<RuledTools, Error> {
     let workspace_id = evidence.workspace().id();
-    let private = coral_provider::authored_tool_provider_in_transaction(
-        transaction,
-        workspace_id,
-        coral_catalog::AuthoredToolKind::Private,
-    )
-    .await?
-    .is_some_and(|private| private.id() == provider);
-    if !private {
-        return Ok(RuledTools {
+    match RuledSource::of(transaction, workspace_id, provider).await? {
+        RuledSource::Generation => Ok(RuledTools {
             facts: coral_provider::tool_policy_facts_batch_in_transaction(
                 transaction,
                 workspace_id,
@@ -613,35 +599,94 @@ async fn ruled_tool_facts_in_transaction(
             )
             .await?,
             rules_apply: true,
-        });
+        }),
+        RuledSource::PrivateTools => {
+            let reach = PrivateToolReach::of(evidence);
+            let reader = AuthenticatedPrincipal::user(actor.clone());
+            let facts = coral_tools::readable_defaults_in_transaction(
+                transaction,
+                workspace_id,
+                reader.principal(),
+                reach.scope,
+                keys,
+            )
+            .await
+            .map_err(tools_error)?
+            .into_iter()
+            .map(|(key, declared)| {
+                (
+                    key,
+                    ToolPolicyFacts::default().declaring_default(Some(declared)),
+                )
+            })
+            .collect();
+            Ok(RuledTools {
+                facts,
+                rules_apply: reach.rules_apply,
+            })
+        }
     }
-    let reader = AuthenticatedPrincipal::user(actor.clone());
-    let owner = evidence.effective_role() == WorkspaceRole::Owner;
-    let facts = coral_tools::readable_defaults_in_transaction(
-        transaction,
-        workspace_id,
-        reader.principal(),
-        if owner {
-            coral_tools::PrivateToolScope::OwnAndAgents
+}
+
+/// Where the Tools that take a Provider's rules are kept.
+enum RuledSource {
+    /// The Provider's current Generation: its catalog.
+    Generation,
+    /// The Private Tools that coral-tools keeps, each Principal's own.
+    PrivateTools,
+}
+
+impl RuledSource {
+    /// The source of `provider`'s Tools in the Workspace, by the kind of
+    /// Provider its Call Root names. A new kind must be decided here.
+    async fn of(
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        provider: &coral_provider::ProviderId,
+    ) -> Result<Self, Error> {
+        let call_root =
+            coral_provider::provider_call_root_in_transaction(transaction, workspace_id, provider)
+                .await?;
+        Ok(match call_root {
+            Some(ProviderCallRoot::Private) => Self::PrivateTools,
+            // An Owner-added Provider and the Built-in Provider keep their
+            // Tools in their Generation. The Shared Provider's Generation
+            // holds none, so it lists no Tool and takes no rule until issue
+            // #3009 reads its Shared Tools and their rules from coral-tools.
+            // An absent Provider answers as a Generation read does.
+            Some(
+                ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin | ProviderCallRoot::Shared,
+            )
+            | None => Self::Generation,
+        })
+    }
+}
+
+/// What a reader reads of the Private Provider (ADR 0033).
+struct PrivateToolReach {
+    /// The Private Tools whose policy it reads.
+    scope: coral_tools::PrivateToolScope,
+    /// Whether an Owner's exact rule applies to them.
+    rules_apply: bool,
+}
+
+impl PrivateToolReach {
+    /// An Owner reads its own Private Tools and every Agent's, and its
+    /// rules apply to them. Anyone else reads only its own, which take
+    /// their declared default: no rule applies to a Member's.
+    fn of(evidence: &WorkspaceEvidence) -> Self {
+        if evidence.effective_role() == WorkspaceRole::Owner {
+            Self {
+                scope: coral_tools::PrivateToolScope::OwnAndAgents,
+                rules_apply: true,
+            }
         } else {
-            coral_tools::PrivateToolScope::Own
-        },
-        keys,
-    )
-    .await
-    .map_err(tools_error)?
-    .into_iter()
-    .map(|(key, declared)| {
-        (
-            key,
-            ToolPolicyFacts::default().declaring_default(Some(declared)),
-        )
-    })
-    .collect();
-    Ok(RuledTools {
-        facts,
-        rules_apply: owner,
-    })
+            Self {
+                scope: coral_tools::PrivateToolScope::Own,
+                rules_apply: false,
+            }
+        }
+    }
 }
 
 /// Reads one exact current Tool decision without holding it.
@@ -706,23 +751,32 @@ pub async fn invocation_decision_in_transaction(
     Ok(resolved_decision(target, retained, explicit))
 }
 
-/// Rechecks the decision for one Private Tool Invocation, as
-/// [`invocation_decision_in_transaction`] does for a Provider Tool: the
-/// Owner's exact rule when it applies to `owner`, held as `lock` says, else
-/// `declared`, the default its author declared for the revision the Run
-/// linked. A rule on a Member's Private Tool is not read.
+/// Rechecks the decision for one Invocation of a Private or Shared Tool,
+/// as [`invocation_decision_in_transaction`] does for a Provider Tool: the
+/// Owner's exact rule when it applies, held as `lock` says, else
+/// `declared`, the default of the revision the Run linked.
+///
+/// A Shared Tool is the Workspace's, so a rule on it applies to every
+/// caller. A Private Tool is its `caller`'s own, so a rule applies only
+/// while the caller is an Owner or an Agent: a rule on a Member's Private
+/// Tool is not read.
 ///
 /// # Errors
 ///
 /// Returns a corrupt-data or persistence failure.
-pub async fn private_tool_decision_in_transaction(
+pub async fn authored_tool_decision_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &ToolPolicyTarget,
+    kind: coral_catalog::AuthoredToolKind,
     declared: ToolAccessState,
-    owner: PrivateToolOwner,
+    caller: PrivateToolOwner,
     lock: coral_db::RowLock,
 ) -> Result<ToolPolicyDecision, Error> {
-    let explicit = if owner.takes_rules() {
+    let rule_applies = match kind {
+        coral_catalog::AuthoredToolKind::Shared => true,
+        coral_catalog::AuthoredToolKind::Private => caller.takes_rules(),
+    };
+    let explicit = if rule_applies {
         repository::access_state_in_transaction(transaction, target, lock).await?
     } else {
         None

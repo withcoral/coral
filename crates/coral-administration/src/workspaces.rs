@@ -1,9 +1,10 @@
 //! The Workspace workflow owns the one transaction that creates a Workspace
-//! together with its Built-in Provider.
+//! together with the Providers Coral defines in it.
 //!
 //! Workspace writes the Workspace and the creator's Owner Membership; Provider
-//! then writes "Coral" at `coral` with the creator as its actor.
-//! The workflow commits only when both succeed, so a failure leaves neither.
+//! then writes its Built-in, Private and Shared Providers with the creator as
+//! their actor. The workflow commits only when all succeed, so a failure
+//! leaves none.
 //!
 //! Per ADR 0017, the workflow notifies Universal Search after the commit,
 //! through the mapping every Provider change shares. The reconcile task
@@ -17,7 +18,8 @@ use coral_workspace::{ChangeContext, Workspace, WorkspaceDisplayName, WorkspaceM
 
 use crate::Error;
 
-/// Creates Workspaces, each with its Built-in Provider, one transaction each.
+/// Creates Workspaces, each with the Providers Coral defines, one transaction
+/// each.
 #[derive(Clone)]
 pub struct WorkspaceWorkflow {
     database: Arc<Database>,
@@ -49,11 +51,9 @@ impl WorkspaceWorkflow {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`WorkspaceModule::create_in_transaction`],
-    /// [`ProviderModule::install_builtin_in_transaction`],
-    /// [`ProviderModule::install_private_in_transaction`] and
-    /// [`ProviderModule::install_shared_in_transaction`]. Failure writes
-    /// nothing.
+    /// Returns the errors of [`WorkspaceModule::create_in_transaction`] and
+    /// [`ProviderModule::install_every_coral_defined_in_transaction`]. Failure
+    /// writes nothing.
     pub async fn create_workspace(
         &self,
         context: &ChangeContext,
@@ -66,16 +66,12 @@ impl WorkspaceWorkflow {
             .await?;
         let installed = self
             .providers
-            .install_builtin_in_transaction(&mut transaction, context, workspace.id())
-            .await?;
-        self.providers
-            .install_private_in_transaction(&mut transaction, context, workspace.id())
-            .await?;
-        self.providers
-            .install_shared_in_transaction(&mut transaction, context, workspace.id())
+            .install_every_coral_defined_in_transaction(&mut transaction, context, workspace.id())
             .await?;
         transaction.commit().await?;
-        crate::providers::notify(&self.search, installed);
+        for provider in installed {
+            crate::providers::notify(&self.search, provider);
+        }
         Ok(workspace)
     }
 }

@@ -1,11 +1,31 @@
--- Saved Functions are Private Tools (ADR 0033). Step 65 renamed the schema
--- and the values its checks name; this step rewrites the other stored values
--- that name Saved Functions, so retained state reads the way new state does.
+-- Every callable is a Tool (ADR 0033). The steps beside this one rename the
+-- schema and the values its checks name; this step rewrites the other stored
+-- values that name the old roots and Saved Functions, so retained state reads
+-- the way new state does.
 --
 -- Stored JSON is compact, so each JSON pattern starts at a key or at a
 -- string's opening quote. Text a Program or an upstream controls, such as an
 -- error message or a Final Value, stays as it was written. The Call Paths and
 -- sources that Runs recorded stay as well.
+
+-- The Built-in Provider's Tools now sit directly on `coral`. Each Provider
+-- row stores its full Call Root, so the Built-in Provider's moves from
+-- `coral.workspace` to `coral`.
+UPDATE provider_records
+SET namespace = 'coral'
+WHERE namespace = 'coral.workspace';
+
+-- Private Tools, which were Saved Functions, are called at `coral.private`.
+-- Universal Search stores each indexed Call Path as it returns it, so the rows
+-- of Built-in Tools and Private Tools move to the new roots too. Retained Run
+-- history keeps the paths it recorded.
+UPDATE search_entities
+SET call_path = 'coral.' || substr(call_path, length('coral.workspace.') + 1)
+WHERE call_path LIKE 'coral.workspace.%';
+
+UPDATE search_entities
+SET call_path = 'coral.private.' || substr(call_path, length('coral.functions.') + 1)
+WHERE call_path LIKE 'coral.functions.%';
 
 -- A Coral failure code names a Private Tool. An Invocation's Coral failure
 -- message is Coral's own.

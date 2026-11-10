@@ -555,9 +555,13 @@ async fn only_the_private_providers_generation_binds_code() {
     )
     .await
     .unwrap();
-    let private = crate::publish_private_generation_in_transaction(&mut transaction, 3)
-        .await
-        .unwrap();
+    let private = crate::publish_authored_generation_in_transaction(
+        &mut transaction,
+        crate::AuthoredToolKind::Private,
+        3,
+    )
+    .await
+    .unwrap();
     for (generation, binds_code) in [(&openapi, false), (&builtin, false), (&private, true)] {
         assert_eq!(
             crate::generation_binds_code_in_transaction(&mut transaction, generation)

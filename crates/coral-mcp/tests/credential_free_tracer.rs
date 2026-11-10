@@ -300,23 +300,26 @@ impl Tracer {
         for (workspace, at) in [(&workspace_a, 13), (&workspace_b, 14)] {
             let mut transaction = db.begin().await.expect("begin the Built-in install");
             providers
-                .install_builtin_in_transaction(
+                .install_coral_defined_in_transaction(
                     &mut transaction,
                     &change(local_user.clone(), at, '2'),
                     workspace,
+                    coral_provider::CoralDefinedProvider::Builtin,
                 )
                 .await
                 .expect("install the Built-in Provider")
                 // The reconcile below indexes it.
                 .skip_search();
             providers
-                .install_private_in_transaction(
+                .install_coral_defined_in_transaction(
                     &mut transaction,
                     &change(local_user.clone(), at, '2'),
                     workspace,
+                    coral_provider::CoralDefinedProvider::Private,
                 )
                 .await
-                .expect("install the Private Provider");
+                .expect("install the Private Provider")
+                .skip_search();
             transaction
                 .commit()
                 .await

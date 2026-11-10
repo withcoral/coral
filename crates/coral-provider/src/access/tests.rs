@@ -458,13 +458,26 @@ fn only_one_call_root_owns_a_call_path_and_splits_it() {
             "coral.providers.workspace.create",
             Some(("coral.providers.workspace", "create")),
         ),
+        // The Private and Shared Call Roots own every path under them.
+        (
+            "coral.private.github.get",
+            Some(("coral.private", "github.get")),
+        ),
+        ("coral.private.lookup", Some(("coral.private", "lookup"))),
+        (
+            "coral.shared.github.get",
+            Some(("coral.shared", "github.get")),
+        ),
+        ("coral.private", None),
+        ("coral.shared", None),
+        ("coral.private.", None),
+        ("coral.shared..get", None),
+        ("coral.private.get\n", None),
         // The Built-in Call Root owns one segment, and no member of `coral`
         // that another root or the Program host takes.
+        ("coral.privateer", Some(("coral", "privateer"))),
         ("coral.search.paths", None),
         ("coral.providers", None),
-        ("coral.private", None),
-        ("coral.private.github.get", None),
-        ("coral.shared.github.get", None),
         ("coral.emit", None),
         ("coral.ToolError", None),
         ("coral.workspace.addProvider", None),

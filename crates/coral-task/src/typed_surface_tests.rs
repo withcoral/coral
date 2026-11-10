@@ -162,16 +162,26 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
 async fn search_types_each_mode_with_the_result_it_returns() {
     let fixture = Fixture::new().await;
     let database = fixture.test_database.database();
-    let (installed, _search) = coral_provider::ProviderModule::with_running_catalog(
+    let mut transaction = database.begin().await.unwrap();
+    coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         WorkspaceModule::new(database.clone()),
     )
-    .install_missing_builtin(&fixture.workspace, 20)
+    .install_coral_defined_in_transaction(
+        &mut transaction,
+        &coral_workspace::ChangeContext::new(
+            fixture.user.clone(),
+            20,
+            coral_test_support::trace('2'),
+        ),
+        &fixture.workspace,
+        coral_provider::CoralDefinedProvider::Builtin,
+    )
     .await
-    .unwrap()
-    .into_parts();
-    installed.expect("the Workspace has no Built-in Provider yet");
+    .expect("the Workspace has no Built-in Provider yet")
+    .skip_search();
+    transaction.commit().await.unwrap();
     let cases: &[(&str, &str, Located)] = &[
         (
             "a query reads its page",

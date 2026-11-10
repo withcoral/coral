@@ -16,10 +16,11 @@ pub mod access;
 pub mod account;
 #[cfg(test)]
 mod account_tests;
-mod builtin;
-#[cfg(test)]
-mod builtin_tests;
+mod coral_defined;
+pub use coral_defined::{CoralDefinedProvider, MissingCoralDefinedProvider};
 mod change;
+#[cfg(test)]
+mod coral_defined_tests;
 #[cfg(test)]
 mod private_tests;
 pub use change::{Committed, SearchChange};
@@ -731,6 +732,29 @@ pub async fn provider_tool_paths_in_transaction(
     Ok(Some((active.provider.id().clone(), paths)))
 }
 
+/// The Call Root of the Workspace's Provider `provider_id`, in any state;
+/// `None` when the Workspace has no such Provider. A rule that depends on the
+/// kind of Provider matches on it. The caller owns authority and the
+/// coherent read transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider failure.
+pub async fn provider_call_root_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_id: &ProviderId,
+) -> Result<Option<ProviderCallRoot>, Error> {
+    Ok(repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::Id(provider_id),
+        repository::ProviderHold::None,
+    )
+    .await?
+    .map(|stored| stored.provider.call_root().clone()))
+}
+
 /// The Workspace's Provider for Tools of `kind`, the Private or the Shared
 /// Provider, in any state; `None` when the Workspace has none yet. Its Tools
 /// are rows coral-tools keeps, so the caller owns authority and decides
@@ -964,8 +988,9 @@ async fn reached_tool(
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
         },
-        // No Call Path splits to either: coral-tools resolves Private and
-        // Shared Tools.
+        // No Generation holds a Private or Shared Tool: coral-tools keeps
+        // them, and a Run reaches one with the definition it linked, through
+        // `resolve_authored_tool_in_transaction`.
         ProviderCallRoot::Private | ProviderCallRoot::Shared => return Ok(None),
     };
     Ok(
@@ -997,10 +1022,12 @@ pub async fn resolve_owner_tool_in_transaction(
     else {
         return Ok(None);
     };
-    assert!(
-        matches!(call_root, ProviderCallRoot::Owner(_)),
-        "{call_path} needs a caller"
-    );
+    match call_root {
+        ProviderCallRoot::Owner(_) => {}
+        ProviderCallRoot::Builtin => panic!("{call_path} needs a caller"),
+        // No Generation holds a Private or Shared Tool.
+        ProviderCallRoot::Private | ProviderCallRoot::Shared => return Ok(None),
+    }
     let reached = reached_tool_by_root(
         transaction,
         workspace_id,

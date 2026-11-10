@@ -2267,12 +2267,14 @@ async fn install_private_provider(
     );
     let mut transaction = database.begin().await.unwrap();
     providers
-        .install_private_in_transaction(
+        .install_coral_defined_in_transaction(
             &mut transaction,
             &ChangeContext::new(owner.clone(), 10, coral_test_support::trace('1')),
             workspace,
+            coral_provider::CoralDefinedProvider::Private,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
 }

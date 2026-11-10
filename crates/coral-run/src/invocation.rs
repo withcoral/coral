@@ -313,33 +313,15 @@ impl ToolInvoker {
     ) -> Result<String, InvocationHostError> {
         let arguments_json = self.arguments_json(&arguments)?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
-        let id = InvocationId::generate();
-        let trace = OpenChild::in_parent_span(child.as_ref(), || {
-            crate::trace::InvocationTrace::begin(
-                &id,
-                target.call_path(),
-                target.provider_access().id(),
-            )
-        });
-        let admitted = Arc::new(AdmittedInvocation {
-            id,
-            workspace_id: self.workspace_id.clone(),
-            run_id: self.run_id.clone(),
+        let (admitted, trace) = self.open(
+            child.as_ref(),
             target,
-            call_path: call_path.to_string(),
+            call_path.to_string(),
             arguments_json,
             source_location,
-            parent_invocation_id: child.as_ref().map(OpenChild::parent),
-            admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
-            span: trace.span().clone(),
-        });
+        )?;
         let ended = async {
-            self.owner
-                .admit(Box::new(AdmissionWork {
-                    admitted: admitted.clone(),
-                }))
-                .await?;
-            trace.admitted(admitted.target.tool());
+            self.admit(&admitted, &trace).await?;
             self.invoke_admitted(&admitted, &arguments, policy, builtin, &trace)
                 .await
         }
@@ -367,33 +349,15 @@ impl ToolInvoker {
         let arguments_json = self.arguments_json(&arguments)?;
         let call_path = linked.kind.call_path(relative_path);
         let (target, policy) = self.resolve_linked(relative_path, linked).await?;
-        let id = InvocationId::generate();
-        let trace = OpenChild::in_parent_span(child.as_ref(), || {
-            crate::trace::InvocationTrace::begin(
-                &id,
-                target.call_path(),
-                target.provider_access().id(),
-            )
-        });
-        let admitted = Arc::new(AdmittedInvocation {
-            id,
-            workspace_id: self.workspace_id.clone(),
-            run_id: self.run_id.clone(),
+        let (admitted, trace) = self.open(
+            child.as_ref(),
             target,
             call_path,
             arguments_json,
             source_location,
-            parent_invocation_id: child.as_ref().map(OpenChild::parent),
-            admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
-            span: trace.span().clone(),
-        });
+        )?;
         let permitted = async {
-            self.owner
-                .admit(Box::new(AdmissionWork {
-                    admitted: admitted.clone(),
-                }))
-                .await?;
-            trace.admitted(admitted.target.tool());
+            self.admit(&admitted, &trace).await?;
             let Permit { slot, progress, .. } =
                 self.permit(&admitted, &arguments, policy, None).await?;
             // The owner's own terminal state, before the body runs: a stop
@@ -423,6 +387,56 @@ impl ToolInvoker {
                 Err(error)
             }
         }
+    }
+
+    /// The Invocation of `target` that one call opens, with its trace, as a
+    /// child of the call whose body made it when there is one. Its Run
+    /// Owner has not admitted it yet.
+    fn open(
+        &self,
+        child: Option<&OpenChild>,
+        target: ResolvedInvocationTool,
+        call_path: String,
+        arguments_json: String,
+        source_location: Option<crate::SourceLocation>,
+    ) -> Result<(Arc<AdmittedInvocation>, crate::trace::InvocationTrace), InvocationHostError> {
+        let id = InvocationId::generate();
+        let trace = OpenChild::in_parent_span(child, || {
+            crate::trace::InvocationTrace::begin(
+                &id,
+                target.call_path(),
+                target.provider_access().id(),
+            )
+        });
+        let admitted = Arc::new(AdmittedInvocation {
+            id,
+            workspace_id: self.workspace_id.clone(),
+            run_id: self.run_id.clone(),
+            target,
+            call_path,
+            arguments_json,
+            source_location,
+            parent_invocation_id: child.map(OpenChild::parent),
+            admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
+            span: trace.span().clone(),
+        });
+        Ok((admitted, trace))
+    }
+
+    /// Asks the Run Owner to admit the opened Invocation, and counts it as
+    /// started once the owner has. One the owner refuses is never counted.
+    async fn admit(
+        &self,
+        admitted: &Arc<AdmittedInvocation>,
+        trace: &crate::trace::InvocationTrace,
+    ) -> Result<(), InvocationHostError> {
+        self.owner
+            .admit(Box::new(AdmissionWork {
+                admitted: admitted.clone(),
+            }))
+            .await?;
+        trace.admitted(admitted.target.tool());
+        Ok(())
     }
 
     /// The encoded `arguments`, within the Run's value limits.
@@ -489,7 +503,7 @@ impl ToolInvoker {
                 CoralFailure::ProviderUnavailable.into(),
             ));
         };
-        let policy = enforcement::tool_decision_in_transaction(
+        let policy = enforcement::resolved_tool_decision_in_transaction(
             &mut transaction,
             &self.workspace_id,
             &target,

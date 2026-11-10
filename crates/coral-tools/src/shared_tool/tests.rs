@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coral_catalog::ToolAccessState;
+use coral_catalog::{AuthoredToolKind, ToolAccessState};
 use coral_test_support::{TestDatabase, change, provision_user};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
@@ -9,12 +9,12 @@ use coral_workspace::{
 
 use super::{
     SharedToolModule, SharedToolOrigin, SharedToolPath, SharedToolPublication, SharedToolPublish,
-    SharedToolRevisionOrigin, hold_shared_selection_in_transaction,
-    select_shared_source_in_transaction,
+    SharedToolRevisionOrigin,
 };
 use crate::{
-    AuthoredToolDescription, AuthoredToolSource, Error, PrivateToolChangeContext,
-    PrivateToolModule, PrivateToolPath, PrivateToolSave,
+    AuthoredToolDescription, AuthoredToolSource, Error, LinkedToolPath, LinkedToolSelection,
+    PrivateToolChangeContext, PrivateToolModule, PrivateToolPath, PrivateToolSave,
+    hold_linked_tools_in_transaction, select_linked_tool_in_transaction,
 };
 
 /// One Workspace with an Owner, an ordinary Member and an Agent, each of
@@ -137,6 +137,7 @@ impl SharedToolFixture {
                     source,
                     expected_revision,
                 ),
+                None,
             )
             .await
     }
@@ -276,6 +277,7 @@ async fn only_an_owner_publishes_and_only_from_their_own_or_an_agents_private_to
                     DRAFT,
                     0,
                 ),
+                None,
             )
             .await;
 
@@ -342,6 +344,7 @@ async fn a_publish_stores_exactly_the_reviewed_bytes_and_leaves_the_private_tool
                 ToolAccessState::ApprovalRequired,
                 0,
             ),
+            None,
         )
         .await
         .expect("publish the reviewed bytes");
@@ -420,7 +423,7 @@ async fn a_publish_whose_expected_revision_moved_is_refused_and_changes_nothing(
                 assert!(
                     matches!(
                         published,
-                        Err(Error::SharedToolRevisionConflict { current: found }) if found == current
+                        Err(Error::RevisionConflict { kind: AuthoredToolKind::Shared, current: found }) if found == current
                     ),
                     "step {step}: {published:?}"
                 );
@@ -474,6 +477,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
                 first.default_access_state(),
                 2,
             ),
+            None,
         )
         .await
         .expect("restore revision 1");
@@ -515,6 +519,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
                 first.default_access_state(),
                 3,
             ),
+            None,
         )
         .await;
     assert!(
@@ -536,6 +541,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
                 first.default_access_state(),
                 3,
             ),
+            None,
         )
         .await;
     assert!(
@@ -594,6 +600,7 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
                 1,
             )
             .validate_only(),
+            None,
         )
         .await
         .expect("validate the publish");
@@ -642,10 +649,17 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
                 0,
             )
             .validate_only(),
+            None,
         )
         .await;
     assert!(
-        matches!(stale, Err(Error::SharedToolRevisionConflict { current: 1 })),
+        matches!(
+            stale,
+            Err(Error::RevisionConflict {
+                kind: AuthoredToolKind::Shared,
+                current: 1
+            })
+        ),
         "{stale:?}"
     );
 }
@@ -668,20 +682,20 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
             "a syntax error",
             "mail.other",
             "export default async function (",
-            |error| matches!(error, Error::SharedToolAdmission(_)),
+            |error| matches!(error, Error::Admission(AuthoredToolKind::Shared, _)),
         ),
         (
             "a callback argument",
             "mail.other",
             "export default async function each(visit: () => void): Promise<void> { visit(); }",
-            |error| matches!(error, Error::SharedToolNotData(_)),
+            |error| matches!(error, Error::NotData(AuthoredToolKind::Shared, _)),
         ),
         (
             "a missing Shared Tool",
             "mail.other",
             "export default async function other() { return coral.shared.mail.absent(); }",
             |error| {
-                matches!(error, Error::SharedToolAdmission(message)
+                matches!(error, Error::Admission(AuthoredToolKind::Shared, message)
                     if message.contains("coral.shared.mail.absent"))
             },
         ),
@@ -689,10 +703,10 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
             "a path under a Shared Tool",
             "mail.remind.later",
             DRAFT,
-            |error| matches!(error, Error::SharedToolPathConflict),
+            |error| matches!(error, Error::PathConflict(AuthoredToolKind::Shared)),
         ),
         ("a path over a Shared Tool", "mail", DRAFT, |error| {
-            matches!(error, Error::SharedToolPathConflict)
+            matches!(error, Error::PathConflict(AuthoredToolKind::Shared))
         }),
     ];
     for (case, path, source, refused) in cases {
@@ -705,10 +719,11 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
     }
 }
 
-// Catches: an acceptance that keeps a revision a publish replaced, or a
-// selection that outlives the Shared Tool's current revision.
+// Catches: an acceptance that keeps a definition its owner replaced or a
+// revision a publish replaced, a hold that names the wrong selection, or a
+// path that selects a Tool of the other kind.
 #[tokio::test]
-async fn a_selected_revision_holds_only_while_it_is_current() {
+async fn a_linked_selection_holds_only_while_it_is_current() {
     let fixture = SharedToolFixture::new().await;
     let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
     fixture.save_private(&owner, "draft", DRAFT).await;
@@ -716,45 +731,173 @@ async fn a_selected_revision_holds_only_while_it_is_current() {
         .publish(&fixture.owner, "mail.remind", DRAFT, 0)
         .await
         .expect("publish revision 1");
-    let path = shared_path("mail.remind");
+    let private = LinkedToolPath::Private(PrivateToolPath::parse("draft").expect("path"));
+    let shared = LinkedToolPath::Shared(shared_path("mail.remind"));
+
     let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
-    let selected = select_shared_source_in_transaction(&mut transaction, &fixture.workspace, &path)
-        .await
-        .expect("select")
-        .expect("the current revision");
-    assert!(
-        select_shared_source_in_transaction(
-            &mut transaction,
-            &fixture.workspace,
-            &shared_path("mail.absent")
-        )
-        .await
-        .expect("select")
-        .is_none()
-    );
+    let mut selected = Vec::new();
+    for path in [&shared, &private] {
+        selected.push(
+            select_linked_tool_in_transaction(
+                &mut transaction,
+                &fixture.workspace,
+                owner.principal(),
+                path,
+            )
+            .await
+            .expect("select")
+            .expect("the current definition"),
+        );
+    }
+    // Each root names only its own kind: no Shared Tool is at `draft`, and
+    // the Owner has no Private Tool at `mail.remind`.
+    for absent in [
+        LinkedToolPath::Shared(shared_path("draft")),
+        LinkedToolPath::Private(PrivateToolPath::parse("mail.remind").expect("path")),
+    ] {
+        assert_eq!(
+            select_linked_tool_in_transaction(
+                &mut transaction,
+                &fixture.workspace,
+                owner.principal(),
+                &absent,
+            )
+            .await
+            .expect("select"),
+            None,
+            "{absent:?}"
+        );
+    }
     transaction.commit().await.expect("commit");
     assert_eq!(
-        (selected.revision(), selected.source().as_str()),
-        (1, DRAFT)
+        selected
+            .iter()
+            .map(|selection| (
+                selection.path(),
+                selection.revision(),
+                selection.source().as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [(&shared, 1, DRAFT), (&private, 1, DRAFT)]
     );
 
-    let held = |fixture: &SharedToolFixture, selected| {
+    let changed = |fixture: &SharedToolFixture, selected: Vec<LinkedToolSelection>| {
         let database = fixture.database.clone();
         let workspace = fixture.workspace.clone();
+        let principal = owner.principal().clone();
         async move {
             let mut transaction = database.begin().await.expect("begin");
-            let held =
-                hold_shared_selection_in_transaction(&mut transaction, &workspace, &selected)
-                    .await
-                    .expect("hold");
+            let changed = hold_linked_tools_in_transaction(
+                &mut transaction,
+                &workspace,
+                &principal,
+                &selected,
+            )
+            .await
+            .expect("hold")
+            .map(|selection| selection.path().clone());
             transaction.commit().await.expect("commit");
-            held
+            changed
         }
     };
-    assert!(held(&fixture, selected.clone()).await);
+    assert_eq!(changed(&fixture, selected.clone()).await, None);
     fixture
         .publish(&fixture.owner, "mail.remind", REVIEWED, 1)
         .await
         .expect("publish revision 2");
-    assert!(!held(&fixture, selected).await);
+    assert_eq!(
+        changed(&fixture, selected.clone()).await,
+        Some(shared.clone())
+    );
+    fixture.save_private(&owner, "draft", REVIEWED).await;
+    // Private Tools are held first, so the replaced draft is the one named.
+    assert_eq!(changed(&fixture, selected).await, Some(private));
+}
+
+// Catches: a publish that drops the Provider Tool typing a Private Tool
+// save has, a save that leaves `coral.shared` untyped, or a save and a
+// publish that emit different declarations for one source.
+#[tokio::test]
+async fn one_source_is_typed_alike_when_saved_and_when_published() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    fixture
+        .publish(&fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish the Shared Tool the source calls");
+    // The source passes a Shared Tool an argument it does not take, and a
+    // Provider Tool a field it does not have.
+    let source = "export default async function typed() {
+        await coral.shared.mail.remind(1);
+        return coral.providers.github.repos.get({ owner: \"a\", nope: 1 });
+    }";
+    let codes = |diagnostics: &[crate::AuthoredToolDiagnostic]| {
+        let mut codes = diagnostics
+            .iter()
+            .map(crate::AuthoredToolDiagnostic::code)
+            .collect::<Vec<_>>();
+        codes.sort_unstable();
+        codes
+    };
+
+    let prepared = fixture
+        .private_tools
+        .prepare_save(
+            &PrivateToolChangeContext::new(
+                owner.clone(),
+                40,
+                coral_workspace::TraceId::parse(&"d".repeat(32)).expect("trace id"),
+            ),
+            &fixture.workspace,
+            PrivateToolSave::new(
+                PrivateToolPath::parse("typed").expect("Private Tool Path"),
+                AuthoredToolDescription::parse("Typed").expect("description"),
+                AuthoredToolSource::parse(source).expect("source"),
+            ),
+            Some(&crate::tests::DeclaresReposGet),
+        )
+        .await
+        .expect("typing never fails a save");
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let saved = fixture
+        .private_tools
+        .save_in_transaction(&mut transaction, prepared)
+        .await
+        .expect("save");
+    transaction.commit().await.expect("commit");
+
+    let review_of = |tools| {
+        let fixture = &fixture;
+        async move {
+            fixture
+                .shared_tools
+                .publish(
+                    &change(fixture.owner.clone(), 41, 'e'),
+                    &fixture.workspace,
+                    publish("mail.typed", own_draft(&fixture.owner), "Typed", source, 0)
+                        .validate_only(),
+                    tools,
+                )
+                .await
+                .expect("typing never fails a publish")
+        }
+    };
+    let typed = review_of(Some(
+        &crate::tests::DeclaresReposGet as &dyn crate::ToolDeclarationReader,
+    ))
+    .await;
+    let review = typed.review();
+    assert_eq!(
+        codes(saved.diagnostics()),
+        [2353, 2554],
+        "a save reports the misuse of both Tools: {:?}",
+        saved.diagnostics()
+    );
+    assert_eq!(codes(review.diagnostics()), codes(saved.diagnostics()));
+    assert_eq!(review.declaration(), saved.declaration());
+
+    // Without the Owner's declarations, Provider Tools stay untyped.
+    let untyped = review_of(None).await;
+    assert_eq!(codes(untyped.review().diagnostics()), [2554]);
 }

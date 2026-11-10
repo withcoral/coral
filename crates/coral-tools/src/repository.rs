@@ -13,7 +13,7 @@ use crate::types::{
     ExactPrivateToolAuthoringMaterial, ExactPrivateToolDescriptionMaterial, LifecycleAction,
     LifecycleOutcome, PrivateTool, PrivateToolAuthoringMaterial,
     PrivateToolDeclarationSearchMaterial, PrivateToolEntry, PrivateToolId, PrivateToolPage,
-    PrivateToolPath, PrivateToolSearchMaterial, PrivateToolSelection, PrivateToolSummary,
+    PrivateToolPath, PrivateToolSearchMaterial, PrivateToolSummary,
 };
 
 #[derive(Iden)]
@@ -1101,41 +1101,16 @@ pub(crate) async fn list_lifecycle_events_in_transaction(
     rows.into_iter().map(LifecycleEventRow::decode).collect()
 }
 
-/// Selects exact current source inside the admission owner's read snapshot.
-///
-/// The caller must first authorize the Principal in this Workspace, use the same
-/// snapshot for the complete closure, and recheck every selection at acceptance.
-/// This facet neither commits nor creates retained Run history.
-///
-/// # Errors
-///
-/// Returns persistence or corrupt-definition failures.
-pub async fn select_source_in_transaction(
+/// Whether `revision` is still the current definition of the Private Tool
+/// `key` of `principal` at `path`, holding its row exclusively for the rest
+/// of the transaction by a no-op `UPDATE`: only its owner links it.
+pub(crate) async fn hold_current_revision(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
+    key: &coral_catalog::ToolKey,
     path: &PrivateToolPath,
-) -> Result<Option<PrivateToolSelection>, Error> {
-    find_current_in_transaction(transaction, workspace_id, principal, path)
-        .await
-        .map(|tool| tool.as_ref().map(PrivateToolSelection::from_current))
-}
-
-/// Holds a selected definition unchanged through the caller's acceptance commit.
-///
-/// The caller must hold current Workspace authority in this write transaction and
-/// pass the same Workspace and Principal used for selection. `false` means the
-/// definition was replaced or deleted; admission must reject without a Run.
-/// The revision and locking mechanics remain private to Tools.
-///
-/// # Errors
-///
-/// Returns persistence or corrupt-selection failures.
-pub async fn hold_source_selection_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    principal: &Principal,
-    snapshot: &PrivateToolSelection,
+    revision: u64,
 ) -> Result<bool, Error> {
     let statement = Query::update()
         .table(PrivateToolRecords::Table)
@@ -1144,16 +1119,13 @@ pub async fn hold_source_selection_in_transaction(
             Expr::col(PrivateToolRecords::DefinitionRevision),
         )
         .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(PrivateToolRecords::Id).eq(snapshot.id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(key.as_str()))
         .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(
             Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
         )
-        .and_where(Expr::col(PrivateToolRecords::Path).eq(snapshot.path.as_str()))
-        .and_where(
-            Expr::col(PrivateToolRecords::DefinitionRevision)
-                .eq(stored_revision(snapshot.revision)?),
-        )
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
+        .and_where(Expr::col(PrivateToolRecords::DefinitionRevision).eq(stored_revision(revision)?))
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
 }

@@ -1,24 +1,33 @@
 //! Authoring that Private and Shared Tools share: both are Tools that Coral
-//! performs from authored source (ADR 0033). One compiler seam prepares a
-//! source of either kind without executing it: its declaration, its
-//! advisory diagnostics, the Private and Shared Tools it names, and whether
-//! its arguments and result are data.
+//! performs from authored source (ADR 0033).
+//!
+//! [`Authoring`] prepares a source of either kind without executing it, by
+//! one deadline: it finds the Call Paths the source names, reads the
+//! declarations that type them, and compiles. The result holds the
+//! declaration, the advisory diagnostics, the Private and Shared Tools and
+//! the Tool chains the source names, and whether its arguments and result
+//! are data. A save and a publish type a source the same way, except that
+//! `coral.private` is untyped inside a Shared Tool: it is each caller's own.
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use coral_catalog::AuthoredToolKind;
+use coral_db::Database;
 use coral_run_executor::{CompilerClient, time_left};
 use coral_telemetry::safe;
-use coral_v8::{CompileFailure, CoralDeclarations, NamedCallPaths};
+use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, NamedCallPaths};
+use coral_workspace::{Principal, WorkspaceId};
 use tokio::time::timeout_at;
 
-use crate::Error;
+use crate::linking::{LinkedToolPath, LinkedToolReference};
 use crate::shared_tool::SharedToolPath;
+use crate::tool_typing::{self, ToolDeclarationReader};
 use crate::types::{
-    AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT, AuthoredToolDeclaration,
-    AuthoredToolDeclarationFieldProjection, AuthoredToolDiagnostic, PrivateToolPath,
+    AUTHORED_TOOL_DECLARATION_MAX_BYTES, AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT,
+    AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDiagnostic,
+    PrivateToolPath,
 };
+use crate::{Error, repository, shared_tool_repository};
 
 pub(crate) fn now_unix_nanos() -> Result<i64, Error> {
     let elapsed = SystemTime::now()
@@ -28,28 +37,52 @@ pub(crate) fn now_unix_nanos() -> Result<i64, Error> {
         .map_err(|_error| Error::Clock("current time exceeds durable nanosecond range".to_string()))
 }
 
-/// One Tool a source names by a literal path, and where it names it.
-pub(crate) struct PathReference<Path> {
-    pub(crate) path: Path,
-    pub(crate) line: u64,
-    pub(crate) column: u64,
-}
-
 /// What the compiler made of one authored source.
 pub(crate) struct PreparedAuthoredTool {
     pub(crate) declaration: AuthoredToolDeclaration,
     pub(crate) declaration_field_projection: AuthoredToolDeclarationFieldProjection,
     pub(crate) diagnostics: Vec<AuthoredToolDiagnostic>,
     pub(crate) diagnostics_truncated: bool,
-    /// The Private Tools the source names directly, relative to
-    /// `coral.private`: the caller's own, whoever wrote the source.
-    pub(crate) private_references: Vec<PathReference<PrivateToolPath>>,
-    /// The Shared Tools the source names directly, relative to
-    /// `coral.shared`.
-    pub(crate) shared_references: Vec<PathReference<SharedToolPath>>,
+    /// The Private and Shared Tools the source names directly. A Private
+    /// Tool is the caller's own, whoever wrote the source.
+    pub(crate) linked: Vec<LinkedToolReference>,
+    /// The literal Tool chains under `coral` the source names, from the
+    /// compile that emitted the declaration.
+    pub(crate) tools: coral_v8::ToolReferences,
     /// Where the declaration's arguments or result hold something that is
     /// not data, as the compiler found it; `None` when they are all data.
     pub(crate) not_data: Option<String>,
+}
+
+impl PreparedAuthoredTool {
+    /// Every Call Path the source calls by a literal path, once each, in
+    /// path order: Provider and Built-in Tools, the caller's Private Tools
+    /// and Shared Tools.
+    pub(crate) fn called_tools(&self) -> Vec<String> {
+        let mut called = self.tools.called_paths();
+        called.extend(
+            self.linked
+                .iter()
+                .map(|reference| reference.path().call_path()),
+        );
+        called.sort();
+        called.dedup();
+        called
+    }
+}
+
+/// What types an authored source beside the Workspace's current Shared
+/// Tools, which always type `coral.shared`.
+#[derive(Clone, Copy)]
+pub(crate) struct Typing<'a> {
+    /// The Principal whose current Private Tools type `coral.private`.
+    /// `None` leaves the root untyped: inside a Shared Tool, `coral.private`
+    /// is each caller's own.
+    pub(crate) private_tools_of: Option<&'a Principal>,
+    /// Reads the declarations of the Provider and Built-in Tools the author
+    /// can discover: the saving Principal, or the publishing Owner. `None`
+    /// leaves them untyped.
+    pub(crate) tools: Option<&'a dyn ToolDeclarationReader>,
 }
 
 pub(crate) trait AuthoredToolCompiler: Send + Sync {
@@ -117,33 +150,17 @@ impl AuthoredToolCompiler for V8AuthoredToolCompiler {
             declaration_field_projection,
             diagnostics,
             diagnostics_truncated,
-            private_references: parsed_references(compiled.references(), PrivateToolPath::parse)?,
-            shared_references: parsed_references(
+            linked: LinkedToolReference::from_compiler(
+                compiled.references(),
                 compiled.shared_references(),
-                SharedToolPath::parse,
-            )?,
+            )
+            .map_err(|invalid| {
+                format!("at {}:{}: {}", invalid.line, invalid.column, invalid.error)
+            })?,
+            tools: compiled.tools().clone(),
             not_data: compiled.not_data().map(ToOwned::to_owned),
         })
     }
-}
-
-fn parsed_references<Path>(
-    references: &[coral_v8::LinkedToolReference],
-    parse: impl Fn(&str) -> Result<Path, Error>,
-) -> Result<Vec<PathReference<Path>>, String> {
-    references
-        .iter()
-        .map(|reference| {
-            let path = parse(reference.path()).map_err(|error| {
-                format!("at {}:{}: {error}", reference.line(), reference.column())
-            })?;
-            Ok(PathReference {
-                path,
-                line: reference.line(),
-                column: reference.column(),
-            })
-        })
-        .collect()
 }
 
 /// The authoring compiler over the process's one warm `compiler`, which
@@ -155,68 +172,293 @@ pub(crate) fn v8_compiler(compiler: Arc<dyn CompilerClient>) -> Arc<dyn Authored
     })
 }
 
-/// Prepares the `source` of the Tool of `kind` at `relative_path`, typed by
-/// `declarations` when there are any, by `deadline`, and refuses a source
-/// whose arguments or result are not data. It never executes the source.
-pub(crate) async fn prepare_authored_source(
+/// Prepares authored sources of both kinds, through the process's one warm
+/// compiler.
+#[derive(Clone)]
+pub(crate) struct Authoring {
+    database: Arc<Database>,
     compiler: Arc<dyn AuthoredToolCompiler>,
-    deadline: Instant,
-    kind: AuthoredToolKind,
-    relative_path: &str,
-    source: &str,
-    declarations: Option<CoralDeclarations>,
-) -> Result<PreparedAuthoredTool, Error> {
-    let source_name = kind.source_name(relative_path);
-    let compile = {
-        let source = source.to_string();
-        tokio::task::spawn_blocking(move || {
-            compiler.prepare(deadline, &source, declarations.as_ref())
-        })
-    };
-    let prepared = timeout_at(deadline.into(), compile)
-        .await
-        .map_err(|_elapsed| timed_out(kind))?
-        .map_err(|_join_error| Error::CompilerWorkerStopped)?
-        .map_err(|failure| match failure {
-            CompileFailure::Rejected(message) => {
-                rejected(kind, format!("{source_name}: {message}"))
-            }
-            CompileFailure::Busy => Error::CompilerBusy,
-            CompileFailure::TimedOut => timed_out(kind),
-            CompileFailure::Stopped => Error::CompilerWorkerStopped,
-            CompileFailure::Failed(failure_kind) => {
-                tracing::warn!(
-                    error.type = safe::kind(failure_kind),
-                    "The authoring compiler failed; the caller sees an internal failure"
-                );
-                Error::CompilerUnavailable(failure_kind.to_string())
-            }
-        })?;
-    // Every call crosses to Coral and back, so only data can (ADR 0033).
-    if let Some(reason) = prepared.not_data {
-        let message = format!("{source_name}: {reason}");
-        return Err(match kind {
-            AuthoredToolKind::Private => Error::PrivateToolNotData(message),
-            AuthoredToolKind::Shared => Error::SharedToolNotData(message),
-        });
-    }
-    Ok(prepared)
+    /// The deadline for preparing one source, including typing and queueing.
+    compilation_timeout: Duration,
 }
 
-/// The refusal of a source of `kind` that cannot become a Tool.
-pub(crate) fn rejected(kind: AuthoredToolKind, message: String) -> Error {
-    match kind {
-        AuthoredToolKind::Private => Error::PrivateToolAdmission(message),
-        AuthoredToolKind::Shared => Error::SharedToolAdmission(message),
+impl Authoring {
+    pub(crate) const fn new(
+        database: Arc<Database>,
+        compiler: Arc<dyn AuthoredToolCompiler>,
+        compilation_timeout: Duration,
+    ) -> Self {
+        Self {
+            database,
+            compiler,
+            compilation_timeout,
+        }
+    }
+
+    /// Prepares the `source` of the Tool at `path`, typed as `typing` says,
+    /// and refuses a source whose arguments or result are not data. It
+    /// never executes the source.
+    ///
+    /// Typing is advisory and stops by its own deadline, so a compile always
+    /// keeps its reserve: a source that cannot be analyzed or typed in time
+    /// is prepared untyped, and preparation reports its own failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal of a source that cannot become a Tool, a timeout,
+    /// or an unavailable compiler.
+    pub(crate) async fn prepare(
+        &self,
+        workspace_id: &WorkspaceId,
+        path: &LinkedToolPath,
+        source: &str,
+        typing: Typing<'_>,
+    ) -> Result<PreparedAuthoredTool, Error> {
+        let kind = path.kind();
+        let deadline = Instant::now() + self.compilation_timeout;
+        let preparation = async {
+            let declarations = self
+                .declarations(workspace_id, path, source, typing, deadline)
+                .await?;
+            self.compile(deadline, path, source, declarations).await
+        };
+        timeout_at(deadline.into(), preparation)
+            .await
+            .map_err(|_elapsed| Error::CompilationTimedOut(kind))?
+    }
+
+    /// The declarations that type `source`: the current ones of the Shared
+    /// Tools it names and, as `typing` says, of the Private Tools and the
+    /// Provider and Built-in Tools it names. `None` leaves it untyped.
+    async fn declarations(
+        &self,
+        workspace_id: &WorkspaceId,
+        path: &LinkedToolPath,
+        source: &str,
+        typing: Typing<'_>,
+        deadline: Instant,
+    ) -> Result<Option<CoralDeclarations>, Error> {
+        let Some(typing_deadline) = tool_typing::typing_deadline(deadline) else {
+            tracing::warn!("No time is left to type the source; it is checked untyped");
+            return Ok(None);
+        };
+        let typed = async {
+            let compiler = self.compiler.clone();
+            let analyzed = source.to_string();
+            let Some(named) = tokio::task::spawn_blocking(move || {
+                compiler.call_paths(typing_deadline, &analyzed)
+            })
+            .await
+            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            else {
+                return Ok(None);
+            };
+            let Ok(linked) =
+                LinkedToolReference::from_compiler(named.private_tools(), named.shared_tools())
+            else {
+                return Ok(None);
+            };
+            let private_paths = linked
+                .iter()
+                .filter_map(|reference| match reference.path() {
+                    LinkedToolPath::Private(named) => Some(named),
+                    LinkedToolPath::Shared(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let shared_paths = linked
+                .iter()
+                .filter_map(|reference| match reference.path() {
+                    LinkedToolPath::Shared(named) => Some(named),
+                    LinkedToolPath::Private(_) => None,
+                })
+                .collect::<Vec<_>>();
+            // A Private Tool that names itself is typed by its current
+            // definition, as its other callers are.
+            let private_tools = match typing.private_tools_of {
+                Some(owner) if !private_paths.is_empty() => {
+                    self.private_declarations(workspace_id, owner, &private_paths)
+                        .await
+                }
+                _ => None,
+            };
+            // A Shared Tool that names itself is not typed by its current
+            // revision: the declaration being prepared replaces it for every
+            // caller at once. Naming only itself still types the root.
+            let shared_tools = if shared_paths.is_empty() {
+                None
+            } else {
+                let others = shared_paths
+                    .into_iter()
+                    .filter(|named| LinkedToolPath::Shared((*named).clone()) != *path)
+                    .collect::<Vec<_>>();
+                self.shared_declarations(workspace_id, &others).await
+            };
+            let tools = match typing.tools {
+                Some(reader) => {
+                    tool_typing::tool_declarations(reader, named.tools().call_paths()).await
+                }
+                None => None,
+            };
+            if private_tools.is_none() && shared_tools.is_none() && tools.is_none() {
+                return Ok(None);
+            }
+            let mut declarations = CoralDeclarations::new(AUTHORED_TOOL_DECLARATION_MAX_BYTES);
+            if let Some(private_tools) = private_tools {
+                declarations = declarations.with_private_tools(private_tools);
+            }
+            if let Some(shared_tools) = shared_tools {
+                declarations = declarations.with_shared_tools(shared_tools);
+            }
+            if let Some(tools) = tools {
+                declarations = declarations.with_tools(named.tools(), tools);
+            }
+            Ok(Some(declarations))
+        };
+        timeout_at(typing_deadline.into(), typed)
+            .await
+            .unwrap_or_else(|_elapsed| {
+                tracing::warn!("Typing was too slow; the source is checked untyped");
+                Ok(None)
+            })
+    }
+
+    /// The current declaration of each Private Tool of `owner` at `paths`,
+    /// or `None`, which leaves `coral.private` untyped, when they cannot be
+    /// read.
+    async fn private_declarations(
+        &self,
+        workspace_id: &WorkspaceId,
+        owner: &Principal,
+        paths: &[&PrivateToolPath],
+    ) -> Option<Vec<CallableDeclaration>> {
+        let read = async {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let mut declarations = Vec::new();
+            for path in paths {
+                if let Some(tool) = repository::find_current_in_transaction(
+                    &mut transaction,
+                    workspace_id,
+                    owner,
+                    path,
+                )
+                .await?
+                {
+                    declarations.push(CallableDeclaration::new(
+                        path.segments(),
+                        tool.declaration().as_str().to_string(),
+                    ));
+                }
+            }
+            transaction.commit().await?;
+            Ok::<_, Error>(declarations)
+        };
+        untyped_on_failure(read.await)
+    }
+
+    /// The current declaration of each live Shared Tool at `paths`, or
+    /// `None`, which leaves `coral.shared` untyped, when they cannot be
+    /// read.
+    async fn shared_declarations(
+        &self,
+        workspace_id: &WorkspaceId,
+        paths: &[&SharedToolPath],
+    ) -> Option<Vec<CallableDeclaration>> {
+        let read = async {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let mut declarations = Vec::new();
+            for path in paths {
+                if let Some(tool) =
+                    shared_tool_repository::find_live_tool(&mut transaction, workspace_id, path)
+                        .await?
+                {
+                    declarations.push(CallableDeclaration::new(
+                        path.segments(),
+                        tool.current.declaration.as_str().to_string(),
+                    ));
+                }
+            }
+            transaction.commit().await?;
+            Ok::<_, Error>(declarations)
+        };
+        untyped_on_failure(read.await)
+    }
+
+    /// Compiles `source`, typed by `declarations` when there are any, by
+    /// `deadline`.
+    async fn compile(
+        &self,
+        deadline: Instant,
+        path: &LinkedToolPath,
+        source: &str,
+        declarations: Option<CoralDeclarations>,
+    ) -> Result<PreparedAuthoredTool, Error> {
+        let kind = path.kind();
+        let source_name = path.source_name();
+        let compile = {
+            let compiler = self.compiler.clone();
+            let source = source.to_string();
+            tokio::task::spawn_blocking(move || {
+                compiler.prepare(deadline, &source, declarations.as_ref())
+            })
+        };
+        let prepared = timeout_at(deadline.into(), compile)
+            .await
+            .map_err(|_elapsed| Error::CompilationTimedOut(kind))?
+            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            .map_err(|failure| match failure {
+                CompileFailure::Rejected(message) => {
+                    Error::Admission(kind, format!("{source_name}: {message}"))
+                }
+                CompileFailure::Busy => Error::CompilerBusy,
+                CompileFailure::TimedOut => Error::CompilationTimedOut(kind),
+                CompileFailure::Stopped => Error::CompilerWorkerStopped,
+                CompileFailure::Failed(failure_kind) => {
+                    tracing::warn!(
+                        error.type = safe::kind(failure_kind),
+                        "The authoring compiler failed; the caller sees an internal failure"
+                    );
+                    Error::CompilerUnavailable(failure_kind.to_string())
+                }
+            })?;
+        // Every call crosses to Coral and back, so only data can (ADR 0033).
+        if let Some(reason) = prepared.not_data {
+            return Err(Error::NotData(kind, format!("{source_name}: {reason}")));
+        }
+        Ok(prepared)
     }
 }
 
-/// The failure of a compilation of `kind` that passed its deadline.
-pub(crate) const fn timed_out(kind: AuthoredToolKind) -> Error {
-    match kind {
-        AuthoredToolKind::Private => Error::PrivateToolCompilationTimedOut,
-        AuthoredToolKind::Shared => Error::SharedToolCompilationTimedOut,
-    }
+/// The declarations read, or `None` with a warning when the read failed:
+/// typing never fails a preparation.
+fn untyped_on_failure(
+    read: Result<Vec<CallableDeclaration>, Error>,
+) -> Option<Vec<CallableDeclaration>> {
+    read.inspect_err(|error| {
+        tracing::warn!(
+            error.type = safe::kind(error.code()),
+            "Tool declarations are unavailable; they are checked untyped"
+        );
+    })
+    .ok()
+}
+
+/// The refusal of the source at `source` that names `reference`, a path no
+/// Tool is at: worded as any path that names no Tool. Authoring looks up no
+/// suggestions.
+pub(crate) fn missing_linked_tool(
+    source: &LinkedToolPath,
+    reference: &LinkedToolReference,
+) -> Error {
+    Error::Admission(
+        source.kind(),
+        format!(
+            "{}:{}:{}: {}",
+            source.source_name(),
+            reference.line(),
+            reference.column(),
+            coral_catalog::unknown_call_path_message(&reference.path().call_path(), &[])
+        ),
+    )
 }
 
 /// Whether one of two different dotted Tool paths names a namespace that

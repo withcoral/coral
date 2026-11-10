@@ -316,38 +316,6 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds directly named `coral.private` paths in one Program body.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased access and malformed wrapper escapes.
-    pub fn private_tool_paths(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<Vec<LinkedToolReference>, Error> {
-        let source = source.to_string();
-        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.private_tool_paths(&source)
-        })
-    }
-
-    /// Finds directly named `coral.private` paths in one Authored Tool module.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased access and malformed module source.
-    pub fn private_tool_dependency_paths(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<Vec<LinkedToolReference>, Error> {
-        let source = source.to_string();
-        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.private_tool_dependency_paths(&source)
-        })
-    }
-
     /// Lowers one Program body together with the exact source closure of its linked Tools.
     ///
     /// Linked modules initialize once in the supplied dependency order before
@@ -549,14 +517,8 @@ struct AuthoredToolOutput {
     references: Vec<LinkedToolReference>,
     #[serde(default)]
     shared_references: Vec<LinkedToolReference>,
+    tools: Option<ToolReferences>,
     not_data: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PrivateToolPathsOutput {
-    references: Vec<LinkedToolReference>,
-    validation_error: Option<LinkedToolReferenceError>,
 }
 
 #[derive(Deserialize)]
@@ -686,12 +648,16 @@ impl CompilerIsolate {
                 ));
             }
         };
+        let tools = output.tools.ok_or_else(|| {
+            Error::CompilerProtocol("compiler returned no Tool references".to_string())
+        })?;
         Ok(AuthoredToolCompilation::new(
             declaration,
             declaration_field_projection,
             output.diagnostics,
             output.references,
             output.shared_references,
+            tools,
             output.not_data,
         ))
     }
@@ -726,39 +692,6 @@ impl CompilerIsolate {
             (None, None) => Err(Error::CompilerProtocol(
                 "compiler returned no Tool references".to_string(),
             )),
-        }
-    }
-
-    fn private_tool_paths(&mut self, source: &str) -> Result<Vec<LinkedToolReference>, Error> {
-        self.analyze_private_tool_paths("__coralAnalyzeProgramPaths", source)
-    }
-
-    fn private_tool_dependency_paths(
-        &mut self,
-        source: &str,
-    ) -> Result<Vec<LinkedToolReference>, Error> {
-        self.analyze_private_tool_paths("__coralAnalyzeAuthoredToolDependencies", source)
-    }
-
-    fn analyze_private_tool_paths(
-        &mut self,
-        function: &str,
-        source: &str,
-    ) -> Result<Vec<LinkedToolReference>, Error> {
-        let json = self.call(
-            function,
-            &[
-                source,
-                PROGRAM_FILE_NAME,
-                TYPESCRIPT_PROFILE.javascript_target(),
-            ],
-        )?;
-        let output: PrivateToolPathsOutput = serde_json::from_str(&json)
-            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
-        if let Some(error) = output.validation_error {
-            Err(invalid_linked_tool_reference(error))
-        } else {
-            Ok(output.references)
         }
     }
 
@@ -1325,7 +1258,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    compiler.private_tool_paths(deadline(), &source),
+                    compiler.program_call_paths(deadline(), &source),
                     Err(Error::SourceTooDeeplyNested)
                 ),
                 "analysis"

@@ -1,6 +1,7 @@
 //! Organization Membership removal hands each Workspace the departing User
 //! solely owns to a transfer target, in the removal's own transaction.
 use super::*;
+use coral_catalog::AuthoredToolKind;
 use coral_workspace::{AuthoritySource, LifecycleAction, OrganizationModule, WorkspaceRole};
 
 /// One Workspace the departing User owns, with their connected Account, pending
@@ -334,7 +335,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
                     &PrivateToolPath::parse("answer").unwrap()
                 )
                 .await,
-            Err(coral_tools::Error::PrivateToolNotFound)
+            Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
         ));
         owned.connected.assert_retired(&returned).await;
     }

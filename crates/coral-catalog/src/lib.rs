@@ -41,10 +41,7 @@ mod inspection;
 mod mcp;
 mod openapi;
 mod paths;
-pub use authored::{
-    AuthoredToolKind, CodeExecutionBinding, PRIVATE_PROVIDER_DISPLAY_NAME,
-    SHARED_PROVIDER_DISPLAY_NAME, authored_tool,
-};
+pub use authored::{AuthoredToolKind, CodeExecutionBinding, authored_tool};
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors
 /// Returns a persistence or corrupt-evidence error.
@@ -278,56 +275,26 @@ pub async fn publish_builtin_generation_in_transaction(
     .await
 }
 
-/// Publishes one Workspace's Private Provider Generation, which declares no
-/// Tool. The caller owns the transaction and commits the Provider that
-/// selects it atomically with this facet.
+/// Publishes one Workspace's Generation of the Provider for Tools of `kind`,
+/// the Private or the Shared Provider. It declares no Tool: each Private
+/// Tool and each Shared Tool is a row coral-tools keeps. The caller owns the
+/// transaction and commits the Provider that selects it atomically with this
+/// facet.
 ///
 /// # Errors
 ///
 /// Returns a persistence failure.
-pub async fn publish_private_generation_in_transaction(
+pub async fn publish_authored_generation_in_transaction(
     transaction: &mut Transaction<'_>,
-    created_at_unix_nanos: i64,
-) -> Result<ProviderGenerationId, Error> {
-    publish_code_generation(
-        transaction,
-        authored::AuthoredToolKind::Private,
-        created_at_unix_nanos,
-    )
-    .await
-}
-
-/// Publishes one Workspace's Shared Provider Generation, which declares no
-/// Tool: a Shared Tool Publish adds each one as a row coral-tools keeps. The
-/// caller owns the transaction and commits the Provider that selects it
-/// atomically with this facet.
-///
-/// # Errors
-///
-/// Returns a persistence failure.
-pub async fn publish_shared_generation_in_transaction(
-    transaction: &mut Transaction<'_>,
-    created_at_unix_nanos: i64,
-) -> Result<ProviderGenerationId, Error> {
-    publish_code_generation(
-        transaction,
-        authored::AuthoredToolKind::Shared,
-        created_at_unix_nanos,
-    )
-    .await
-}
-
-async fn publish_code_generation(
-    transaction: &mut Transaction<'_>,
-    catalog: authored::AuthoredToolKind,
+    kind: AuthoredToolKind,
     created_at_unix_nanos: i64,
 ) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
-        repository::GenerationInput::Code(catalog),
-        &ProviderSetupInputDigest::of_bytes(catalog.call_root().as_bytes()),
-        authored::prepared(catalog)?,
-        catalog.materializer_version(),
+        repository::GenerationInput::Code(kind),
+        &ProviderSetupInputDigest::of_bytes(kind.call_root().as_bytes()),
+        authored::prepared(kind)?,
+        kind.materializer_version(),
         created_at_unix_nanos,
     )
     .await

@@ -1,49 +1,9 @@
-use super::workspaces::{
-    annotate, error as workspace_error, invalid, page_start, page_token, safe_status, timestamp,
-    workspace_id,
-};
+use super::authored_tools::{diagnostic, error};
+use super::workspaces::{annotate, invalid, page_start, page_token, timestamp, workspace_id};
 use super::{GrpcServices, management as wire, now};
-use coral_tools::{
-    AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory, PrivateTool, PrivateToolChangeContext,
-    PrivateToolPath, PrivateToolSummary,
-};
+use coral_tools::{PrivateTool, PrivateToolChangeContext, PrivateToolPath, PrivateToolSummary};
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
 use tonic::{Request, Response, Status};
-
-fn error(error: coral_tools::Error) -> Status {
-    use coral_tools::Error as E;
-    let (code, reason) = match error {
-        E::Workspace(error) => return workspace_error(error),
-        E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        E::PrivateToolNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
-        E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
-        E::PrivateToolExists => (tonic::Code::AlreadyExists, "ALREADY_EXISTS"),
-        E::PrivateToolRevisionConflict { .. } => (tonic::Code::Aborted, "ABORTED"),
-        // Reads and deletes never compile, and no Private Tool call reads or
-        // writes a Shared Tool. Name every variant so a new one needs a wire
-        // decision.
-        E::SharedToolNotFound
-        | E::SharedToolRevisionConflict { .. }
-        | E::SharedToolSourceUnreadable
-        | E::SharedToolPathConflict
-        | E::SharedToolAdmission(_)
-        | E::SharedToolNotData(_)
-        | E::SharedToolCompilationTimedOut
-        | E::PrivateToolAdmission(_)
-        | E::PrivateToolNotData(_)
-        | E::PrivateToolPathConflict
-        | E::PrivateToolCompilationTimedOut
-        | E::CompilerBusy
-        | E::PackageTooLarge { .. }
-        | E::CompilerUnavailable(_)
-        | E::CompilerWorkerStopped
-        | E::Clock(_)
-        | E::Json(_)
-        | E::CorruptData(_)
-        | E::Database(_) => (tonic::Code::Unavailable, "UNAVAILABLE"),
-    };
-    safe_status(code, reason)
-}
 
 fn path(value: &str) -> Result<PrivateToolPath, Status> {
     PrivateToolPath::parse(value).map_err(|_error| invalid("invalid Private Tool Path"))
@@ -54,24 +14,6 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
         update_time: Some(timestamp(summary.saved_at_unix_nanos())),
-    }
-}
-
-pub(super) fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> wire::AuthoredToolDiagnostic {
-    let category = match diagnostic.category() {
-        AuthoredToolDiagnosticCategory::Message => wire::AuthoredToolDiagnosticCategory::Message,
-        AuthoredToolDiagnosticCategory::Warning => wire::AuthoredToolDiagnosticCategory::Warning,
-        AuthoredToolDiagnosticCategory::Error => wire::AuthoredToolDiagnosticCategory::Error,
-        AuthoredToolDiagnosticCategory::Suggestion => {
-            wire::AuthoredToolDiagnosticCategory::Suggestion
-        }
-    };
-    wire::AuthoredToolDiagnostic {
-        category: category.into(),
-        code: diagnostic.code(),
-        message: diagnostic.message().to_owned(),
-        line: diagnostic.line(),
-        column: diagnostic.column(),
     }
 }
 

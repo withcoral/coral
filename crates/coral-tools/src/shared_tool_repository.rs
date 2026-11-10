@@ -2,6 +2,7 @@
 //! immutable revisions, the Shared Tools each revision calls, and lifecycle
 //! Events. Every read and write matches the Workspace and the entity.
 
+use coral_catalog::ToolAccessState;
 use coral_db::{RowLock, Transaction};
 use coral_workspace::{TraceId, UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query, SelectStatement};
@@ -11,8 +12,7 @@ use crate::Error;
 use crate::repository::{access_state_from_storage, decode_diagnostics, stored_revision};
 use crate::shared_tool::{
     SharedTool, SharedToolDependency, SharedToolId, SharedToolLifecycleAction, SharedToolPage,
-    SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSelection,
-    SharedToolSummary,
+    SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSummary,
 };
 use crate::types::{
     AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDescription,
@@ -446,6 +446,16 @@ pub(crate) async fn list_live_page(
     })
 }
 
+/// The current revision of one live Shared Tool, as a Run links it and as
+/// a publish records a dependency on it.
+pub(crate) struct CurrentRevision {
+    pub(crate) id: SharedToolId,
+    pub(crate) path: SharedToolPath,
+    pub(crate) revision: u64,
+    pub(crate) source: AuthoredToolSource,
+    pub(crate) default_access_state: ToolAccessState,
+}
+
 #[derive(Debug, FromRow)]
 struct SelectionRow {
     id: String,
@@ -460,7 +470,7 @@ pub(crate) async fn select_current_source(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
-) -> Result<Option<SharedToolSelection>, Error> {
+) -> Result<Option<CurrentRevision>, Error> {
     let statement = Query::select()
         .column((SharedToolRecords::Table, SharedToolRecords::Id))
         .column((SharedToolRecords::Table, SharedToolRecords::CurrentRevision))
@@ -486,7 +496,7 @@ pub(crate) async fn select_current_source(
         .to_owned();
     let row: Option<SelectionRow> = transaction.fetch_optional(statement).await?;
     row.map(|row| {
-        Ok(SharedToolSelection {
+        Ok(CurrentRevision {
             id: decode_id(&row.id)?,
             path: path.clone(),
             revision: decode_revision(row.current_revision)?,
@@ -500,13 +510,13 @@ pub(crate) async fn select_current_source(
 }
 
 /// Whether `revision` is still the current revision of the live Shared
-/// Tool `id` at `path`, holding the record shared for the rest of the
+/// Tool `key` at `path`, holding the record shared for the rest of the
 /// transaction: concurrent readers hold it side by side, and a publish
 /// waits for them.
 pub(crate) async fn hold_current(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    id: &SharedToolId,
+    key: &coral_catalog::ToolKey,
     path: &SharedToolPath,
     revision: u64,
 ) -> Result<bool, Error> {
@@ -514,7 +524,7 @@ pub(crate) async fn hold_current(
         .column(SharedToolRecords::Id)
         .from(SharedToolRecords::Table)
         .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SharedToolRecords::Id).eq(id.to_string()))
+        .and_where(Expr::col(SharedToolRecords::Id).eq(key.as_str()))
         .and_where(Expr::col(SharedToolRecords::Path).eq(path.as_str()))
         .and_where(Expr::col(SharedToolRecords::CurrentRevision).eq(stored_revision(revision)?))
         .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())

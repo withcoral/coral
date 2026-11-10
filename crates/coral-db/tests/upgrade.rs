@@ -15,9 +15,10 @@ const TOOL_SCHEMA_NAMES: i64 = 45;
 /// The step that rewrote the stored values that named Operations.
 const TOOL_NAMES: i64 = 46;
 
-/// The step that renamed Saved Functions to Private Tools (ADR 0033). The
-/// data step after it rewrites the other stored values that named them.
-const PRIVATE_TOOL_SCHEMA_NAMES: i64 = 65;
+/// The first of the steps that make every callable a Tool (ADR 0033).
+/// Together they rename Saved Functions to Private Tools, in the schema and
+/// in the stored values that named them.
+const EVERY_CALLABLE_IS_A_TOOL: i64 = 60;
 
 /// A row in each table that the step renames or rebuilds, and an approval
 /// whose foreign key names a rebuilt table, as an earlier release wrote them.
@@ -365,13 +366,11 @@ const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
     INSERT INTO saved_function_records
         (id, workspace_id, principal_id, principal_kind, path, description, source, declaration,
          declaration_fields_format, declaration_fields_status, declaration_fields_json,
-         diagnostics_json, diagnostics_truncated, saved_at_unix_nanos, definition_revision,
-         default_access_state)
+         diagnostics_json, diagnostics_truncated, saved_at_unix_nanos, definition_revision)
     VALUES ('tool', 'workspace', 'user:upgrade', 'user', 'people.greet', 'Greet one person',
             'export default async function greet() { return "hi"; }',
             'export default function greet(): Promise<string>;',
-            'saved-function-declaration-fields-v1', 'ready', '[]', '[]', FALSE, 2, 3,
-            'approval_required');
+            'saved-function-declaration-fields-v1', 'ready', '[]', '[]', FALSE, 2, 3);
     INSERT INTO saved_function_lifecycle_events
         (id, workspace_id, actor_principal_id, actor_principal_kind, action,
          target_saved_function_id, target_path, outcome, changed_field_paths,
@@ -449,7 +448,8 @@ const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
 
 /// A database from before Saved Functions were Private Tools: the upgrade
 /// renames the tables, columns and stored values that named them, keeps every
-/// row, and rewrites what Coral wrote about them: a Coral failure a Run or an
+/// row, gives each Private Tool the default Tool Access State `enabled`, and
+/// rewrites what Coral wrote about them: a Coral failure a Run or an
 /// Invocation kept, a stack frame's source, a recorded location's document,
 /// a lifecycle action, a search kind and a Task's evidence. A Program's own
 /// message, log and query keep the old name as they were written.
@@ -459,7 +459,7 @@ const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
     reason = "one table names every row the upgrade renames or keeps"
 )]
 async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote() {
-    let before = coral_test_support::migration_plan_before(PRIVATE_TOOL_SCHEMA_NAMES);
+    let before = coral_test_support::migration_plan_before(EVERY_CALLABLE_IS_A_TOOL);
     let fixture = TestDatabase::new(&before).await.unwrap();
     fixture
         .execute_fixture_sql(ROWS_BEFORE_PRIVATE_TOOL_NAMES)
@@ -479,11 +479,7 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
             (
                 "SELECT path, declaration_fields_format, default_access_state \
                  FROM private_tool_records",
-                [
-                    "people.greet",
-                    "private-tool-declaration-fields-v1",
-                    "approval_required",
-                ],
+                ["people.greet", "private-tool-declaration-fields-v1", "enabled"],
             ),
             (
                 "SELECT action, target_private_tool_id, trace_id FROM private_tool_lifecycle_events",

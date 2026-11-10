@@ -1,67 +1,48 @@
+use coral_catalog::AuthoredToolKind;
+
 /// Private and Shared Tool authoring, inspection, and persistence failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Caller-supplied domain input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    /// The Private Tool is absent or concealed from this Principal.
-    #[error("Private Tool was not found")]
-    PrivateToolNotFound,
+    /// The Tool is absent or concealed from this Principal: no Private
+    /// Tool of the caller's, or no live Shared Tool, is at the path.
+    #[error("{} was not found", .0.name())]
+    NotFound(AuthoredToolKind),
     /// A create-only save found a Private Tool at its path.
     #[error("a Private Tool is already at this path")]
     PrivateToolExists,
-    /// A replace-only save expected a revision other than the current one.
-    #[error("the Private Tool is at revision {current}")]
-    PrivateToolRevisionConflict {
-        /// The revision of the Private Tool at the path.
+    /// A save or a publish expected a revision other than the current one.
+    #[error("the {} is at revision {current}", .kind.name())]
+    RevisionConflict {
+        /// The kind of Tool at the path.
+        kind: AuthoredToolKind,
+        /// The current revision at the path: for a publish, zero when no
+        /// Shared Tool is there.
         current: u64,
     },
-    /// Source could not become one accepted callable definition.
-    #[error("Private Tool authoring failed: {0}")]
-    PrivateToolAdmission(String),
-    /// No live Shared Tool is at the path, or none is visible to this
-    /// Principal.
-    #[error("Shared Tool was not found")]
-    SharedToolNotFound,
-    /// A publish expected a current revision other than the one at its
-    /// path: zero when none is there.
-    #[error("the Shared Tool is at revision {current}")]
-    SharedToolRevisionConflict {
-        /// The current revision at the path, or zero when none is there.
-        current: u64,
-    },
+    /// Source could not become one accepted Tool definition or revision.
+    #[error("{} authoring failed: {}", .0.name(), .1)]
+    Admission(AuthoredToolKind, String),
     /// The publish names a source the Owner cannot read: another User's
     /// Private Tool, a Private Tool that is gone, or a revision that never
     /// existed.
     #[error("the source of this Shared Tool Publish cannot be read")]
     SharedToolSourceUnreadable,
-    /// The path names a namespace that holds other live Shared Tools, or
-    /// lies under one of them.
-    #[error("Shared Tool Path conflicts with an existing Shared Tool namespace")]
-    SharedToolPathConflict,
-    /// Source could not become one accepted Shared Tool revision.
-    #[error("Shared Tool authoring failed: {0}")]
-    SharedToolAdmission(String),
-    /// The source's arguments or result cannot cross a Tool call as data.
-    #[error("a Shared Tool takes and returns only data: {0}")]
-    SharedToolNotData(String),
-    /// Compiling a Shared Tool Publish exceeded the fixed authoring deadline.
-    #[error("Shared Tool compilation exceeded the two-second deadline")]
-    SharedToolCompilationTimedOut,
+    /// The path names a namespace that holds other Tools of its kind, or
+    /// lies under one of them: the caller's other Private Tools, or other
+    /// live Shared Tools.
+    #[error("{}", path_conflict(*.0))]
+    PathConflict(AuthoredToolKind),
     /// The source's arguments or result cannot cross a Tool call as data:
     /// the reason names where the declaration holds a function, a class
     /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
-    #[error("a Private Tool takes and returns only data: {0}")]
-    PrivateToolNotData(String),
-    /// The path names a namespace that holds the caller's other Private Tools,
-    /// or lies under one of them.
-    #[error(
-        "Private Tool authoring failed: Private Tool Path conflicts with an existing virtual namespace"
-    )]
-    PrivateToolPathConflict,
+    #[error("a {} takes and returns only data: {}", .0.name(), .1)]
+    NotData(AuthoredToolKind, String),
     /// Compilation exceeded the fixed authoring deadline.
-    #[error("Private Tool compilation exceeded the two-second deadline")]
-    PrivateToolCompilationTimedOut,
+    #[error("{} compilation exceeded the two-second deadline", .0.name())]
+    CompilationTimedOut(AuthoredToolKind),
     /// The compiler queue was full, so the source was not judged. Retryable.
     #[error("the authoring compiler is busy; retry shortly")]
     CompilerBusy,
@@ -99,27 +80,41 @@ pub enum Error {
     Database(#[from] coral_db::Error),
 }
 
+/// What a path conflict says. A Private Tool's keeps the wording its save
+/// has always returned.
+const fn path_conflict(kind: AuthoredToolKind) -> &'static str {
+    match kind {
+        AuthoredToolKind::Private => {
+            "Private Tool authoring failed: Private Tool Path conflicts with an existing virtual namespace"
+        }
+        AuthoredToolKind::Shared => {
+            "Shared Tool Path conflicts with an existing Shared Tool namespace"
+        }
+    }
+}
+
 impl Error {
     /// The error's stable kind, for an event's `error.type`: a bounded
     /// code that never carries the error's text.
     #[must_use]
     pub const fn code(&self) -> &'static str {
+        use AuthoredToolKind::{Private, Shared};
         match self {
             Self::InvalidInput { .. } => "invalid_input",
-            Self::PrivateToolNotFound { .. } => "private_tool_not_found",
+            Self::NotFound(Private) => "private_tool_not_found",
+            Self::NotFound(Shared) => "shared_tool_not_found",
             Self::PrivateToolExists => "private_tool_exists",
-            Self::PrivateToolRevisionConflict { .. } => "private_tool_revision_conflict",
-            Self::PrivateToolAdmission { .. } => "private_tool_admission",
-            Self::SharedToolNotFound => "shared_tool_not_found",
-            Self::SharedToolRevisionConflict { .. } => "shared_tool_revision_conflict",
+            Self::RevisionConflict { kind: Private, .. } => "private_tool_revision_conflict",
+            Self::RevisionConflict { kind: Shared, .. } => "shared_tool_revision_conflict",
+            Self::Admission(Private, _) => "private_tool_admission",
+            Self::Admission(Shared, _) => "shared_tool_admission",
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
-            Self::SharedToolPathConflict => "shared_tool_path_conflict",
-            Self::SharedToolAdmission(_) => "shared_tool_admission",
-            Self::SharedToolNotData(_) => "shared_tool_not_data",
-            Self::SharedToolCompilationTimedOut => "shared_tool_compilation_timed_out",
-            Self::PrivateToolNotData(_) => "private_tool_not_data",
-            Self::PrivateToolPathConflict => "private_tool_path_conflict",
-            Self::PrivateToolCompilationTimedOut { .. } => "private_tool_compilation_timed_out",
+            Self::PathConflict(Private) => "private_tool_path_conflict",
+            Self::PathConflict(Shared) => "shared_tool_path_conflict",
+            Self::NotData(Private, _) => "private_tool_not_data",
+            Self::NotData(Shared, _) => "shared_tool_not_data",
+            Self::CompilationTimedOut(Private) => "private_tool_compilation_timed_out",
+            Self::CompilationTimedOut(Shared) => "shared_tool_compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::PackageTooLarge { .. } => "package_too_large",
@@ -136,6 +131,7 @@ impl Error {
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
+        use AuthoredToolKind::{Private, Shared};
         if let Self::Workspace(error) = self {
             return error
                 .safe_rejection()
@@ -143,21 +139,18 @@ impl Error {
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
-            Self::PrivateToolNotFound => "private_tool_not_found",
             Self::PrivateToolExists => "private_tool_exists",
-            Self::PrivateToolRevisionConflict { .. } => "private_tool_revision_conflict",
-            Self::PrivateToolAdmission(_) | Self::PrivateToolPathConflict => {
+            // A Private Tool's path conflict is refused as its authoring is.
+            Self::Admission(Private, _) | Self::PathConflict(Private) => {
                 "private_tool_admission_failed"
             }
-            Self::PrivateToolNotData(_) => "private_tool_not_data",
-            Self::SharedToolNotFound => "shared_tool_not_found",
-            Self::SharedToolRevisionConflict { .. } => "shared_tool_revision_conflict",
+            Self::Admission(Shared, _) => "shared_tool_admission_failed",
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
-            Self::SharedToolPathConflict => "shared_tool_path_conflict",
-            Self::SharedToolAdmission(_) => "shared_tool_admission_failed",
-            Self::SharedToolNotData(_) => "shared_tool_not_data",
-            Self::SharedToolCompilationTimedOut => "shared_tool_compilation_timed_out",
-            Self::PrivateToolCompilationTimedOut => "private_tool_compilation_timed_out",
+            Self::NotFound(_)
+            | Self::RevisionConflict { .. }
+            | Self::PathConflict(Shared)
+            | Self::NotData(..)
+            | Self::CompilationTimedOut(_) => self.code(),
             Self::CompilerBusy => "authoring_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::PermissionDenied(_) => "permission_denied",

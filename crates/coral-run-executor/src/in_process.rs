@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
     AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations,
-    IsolateLimits, LinkedToolReference, LinkedToolSource, NamedCallPaths, ProgramCompiler,
-    ToolReferences, UnknownToolCall,
+    IsolateLimits, LinkedToolSource, NamedCallPaths, ProgramCompiler, ToolReferences,
+    UnknownToolCall,
 };
 
 use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
@@ -54,13 +54,13 @@ impl CompilerClient for InProcessCompiler {
             .map_err(compile_error)
     }
 
-    fn dependency_references(
+    fn module_references(
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<Vec<LinkedToolReference>, CompileError> {
+    ) -> Result<NamedCallPaths, CompileError> {
         self.run
-            .private_tool_dependency_paths(deadline(time_left), source)
+            .authored_tool_call_paths(deadline(time_left), source)
             .map_err(compile_error)
     }
 

@@ -1,3 +1,4 @@
+use coral_catalog::AuthoredToolKind;
 use coral_test_support::change;
 use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::Duration;
@@ -242,7 +243,10 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
             ),
         )
         .await;
-    assert!(matches!(failed, Err(Error::PrivateToolAdmission(_))));
+    assert!(matches!(
+        failed,
+        Err(Error::Admission(AuthoredToolKind::Private, _))
+    ));
     let unchanged = fixture
         .private_tools
         .get(&principal, &workspace_id, &path)
@@ -293,7 +297,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
             .private_tools
             .get(&principal, &workspace_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     let events = fixture
         .private_tools
@@ -530,7 +534,7 @@ async fn agent_and_user_private_tool_paths_are_principal_owned() {
 
     assert!(matches!(
         fixture.private_tools.get(&user, &workspace_id, &path).await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert_eq!(
         fixture
@@ -555,7 +559,7 @@ async fn agent_and_user_private_tool_paths_are_principal_owned() {
             .private_tools
             .get(&agent, &workspace_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(matches!(
         fixture
@@ -664,7 +668,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
             .private_tools
             .get_agent(&member, &workspace_id, &agent_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(matches!(
         fixture
@@ -683,7 +687,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
                 &path,
             )
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
 
     let organization_owner = AuthenticatedPrincipal::user(
@@ -707,7 +711,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
             .private_tools
             .get_agent(&organization_owner, &workspace_id, &agent_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(matches!(
         fixture
@@ -719,7 +723,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
                 &path,
             )
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert_eq!(
         fixture
@@ -747,7 +751,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
             .private_tools
             .get(&agent, &workspace_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert_eq!(
         fixture
@@ -895,7 +899,7 @@ async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
                     ),
                 )
                 .await,
-            Err(Error::PrivateToolPathConflict)
+            Err(Error::PathConflict(AuthoredToolKind::Private))
         ));
         assert!(
             matches!(
@@ -907,7 +911,7 @@ async fn private_tool_paths_cannot_overlap_virtual_namespaces() {
                         &PrivateToolPath::parse(path).expect("path"),
                     )
                     .await,
-                Err(Error::PrivateToolNotFound)
+                Err(Error::NotFound(AuthoredToolKind::Private))
             ),
             "the refused save of {path} saved nothing"
         );
@@ -981,7 +985,7 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
                 .private_tools
                 .get(&principal, &workspace_id, &path)
                 .await,
-            Err(Error::PrivateToolNotFound)
+            Err(Error::NotFound(AuthoredToolKind::Private))
         ));
     }
 }
@@ -1054,7 +1058,7 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                 .save(&context, &workspace_id, save(&missing).replace_only(None))
                 .await
                 .map(drop),
-            |error| matches!(error, Error::PrivateToolNotFound),
+            |error| matches!(error, Error::NotFound(AuthoredToolKind::Private)),
         ),
         (
             "replace-only at a moved revision",
@@ -1062,7 +1066,15 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                 .save(&context, &workspace_id, save(&path).replace_only(Some(2)))
                 .await
                 .map(drop),
-            |error| matches!(error, Error::PrivateToolRevisionConflict { current: 1 }),
+            |error| {
+                matches!(
+                    error,
+                    Error::RevisionConflict {
+                        kind: AuthoredToolKind::Private,
+                        current: 1
+                    }
+                )
+            },
         ),
         (
             "delete at a missing path",
@@ -1070,7 +1082,7 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                 .delete(&context, &workspace_id, &missing)
                 .await
                 .map(drop),
-            |error| matches!(error, Error::PrivateToolNotFound),
+            |error| matches!(error, Error::NotFound(AuthoredToolKind::Private)),
         ),
     ];
     for (name, refused, expected) in refusals {
@@ -1090,7 +1102,7 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                     .private_tools
                     .get(&principal, &workspace_id, &missing)
                     .await,
-                Err(Error::PrivateToolNotFound)
+                Err(Error::NotFound(AuthoredToolKind::Private))
             ),
             "{name}: nothing was created"
         );
@@ -1113,7 +1125,7 @@ async fn a_save_whose_intent_the_path_refuses_never_compiles_and_changes_nothing
                 save(&path).replace_only(Some(1)),
             )
             .await,
-        Err(Error::PrivateToolCompilationTimedOut)
+        Err(Error::CompilationTimedOut(AuthoredToolKind::Private))
     ));
 }
 
@@ -1167,7 +1179,7 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(result, Err(Error::PrivateToolPathConflict)))
+            .filter(|result| matches!(result, Err(Error::PathConflict(AuthoredToolKind::Private))))
             .count(),
         1
     );
@@ -1228,7 +1240,7 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
                 &PrivateToolPath::parse("races.compile").expect("path"),
             )
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(
         blocked_private_tools
@@ -1293,7 +1305,10 @@ async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_pub
         )
         .await;
     assert!(
-        matches!(rejected, Err(Error::PrivateToolAdmission(_))),
+        matches!(
+            rejected,
+            Err(Error::Admission(AuthoredToolKind::Private, _))
+        ),
         "unexpected unresolved-public-type result: {rejected:?}"
     );
     for invalid_source in [
@@ -1320,7 +1335,7 @@ async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_pub
                     ),
                 )
                 .await,
-            Err(Error::PrivateToolAdmission(_))
+            Err(Error::Admission(AuthoredToolKind::Private, _))
         ));
     }
     let unchanged = fixture
@@ -1396,7 +1411,7 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
             )
             .await;
         assert!(
-            matches!(&refused, Err(Error::PrivateToolNotData(message)) if message.contains(reason)),
+            matches!(&refused, Err(Error::NotData(AuthoredToolKind::Private, message)) if message.contains(reason)),
             "{source}: {refused:?}"
         );
     }
@@ -1405,7 +1420,7 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
             .private_tools
             .get(&principal, &workspace_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
 
     for source in [
@@ -1450,7 +1465,7 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
     assert!(
         matches!(
             &missing,
-            Err(Error::PrivateToolAdmission(message))
+            Err(Error::Admission(AuthoredToolKind::Private, message))
                 if message == "Private Tool coral.private.reports.compose:2:10: \
                     coral.private.missing.value names no Tool that you can call. \
                     Find one with coral.search."
@@ -1478,7 +1493,7 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
             .await;
         assert!(matches!(
             rejected,
-            Err(Error::PrivateToolAdmission(message))
+            Err(Error::Admission(AuthoredToolKind::Private, message))
                 if message.contains("Private Tool coral.private.reports.compose")
                     && (message.contains(" at 1:") || message.contains(":1:"))
         ));
@@ -1489,7 +1504,7 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
             .private_tools
             .get(&principal, &workspace_id, &path)
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(
         fixture
@@ -1533,7 +1548,7 @@ async fn accepted_private_tool_diagnostics_are_bounded() {
 }
 
 /// Declares `repos.get` for every caller.
-struct DeclaresReposGet;
+pub(crate) struct DeclaresReposGet;
 
 #[async_trait::async_trait]
 impl crate::ToolDeclarationReader for DeclaresReposGet {
@@ -1674,10 +1689,13 @@ async fn one_users_private_tools_at_the_same_path_stay_scoped_to_each_workspace(
     assert_eq!(&delete().await.unwrap(), in_second.id());
     assert!(matches!(
         get(&second).await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     // Deleting again finds nothing and never falls back to the first Workspace.
-    assert!(matches!(delete().await, Err(Error::PrivateToolNotFound)));
+    assert!(matches!(
+        delete().await,
+        Err(Error::NotFound(AuthoredToolKind::Private))
+    ));
     assert_eq!(get(&first).await.unwrap(), in_first);
     assert_eq!(
         fixture
@@ -1760,8 +1778,8 @@ impl AuthoredToolCompiler for GatedAuthoredToolCompiler {
             ),
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
-            private_references: Vec::new(),
-            shared_references: Vec::new(),
+            linked: Vec::new(),
+            tools: coral_v8::ToolReferences::default(),
             not_data: None,
         })
     }
@@ -2123,7 +2141,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
                 &PrivateToolPath::parse("alpha.first").expect("path"),
             )
             .await,
-        Err(Error::PrivateToolNotFound)
+        Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert_eq!(entries().await, before);
 }

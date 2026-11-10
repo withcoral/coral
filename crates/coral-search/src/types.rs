@@ -335,19 +335,6 @@ impl SearchRequest {
     }
 }
 
-/// Splits a written path into the Call Root that would own it and the path
-/// under that root: a Provider Call Root's, or `coral.private` for a
-/// Private Tool's, which no Provider Call Root splits. `None` when no root
-/// owns it.
-pub(crate) fn split_written_path(path: &str) -> Option<(ProviderCallRoot, &str)> {
-    ProviderCallRoot::split_call_path(path).or_else(|| {
-        AuthoredToolKind::Private
-            .relative_path(path)
-            .filter(|relative| relative.split('.').all(|segment| !segment.is_empty()))
-            .map(|relative| (ProviderCallRoot::Private, relative))
-    })
-}
-
 /// Complete public JavaScript path for one Tool or Private Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);
@@ -361,10 +348,14 @@ impl CallPath {
     /// Returns [`Error::InvalidInput`] unless every path member is a safe
     /// JavaScript identifier under `coral` with a root and a relative path.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let segments = value.split('.').collect::<Vec<_>>();
-        let shaped = ProviderCallRoot::split_call_path(value).is_some()
-            || matches!(segments.as_slice(), ["coral", "private", _, ..]);
-        if !shaped || segments.iter().any(|segment| !safe_path_segment(segment)) {
+        let shaped = match ProviderCallRoot::split_call_path(value).map(|(root, _relative)| root) {
+            Some(
+                ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin | ProviderCallRoot::Private,
+            ) => true,
+            // Universal Search holds no Shared Tool yet (#2981).
+            Some(ProviderCallRoot::Shared) | None => false,
+        };
+        if !shaped || value.split('.').any(|segment| !safe_path_segment(segment)) {
             return Err(Error::InvalidInput(
                 "Call Path must be a complete safe JavaScript path under coral, coral.providers or coral.private"
                     .to_string(),

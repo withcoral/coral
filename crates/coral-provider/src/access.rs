@@ -111,8 +111,17 @@ impl ProviderCallRoot {
 
     /// Splits `call_path` into the Call Root that owns it and the
     /// Tool-relative path under that root, if a valid root owns it.
+    ///
+    /// Any kind of root can own one. A caller that reads only the Tools a
+    /// Provider's Generation holds matches on the root, and leaves the
+    /// Private and Shared roots to coral-tools, which keeps their Tools.
     #[must_use]
     pub fn split_call_path(call_path: &str) -> Option<(Self, &str)> {
+        if let Some(kind) = AuthoredToolKind::of_call_path(call_path) {
+            let relative = kind.relative_path(call_path)?;
+            return relative_path_is_valid(relative)
+                .then_some((Self::of_authored_tools(kind), relative));
+        }
         let members = call_path.strip_prefix(BUILTIN_ROOT)?.strip_prefix('.')?;
         if let Some(owned) = members.strip_prefix("providers.") {
             let (namespace, relative) = owned.split_once('.')?;
@@ -155,12 +164,25 @@ impl ProviderCallRoot {
         }
     }
 
+    /// The kind of Tool the Provider at this Call Root holds, when Coral
+    /// performs its Tools from authored source that coral-tools keeps: the
+    /// Private and the Shared Provider. `None` for a Provider whose
+    /// Generation holds its Tools.
+    #[must_use]
+    pub const fn authored_tool_kind(&self) -> Option<coral_catalog::AuthoredToolKind> {
+        match self {
+            Self::Private => Some(coral_catalog::AuthoredToolKind::Private),
+            Self::Shared => Some(coral_catalog::AuthoredToolKind::Shared),
+            Self::Owner(_) | Self::Builtin => None,
+        }
+    }
+
     /// Whether Coral performs the Provider's Tools from authored source
     /// that coral-tools keeps: the Private and the Shared Provider. Such a
     /// Provider's Generation holds no Tool, and it has no Accounts.
     #[must_use]
     pub const fn performs_code(&self) -> bool {
-        matches!(self, Self::Private | Self::Shared)
+        self.authored_tool_kind().is_some()
     }
 
     /// Returns the Call Root's last segment, such as `github` or `coral`, for

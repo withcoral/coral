@@ -210,16 +210,14 @@ async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_
     // test starts at 0048, and the steps after it there wait too. Every later
     // step applies first, because today's code publishes the tracer Provider
     // and may read any of them. A later step needs no change to this range
-    // unless it depends on one of the held-back steps: 0065 rebuilds the
-    // search tables on SQLite, so it waits with 0066, and 0068 rebuilds the
-    // location columns that 0065 renames, so it waits too. The publish reads
-    // none of what they change.
+    // unless it depends on one of the held-back steps: 0063 rebuilds the
+    // search tables on SQLite, and renames the Saved Function table that
+    // they reference until 0049, so it waits too. The publish reads none of
+    // what it changes.
     let modules = TestModules::with_plan(&coral_test_support::edited_migration_plan(|steps| {
         steps
             .into_iter()
-            .filter(|step| {
-                !(48..55).contains(&step.version) && ![65, 66, 68].contains(&step.version)
-            })
+            .filter(|step| !(48..55).contains(&step.version) && step.version != 63)
             .collect()
     }))
     .await;

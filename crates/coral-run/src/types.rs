@@ -1093,6 +1093,17 @@ pub(crate) struct LinkedTool {
     pub(crate) declared_default: coral_catalog::ToolAccessState,
 }
 
+impl LinkedTool {
+    /// The definition a Run that linked `selection` performs.
+    pub(crate) fn of(selection: &coral_tools::LinkedToolSelection) -> Self {
+        Self {
+            kind: selection.kind(),
+            binding: selection.execution_binding(),
+            declared_default: selection.default_access_state(),
+        }
+    }
+}
+
 impl AcceptedRun {
     /// The Run's ID as a span field.
     pub(crate) fn held_id(&self) -> HeldRunId {

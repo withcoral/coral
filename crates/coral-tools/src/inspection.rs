@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 
@@ -34,7 +35,7 @@ impl PrivateToolInspection {
     /// # Errors
     ///
     /// An absent, inaccessible, or differently owned path returns
-    /// [`Error::PrivateToolNotFound`].
+    /// [`Error::NotFound`].
     pub async fn get(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -52,7 +53,7 @@ impl PrivateToolInspection {
             path,
         )
         .await?
-        .ok_or(Error::PrivateToolNotFound)?;
+        .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         transaction.commit().await?;
         Ok(tool)
     }

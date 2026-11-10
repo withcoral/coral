@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use coral_v8::{
     AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations,
-    LinkedToolReference, LinkedToolSource, NamedCallPaths, ToolReferences, UnknownToolCall,
+    LinkedToolSource, NamedCallPaths, ToolReferences, UnknownToolCall,
 };
 
 /// The calls Program Admission and Private Tool save make of one warm
@@ -13,12 +13,12 @@ use coral_v8::{
 /// time runs out, while it waits or while it compiles. A call
 /// carries source and no authority.
 pub trait CompilerClient: Send + Sync {
-    /// The Private Tools and Tools that a Program body names directly.
+    /// The Private and Shared Tools and the Tools that a Program body names
+    /// directly.
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.private` access and malformed
-    /// wrapper escapes.
+    /// Rejects computed or aliased access and malformed wrapper escapes.
     fn program_references(
         &self,
         time_left: Duration,
@@ -38,16 +38,17 @@ pub trait CompilerClient: Send + Sync {
         callable: &[String],
     ) -> Result<Vec<UnknownToolCall>, CompileError>;
 
-    /// The Private Tools that one Authored Tool module names directly.
+    /// The Private and Shared Tools and the Tools that one linked module
+    /// names directly, for Program Admission to link and check.
     ///
     /// # Errors
     ///
     /// Rejects computed or aliased access and malformed module source.
-    fn dependency_references(
+    fn module_references(
         &self,
         time_left: Duration,
         source: &str,
-    ) -> Result<Vec<LinkedToolReference>, CompileError>;
+    ) -> Result<NamedCallPaths, CompileError>;
 
     /// A Program body lowered with the Private and Shared Tools it links, which
     /// initialize in the given order, and with `builtin_tools` on `coral`.
@@ -64,13 +65,12 @@ pub trait CompilerClient: Send + Sync {
         builtin_tools: &BuiltinTools,
     ) -> Result<CompiledProgram, CompileError>;
 
-    /// The Private Tools and Tools that one Authored Tool module names
-    /// directly, to type it.
+    /// The Private and Shared Tools and the Tools that one Authored Tool
+    /// module names directly, for authoring to type and review it.
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.private` access and malformed
-    /// module source.
+    /// Rejects computed or aliased access and malformed module source.
     fn call_paths(&self, time_left: Duration, source: &str)
     -> Result<NamedCallPaths, CompileError>;
 

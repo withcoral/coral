@@ -279,6 +279,7 @@ async fn a_missing_path_names_the_nearest_paths_the_caller_can_call_in_its_call_
         ),
         ("coral.providers.absent.retrievePage", None),
         ("coral.private.retrievePage", None),
+        ("coral.shared.retrievePage", None),
         (
             "coral.providers.notion.retrieve-page",
             Some("notion.retrieveAPage"),
@@ -363,10 +364,11 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
     let mut transaction = database.begin().await.unwrap();
     fixture
         .providers
-        .install_builtin_in_transaction(
+        .install_coral_defined_in_transaction(
             &mut transaction,
             &change(scope.user.clone(), 50, '5'),
             &scope.workspace_id,
+            coral_provider::CoralDefinedProvider::Builtin,
         )
         .await
         .unwrap()

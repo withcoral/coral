@@ -15,7 +15,12 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
     let mut transaction = database.begin().await.unwrap();
     fixture
         .providers
-        .install_builtin_in_transaction(&mut transaction, &context, &workspace)
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            &workspace,
+            coral_provider::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();
@@ -102,7 +107,12 @@ async fn the_search_tool_hit_is_not_complete_while_its_line_shows_one_overload()
     let mut transaction = database.begin().await.unwrap();
     fixture
         .providers
-        .install_builtin_in_transaction(&mut transaction, &context, &workspace)
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            &workspace,
+            coral_provider::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();
