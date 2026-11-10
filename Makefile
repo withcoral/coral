@@ -1,6 +1,6 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
-.PHONY: license-check lint-migrations lint-proto reef-image-checks
+.PHONY: license-check lint-migrations lint-proto reef-image-checks ee-boundary
 
 # Images build and test with Docker or Podman.
 CONTAINER_ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -59,10 +59,8 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks: lint-migrations license-check
+rust-checks: lint-migrations license-check ee-boundary
 	scripts/check-migrations.sh
-	scripts/check-ee-boundary.sh
-	scripts/check-ee-boundary.test.sh
 	# A plain build at the root builds only the Apache-2.0 crates; prove they
 	# stand alone without ee/ (ADR 0033).
 	cargo check --locked
@@ -70,6 +68,19 @@ rust-checks: lint-migrations license-check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	$(RUST_WORKSPACE_TESTS)
 	# RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+# ----------------------------------------------------------------------------
+# ee/ boundary
+# ----------------------------------------------------------------------------
+# Checks that code outside ee/ does not reach into it (ADR 0033), then tries
+# each breach the check must catch. CI runs it on every change; rust-checks
+# runs it too.
+#
+#   make ee-boundary
+
+ee-boundary:
+	scripts/check-ee-boundary.sh
+	scripts/check-ee-boundary.test.sh
 
 # ----------------------------------------------------------------------------
 # Local Postgres-backed tests
