@@ -772,11 +772,11 @@ dependencies = [
 
 [[package]]
 name = "coral-edition"
-version = "1.5.0"
+version = "1.6.0"
 
 [[package]]
 name = "coral-ee"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "coral",
  "coral-app",
