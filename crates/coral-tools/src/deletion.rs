@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use coral_catalog::AuthoredToolKind;
-use coral_db::{Database, Transaction};
+use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, PrincipalKind, WorkspaceId, WorkspaceModule};
 
 use crate::Error;
@@ -14,44 +12,28 @@ use crate::types::{PrivateToolChangeContext, PrivateToolId, PrivateToolPath};
 /// for a Workspace Owner a Workspace-owned Agent's.
 ///
 /// It starts no compiler, so management surfaces can delete without the
-/// authoring cost of [`crate::PrivateToolModule`].
+/// authoring cost of [`crate::PrivateToolModule`]. It stages each deletion
+/// in the caller's transaction and commits none. The caller removes the
+/// deleted Private Tool's exact rule in the same transaction, through
+/// `coral_policy::remove_authored_tool_rules_in_transaction`, and sends its
+/// identity to `SearchIndex::sync_authored_tool` after the commit:
+/// coral-policy and coral-search depend on this crate, so neither call can
+/// come from here.
 #[derive(Clone)]
 pub struct PrivateToolDeletion {
-    database: Arc<Database>,
     workspaces: WorkspaceModule,
 }
 
 impl PrivateToolDeletion {
-    /// Builds deletion over the application's shared database and Workspace authority.
+    /// Builds deletion over the application's Workspace authority.
     #[must_use]
-    pub const fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
-        Self {
-            database,
-            workspaces,
-        }
+    pub const fn new(workspaces: WorkspaceModule) -> Self {
+        Self { workspaces }
     }
 
-    /// Atomically deletes one current path and records its lifecycle Event.
-    ///
-    /// # Errors
-    ///
-    /// Requires the owning Principal and an active Workspace. Absence or other
-    /// ownership is concealed as [`Error::NotFound`].
-    pub async fn delete(
-        &self,
-        context: &PrivateToolChangeContext,
-        workspace_id: &WorkspaceId,
-        path: &PrivateToolPath,
-    ) -> Result<PrivateToolId, Error> {
-        let mut transaction = self.database.begin().await?;
-        let id = self
-            .delete_in_transaction(&mut transaction, context, workspace_id, path)
-            .await?;
-        transaction.commit().await?;
-        Ok(id)
-    }
-
-    /// Atomically deletes one Workspace-owned Agent Private Tool as a Workspace Owner.
+    /// Stages the deletion of one Workspace-owned Agent Private Tool as a
+    /// Workspace Owner, with its lifecycle Event, in the caller's
+    /// transaction.
     ///
     /// The accountable User remains the lifecycle actor and never authors or
     /// executes as the Agent.
@@ -60,8 +42,10 @@ impl PrivateToolDeletion {
     ///
     /// Requires Workspace Owner authority in an active Workspace. A caller
     /// without it and an absent path get the same [`Error::NotFound`].
-    pub async fn delete_agent(
+    /// Failure requires rollback.
+    pub async fn delete_agent_in_transaction(
         &self,
+        transaction: &mut Transaction<'_>,
         context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
         agent_id: &PrincipalId,
@@ -71,26 +55,24 @@ impl PrivateToolDeletion {
             .actor()
             .authenticated_user()
             .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        let mut transaction = self.database.begin().await?;
         self.workspaces
-            .check_configuration_in_transaction(&mut transaction, user, workspace_id)
+            .check_configuration_in_transaction(transaction, user, workspace_id)
             .await
             .map_err(conceal_agent_private_tool_error)?;
         let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let tool =
-            repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
-                .await?
-                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        let deleted_id =
-            delete_current_with_event(&mut transaction, context, workspace_id, &tool).await?;
-        transaction.commit().await?;
-        Ok(deleted_id)
+        let tool = repository::find_current_in_transaction(transaction, workspace_id, &agent, path)
+            .await?
+            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
+        delete_current_with_event(transaction, context, workspace_id, &tool).await
     }
 
-    /// Stages deletion and lifecycle evidence in the caller's transaction.
+    /// Stages the deletion of the actor's own Private Tool at `path`, with
+    /// its lifecycle Event, in the caller's transaction.
     ///
     /// # Errors
-    /// Rechecks authority and exact current ownership. Failure requires rollback.
+    ///
+    /// Requires the owning Principal and an active Workspace. Absence or other
+    /// ownership is concealed as [`Error::NotFound`]. Failure requires rollback.
     pub async fn delete_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,

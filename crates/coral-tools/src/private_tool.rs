@@ -38,7 +38,8 @@ pub struct PreparedSave {
 /// outside the successful authoring transaction; current authority, state,
 /// definition, and Event commit together at the final linearization point.
 /// A Workspace Owner inspects an Agent's definitions through
-/// [`PrivateToolInspection`] and deletes one through [`PrivateToolDeletion`].
+/// [`PrivateToolInspection`] and deletes one through [`PrivateToolDeletion`],
+/// in a transaction its caller owns.
 #[derive(Clone)]
 pub struct PrivateToolModule {
     database: Arc<Database>,
@@ -85,7 +86,7 @@ impl PrivateToolModule {
     ) -> Self {
         Self {
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
-            deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
+            deletion: PrivateToolDeletion::new(workspaces.clone()),
             authoring: Authoring::new(database.clone(), v8_compiler(compiler), compilation_timeout),
             database,
             workspaces,
@@ -100,7 +101,7 @@ impl PrivateToolModule {
     ) -> Self {
         Self {
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
-            deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
+            deletion: PrivateToolDeletion::new(workspaces.clone()),
             authoring: Authoring::new(
                 database.clone(),
                 compiler,
@@ -296,25 +297,38 @@ impl PrivateToolModule {
         self.inspection.get(actor, workspace_id, path).await
     }
 
-    /// Atomically deletes one current path and records its lifecycle Event.
+    /// Deletes one current path with its lifecycle Event and commits, for
+    /// tests. It leaves the Private Tool's exact rule and does not notify
+    /// Universal Search: production deletes through a caller that owns the
+    /// transaction and joins [`Self::delete_in_transaction`].
     ///
     /// # Errors
     ///
-    /// Requires the owning Principal and an active Workspace. Absence or other
-    /// ownership is concealed as [`Error::NotFound`].
+    /// Returns the errors of [`Self::delete_in_transaction`].
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn delete(
         &self,
         context: &PrivateToolChangeContext,
         workspace_id: &WorkspaceId,
         path: &PrivateToolPath,
     ) -> Result<PrivateToolId, Error> {
-        self.deletion.delete(context, workspace_id, path).await
+        let mut transaction = self.database.begin().await?;
+        let id = self
+            .delete_in_transaction(&mut transaction, context, workspace_id, path)
+            .await?;
+        transaction.commit().await?;
+        Ok(id)
     }
 
-    /// Stages deletion and lifecycle evidence in the caller's transaction.
+    /// Stages deletion and lifecycle evidence in the caller's transaction,
+    /// as [`PrivateToolDeletion::delete_in_transaction`] does: the caller
+    /// also removes the Private Tool's exact rule and notifies Universal
+    /// Search.
     ///
     /// # Errors
-    /// Rechecks authority and exact current ownership. Failure requires rollback.
+    ///
+    /// Requires the owning Principal and an active Workspace. Absence or other
+    /// ownership is concealed as [`Error::NotFound`]. Failure requires rollback.
     pub async fn delete_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
@@ -478,6 +492,12 @@ impl PrivateToolModule {
 /// to this transaction. This facet neither commits
 /// nor initializes a compiler; retained execution snapshots are untouched.
 ///
+/// Returns the Private Tools it deleted, with the Workspace of each scope
+/// that held any. The caller removes their exact rules in this transaction,
+/// through `coral_policy::remove_authored_tool_rules_in_transaction`:
+/// coral-policy depends on this crate, so the call from here would be a
+/// cycle.
+///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-definition failure, requiring the caller to
@@ -486,13 +506,14 @@ pub async fn delete_current_for_access_removal_in_transaction(
     transaction: &mut Transaction<'_>,
     context: &coral_workspace::ChangeContext,
     prepared: &coral_workspace::PreparedAccessRemoval,
-) -> Result<(), Error> {
+) -> Result<Vec<(WorkspaceId, Vec<PrivateToolId>)>, Error> {
     prepared.verify_transaction(transaction, context)?;
     let change = PrivateToolChangeContext::new(
         AuthenticatedPrincipal::user(context.actor().clone()),
         context.occurred_at_unix_nanos(),
         context.trace_id().clone(),
     );
+    let mut deleted = Vec::new();
     for scope in prepared.lost_access() {
         let tools = repository::list_current_in_transaction(
             transaction,
@@ -500,11 +521,18 @@ pub async fn delete_current_for_access_removal_in_transaction(
             scope.principal(),
         )
         .await?;
+        let mut ids = Vec::with_capacity(tools.len());
         for tool in tools {
-            delete_current_with_event(transaction, &change, scope.workspace_id(), &tool).await?;
+            ids.push(
+                delete_current_with_event(transaction, &change, scope.workspace_id(), &tool)
+                    .await?,
+            );
+        }
+        if !ids.is_empty() {
+            deleted.push((scope.workspace_id().clone(), ids));
         }
     }
-    Ok(())
+    Ok(deleted)
 }
 
 pub(crate) async fn delete_current_with_event(

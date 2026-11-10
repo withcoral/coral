@@ -131,6 +131,10 @@
   no foreign key to a source but the Workspace. Notify `SearchIndex` after the
   commit with ids alone; its reconcile pass repairs what a notification missed
   ([ADR 0017](docs/adr/0017-universal-search-never-gates-the-catalog.md)).
+- The transaction that removes a Private or a Shared Tool also removes its
+  exact rules: the caller that owns the transaction joins
+  `coral_policy::remove_authored_tool_rules_in_transaction` with the removed
+  Tools' keys.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must

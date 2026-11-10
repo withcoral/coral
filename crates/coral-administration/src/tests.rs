@@ -8,6 +8,7 @@ mod repository;
 mod search_eval;
 mod setup;
 mod shared_tools;
+mod tool_removal;
 mod workspaces;
 
 use super::*;
@@ -93,6 +94,53 @@ impl RemovalAttempt {
             result.unwrap();
         }
     }
+}
+
+/// Creates `owner`'s Workspace as production does, with the Providers Coral
+/// defines, and tells `index` of them.
+async fn workspace_with_coral_defined_providers(
+    database: &Arc<Database>,
+    workspaces: &WorkspaceModule,
+    index: &coral_search::SearchIndex,
+    owner: &AuthenticatedUser,
+) -> WorkspaceId {
+    WorkspaceWorkflow::new(
+        database.clone(),
+        workspaces.clone(),
+        coral_provider::ProviderModule::with_running_catalog(
+            coral_outbound::DestinationPolicy::default(),
+            database.clone(),
+            workspaces.clone(),
+        ),
+        index.clone(),
+    )
+    .create_workspace(
+        &coral_test_support::change(owner.clone(), 10, '1'),
+        WorkspaceDisplayName::parse("Ops").unwrap(),
+    )
+    .await
+    .expect("create the Workspace")
+    .id()
+    .clone()
+}
+
+/// How many rows of `kind` the search index holds in the Workspace. Search
+/// hydrates a hit from the Tool itself, so only the row shows a change that
+/// search was not told of.
+async fn indexed_rows(database: &Database, workspace: &WorkspaceId, kind: &str) -> usize {
+    use sea_query::{Alias, Expr, ExprTrait as _, Query};
+    let rows: Vec<(String,)> = database
+        .fetch_all(
+            Query::select()
+                .column(Alias::new("doc_id"))
+                .from(Alias::new("search_entities"))
+                .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.to_string()))
+                .and_where(Expr::col(Alias::new("kind")).eq(kind))
+                .to_owned(),
+        )
+        .await
+        .expect("read the index rows");
+    rows.len()
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {

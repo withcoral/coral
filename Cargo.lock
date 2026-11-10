@@ -612,6 +612,7 @@ dependencies = [
  "coral-credentials",
  "coral-db",
  "coral-outbound",
+ "coral-policy",
  "coral-provider",
  "coral-search",
  "coral-telemetry",

@@ -2778,3 +2778,86 @@ async fn an_owner_sets_a_rule_on_a_shared_tool_and_a_member_only_reads_it() {
         "a removed Shared Tool has no decision to read"
     );
 }
+
+// Catches: a removed Private or Shared Tool whose exact rule stays among
+// the Workspace's rules, or a removal that takes another Tool's rule.
+#[tokio::test]
+async fn removing_authored_tool_rules_takes_only_the_rules_that_name_those_tools() {
+    let tools = SharedTools::new().await;
+    let base = &tools.base;
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let send = tools
+        .publish("mail.send", ToolAccessState::Enabled, 0)
+        .await;
+    base.policies
+        .set_access_states(
+            &change(base.owner.clone(), 70, 'b'),
+            vec![
+                (base.target(&base.owners_tool), ToolAccessState::Disabled),
+                (base.target(&base.agents_tool), ToolAccessState::Disabled),
+                (tools.target(&remind), ToolAccessState::Disabled),
+                (tools.target(&send), ToolAccessState::Disabled),
+            ],
+        )
+        .await
+        .expect("set the Owner's rules");
+    let events = base.events().await;
+
+    let mut transaction = base.policies.database.begin().await.expect("begin");
+    for (kind, removed) in [
+        (
+            coral_catalog::AuthoredToolKind::Private,
+            // A Tool without a rule has none to remove.
+            vec![base.owners_tool.clone(), base.members_tool.clone()],
+        ),
+        (
+            coral_catalog::AuthoredToolKind::Shared,
+            vec![remind.clone()],
+        ),
+        // A Shared Tool's key names no Tool of the Private Provider.
+        (coral_catalog::AuthoredToolKind::Private, vec![send.clone()]),
+        (coral_catalog::AuthoredToolKind::Shared, Vec::new()),
+    ] {
+        crate::remove_authored_tool_rules_in_transaction(
+            &mut transaction,
+            &base.workspace,
+            kind,
+            &removed,
+        )
+        .await
+        .expect("remove the rules");
+    }
+    transaction.commit().await.expect("commit");
+
+    let mut transaction = base
+        .policies
+        .database
+        .begin_read_snapshot()
+        .await
+        .expect("begin read");
+    let rules = crate::exact_tool_rules_in_transaction(&mut transaction, &base.workspace)
+        .await
+        .expect("read the Workspace's rules");
+    transaction.rollback().await.expect("end read");
+    assert_eq!(
+        rules,
+        crate::ExactToolRules::new(BTreeMap::from([
+            (
+                base.provider.clone(),
+                BTreeMap::from([(base.agents_tool.clone(), ToolAccessState::Disabled)]),
+            ),
+            (
+                base.shared_provider.clone(),
+                BTreeMap::from([(send, ToolAccessState::Disabled)]),
+            ),
+        ])),
+        "each Provider keeps only its other Tool's rule"
+    );
+    assert_eq!(
+        base.events().await,
+        events,
+        "the Tool's own removal Event is the record"
+    );
+}

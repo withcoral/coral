@@ -269,11 +269,13 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
-                private_tool_deletion: coral_tools::PrivateToolDeletion::new(
+                private_tool_workflow: coral_administration::PrivateToolWorkflow::new(
                     database.clone(),
-                    workspaces.clone(),
+                    coral_tools::PrivateToolDeletion::new(workspaces.clone()),
+                    search_index.clone(),
                 ),
                 shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
+                    database.clone(),
                     shared_tools.clone(),
                     coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
                     search_index.clone(),

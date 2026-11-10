@@ -839,9 +839,12 @@ impl SharedToolModule {
     /// Tool, checks that no other Shared Tool calls it, then writes the
     /// tombstone and one lifecycle Event together.
     ///
-    /// This removal does not notify Universal Search: the composing caller
-    /// sends the returned id to `SearchIndex::sync_authored_tool` after the
-    /// commit, as `coral_administration::SharedToolWorkflow` does.
+    /// This removal commits here, for tests: it leaves the Shared Tool's
+    /// exact rule and does not notify Universal Search. coral-policy and
+    /// coral-search depend on this crate, so neither call can come from
+    /// here. Production removes through
+    /// `coral_administration::SharedToolWorkflow`, which joins
+    /// [`Self::remove_in_transaction`].
     ///
     /// # Errors
     ///
@@ -854,6 +857,7 @@ impl SharedToolModule {
     ///   another live Shared Tool calls it, naming that Shared Tool.
     ///
     /// Failure changes nothing.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn remove(
         &self,
         context: &ChangeContext,
@@ -1206,7 +1210,17 @@ impl SharedToolModule {
         Ok(tool)
     }
 
-    async fn remove_in_transaction(
+    /// Stages the removal of [`Self::remove`] and its lifecycle Event in
+    /// the caller's transaction, and returns the removed Shared Tool's
+    /// identity. The caller removes its exact rule in the same transaction,
+    /// through `coral_policy::remove_authored_tool_rules_in_transaction`,
+    /// and sends the identity to `SearchIndex::sync_authored_tool` after the
+    /// commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::remove`]. Failure requires rollback.
+    pub async fn remove_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,

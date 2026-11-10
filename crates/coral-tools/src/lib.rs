@@ -22,8 +22,8 @@
 //!
 //! [`PrivateToolInspection`] reads the caller's own current definitions, and
 //! an Agent's for a Workspace Owner, without a compiler, for read-only
-//! surfaces. [`PrivateToolDeletion`] deletes them without a compiler, for
-//! management surfaces.
+//! surfaces. [`PrivateToolDeletion`] stages their deletion in the caller's
+//! transaction without a compiler, for management surfaces.
 //!
 //! The discovery facets serve Universal Search for both kinds: they join the
 //! caller's authorized read snapshot and separate metadata, declaration

@@ -46,8 +46,9 @@ pub struct Dependencies {
     pub tasks: coral_task::TaskModule,
     /// Current Private Tool inspection: the caller's own, and an Agent's for an Owner.
     pub private_tools: coral_tools::PrivateToolInspection,
-    /// Current Private Tool deletion: the caller's own, and an Agent's for an Owner.
-    pub private_tool_deletion: coral_tools::PrivateToolDeletion,
+    /// Private Tool deletion, the caller's own and an Agent's for an Owner,
+    /// which removes the Private Tool's exact rule and tells Universal Search.
+    pub private_tool_workflow: coral_administration::PrivateToolWorkflow,
     /// The Workspace's Shared Tools: reads.
     pub shared_tools: coral_tools::SharedToolModule,
     /// Shared Tool publishing and removal, which tell Universal Search.
@@ -92,7 +93,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         accounts: dependencies.accounts,
         tasks: dependencies.tasks,
         private_tools: dependencies.private_tools,
-        private_tool_deletion: dependencies.private_tool_deletion,
+        private_tool_workflow: dependencies.private_tool_workflow,
         shared_tools: dependencies.shared_tools,
         shared_tool_workflow: dependencies.shared_tool_workflow,
         runs: dependencies.runs,
@@ -187,7 +188,7 @@ struct GrpcServices {
     accounts: Option<coral_provider::account::AccountModule>,
     tasks: coral_task::TaskModule,
     private_tools: coral_tools::PrivateToolInspection,
-    private_tool_deletion: coral_tools::PrivateToolDeletion,
+    private_tool_workflow: coral_administration::PrivateToolWorkflow,
     shared_tools: coral_tools::SharedToolModule,
     shared_tool_workflow: coral_administration::SharedToolWorkflow,
     runs: coral_run::RunModule,

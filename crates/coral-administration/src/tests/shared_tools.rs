@@ -2,9 +2,8 @@
 //! discover, and Universal Search hears of a publish and of a removal after
 //! each commits. Publishing and removal rules are tested at their owner,
 //! coral-tools.
-use crate::{SharedToolWorkflow, WorkspaceWorkflow};
+use crate::SharedToolWorkflow;
 use coral_catalog::ToolAccessState;
-use coral_provider::ProviderModule;
 use coral_search::{SearchIndex, SearchQuery, SearchRequest, UniversalSearchModule};
 use coral_test_support::{TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user};
 use coral_tools::{
@@ -13,10 +12,9 @@ use coral_tools::{
     SharedToolPath, SharedToolPublish,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, TraceId, WorkspaceDisplayName,
-    WorkspaceId, WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, TraceId, WorkspaceId,
+    WorkspaceModule,
 };
-use sea_query::{Alias, Expr, ExprTrait as _, Query};
 
 const SHARED: &str = "coral.shared.tides.summarize";
 const SOURCE: &str = "export default async function summarize() { return 'high at noon'; }";
@@ -39,24 +37,9 @@ impl Fixture {
         let workspaces = WorkspaceModule::new(database.clone());
         let index = SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
         let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Member).await;
-        let workspace = WorkspaceWorkflow::new(
-            database.clone(),
-            workspaces.clone(),
-            ProviderModule::with_running_catalog(
-                coral_outbound::DestinationPolicy::default(),
-                database.clone(),
-                workspaces.clone(),
-            ),
-            index.clone(),
-        )
-        .create_workspace(
-            &change(owner.clone(), 10, '1'),
-            WorkspaceDisplayName::parse("Ops").unwrap(),
-        )
-        .await
-        .expect("create the Workspace")
-        .id()
-        .clone();
+        let workspace =
+            super::workspace_with_coral_defined_providers(&database, &workspaces, &index, &owner)
+                .await;
         PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
@@ -81,7 +64,7 @@ impl Fixture {
         .expect("save the draft");
         let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
         let shared_tools = SharedToolModule::new(
-            database,
+            database.clone(),
             workspaces,
             IsolateLimits::default(),
             TEST_COMPILATION_TIMEOUT,
@@ -90,7 +73,12 @@ impl Fixture {
         // The Workspace's own Providers are indexed before a test publishes.
         index.settled().await;
         Self {
-            workflow: SharedToolWorkflow::new(shared_tools, search.clone(), index.clone()),
+            workflow: SharedToolWorkflow::new(
+                database,
+                shared_tools,
+                search.clone(),
+                index.clone(),
+            ),
             db,
             index,
             search,
@@ -133,20 +121,7 @@ impl Fixture {
 
     /// How many Shared Tool rows the search index holds in the Workspace.
     async fn indexed_rows(&self) -> usize {
-        let rows: Vec<(String,)> = self
-            .db
-            .database()
-            .fetch_all(
-                Query::select()
-                    .column(Alias::new("doc_id"))
-                    .from(Alias::new("search_entities"))
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("shared_tool"))
-                    .to_owned(),
-            )
-            .await
-            .expect("read the Shared Tool rows");
-        rows.len()
+        super::indexed_rows(&self.db.database(), &self.workspace, "shared_tool").await
     }
 }
 

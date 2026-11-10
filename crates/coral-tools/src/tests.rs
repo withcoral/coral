@@ -666,7 +666,6 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     ));
     assert!(matches!(
         fixture
-            .deletion
             .delete_agent(
                 &private_tool_change(member, 36, 'b'),
                 &workspace_id,
@@ -702,7 +701,6 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     ));
     assert!(matches!(
         fixture
-            .deletion
             .delete_agent(
                 &private_tool_change(organization_owner, 40, '9'),
                 &workspace_id,
@@ -723,7 +721,6 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     );
 
     fixture
-        .deletion
         .delete_agent(
             &private_tool_change(workspace_owner.clone(), 41, '9'),
             &workspace_id,
@@ -798,7 +795,6 @@ async fn naming_a_user_as_the_agent_selects_no_private_tool() {
     ));
     assert!(matches!(
         fixture
-            .deletion
             .delete_agent(
                 &private_tool_change(owner.clone(), 30, '8'),
                 &workspace_id,
@@ -1870,11 +1866,29 @@ impl PrivateToolTestModules {
         Self {
             fixture,
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
-            deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
+            deletion: PrivateToolDeletion::new(workspaces.clone()),
             database,
             workspaces,
             private_tools,
         }
+    }
+
+    /// Deletes an Agent's Private Tool as a caller that owns the
+    /// transaction does, and commits.
+    async fn delete_agent(
+        &self,
+        context: &PrivateToolChangeContext,
+        workspace_id: &coral_workspace::WorkspaceId,
+        agent_id: &coral_workspace::PrincipalId,
+        path: &PrivateToolPath,
+    ) -> Result<crate::PrivateToolId, Error> {
+        let mut transaction = self.database.begin().await?;
+        let deleted = self
+            .deletion
+            .delete_agent_in_transaction(&mut transaction, context, workspace_id, agent_id, path)
+            .await?;
+        transaction.commit().await?;
+        Ok(deleted)
     }
 
     async fn user_workspace(

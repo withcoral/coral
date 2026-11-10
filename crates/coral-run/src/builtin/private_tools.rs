@@ -168,8 +168,8 @@ impl RemoveTool {
             .map_err(|error| Rejection::invalid_inputs(vec![problem("path", &error)]))
     }
 
-    /// Deletes the invoking Principal's function at the path, then tells
-    /// Universal Search.
+    /// Deletes the invoking Principal's Private Tool at the path together
+    /// with its exact rule, then tells Universal Search.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         let private_tools = authoring(host)?;
         let context = change_context(host)?;
@@ -183,9 +183,18 @@ impl RemoveTool {
             .delete_in_transaction(&mut transaction, &context, host.workspace_id, &self.path)
             .await
             .map_err(|error| failure("path", error))?;
+        // The rule rows are coral-policy's, which coral-tools cannot call,
+        // so the delete's transaction joins both.
+        coral_policy::remove_authored_tool_rules_in_transaction(
+            &mut transaction,
+            host.workspace_id,
+            AuthoredToolKind::Private,
+            &[deleted.tool_key()],
+        )
+        .await?;
         transaction.commit().await?;
         // The delete never touches the search tables; this removes the
-        // function's rows sooner than a reconcile pass.
+        // Private Tool's rows sooner than a reconcile pass.
         private_tools
             .inner
             .index

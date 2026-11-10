@@ -244,6 +244,24 @@ pub(super) async fn upsert_access_state(
     Ok(())
 }
 
+/// Deletes the exact rules of `keys` on one Provider. A decision that holds
+/// one of them shared makes the delete wait, as it does a change.
+pub(super) async fn delete_access_states(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    provider: &ProviderId,
+    keys: &[ToolKey],
+) -> Result<(), Error> {
+    let statement = Query::delete()
+        .from_table(ToolAccessRules::Table)
+        .and_where(Expr::col(ToolAccessRules::WorkspaceId).eq(workspace.to_string()))
+        .and_where(Expr::col(ToolAccessRules::ProviderId).eq(provider.to_string()))
+        .and_where(Expr::col(ToolAccessRules::ToolKey).is_in(keys.iter().map(ToolKey::as_str)))
+        .to_owned();
+    transaction.execute_change(statement).await?;
+    Ok(())
+}
+
 pub(super) struct NewLifecycleEvent<'a> {
     pub(super) target: &'a ToolPolicyTarget,
     pub(super) actor_user_id: &'a UserId,

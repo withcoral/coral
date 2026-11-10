@@ -57,6 +57,7 @@ impl SharedScope {
                     index.clone(),
                 ));
         let workflow = coral_administration::SharedToolWorkflow::new(
+            scope.fixture.database.clone(),
             shared_tools.clone(),
             coral_search::UniversalSearchModule::new(
                 scope.fixture.database.clone(),

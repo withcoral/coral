@@ -1195,6 +1195,111 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
     }
 }
 
+// Catches: a `coral.removeTool` that leaves its Private Tool's exact rule
+// among the Workspace's rules or takes another Tool's, a refused one that
+// takes a rule, or one that commits although its rule removal failed.
+#[tokio::test]
+async fn removing_a_tool_removes_its_exact_rule_and_no_other() {
+    let (scope, _index) = authoring_scope("user:remove-rule").await;
+    let functions = private_tool_module(&scope);
+    let provider = private_provider(&scope).await.id().clone();
+    let mut keys = Vec::new();
+    for path in ["people.greet", "people.part"] {
+        let saved = outcome(&scope, &scope.owner, add(path, SOURCE)).await;
+        assert!(saved.pointer("/data/revision").is_some(), "{path}: {saved}");
+        let tool = functions
+            .get(
+                &scope.owner,
+                &scope.workspace_id,
+                &PrivateToolPath::parse(path).unwrap(),
+            )
+            .await
+            .unwrap();
+        keys.push(tool.id().tool_key());
+    }
+    scope
+        .fixture
+        .policies
+        .set_access_states(
+            &change(scope.owner_user(), 13, '4'),
+            keys.iter()
+                .map(|key| {
+                    (
+                        ToolPolicyTarget::new(
+                            scope.workspace_id.clone(),
+                            provider.clone(),
+                            key.clone(),
+                        ),
+                        ToolAccessState::Disabled,
+                    )
+                })
+                .collect(),
+        )
+        .await
+        .expect("set the Owner's rules");
+    // Whether an exact rule names each Tool: with no policy facts a Tool
+    // defaults to `approval_required`, so only its rule disables it.
+    let ruled = async || {
+        let mut transaction = scope.fixture.database.begin_read_snapshot().await.unwrap();
+        let rules =
+            coral_policy::exact_tool_rules_in_transaction(&mut transaction, &scope.workspace_id)
+                .await
+                .unwrap();
+        transaction.rollback().await.unwrap();
+        keys.iter()
+            .map(|key| {
+                rules.access_state(&provider, key, coral_catalog::ToolPolicyFacts::default())
+                    == ToolAccessState::Disabled
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ruled().await, [true, true]);
+
+    // An Owner's rule refuses the remove of the ruled Tool itself.
+    scope
+        .set_access_to("coral.removeTool", ToolAccessState::Disabled)
+        .await;
+    let refused = outcome(&scope, &scope.owner, remove("people.greet")).await;
+    assert_eq!(
+        refused.get("code"),
+        Some(&json!("tool_disabled")),
+        "{refused}"
+    );
+    assert_eq!(
+        ruled().await,
+        [true, true],
+        "a refused remove takes no rule"
+    );
+    scope
+        .set_access_to("coral.removeTool", ToolAccessState::Enabled)
+        .await;
+
+    // While the rule delete fails, the remove fails with it and keeps its
+    // Tool: the remove below still finds the Tool.
+    let table = "tool_access_rules";
+    let database = &scope.fixture.test_database;
+    database.fail_deletes(table, true).await.unwrap();
+    let run = scope.start(&scope.owner, remove("people.greet")).await;
+    let failed = scope.terminal(&scope.owner, &run).await;
+    assert!(
+        matches!(
+            failed.terminal_outcome(),
+            Some(RunTerminalOutcome::Interrupted)
+        ),
+        "{failed:?}"
+    );
+    assert_eq!(ruled().await, [true, true], "a failed remove takes no rule");
+    database.fail_deletes(table, false).await.unwrap();
+
+    let removed = outcome(&scope, &scope.owner, remove("people.greet")).await;
+    assert_eq!(
+        removed.pointer("/data/call_path"),
+        Some(&json!("coral.private.people.greet")),
+        "{removed}"
+    );
+    assert_eq!(ruled().await, [false, true]);
+}
+
 /// The Workspace's Private Provider, in any state.
 async fn private_provider(scope: &AdminScope) -> coral_provider::Provider {
     let mut transaction = scope.fixture.database.begin().await.unwrap();

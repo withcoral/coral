@@ -914,8 +914,12 @@ pub(crate) async fn start_server(
     }
     let private_tools =
         coral_tools::PrivateToolInspection::new(database.clone(), workspaces.clone());
-    let private_tool_deletion =
-        coral_tools::PrivateToolDeletion::new(database.clone(), workspaces.clone());
+    // A delete removes the Private Tool's exact rule and tells the search index.
+    let private_tool_workflow = coral_administration::PrivateToolWorkflow::new(
+        database.clone(),
+        coral_tools::PrivateToolDeletion::new(workspaces.clone()),
+        search_index.clone(),
+    );
     // A Shared Tool Publish compiles through the same warm compiler.
     let shared_tools = coral_tools::SharedToolModule::with_compiler_client(
         database.clone(),
@@ -930,6 +934,7 @@ pub(crate) async fn start_server(
             organization: coral_workspace::OrganizationModule::new(database.clone()),
             // A publish and a removal tell the search index after they commit.
             shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
+                database.clone(),
                 shared_tools.clone(),
                 search.clone(),
                 search_index.clone(),
@@ -952,7 +957,7 @@ pub(crate) async fn start_server(
             accounts: accounts.clone(),
             tasks,
             private_tools,
-            private_tool_deletion,
+            private_tool_workflow,
             shared_tools,
             runs: runs.clone(),
             releases: releases.clone(),

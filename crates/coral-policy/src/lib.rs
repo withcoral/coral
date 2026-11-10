@@ -27,6 +27,9 @@
 //!   holding the explicit rule shared when asked to.
 //! - [`ToolPolicyModule::list_lifecycle_events`] exposes safe policy-domain
 //!   Administrative Lifecycle Events.
+//! - [`remove_authored_tool_rules_in_transaction`] removes the exact rules
+//!   of removed Private and Shared Tools inside the transaction that removes
+//!   them.
 //!
 //! # Invariants
 //!
@@ -874,6 +877,53 @@ pub async fn authored_tool_decision_in_transaction(
         explicit.unwrap_or(declared),
         explicit.is_some(),
     ))
+}
+
+/// Removes the exact rules on the Tool Keys `removed` of the Workspace's
+/// Provider for Tools of `kind`: the rules that name the Private or the
+/// Shared Tools that the caller removes in this transaction. A Tool's
+/// identity is its Tool Key there. A Tool without a rule has none to remove.
+///
+/// The caller owns the removal, its authority and its transaction, and
+/// commits the two together. This facet records no policy Event: the Tool's
+/// own removal Event is the record, as when a Provider's removal drops its
+/// rules.
+///
+/// # Errors
+///
+/// Returns [`Error::Database`] for a persistence failure and
+/// [`Error::CorruptData`] for a corrupt Provider, and no other error.
+pub async fn remove_authored_tool_rules_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    kind: coral_catalog::AuthoredToolKind,
+    removed: &[ToolKey],
+) -> Result<(), Error> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    // A rule names its Provider, so a Workspace without the kind's Provider
+    // has no rule on a Tool of that kind.
+    let Some(provider) =
+        coral_provider::authored_tool_provider_in_transaction(transaction, workspace_id, kind)
+            .await
+            .map_err(provider_read_error)?
+    else {
+        return Ok(());
+    };
+    repository::delete_access_states(transaction, workspace_id, provider.id(), removed).await
+}
+
+/// A coral-provider read failure: only persistence or corrupt data.
+fn provider_read_error(error: coral_provider::Error) -> Error {
+    match error {
+        coral_provider::Error::Database(error)
+        | coral_provider::Error::Catalog(coral_catalog::Error::Database(error))
+        | coral_provider::Error::Workspace(coral_workspace::Error::Database(error)) => {
+            Error::Database(error)
+        }
+        other => Error::CorruptData(other.to_string()),
+    }
 }
 
 fn resolved_decision(

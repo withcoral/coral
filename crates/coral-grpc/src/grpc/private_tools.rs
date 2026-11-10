@@ -109,15 +109,11 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
             now().map_err(annotate)?,
             TraceId::current_or_new(),
         );
-        match private_tool_agent(&input.agent, &w)? {
-            Some(agent) => {
-                self.private_tool_deletion
-                    .delete_agent(&context, &w, &agent, &path)
-                    .await
-            }
-            None => self.private_tool_deletion.delete(&context, &w, &path).await,
-        }
-        .map_err(error)?;
+        let agent = private_tool_agent(&input.agent, &w)?;
+        self.private_tool_workflow
+            .delete(&context, &w, agent.as_ref(), &path)
+            .await
+            .map_err(error)?;
         Ok(Response::new(()))
     }
 }
