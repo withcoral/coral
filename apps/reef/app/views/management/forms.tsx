@@ -67,6 +67,7 @@ export function RoleField({
   onChange?: (role: string) => void
 }) {
   const [role, setRole] = useState(defaultValue)
+  const name = role === 'owner' ? 'Owner' : 'Member'
   return (
     <>
       <input type="hidden" name="role" value={role} form={formId} />
@@ -74,7 +75,7 @@ export function RoleField({
         <Menu.Trigger
           render={
             <Button.Container
-              ariaLabel={label}
+              ariaLabel={`${label}: ${name}`}
               className={styles.roleTrigger}
               disabled={disabled}
               fullWidth={fullWidth}
@@ -82,7 +83,7 @@ export function RoleField({
             />
           }
         >
-          <Button.Text>{role === 'owner' ? 'Owner' : 'Member'}</Button.Text>
+          <Button.Text>{name}</Button.Text>
           <Button.Icon name="ChevronDown" />
         </Menu.Trigger>
         <Menu.Content align="start">

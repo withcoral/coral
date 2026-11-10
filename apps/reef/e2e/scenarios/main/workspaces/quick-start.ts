@@ -45,7 +45,7 @@ export async function workspaceQuickStart(context: TestContext) {
         card.getByRole('button', { name: 'Copy prompt', exact: true }),
       )
       expect(copied).toContain(
-        `Help me connect to my Coral workspace ${JSON.stringify(name)} and add a provider.`,
+        `Help me connect to my Coral workspace ${JSON.stringify(name)}. Then help me add a provider if I want one.`,
       )
       // The prompt's wording and clamp belong to the AskYourAgent stories; this checks the live URL.
       expect(copied).toContain(`${target.mcpURL}/workspaces/${id}/mcp`)

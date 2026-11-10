@@ -10,6 +10,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::routing::get;
+use coral_auth as _;
 use coral_catalog::{OpenApiDocument, ToolKey};
 use coral_functions::SavedFunctionModule;
 use coral_mcp::{McpHttpConfig, McpModules, SUPPORTED_PROTOCOL_VERSIONS, start_local};
@@ -86,14 +87,7 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 6] = [
-    "save_function",
-    "delete_function",
-    "exec",
-    "wait",
-    "cancel",
-    "end_task",
-];
+const TOOL_NAMES: [&str; 4] = ["exec", "wait", "cancel", "end_task"];
 
 #[derive(Clone, Default)]
 struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -230,6 +224,8 @@ struct Tracer {
     provider_id: coral_provider::ProviderId,
     agent_credential: String,
     workspaces: WorkspaceModule,
+    /// Publishes the Providers a test adds to Workspace A.
+    providers: ProviderModule,
     runs: RunModule,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
@@ -328,6 +324,12 @@ impl Tracer {
         let index = coral_search::SearchIndex::new(db.clone(), std::time::Duration::from_mins(5));
         // The test helper publishes without the workflow, so nothing notified.
         index.reconcile().await;
+        // Programs save through the one module the Task commands use, and
+        // notify the same index.
+        let runs = runs.with_saved_functions(coral_run::SavedFunctions::new(
+            saved_functions.clone(),
+            index.clone(),
+        ));
         let agent = workspaces
             .create_agent(
                 &change(local_user.clone(), 12, '3'),
@@ -337,18 +339,13 @@ impl Tracer {
             )
             .await
             .expect("register tracer Agent");
-        let commands = coral_task::TaskCommands::new(
-            tasks.clone(),
-            saved_functions.clone(),
-            search,
-            index.clone(),
-            runs.clone(),
-        );
+        let commands = coral_task::TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
         let modules = McpModules::new(
             workspaces.clone(),
             tasks.clone(),
             commands,
             runs.clone(),
+            search,
             coral_mcp::HumanInterfaceUrl::parse("https://reef.example.test")
                 .expect("human interface URL"),
         )
@@ -373,6 +370,7 @@ impl Tracer {
             provider_id,
             agent_credential: agent.credential.expose().to_owned(),
             workspaces,
+            providers,
             runs,
             policies,
             approvals,
@@ -418,6 +416,57 @@ impl Tracer {
     async fn sdk(&self) -> SdkClient {
         self.sdk_on(&self.workspace_a, protocol_window_ends().1)
             .await
+    }
+
+    /// Publishes and indexes `acme_code`, the Provider `exec`'s example
+    /// searches, in Workspace A. Its `createPullRequest` takes a body whose
+    /// type the signature line names but does not show, so that hit is never
+    /// complete.
+    async fn publish_example_provider(&self) {
+        let operation = |id: &str, summary: &str| {
+            json!({
+                "operationId": id,
+                "summary": summary,
+                "responses": {"200": {
+                    "description": "Tracer response",
+                    "content": {"application/json": {"schema": {"type": "object"}}}
+                }}
+            })
+        };
+        let mut create = operation("createPullRequest", "Create a pull request");
+        create.as_object_mut().expect("operation").insert(
+            "requestBody".to_owned(),
+            json!({"required": true, "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+                "required": ["title"]
+            }}}}),
+        );
+        let document = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Acme Code Tracer", "version": "1"},
+            "servers": [{"url": self.upstream.url()}],
+            "security": [],
+            "paths": {"/pulls": {
+                "get": operation("listPullRequests", "List pull requests"),
+                "post": create
+            }}
+        });
+        publish_openapi(
+            &self.providers,
+            &self.policies,
+            &self.local_user,
+            &self.workspace_a,
+            &Publication {
+                namespace: "acme_code",
+                request_id: "54000000-0000-4000-8000-000000000002",
+                document,
+                tool_keys: &["listPullRequests", "createPullRequest"],
+                at: 60,
+            },
+        )
+        .await;
+        self.index.reconcile().await;
     }
 
     /// Makes `getForecast` wait for the invoking User's approval.
@@ -486,6 +535,64 @@ async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
         .pointer("/final_value/value")
         .cloned()
         .unwrap_or_else(|| panic!("a Final Value: {update}"))
+}
+
+/// Calls the Built-in authoring `tool` with `arguments` from a Program in
+/// `task`, as an agent saves or deletes a Saved Function, and returns the
+/// Tool Result's data or the failure the Program caught.
+async fn authoring_value(client: &SdkClient, task: &str, tool: &str, arguments: &Value) -> Value {
+    program_value(client, task, &authoring_program(tool, arguments)).await
+}
+
+/// Saves the function `name` that `declarations` declare at the top level
+/// of a Program in `task`, as an agent saves a Saved Function, and returns
+/// the Tool Result's data or the failure the Program caught.
+async fn saving_value(client: &SdkClient, task: &str, save: &Save<'_>) -> Value {
+    program_value(client, task, &save.program()).await
+}
+
+/// One save of a function a Program declares.
+struct Save<'a> {
+    path: &'a str,
+    description: &'a str,
+    /// Top-level declarations that declare `name`.
+    declarations: &'a str,
+    name: &'a str,
+}
+
+impl Save<'_> {
+    /// The Program that declares the function and saves it, as
+    /// [`authoring_program`] calls a Tool.
+    fn program(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.declarations,
+            authored_call(
+                "saveFunction",
+                &format!(
+                    "{{ path: {}, description: {}, source: {} }}",
+                    json!(self.path),
+                    json!(self.description),
+                    self.name
+                ),
+            )
+        )
+    }
+}
+
+/// A Program that calls `coral.workspace.<tool>` with `arguments` and
+/// returns the Tool Result's data, or the code and message it caught.
+fn authoring_program(tool: &str, arguments: &Value) -> String {
+    authored_call(tool, &arguments.to_string())
+}
+
+/// [`authoring_program`] with `arguments` as TypeScript source.
+fn authored_call(tool: &str, arguments: &str) -> String {
+    format!(
+        "try {{ return (await coral.workspace.{tool}({arguments})).data; }} \
+         catch (error) {{ if (!(error instanceof coral.ToolError)) throw error; \
+         return {{ code: error.code, message: error.message }}; }}"
+    )
 }
 
 /// Local mode has no sign-in to pick a Workspace with, so `/mcp` needs an
@@ -1205,17 +1312,22 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     assert_eq!(escaped.is_error, Some(false));
     assert!(program_error_bytes(&escaped) <= PROGRAM_ERROR_MAX_BYTES);
 
-    let saved_failure = call(
+    let saved_failure = saving_value(
         &client_a,
-        "save_function",
-        json!({
-            "task_id":task_id, "intent":"Locate an authored Saved Function failure",
-            "path":"diagnostics.fail", "description":"Fail with an authored message",
-            "source":"export default function fail() { throw new Error('saved-function-canary'); }"
-        }),
+        &task_id,
+        &Save {
+            path: "diagnostics.fail",
+            description: "Fail with an authored message",
+            declarations: "function fail() { throw new Error('saved-function-canary'); }",
+            name: "fail",
+        },
     )
     .await;
-    assert_ne!(saved_failure.is_error, Some(true));
+    assert_eq!(
+        saved_failure.get("call_path"),
+        Some(&json!("coral.functions.diagnostics.fail")),
+        "{saved_failure}"
+    );
     let linked_failure = call(
         &client_a,
         "exec",
@@ -1342,26 +1454,26 @@ return { found: found.data, read: read.data };"#,
         "{missing}"
     );
 
-    let saved = call(
+    let saved = saving_value(
         &client_a,
-        "save_function",
-        json!({
-            "task_id": task_id,
-            "intent": "Save a reusable weather helper",
-            "path": "weather.currentTemperature",
-            "description": "Return the current temperature in Celsius",
-            "source": r"export default async function currentTemperature(): Promise<number> {
+        &task_id,
+        &Save {
+            path: "weather.currentTemperature",
+            description: "Return the current temperature in Celsius",
+            declarations: r"async function currentTemperature(): Promise<number> {
     const forecast = await coral.providers.weather.getForecast();
     return forecast.data.temperatureC;
-}"
-        }),
+}",
+            name: "currentTemperature",
+        },
     )
     .await;
     assert_eq!(
-        structured(&saved)["call_path"],
-        "coral.functions.weather.currentTemperature"
+        saved.get("call_path"),
+        Some(&json!("coral.functions.weather.currentTemperature")),
+        "{saved}"
     );
-    assert!(structured(&saved)["declaration"].is_string());
+    assert!(saved.get("declaration").is_some_and(Value::is_string));
     // The save notifies search; wait for its write, with no reconcile pass.
     tracer.index.settled().await;
     let searched_function = program_value(
@@ -1428,19 +1540,17 @@ return { found: found.data, read: read.data };"#,
         json!({"kind":"value", "value":18})
     );
 
-    let deleted = call(
+    let deleted = authoring_value(
         &client_a,
-        "delete_function",
-        json!({
-            "task_id": task_id,
-            "intent": "Remove the tracer helper",
-            "path": "weather.currentTemperature"
-        }),
+        &task_id,
+        "deleteFunction",
+        &json!({ "path": "weather.currentTemperature" }),
     )
     .await;
     assert_eq!(
-        structured(&deleted)["call_path"],
-        "coral.functions.weather.currentTemperature"
+        deleted.get("call_path"),
+        Some(&json!("coral.functions.weather.currentTemperature")),
+        "{deleted}"
     );
 
     // coral-task owns how each rejected attempt is recorded; the wire carries its code.
@@ -1448,13 +1558,26 @@ return { found: found.data, read: read.data };"#,
         "task_id": task_id, "intent": "Record a source-limit rejection", "program": "x".repeat(65 * 1024), "wait_ms": 0
     })).await;
     assert_eq!(structured(&oversized)["code"], "invalid_input");
-    let invalid_function = call(&client_a, "save_function", json!({
-        "task_id": task_id, "intent": "Record rejected function authoring", "path": "invalidHelper",
-        "description": "Must not save", "source": "export default function ("
-    })).await;
+    // A function that does not compile fails the Program that saves it.
+    let invalid_function = call(
+        &client_a,
+        "exec",
+        json!({
+            "task_id": task_id, "intent": "Save a function that does not compile", "wait_ms": 0,
+            "program": Save {
+                path: "invalidHelper",
+                description: "Must not save",
+                declarations: "function invalidHelper(",
+                name: "invalidHelper",
+            }
+            .program(),
+        }),
+    )
+    .await;
     assert_eq!(
         structured(&invalid_function)["code"],
-        "saved_function_admission_failed"
+        "program_admission_failed",
+        "{invalid_function:?}"
     );
     for invalid in [" ".to_string(), "bad\0text".to_string(), "🪸".repeat(4097)] {
         let rejected = call(
@@ -1502,6 +1625,41 @@ return { found: found.data, read: read.data };"#,
     assert_ne!(observed_after_closure.is_error, Some(true));
 }
 
+/// A namespace lookup that fails costs only the list: `tools/list` still
+/// serves every tool, and `exec`'s description says the list is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_namespace_lookup_still_lists_every_tool() {
+    let tracer = Tracer::start().await;
+    // A fault in the Provider's credential contract fails every read that
+    // checks whether the caller can reach it.
+    tracer
+        .database
+        .execute_fixture_sql(
+            "UPDATE provider_generations SET credential_contract = 'not a contract' \
+             WHERE id IN (SELECT active_generation_id FROM provider_records \
+                          WHERE namespace = 'coral.providers.weather')",
+        )
+        .await
+        .expect("break the Provider's credential contract");
+    let client = tracer.sdk().await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let mut names = tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["cancel", "end_task", "exec", "wait"]);
+    let description = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.description.as_deref())
+        .expect("exec description");
+    assert!(
+        description.ends_with("\n\nCoral could not list your namespaces. Leave `provider` out."),
+        "{description}"
+    );
+}
+
 /// `exec`'s description teaches discovery with one example. Its first
 /// Program type-checks against the declaration Coral publishes for
 /// `coral.workspace.search`, and runs against a real search, so the fields
@@ -1509,6 +1667,9 @@ return { found: found.data, read: read.data };"#,
 #[tokio::test(flavor = "multi_thread")]
 async fn the_exec_example_type_checks_and_reads_a_real_search() {
     let tracer = Tracer::start().await;
+    // The example searches `provider: "acme_code"`, a namespace the caller
+    // must be able to search.
+    tracer.publish_example_provider().await;
     let client = tracer.sdk().await;
     let tools = client.list_all_tools().await.expect("list MCP tools");
     let description = tools
@@ -1540,25 +1701,35 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         call_found.starts_with("return (await coral.providers."),
         "the later Program calls a literal Call Path: {call_found}"
     );
+    // The description ends with the namespaces this caller can search, so
+    // the first Program can pass `provider`.
+    let (_fixed, list) = description
+        .rsplit_once("\n\nNamespaces for `provider`:\n")
+        .expect("exec names the caller's namespaces");
+    assert_eq!(
+        list.lines()
+            .map(|line| line.split('\t').next().expect("a namespace"))
+            .collect::<Vec<_>>(),
+        ["acme_code", "coral.workspace", "weather"],
+        "{list}"
+    );
 
     let task_id = start_task(&client, "Check the exec example").await;
-    let saved = call(
+    let saved = saving_value(
         &client,
-        "save_function",
-        json!({
-            "task_id": task_id,
-            "intent": "Type-check the exec example",
-            "path": "example.find",
-            "description": "The exec description's discovery example",
-            "source": format!("export default async function find() {{\n{find}\n}}"),
-        }),
+        &task_id,
+        &Save {
+            path: "example.find",
+            description: "The exec description's discovery example",
+            declarations: &format!("async function find() {{\n{find}\n}}"),
+            name: "find",
+        },
     )
     .await;
-    assert_eq!(saved.is_error, Some(false), "{saved:?}");
     assert_eq!(
-        structured(&saved)["diagnostics"],
-        json!([]),
-        "the example type-checks"
+        saved.get("diagnostics"),
+        Some(&json!([])),
+        "the example type-checks: {saved}"
     );
 
     let found = &program_value(&client, &task_id, find).await;
@@ -1570,10 +1741,12 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         else {
             panic!("three fields of a hit: {hit}");
         };
+        // The filter keeps `acme_code`'s tools and Saved Functions.
         assert!(
-            call_path
-                .as_str()
-                .is_some_and(|path| path.starts_with("coral.")),
+            call_path.as_str().is_some_and(|path| {
+                path.starts_with("coral.providers.acme_code.")
+                    || path.starts_with("coral.functions.")
+            }),
             "{hit}"
         );
         assert!(
@@ -1583,16 +1756,15 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         );
         assert!(description_snippet.is_string(), "{hit}");
     }
-    // The tracer's search for pull requests finds `coral.workspace.search`,
-    // whose line is never complete: it has one overload per mode. So the
-    // example reads that declaration by its path, and every path it read
-    // exists.
+    // The search finds `createPullRequest`, whose line names its body type
+    // without showing it. So the example reads that declaration by its path,
+    // and every path it read exists.
     let declarations = found["declarations"].as_array().expect("declarations");
     assert!(
         declarations
             .iter()
             .filter_map(Value::as_str)
-            .any(|declaration| declaration.contains("PathsResult")),
+            .any(|declaration| declaration.contains("type PostPullsBodyInput =")),
         "{found}"
     );
     assert_eq!(found["missing"], json!([]), "{found}");
@@ -2706,6 +2878,17 @@ impl RawSession {
             .to_owned()
     }
 
+    /// [`authoring_value`] over this raw session.
+    async fn authoring_value(&self, task: &str, tool: &str, arguments: &Value) -> Value {
+        self.program_value(task, &authoring_program(tool, arguments))
+            .await
+    }
+
+    /// [`saving_value`] over this raw session.
+    async fn saving_value(&self, task: &str, save: &Save<'_>) -> Value {
+        self.program_value(task, &save.program()).await
+    }
+
     /// Runs `program` in `task` and returns its Final Value, as an agent
     /// reads what a Program found with `coral.workspace.search`.
     async fn program_value(&self, task: &str, program: &str) -> Value {
@@ -3213,50 +3396,81 @@ async fn publish_tools(
             "/search-records": {"get": tool("searchRecords", "")}
         }
     });
+    publish_openapi(
+        providers,
+        policies,
+        user,
+        workspace_id,
+        &Publication {
+            namespace: "weather",
+            request_id: "54000000-0000-4000-8000-000000000001",
+            document,
+            tool_keys: &[
+                "getForecast",
+                "disconnectedFirst",
+                "disconnectedSecond",
+                "lostWorker",
+                "getPrivateRecord",
+                "searchRecords",
+            ],
+            at: 20,
+        },
+    )
+    .await
+}
+
+/// An OpenAPI Provider a tracer publishes in a Workspace, with the Tools
+/// it enables.
+struct Publication<'a> {
+    namespace: &'a str,
+    request_id: &'a str,
+    document: Value,
+    tool_keys: &'a [&'a str],
+    /// When its setup is prepared. It is published 1 later, and its Tools
+    /// are enabled from 10 later.
+    at: i64,
+}
+
+async fn publish_openapi(
+    providers: &ProviderModule,
+    policies: &ToolPolicyModule,
+    user: &AuthenticatedUser,
+    workspace_id: &WorkspaceId,
+    publication: &Publication<'_>,
+) -> coral_provider::ProviderId {
     let setup = providers
         .prepare_openapi_fixture(
-            &change(user.clone(), 20, '3'),
+            &change(user.clone(), publication.at, '3'),
             workspace_id,
-            OpenApiDocument::parse(&document.to_string()).expect("OpenAPI document"),
+            OpenApiDocument::parse(&publication.document.to_string()).expect("OpenAPI document"),
         )
         .await
         .expect("create Provider Setup");
-    let publication = providers
+    let published = providers
         .publish_workspace_provider(
-            &change(user.clone(), 21, '4'),
+            &change(user.clone(), publication.at + 1, '4'),
             WorkspaceProviderPublicationRequest::new(
-                ManagementRequestId::parse("54000000-0000-4000-8000-000000000001")
-                    .expect("management request id"),
+                ManagementRequestId::parse(publication.request_id).expect("management request id"),
                 workspace_id.clone(),
                 setup.id().clone(),
-                ProviderNamespace::parse("weather").expect("namespace"),
+                ProviderNamespace::parse(publication.namespace).expect("namespace"),
                 CredentialRoute::None,
             ),
         )
         .await
         .expect("publish tracer Provider");
-    let provider_id = publication
+    let provider_id = published
         .skip_search()
         .published_provider()
         .expect("successful Provider publication")
         .id()
         .clone();
-    for (index, tool_key) in [
-        "getForecast",
-        "disconnectedFirst",
-        "disconnectedSecond",
-        "lostWorker",
-        "getPrivateRecord",
-        "searchRecords",
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (index, tool_key) in publication.tool_keys.iter().enumerate() {
         policies
             .set_access_state(
                 &change(
                     user.clone(),
-                    30 + i64::try_from(index).expect("small fixture index"),
+                    publication.at + 10 + i64::try_from(index).expect("small fixture index"),
                     char::from_digit(u32::try_from(index + 5).expect("trace digit"), 16)
                         .expect("trace digit character"),
                 ),

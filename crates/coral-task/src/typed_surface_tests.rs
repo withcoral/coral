@@ -77,7 +77,6 @@ fn located(diagnostics: &[coral_functions::SavedFunctionDiagnostic]) -> Located 
 async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_functions::SavedFunction {
     let goal = fixture.goal().await;
     fixture
-        .commands
         .save_function(
             &fixture.call(&goal, "Save a typed function"),
             path,

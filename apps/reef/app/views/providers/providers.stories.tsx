@@ -11,6 +11,7 @@ import { StepperPage } from './stepper-page'
 import type { ProviderView, ToolDetailView, ToolView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
+import { selectionKey } from './selection'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
@@ -310,6 +311,71 @@ export const TreeNothingSelected: Story = {
       await expect(hit?.closest('label')).toBe(box.closest('label'))
     }
   },
+}
+/** A month of daily calls, oldest first. */
+const usage = (perDay: (day: number) => number) => {
+  const daily = Array.from({ length: 30 }, (_, day) => perDay(day))
+  const calls = daily.reduce((sum, count) => sum + count, 0)
+  const agent = Math.round(calls * 0.7)
+  const callers = [
+    {
+      key: 'agent',
+      label: 'PR review agent',
+      agentPath: '/workspaces/demo/agents/review',
+      calls: agent,
+    },
+    { key: 'you', label: 'You', calls: calls - agent },
+  ].filter((caller) => caller.calls > 0)
+  return { calls, daily, callers }
+}
+const toolUsage = {
+  days: 30,
+  tools: {
+    [selectionKey('prov-github', 'issues.list')]: usage((day) => 300 + ((day * 37) % 160)),
+    [selectionKey('prov-github', 'issues.create')]: usage((day) => (day > 20 ? 30 + day : 2)),
+    [selectionKey('prov-weather', 'getForecast')]: usage((day) => (day % 9 === 0 ? 1 : 0)),
+  },
+}
+// The Usage column: each tool's calls as a bar against the busiest tool's.
+export const TreeToolCalls: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} toolCalls={toolUsage} />,
+}
+// The drawer's usage: the total, each day as a bar, and who called it.
+export const TreeToolUsage: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      selectedProvider="prov-github"
+      selectedTool="issues.create"
+      selectedToolDetail={createIssue}
+      toolCalls={toolUsage}
+    />
+  ),
+}
+// A provider heading's status: a destructive tool that runs without approval on
+// GitHub, and unavailable tools on HR system.
+export const TreeProviderStatus: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      providers={[
+        {
+          ...github,
+          // issues.close becomes available below, so every GitHub tool is ready.
+          readyCount: 4,
+          tools: github.tools.map((tool) =>
+            tool.relativePath === 'issues.close'
+              ? { ...tool, available: true, policy: 'enabled' }
+              : tool.relativePath === 'repos.get'
+                ? { ...tool, policy: 'disabled' }
+                : tool,
+          ),
+        },
+        weather,
+        blocked,
+      ]}
+    />
+  ),
 }
 export const TreeCollapsedProvider: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} />,
@@ -980,10 +1046,8 @@ const catalogViewports = { chromatic: { viewports: [390, 1440] } }
 async function showEmptyCatalogFilter(canvasElement: HTMLElement, label: string) {
   const canvas = within(canvasElement)
   await userEvent.type(canvas.getByRole('searchbox', { name: label }), 'no match')
-  // Each provider section says it has no match.
-  for (const status of canvas.getAllByText('No tools match “no match”.')) {
-    await expect(status).toBeVisible()
-  }
+  // Every provider leaves the table, and one status says nothing matches.
+  await expect(canvas.getByText('No tools match “no match”.')).toBeVisible()
 }
 
 // Coral refuses a row's policy change: the row keeps its policy and says why.
@@ -995,7 +1059,7 @@ export const TreePolicyRefused: Story = {
     // Both fixture providers list repos.get; use the first provider's row.
     const [select] = canvas.getAllByRole('checkbox', { name: 'Select repos.get' })
     const row = within(select!.closest<HTMLElement>('[role="row"]')!)
-    await userEvent.click(row.getByRole('radio', { name: 'Disabled' }))
+    await userEvent.click(row.getByRole('radio', { name: 'Block' }))
     await expect(await row.findByText('Not saved')).toBeVisible()
   },
 }
@@ -1010,10 +1074,10 @@ export const TreeBulkPending: Story = {
     await userEvent.click(canvas.getByRole('checkbox', { name: 'Select GitHub tools' }))
     // The "Bulk policy" form names the group; the trigger reads as its value.
     const bulk = canvas.getByRole('form', { name: 'Bulk policy' })
-    await userEvent.click(within(bulk).getByRole('button', { name: 'Needs approval' }))
+    await userEvent.click(within(bulk).getByRole('button', { name: 'Ask' }))
     // The menu renders in a portal outside the canvas.
     const body = within(canvasElement.ownerDocument.body)
-    await userEvent.click(await body.findByRole('menuitemradio', { name: 'Disabled' }))
+    await userEvent.click(await body.findByRole('menuitemradio', { name: 'Block' }))
     await userEvent.click(within(bulk).getByRole('button', { name: 'Apply' }))
     await expect(canvas.getByRole('checkbox', { name: 'Select GitHub tools' })).toBeDisabled()
   },

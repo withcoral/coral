@@ -141,16 +141,17 @@ impl TaskModule {
         workspace: &WorkspaceId,
         days: u32,
     ) -> Result<coral_run::ActivitySummary, Error> {
-        let since = runs.summary_window_start(days)?;
+        let window = runs.summary_window(days)?;
         let mut tx = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
             .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
             .await?;
         let discovery =
-            crate::repository::activity::discovery_context(&mut tx, &authority, since).await?;
+            crate::repository::activity::discovery_context(&mut tx, &authority, window.since())
+                .await?;
         let summary = runs
-            .activity_summary_in_transaction(&mut tx, &authority, since, discovery)
+            .activity_summary_in_transaction(&mut tx, &authority, &window, discovery)
             .await?;
         tx.commit().await?;
         Ok(summary)

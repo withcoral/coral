@@ -89,7 +89,7 @@ export function ToolName({ row, to, query }: { row: ToolRow; to?: string; query?
           {mark(row.namespace)}.
         </Typography.BodySmall>
       )}
-      {mark(row.tool)}
+      {mark(row.relativePath)}
     </Typography.BodySmall>
   )
   return (

@@ -40,6 +40,9 @@ pub struct Launch {
     /// A config directory the launcher selects. Without one, the environment
     /// or the platform default selects it.
     pub config_dir: Option<std::path::PathBuf>,
+    /// The variables that stop this process from sending usage data, as
+    /// bootstrap read them. Without them, the process sends nothing.
+    pub usage_environment: Option<coral_usage::SendEnvironment>,
 }
 
 impl Launch {
@@ -55,6 +58,10 @@ impl Launch {
         };
         let builder = match self.config_dir {
             Some(config_dir) => builder.with_config_dir(config_dir),
+            None => builder,
+        };
+        let builder = match self.usage_environment {
+            Some(environment) => builder.with_usage_environment(environment),
             None => builder,
         };
         if self.desktop {
@@ -495,16 +502,17 @@ fn mcp_modules(
         compiler,
         runtime_limits.compilation_timeout(),
     );
-    // MCP-started Runs link people to Reef; this clone shares the server's Run Owners.
-    let runs = runs.with_human_interface(human_interface.clone());
-    let commands = TaskCommands::new(
-        tasks.clone(),
-        saved_functions,
-        search,
-        search_index,
-        runs.clone(),
-    );
-    McpModules::new(workspaces, tasks, commands, runs, human_interface)
+    // MCP-started Runs link people to Reef and save Saved Functions through
+    // the one module, so every save shares its compiler and deadline. This
+    // clone shares the server's Run Owners; no other clone runs a Program.
+    let runs = runs
+        .with_human_interface(human_interface.clone())
+        .with_saved_functions(coral_run::SavedFunctions::new(
+            saved_functions,
+            search_index,
+        ));
+    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
+    McpModules::new(workspaces, tasks, commands, runs, search, human_interface)
 }
 
 #[cfg(test)]

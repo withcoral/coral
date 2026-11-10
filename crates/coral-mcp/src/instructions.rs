@@ -1,9 +1,13 @@
 //! Server `instructions`: the agent workflow every Coral session needs first.
 //!
-//! Claude Code keeps only the first 2048 characters of server instructions,
-//! so the text stays within that budget. Agents learn discovery from
-//! `exec`'s example, the types and the errors; the rest of the text is
-//! kept as it was before discovery moved into Programs.
+//! Claude Code 2.1.292 kept only the first 2048 characters of server
+//! instructions, and 2.1.296 and later keep 4096. The text stays within 2048,
+//! so a client that cuts at either limit reads it whole. Codex copies it into
+//! each tool, and pi
+//! shows the model its first line or none of it, so what an agent needs on every
+//! call, such as its namespaces, goes in `exec`'s description instead. Agents
+//! learn discovery from `exec`'s example, the types and the errors; the rest
+//! of the text is kept as it was before discovery moved into Programs.
 
 /// Instructions sent in `InitializeResult` and `DiscoverResult`.
 pub(crate) const INSTRUCTIONS: &str = "\
@@ -14,7 +18,7 @@ Coral runs TypeScript Programs that call the user's connected providers.
 2. Find provider tools and Saved Functions with `coral.workspace.search` in a Program; `exec` shows how.
 3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new Run and can repeat external effects.
 4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the Final Value or failure.
-5. After the answering Run succeeds, call `save_function` unless its Program made one provider tool call. Use the request's values as inputs, a path like `github.pulls.listStale`, and search words in the description. Tell the user its path.
+5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.workspace.saveFunction` in that Run. Skip one call, one-off writes and exploration. Tell the user its path.
 6. When the work is done or cannot continue, call `end_task` once with the outcome.
 
 ## Program rules
@@ -34,5 +38,6 @@ A non-empty `required_actions` means the Run waits for a person.
 - Never ask for a token, password or account in the chat: a connection happens on that page.
 ";
 
-// Clients add instructions to every turn; Claude Code drops what follows 2048.
+// Clients add instructions to every turn; Claude Code before 2.1.296 drops
+// what follows 2048.
 const _: () = assert!(INSTRUCTIONS.len() <= 2048);

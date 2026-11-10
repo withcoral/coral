@@ -18,14 +18,16 @@ pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
     BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
     BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices,
-    ConfigurationOutput, ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring,
-    GetPolicyArguments, GetPolicyResult, GetProviderArguments, GetProviderResult,
-    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
-    MissingPath, PathsResult, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
-    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
-    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
-    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, SourceChange,
-    UpdatePolicyArguments, UpdatePolicyResult, UpdateProviderArguments, UpdateProviderResult,
+    ConfigurationOutput, ConfigurationPatch, DeclaredHints, DeleteFunctionArguments,
+    DeleteFunctionResult, Description, DescriptionAuthoring, GetPolicyArguments, GetPolicyResult,
+    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
+    ListedProviderState, ListedSetup, ListedSetupState, MissingPath, PathsResult, ProviderArgument,
+    ProviderFacts, ProviderSourceArgument, ProviderSourceOutput, SEARCH_PATH_MAX_BYTES,
+    SEARCH_PATHS_MAX, SEARCH_PROVIDERS_MAX, SaveFunctionArguments, SaveFunctionResult, SavedDetail,
+    SavedDiagnostic, SavedDiagnosticCategory, SearchArguments, SearchHit, SearchOutput,
+    SearchResult, SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState,
+    SearchRetrieverStatus, SourceChange, UpdatePolicyArguments, UpdatePolicyResult,
+    UpdateProviderArguments, UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{
@@ -135,7 +137,7 @@ pub use types::{
     ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
     SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability, ToolHints, ToolKey,
-    ToolPresentation,
+    ToolPolicyFacts, ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
@@ -441,20 +443,22 @@ pub async fn authoring_declaration_in_transaction(
     Ok(closure.compose(tool.typescript_declaration()))
 }
 
-/// Reads hints and the HTTP method for 1–100 exact keys without loading
-/// executable definitions or schemas. The method is `None` for other protocols.
-/// Absent keys are omitted; structurally unavailable Tools remain included.
+/// Reads what the default Tool Access State of 1–100 exact keys is decided
+/// from, without loading executable definitions or schemas. Absent keys are
+/// omitted; structurally unavailable Tools remain included.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt-generation failures.
-pub async fn tool_hints_and_methods_in_transaction(
+pub async fn tool_policy_facts_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     keys: &[ToolKey],
-) -> Result<std::collections::BTreeMap<ToolKey, (ToolHints, Option<HttpMethod>)>, Error> {
+) -> Result<std::collections::BTreeMap<ToolKey, ToolPolicyFacts>, Error> {
     if !(1..=100).contains(&keys.len()) {
-        return Err(Error::InvalidInput("invalid Tool hints batch size".into()));
+        return Err(Error::InvalidInput(
+            "invalid Tool policy facts batch size".into(),
+        ));
     }
-    repository::load_tool_hints_and_methods(transaction, generation_id, keys).await
+    repository::load_tool_policy_facts(transaction, generation_id, keys).await
 }
 
 /// Reads one summary page in Tool Key order, plus at most one lookahead row.

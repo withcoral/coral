@@ -34,7 +34,14 @@ test('Row actions keep the last Owner and removing another person keeps the admi
       const id = workspace.name.split('/')[1]
       const runner = programRunner(page, target, id, { accessToken: await mcpToken(page, id) })
       expect(
-        (await runner.saveFunction('answer', 'Private answer', 'export default () => 42;')).isError,
+        (
+          await runner.saveFunction(
+            'answer',
+            'Private answer',
+            'const answer = () => 42;',
+            'answer',
+          )
+        ).isError,
       ).not.toBe(true)
       retainedRun = (await runner.exec('return coral.functions.answer();')).structuredContent
       expect(retainedRun.final_value).toEqual({ kind: 'value', value: 42 })
@@ -59,7 +66,9 @@ test('Row actions keep the last Owner and removing another person keeps the admi
         expect(await page.getByText(`${owner.label} (You)`, { exact: true }).count()).toBe(1)
         await page.getByRole('button', { name: `Actions for ${owner.label}`, exact: true }).click()
         await page.getByRole('menuitem', { name: 'Change role', exact: true }).click()
-        await page.getByRole('button', { name: `Role for ${owner.label}`, exact: true }).click()
+        await page
+          .getByRole('button', { name: `Role for ${owner.label}: Owner`, exact: true })
+          .click()
         await page.getByRole('menuitemradio', { name: 'Member', exact: true }).click()
         await page.getByRole('button', { name: 'Save role', exact: true }).click()
         await lastOwner.waitFor()

@@ -564,6 +564,9 @@ pub(super) async fn token_request(
     parse_token_response(status, &body)
 }
 
+/// The largest token or device-authorization response Coral reads.
+const TOKEN_RESPONSE_LIMIT: usize = 64 * 1024;
+
 pub(super) async fn form_request(
     endpoint: TokenEndpoint<'_>,
     form: &[(&str, &str)],
@@ -611,20 +614,21 @@ pub(super) async fn form_request(
             ));
         }
     }
-    let mut response = request
+    let response = request
         .form(&form)
         .send()
         .await
         .map_err(token_transport_error)?;
     let status = response.status();
-    let mut body = zeroize::Zeroizing::new(Vec::new());
-    while let Some(chunk) = response.chunk().await.map_err(token_transport_error)? {
-        if body.len().saturating_add(chunk.len()) > 64 * 1024 {
-            return Err(Error::OAuthTokenExchange("oauth_token_response_invalid"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok((status, body))
+    // The body carries tokens. The shared reader reserves its whole limit up
+    // front, so no copy of them is left in a freed allocation as it fills.
+    let body = coral_outbound::read_bounded_body(response, TOKEN_RESPONSE_LIMIT)
+        .await
+        .map_err(|error| match error {
+            coral_outbound::OutboundUrlPolicyError::BodyRead(error) => token_transport_error(error),
+            _ => Error::OAuthTokenExchange("oauth_token_response_invalid"),
+        })?;
+    Ok((status, zeroize::Zeroizing::new(body)))
 }
 
 fn token_transport_error(error: reqwest::Error) -> Error {

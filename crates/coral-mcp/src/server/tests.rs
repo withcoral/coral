@@ -1,17 +1,62 @@
-use coral_functions::SavedFunctionModule;
-use coral_run::{
-    IsolateLimits, ProgramSource, RunModule, RunSubmission, RunTimeout, RuntimeLimits,
-};
+use std::sync::Arc;
+
+use coral_run::{ProgramSource, RunModule, RunSubmission, RunTimeout, RuntimeLimits};
 use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_test_support::TestDatabase;
 use coral_workspace::{
-    AuthenticatedPrincipal, ChangeContext, OrganizationModule, WorkspaceDisplayName,
+    AuthenticatedPrincipal, ChangeContext, OrganizationModule, TraceId, WorkspaceDisplayName,
     WorkspaceModule, local_organization_owner,
 };
 
 use super::*;
 use serde_json::{Value, json};
+
+/// A Run Module over `database`. No test here launches a Run's execution.
+fn run_module(database: &Arc<coral_db::Database>, workspaces: &WorkspaceModule) -> RunModule {
+    RunModule::new(
+        coral_outbound::DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+        coral_provider::ProviderModule::with_running_catalog(
+            coral_outbound::DestinationPolicy::default(),
+            database.clone(),
+            workspaces.clone(),
+        ),
+        RuntimeLimits::default()
+            .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
+        coral_run::CoralInstanceId::generate(),
+        coral_run::RunInbox::table(database.clone()),
+    )
+    .unwrap()
+}
+
+/// `principal`'s MCP server on `workspace`, over the real modules.
+fn server_on(
+    database: &Arc<coral_db::Database>,
+    workspaces: WorkspaceModule,
+    runs: RunModule,
+    principal: AuthenticatedPrincipal,
+    workspace: WorkspaceId,
+) -> McpServer {
+    let tasks = TaskModule::new(database.clone(), workspaces.clone());
+    let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
+    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
+    McpServer::new(
+        McpRuntime {
+            modules: crate::McpModules::new(
+                workspaces,
+                tasks,
+                commands,
+                runs,
+                search,
+                crate::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
+            ),
+            principal,
+        },
+        workspace,
+    )
+}
 
 async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
@@ -28,31 +73,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         .await
         .unwrap();
     let actor = AuthenticatedPrincipal::user(user);
-    let tasks = TaskModule::new(database.clone(), workspaces.clone());
-    let functions = SavedFunctionModule::new(
-        database.clone(),
-        workspaces.clone(),
-        IsolateLimits::default(),
-        coral_test_support::TEST_COMPILATION_TIMEOUT,
-    )
-    .unwrap();
-    let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
-    let index = coral_search::SearchIndex::inert(database.clone());
-    let runs = RunModule::new(
-        coral_outbound::DestinationPolicy::default(),
-        database.clone(),
-        workspaces.clone(),
-        coral_provider::ProviderModule::with_running_catalog(
-            coral_outbound::DestinationPolicy::default(),
-            database.clone(),
-            workspaces.clone(),
-        ),
-        RuntimeLimits::default()
-            .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
-        coral_run::CoralInstanceId::generate(),
-        coral_run::RunInbox::table(database.clone()),
-    )
-    .unwrap();
+    let runs = run_module(&database, &workspaces);
     // Commit acceptance without launching execution. There can be no authored output,
     // human actions, or terminal transition to wake the observation early.
     let prepared = runs
@@ -72,21 +93,42 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    let commands = TaskCommands::new(tasks.clone(), functions, search, index, runs.clone());
-    let server = McpServer::new(
-        McpRuntime {
-            modules: crate::McpModules::new(
-                workspaces,
-                tasks,
-                commands,
-                runs,
-                crate::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
-            ),
-            principal: actor,
-        },
-        workspace.id().clone(),
-    );
+    let server = server_on(&database, workspaces, runs, actor, workspace.id().clone());
     (fixture, server, staged.run_id().clone())
+}
+
+// Catches: a caller that lost the Workspace being served the tools without
+// namespaces, as when the lookup only failed, instead of the denial every
+// later call of its repeats.
+#[tokio::test]
+async fn a_caller_that_lost_the_workspace_is_refused_the_tool_list() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    let user = local_organization_owner();
+    OrganizationModule::new(database.clone())
+        .provision_login(&ChangeContext::new(
+            user.clone(),
+            1,
+            TraceId::current_or_new(),
+        ))
+        .await
+        .unwrap();
+    let workspaces = WorkspaceModule::new(database.clone());
+    let runs = run_module(&database, &workspaces);
+    // No Workspace has this id, as after the caller's one is gone.
+    let gone = WorkspaceId::parse("6f1d2c3b-5e4a-4d7c-9b8a-0123456789ab").unwrap();
+    let server = server_on(
+        &database,
+        workspaces,
+        runs,
+        AuthenticatedPrincipal::user(user),
+        gone,
+    );
+    let Err(denied) = server.listed_tools().await else {
+        panic!("a caller that lost the Workspace gets no tools")
+    };
+    assert_eq!(denied.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+    assert_eq!(denied.message, "Permission was denied");
 }
 
 /// Calls `wait` on `run_id` and returns its structured update.

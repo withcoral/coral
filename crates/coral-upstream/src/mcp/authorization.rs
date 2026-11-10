@@ -13,8 +13,6 @@ const METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 const DISCOVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 const METADATA_MAX_BYTES: usize = 64 * 1024;
 const MAX_METADATA_REQUESTS: usize = 6;
-// Match the recipe scope limit and accommodate Zoho CRM's 83 advertised scopes.
-const MAX_SCOPES: usize = 100;
 
 /// Safe, typed reason authorization discovery or registration failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,10 +211,6 @@ async fn discover(
     };
     scopes.sort();
     scopes.dedup();
-    // The request is exact: an unbounded advertisement is rejected, never trimmed.
-    if scopes.len() > MAX_SCOPES {
-        return Err(AuthorizationDiscoveryError::ResourceMetadataUnavailable);
-    }
     // Consent navigation is screened by Provider authorization when issued.
     // Only endpoints Coral requests belong to the server-egress policy.
     for endpoint in [

@@ -17,6 +17,9 @@ import { resizeViewport } from '../../../.storybook/browser'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
 import { onboardingPrompt } from './onboarding-prompt'
 
+/** A tool's stand-in resource name beside its Call Path. */
+const summaryTool = (callPath: string) => ({ tool: `${callPath}#tool`, callPath })
+
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
 // The app shell bounds a page's height; a story that scrolls inside it needs the same bound.
 const viewportHeight: Decorator = (Story) => (
@@ -225,22 +228,37 @@ export const SummaryOverview: Story = {
             },
             stopped: [
               {
-                callPath: 'coral.providers.github.deleteRepository',
+                ...summaryTool('coral.providers.github.deleteRepository'),
                 blocked: 4,
                 notAllowed: 0,
                 needsSetup: 0,
               },
               {
-                callPath: 'coral.providers.gmail.sendMessage',
+                ...summaryTool('coral.providers.gmail.sendMessage'),
                 blocked: 0,
                 notAllowed: 2,
                 needsSetup: 0,
               },
             ],
             tools: [
-              { callPath: 'coral.providers.github.getIssue', calls: 81, callers: [] },
-              { callPath: 'coral.providers.linear.searchIssues', calls: 40, callers: [] },
-              { callPath: 'coral.providers.gmail.sendMessage', calls: 16, callers: [] },
+              {
+                ...summaryTool('coral.providers.github.getIssue'),
+                calls: 81,
+                daily: [],
+                callers: [],
+              },
+              {
+                ...summaryTool('coral.providers.linear.searchIssues'),
+                calls: 40,
+                daily: [],
+                callers: [],
+              },
+              {
+                ...summaryTool('coral.providers.gmail.sendMessage'),
+                calls: 16,
+                daily: [],
+                callers: [],
+              },
             ],
             approvals: { approved: 5, declined: 2, medianWaitSeconds: 95 },
             callers: [],
@@ -419,18 +437,19 @@ const policyReview =
 /** An owner's prompt, which adds a provider. */
 const onboardingCopy = (connect: string[], data = dataRule) =>
   promptCopy(
-    'Help me connect to my Coral workspace "Operations team" and add a provider.',
+    'Help me connect to my Coral workspace "Operations team". Then help me add a provider if I want one.',
     connect,
     [
       '8. Search the workspace tools for coral.workspace.addProvider. Describe it to read its input. If you cannot find it, this server may not act as me. Ask me if I want to reconnect. If I do, go to step 4.',
-      '9. Ask me which kind of provider or which specific service I want to connect. Give a few examples, such as GitHub, a weather service or Slack. These are only suggestions. I can connect any provider. Do not choose one for me.',
-      '10. Use coral.workspace.addProvider to add that provider. If Coral asks for an approval, guide me through it.',
-      '11. When the status is needs_person, give me the returned link. I review, finish and publish the provider on that page. The call does not wait for me.',
-      "12. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published. Call the provider's tools under its callRoot in that list. I can change its namespace on the page.",
-      '13. When the provider is published, ask me if I want to review its tool policy. Wait for my answer.',
-      `14. ${policyReview}`,
-      '15. If I want a change, propose it. Wait for me to confirm it.',
-      '16. Use coral.workspace.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
+      '9. Ask me if I want to add a provider now. Suggest one or two services for it. Base them only on what you already know about me. Do not search my files, messages or other data for ideas. Do not say that you know my tools when you do not. If you know nothing relevant, give general examples, such as GitHub or a weather service. Tell me that these are only examples. I can name any other service. I can also skip this step. Do not choose one for me. If you give me choices, always include "Another service" and "Skip for now". If I choose another service, ask me which one. If your tool cannot take a typed answer, ask me in this chat.',
+      '10. If I skip, tell me that I can add a provider later. Then stop. Do not use coral.workspace.addProvider.',
+      '11. Use coral.workspace.addProvider to add the provider that I name. If Coral asks for an approval, guide me through it.',
+      '12. When the status is needs_person, give me the returned link. I review, finish and publish the provider on that page. The call does not wait for me.',
+      "13. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published. Call the provider's tools under its callRoot in that list. I can change its namespace on the page.",
+      '14. When the provider is published, ask me if I want to review its tool policy. Wait for my answer.',
+      `15. ${policyReview}`,
+      '16. If I want a change, propose it. Wait for me to confirm it.',
+      '17. Use coral.workspace.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
     ],
     data,
   )
@@ -504,7 +523,10 @@ async function openAskTab() {
 // by name, makes a change before it warns you, or starts the role's steps without a live call.
 // Also catches, in the prompt's content only: a prompt that drops the rules that a name or an
 // organization MCP endpoint does not prove the workspace, that a server you do not confirm stays
-// unchanged, and that a server with the chosen name is not replaced. This proves no client's behavior.
+// unchanged, and that a server with the chosen name is not replaced. Also catches: provider
+// suggestions that read as the only choices, come from a search of your data, or leave no way to
+// skip, a choice list without another service and a skip, an opener that makes a provider
+// required, and a skip that still calls addProvider. This proves no client's behavior.
 export const AskYourAgent: Story = {
   render: () => quickStartOverview(),
   beforeEach: clearToasts,
@@ -610,7 +632,7 @@ export const AskYourAgentNarrow: Story = {
       )
     }
     await expect(await copyPrompt(panel)).toContain(
-      `Help me connect to my Coral workspace "${longName}" and add a provider.`,
+      `Help me connect to my Coral workspace "${longName}". Then help me add a provider if I want one.`,
     )
   },
 }
@@ -1594,7 +1616,7 @@ export const AddMembersSelection: Story = {
     await expect(dialog.getByRole('button', { name: 'Add member' })).toBeDisabled()
     await pickPerson(dialog, canvasElement, /Sam Rivera/)
     await pickPerson(dialog, canvasElement, /ops-bot@example\.com/)
-    await userEvent.click(dialog.getByRole('button', { name: 'Role' }))
+    await userEvent.click(dialog.getByRole('button', { name: 'Role: Member' }))
     await userEvent.click(
       await within(canvasElement.ownerDocument.body).findByRole('menuitemradio', {
         name: 'Owner',
@@ -1729,7 +1751,7 @@ export const MembershipRoleSelection: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Actions for Alice Chen' }))
     const body = within(canvasElement.ownerDocument.body)
     await userEvent.click(await body.findByRole('menuitem', { name: 'Change role' }))
-    await userEvent.click(await body.findByRole('button', { name: 'Role for Alice Chen' }))
+    await userEvent.click(await body.findByRole('button', { name: /^Role for Alice Chen: / }))
     await userEvent.click(await body.findByRole('menuitemradio', { name: 'Member' }))
     const save = (await body.findByRole('button', {
       name: 'Save role',

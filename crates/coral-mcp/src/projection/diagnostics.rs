@@ -1,5 +1,4 @@
 //! Adapter-owned diagnostic projections. Numeric host fields remain exact JSON integers.
-use coral_functions::{SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -19,47 +18,6 @@ impl SafeInteger {
             Err(ToolFailure::internal())
         }
     }
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Diagnostic {
-    category: DiagnosticCategory,
-    code: SafeInteger,
-    message: String,
-    line: Option<SafeInteger>,
-    column: Option<SafeInteger>,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum DiagnosticCategory {
-    Message,
-    Warning,
-    Error,
-    Suggestion,
-}
-
-pub(super) fn saved_diagnostics(
-    diagnostics: &[SavedFunctionDiagnostic],
-) -> Result<Vec<Diagnostic>, ToolFailure> {
-    diagnostics
-        .iter()
-        .map(|diagnostic| {
-            Ok(Diagnostic {
-                category: match diagnostic.category() {
-                    SavedFunctionDiagnosticCategory::Message => DiagnosticCategory::Message,
-                    SavedFunctionDiagnosticCategory::Warning => DiagnosticCategory::Warning,
-                    SavedFunctionDiagnosticCategory::Error => DiagnosticCategory::Error,
-                    SavedFunctionDiagnosticCategory::Suggestion => DiagnosticCategory::Suggestion,
-                },
-                code: SafeInteger::new(diagnostic.code())?,
-                message: diagnostic.message().to_owned(),
-                line: diagnostic.line().map(SafeInteger::new).transpose()?,
-                column: diagnostic.column().map(SafeInteger::new).transpose()?,
-            })
-        })
-        .collect()
 }
 
 #[derive(Serialize, JsonSchema)]

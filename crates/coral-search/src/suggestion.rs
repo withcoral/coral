@@ -13,7 +13,7 @@ use crate::retriever::{
     EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
     end_query,
 };
-use crate::{EntityKind, Error, ProviderCallRoot, query_terms};
+use crate::{EntityKind, Error, ProviderCallRoot, ProviderFilter, query_terms};
 
 /// The most Call Paths one missing path names.
 pub const SUGGESTIONS_MAX: usize = 3;
@@ -53,7 +53,10 @@ pub(crate) async fn suggestions(
     else {
         return Ok(Vec::new());
     };
-    let listing = match tools.list(transaction, context, Some(&call_root)).await {
+    let listing = match tools
+        .list(transaction, context, &ProviderFilter::one(&call_root))
+        .await
+    {
         Ok(listing) => listing,
         Err(Error::UnknownProviderCallRoot { .. }) => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -86,13 +89,14 @@ pub(crate) async fn suggestions(
         ..context
     };
     begin_query(transaction).await?;
+    let provider_filter = ProviderFilter::one(&call_root);
     let window = match tools
         .query(
             transaction,
             ranking,
             &QueryRequest {
                 terms: &terms,
-                provider_filter: Some(&call_root),
+                provider_filter: &provider_filter,
                 window: SUGGESTIONS_MAX * 2,
             },
         )

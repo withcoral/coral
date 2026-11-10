@@ -33,7 +33,7 @@ test("An agent's Program finds the tools an owner disabled in Reef", async (cont
     })
     await step('The owner disables lookup', async () => {
       await page.goto(`/${provider}`)
-      await setToolPolicy(page, 'lookup', 'Disabled')
+      await setToolPolicy(page, 'lookup', 'Block')
     })
     await step('getPolicy names lookup as disabled', async () => {
       const { update } = await observeRun(

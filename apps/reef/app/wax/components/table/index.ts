@@ -18,6 +18,7 @@ export type {
   TableDensity,
   TableGroupHeadings,
   TableLayout,
+  TableSort,
   TableVariant,
 } from './constants'
 export { Container } from './container'
@@ -30,6 +31,8 @@ export { Heading } from './heading'
 export type { HeadingProps } from './heading'
 export { Record } from './record'
 export { Row } from './row'
+export { SortButton } from './sort-button'
+export type { SortButtonProps } from './sort-button'
 export { groupToggleHeading, selectionCell } from './table.css'
 export { RowLink } from './row-link'
 export { useRowCursor } from './row-cursor'

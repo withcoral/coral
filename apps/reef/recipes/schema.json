@@ -949,7 +949,6 @@
       ]
     },
     "__schema38": {
-      "maxItems": 100,
       "type": "array",
       "items": {
         "$ref": "#/$defs/__schema39"

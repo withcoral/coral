@@ -13,6 +13,8 @@ export interface SummaryProvider {
 }
 
 export interface ToolRow {
+  /** The tool's resource name. Two tools that held one Call Path are two rows. */
+  tool: string
   callPath: string
   /** The provider's name, or its namespace when the workspace no longer has it. */
   provider: string
@@ -20,7 +22,7 @@ export interface ToolRow {
   namespace: string
   icons?: ProviderLogo
   /** The Call Path after the provider's Call Root. */
-  tool: string
+  relativePath: string
   /** The tool's pages, when its provider is in the workspace. */
   pages?: { tool: string; settings: string }
   calls: number
@@ -42,7 +44,7 @@ function named(callPath: string, providers: readonly SummaryProvider[]) {
       provider: provider.displayName,
       namespace: provider.callRoot.split('.').at(-1)!,
       icons: provider.icons,
-      tool: relativePath,
+      relativePath,
       pages: {
         tool: `${provider.path}/tools/${encodeURIComponent(relativePath)}`,
         settings: `${provider.path}/settings`,
@@ -52,14 +54,14 @@ function named(callPath: string, providers: readonly SummaryProvider[]) {
   const [namespace = '', ...rest] = callPath.startsWith(REMOVED_ROOT)
     ? callPath.slice(REMOVED_ROOT.length).split('.')
     : []
-  return { provider: namespace || callPath, namespace, tool: rest.join('.') || callPath }
+  return { provider: namespace || callPath, namespace, relativePath: rest.join('.') || callPath }
 }
 
 const stoppedOf = (stops: Record<StopReason, number>) =>
   STOP_REASONS.reduce((total, reason) => total + stops[reason], 0)
 
 /**
- * The busiest tools and the stopped ones as one list, one row per Call Path.
+ * The busiest tools and the stopped ones as one list, one row per tool.
  * The summary lists them apart, and a tool can be stopped without being among
  * the busiest; it joins with its stopped calls as its calls.
  */
@@ -67,21 +69,27 @@ export function toolRows(
   summary: Pick<ActivitySummaryData, 'tools' | 'stopped'>,
   providers: readonly SummaryProvider[] = [],
 ): ToolRow[] {
-  const stopped = new Map(summary.stopped.map((tool) => [tool.callPath, tool]))
-  const called = new Set(summary.tools.map((tool) => tool.callPath))
+  const stopped = new Map(summary.stopped.map((tool) => [tool.tool, tool]))
+  const called = new Set(summary.tools.map((tool) => tool.tool))
   return [
     ...summary.tools,
     ...summary.stopped
-      .filter((tool) => !called.has(tool.callPath))
-      .map((tool) => ({ callPath: tool.callPath, calls: stoppedOf(tool), callers: [] })),
-  ].map(({ callPath, calls, callers }) => {
-    const stoppedTool = stopped.get(callPath)
+      .filter((tool) => !called.has(tool.tool))
+      .map(({ tool, callPath, ...stops }) => ({
+        tool,
+        callPath,
+        calls: stoppedOf(stops),
+        callers: [],
+      })),
+  ].map(({ tool, callPath, calls, callers }) => {
+    const stoppedTool = stopped.get(tool)
     const stops = {
       blocked: stoppedTool?.blocked ?? 0,
       notAllowed: stoppedTool?.notAllowed ?? 0,
       needsSetup: stoppedTool?.needsSetup ?? 0,
     }
     return {
+      tool,
       callPath,
       ...named(callPath, providers),
       calls,

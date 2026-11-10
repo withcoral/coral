@@ -28,8 +28,8 @@ Coral replaces that with one server:
 - **Agents never hold credentials.** Coral stores your tokens and adds them to
   each call. Programs run in an isolated sandbox with no secrets, no network
   access, and no imports.
-- **You decide what runs.** Set each tool to allowed, approval required,
-  or disabled. A call that needs approval waits until a person approves it.
+- **You decide what runs.** Set each tool's policy to Allow, Ask, or Block.
+  A call to a tool set to Ask waits until a person approves it.
 - **Every run is recorded.** Review each program and the calls it made in the
   Coral UI.
 - **You host it.** Run Coral on your laptop or on your own server. Your data,

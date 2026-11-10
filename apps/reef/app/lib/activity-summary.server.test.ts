@@ -73,12 +73,13 @@ it('reports no decisions and no measured context as absent, not zero', async () 
   expect(summary.contextImpactBytes).toBeUndefined()
 })
 
-// Catches: zeros shown for an unavailable summary, or a rejected session or a defect
-// hidden as one.
+// Catches: zeros shown for an unavailable or slow summary, a slow one that takes the
+// page down, or a rejected session or a defect hidden as one.
 it.each([
   [Code.NotFound, 'hidden'],
   [Code.PermissionDenied, 'hidden'],
   [Code.Unavailable, 'hidden'],
+  [Code.DeadlineExceeded, 'hidden'],
   [Code.Unauthenticated, 'rejected'],
   [Code.InvalidArgument, 'rejected'],
   [Code.Internal, 'rejected'],

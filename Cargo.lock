@@ -654,6 +654,7 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-usage",
  "coral-v8",
  "coral-workspace",
  "etcetera",
@@ -812,6 +813,7 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-usage",
  "coral-workspace",
  "prost",
  "prost-types",
@@ -847,6 +849,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "coral-auth",
  "coral-catalog",
  "coral-db",
  "coral-functions",
@@ -1060,7 +1063,6 @@ dependencies = [
 name = "coral-task"
 version = "1.5.0"
 dependencies = [
- "async-trait",
  "coral-administration",
  "coral-catalog",
  "coral-db",
@@ -1148,6 +1150,31 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "coral-usage"
+version = "1.5.0"
+dependencies = [
+ "chrono",
+ "coral-db",
+ "coral-outbound",
+ "coral-provider",
+ "coral-run",
+ "coral-task",
+ "coral-telemetry",
+ "coral-test-support",
+ "coral-workspace",
+ "reqwest",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
