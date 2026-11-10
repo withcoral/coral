@@ -205,6 +205,10 @@ provisioning, advanced RBAC and an immutable audit log.
 
 Coral is licensed under the Apache License 2.0. See [`LICENSE`](./LICENSE).
 
+The [`ee/`](./ee) directory holds Enterprise Edition code under its own licence,
+[`ee/LICENSE`](./ee/LICENSE). A plain `cargo build` at the repository root
+builds only Apache-2.0 code.
+
 ## Upgrade from Coral 0.x
 
 Coral v1 replaces the SQL interface with TypeScript programs. It starts from
