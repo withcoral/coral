@@ -5,8 +5,8 @@ import { shellQuote } from './config.mjs'
 // can split: Coral stays in the caller's pane on the left, Reef starts on the
 // right.
 //
-// Each host says how to find the caller's pane and how to split, name and type
-// into panes. `openPanes` does the rest the same way for every host. Hooks get
+// Each host says how to find the caller's pane and how to split, rename and
+// type into panes; `rename` is optional. `openPanes` does the rest the same way for every host. Hooks get
 // `cli(bin, args, { json })`, which runs a host's binary and returns its
 // output, parsed when `json` is set.
 //
@@ -26,15 +26,12 @@ export const hosts = {
       ctx.pane = pane?.pane_id
       return Boolean(ctx.pane && !pane.agent && layout?.panes?.length === 1)
     },
-    split(cli, ctx, { cwd, title }) {
-      const right = cli(
+    split: (cli, ctx, { cwd }) =>
+      cli(
         'herdr',
         ['pane', 'split', '--current', '--direction', 'right', '--cwd', cwd, '--no-focus'],
         { json: true },
-      ).result?.pane?.pane_id
-      if (right) cli('herdr', ['pane', 'rename', right, title])
-      return right
-    },
+      ).result?.pane?.pane_id,
     rename: (cli, ctx, pane, title) => cli('herdr', ['pane', 'rename', pane, title]),
     send: (cli, ctx, pane, command) => cli('herdr', ['pane', 'run', pane, command]),
   },
@@ -54,7 +51,7 @@ export const hosts = {
       )
       return window?.layers?.flatMap((layer) => layer.blocks ?? []).length === 1
     },
-    split: (cli, ctx, { cwd, title }) =>
+    split: (cli, ctx, { cwd }) =>
       cli(
         'rex',
         [
@@ -67,8 +64,6 @@ export const hosts = {
           'right',
           '-c',
           cwd,
-          '--label',
-          title,
           '--focus=false',
           '--json',
         ],
@@ -89,8 +84,10 @@ export const hosts = {
     fresh(cli, ctx) {
       const tabs = cli('herdr-app', ['ls'], { json: true }).spaces?.flatMap((s) => s.tabs ?? [])
       const tab = tabs?.find((t) => t.terminals?.some((t) => t.terminal === ctx.terminal))
-      ctx.pane = tab?.terminals.find((t) => t.terminal === ctx.terminal).pane
-      return Boolean(ctx.pane && tab.terminals.length === 1)
+      const own = tab?.terminals.find((t) => t.terminal === ctx.terminal)
+      ctx.pane = own?.pane
+      // An agent's terminal sets `app`; hc send would type into the agent.
+      return Boolean(ctx.pane && !own.app && tab.terminals.length === 1)
     },
     split(cli, ctx, { cwd }) {
       // terminal.open splits the focused pane and takes focus, so pin both ends.
@@ -128,8 +125,9 @@ export function openPanes({ host, ctx }, cli, root) {
     throw new Error(
       `Start ./dev run --split from the only pane, an ordinary shell, in ${host.where}`,
     )
-  const right = host.split(cli, ctx, { cwd: root, title: 'Reef' })
+  const right = host.split(cli, ctx, { cwd: root })
   if (!right) throw new Error(`${host.name} did not return the new pane ID`)
+  host.rename?.(cli, ctx, right, 'Reef')
   host.rename?.(cli, ctx, ctx.pane, 'Coral')
   host.send(cli, ctx, right, `${shellQuote(join(root, 'dev'))} reef`)
 }

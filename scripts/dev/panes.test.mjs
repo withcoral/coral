@@ -64,11 +64,10 @@ const rows = [
         'right',
         '-c',
         root,
-        '--label',
-        'Reef',
         '--focus=false',
         '--json',
       ],
+      ['rex', 'block', 'rename', '-s', 's:1', 'R', 'Reef'],
       ['rex', 'block', 'rename', '-s', 's:1', 'L', 'Coral'],
       ['rex', 'send', '-s', 's:1', '-b', 'R', reef],
       ['rex', 'send-key', '-s', 's:1', '-b', 'R', 'enter'],
@@ -77,7 +76,8 @@ const rows = [
   {
     name: 'herdr-app',
     env: { HC_TERMINAL_ID: 't1' },
-    answer: (bin, args, { panes }) => {
+    agentRefused: true,
+    answer: (bin, args, { panes, agent }) => {
       if (args[0] === 'ls')
         return {
           spaces: [
@@ -86,7 +86,7 @@ const rows = [
               tabs: [
                 {
                   terminals: Array.from({ length: panes }, (_, i) =>
-                    i ? { terminal: 't2', pane: 'X' } : { terminal: 't1', pane: 'L' },
+                    i ? { terminal: 't2', pane: 'X' } : { terminal: 't1', pane: 'L', app: agent },
                   ),
                 },
               ],

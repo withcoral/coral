@@ -264,7 +264,7 @@ else
   node "$helper" proxy
 fi
 finish
-say "Run ./dev run for combined terminal output, or ./dev run --split in a fresh terminal tab for Coral and Reef panes."
+say "Run ./dev run for combined terminal output, or ./dev run --split in the only pane of a fresh Herdr, Rex or Herdr app tab."
 say "You can also run ./dev coral and ./dev reef in two ordinary terminals."
 say "The runner checks readiness and prints the web URL. Use ./dev doctor to check an already-running stack."
 note "No service is installed. Ctrl-C stops the processes started by that command."
