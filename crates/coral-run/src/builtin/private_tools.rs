@@ -258,10 +258,6 @@ fn failure(field: &str, error: coral_tools::Error) -> Error {
         | E::NotData(AuthoredToolKind::Private, _) => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem(field, &error)]))
         }
-        E::PackageTooLarge { .. } => Error::InvocationRejected(Rejection::naming(
-            CoralFailure::InputTooLarge,
-            vec![problem(field, &error)],
-        )),
         E::CompilationTimedOut(AuthoredToolKind::Private) | E::CompilerBusy => {
             Error::InvocationRejected(Rejection::naming(
                 CoralFailure::ToolUnavailable,

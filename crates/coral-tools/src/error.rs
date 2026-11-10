@@ -68,17 +68,6 @@ pub enum Error {
     /// Current Principal authority does not permit the operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
-    /// Compiler output exceeded a fixed authoring limit. The declaration is
-    /// the one bounded output, so the text says how to make it smaller.
-    #[error(
-        "the {component} exceeds {maximum_bytes} bytes. Return fewer fields, or annotate the return type."
-    )]
-    PackageTooLarge {
-        /// Component that crossed its bound.
-        component: &'static str,
-        /// Fixed accepted maximum.
-        maximum_bytes: usize,
-    },
     /// The compiler-only isolate could not initialize.
     #[error("the authoring compiler is unavailable: {0}")]
     CompilerUnavailable(String),
@@ -141,7 +130,6 @@ impl Error {
             Self::CompilationTimedOut(Shared) => "shared_tool_compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
-            Self::PackageTooLarge { .. } => "package_too_large",
             Self::CompilerUnavailable { .. } => "compiler_unavailable",
             Self::CompilerWorkerStopped { .. } => "compiler_worker_stopped",
             Self::Clock { .. } => "clock",
@@ -178,7 +166,6 @@ impl Error {
             | Self::NotData(..)
             | Self::CompilationTimedOut(_) => self.code(),
             Self::CompilerBusy => "authoring_compiler_busy",
-            Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::PermissionDenied(_) => "permission_denied",
             _ => return None,
         };

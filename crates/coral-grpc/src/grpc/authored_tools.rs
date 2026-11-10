@@ -57,7 +57,7 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
         }
         // Only a publish compiles a source here. The Owner corrects the
         // content of a publish, so each refusal of it says what to correct.
-        refusal @ (E::Admission(Shared, _) | E::NotData(Shared, _) | E::PackageTooLarge { .. }) => {
+        refusal @ (E::Admission(Shared, _) | E::NotData(Shared, _)) => {
             return correctable("SHARED_TOOL_SOURCE_REJECTED", &refusal);
         }
         refusal @ E::SharedToolRestoreDiffers => {

@@ -134,8 +134,7 @@ impl AuthoredToolCompiler for V8AuthoredToolCompiler {
             &self.builtin_tools,
             declarations,
         )?;
-        let declaration = AuthoredToolDeclaration::from_compiler(compiled.declaration())
-            .map_err(|error| error.to_string())?;
+        let declaration = AuthoredToolDeclaration::from_compiler(compiled.declaration())?;
         let declaration_field_projection =
             AuthoredToolDeclarationFieldProjection::from_compiler(compiled.declaration_fields());
         let diagnostics_truncated =

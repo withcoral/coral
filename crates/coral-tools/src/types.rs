@@ -360,25 +360,25 @@ impl AuthoredToolSource {
 pub struct AuthoredToolDeclaration(String);
 
 impl AuthoredToolDeclaration {
-    pub(crate) fn from_compiler(value: &str) -> Result<Self, Error> {
+    /// The declaration the compiler emitted, or the reason Coral does not
+    /// keep it. The reason becomes the text of an authoring failure, whose
+    /// caller names the kind of Tool and its path, so it says what the
+    /// author can change.
+    pub(crate) fn from_compiler(value: &str) -> Result<Self, String> {
         if value.is_empty() {
-            // The caller names the kind of Tool and its source.
-            return Err(Error::InvalidInput(
-                "TypeScript emitted no Tool declaration".to_string(),
-            ));
+            return Err("TypeScript emitted no Tool declaration".to_string());
         }
         if value.len() > AUTHORED_TOOL_DECLARATION_MAX_BYTES {
-            return Err(Error::PackageTooLarge {
-                component: "Tool declaration",
-                maximum_bytes: AUTHORED_TOOL_DECLARATION_MAX_BYTES,
-            });
+            return Err(format!(
+                "the Tool declaration exceeds {AUTHORED_TOOL_DECLARATION_MAX_BYTES} bytes. Return fewer fields, or annotate the return type."
+            ));
         }
         Ok(Self(value.to_string()))
     }
 
     pub(crate) fn from_persisted(value: &str) -> Result<Self, Error> {
-        Self::from_compiler(value).map_err(|error| {
-            Error::CorruptData(format!("authored Tool has invalid declaration: {error}"))
+        Self::from_compiler(value).map_err(|reason| {
+            Error::CorruptData(format!("authored Tool has invalid declaration: {reason}"))
         })
     }
 
