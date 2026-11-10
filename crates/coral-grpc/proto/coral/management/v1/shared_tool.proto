@@ -35,7 +35,10 @@ service SharedToolService {
   // FAILED_PRECONDITION with reason SHARED_TOOL_SOURCE_UNREADABLE when the
   // origin is another User's Private Tool, a Private Tool that is gone, or a
   // revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
-  // path is inside another Shared Tool's namespace, or holds one.
+  // path is inside another Shared Tool's namespace, or holds one; with reason
+  // SHARED_TOOL_DECLARATION_CHANGED when the declaration the source emits is
+  // not reviewed_declaration, because a Tool the source names changed since
+  // the review. The Owner reviews the publish again.
   // ABORTED when the current revision is not expected_revision.
   // INVALID_ARGUMENT with reason SHARED_TOOL_PATH_INVALID when the path is
   // not a Shared Tool Path; with reason SHARED_TOOL_SOURCE_REJECTED when the
@@ -206,6 +209,11 @@ message PublishSharedToolRequest {
   uint64 expected_revision = 8;
   // Return the review and write nothing.
   bool validate_only = 9;
+  // The declaration of the review the Owner approved:
+  // SharedToolReview.declaration of a validate_only request for the same
+  // content. Coral emits the declaration again at the publish. A
+  // validate_only request ignores it.
+  string reviewed_declaration = 10;
 }
 
 // Names one current Private Tool that a publish copies.

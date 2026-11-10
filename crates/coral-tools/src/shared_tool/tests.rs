@@ -140,7 +140,7 @@ impl SharedToolFixture {
         expected_revision: u64,
     ) -> Result<SharedToolPublication, Error> {
         self.shared_tools
-            .publish(
+            .publish_as_reviewed(
                 &change(actor.clone(), at, 'c'),
                 &self.workspace,
                 publish(
@@ -330,7 +330,7 @@ fn publish(
     source: &str,
     expected_revision: u64,
 ) -> SharedToolPublish {
-    SharedToolPublish::new(
+    SharedToolPublish::review(
         shared_path(path),
         origin,
         AuthoredToolDescription::parse(description).expect("description"),
@@ -403,7 +403,7 @@ async fn only_an_owner_publishes_and_only_from_their_own_or_an_agents_private_to
 
         let published = fixture
             .shared_tools
-            .publish(
+            .publish_as_reviewed(
                 &change(actor.clone(), 30, 'c'),
                 &fixture.workspace,
                 publish(
@@ -469,10 +469,10 @@ async fn a_publish_stores_exactly_the_reviewed_bytes_and_leaves_the_private_tool
 
     let published = fixture
         .shared_tools
-        .publish(
+        .publish_as_reviewed(
             &change(fixture.owner.clone(), 30, 'c'),
             &fixture.workspace,
-            SharedToolPublish::new(
+            SharedToolPublish::review(
                 shared_path("mail.remind"),
                 own_draft(&fixture.owner),
                 AuthoredToolDescription::parse("Remind someone, as reviewed").expect("description"),
@@ -603,10 +603,10 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
 
     let restored = fixture
         .shared_tools
-        .publish(
+        .publish_as_reviewed(
             &change(fixture.owner.clone(), 40, 'd'),
             &fixture.workspace,
-            SharedToolPublish::new(
+            SharedToolPublish::review(
                 path.clone(),
                 SharedToolOrigin::Revision(1),
                 first.description().clone(),
@@ -645,10 +645,10 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     // A restore carries the content of the revision it names, and no other.
     let altered = fixture
         .shared_tools
-        .publish(
+        .publish_as_reviewed(
             &change(fixture.owner.clone(), 41, 'd'),
             &fixture.workspace,
-            SharedToolPublish::new(
+            SharedToolPublish::review(
                 path.clone(),
                 SharedToolOrigin::Revision(1),
                 first.description().clone(),
@@ -667,10 +667,10 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     // A revision that never existed restores nothing.
     let missing = fixture
         .shared_tools
-        .publish(
+        .publish_as_reviewed(
             &change(fixture.owner.clone(), 41, 'd'),
             &fixture.workspace,
-            SharedToolPublish::new(
+            SharedToolPublish::review(
                 path.clone(),
                 SharedToolOrigin::Revision(9),
                 first.description().clone(),
@@ -735,8 +735,7 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
                 "Remind",
                 reviewed,
                 1,
-            )
-            .validate_only(),
+            ),
             None,
         )
         .await
@@ -784,8 +783,7 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
                 "Remind",
                 reviewed,
                 0,
-            )
-            .validate_only(),
+            ),
             None,
         )
         .await;
@@ -798,6 +796,84 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
             })
         ),
         "{stale:?}"
+    );
+}
+
+// Catches: a publish that stores a declaration its Owner never saw, because
+// a Shared Tool the source calls was published again after the review; and
+// a review that does not show the declaration the next publish stores.
+#[tokio::test]
+async fn a_publish_whose_declaration_changed_since_its_review_is_refused_and_changes_nothing() {
+    // It returns what `mail.send` returns, so its declaration follows that
+    // Shared Tool's.
+    const CALLER: &str =
+        "export default async function remind() { return coral.shared.mail.send(); }";
+    const COUNTS: &str = "export default async function send(): Promise<number> { return 1; }";
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    fixture
+        .publish(&fixture.owner, "mail.send", DRAFT, 0)
+        .await
+        .expect("publish the Shared Tool the reviewed one calls");
+    let review = publish(
+        "mail.remind",
+        own_draft(&fixture.owner),
+        "Remind",
+        CALLER,
+        0,
+    );
+    let send = async |publish: SharedToolPublish| {
+        fixture
+            .shared_tools
+            .publish(
+                &change(fixture.owner.clone(), 40, 'c'),
+                &fixture.workspace,
+                publish,
+                None,
+            )
+            .await
+    };
+    let reviewed = send(review.clone())
+        .await
+        .expect("review the publish")
+        .review()
+        .declaration()
+        .as_str()
+        .to_owned();
+    fixture
+        .publish(&fixture.owner, "mail.send", COUNTS, 1)
+        .await
+        .expect("publish the called Shared Tool again, with another result");
+    let before = fixture.everything().await;
+
+    let stale = send(review.clone().reviewed(reviewed.clone())).await;
+
+    assert!(
+        matches!(stale, Err(Error::SharedToolDeclarationChanged)),
+        "{stale:?}"
+    );
+    assert_eq!(fixture.everything().await, before);
+    // The review run again shows the declaration that the publish stores.
+    let current = send(review.clone())
+        .await
+        .expect("review the publish again")
+        .review()
+        .declaration()
+        .as_str()
+        .to_owned();
+    assert_ne!(current, reviewed);
+    let published = send(review.reviewed(current.clone()))
+        .await
+        .expect("publish what the second review showed");
+    assert_eq!(
+        published
+            .published()
+            .expect("the published Shared Tool")
+            .current()
+            .declaration()
+            .as_str(),
+        current
     );
 }
 
@@ -1070,8 +1146,7 @@ async fn one_source_is_typed_alike_when_saved_and_when_published() {
                 .publish(
                     &change(fixture.owner.clone(), 41, 'e'),
                     &fixture.workspace,
-                    publish("mail.typed", own_draft(&fixture.owner), "Typed", source, 0)
-                        .validate_only(),
+                    publish("mail.typed", own_draft(&fixture.owner), "Typed", source, 0),
                     tools,
                 )
                 .await

@@ -9,12 +9,27 @@ use coral_test_support::{TEST_COMPILATION_TIMEOUT, TestDatabase, change, provisi
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, IsolateLimits, PrivateToolChangeContext,
     PrivateToolModule, PrivateToolPath, PrivateToolSave, SharedToolModule, SharedToolOrigin,
-    SharedToolPath, SharedToolPublish,
+    SharedToolPath, SharedToolPublication, SharedToolPublish,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, TraceId, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationRole, TraceId,
+    WorkspaceId, WorkspaceModule,
 };
+
+/// Publishes `review` through the workflow as an Owner who approves the
+/// review they are shown: with the declaration that review returned.
+pub(super) async fn publish_as_reviewed(
+    workflow: &SharedToolWorkflow,
+    context: &ChangeContext,
+    workspace: &WorkspaceId,
+    review: SharedToolPublish,
+) -> Result<SharedToolPublication, coral_tools::Error> {
+    let shown = workflow.publish(context, workspace, review.clone()).await?;
+    let declaration = shown.review().declaration().as_str().to_owned();
+    workflow
+        .publish(context, workspace, review.reviewed(declaration))
+        .await
+}
 
 const SHARED: &str = "coral.shared.tides.summarize";
 const SOURCE: &str = "export default async function summarize() { return 'high at noon'; }";
@@ -87,9 +102,10 @@ impl Fixture {
         }
     }
 
-    /// A publish of `source` at [`SHARED`] from the Owner's `draft`.
+    /// The review of a publish of `source` at [`SHARED`] from the Owner's
+    /// `draft`.
     fn publish(&self, source: &str, expected_revision: u64) -> SharedToolPublish {
-        SharedToolPublish::new(
+        SharedToolPublish::review(
             SharedToolPath::parse("tides.summarize").unwrap(),
             SharedToolOrigin::PrivateTool {
                 owner: AuthenticatedPrincipal::user(self.owner.clone())
@@ -140,8 +156,7 @@ async fn a_publish_review_is_typed_from_the_tools_its_owner_can_discover() {
             f.publish(
                 "export default async function listed() { return coral.listProviders({}, 1); }",
                 0,
-            )
-            .validate_only(),
+            ),
         )
         .await
         .expect("validate");
@@ -165,15 +180,14 @@ async fn a_publish_and_a_removal_tell_search_after_they_commit() {
     let f = Fixture::new().await;
     assert!(!f.finds_shared().await);
 
-    let published = f
-        .workflow
-        .publish(
-            &change(f.owner.clone(), 30, '3'),
-            &f.workspace,
-            f.publish(SOURCE, 0),
-        )
-        .await
-        .expect("publish");
+    let published = publish_as_reviewed(
+        &f.workflow,
+        &change(f.owner.clone(), 30, '3'),
+        &f.workspace,
+        f.publish(SOURCE, 0),
+    )
+    .await
+    .expect("publish");
     f.index.settled().await;
 
     assert!(f.finds_shared().await);

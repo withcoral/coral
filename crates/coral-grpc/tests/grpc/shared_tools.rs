@@ -14,6 +14,9 @@ use management::publish_shared_tool_request::Origin;
 const SOURCE: &str =
     "export default async function remind(name: string): Promise<string> { return name; }";
 
+/// The declaration [`SOURCE`] emits, which the Owner of each publish reviewed.
+const DECLARATION: &str = "export default function remind(name: string): Promise<string>;\n";
+
 /// Saves `user`'s Private Tool `draft`, which each publish copies.
 async fn save_draft(f: &Fixture, user: &AuthenticatedUser) {
     f.private_tools
@@ -52,6 +55,7 @@ fn publish(
         default_access_state: management::ToolAccessState::ApprovalRequired.into(),
         expected_revision,
         validate_only: false,
+        reviewed_declaration: DECLARATION.into(),
     }
 }
 
@@ -135,6 +139,19 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
             &f.owner,
             publish(&f, "mail", 0),
             (tonic::Code::FailedPrecondition, "SHARED_TOOL_PATH_TAKEN"),
+            false,
+        ),
+        (
+            "the declaration is not the one reviewed",
+            &f.owner,
+            management::PublishSharedToolRequest {
+                reviewed_declaration: "export default function remind(): Promise<string>;\n".into(),
+                ..publish(&f, "mail.other", 0)
+            },
+            (
+                tonic::Code::FailedPrecondition,
+                "SHARED_TOOL_DECLARATION_CHANGED",
+            ),
             false,
         ),
         (
@@ -629,6 +646,7 @@ async fn a_refused_removal_maps_to_its_status_and_reason() {
             source:
                 "export default async function digest() { return coral.shared.mail.remind(\"a\"); }"
                     .into(),
+            reviewed_declaration: "export default function digest(): Promise<string>;\n".into(),
             ..publish(&f, "mail.digest", 0)
         },
     )

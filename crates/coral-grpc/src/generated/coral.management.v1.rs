@@ -15469,6 +15469,12 @@ pub struct PublishSharedToolRequest {
     /// Return the review and write nothing.
     #[prost(bool, tag = "9")]
     pub validate_only: bool,
+    /// The declaration of the review the Owner approved:
+    /// SharedToolReview.declaration of a validate_only request for the same
+    /// content. Coral emits the declaration again at the publish. A
+    /// validate_only request ignores it.
+    #[prost(string, tag = "10")]
+    pub reviewed_declaration: ::prost::alloc::string::String,
     /// What the publish copies.
     #[prost(oneof = "publish_shared_tool_request::Origin", tags = "3, 4")]
     pub origin: ::core::option::Option<publish_shared_tool_request::Origin>,
@@ -15886,7 +15892,10 @@ pub mod shared_tool_service_client {
         /// FAILED_PRECONDITION with reason SHARED_TOOL_SOURCE_UNREADABLE when the
         /// origin is another User's Private Tool, a Private Tool that is gone, or a
         /// revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
-        /// path is inside another Shared Tool's namespace, or holds one.
+        /// path is inside another Shared Tool's namespace, or holds one; with reason
+        /// SHARED_TOOL_DECLARATION_CHANGED when the declaration the source emits is
+        /// not reviewed_declaration, because a Tool the source names changed since
+        /// the review. The Owner reviews the publish again.
         /// ABORTED when the current revision is not expected_revision.
         /// INVALID_ARGUMENT with reason SHARED_TOOL_PATH_INVALID when the path is
         /// not a Shared Tool Path; with reason SHARED_TOOL_SOURCE_REJECTED when the
@@ -16049,7 +16058,10 @@ pub(crate) mod shared_tool_service_server {
         /// FAILED_PRECONDITION with reason SHARED_TOOL_SOURCE_UNREADABLE when the
         /// origin is another User's Private Tool, a Private Tool that is gone, or a
         /// revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
-        /// path is inside another Shared Tool's namespace, or holds one.
+        /// path is inside another Shared Tool's namespace, or holds one; with reason
+        /// SHARED_TOOL_DECLARATION_CHANGED when the declaration the source emits is
+        /// not reviewed_declaration, because a Tool the source names changed since
+        /// the review. The Owner reviews the publish again.
         /// ABORTED when the current revision is not expected_revision.
         /// INVALID_ARGUMENT with reason SHARED_TOOL_PATH_INVALID when the path is
         /// not a Shared Tool Path; with reason SHARED_TOOL_SOURCE_REJECTED when the

@@ -119,7 +119,7 @@ impl SharedScope {
     /// the Owner's Private Tool `draft`, expecting `expected_revision`, as
     /// Reef does: Universal Search hears of it after the commit.
     async fn publish(&self, source: &str, default: ToolAccessState, expected_revision: u64) {
-        let publish = SharedToolPublish::new(
+        let review = SharedToolPublish::review(
             SharedToolPath::parse("mail.remind").expect("a path"),
             SharedToolOrigin::PrivateTool {
                 owner: self.scope.owner.principal().clone(),
@@ -130,11 +130,17 @@ impl SharedScope {
             default,
             expected_revision,
         );
-        Box::pin(self.workflow.publish(
-            &change(self.scope.owner_user(), 70, '6'),
-            &self.scope.workspace_id,
-            publish,
-        ))
+        let context = change(self.scope.owner_user(), 70, '6');
+        let workspace = &self.scope.workspace_id;
+        // The Owner approves the review Reef shows them.
+        let shown = Box::pin(self.workflow.publish(&context, workspace, review.clone()))
+            .await
+            .expect("review the publish");
+        let declaration = shown.review().declaration().as_str().to_owned();
+        Box::pin(
+            self.workflow
+                .publish(&context, workspace, review.reviewed(declaration)),
+        )
         .await
         .expect("publish the Shared Tool");
     }

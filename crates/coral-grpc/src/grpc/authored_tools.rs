@@ -46,6 +46,10 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
             "SHARED_TOOL_SOURCE_UNREADABLE",
         ),
         E::PathConflict(Shared) => (tonic::Code::FailedPrecondition, "SHARED_TOOL_PATH_TAKEN"),
+        E::SharedToolDeclarationChanged => (
+            tonic::Code::FailedPrecondition,
+            "SHARED_TOOL_DECLARATION_CHANGED",
+        ),
         // The Owner must first deal with the Shared Tool that calls this one,
         // so the status names it.
         E::SharedToolHasDependents { dependent } => {

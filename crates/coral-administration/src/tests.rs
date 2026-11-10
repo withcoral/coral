@@ -861,10 +861,10 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
         save_answer(&private_tools, &source_owner, workspace.id()).await;
         let path = coral_tools::SharedToolPath::parse("team.answer").unwrap();
         shared_tools
-            .publish(
+            .publish_as_reviewed(
                 &change(publisher),
                 workspace.id(),
-                coral_tools::SharedToolPublish::new(
+                coral_tools::SharedToolPublish::review(
                     path.clone(),
                     coral_tools::SharedToolOrigin::PrivateTool {
                         owner: source_owner.principal().clone(),

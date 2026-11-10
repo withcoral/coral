@@ -40,6 +40,10 @@ pub enum Error {
     /// description is not that revision's.
     #[error("a restore publishes the exact source and description of the revision it names")]
     SharedToolRestoreDiffers,
+    /// The declaration the publish emits is not the one its Owner reviewed:
+    /// a Tool the source names changed since the review.
+    #[error("the declaration of this Shared Tool changed since its review")]
+    SharedToolDeclarationChanged,
     /// The removal names a Shared Tool that the current revision of another
     /// live Shared Tool calls. Removing it would break that one.
     #[error("coral.shared.{} calls this Shared Tool", .dependent.as_str())]
@@ -121,6 +125,7 @@ impl Error {
             Self::Admission(Shared, _) => "shared_tool_admission",
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
             Self::SharedToolRestoreDiffers => "shared_tool_restore_differs",
+            Self::SharedToolDeclarationChanged => "shared_tool_declaration_changed",
             Self::SharedToolHasDependents { .. } => "shared_tool_has_dependents",
             Self::PathConflict(Private) => "private_tool_path_conflict",
             Self::PathConflict(Shared) => "shared_tool_path_conflict",
@@ -161,6 +166,7 @@ impl Error {
             Self::NotFound(_)
             | Self::RevisionConflict { .. }
             | Self::SharedToolRestoreDiffers
+            | Self::SharedToolDeclarationChanged
             | Self::SharedToolHasDependents { .. }
             | Self::PathConflict(Shared)
             | Self::NotData(..)

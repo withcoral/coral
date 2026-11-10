@@ -147,8 +147,9 @@ pub enum SharedToolRevisionOrigin {
     Revision(u64),
 }
 
-/// One Workspace Owner's request to publish the exact content they
-/// reviewed as a new revision of the Shared Tool at `path`.
+/// One Workspace Owner's request about the content they mean to publish as
+/// a new revision of the Shared Tool at `path`: its review, or the publish
+/// of what that review showed.
 #[derive(Debug, Clone)]
 pub struct SharedToolPublish {
     path: SharedToolPath,
@@ -157,16 +158,18 @@ pub struct SharedToolPublish {
     source: AuthoredToolSource,
     default_access_state: ToolAccessState,
     expected_revision: u64,
-    validate_only: bool,
+    /// The declaration the Owner reviewed. `None` asks for the review only.
+    reviewed_declaration: Option<String>,
 }
 
 impl SharedToolPublish {
-    /// Publishes `source` and `description`, the content the Owner
-    /// reviewed, from `origin`, at `path`, with `default_access_state` as
-    /// its default Tool Access State. `expected_revision` is the revision
-    /// the Owner expects to be current at `path`: zero to create.
+    /// Asks for the review of a publish of `source` and `description` from
+    /// `origin`, at `path`, with `default_access_state` as its default Tool
+    /// Access State. `expected_revision` is the revision the Owner expects
+    /// to be current at `path`: zero to create. Coral checks the publish
+    /// and writes nothing.
     #[must_use]
-    pub const fn new(
+    pub const fn review(
         path: SharedToolPath,
         origin: SharedToolOrigin,
         description: AuthoredToolDescription,
@@ -181,14 +184,16 @@ impl SharedToolPublish {
             source,
             default_access_state,
             expected_revision,
-            validate_only: false,
+            reviewed_declaration: None,
         }
     }
 
-    /// Checks the publish and returns its review without writing anything.
+    /// Publishes the content, given the declaration its review showed the
+    /// Owner. Coral emits the declaration again at the publish, and refuses
+    /// the publish when it is not `declaration`.
     #[must_use]
-    pub const fn validate_only(mut self) -> Self {
-        self.validate_only = true;
+    pub fn reviewed(mut self, declaration: impl Into<String>) -> Self {
+        self.reviewed_declaration = Some(declaration.into());
         self
     }
 
@@ -763,10 +768,12 @@ impl SharedToolModule {
 
     /// Publishes the exact content the Owner reviewed as the next revision
     /// of the Shared Tool at its path, and makes it current; or, for a
-    /// publish that only validates, returns its review and writes nothing.
+    /// [`SharedToolPublish::review`], returns its review and writes nothing.
     ///
     /// The source is compiled outside the write transaction, and never
-    /// executed. It is typed as a Private Tool save types it: against the
+    /// executed. The declaration it emits depends on the Tools it names, so
+    /// one of them may have changed it since the review: a publish stores
+    /// the declaration only when it is the one the Owner reviewed. It is typed as a Private Tool save types it: against the
     /// current Shared Tools it names and, through `tools`, against the
     /// Provider and Built-in Tools it names that the publishing Owner can
     /// discover (ADR 0020). Without `tools`, those stay untyped.
@@ -795,6 +802,8 @@ impl SharedToolModule {
     /// - [`Error::PathConflict`] when the path overlaps another
     ///   live Shared Tool's namespace.
     /// - An authoring failure when the source cannot become a Tool.
+    /// - [`Error::SharedToolDeclarationChanged`] when the declaration the
+    ///   source emits is not the one the Owner reviewed.
     ///
     /// Failure changes nothing.
     pub async fn publish(
@@ -805,11 +814,16 @@ impl SharedToolModule {
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<SharedToolPublication, Error> {
         let prepared = self.prepare(context, workspace_id, &publish, tools).await?;
-        if publish.validate_only {
+        let Some(reviewed) = &publish.reviewed_declaration else {
             return Ok(SharedToolPublication {
                 review: prepared.review,
                 published: None,
             });
+        };
+        // The transaction stores the declaration compiled here, so this is
+        // the one to compare with what the Owner saw.
+        if prepared.compiled.declaration.as_str() != reviewed {
+            return Err(Error::SharedToolDeclarationChanged);
         }
         let mut transaction = self.database.begin().await?;
         let published = self
@@ -826,6 +840,29 @@ impl SharedToolModule {
             review: prepared.review,
             published: Some(published),
         })
+    }
+
+    /// Publishes `review` as an Owner who approves the review they are
+    /// shown: reviews it, then publishes it with the declaration that
+    /// review returned. For tests that are not about the review.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::publish`].
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub async fn publish_as_reviewed(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        review: SharedToolPublish,
+        tools: Option<&dyn ToolDeclarationReader>,
+    ) -> Result<SharedToolPublication, Error> {
+        let shown = self
+            .publish(context, workspace_id, review.clone(), tools)
+            .await?;
+        let declaration = shown.review().declaration().as_str().to_owned();
+        self.publish(context, workspace_id, review.reviewed(declaration), tools)
+            .await
     }
 
     /// Removes the live Shared Tool at `path` and returns its identity,

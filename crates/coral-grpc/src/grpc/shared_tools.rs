@@ -267,7 +267,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         // Shared Tool Path is.
         let path = SharedToolPath::parse(&input.path)
             .map_err(|refusal| correctable("SHARED_TOOL_PATH_INVALID", &refusal))?;
-        let mut publish = SharedToolPublish::new(
+        let mut publish = SharedToolPublish::review(
             path,
             origin(input.origin, &w, &user)?,
             AuthoredToolDescription::parse(&input.description)
@@ -276,8 +276,8 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             access(input.default_access_state)?,
             input.expected_revision,
         );
-        if input.validate_only {
-            publish = publish.validate_only();
+        if !input.validate_only {
+            publish = publish.reviewed(input.reviewed_declaration);
         }
         let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
         let published = self

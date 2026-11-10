@@ -90,10 +90,10 @@ impl SharedScope {
         expected_revision: u64,
     ) -> SharedTool {
         self.shared_tools
-            .publish(
+            .publish_as_reviewed(
                 &change(self.scope.user.clone(), 60, '6'),
                 &self.scope.workspace_id,
-                SharedToolPublish::new(
+                SharedToolPublish::review(
                     SharedToolPath::parse("tides.summarize").expect("a path"),
                     SharedToolOrigin::PrivateTool {
                         owner: self.scope.principal.principal().clone(),

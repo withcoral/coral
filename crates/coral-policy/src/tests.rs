@@ -2514,7 +2514,7 @@ impl SharedTools {
         default: ToolAccessState,
         expected_revision: u64,
     ) -> ToolKey {
-        let publish = coral_tools::SharedToolPublish::new(
+        let publish = coral_tools::SharedToolPublish::review(
             coral_tools::SharedToolPath::parse(path).expect("path"),
             coral_tools::SharedToolOrigin::PrivateTool {
                 owner: AuthenticatedPrincipal::user(self.base.owner.clone())
@@ -2528,7 +2528,7 @@ impl SharedTools {
             default,
             expected_revision,
         );
-        Box::pin(self.shared.publish(
+        Box::pin(self.shared.publish_as_reviewed(
             &change(self.base.owner.clone(), 60, '9'),
             &self.base.workspace,
             publish,
