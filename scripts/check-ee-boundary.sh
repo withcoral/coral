@@ -5,8 +5,9 @@
 #   - a package outside ee/ depends on a package inside it;
 #   - a default workspace member sits inside ee/, so a plain `cargo build`
 #     would build enterprise code;
-#   - code outside ee/ has a compile-time enterprise switch or names an ee/
-#     crate;
+#   - code outside ee/ has a compile-time enterprise switch, or names an ee/
+#     crate or a path into ee/;
+#   - ee/ holds a symlink;
 #   - a source file in ee/ lacks the enterprise SPDX header, or a file
 #     outside ee/ carries it.
 #
@@ -26,26 +27,31 @@ marker="SPDX-License-Identifier: LicenseRef-Coral-""Enterprise"
 
 metadata="$(cargo metadata --format-version 1 --no-deps --locked)"
 
-while IFS= read -r line; do
-  fail "$line"
-done < <(jq -r --arg ee "$root/ee/" '
+# Each query runs in a plain assignment, so a failed jq stops the script
+# under `set -e` instead of passing with no findings.
+report() {
+  [[ -z "$1" ]] && return 0
+  while IFS= read -r line; do fail "$line"; done <<<"$1"
+}
+
+outward="$(jq -r --arg ee "$root/ee/" '
   .packages[]
   | select(.manifest_path | startswith($ee) | not)
   | .name as $name
   | .dependencies[]
   | select(.path != null and (.path + "/" | startswith($ee)))
   | "\($name) depends on \(.name) in ee/; dependencies only point from ee/ to the rest of Coral"
-' <<<"$metadata")
+' <<<"$metadata")"
 
-while IFS= read -r line; do
-  fail "$line"
-done < <(jq -r --arg ee "$root/ee/" '
+defaults="$(jq -r --arg ee "$root/ee/" '
   .workspace_default_members as $defaults
   | .packages[]
   | select(.id as $id | $defaults | index($id))
   | select(.manifest_path | startswith($ee))
   | "\(.name) in ee/ is a default workspace member; a plain cargo build must not build ee/"
-' <<<"$metadata")
+' <<<"$metadata")"
+report "$outward"
+report "$defaults"
 
 # Every tracked or new file, minus deleted ones, as paths from the root.
 files() {
@@ -55,14 +61,20 @@ files() {
 
 outside_ee=(':!ee/')
 
+# A symlink would let a file in ee/ escape the header check, or point outside.
+while IFS= read -r path; do
+  [[ -L "$path" ]] && fail "$path: symlink in ee/; put the file itself here"
+done < <(git ls-files --cached --others --exclude-standard -- ee/)
+
 while IFS= read -r hit; do
   fail "$hit: compile-time enterprise switch outside ee/; check the Edition at runtime instead"
 done < <(files "${outside_ee[@]}" '*.rs' '*Cargo.toml' |
-  tr '\n' '\0' | xargs -0 grep -nE 'feature *= *"(ee|enterprise)"|cfg\((ee|enterprise)\b|^ *(ee|enterprise) *= *\[' /dev/null || true)
+  tr '\n' '\0' | xargs -0 grep -nE 'features? *= *\[?[^]]*"(ee|enterprise)"|cfg!? *\( *(ee|enterprise)\b|^ *(ee|enterprise) *= *\[' /dev/null || true)
 
 while IFS= read -r hit; do
-  fail "$hit: Rust outside ee/ names an ee/ crate"
-done < <(files "${outside_ee[@]}" '*.rs' | tr '\n' '\0' | xargs -0 grep -nE '\bcoral_ee' /dev/null || true)
+  fail "$hit: Rust outside ee/ names an ee/ crate or path"
+done < <(files "${outside_ee[@]}" '*.rs' | tr '\n' '\0' |
+  xargs -0 grep -nE '\bcoral_ee|(include(_str|_bytes)?! *\(|#\[path *=) *"[^"]*\bee/' /dev/null || true)
 
 while IFS= read -r hit; do
   fail "${hit%%:*}: carries the enterprise licence header outside ee/"
