@@ -14,10 +14,8 @@ pub enum SendBlock {
 pub enum BlockingVariable {
     /// `DO_NOT_TRACK` with any value but empty, `0` or `false`.
     DoNotTrack,
-    /// `CORAL_TELEMETRY` set to `0` or `false`.
-    CoralTelemetry,
-    /// `CI` set, even to an empty value.
-    Ci,
+    /// `CORAL_DISABLE_USAGE_DATA` with any value but empty, `0` or `false`.
+    CoralDisableUsageData,
 }
 
 impl BlockingVariable {
@@ -26,8 +24,7 @@ impl BlockingVariable {
     pub const fn name(self) -> &'static str {
         match self {
             Self::DoNotTrack => "DO_NOT_TRACK",
-            Self::CoralTelemetry => "CORAL_TELEMETRY",
-            Self::Ci => "CI",
+            Self::CoralDisableUsageData => "CORAL_DISABLE_USAGE_DATA",
         }
     }
 }
@@ -66,35 +63,31 @@ impl Build {
 pub struct SendEnvironment {
     /// `DO_NOT_TRACK`, when set.
     pub do_not_track: Option<String>,
-    /// `CORAL_TELEMETRY`, when set.
-    pub coral_telemetry: Option<String>,
-    /// `CI`, when set.
-    pub ci: Option<String>,
+    /// `CORAL_DISABLE_USAGE_DATA`, when set.
+    pub coral_disable_usage_data: Option<String>,
 }
 
 impl SendEnvironment {
-    /// The first rule that stops this process from sending, if any. Values
-    /// are trimmed and compared without case; `CI` stops it when set at all.
+    /// The first rule that stops this process from sending, if any. A
+    /// variable stops it when set to any value but empty, `0` or `false`,
+    /// trimmed and compared without case.
     #[must_use]
     pub fn block(&self, build: Build) -> Option<SendBlock> {
-        let value = |value: &Option<String>| {
-            value
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_ascii_lowercase)
+        let stops = |value: &Option<String>| {
+            value.as_deref().map(str::trim).is_some_and(|value| {
+                !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+            })
         };
-        let off = |value: &str| value == "0" || value == "false";
-        if value(&self.do_not_track).is_some_and(|value| !off(&value)) {
-            return Some(SendBlock::Environment(BlockingVariable::DoNotTrack));
-        }
-        if value(&self.coral_telemetry).is_some_and(|value| off(&value)) {
-            return Some(SendBlock::Environment(BlockingVariable::CoralTelemetry));
-        }
-        if self.ci.is_some() {
-            return Some(SendBlock::Environment(BlockingVariable::Ci));
-        }
-        (build == Build::Source).then_some(SendBlock::SourceBuild)
+        [
+            (&self.do_not_track, BlockingVariable::DoNotTrack),
+            (
+                &self.coral_disable_usage_data,
+                BlockingVariable::CoralDisableUsageData,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(value, variable)| stops(value).then_some(SendBlock::Environment(variable)))
+        .or_else(|| (build == Build::Source).then_some(SendBlock::SourceBuild))
     }
 }
 
@@ -104,68 +97,54 @@ mod tests {
 
     #[test]
     fn each_rule_stops_sending_only_for_its_values() {
-        let env = |dnt: Option<&str>, telemetry: Option<&str>, ci: Option<&str>| SendEnvironment {
+        let env = |dnt: Option<&str>, disable: Option<&str>| SendEnvironment {
             do_not_track: dnt.map(str::to_owned),
-            coral_telemetry: telemetry.map(str::to_owned),
-            ci: ci.map(str::to_owned),
+            coral_disable_usage_data: disable.map(str::to_owned),
         };
         let blocked = |variable| Some(SendBlock::Environment(variable));
         for (environment, build, expected) in [
-            (env(None, None, None), Build::Release, None),
+            (env(None, None), Build::Release, None),
+            (env(None, None), Build::Source, Some(SendBlock::SourceBuild)),
             (
-                env(None, None, None),
+                env(Some("1"), None),
+                Build::Release,
+                blocked(BlockingVariable::DoNotTrack),
+            ),
+            (
+                env(Some(" TRUE "), None),
+                Build::Release,
+                blocked(BlockingVariable::DoNotTrack),
+            ),
+            (
+                env(Some("yes"), None),
+                Build::Release,
+                blocked(BlockingVariable::DoNotTrack),
+            ),
+            (env(Some("0"), None), Build::Release, None),
+            (env(Some("False"), None), Build::Release, None),
+            (env(Some(""), None), Build::Release, None),
+            (
+                env(None, Some("1")),
+                Build::Release,
+                blocked(BlockingVariable::CoralDisableUsageData),
+            ),
+            (
+                env(None, Some(" TRUE ")),
+                Build::Release,
+                blocked(BlockingVariable::CoralDisableUsageData),
+            ),
+            (env(None, Some("0")), Build::Release, None),
+            (env(None, Some("FALSE")), Build::Release, None),
+            (env(None, Some("")), Build::Release, None),
+            (
+                env(None, Some("1")),
                 Build::Source,
-                Some(SendBlock::SourceBuild),
+                blocked(BlockingVariable::CoralDisableUsageData),
             ),
             (
-                env(Some("1"), None, None),
+                env(Some("1"), Some("1")),
                 Build::Release,
                 blocked(BlockingVariable::DoNotTrack),
-            ),
-            (
-                env(Some(" TRUE "), None, None),
-                Build::Release,
-                blocked(BlockingVariable::DoNotTrack),
-            ),
-            (
-                env(Some("yes"), None, None),
-                Build::Release,
-                blocked(BlockingVariable::DoNotTrack),
-            ),
-            (env(Some("0"), None, None), Build::Release, None),
-            (env(Some("False"), None, None), Build::Release, None),
-            (env(Some(""), None, None), Build::Release, None),
-            (
-                env(None, Some("0"), None),
-                Build::Release,
-                blocked(BlockingVariable::CoralTelemetry),
-            ),
-            (
-                env(None, Some("FALSE"), None),
-                Build::Release,
-                blocked(BlockingVariable::CoralTelemetry),
-            ),
-            (env(None, Some("1"), None), Build::Release, None),
-            (env(None, Some(""), None), Build::Release, None),
-            (
-                env(None, None, Some("true")),
-                Build::Release,
-                blocked(BlockingVariable::Ci),
-            ),
-            (
-                env(None, None, Some("0")),
-                Build::Release,
-                blocked(BlockingVariable::Ci),
-            ),
-            (
-                env(None, None, Some("")),
-                Build::Release,
-                blocked(BlockingVariable::Ci),
-            ),
-            (
-                env(None, Some("0"), Some("1")),
-                Build::Source,
-                blocked(BlockingVariable::CoralTelemetry),
             ),
         ] {
             assert_eq!(

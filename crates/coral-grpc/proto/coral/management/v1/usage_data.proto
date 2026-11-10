@@ -46,12 +46,10 @@ enum UsageSendBlock {
   USAGE_SEND_BLOCK_NONE = 1;
   // `DO_NOT_TRACK` is set.
   USAGE_SEND_BLOCK_DO_NOT_TRACK = 2;
-  // `CORAL_TELEMETRY` is `0` or `false`.
-  USAGE_SEND_BLOCK_CORAL_TELEMETRY = 3;
-  // `CI` is set.
-  USAGE_SEND_BLOCK_CI = 4;
+  // `CORAL_DISABLE_USAGE_DATA` is set.
+  USAGE_SEND_BLOCK_CORAL_DISABLE_USAGE_DATA = 3;
   // A source or development build.
-  USAGE_SEND_BLOCK_SOURCE_BUILD = 5;
+  USAGE_SEND_BLOCK_SOURCE_BUILD = 4;
 }
 
 // Where Coral runs.
