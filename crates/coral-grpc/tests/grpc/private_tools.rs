@@ -1,4 +1,4 @@
-use super::{Fixture, error_reason, management, request};
+use super::{DENIED, Fixture, INVALID, NOT_FOUND, error_reason, management, request};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
     PrivateToolSave,
@@ -65,10 +65,6 @@ fn in_another_workspace(agent: &str) -> String {
     format!("workspaces/{}/agents/{id}", uuid::Uuid::new_v4())
 }
 
-const NOT_FOUND: (tonic::Code, &str) = (tonic::Code::NotFound, "NOT_FOUND");
-const INVALID: (tonic::Code, &str) = (tonic::Code::InvalidArgument, "INVALID_ARGUMENT");
-const DENIED: (tonic::Code, &str) = (tonic::Code::PermissionDenied, "PERMISSION_DENIED");
-
 #[tokio::test]
 async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
     let f = Fixture::new().await;
@@ -121,7 +117,7 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
 // another Workspace, or maps a concealed Private Tool to anything but
 // NOT_FOUND.
 #[tokio::test]
-async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found() {
+async fn get_returns_the_named_private_tools_authoring_material_and_maps_each_refusal() {
     let f = Fixture::new().await;
     save(
         &f,
@@ -198,8 +194,8 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
 }
 
 // Catches: a delete that ignores `agent` and removes the caller's own Private
-// Tool, removes an Agent's for a Member, takes an Agent of another Workspace,
-// or maps a concealed Private Tool to anything but NOT_FOUND.
+// Tool, takes an Agent of another Workspace, or maps a concealed Private Tool
+// to anything but NOT_FOUND.
 #[tokio::test]
 async fn delete_removes_only_the_private_tool_the_request_names() {
     let f = Fixture::new().await;
@@ -226,11 +222,15 @@ async fn delete_removes_only_the_private_tool_the_request_names() {
         let owner = AuthenticatedPrincipal::user(f.owner.clone());
         let mut exist = [false; 2];
         for (exists, principal) in exist.iter_mut().zip([&owner, &agent_principal]) {
-            *exists = f
+            *exists = match f
                 .private_tools
                 .get(principal, f.workspace.id(), &path)
                 .await
-                .is_ok();
+            {
+                Ok(_) => true,
+                Err(coral_tools::Error::NotFound(_)) => false,
+                Err(error) => panic!("reading the Private Tool failed: {error}"),
+            };
         }
         exist
     };

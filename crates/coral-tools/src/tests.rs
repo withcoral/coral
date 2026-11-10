@@ -15,8 +15,8 @@ use coral_workspace::{
 use crate::authoring::{AuthoredToolCompiler, PreparedAuthoredTool};
 use crate::{
     AuthoredToolDescription, AuthoredToolSource, Error,
-    LifecycleAction as PrivateToolLifecycleAction, PrivateToolChangeContext, PrivateToolModule,
-    PrivateToolPath, PrivateToolSave,
+    LifecycleAction as PrivateToolLifecycleAction, PrivateToolChangeContext, PrivateToolDeletion,
+    PrivateToolInspection, PrivateToolModule, PrivateToolPath, PrivateToolSave,
 };
 
 #[test]
@@ -583,7 +583,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
 
     assert_eq!(
         fixture
-            .private_tools
+            .inspection
             .get_agent(&workspace_owner, &workspace_id, &agent_id, &path)
             .await
             .expect("Workspace Owner inspects Agent tool")
@@ -592,7 +592,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     );
     assert_eq!(
         fixture
-            .private_tools
+            .inspection
             .list_agent(&workspace_owner, &workspace_id, &agent_id)
             .await
             .expect("Workspace Owner lists Agent tools")
@@ -616,7 +616,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     assert_ne!(owner_private_tool.id(), agent_private_tool.id());
     assert_eq!(
         fixture
-            .private_tools
+            .inspection
             .get_agent(&workspace_owner, &workspace_id, &agent_id, &path)
             .await
             .expect("Agent definition remains unchanged")
@@ -650,21 +650,21 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     let member = AuthenticatedPrincipal::user(member_user);
     assert!(matches!(
         fixture
-            .private_tools
+            .inspection
             .get_agent(&member, &workspace_id, &agent_id, &path)
             .await,
         Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(matches!(
         fixture
-            .private_tools
+            .inspection
             .list_agent(&member, &workspace_id, &agent_id)
             .await,
         Err(Error::PermissionDenied(_))
     ));
     assert!(matches!(
         fixture
-            .private_tools
+            .deletion
             .delete_agent(
                 &private_tool_change(member, 36, 'b'),
                 &workspace_id,
@@ -686,21 +686,21 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     // An Organization Owner without a Membership is denied like any non-Member.
     assert!(matches!(
         fixture
-            .private_tools
+            .inspection
             .list_agent(&organization_owner, &workspace_id, &agent_id)
             .await,
         Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
     ));
     assert!(matches!(
         fixture
-            .private_tools
+            .inspection
             .get_agent(&organization_owner, &workspace_id, &agent_id, &path)
             .await,
         Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(matches!(
         fixture
-            .private_tools
+            .deletion
             .delete_agent(
                 &private_tool_change(organization_owner, 40, '9'),
                 &workspace_id,
@@ -721,7 +721,7 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     );
 
     fixture
-        .private_tools
+        .deletion
         .delete_agent(
             &private_tool_change(workspace_owner.clone(), 41, '9'),
             &workspace_id,
@@ -730,6 +730,22 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
         )
         .await
         .expect("designated Owner deletes Agent tool");
+
+    let events = fixture
+        .private_tools
+        .list_lifecycle_events(&workspace_owner, &workspace_id)
+        .await
+        .expect("list the Owner's lifecycle Events");
+    assert!(
+        matches!(
+            events.last(),
+            Some(event)
+                if event.action() == PrivateToolLifecycleAction::Deleted
+                    && event.target_id() == agent_private_tool.id()
+                    && event.actor() == workspace_owner.principal()
+        ),
+        "the Owner is the actor of the Agent tool's deletion: {events:?}"
+    );
 
     assert!(matches!(
         fixture
@@ -773,14 +789,14 @@ async fn naming_a_user_as_the_agent_selects_no_private_tool() {
 
     assert!(matches!(
         fixture
-            .private_tools
+            .inspection
             .get_agent(&owner, &workspace_id, user_id, &path)
             .await,
         Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert!(matches!(
         fixture
-            .private_tools
+            .deletion
             .delete_agent(
                 &private_tool_change(owner.clone(), 30, '8'),
                 &workspace_id,
@@ -889,7 +905,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
     // A Workspace Owner still reads an Agent's Private Tool.
     assert_eq!(
         fixture
-            .private_tools
+            .inspection
             .list_agent(&owner, &workspace_id, &agent_id)
             .await
             .expect("the Owner lists the Agent's Private Tools")
@@ -1827,6 +1843,9 @@ struct PrivateToolTestModules {
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
     private_tools: PrivateToolModule,
+    /// What the management API holds in place of the Module.
+    inspection: PrivateToolInspection,
+    deletion: PrivateToolDeletion,
 }
 
 impl PrivateToolTestModules {
@@ -1849,6 +1868,8 @@ impl PrivateToolTestModules {
         .expect("start Private Tool compiler");
         Self {
             fixture,
+            inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
+            deletion: PrivateToolDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
             private_tools,
@@ -1985,7 +2006,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
         assert!(denied(saving.await.unwrap().map(drop)));
         assert_eq!(
             fixture
-                .private_tools
+                .inspection
                 .get_agent(&owner, &workspace_id, agent.principal().id(), &path)
                 .await
                 .unwrap(),

@@ -108,6 +108,11 @@ fn error_reason(status: &tonic::Status) -> String {
     error_info(status).reason
 }
 
+/// A refusal's code with its stable reason, as a test compares them.
+const NOT_FOUND: (tonic::Code, &str) = (tonic::Code::NotFound, "NOT_FOUND");
+const INVALID: (tonic::Code, &str) = (tonic::Code::InvalidArgument, "INVALID_ARGUMENT");
+const DENIED: (tonic::Code, &str) = (tonic::Code::PermissionDenied, "PERMISSION_DENIED");
+
 impl Fixture {
     async fn new() -> Self {
         Self::with_session_auth(true).await

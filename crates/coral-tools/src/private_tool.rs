@@ -5,7 +5,7 @@ use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
 use coral_run_executor::CompilerClient;
 use coral_workspace::{
-    AuthenticatedPrincipal, PrincipalId, PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId,
+    AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId,
     WorkspaceModule,
 };
 
@@ -34,10 +34,11 @@ pub struct PreparedSave {
 /// Atomic current Private Tool lifecycle Module.
 ///
 /// This transport-neutral Interface owns create-or-replace, Principal inspection,
-/// Owner inspection and deletion of Agent definitions, authoring
-/// compilation, and safe lifecycle evidence. Compilation happens outside the
-/// successful authoring transaction; current authority, state, definition, and
-/// Event commit together at the final linearization point.
+/// authoring compilation, and safe lifecycle evidence. Compilation happens
+/// outside the successful authoring transaction; current authority, state,
+/// definition, and Event commit together at the final linearization point.
+/// A Workspace Owner inspects an Agent's definitions through
+/// [`PrivateToolInspection`] and deletes one through [`PrivateToolDeletion`].
 #[derive(Clone)]
 pub struct PrivateToolModule {
     database: Arc<Database>,
@@ -293,66 +294,6 @@ impl PrivateToolModule {
         path: &PrivateToolPath,
     ) -> Result<PrivateTool, Error> {
         self.inspection.get(actor, workspace_id, path).await
-    }
-
-    /// Lists one Workspace-owned Agent's current Private Tools for a Workspace Owner.
-    ///
-    /// User-owned Private Tools remain private and cannot be selected through this Interface.
-    /// The Agent's stable identity is an inspection target, never an authoring identity
-    /// for the calling User.
-    ///
-    /// # Errors
-    ///
-    /// Requires Workspace Owner authority and returns authority or
-    /// persistence failures.
-    pub async fn list_agent(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        agent_id: &PrincipalId,
-    ) -> Result<Vec<PrivateTool>, Error> {
-        self.inspection
-            .list_agent(actor, workspace_id, agent_id)
-            .await
-    }
-
-    /// Returns one Workspace-owned Agent Private Tool to a Workspace Owner.
-    ///
-    /// # Errors
-    ///
-    /// Requires Workspace Owner authority. A caller without it and an absent
-    /// path get the same [`Error::NotFound`].
-    pub async fn get_agent(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        agent_id: &PrincipalId,
-        path: &PrivateToolPath,
-    ) -> Result<PrivateTool, Error> {
-        self.inspection
-            .get_agent(actor, workspace_id, agent_id, path)
-            .await
-    }
-
-    /// Atomically deletes one Workspace-owned Agent Private Tool as a Workspace Owner.
-    ///
-    /// The accountable User remains the lifecycle actor and never authors or
-    /// executes as the Agent.
-    ///
-    /// # Errors
-    ///
-    /// Requires Workspace Owner authority in an active Workspace. A caller
-    /// without it and an absent path get the same [`Error::NotFound`].
-    pub async fn delete_agent(
-        &self,
-        context: &PrivateToolChangeContext,
-        workspace_id: &WorkspaceId,
-        agent_id: &PrincipalId,
-        path: &PrivateToolPath,
-    ) -> Result<PrivateToolId, Error> {
-        self.deletion
-            .delete_agent(context, workspace_id, agent_id, path)
-            .await
     }
 
     /// Atomically deletes one current path and records its lifecycle Event.

@@ -75,9 +75,12 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         Err(coral_workspace::Error::AgentNotFound)
     ));
     assert!(matches!(
-        saved
-            .get_agent(&owner, &workspace, agent.principal().id(), &path)
-            .await,
+        coral_tools::PrivateToolInspection::new(
+            fixture.database.clone(),
+            fixture.workspaces.clone()
+        )
+        .get_agent(&owner, &workspace, agent.principal().id(), &path)
+        .await,
         Err(ToolsError::NotFound(AuthoredToolKind::Private))
     ));
     release.send(()).unwrap();
