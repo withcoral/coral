@@ -277,7 +277,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             input.expected_revision,
         );
         if !input.validate_only {
-            publish = publish.reviewed(input.reviewed_declaration);
+            publish = publish.approve(input.reviewed_declaration);
         }
         let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
         let published = self

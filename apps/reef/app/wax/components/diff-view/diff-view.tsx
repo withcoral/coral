@@ -17,7 +17,7 @@ const spoken = { removed: 'Removed: ', added: 'Added: ' } as const
  * A sign marks each changed line, so its colour is not the only cue. Lines do
  * not wrap; the diff scrolls sideways. With `maxLines` it grows to that many
  * lines, then scrolls inside itself. Two equal texts show `unchanged`; two
- * whose lines are equal but whose line breaks differ say so.
+ * whose lines are equal but whose line breaks differ show `lineBreaksOnly`.
  */
 export function DiffView({
   before,
@@ -26,6 +26,7 @@ export function DiffView({
   context = 3,
   maxLines,
   unchanged = 'No changes.',
+  lineBreaksOnly = 'Only the line breaks change.',
 }: {
   before: string
   after: string
@@ -34,6 +35,7 @@ export function DiffView({
   context?: number
   maxLines?: number
   unchanged?: string
+  lineBreaksOnly?: string
 }) {
   const rows = useMemo(() => {
     const lines = diffLines(before, after)
@@ -42,7 +44,7 @@ export function DiffView({
   if (!rows)
     return (
       <Typography.BodySmall as="p" variant="secondary">
-        {before === after ? unchanged : 'Only the line breaks change.'}
+        {before === after ? unchanged : lineBreaksOnly}
       </Typography.BodySmall>
     )
   return (

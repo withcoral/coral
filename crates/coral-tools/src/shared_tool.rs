@@ -188,11 +188,12 @@ impl SharedToolPublish {
         }
     }
 
-    /// Publishes the content, given the declaration its review showed the
-    /// Owner. Coral emits the declaration again at the publish, and refuses
-    /// the publish when it is not `declaration`.
+    /// Turns the review into a publish of its content: the Owner approves
+    /// `declaration`, the one their review showed. Coral emits the
+    /// declaration again at the publish, and refuses the publish when it is
+    /// not `declaration`.
     #[must_use]
-    pub fn reviewed(mut self, declaration: impl Into<String>) -> Self {
+    pub fn approve(mut self, declaration: impl Into<String>) -> Self {
         self.reviewed_declaration = Some(declaration.into());
         self
     }
@@ -862,7 +863,7 @@ impl SharedToolModule {
             .publish(context, workspace_id, review.clone(), tools)
             .await?;
         let declaration = shown.review().declaration().as_str().to_owned();
-        self.publish(context, workspace_id, review.reviewed(declaration), tools)
+        self.publish(context, workspace_id, review.approve(declaration), tools)
             .await
     }
 

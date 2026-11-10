@@ -285,24 +285,25 @@ async fn publish_shared_tools(
 ) -> NamedTools {
     let mut keys = Vec::new();
     for (name, path) in [("shared.gone", "tide.gone"), ("shared.kept", "tide.kept")] {
-        let published = Box::pin(super::shared_tools::publish_as_reviewed(
-            shared_tools,
-            &change(owner.clone(), 30, '3'),
-            workspace,
-            SharedToolPublish::review(
-                SharedToolPath::parse(path).unwrap(),
-                SharedToolOrigin::PrivateTool {
-                    owner: AuthenticatedPrincipal::user(owner.clone())
-                        .principal()
-                        .clone(),
-                    path: PrivateToolPath::parse("tide.kept").unwrap(),
-                },
-                AuthoredToolDescription::parse("Read the tide").unwrap(),
-                AuthoredToolSource::parse(SOURCE).unwrap(),
-                ToolAccessState::Enabled,
-                0,
+        let published = Box::pin(
+            shared_tools.publish_as_reviewed(
+                &change(owner.clone(), 30, '3'),
+                workspace,
+                SharedToolPublish::review(
+                    SharedToolPath::parse(path).unwrap(),
+                    SharedToolOrigin::PrivateTool {
+                        owner: AuthenticatedPrincipal::user(owner.clone())
+                            .principal()
+                            .clone(),
+                        path: PrivateToolPath::parse("tide.kept").unwrap(),
+                    },
+                    AuthoredToolDescription::parse("Read the tide").unwrap(),
+                    AuthoredToolSource::parse(SOURCE).unwrap(),
+                    ToolAccessState::Enabled,
+                    0,
+                ),
             ),
-        ))
+        )
         .await
         .expect("publish the Shared Tool");
         keys.push((name, published.published().expect("a tool").id().tool_key()));

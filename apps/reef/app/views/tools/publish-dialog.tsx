@@ -292,10 +292,10 @@ function Review({ review }: { review: PublishReviewView }) {
           />
         )}
       </Section>
-      <section aria-label="Source" className={styles.stack}>
-        <div className={styles.reviewHeading}>
-          <Typography.HeadingSmall as="h2">Source</Typography.HeadingSmall>
-          {previous && (
+      <Section
+        title="Source"
+        actions={
+          previous && (
             <SegmentedControl
               label="Source view"
               value={sourceView}
@@ -305,8 +305,9 @@ function Review({ review }: { review: PublishReviewView }) {
                 { value: 'full', label: 'Full source' },
               ]}
             />
-          )}
-        </div>
+          )
+        }
+      >
         {previous && sourceView === 'changes' ? (
           <DiffView
             label="Source changes"
@@ -318,7 +319,7 @@ function Review({ review }: { review: PublishReviewView }) {
         ) : (
           <CodeBlock value={review.source} format="typescript" framed maxLines={REVIEW_LINES} />
         )}
-      </section>
+      </Section>
       <Section title="Declaration">
         <CodeBlock value={review.declaration} format="typescript" framed />
         {previous && (

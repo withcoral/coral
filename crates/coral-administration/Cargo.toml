@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Test-only workflow helpers for this crate's tests and other crates' tests.
+test-fixtures = []
+
 [lints]
 workspace = true
 

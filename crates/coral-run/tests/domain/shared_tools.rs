@@ -130,17 +130,12 @@ impl SharedScope {
             default,
             expected_revision,
         );
-        let context = change(self.scope.owner_user(), 70, '6');
-        let workspace = &self.scope.workspace_id;
         // The Owner approves the review Reef shows them.
-        let shown = Box::pin(self.workflow.publish(&context, workspace, review.clone()))
-            .await
-            .expect("review the publish");
-        let declaration = shown.review().declaration().as_str().to_owned();
-        Box::pin(
-            self.workflow
-                .publish(&context, workspace, review.reviewed(declaration)),
-        )
+        Box::pin(self.workflow.publish_as_reviewed(
+            &change(self.scope.owner_user(), 70, '6'),
+            &self.scope.workspace_id,
+            review,
+        ))
         .await
         .expect("publish the Shared Tool");
     }

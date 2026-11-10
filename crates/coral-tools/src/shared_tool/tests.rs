@@ -847,7 +847,7 @@ async fn a_publish_whose_declaration_changed_since_its_review_is_refused_and_cha
         .expect("publish the called Shared Tool again, with another result");
     let before = fixture.everything().await;
 
-    let stale = send(review.clone().reviewed(reviewed.clone())).await;
+    let stale = send(review.clone().approve(reviewed.clone())).await;
 
     assert!(
         matches!(stale, Err(Error::SharedToolDeclarationChanged)),
@@ -863,7 +863,7 @@ async fn a_publish_whose_declaration_changed_since_its_review_is_refused_and_cha
         .as_str()
         .to_owned();
     assert_ne!(current, reviewed);
-    let published = send(review.reviewed(current.clone()))
+    let published = send(review.approve(current.clone()))
         .await
         .expect("publish what the second review showed");
     assert_eq!(

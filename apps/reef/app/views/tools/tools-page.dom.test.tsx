@@ -698,12 +698,21 @@ test.each([
 
 // Catches: a member offered a publish Coral refuses, with nothing to say an
 // owner can; an owner with no way to publish their own or an agent's private
-// tool; or a publish offered in an archived workspace, which accepts none.
+// tool; or a publish offered, or an owner named as able to publish, in an
+// archived workspace, which accepts none.
 test.each([
   ['an owner', { effectiveRole: 'owner' }, mine.tools[0]!, true, false],
   ['an owner, of an agent’s private tool', { effectiveRole: 'owner' }, mine.tools[1]!, true, false],
   ['a member', { effectiveRole: 'member' }, mine.tools[0]!, false, true],
   ['an owner of an archived workspace', { state: 'archived' }, mine.tools[0]!, false, false],
+  // Nobody publishes until an owner restores the workspace.
+  [
+    'a member of an archived workspace',
+    { effectiveRole: 'member', state: 'archived' },
+    mine.tools[0]!,
+    false,
+    false,
+  ],
 ] as const)('the drawer offers a publish to %s', (_, role, tool, publishes, says) => {
   renderPage({
     providers: [github, mine],

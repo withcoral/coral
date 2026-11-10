@@ -29,8 +29,9 @@ export function PrivateToolDetail({
   canDelete: boolean
   /**
    * What the reader can do about publishing: an owner of an active workspace
-   * publishes, with the tool's own policy as the first choice; a member reads
-   * that only an owner can; in an archived workspace nobody can.
+   * publishes, with the tool's own policy as the first choice; a member of an
+   * active workspace reads that only an owner can. In an archived workspace
+   * nobody can, so the drawer says nothing of it.
    */
   publish: { workspacePath: string; policy: PolicyState } | 'owner-only' | null
 }) {

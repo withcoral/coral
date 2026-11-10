@@ -2435,12 +2435,13 @@ function ToolDetailsDrawer({
                   callPath={callPath}
                   form={form}
                   canDelete={canDelete}
+                  // An archived workspace accepts no publish, an owner's included.
                   publish={
                     canChange
                       ? { workspacePath: workspace.path, policy: tool.policy }
-                      : workspace.effectiveRole === 'owner'
-                        ? null
-                        : 'owner-only'
+                      : canDelete && workspace.effectiveRole !== 'owner'
+                        ? 'owner-only'
+                        : null
                   }
                 />
               )}

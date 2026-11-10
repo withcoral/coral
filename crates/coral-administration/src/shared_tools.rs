@@ -72,6 +72,26 @@ impl SharedToolWorkflow {
         Ok(publication)
     }
 
+    /// Publishes `review` as an Owner who approves the review they are
+    /// shown: reviews it, then publishes it with the declaration that
+    /// review returned. For tests that are not about the review, as
+    /// `SharedToolModule::publish_as_reviewed` is for the module.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::publish`].
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub async fn publish_as_reviewed(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        review: SharedToolPublish,
+    ) -> Result<SharedToolPublication, Error> {
+        let shown = Box::pin(self.publish(context, workspace_id, review.clone())).await?;
+        let declaration = shown.review().declaration().as_str().to_owned();
+        Box::pin(self.publish(context, workspace_id, review.approve(declaration))).await
+    }
+
     /// Removes the live Shared Tool at `path` together with its exact rule,
     /// and returns its identity.
     ///

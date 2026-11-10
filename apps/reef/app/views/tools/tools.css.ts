@@ -174,14 +174,6 @@ export const calledTool = style({
   gap: 8,
   minWidth: 0,
 })
-// A heading with its control at the end of the line, such as a view switch.
-export const reviewHeading = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 12,
-  justifyContent: 'space-between',
-})
 // A revision's number with what sets it apart, which wraps in a narrow column.
 export const revisionCell = style({
   alignItems: 'center',

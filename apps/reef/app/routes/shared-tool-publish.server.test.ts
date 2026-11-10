@@ -402,7 +402,7 @@ it.each([
       }),
     status: 400,
     error:
-      'Fix the source in the private tool, then publish again. Shared Tool coral.shared.mail.remind authoring failed: no default export',
+      'Correct the source in the private tool. Shared Tool coral.shared.mail.remind authoring failed: no default export',
   },
   {
     name: 'the restore is not of its revision',

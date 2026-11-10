@@ -319,7 +319,7 @@ function publishFailure(error: unknown): [status: number, message: string] {
       return [400, corrections[error.rawMessage]!]
     const { message } = refusalMetadata(error)
     if (error.rawMessage === 'SHARED_TOOL_SOURCE_REJECTED' && message)
-      return [400, `Fix the source in the private tool, then publish again. ${message}`]
+      return [400, `Correct the source in the private tool. ${message}`]
     if (error.code === Code.Aborted) return [409, publishRefusals.moved]
     if (error.code === Code.PermissionDenied) return [403, publishRefusals.denied]
     if (error.code === Code.NotFound) return [404, publishRefusals.unreadable]
@@ -461,7 +461,7 @@ function removalFailure(error: unknown): [status: number, message: string] {
     if (error.code === Code.Aborted)
       return [
         409,
-        'Another owner published this shared tool again. Close this dialog and check the new revision.',
+        'Another owner published this shared tool again. Check the new revision before you remove it.',
       ]
     if (error.code === Code.PermissionDenied)
       return [403, 'Only an owner can remove a shared tool.']

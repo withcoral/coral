@@ -621,7 +621,7 @@ it.each([
     fields: { path: 'mail.remind', expectedRevision: '1' },
     status: 409,
     error:
-      'Another owner published this shared tool again. Close this dialog and check the new revision.',
+      'Another owner published this shared tool again. Check the new revision before you remove it.',
   },
   {
     name: 'it is gone',
