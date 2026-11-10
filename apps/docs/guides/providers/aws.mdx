@@ -243,6 +243,29 @@ flowchart LR
 
         Keep the Service as `ClusterIP`. Do not add an Ingress for it.
 
+        On a cluster that is not Amazon EKS, use an IAM user's access key instead. Remove the `eks.amazonaws.com/role-arn` annotation. Store the access key in a Secret:
+
+        ```bash
+        kubectl -n coral create secret generic aws-mcp-credentials \
+          --from-literal=access-key-id="<access-key-id>" \
+          --from-literal=secret-access-key="<secret-access-key>"
+        ```
+
+        Then add these variables to the `env` list of the `bridge` container:
+
+        ```yaml
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-mcp-credentials
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-mcp-credentials
+              key: secret-access-key
+        ```
+
         The bridge's MCP server URL is `http://aws-mcp.coral.svc.cluster.local:8080/mcp`.
       </Tab>
     </Tabs>
