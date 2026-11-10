@@ -316,13 +316,13 @@ Coral reads these variables when it starts. Restart Coral after you change one.
 | `CORAL_LOCAL_WEB_URL`       | The web UI's origin, for a local launcher that sets no `[listeners.web]`. Coral links your users to it. Coral does not start with it when `[auth]` is present. |
 | `CORAL_STOP_ON_STDIN_CLOSE` | Set to `1` to stop Coral when its stdin closes. Use it when your launcher stops Coral by closing a pipe.                                                         |
 | `CORAL_TRACE_PARENT`        | A W3C `traceparent`. Coral starts its process span in that trace.                                                                                                 |
-| `DO_NOT_TRACK`, `CORAL_TELEMETRY`, `CI` | Stop the daily usage report. See [Usage data](/reference/usage-data#with-an-environment-variable).                                                    |
+| `DO_NOT_TRACK`, `CORAL_TELEMETRY`, `CI` | Stop the daily usage report, but only with some values. For example, `DO_NOT_TRACK=0` does not stop it. See [Usage data](/reference/usage-data#with-an-environment-variable) for the values. |
 
 The variables that `*_env` keys name, such as `CORAL_SESSION_SIGNING_KEY`, hold secrets. Coral does not start when one of them is not set.
 
 ### Exit status
 
-Coral exits with `0` after a clean stop. It exits with `75` when another Coral process holds its config folder. Your launcher can try again after that process stops. Coral exits with `1` on every other error.
+Coral exits with `0` after a clean stop. It exits with `75` when another Coral process holds its config folder. Your launcher can try again after that process stops. Coral exits with `2` when a command-line argument is not valid, and with `1` on every other error.
 
 ## Container image
 
@@ -347,7 +347,7 @@ The `coral-web` image reads these variables when it starts. It does not start wh
 | `CORAL_WEB_SESSION_SECRET`                | Required with `required`. At least 32 characters. Signs the session cookie. Give every UI process the same value.                                                                                                | None                                               |
 | `CORAL_WEB_SESSION_MAX_AGE_SECONDS`       | How long a web session lasts, in seconds. See [Web sessions](#web-sessions).                                                                                                                                      | `2592000`                                          |
 | `CORAL_WEB_SESSION_COOKIE_NAME`           | Name of the session cookie. Must be a valid RFC 6265 cookie name. Over https, the UI adds the `__Host-` prefix. Your users must sign in again after you change it.                                             | `coral_web_session`                                |
-| `HOST`                                    | Address the UI listens on. With `disabled`, it must be a loopback IP address, such as `127.0.0.1`. Set `::` to listen on IPv6.                                                                                    | `0.0.0.0`, or `127.0.0.1` with `disabled`          |
+| `HOST`                                    | Address the UI listens on. With `disabled`, it must be `::1` or an IPv4 loopback address, such as `127.0.0.1`. With `required`, set `::` to listen on IPv6.                                                      | `0.0.0.0`, or `127.0.0.1` with `disabled`          |
 | `PORT`                                    | Port the UI listens on.                                                                                                                                                                                           | `3000`                                             |
 | `AGENTS_WITH_AVAILABLE_PLUGINS`           | MCP clients that may have a Coral plugin. See [Offering a Coral plugin](/getting-started/self-host/docker-compose#offering-a-coral-plugin).                                                                     | None                                               |
 
