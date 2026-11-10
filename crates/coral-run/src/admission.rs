@@ -1,8 +1,8 @@
 //! Program admission: bounded source-closure resolution, compilation outside
 //! write transactions, and atomic acceptance of one complete package.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::Instant;
 
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
@@ -13,7 +13,11 @@ use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
 use uuid::Uuid;
 
-use crate::engine::{ProgramEngine, ProgramPackage, ProgramReferences, SavedFunctionReference};
+use coral_run_executor::tool_check_deadline;
+
+use crate::engine::{
+    AdmissionReferences, AdmissionSource, PackageFailure, ProgramPackage, SavedFunctionReference,
+};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
@@ -24,13 +28,6 @@ use crate::{
 /// The most candidate Call Paths admission checks, as Saved Function typing
 /// bounds them. A Program that names more has its paths checked when called.
 const TOOL_CHECK_MAX_PATHS: usize = 128;
-
-/// The longest admission's Call Path check may take.
-const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
-
-/// The compilation time the Call Path check always leaves, so the check never
-/// makes a Program time out that would have compiled without it.
-const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 enum SavedFunctionReferenceSource {
@@ -326,10 +323,14 @@ impl RunModule {
         let named = self
             .analyze_program(source.clone(), compilation_deadline)
             .await?;
-        if let Some(tools) = &named.tools {
-            self.check_tool_calls(actor, workspace_id, tools, compilation_deadline)
-                .await?;
-        }
+        let callable = self
+            .callable_tool_paths(
+                actor,
+                workspace_id,
+                &named.tool_call_paths,
+                compilation_deadline,
+            )
+            .await;
         let linked = self
             .read_source_closure(actor, workspace_id, named.functions, compilation_deadline)
             .await?;
@@ -341,18 +342,32 @@ impl RunModule {
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
-            engine.compile_with_saved_functions(compilation_deadline, &source, &compile_linked)
+            engine.compile(
+                compilation_deadline,
+                &source,
+                &compile_linked,
+                callable.as_deref(),
+            )
         });
         let package = match timeout_at(compilation_deadline.into(), compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(failure))) => return Err(domain_error(failure)),
+            Ok(Ok(Err(PackageFailure::UnknownTools(unknown)))) => {
+                return Err(self
+                    .unknown_tools(actor, workspace_id, &unknown, compilation_deadline)
+                    .await);
+            }
+            Ok(Ok(Err(PackageFailure::Compile(failure)))) => return Err(domain_error(failure)),
             Ok(Ok(Ok(package))) => package,
         };
         package.validate()?;
         Ok((package, linked))
     }
 
+    /// Reads the Saved Function closure in one read snapshot, one level of
+    /// the graph at a time, with one analysis per level. It reports what
+    /// reading one Saved Function at a time in the same order would find
+    /// first.
     async fn read_source_closure(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -369,54 +384,83 @@ impl RunModule {
             .map(|reference| reference.path.clone())
             .collect::<Vec<_>>();
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let mut pending = roots
+        let mut level = roots
             .into_iter()
             .map(|reference| PendingSavedFunctionReference {
                 source: SavedFunctionReferenceSource::SubmittedProgram,
                 reference,
             })
-            .collect::<VecDeque<_>>();
+            .collect::<Vec<_>>();
         let mut snapshots = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
-        while let Some(pending_reference) = pending.pop_front() {
-            let path = &pending_reference.reference.path;
-            if snapshots.contains_key(path) {
-                continue;
-            }
-            if snapshots.len() == LINKED_SAVED_FUNCTION_MAX_COUNT {
-                return Err(Error::ProgramAdmission(format!(
-                    "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Saved Functions"
-                )));
-            }
-            let snapshot = coral_functions::select_source_in_transaction(
-                &mut transaction,
-                workspace_id,
-                actor.principal(),
-                path,
-            )
-            .await?
-            .ok_or_else(|| missing_saved_function(&pending_reference))?;
-            let referenced = self
-                .analyze_saved_function_paths(
-                    snapshot.source().as_str().to_string(),
-                    path.clone(),
-                    compilation_deadline,
-                )
-                .await?;
-            pending.extend(referenced.iter().cloned().map(|reference| {
-                PendingSavedFunctionReference {
-                    source: SavedFunctionReferenceSource::SavedFunction(path.clone()),
-                    reference,
+        while !level.is_empty() {
+            let mut paths = Vec::new();
+            let mut sources = Vec::new();
+            let mut stopped = None;
+            for pending_reference in &level {
+                let path = &pending_reference.reference.path;
+                if snapshots.contains_key(path) {
+                    continue;
                 }
-            }));
-            dependencies.insert(
-                path.clone(),
-                referenced
-                    .into_iter()
-                    .map(|reference| reference.path)
-                    .collect(),
-            );
-            snapshots.insert(path.clone(), snapshot);
+                if snapshots.len() == LINKED_SAVED_FUNCTION_MAX_COUNT {
+                    stopped = Some(Error::ProgramAdmission(format!(
+                        "Program may link at most {LINKED_SAVED_FUNCTION_MAX_COUNT} Saved Functions"
+                    )));
+                    break;
+                }
+                let snapshot = match coral_functions::select_source_in_transaction(
+                    &mut transaction,
+                    workspace_id,
+                    actor.principal(),
+                    path,
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => {
+                        stopped = Some(missing_saved_function(pending_reference));
+                        break;
+                    }
+                    Err(error) => {
+                        stopped = Some(error.into());
+                        break;
+                    }
+                };
+                sources.push(AdmissionSource::SavedFunction {
+                    path: path.clone(),
+                    source: snapshot.source().as_str().to_string(),
+                });
+                paths.push(path.clone());
+                snapshots.insert(path.clone(), snapshot);
+            }
+            // The Saved Functions read before the one that stopped the level
+            // come first, so their rejection wins.
+            let analyzed = if sources.is_empty() {
+                Vec::new()
+            } else {
+                self.analyze(sources, compilation_deadline).await?
+            };
+            if let Some(error) = stopped {
+                return Err(error);
+            }
+            let mut next = Vec::new();
+            for (path, referenced) in paths.into_iter().zip(analyzed) {
+                next.extend(referenced.functions.iter().cloned().map(|reference| {
+                    PendingSavedFunctionReference {
+                        source: SavedFunctionReferenceSource::SavedFunction(path.clone()),
+                        reference,
+                    }
+                }));
+                dependencies.insert(
+                    path,
+                    referenced
+                        .functions
+                        .into_iter()
+                        .map(|reference| reference.path)
+                        .collect(),
+                );
+            }
+            level = next;
         }
         transaction.commit().await?;
 
@@ -427,85 +471,78 @@ impl RunModule {
         &self,
         source: String,
         compilation_deadline: Instant,
-    ) -> Result<ProgramReferences, Error> {
-        self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.program_references(deadline, &source)
-        })
-        .await
+    ) -> Result<AdmissionReferences, Error> {
+        let mut analyzed = self
+            .analyze(vec![AdmissionSource::Program(source)], compilation_deadline)
+            .await?;
+        Ok(analyzed.pop().unwrap_or_default())
     }
 
-    /// Refuses a Program whose literal `coral.providers` or
-    /// `coral.workspace` call names no Tool the caller can call, naming
-    /// each such path and the nearest ones it can discover. A computed path
-    /// is checked only when called.
+    /// The candidate Call Paths that the caller can call, which compile
+    /// checks the Program's literal `coral.providers` and `coral.workspace`
+    /// calls against. A computed path is checked only when called.
     ///
     /// A path names a Tool when Invocation admission would resolve it now,
     /// so the check refuses exactly the calls that would fail with
     /// `tool_not_found`, and a call to a disabled Tool still runs to be
     /// recorded and refused. The unknown-Tool diagnostic's rule decides
     /// which chains those paths leave unknown. Neither reads the search
-    /// index. The check is bounded like Saved Function typing: a Program
-    /// that names more candidate paths, or a check that fails or runs out of
-    /// its time, leaves the paths to be checked when called.
-    async fn check_tool_calls(
+    /// index. The check is bounded like Saved Function typing: `None`, for
+    /// a Program that names more candidate paths or a read that fails or
+    /// runs out of its time, leaves the paths to be checked when called.
+    async fn callable_tool_paths(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        tools: &coral_v8::ToolReferences,
+        candidates: &[String],
         compilation_deadline: Instant,
-    ) -> Result<(), Error> {
-        let candidates = tools.call_paths();
+    ) -> Option<Vec<String>> {
         if candidates.is_empty() || candidates.len() > TOOL_CHECK_MAX_PATHS {
-            return Ok(());
+            return None;
         }
-        let now = Instant::now();
-        let Some(deadline) = compilation_deadline
-            .checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
-            .map(|latest| latest.min(now + TOOL_CHECK_BUDGET))
-            .filter(|deadline| *deadline > now)
-        else {
+        let Some(deadline) = tool_check_deadline(compilation_deadline) else {
             tracing::warn!("No time is left to check the Program's Call Paths before it runs");
-            return Ok(());
+            return None;
         };
-        let search = coral_search::UniversalSearchModule::new(
-            self.database.clone(),
-            self.workspaces.clone(),
-        );
-        let check = async {
-            let callable = self
-                .callable_tools(actor, workspace_id, candidates)
-                .await
-                .map_err(|_error| "catalog_unavailable")?;
-            let engine = self.engine.clone();
-            let tools = tools.clone();
-            tokio::task::spawn_blocking(move || {
-                engine.unknown_tool_calls(deadline, &tools, &callable)
-            })
-            .await
-            .map_err(|_join_error| "compiler_stopped")?
-            .map_err(|_failure| "compiler_failed")
-        };
-        let unknown = match timeout_at(deadline.into(), check).await {
-            Ok(Ok(unknown)) => unknown,
-            Ok(Err(kind)) => {
+        match timeout_at(
+            deadline.into(),
+            self.callable_tools(actor, workspace_id, candidates),
+        )
+        .await
+        {
+            Ok(Ok(callable)) => Some(callable),
+            Ok(Err(_error)) => {
                 tracing::warn!(
-                    error.type = safe::kind(kind),
+                    error.type = safe::kind("catalog_unavailable"),
                     "The Program's Call Paths are checked only when called"
                 );
-                return Ok(());
+                None
             }
             Err(_elapsed) => {
                 tracing::warn!(
                     "Checking the Program's Call Paths took too long; they are checked only when called"
                 );
-                return Ok(());
+                None
             }
-        };
-        if unknown.is_empty() {
-            return Ok(());
         }
+    }
+
+    /// Refuses a Program whose literal calls name no Tool the caller can
+    /// call, naming each such path once, where it is, and the nearest ones
+    /// the caller can discover.
+    async fn unknown_tools(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        unknown: &[coral_v8::UnknownToolCall],
+        compilation_deadline: Instant,
+    ) -> Error {
+        let search = coral_search::UniversalSearchModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+        );
         let mut named = Vec::<&coral_v8::UnknownToolCall>::new();
-        for call in &unknown {
+        for call in unknown {
             if !named
                 .iter()
                 .any(|known| known.call_path() == call.call_path())
@@ -536,9 +573,7 @@ impl RunModule {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        Err(Error::ProgramAdmission(
-            coral_v8::bounded_diagnostic_message(&message),
-        ))
+        Error::ProgramAdmission(coral_v8::bounded_diagnostic_message(&message))
     }
 
     /// The paths among `call_paths` that Invocation admission would
@@ -568,27 +603,16 @@ impl RunModule {
         Ok(callable)
     }
 
-    async fn analyze_saved_function_paths(
+    /// Analyzes `sources` on a blocking worker within the admission
+    /// deadline: one result per source, in order.
+    async fn analyze(
         &self,
-        source: String,
-        path: SavedFunctionPath,
+        sources: Vec<AdmissionSource>,
         compilation_deadline: Instant,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
-        self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.saved_function_dependency_references(deadline, &path, &source)
-        })
-        .await
-    }
-
-    /// Runs one analysis on a blocking worker within the admission deadline.
-    async fn analyze<T: Send + 'static>(
-        &self,
-        compilation_deadline: Instant,
-        analysis: impl FnOnce(&dyn ProgramEngine, Instant) -> Result<T, CompileFailure> + Send + 'static,
-    ) -> Result<T, Error> {
+    ) -> Result<Vec<AdmissionReferences>, Error> {
         let engine = self.engine.clone();
         let analyze =
-            tokio::task::spawn_blocking(move || analysis(engine.as_ref(), compilation_deadline));
+            tokio::task::spawn_blocking(move || engine.analyze(compilation_deadline, &sources));
         match timeout_at(compilation_deadline.into(), analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
@@ -669,12 +693,10 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
 }
 
 fn missing_saved_function(pending: &PendingSavedFunctionReference) -> Error {
-    let source_name = match &pending.source {
-        SavedFunctionReferenceSource::SubmittedProgram => "Program".to_string(),
-        SavedFunctionReferenceSource::SavedFunction(path) => {
-            format!("Saved Function coral.functions.{}", path.as_str())
-        }
-    };
+    let source_name = crate::engine::source_name(match &pending.source {
+        SavedFunctionReferenceSource::SubmittedProgram => None,
+        SavedFunctionReferenceSource::SavedFunction(path) => Some(path),
+    });
     Error::ProgramAdmission(format!(
         "{source_name}:{}:{} references missing Saved Function coral.functions.{}",
         pending.reference.line,

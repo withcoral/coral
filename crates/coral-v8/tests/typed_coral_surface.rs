@@ -4,8 +4,8 @@
 use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits, ProgramCompiler,
-    SavedFunctionCompilation,
+    AnalyzedSource, CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits,
+    ProgramCompiler, SavedFunctionCompilation,
 };
 use coral_value as _;
 use deno_core_icudata as _;
@@ -70,22 +70,28 @@ fn tools() -> Vec<CallableDeclaration> {
     ]
 }
 
-/// Prepares `source` as Saved Function save does: typed by `tools` and
-/// `weather.forecast` along the Call Paths the source names.
+/// Prepares `source` typed by `tools` and `weather.forecast`. Saved Function
+/// save sends the declarations of the Call Paths the source names; the
+/// compiler finds the chains in the source again.
 fn prepare(
     compiler: &ProgramCompiler,
     source: &str,
     tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
 ) -> Result<SavedFunctionCompilation, coral_v8::Error> {
-    let named = compiler.saved_function_call_paths(deadline(), source)?;
     compiler.prepare_typed_saved_function(
         deadline(),
         source,
         &CoralDeclarations::new(declaration_max_bytes)
-            .with_tools(named.tools(), tools)
+            .with_tools(tools)
             .with_functions(vec![tool("weather.forecast", FORECAST)]),
     )
+}
+
+fn analyze(compiler: &ProgramCompiler, source: &AnalyzedSource) -> coral_v8::SourceReferences {
+    compiler
+        .analyze(deadline(), source)
+        .expect("analyze the source")
 }
 
 /// `(code, line, column)` of one diagnostic.
@@ -230,11 +236,9 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
         await coral.providers.github.repos({});\n\
         return [page, repo];";
-    let named = compiler
-        .program_call_paths(deadline(), source)
-        .expect("analyze the Program body");
+    let named = analyze(&compiler, &AnalyzedSource::Program(source.to_owned()));
     assert_eq!(
-        named.tools().call_paths(),
+        named.tool_call_paths(),
         [
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",
@@ -245,7 +249,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
     );
     let callable = ["coral.providers.github.repos.get".to_owned()];
     let unknown = compiler
-        .unknown_tool_calls(deadline(), named.tools(), &callable)
+        .unknown_tool_calls(deadline(), source, &callable)
         .expect("check the called chains");
     assert_eq!(
         unknown
@@ -264,7 +268,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         compiler
             .unknown_tool_calls(
                 deadline(),
-                named.tools(),
+                source,
                 &[
                     "coral.providers.github.repos.get".to_owned(),
                     "coral.providers.notion.retrievePage".to_owned(),
@@ -288,21 +292,18 @@ fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let source = "await coral.providers.github.users.getAuthenticated();\n\
         return await coral.providers.github[\"repos.get\"]({ owner: \"a\", repo: \"b\" });";
-    let named = compiler
-        .program_call_paths(deadline(), source)
-        .expect("analyze the Program body");
+    let named = analyze(&compiler, &AnalyzedSource::Program(source.to_owned()));
     assert!(
         named
-            .tools()
-            .call_paths()
+            .tool_call_paths()
             .contains(&"coral.providers.github.repos.get".to_owned()),
         "{:?}",
-        named.tools().call_paths()
+        named.tool_call_paths()
     );
     let unknown = compiler
         .unknown_tool_calls(
             deadline(),
-            named.tools(),
+            source,
             &[
                 "coral.providers.github.repos.get".to_owned(),
                 "coral.providers.github.users.getAuthenticated".to_owned(),
@@ -389,14 +390,15 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 fn call_path_analysis_names_every_candidate_tool_call_path() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
-    let named = compiler
-        .saved_function_call_paths(
-            deadline(),
-            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.workspace.listProviders();\n  return [a, b, c, d, coral.providers, coral.workspace, coral.functions.weather.forecast];\n}",
-        )
-        .expect("analyze Saved Function");
+    let named = analyze(
+        &compiler,
+        &AnalyzedSource::SavedFunction(
+            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.workspace.listProviders();\n  return [a, b, c, d, coral.providers, coral.workspace, coral.functions.weather.forecast];\n}"
+                .to_owned(),
+        ),
+    );
     assert_eq!(
-        named.tools().call_paths(),
+        named.tool_call_paths(),
         [
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",

@@ -19,7 +19,10 @@ mod pull;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use compiler::{CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
+pub use compiler::{
+    AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left,
+    tool_check_deadline,
+};
 pub use in_process::InProcessCompiler;
 pub use link::{
     AddressError, CoralAddress, PROTOCOL_LEVEL, RunExecutorConfig, Token, TokenError, run,
