@@ -36,13 +36,28 @@ export default [
       route('workspaces/:workspace/agents', 'routes/agents.tsx'),
       route('workspaces/:workspace/agents/:agent', 'routes/agent.tsx'),
       route('workspaces/:workspace/agents/:agent/settings', 'routes/agent-settings.tsx'),
-      route('workspaces/:workspace/providers', 'routes/providers.tsx', { id: 'providers' }, [
-        index('routes/providers-selection.tsx', { id: 'providers-index' }),
-        route(':provider', 'routes/providers-selection.tsx', { id: 'providers-provider' }),
-        route(':provider/tools/:tool', 'routes/providers-selection.tsx', {
-          id: 'providers-tool',
+      // One table of every tool. The address names what it reveals: every
+      // group, one group, or one open tool. A provider's group and tools keep
+      // its resource path; the private group has a fixed one.
+      layout('routes/tools.tsx', { id: 'tools' }, [
+        route('workspaces/:workspace/tools', 'routes/tools-selection.tsx', { id: 'tools-index' }),
+        route('workspaces/:workspace/tools/:group', 'routes/tools-selection.tsx', {
+          id: 'tools-group',
         }),
+        route('workspaces/:workspace/tools/:group/:tool', 'routes/tools-selection.tsx', {
+          id: 'tools-group-tool',
+        }),
+        route('workspaces/:workspace/providers/:provider', 'routes/tools-selection.tsx', {
+          id: 'tools-provider',
+        }),
+        route(
+          'workspaces/:workspace/providers/:provider/tools/:tool',
+          'routes/tools-selection.tsx',
+          { id: 'tools-provider-tool' },
+        ),
       ]),
+      // The list of providers is now the Tools page.
+      route('workspaces/:workspace/providers', 'routes/providers-redirect.ts'),
       route('workspaces/:workspace/providers/new', 'routes/provider-new.tsx', {
         id: 'provider-new',
       }),
@@ -62,12 +77,6 @@ export default [
       ),
       route('workspaces/:workspace/accounts', 'routes/accounts.tsx'),
       route('workspaces/:workspace/accounts/:provider', 'routes/user-account.tsx'),
-      // A function opens in a drawer over the list, and a namespace picks the
-      // list's tab. Both URLs stay shareable.
-      route('workspaces/:workspace/functions', 'routes/functions.tsx', [
-        route(':path', 'routes/function.tsx'),
-        route('namespaces/:namespace', 'routes/functions-namespace.tsx'),
-      ]),
       route('workspaces/:workspace/members', 'routes/workspace-members.tsx'),
     ]),
   ]),

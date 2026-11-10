@@ -12,7 +12,7 @@ export { railItem, toolbarActionLabel } from './catalog.css'
 
 /**
  * A catalog page: a filterable rail of groups on the left and the grouped table
- * of their members on the right. Providers and Functions share it.
+ * of their members on the right. The Tools page is one.
  */
 export function CatalogLayout({ rail, children }: { rail: ReactNode; children: ReactNode }) {
   return (

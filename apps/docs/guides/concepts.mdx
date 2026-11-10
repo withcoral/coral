@@ -46,7 +46,7 @@ You can add a provider multiple times, each under its own namespace, to give the
 
 ### Built-in provider
 
-Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its tools and performs them itself, without an upstream service. It is listed first under **Providers** in the [Coral UI](#coral-ui).
+Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its tools and performs them itself, without an upstream service. It is listed first under **Tools** in the [Coral UI](#coral-ui).
 
 - Its tools sit directly on `coral`, as in `coral.search`, with no namespace.
 - Members and agents can find and call only `coral.listProviders`, `coral.getPolicy`, `coral.search`, `coral.addTool`, `coral.updateTool` and `coral.removeTool`. Workspace owners can find and call all its tools.
@@ -161,4 +161,4 @@ return issues;
 
 Later programs call it as `coral.private.triage.staleIssues`. The program that saves it cannot call the new version by that path. A program that replaces a private tool calls the version that was current when it started.
 
-A user's private tools are private to that user.
+A user's private tools are private to that user. They are listed under **Tools** in the [Coral UI](#coral-ui), in the **Private** group.

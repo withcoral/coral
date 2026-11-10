@@ -5,7 +5,7 @@ import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderBlocker } from '@/generated/coral/management/v1/provider_pb'
 import { fakeManagement } from '@/lib/management.test-support'
-import { action } from './providers'
+import { action } from './tools'
 
 const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(),
@@ -36,7 +36,7 @@ beforeEach(() => {
 const post = (form: FormData) =>
   action(
     authRouteTestArgs(
-      new Request(`https://reef.test/workspaces/${workspaceId}/providers`, {
+      new Request(`https://reef.test/workspaces/${workspaceId}/tools`, {
         method: 'POST',
         headers: { origin: 'https://reef.test' },
         body: form,

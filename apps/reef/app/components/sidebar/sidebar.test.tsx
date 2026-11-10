@@ -19,14 +19,13 @@ const researchLinks = [
   '/workspaces/research',
   '/workspaces/research/approvals',
   '/workspaces/research/activity',
-  '/workspaces/research/providers',
+  '/workspaces/research/tools',
   '/workspaces/research/accounts',
-  '/workspaces/research/functions',
   '/workspaces/research/members',
 ]
 
 test('only the current workspace starts open, and opening another keeps it open', async () => {
-  const { container } = render('/workspaces/ops/providers')
+  const { container } = render('/workspaces/ops/tools')
   expect(links(container)).toEqual(ownerLinks('ops'))
 
   await userEvent.click(header('Research'))
@@ -175,7 +174,7 @@ test.each([
 })
 
 test('collapsed, every workspace is a tile and only the current one shows its destinations', async () => {
-  render('/workspaces/ops/providers', { minimized: true })
+  render('/workspaces/ops/tools', { minimized: true })
   const rail = screen.getByRole('group', { name: 'Workspaces' })
   const tiles = [...rail.querySelectorAll(':scope > div > a')]
   expect(tiles.map((a) => [a.getAttribute('aria-label'), a.getAttribute('href')])).toEqual([
@@ -187,9 +186,8 @@ test('collapsed, every workspace is a tile and only the current one shows its de
     '/workspaces/ops',
     '/workspaces/ops/approvals',
     '/workspaces/ops/activity',
-    '/workspaces/ops/providers',
+    '/workspaces/ops/tools',
     '/workspaces/ops/accounts',
-    '/workspaces/ops/functions',
     '/workspaces/ops/agents',
     '/workspaces/ops/members',
     '/workspaces/research',
@@ -287,6 +285,19 @@ test.each(['/workspaces/ops/activity', '/workspaces/ops/runs/r'])(
     expect(activityLink()).toHaveAttribute('aria-current', 'page')
   },
 )
+// Catches: Tools losing its mark on a provider's own pages, which keep the
+// provider's resource path, or keeping it on the Accounts page.
+test.each([
+  ['/workspaces/ops/tools', 'page'],
+  ['/workspaces/ops/tools/private', 'page'],
+  ['/workspaces/ops/providers/p/settings', 'page'],
+  ['/workspaces/ops/accounts', null],
+])('marks Tools current on the tools and on each provider page: %s', (path, current) => {
+  render(path)
+  const tools = screen.getByRole('link', { name: /^Tools/ })
+  expect(tools).toHaveAttribute('href', '/workspaces/ops/tools')
+  expect(tools.getAttribute('aria-current')).toBe(current)
+})
 test('Approvals sits directly under Overview and shows with nothing pending', () => {
   render('/workspaces/ops/approvals')
   const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'))
@@ -295,7 +306,7 @@ test('Approvals sits directly under Overview and shows with nothing pending', ()
   expect(approvalsLink()).toHaveAttribute('aria-current', 'page')
 })
 test('an open workspace shows each count on its kind, a closed one the total on its name', () => {
-  render('/workspaces/ops/providers', { actionCounts: counts })
+  render('/workspaces/ops/tools', { actionCounts: counts })
   expect(approvalsLink()).toHaveAccessibleName('Approvals. 3 pending approvals')
   expect(accountsLink()).toHaveAccessibleName('Accounts. 2 pending connection requests')
   expect(activityLink()).toHaveAccessibleName('Activity')
@@ -309,7 +320,7 @@ test('an open workspace shows each count on its kind, a closed one the total on 
   expect(within(header(/^Research/)).getByText('5')).toBeInTheDocument()
 })
 test('collapsed, the current workspace shows each kind and the others their total on the tile', () => {
-  render('/workspaces/ops/providers', { minimized: true, actionCounts: counts })
+  render('/workspaces/ops/tools', { minimized: true, actionCounts: counts })
   const rail = screen.getByRole('group', { name: 'Workspaces' })
   expect(within(rail).getByRole('link', { name: 'Operations' })).toBeInTheDocument()
   expect(approvalsLink()).toHaveAccessibleName('Approvals. 3 pending approvals')
@@ -378,9 +389,8 @@ function ownerLinks(id: string) {
     w,
     `${w}/approvals`,
     `${w}/activity`,
-    `${w}/providers`,
+    `${w}/tools`,
     `${w}/accounts`,
-    `${w}/functions`,
     `${w}/agents`,
     `${w}/members`,
   ]

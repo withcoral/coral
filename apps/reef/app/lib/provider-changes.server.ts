@@ -3,7 +3,7 @@ import { data, redirect, type RouterContextProvider } from 'react-router'
 import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
 import {
-  blockerLabel,
+  toolBlockers,
   providerName,
   providerFailure,
   toolName,
@@ -30,7 +30,6 @@ export async function applyProviderChange(
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace, {
       ownerOnly: true,
     })
-    const providersPath = `${w.path}/providers`
     switch (intent) {
       case 'renameProvider': {
         await api.providers.updateProvider({
@@ -99,7 +98,7 @@ export async function applyProviderChange(
           name: `${w.name}/providers/${uuidOr404(field(form, 'provider'))}`,
           etag: field(form, 'etag'),
         })
-        return redirect(providersPath, { headers: privateHeaders })
+        return redirect(`${w.path}/tools`, { headers: privateHeaders })
       }
       case 'policy': {
         const access = field(form, 'access')
@@ -253,7 +252,7 @@ async function currentBlockers(api: ManagementApi, workspace: string, providers:
         ...(await Promise.all(
           batch.map(async (id) => {
             const provider = await api.providers.getProvider({ name: providerName(workspace, id) })
-            return [id, provider.blockers.map(blockerLabel)] as const
+            return [id, toolBlockers(provider)] as const
           }),
         )),
       )

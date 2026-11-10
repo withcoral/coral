@@ -48,7 +48,7 @@ async function resolveScope(
     workspace: w,
     parent: w.name,
     basePath: `${w.path}/providers/new`,
-    cancelPath: `${w.path}/providers`,
+    cancelPath: `${w.path}/tools`,
   }
 }
 

@@ -174,6 +174,17 @@ export const providerGroupLabel = style({
   gridColumn: '2 / -1',
   minWidth: 0,
 })
+// A group's name opens its page. It reads as the heading it is, and shows it
+// is a link when the pointer or the keyboard reaches it.
+export const groupLink = style({
+  color: 'inherit',
+  minWidth: 0,
+  textDecoration: 'none',
+  selectors: {
+    '&:hover': { textDecoration: 'underline' },
+    '&:focus-visible': { borderRadius: 4, outline: `2px solid ${theme.stroke.focused}` },
+  },
+})
 // A checked row is filled, so the selection reads down the table at a glance.
 export const checkedRow = style({
   backgroundColor: theme.surface.onMainContent,

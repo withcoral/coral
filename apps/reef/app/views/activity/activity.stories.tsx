@@ -1403,7 +1403,7 @@ function discovery(context: DiscoveryContext, response: string): Story['args'] {
     if (owner && target.title === target.callPath) target.title = owner.relativePath
     target.currentHref = owner
       ? `/${workspace}/providers/${owner.provider.id}/tools/${owner.relativePath}`
-      : `/${workspace}/functions/${path}`
+      : `/${workspace}/tools/private/${path}`
   }
   const name = context.kind === 'describe' ? 'describe' : 'search'
   const row = tool(name, name, 'succeeded', 'Find the tool that merges a pull request')
@@ -1518,13 +1518,13 @@ export const HistoricalSearchMixedResults: Story = {
     const results = opened.getByRole('list', { name: 'Results in rank order' })
     const [privateTool, merge] = within(results).getAllByRole('listitem')
     await expect(within(privateTool).getByText('private tool')).toBeVisible()
-    // An icon beside the call path opens today's function, named with its path.
+    // An icon beside the call path opens today's private tool, named with its path.
     const current = within(privateTool).getByRole('link', {
       name: /^Open current private tool coral\.private\./,
     })
     await expect(current).toBeVisible()
-    await expect(current.getAttribute('href')).toMatch(/\/functions\//)
-    // Approval shows as the Providers page's named hand; other flags keep their text.
+    await expect(current.getAttribute('href')).toMatch(/\/tools\/private\//)
+    // Approval shows as the Tools page's named hand; other flags keep their text.
     await expect(within(merge).getByRole('img', { name: /^Ask/ })).toBeVisible()
     for (const flag of ['destructive', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()

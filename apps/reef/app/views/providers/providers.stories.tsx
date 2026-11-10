@@ -6,13 +6,20 @@ import type { CreationAttempt, UpdateAttempt } from '@/lib/provider-publication-
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import githubIcon from '../../../recipes/github/github.svg'
 import stripeIcon from '../../../recipes/stripe/stripe.svg'
-import { CORAL_ICONS } from './coral-icons'
+import { CORAL_ICONS, PRIVATE_ICONS } from './coral-icons'
 import { StepperPage } from './stepper-page'
-import type { ProviderView, ToolDetailView, ToolView, ReviewToolView, SetupView } from './types'
+import type {
+  ProviderToolDetailView,
+  ProviderView,
+  ToolView,
+  ReviewToolView,
+  SetupView,
+} from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
 import { selectionKey } from './selection'
-import { WorkspaceProvidersPage } from './workspace-providers-page'
+import { ToolsPage } from '@/views/tools/tools-page'
+import type { PrivateToolDetailView } from '@/views/tools/types'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
 const jordan = {
@@ -71,7 +78,8 @@ const githubOps = (provider: string) => [
     hints: { readOnly: true },
   }),
 ]
-const createIssue: ToolDetailView = {
+const createIssue: ProviderToolDetailView = {
+  kind: 'provider',
   relativePath: 'issues.create',
   summary: 'Create an issue',
   description:
@@ -82,7 +90,7 @@ const github: ProviderView = {
   displayName: 'GitHub',
   namespace: 'github',
   callRoot: 'coral.providers.github',
-  builtin: false,
+  kind: 'added',
   account: 'Individual accounts',
   blockers: [],
   personalAccountAction: null,
@@ -100,7 +108,7 @@ const weather: ProviderView = {
   displayName: 'Weather',
   namespace: 'weather',
   callRoot: 'coral.providers.weather',
-  builtin: false,
+  kind: 'added',
   account: 'No account',
   blockers: [],
   personalAccountAction: null,
@@ -157,7 +165,7 @@ const coral: ProviderView = {
   displayName: 'Coral',
   namespace: '',
   callRoot: 'coral',
-  builtin: true,
+  kind: 'coral',
   icons: CORAL_ICONS,
   path: '/workspaces/demo/providers/prov-coral',
   readyCount: coralTools.length,
@@ -184,9 +192,7 @@ const meta = {
       ])
       return (
         <div style={{ height: '100vh' }}>
-          <Stub
-            initialEntries={[context.parameters.initialEntry ?? '/workspaces/demo/providers']}
-          />
+          <Stub initialEntries={[context.parameters.initialEntry ?? '/workspaces/demo/tools']} />
         </div>
       )
     },
@@ -234,7 +240,7 @@ const treeProps = {
 
 export const TreeAddProviderLauncher: Story = {
   // Another tab is current, and the toolbar still ends with the Add button.
-  render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
+  render: () => <ToolsPage {...treeProps} selectedProvider="prov-weather" />,
   play: async ({ canvas }) => {
     const add = within(canvas.getByRole('main')).getByRole('button', { name: 'Add provider' })
     await expect(add).toBeVisible()
@@ -253,7 +259,7 @@ export const TreeAddProviderLauncher: Story = {
 }
 // A rail filter that matches no installed provider points to the catalog.
 export const TreeFilterFindsCatalogProvider: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   play: async ({ canvas }) => {
     await userEvent.type(canvas.getByLabelText('Filter providers'), 'stripe')
   },
@@ -261,7 +267,7 @@ export const TreeFilterFindsCatalogProvider: Story = {
 // A long name breaks inside the message and truncates on the button.
 export const TreeFilterFindsLongCatalogName: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       recipes={[
         ...catalogRecipes,
@@ -282,19 +288,19 @@ export const TreeFilterFindsLongCatalogName: Story = {
   },
 }
 export const TreeFilterFindsNothing: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   play: async ({ canvas }) => {
     await userEvent.type(canvas.getByLabelText('Filter providers'), 'notion')
   },
 }
 export const EmptyTree: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} providers={[]} />,
+  render: () => <ToolsPage {...treeProps} providers={[]} />,
 }
 export const EmptyWorkspace: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} providers={[]} />,
+  render: () => <ToolsPage {...treeProps} providers={[]} />,
 }
 export const TreeNothingSelected: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   play: async ({ canvas }) => {
     // The checkbox's click target reaches the row's edge, its top and bottom,
     // and into the gap before the next column.
@@ -338,12 +344,12 @@ const toolUsage = {
 }
 // The Usage column: each tool's calls as a bar against the busiest tool's.
 export const TreeToolCalls: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} toolCalls={toolUsage} />,
+  render: () => <ToolsPage {...treeProps} toolCalls={toolUsage} />,
 }
 // The drawer's usage: the total, each day as a bar, and who called it.
 export const TreeToolUsage: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.create"
@@ -356,7 +362,7 @@ export const TreeToolUsage: Story = {
 // GitHub, and unavailable tools on HR system.
 export const TreeProviderStatus: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       providers={[
         {
@@ -378,7 +384,7 @@ export const TreeProviderStatus: Story = {
   ),
 }
 export const TreeCollapsedProvider: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   play: async ({ canvas }) => {
     // Collapsing a provider leaves its heading's content where it was.
     const heading = canvas.getAllByRole('rowgroup', { name: 'GitHub' })[0]!
@@ -391,7 +397,7 @@ export const TreeCollapsedProvider: Story = {
   },
 }
 export const TreeCollapseAll: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   play: async ({ canvas }) => {
     // The header's toggle lines up with the provider headings' toggles.
     const left = (name: string) => canvas.getByRole('button', { name }).getBoundingClientRect().left
@@ -409,7 +415,7 @@ const manyProviders: ProviderView[] = Array.from({ length: 30 }, (_, index) => (
   path: `/workspaces/demo/providers/prov-many-${index + 1}`,
 }))
 export const TreeExpandAllFromDownTheTable: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} providers={manyProviders} />,
+  render: () => <ToolsPage {...treeProps} providers={manyProviders} />,
   play: async ({ canvas }) => {
     // Expanding all from down the table returns it to its top.
     await userEvent.click(canvas.getByRole('button', { name: 'Collapse all' }))
@@ -421,10 +427,10 @@ export const TreeExpandAllFromDownTheTable: Story = {
   },
 }
 export const TreeWithBuiltinProvider: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} providers={[github, coral, weather]} />,
+  render: () => <ToolsPage {...treeProps} providers={[github, coral, weather]} />,
 }
 export const TreeProviderSelected: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
+  render: () => <ToolsPage {...treeProps} selectedProvider="prov-weather" />,
 }
 // A catalog large enough that the table virtualizes: only the tools and tool
 // groups near the scroll position mount, while every provider heading does.
@@ -449,7 +455,130 @@ const largeProviders: ProviderView[] = Array.from({ length: 6 }, (_, providerInd
   }
 })
 export const TreeLargeCatalog: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} providers={largeProviders} />,
+  render: () => <ToolsPage {...treeProps} providers={largeProviders} />,
+}
+// Your own private tools, and the agent Nightly sync's, one at a path of yours.
+const privateTools: ProviderView = {
+  ...weather,
+  id: 'prov-private',
+  displayName: 'Private',
+  namespace: '',
+  callRoot: 'coral.private',
+  kind: 'private',
+  icons: PRIVATE_ICONS,
+  path: '/workspaces/demo/tools/private',
+  readyCount: 4,
+  totalCount: 4,
+  // Each row shows the name inside the namespace that heads its group.
+  tools: [
+    op('prov-private', 'finance.monthlyTotals', 'finance', {
+      policy: 'enabled',
+      nameInGroup: 'monthlyTotals',
+    }),
+    op('prov-private', 'finance.refundCustomer', 'finance', { nameInGroup: 'refundCustomer' }),
+    {
+      ...op('prov-private', 'finance.monthlyTotals', 'finance', {
+        policy: 'disabled',
+        nameInGroup: 'monthlyTotals',
+      }),
+      key: 'agent/finance.monthlyTotals',
+      agent: { label: 'Nightly sync', path: '/workspaces/demo/agents/nightly' },
+    },
+    op('prov-private', 'linear.completedSince', 'linear', {
+      policy: 'enabled',
+      nameInGroup: 'completedSince',
+    }),
+  ],
+}
+const monthlyTotals: PrivateToolDetailView = {
+  kind: 'private',
+  relativePath: 'finance.monthlyTotals',
+  description: 'Sums the **paid** invoices of one month, by currency.',
+  declaration:
+    'declare function monthlyTotals(input: { month: string }): Promise<Record<string, number>>',
+  source: [
+    'export default async function monthlyTotals({ month }: { month: string }) {',
+    '  const { data } = await coral.providers.stripe.invoices.list({ status: "paid", month })',
+    '  const totals: Record<string, number> = {}',
+    '  for (const invoice of data) totals[invoice.currency] = (totals[invoice.currency] ?? 0) + invoice.total',
+    '  return totals',
+    '}',
+  ].join('\n'),
+  diagnostics: [
+    {
+      category: 'warning',
+      code: 7006,
+      message: "Parameter 'invoice' implicitly has an 'any' type.",
+      line: 4,
+      column: 14,
+    },
+  ],
+  diagnosticsTruncated: false,
+  savedAt: '2026-11-09T14:27:03.000Z',
+}
+// A provider of 200 tools, collapsed: its heading keeps its count, and the
+// groups after it come into view. Coral leads, then the private tools.
+export const TreeLargeProviderCollapsed: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[privateTools, weather, ...largeProviders.slice(0, 2), coral]}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await userEvent.click(await canvas.findByRole('button', { name: 'Collapse API 1' }))
+  },
+}
+// The private page for an owner: your own private tools and each agent's.
+export const TreePrivateTools: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[coral, github, privateTools]}
+      selectedProvider="prov-private"
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/tools/private' },
+}
+// A member reads the policy of their own private tools, and changes none.
+export const TreePrivateToolsAsMember: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      workspace={member}
+      providers={[
+        coral,
+        github,
+        { ...privateTools, tools: privateTools.tools.filter((tool) => !tool.agent) },
+      ]}
+      selectedProvider="prov-private"
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/tools/private' },
+}
+// The private page with no private tool yet.
+export const TreePrivateToolsEmpty: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[coral, github, { ...privateTools, tools: [], readyCount: 0, totalCount: 0 }]}
+      selectedProvider="prov-private"
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/tools/private' },
+}
+// One of your own private tools, as Coral saved it.
+export const TreePrivateToolSelected: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[coral, github, privateTools]}
+      selectedProvider="prov-private"
+      selectedTool="finance.monthlyTotals"
+      selectedToolDetail={monthlyTotals}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals' },
 }
 // Too many tool groups to mount: only those near the scroll position do, and
 // the one a reader scrolls through still pins, at the same scroll position.
@@ -463,7 +592,7 @@ const manyGroups: ProviderView = {
   totalCount: 900,
 }
 export const TreeManyToolGroups: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} providers={[manyGroups]} />,
+  render: () => <ToolsPage {...treeProps} providers={[manyGroups]} />,
   play: async ({ canvasElement }) => {
     const table = within(canvasElement).getByRole('table', { name: 'Tools' })
     const headings = () => [
@@ -493,13 +622,13 @@ export const TreeManyToolGroups: Story = {
   },
 }
 export const TreeAuthenticatedProviderSelected: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-github" />,
+  render: () => <ToolsPage {...treeProps} selectedProvider="prov-github" />,
 }
 // Labels show only hints the provider declared. A row shows those declared
 // true; the drawer also shows those declared false. Undeclared shows nothing.
 export const TreeToolSelected: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.create"
@@ -535,11 +664,7 @@ export const TreeToolSelected: Story = {
 // Weather declares no hints, so its row shows no labels.
 export const TreeToolWithoutDescription: Story = {
   render: () => (
-    <WorkspaceProvidersPage
-      {...treeProps}
-      selectedProvider="prov-weather"
-      selectedTool="getForecast"
-    />
+    <ToolsPage {...treeProps} selectedProvider="prov-weather" selectedTool="getForecast" />
   ),
   play: async ({ canvasElement }) => {
     // The open drawer is modal, so the table sits outside the accessibility tree.
@@ -554,7 +679,7 @@ export const TreeToolWithoutDescription: Story = {
 }
 export const TreeToolWithSummaryAsDescription: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       providers={[github]}
       selectedProvider="prov-github"
@@ -565,11 +690,12 @@ export const TreeToolWithSummaryAsDescription: Story = {
 }
 export const TreeUnavailableToolSelected: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.close"
       selectedToolDetail={{
+        kind: 'provider',
         relativePath: 'issues.close',
         summary: 'Close an issue',
         description: '',
@@ -581,7 +707,7 @@ export const TreeUnavailableToolSelected: Story = {
 // tools say so; Weather, which search indexed, says nothing.
 export const TreeSearchIndexFailed: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       providers={[
         { ...github, searchIndex: { state: 'failed', reason: 'Indexing took too long.' } },
@@ -606,7 +732,7 @@ export const TreeSearchIndexFailed: Story = {
 // The pill's tooltip names the error the failed attempt recorded.
 export const TreeSearchIndexFailureReason: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       providers={[
         { ...github, searchIndex: { state: 'failed', reason: 'Indexing took too long.' } },
@@ -622,7 +748,7 @@ export const TreeSearchIndexFailureReason: Story = {
 // Search has not finished indexing GitHub's active Generation yet.
 export const TreeSearchIndexPending: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       providers={[{ ...github, searchIndex: { state: 'pending' } }, weather]}
       selectedProvider="prov-github"
@@ -643,17 +769,15 @@ export const TreeSearchIndexPending: Story = {
   },
 }
 export const TreeAsMember: Story = {
-  render: () => (
-    <WorkspaceProvidersPage {...treeProps} workspace={member} selectedProvider="prov-github" />
-  ),
+  render: () => <ToolsPage {...treeProps} workspace={member} selectedProvider="prov-github" />,
 }
 export const TreeAtPhoneWidth: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   globals: { viewport: { value: 'mobile1', isRotated: false } },
 }
 export const TreeAtPhoneWidthSelected: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.create"
@@ -667,7 +791,7 @@ export const ConfigurationMissingAuthentication: Story = {
   play: async ({ canvas }) => {
     // The current crumb names the provider being added and titles the page.
     await expect(canvas.getByRole('navigation', { name: 'breadcrumb' })).toHaveTextContent(
-      'ProvidersAdd Example API',
+      'ToolsAdd Example API',
     )
     await expect(canvas.getByRole('heading', { level: 1 })).toHaveTextContent('Add Example API')
     await expect(canvas.getByLabelText('Display name')).toHaveValue(
@@ -1018,7 +1142,7 @@ export const ConfigurationResolvedDestinations: Story = {
 
 export const TreeAfterAdded: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       selectedProvider="prov-github"
       result={{
@@ -1031,7 +1155,7 @@ export const TreeAfterAdded: Story = {
 }
 export const TreeConflict: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       selectedProvider="prov-weather"
       result={{
@@ -1086,7 +1210,7 @@ export const TreeBulkPending: Story = {
 // A provider with no tools yet keeps its heading and its settings.
 export const TreeEmptyProvider: Story = {
   render: () => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       {...treeProps}
       providers={[
         github,
@@ -1107,15 +1231,15 @@ export const TreeEmptyProvider: Story = {
 }
 
 export const TreeEmptyFilter: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   parameters: catalogViewports,
   play: ({ canvasElement }) => showEmptyCatalogFilter(canvasElement, 'Filter tools'),
 }
 export const TreeFilteredGroups: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  render: () => <ToolsPage {...treeProps} />,
   parameters: catalogViewports,
   // The filtered table, with each match in a tool's name in bold.
-  // workspace-providers-page.dom.test.tsx owns what the filter matches.
+  // tools-page.dom.test.tsx owns what the filter matches.
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter tools' }), 'ISSUES')
@@ -1961,7 +2085,7 @@ export const RefreshUploadedDocument: Story = {
       displayName="GitHub"
       basePath="/workspaces/demo/providers/prov-github/update"
       cancelPath="/workspaces/demo/providers/prov-github"
-      providersPath="/workspaces/demo/providers"
+      toolsPath="/workspaces/demo/tools"
       attempt={{
         kind: 'update',
         state: 'draft',
@@ -1982,7 +2106,7 @@ export const UpdateReady: Story = {
       displayName="GitHub"
       basePath="/workspaces/demo/providers/prov-github/update"
       cancelPath="/workspaces/demo/providers/prov-github"
-      providersPath="/workspaces/demo/providers"
+      toolsPath="/workspaces/demo/tools"
       setup={{ ...setupReady, sourceLabel: 'https://api.github.com/openapi.json' }}
       attempt={{
         kind: 'update',
@@ -2004,7 +2128,7 @@ export const UpdateFailed: Story = {
       displayName="GitHub"
       basePath="/workspaces/demo/providers/prov-github/update"
       cancelPath="/workspaces/demo/providers/prov-github"
-      providersPath="/workspaces/demo/providers"
+      toolsPath="/workspaces/demo/tools"
       setup={setupReady}
       attempt={{
         kind: 'update',
@@ -2190,7 +2314,7 @@ const updateStory = {
   displayName: 'Records',
   basePath: '/workspaces/demo/providers/records/update',
   cancelPath: '/workspaces/demo/providers/records',
-  providersPath: '/workspaces/demo/providers',
+  toolsPath: '/workspaces/demo/tools',
   attempt: {
     kind: 'update',
     state: 'draft',
@@ -2402,7 +2526,7 @@ export const ReplaceProviderSource: Story = {
 // Recipe configuration
 
 export const TreeProviderDisabled: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-hr" />,
+  render: () => <ToolsPage {...treeProps} selectedProvider="prov-hr" />,
 }
 export const ConfigurationFromRecipe: Story = {
   render: () => (

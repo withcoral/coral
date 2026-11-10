@@ -281,7 +281,7 @@ function Flags({
   approval = 'pill',
 }: {
   tool: ToolFlags
-  /** A compact search result shows approval as the policy hand the Providers page uses. */
+  /** A compact search result shows approval as the policy hand the Tools page uses. */
   approval?: 'pill' | 'icon'
 }) {
   return (
@@ -311,7 +311,7 @@ function Flags({
 }
 
 const needsApproval = policyOptions.find((option) => option.value === 'approval_required')!
-/** The policy hand, named and explained as the Providers page's policy control does. */
+/** The policy hand, named and explained as the Tools page's policy control does. */
 function NeedsApproval() {
   const { label, icon, description } = needsApproval
   return (

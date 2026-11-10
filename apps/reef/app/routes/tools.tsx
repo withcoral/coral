@@ -1,11 +1,12 @@
 import { data, Outlet, type ShouldRevalidateFunctionArgs } from 'react-router'
-import type { Route } from './+types/providers'
+import type { Route } from './+types/tools'
 import {
   formContext,
   managementFailure,
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
+import { deletePrivateTool, privateGroup } from '@/lib/private-tools.server'
 import { providerView, listAllProviders, toolUsage, uuidOr404 } from '@/lib/providers.server'
 import type { SummaryDays } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
@@ -14,6 +15,7 @@ import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import type { PolicyActionResult } from '@/views/providers/types'
+import { addressedTool, PRIVATE_GROUP, toolsPageWorkspace } from '@/views/tools/addresses'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
@@ -27,7 +29,7 @@ function patchesTree(formData: FormData | undefined, result: PolicyActionResult 
   )
 }
 
-// Selection changes on the page (provider, tool) reuse the
+// Selection changes on the page (group, tool) reuse the
 // tree: they are one table, and the address only names what is revealed. A
 // child loader still checks Workspace authority on each. A saved policy change
 // also reuses it, as the whole catalog is a costly read to repeat for one
@@ -44,12 +46,8 @@ export function shouldRevalidate({
   if (patchesTree(formData, actionResult as PolicyActionResult | undefined)) return false
   if ((formMethod && formMethod.toUpperCase() !== 'GET') || actionStatus !== undefined) return true
   if (currentUrl.search !== nextUrl.search || currentUrl.pathname === nextUrl.pathname) return true
-  // `new` is the Add provider page, whose result must reload the catalog.
-  const pagePath =
-    /^(\/workspaces\/[^/]+\/providers)(?:\/(?!new(?:\/|$))[^/]+(?:\/tools\/[^/]+)?)?$/
-  const current = pagePath.exec(currentUrl.pathname)
-  const next = pagePath.exec(nextUrl.pathname)
-  return !current || !next || current[1] !== next[1]
+  const current = toolsPageWorkspace(currentUrl.pathname)
+  return !current || current !== toolsPageWorkspace(nextUrl.pathname)
 }
 
 /** Loads the Workspace tree independently of tool selection. */
@@ -57,24 +55,29 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     const days: SummaryDays = 30
-    const [listed, personalAccounts, summary] = await Promise.all([
+    const [listed, personalAccounts, summary, privateToolsGroup] = await Promise.all([
       listAllProviders(api, w.name),
       personalAccountStates(api, w.name),
       glimpseActivitySummary(api, w.name, days, request.signal),
+      privateGroup(api, w),
     ])
-    const providers = await Promise.all(
-      listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
-    )
-    const selectedProvider = params.provider ? uuidOr404(params.provider) : null
-    if (selectedProvider && !providers.some((i) => i.id === selectedProvider))
-      throw new Response('Not found', { status: 404, headers: privateHeaders })
-    const selectedTool = params.tool ?? null
-    if (
-      selectedTool &&
-      !providers
-        .find((i) => i.id === selectedProvider)
-        ?.tools.some((o) => o.relativePath === selectedTool)
-    )
+    // The page orders the groups; the private one is not in Coral's list.
+    const providers = [
+      ...(await Promise.all(
+        listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
+      )),
+      privateToolsGroup,
+    ]
+    // An address that names a group or a tool the catalog does not hold is not found.
+    const namesGroup = params.group !== undefined || params.provider !== undefined
+    const group =
+      params.group === PRIVATE_GROUP
+        ? privateToolsGroup
+        : params.provider === undefined
+          ? undefined
+          : providers.find((i) => i.id === uuidOr404(params.provider!))
+    const { tool } = params
+    if ((namesGroup && !group) || (tool !== undefined && !(group && addressedTool(group, tool))))
       throw new Response('Not found', { status: 404, headers: privateHeaders })
     return data(
       {
@@ -82,8 +85,6 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
         providers,
         toolCalls: summary && { days, tools: toolUsage(summary.tools) },
         recipes: RECIPE_CHOICES,
-        selectedProvider,
-        selectedTool,
         form: formContext(context),
       },
       { headers: privateHeaders },
@@ -93,12 +94,19 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   }
 }
 
+/**
+ * A change from the page. Every member deletes their own private tools; the
+ * rest are an owner's changes to providers and policy.
+ */
 export async function action({ request, context, params }: Route.ActionArgs) {
-  return applyProviderChange(context, params, await mutationForm(request, context))
+  const form = await mutationForm(request, context)
+  if (form.get('intent') === 'deletePrivateTool')
+    return deletePrivateTool(context, params.workspace, form)
+  return applyProviderChange(context, params, form)
 }
 
-export type ProvidersData = Route.ComponentProps['loaderData']
+export type ToolsData = Route.ComponentProps['loaderData']
 
-export default function ProvidersRoute({ loaderData }: Route.ComponentProps) {
+export default function ToolsRoute({ loaderData }: Route.ComponentProps) {
   return <Outlet context={loaderData} />
 }

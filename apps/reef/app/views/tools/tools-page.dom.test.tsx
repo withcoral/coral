@@ -6,10 +6,16 @@ import { expect, test, vi } from 'vitest'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
 
-import { builtinProvider, provider, workspaceView } from './fixtures'
-import { selectionKey } from './selection'
-import type { ToolCallCounts, ToolDetailView, ToolView, ProviderView, WorkspaceView } from './types'
-import { WorkspaceProvidersPage } from './workspace-providers-page'
+import {
+  builtinProvider,
+  privateProvider,
+  provider,
+  workspaceView,
+} from '@/views/providers/fixtures'
+import { selectionKey } from '@/views/providers/selection'
+import type { ToolCallCounts, ToolView, ProviderView, WorkspaceView } from '@/views/providers/types'
+import { ToolsPage } from './tools-page'
+import type { ToolDetailView } from './types'
 
 // happy-dom lays nothing out, so the virtualizer would mount no tool
 // rows. Give the scroll port a viewport; row heights come from estimates.
@@ -32,12 +38,18 @@ const github = provider('00000000-0000-4000-8000-000000000001', 'GitHub', 'githu
 const weather = provider('00000000-0000-4000-8000-000000000002', 'Weather', 'weather', [
   'getForecast',
 ])
+// Your own private tools, and an agent's at the path of one of yours.
+const mine = privateProvider('00000000-0000-4000-8000-0000000000aa', [
+  'people.greet',
+  ['people.greet', 'Worker'],
+  'reports.total',
+])
 
 type Action = (request: Request) => Promise<unknown>
 
 function renderPage({
   action,
-  entry = '/workspaces/demo/providers',
+  entry = '/workspaces/demo/tools',
   providers = [github, weather],
   recipes = [],
   selectedTool = null,
@@ -55,7 +67,7 @@ function renderPage({
   workspace?: WorkspaceView
 } = {}) {
   const page = (selected: ToolView | null, owner = providerOf(selected, providers)) => (
-    <WorkspaceProvidersPage
+    <ToolsPage
       workspace={workspace}
       providers={providers}
       recipes={recipes}
@@ -79,7 +91,7 @@ function renderPage({
     await act(async () =>
       router.navigate(
         (selected && pathOf(selected, providers)) ??
-          (owner ? `/workspaces/demo/providers/${owner}` : '/workspaces/demo/providers'),
+          (owner ? providers.find((item) => item.id === owner)!.path : '/workspaces/demo/tools'),
       ),
     )
   }
@@ -87,13 +99,16 @@ function renderPage({
   const rerenderProviders = async (next: ProviderView[]) => {
     providers = next
     element = page(null)
-    await act(async () => router.navigate('/workspaces/demo/providers#reloaded'))
+    await act(async () => router.navigate('/workspaces/demo/tools#reloaded'))
   }
   return { show, router, rerenderProviders }
 }
 
-const pathOf = (tool: ToolView, providers = [github, weather]) =>
-  `${providers.find((item) => item.tools.includes(tool))!.path}/tools/${encodeURIComponent(tool.relativePath)}`
+const pathOf = (tool: ToolView, providers = [github, weather]) => {
+  const owner = providers.find((item) => item.tools.includes(tool))!
+  const name = encodeURIComponent(tool.relativePath)
+  return owner.kind === 'private' ? `${owner.path}/${name}` : `${owner.path}/tools/${name}`
+}
 
 function providerOf(selected: ToolView | null, providers = [github, weather]) {
   return selected ? providers.find((item) => item.tools.includes(selected))!.id : null
@@ -106,6 +121,7 @@ test('the drawer shows the prose of the tool the route names', () => {
     entry: `${github.path}/tools/issues.list`,
     selectedTool: github.tools[0]!,
     selectedToolDetail: {
+      kind: 'provider',
       relativePath: 'issues.list',
       summary: 'List issues',
       description: 'Lists **every** issue.',
@@ -198,7 +214,12 @@ test('the drawer ignores prose that belongs to another tool', () => {
   renderPage({
     entry: `${github.path}/tools/issues.list`,
     selectedTool: github.tools[0]!,
-    selectedToolDetail: { relativePath: 'repos.get', summary: 'Stale', description: 'Stale prose' },
+    selectedToolDetail: {
+      kind: 'provider',
+      relativePath: 'repos.get',
+      summary: 'Stale',
+      description: 'Stale prose',
+    },
   })
   const drawer = screen.getByRole('dialog')
   expect(within(drawer).queryByText('Stale prose')).not.toBeInTheDocument()
@@ -221,13 +242,13 @@ const filterProviders = (value: string) => filter('Filter providers', value)
 
 const table = () => screen.getByRole('table', { name: 'Tools' })
 
-// Each tool's name links to its details; nothing else in the table is a
-// link. An open drawer hides the table from the accessibility tree, so these
-// helpers read hidden rows too.
+// Each tool's name links to its details. The only other links in the table
+// are the group headings, which open their groups. An open drawer hides the
+// table from the accessibility tree, so these helpers read hidden rows too.
 const toolLinks = () =>
-  within(screen.getByRole('table', { name: 'Tools', hidden: true })).queryAllByRole('link', {
-    hidden: true,
-  })
+  within(screen.getByRole('table', { name: 'Tools', hidden: true }))
+    .queryAllByRole('link', { hidden: true })
+    .filter((link) => !link.closest('[data-pinned-heading]'))
 
 const rowNames = () => toolLinks().map((link) => link.textContent)
 
@@ -469,6 +490,14 @@ test('a collapsed heading hides its rows but still counts and selects them', asy
   expect(rowNames()).toEqual(['issues.create', 'issues.list', 'repos.get', 'getForecast'])
 })
 
+// Catches: a workspace with nothing to call showing an empty table instead
+// of the way to add a first provider, because its private group is always there.
+test('asks for a first provider while the only group is the empty private one', () => {
+  renderPage({ providers: [privateProvider(mine.id)] })
+  expect(screen.getByText('No providers yet')).toBeInTheDocument()
+  expect(screen.queryByRole('table', { name: 'Tools' })).toBeNull()
+})
+
 // Catches: a collapse-all that misses the groups of a collapsed provider, or
 // an expand-all that leaves a heading the reader collapsed by hand.
 test('collapse all closes every heading and expand all opens them', async () => {
@@ -525,20 +554,143 @@ test('tool groups sort alphabetically without regard to case', () => {
   expect(positions).toEqual(positions.toSorted((a, b) => a - b))
 })
 
-// Catches: Coral's Built-in Provider sorted among the providers you add,
-// instead of leading the rail and the table, or linking to settings it does
-// not have.
-test('the built-in provider leads the providers you add and has no settings', () => {
+// Catches: Coral's own groups sorted among the providers you add, instead of
+// Coral then the private tools leading the rail and the table, or either
+// linking to settings it does not have.
+test('Coral then the private tools lead the providers you add, and neither has settings', () => {
   const coral = builtinProvider('00000000-0000-4000-8000-000000000003')
   const arcade = provider('00000000-0000-4000-8000-000000000004', 'Arcade', 'arcade')
-  renderPage({ providers: [weather, arcade, coral, github] })
+  renderPage({ providers: [weather, mine, arcade, coral, github] })
   const gears = screen.getAllByRole('link', { name: / settings$/ })
   expect(gears.map((gear) => gear.getAttribute('aria-label'))).toEqual([
     'Arcade settings',
     'GitHub settings',
     'Weather settings',
   ])
-  expect(providerGroups()).toEqual(['Coral', 'Arcade', 'GitHub', 'Weather'])
+  expect(providerGroups()).toEqual(['Coral', 'Private', 'Arcade', 'GitHub', 'Weather'])
+  const entries = within(rail()).getAllByRole('link')
+  const positions = ['All tools', 'Coral', 'Private', 'Arcade', 'GitHub', 'Weather'].map((name) =>
+    entries.indexOf(tabLink(name)),
+  )
+  expect(positions).toEqual(positions.toSorted((a, b) => a - b))
+})
+
+const groupHeading = (name: string) => within(table()).getByRole('rowgroup', { name })
+
+// Catches: a heading without its count or the way to its group's own page,
+// a filter that misses a tool in some group, or a private tool that repeats
+// its namespace under the heading that already shows it.
+test('each group heading counts its tools and opens its page, and one filter searches them all', async () => {
+  renderPage({ providers: [github, weather, mine] })
+  expect(providerGroups()).toEqual(['Private', 'GitHub', 'Weather'])
+  expect(
+    ['GitHub', 'Weather', 'Private'].map(
+      // The group's own count comes first; its tool groups follow with theirs.
+      (name) => within(groupHeading(name)).getAllByText(/^\d+ tools?$/)[0]!.textContent,
+    ),
+  ).toEqual(['2 tools', '1 tool', '3 tools'])
+  // The first rail entry counts every tool, the private ones included.
+  expect(tabLink('All tools')).toHaveTextContent('All tools6')
+  expect(within(groupHeading('GitHub')).getByRole('link', { name: 'GitHub' })).toHaveAttribute(
+    'href',
+    github.path,
+  )
+  expect(within(groupHeading('Private')).getByRole('link', { name: 'Private' })).toHaveAttribute(
+    'href',
+    '/workspaces/demo/tools/private',
+  )
+  // Under `people` and `reports`, each private tool shows the rest of its path.
+  expect(rowNames()).toEqual(['greet', 'total', 'issues.list', 'repos.get', 'getForecast'])
+  expect(screen.getByRole('link', { name: 'people.greet' }).textContent).toBe('greet')
+
+  await filterTools('get')
+  expect(rowNames()).toEqual(['repos.get', 'getForecast'])
+  expect(within(groupHeading('GitHub')).getByText('1 of 2 tools')).toBeInTheDocument()
+  // A match can span the namespace the heading shows and the name the row shows.
+  await filterTools('people.gr')
+  expect(providerGroups()).toEqual(['Private'])
+  expect(rowNames()).toEqual(['greet'])
+})
+
+// Catches: an agent's private tool opening a drawer Coral cannot fill, two
+// private tools at one path sharing a row or a control's name, or your own
+// private tool opening at a provider's address.
+test('lists an agent’s private tool beside your own, and opens only your own', async () => {
+  const { router, show } = renderPage({ providers: [github, mine] })
+  await show(null, mine.id)
+  expect(rowNames()).toEqual(['greet', 'total'])
+  const rows = within(groupHeading('Private'))
+    .getAllByRole('row')
+    .filter((row) => !row.hasAttribute('aria-level'))
+  // The agent's tool follows your own at the same path, and names its agent.
+  expect(rows.map((row) => within(row).queryByText('Worker') !== null)).toEqual([
+    false,
+    true,
+    false,
+  ])
+  // Each control names the one tool it acts on.
+  expect(checkbox('Select people.greet')).toBeInTheDocument()
+  expect(checkbox('Select people.greet of agent Worker')).toBeInTheDocument()
+  expect(
+    within(rows[1]!).getByRole('radiogroup', { name: 'Policy for people.greet of agent Worker' }),
+  ).toBeInTheDocument()
+
+  await user.click(rows[1]!)
+  expect(router.state.location.pathname).toBe(mine.path)
+  await user.click(rows[0]!)
+  expect(router.state.location.pathname).toBe('/workspaces/demo/tools/private/people.greet')
+})
+
+const greet: ToolDetailView = {
+  kind: 'private',
+  relativePath: 'people.greet',
+  description: 'Greets **one** person.',
+  declaration: 'declare function greet(name: string): Promise<string>',
+  source: 'export default async (name: string) => `Hello ${name}`',
+  diagnostics: [{ category: 'warning', code: 6133, message: 'Unused.', line: 2, column: null }],
+  diagnosticsTruncated: false,
+  savedAt: '2026-11-09T14:27:03.000Z',
+}
+
+// Catches: a private tool's drawer without what Coral saved of it, with a
+// provider tool's call path, or offering a delete an archived workspace refuses.
+test.each([
+  ['an active', 'active', true],
+  ['an archived', 'archived', false],
+] as const)('the drawer shows your private tool in %s workspace', (_, state, deletes) => {
+  renderPage({
+    providers: [github, mine],
+    entry: '/workspaces/demo/tools/private/people.greet',
+    selectedTool: mine.tools[0]!,
+    selectedToolDetail: greet,
+    workspace: { ...workspaceView, state },
+  })
+  const drawer = screen.getByRole('dialog')
+  expect(within(drawer).getByRole('heading', { name: 'people.greet' })).toBeInTheDocument()
+  expect(within(drawer).getByText('one').tagName).toBe('STRONG')
+  expect(within(drawer).getByText('coral.private.people.greet')).toBeInTheDocument()
+  expect(within(drawer).getByText('2026-11-09 14:27 UTC')).toBeInTheDocument()
+  for (const section of ['Policy', 'Declaration', 'Source', 'Diagnostics'])
+    expect(within(drawer).getByRole('heading', { name: section })).toBeInTheDocument()
+  expect(within(drawer).getByText('TS6133: Unused.')).toBeInTheDocument()
+  expect(within(drawer).queryAllByRole('button', { name: 'Delete private tool' })).toHaveLength(
+    deletes ? 1 : 0,
+  )
+})
+
+// Catches: a member offered a policy change on their private tools that
+// only an owner may make.
+test.each([
+  ['an owner', 'owner', false],
+  ['a member', 'member', true],
+] as const)('on the private page, %s reads each policy', async (_, role, readOnly) => {
+  const { show } = renderPage({
+    providers: [github, mine],
+    workspace: { ...workspaceView, effectiveRole: role },
+  })
+  await show(null, mine.id)
+  for (const radio of within(groupHeading('Private')).getAllByRole('radio'))
+    expect(radio.hasAttribute('disabled')).toBe(readOnly)
 })
 
 // Catches: a policy form naming the provider's installation instead of its
@@ -566,9 +718,9 @@ const tabLink = (name: string) =>
 
 // Catches: a tab showing other providers, a change of tab dropping the
 // selection, or the rail filter narrowing the table instead of the rail.
-test('each rail entry is a tab, and all providers lists every one', async () => {
+test('each rail entry is a tab, and all tools lists every group', async () => {
   const { router } = renderPage()
-  expect(tabLink('All providers')).toHaveAttribute('aria-current', 'page')
+  expect(tabLink('All tools')).toHaveAttribute('aria-current', 'page')
   expect(providerGroups()).toEqual(['GitHub', 'Weather'])
   await user.click(checkbox('Select repos.get'))
 
@@ -583,7 +735,7 @@ test('each rail entry is a tab, and all providers lists every one', async () => 
   expect(within(rail()).queryByRole('link', { name: /Weather$/ })).toBeNull()
   expect(providerGroups()).toEqual(['Weather'])
 
-  await user.click(tabLink('All providers'))
+  await user.click(tabLink('All tools'))
   expect(providerGroups()).toEqual(['GitHub', 'Weather'])
   expect(checkbox('Select repos.get')).toBeChecked()
 })
@@ -1087,7 +1239,7 @@ test('clicking a row opens its tool, but its controls do not', async () => {
   await user.click(within(rowOf('repos.get')).getByRole('link', { name: 'repos.get' }))
   expect(router.state.location.pathname).toBe(pathOf(github.tools[1]!))
   await act(async () => router.navigate(-1))
-  expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
+  expect(router.state.location.pathname).toBe('/workspaces/demo/tools')
   await user.click(checkbox('Select issues.list'))
   await choosePolicy('issues.list', 'Block')
   expect(router.state.location.pathname).not.toMatch(/issues/)
@@ -1192,7 +1344,7 @@ test('closing the drawer keeps the cursor until a click elsewhere', async () => 
   // A click in the cursor's own row keeps it.
   await user.click(checkbox('Select issues.list'))
   expect(cursorName()).toBe('issues.list')
-  await user.click(screen.getByRole('heading', { name: 'Providers' }))
+  await user.click(screen.getByRole('heading', { name: 'Tools' }))
   expect(cursorName()).toBeNull()
 })
 
@@ -1204,7 +1356,7 @@ test('an arrow key right after Escape moves the cursor, not the drawer', async (
   await settle()
   await user.keyboard('{Escape}{ArrowDown}')
   await settle()
-  expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
+  expect(router.state.location.pathname).toBe('/workspaces/demo/tools')
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(cursorName()).toBe('repos.get')
 })
@@ -1219,7 +1371,7 @@ test('closing the drawer with the pointer keeps its row as the cursor', async ()
   await settle()
   await user.click(screen.getByRole('button', { name: 'Close' }))
   await settle()
-  expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
+  expect(router.state.location.pathname).toBe('/workspaces/demo/tools')
   expect(cursorName()).toBe('repos.get')
   expect(cursorRow()).toHaveFocus()
   await user.keyboard('{ArrowDown}')
@@ -1263,7 +1415,7 @@ test('keys collapse and expand the cursor heading', async () => {
 // last clicked, so Enter and Space act on that control instead.
 test('the cursor row takes focus, so Enter and Space reach it', async () => {
   const { router } = renderPage()
-  await user.click(screen.getByRole('link', { name: /All providers/ }))
+  await user.click(screen.getByRole('link', { name: /All tools/ }))
   await user.keyboard('{ArrowDown>3/}')
   expect(cursorRow()).toHaveFocus()
   await user.keyboard(' ')

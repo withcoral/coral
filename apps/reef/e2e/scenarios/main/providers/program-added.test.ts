@@ -69,7 +69,7 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and you
       expect(providers.map((provider) => [provider.callRoot, provider.displayName])).toEqual([
         ['coral.providers.weather', 'Forecasts'],
       ])
-      await page.goto(`/workspaces/${id}/providers`)
+      await page.goto(`/workspaces/${id}/tools`)
       await page
         .getByRole('navigation', { name: 'installed providers', exact: true })
         .getByRole('link', { name: 'Forecasts settings', exact: true })

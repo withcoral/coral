@@ -1154,7 +1154,7 @@ it.each([
     expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'private tool')
     if (hit.matched.fields.length + hit.matched.tags.length > 0)
       expect(row).toHaveTextContent('Matched in')
-    // Approval shows as the Providers page's Ask hand, named, never as a text badge.
+    // Approval shows as the Tools page's Ask hand, named, never as a text badge.
     const approval = row.querySelector('[role="img"][aria-label^="Ask"]')
     expect(Boolean(approval)).toBe(Boolean(hit.tool?.approvalRequired))
     if (approval) expect(approval.querySelector('svg')).not.toBeNull()

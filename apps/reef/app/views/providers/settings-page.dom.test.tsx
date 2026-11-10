@@ -144,7 +144,7 @@ test('the breadcrumb leads back to the provider list and the provider', async ()
   const trail = document.querySelector('nav[aria-label="breadcrumb"]')!
   const links = [...trail.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
   expect(links).toEqual([
-    ['Providers', '/workspaces/demo/providers'],
+    ['Tools', '/workspaces/demo/tools'],
     ['GitLab.com', provider.path],
   ])
   expect(trail.textContent).toContain('Settings')

@@ -49,36 +49,41 @@ import {
   sourcesInOrder,
   type ServiceChoices,
 } from '@/lib/provider-recipes/choice'
+import { useArrivalToast } from '@/lib/use-arrival-toast'
 import { ActionNotice, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
+import { SavedAt } from '@/views/management/saved-at'
 
-import { AddProviderLauncher, needsSourceDetails, type AddProviderEntryProps } from './add-provider'
+import {
+  AddProviderLauncher,
+  needsSourceDetails,
+  type AddProviderEntryProps,
+} from '@/views/providers/add-provider'
 import { toolCallPath } from '@/lib/call-root'
 import { countLabel } from '@/utils/count-label'
-import { catalogMatches } from './provider-catalog'
-import { PolicyMutations, usePolicyMutations } from './policy-mutations'
-import { useReadRecipe } from './read-recipe'
+import { catalogMatches } from '@/views/providers/provider-catalog'
+import { addressedTool, PRIVATE_TOOL_DELETED, providerAddress, toolPath } from './addresses'
+import { PrivateToolDetail } from './private-tool-detail'
+import { PolicyMutations, usePolicyMutations } from '@/views/providers/policy-mutations'
+import { useReadRecipe } from '@/views/providers/read-recipe'
 import {
   encodeSelectedTool,
   parseSelectionKey,
   SELECTED_TOOL_FIELD,
   selectionKey,
   type SelectionKey,
-} from './selection'
+} from '@/views/providers/selection'
 import type {
   FormContext,
-  ToolDetailView,
   ToolHintsView,
   ToolView,
   ProviderView,
   ToolCallCounts,
   ToolUsage,
-  WorkspaceProvidersPageProps,
-} from './types'
+} from '@/views/providers/types'
+import type { ToolDetailView, ToolsPageProps } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import * as styles from './providers.css'
-
-/** Coral's own mark, which stands for the Built-in Provider. */
+import * as styles from '@/views/providers/providers.css'
 
 const bulkPolicyOptions = policyOptions.map(({ icon, ...option }) => ({
   ...option,
@@ -137,15 +142,15 @@ function HintLabels({ hints }: { hints: ToolHintsView }) {
   ))
 }
 
-export function WorkspaceProvidersPage(props: WorkspaceProvidersPageProps) {
+export function ToolsPage(props: ToolsPageProps) {
   return (
     <PolicyMutations catalog={props.providers}>
-      <WorkspaceProvidersContent {...props} />
+      <ToolsContent {...props} />
     </PolicyMutations>
   )
 }
 
-function WorkspaceProvidersContent({
+function ToolsContent({
   workspace: w,
   providers: installed,
   recipes = [],
@@ -156,13 +161,13 @@ function WorkspaceProvidersContent({
   form,
   result,
   pending = false,
-}: WorkspaceProvidersPageProps) {
+}: ToolsPageProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
   const canChange = owner && active
-  const providersPath = `${w.path}/providers`
-  const newPath = `${providersPath}/new`
-  const location = useLocation()
+  const toolsPath = `${w.path}/tools`
+  const newPath = `${w.path}/providers/new`
+  useArrivalToast(ARRIVAL_FLAGS, () => ({ title: 'Private tool deleted' }))
   const [railFilter, setRailFilter] = useState('')
   const sortedProviders = useMemo(() => sortProviders(installed), [installed])
   const entry = {
@@ -172,14 +177,19 @@ function WorkspaceProvidersContent({
     recipes,
   }
   const notice = result
-  const toolRoute = /\/providers\/([^/]+)(?:\/tools\/([^/?#]+))?\/?$/.exec(location.pathname)
-  // The provider the URL names; none means every provider.
-  const routedId = selectedProviderRoute ?? toolRoute?.[1] ?? null
-  const selectedToolPath =
-    selectedTool ?? (toolRoute?.[2] ? decodeURIComponent(toolRoute[2]) : null)
+  const location = useLocation()
+  // The route names the selection. Until it does, the address stands in for a
+  // provider's tab or tool, so a row the reader opens shows at once.
+  const addressed = providerAddress(location.pathname)
+  // The provider the address names; none means every group.
+  const routedId = selectedProviderRoute ?? addressed?.provider ?? null
+  const selectedToolPath = selectedTool ?? addressed?.tool ?? null
   const selected = sortedProviders.find((provider) => provider.id === routedId)
-  const tool = selected?.tools.find((o) => o.relativePath === selectedToolPath)
-  const empty = sortedProviders.length === 0
+  const tool = selected && selectedToolPath ? addressedTool(selected, selectedToolPath) : undefined
+  // Nothing to list: no provider the reader can use, and no private tool.
+  const empty = sortedProviders.every(
+    (provider) => provider.kind === 'private' && provider.tools.length === 0,
+  )
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
   // The field echoes each keystroke at once; the rail follows with the
   // deferred value when React has time.
@@ -196,7 +206,7 @@ function WorkspaceProvidersContent({
   return (
     <PageLayout
       variant="split"
-      breadcrumbs={trail([], 'Providers')}
+      breadcrumbs={trail([], 'Tools')}
       titled={!empty}
       compact
       header={
@@ -226,11 +236,11 @@ function WorkspaceProvidersContent({
           />
         </div>
       ) : (
-        <ProvidersTableScreen
+        <ToolsTableScreen
           titleInfo={
             !owner && (
-              <InfoTip ariaLabel="About providers">
-                As a member, you use the providers. Owners add, remove, and change them.
+              <InfoTip ariaLabel="About tools">
+                As a member, you use the tools. Owners add providers and set policy.
               </InfoTip>
             )
           }
@@ -238,11 +248,12 @@ function WorkspaceProvidersContent({
             canChange && <AddProviderLauncher {...entry} labelClassName={toolbarActionLabel} />
           }
           railEmpty={railEmpty}
+          active={active}
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
           providers={sortedProviders}
-          providersPath={providersPath}
+          toolsPath={toolsPath}
           railFilter={railFilter}
           selectedProvider={selected ?? null}
           selectedTool={tool ?? null}
@@ -381,18 +392,23 @@ function caseFolded(value: string) {
   return value.toLocaleLowerCase()
 }
 
-// Coral's Built-in Provider leads; the providers you add follow by label.
+// Coral's own tools lead, then the private tools. The providers an owner
+// added follow by label.
+const KIND_ORDER: Record<ProviderView['kind'], number> = { coral: 0, private: 1, added: 2 }
 function sortProviders(providers: ProviderView[]) {
   return providers.toSorted(
     (a, b) =>
-      Number(b.builtin) - Number(a.builtin) ||
+      KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
       caseFolded(providerLabel(a)).localeCompare(caseFolded(providerLabel(b))),
   )
 }
 
+// By name. At one path, your own private tool comes before each agent's.
 function sortTools(tools: ToolView[]) {
-  return tools.toSorted((a, b) =>
-    caseFolded(a.relativePath).localeCompare(caseFolded(b.relativePath)),
+  return tools.toSorted(
+    (a, b) =>
+      caseFolded(a.relativePath).localeCompare(caseFolded(b.relativePath)) ||
+      caseFolded(a.agent?.label ?? '').localeCompare(caseFolded(b.agent?.label ?? '')),
   )
 }
 
@@ -421,7 +437,8 @@ function matchingTools(
   policyFilter: PolicyFilter | null,
   selectedView: ReadonlySet<SelectionKey> | null,
 ) {
-  // The filter matches only the name the row shows, so every match is visible.
+  // The filter matches the tool's path. A row shows all of it, or its end
+  // under a heading that shows its start, so every match is visible.
   return sorted.filter((tool) => {
     const key = selectionKey(provider.id, tool.key)
     return (
@@ -514,14 +531,15 @@ const tableRowHeight = (row: TableRowItem) => {
   }
 }
 
-function ProvidersTableScreen({
+function ToolsTableScreen({
   titleInfo,
   addButton,
+  active,
   canChange,
   filteredProviders,
   form,
   providers,
-  providersPath,
+  toolsPath,
   railEmpty,
   railFilter,
   selectedProvider,
@@ -534,12 +552,15 @@ function ProvidersTableScreen({
   titleInfo: ReactNode
   /** The main action, at the end of the toolbar so it shows on every tab. */
   addButton: ReactNode
+  /** False in an archived workspace, which accepts no changes. */
+  active: boolean
+  /** The reader may change policy and providers: an owner of an active workspace. */
   canChange: boolean
   filteredProviders: ProviderView[]
   form: FormContext
   providers: ProviderView[]
-  /** The address of every provider's tab. */
-  providersPath: string
+  /** The address of the tab that lists every group. */
+  toolsPath: string
   /** What the rail shows when its filter matches no provider; null while one matches. */
   railEmpty: CatalogRailEmpty | null
   railFilter: string
@@ -709,7 +730,10 @@ function ProvidersTableScreen({
       flat.push({ kind: 'provider', key, provider })
       if (section.collapsed) continue
       if (provider.tools.length === 0) {
-        section.status = 'No tools yet. Settings remain available.'
+        section.status =
+          provider.kind === 'private'
+            ? 'No private tools yet. Ask your agent to save one.'
+            : 'No tools yet. Settings remain available.'
         section.statusIndex = flat.length
         flat.push({
           kind: 'status',
@@ -825,8 +849,9 @@ function ProvidersTableScreen({
     selectedToolKey,
     revealIndex,
   )
+  const toolCount = providers.reduce((count, provider) => count + provider.tools.length, 0)
   const tabPath = (id: string | null) =>
-    providers.find((provider) => provider.id === id)?.path ?? providersPath
+    providers.find((provider) => provider.id === id)?.path ?? toolsPath
 
   // A click reads the policies the summary shows, changes in flight included.
   const policyFilterFor = useCallback(
@@ -852,8 +877,8 @@ function ProvidersTableScreen({
     setRailFilter('')
     setPolicyFilter(null)
     setSelectedView(new Set(selected))
-    if (tab !== null) navigate(providersPath, { preventScrollReset: true })
-  }, [navigate, providersPath, selected, setRailFilter, tab])
+    if (tab !== null) navigate(toolsPath, { preventScrollReset: true })
+  }, [navigate, toolsPath, selected, setRailFilter, tab])
 
   const toggleTools = useCallback(
     (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => {
@@ -945,8 +970,11 @@ function ProvidersTableScreen({
     (event: KeyboardEvent) => {
       if (!cursorKeyApplies(event, { fromFilter: true, overControls: true, inDrawer })) return
       event.preventDefault()
-      // The open drawer shows tools, so it steps over the headings.
-      const order = drawerKey ? cursorOrder.filter((stop) => stop.kind === 'tool') : cursorOrder
+      // The open drawer shows tools it can open, so it steps over the headings
+      // and over each agent's private tools.
+      const order = drawerKey
+        ? cursorOrder.filter((stop) => stop.kind === 'tool' && !stop.tool.agent)
+        : cursorOrder
       const at = activeStop ? order.indexOf(activeStop) : -1
       const next =
         at < 0
@@ -996,6 +1024,8 @@ function ProvidersTableScreen({
     if (!cursorKeyApplies(event, { fromFilter: true, overControls: false })) return
     event.preventDefault()
     if (activeStop.kind === 'heading') return toggleHeading(activeStop)
+    // Reef cannot open an agent's private tool.
+    if (activeStop.tool.agent) return
     markRevealed(activeStop.provider.id, activeStop.tool.key)
     navigate(toolPath(activeStop.provider, activeStop.tool), { preventScrollReset: true })
   }
@@ -1026,12 +1056,12 @@ function ProvidersTableScreen({
           empty={railEmpty}
         >
           <CatalogRailItem
-            to={providersPath}
+            to={toolsPath}
             current={tab === null}
-            onSelect={() => openTab(providersPath)}
+            onSelect={() => openTab(toolsPath)}
             leading={<Icon name="Layers" size="20" color="secondary" />}
-            name="All providers"
-            count={providers.length}
+            name="All tools"
+            count={toolCount}
           />
           {filteredProviders.map((provider) => (
             <CatalogRailItem
@@ -1050,8 +1080,9 @@ function ProvidersTableScreen({
               }
               name={providerLabel(provider)}
               trailing={
-                // Coral has no settings: nobody renames, reconfigures, or removes it.
-                !provider.builtin && (
+                // Only a provider an owner added has settings: nobody renames,
+                // reconfigures, or removes Coral's own groups.
+                provider.kind === 'added' && (
                   <Button.Container
                     as={Link}
                     id={providerSettingsDomId(provider.id)}
@@ -1071,7 +1102,7 @@ function ProvidersTableScreen({
       }
     >
       <CatalogToolbar
-        title="Providers"
+        title="Tools"
         titleInfo={titleInfo}
         action={addButton}
         // Beside the search while the row has room; on its own line below it when not.
@@ -1246,6 +1277,7 @@ function ProvidersTableScreen({
         toolCalls={toolCalls}
         provider={selectedProvider ?? undefined}
         canChange={canChange}
+        canDelete={active}
         form={form}
         onClose={closeSelectedRoute}
         // The dialog keeps arrow keys inside it, so it moves the cursor itself.
@@ -1424,9 +1456,12 @@ const TableSections = memo(function TableSections({
                 icons={section.provider.icons}
                 size="20"
               />
-              <Typography.BodyStrong as="span">
-                {providerLabel(section.provider)}
-              </Typography.BodyStrong>
+              {/* The heading opens the group's own page, as its rail entry does. */}
+              <Link to={section.provider.path} preventScrollReset className={styles.groupLink}>
+                <Typography.BodyStrong as="span">
+                  {providerLabel(section.provider)}
+                </Typography.BodyStrong>
+              </Link>
             </>
           }
           members={section.tools}
@@ -1507,9 +1542,12 @@ const TableSections = memo(function TableSections({
 
 const TOOL_FILTER_ID = 'tool-filter'
 
-/** The address of a tool's drawer. */
-const toolPath = (provider: ProviderView, tool: ToolView) =>
-  `${provider.path}/tools/${encodeURIComponent(tool.relativePath)}`
+// The flags an action's redirect lands on this page with.
+const ARRIVAL_FLAGS = [PRIVATE_TOOL_DELETED] as const
+
+/** The name that tells a tool apart in a control's label: two private tools can share a path. */
+const toolLabel = (tool: ToolView) =>
+  tool.agent ? `${tool.relativePath} of agent ${tool.agent.label}` : tool.relativePath
 
 // A heading's key in the collapsed set and the cursor order.
 const providerHeadingKey = (providerId: string) => `provider:${providerId}`
@@ -1737,11 +1775,16 @@ const ToolRow = memo(function ToolRow({
   onOpen: (provider: string, tool: string) => void
 }) {
   const unavailableReason = tool.reasons.join(' ') || 'Coral did not provide a reason.'
+  // Under a heading that says the start of the path, the row shows the rest.
+  // A list with no headings shows the whole path.
+  const shownName = (!namesProvider && tool.nameInGroup) || tool.relativePath
   const { pending } = usePolicyMutations().state(provider.id, tool.key)
   const navigate = useNavigate()
   // A click anywhere but a control opens the tool's drawer. The name's
   // link navigates itself, so the row leaves its clicks alone.
   const open = (event: MouseEvent<HTMLDivElement>) => {
+    // Reef cannot open an agent's private tool.
+    if (tool.agent) return
     const control = (event.target as Element).closest(ROW_CONTROLS + ', a')
     // The cursor row takes focus, so its own tabindex is not a control in it.
     if (control && control !== event.currentTarget && event.currentTarget.contains(control)) return
@@ -1765,7 +1808,7 @@ const ToolRow = memo(function ToolRow({
           disabled={!canChange || disabled}
           onCheckedChange={onCheck}
         >
-          <span className={visuallyHidden}>{`Select ${tool.relativePath}`}</span>
+          <span className={visuallyHidden}>{`Select ${toolLabel(tool)}`}</span>
         </Inputs.Checkbox>
       </span>
       <span role="cell" className={styles.toolNameCell}>
@@ -1781,17 +1824,36 @@ const ToolRow = memo(function ToolRow({
         )}
         <ToolName className={styles.toolNameFace}>
           <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
-            <Link
-              to={toolPath(provider, tool)}
-              prefetch="intent"
-              preventScrollReset
-              onClick={() => onOpen(provider.id, tool.key)}
-              className={styles.toolName}
-            >
-              <HighlightedMatches text={tool.relativePath} query={query} />
-            </Link>
+            {tool.agent ? (
+              <span className={styles.toolName}>
+                <HighlightedMatches text={shownName} query={query} />
+              </span>
+            ) : (
+              <Link
+                to={toolPath(provider, tool)}
+                prefetch="intent"
+                preventScrollReset
+                onClick={() => onOpen(provider.id, tool.key)}
+                className={styles.toolName}
+                // The link still names the whole path, which tells it apart
+                // from a tool of the same name under another heading.
+                aria-label={shownName === tool.relativePath ? undefined : tool.relativePath}
+              >
+                <HighlightedMatches text={shownName} query={query} />
+              </Link>
+            )}
           </Tooltip>
         </ToolName>
+        {tool.agent && (
+          <Tooltip content={`This private tool belongs to the agent ${tool.agent.label}.`}>
+            <span className={styles.inlineTooltipTarget} tabIndex={0}>
+              <Pill size="small" variant="outline" color="graySubtle">
+                <Icon name="Bot" size="14" color="inherit" />
+                {tool.agent.label}
+              </Pill>
+            </span>
+          </Tooltip>
+        )}
         <HintLabels hints={tool.hints} />
         {!tool.available && (
           <Tooltip content={unavailableReason} maxWidth={420}>
@@ -1911,7 +1973,7 @@ const PolicySelect = memo(function PolicySelect({
       <PolicyToggle
         size={compact ? 'small' : undefined}
         disabled={!canChange || mutation.pending}
-        label="Policy"
+        label={tool.agent ? `Policy for ${toolLabel(tool)}` : 'Policy'}
         value={policy}
         onChange={(value) => {
           const data = new FormData(ref.current!)
@@ -2195,6 +2257,7 @@ function ToolUsageSection({ usage }: { usage: ToolUsage }) {
 function ToolDetailsDrawer({
   provider: routedProvider,
   canChange,
+  canDelete,
   detail: routedDetail,
   form,
   tool: routed,
@@ -2204,7 +2267,9 @@ function ToolDetailsDrawer({
 }: {
   provider: ProviderView | undefined
   canChange: boolean
-  /** The prose of `tool`, which the table does not load. */
+  /** The reader may delete their own private tool: the workspace is active. */
+  canDelete: boolean
+  /** What the table does not load of `tool`: its prose, or a private tool's source. */
   detail: ToolDetailView | null
   /** Null shows no usage. */
   toolCalls: ToolCallCounts | null
@@ -2228,8 +2293,10 @@ function ToolDetailsDrawer({
     setShown({ tool: routed, provider: routedProvider, detail: routedDetail })
   }
   const { tool, provider, detail } = shown
-  const summary = detail?.summary.trim() ?? ''
-  const description = detail?.description.trim() ?? ''
+  const saved = detail?.kind === 'private' ? detail : null
+  const prose = detail?.kind === 'provider' ? detail : null
+  const summary = prose?.summary.trim() ?? ''
+  const description = prose?.description.trim() ?? ''
   const callPath = tool && provider ? toolCallPath(provider.callRoot, tool.relativePath) : ''
   const usage = tool && provider ? usageOf(toolCalls, provider, tool) : null
   // The drawer stays open from one tool to the next, so only its content
@@ -2249,18 +2316,21 @@ function ToolDetailsDrawer({
         <Dialog.Backdrop />
         <Dialog.Popup
           ref={popup}
-          size="m"
+          // A private tool shows its source, which needs the room.
+          size={provider?.kind === 'private' ? 'xl' : 'm'}
           placement="right"
           onKeyDown={(event) => onKeyDown(event.nativeEvent)}
         >
           <Dialog.Title>{tool?.relativePath ?? 'Tool details'}</Dialog.Title>
           {tool && (
             <div key={callPath} ref={scrollToTop} className={styles.stack}>
-              {description && description !== summary ? (
-                <Markdown>{detail!.description}</Markdown>
+              {saved ? (
+                <Markdown>{saved.description}</Markdown>
+              ) : description && description !== summary ? (
+                <Markdown>{prose!.description}</Markdown>
               ) : (
                 <Typography.BodySmall as="p">
-                  {detail?.summary || 'No description.'}
+                  {prose?.summary || 'No description.'}
                 </Typography.BodySmall>
               )}
               <div className={styles.callPath}>
@@ -2272,6 +2342,11 @@ function ToolDetailsDrawer({
                   variant="bare"
                 />
               </div>
+              {saved && (
+                <Typography.BodySmall as="p">
+                  Last saved <SavedAt at={saved.savedAt} />
+                </Typography.BodySmall>
+              )}
               {shownHints(tool.hints).length > 0 && (
                 <div className={styles.pills}>
                   <HintLabels hints={tool.hints} />
@@ -2299,6 +2374,14 @@ function ToolDetailsDrawer({
                 <Banner variant="warning" title="Unavailable">
                   {tool.reasons.join(' ') || 'Coral did not provide a reason.'}
                 </Banner>
+              )}
+              {saved && (
+                <PrivateToolDetail
+                  detail={saved}
+                  callPath={callPath}
+                  form={form}
+                  canDelete={canDelete}
+                />
               )}
               {usage && <ToolUsageSection usage={usage} />}
             </div>

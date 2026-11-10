@@ -18,17 +18,9 @@ import {
   AuthoredToolDiagnosticCategory,
   type AuthoredToolDiagnostic,
 } from '@/generated/coral/management/v1/authored_tool_pb'
-import type {
-  PrivateTool,
-  PrivateToolSummary,
-} from '@/generated/coral/management/v1/private_tool_pb'
+import type { PrivateTool } from '@/generated/coral/management/v1/private_tool_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
-import type {
-  PrivateToolDiagnosticView,
-  PrivateToolSummaryView,
-  PrivateToolView,
-} from '@/views/functions/types'
-import type { PolicyState } from '@/components/policy-toggle'
+import type { PrivateToolDetailView, PrivateToolDiagnosticView } from '@/views/tools/types'
 import { resourcePath } from './management.server'
 
 export function workspaceView(w: Workspace) {
@@ -137,32 +129,17 @@ export function registrationView(r: AgentRegistration) {
   }
 }
 
-/** The browser path of one of the current User's functions in a Workspace. */
-export function privateToolHref(workspacePath: string, path: string) {
-  return `${workspacePath}/functions/${encodeURIComponent(path)}`
-}
-export function privateToolSummaryView(
-  workspacePath: string,
-  f: PrivateToolSummary,
-  policy?: PolicyState,
-): PrivateToolSummaryView {
+/** One of the current User's own Private Tools, with its source and saved diagnostics. */
+export function privateToolView(saved: PrivateTool): PrivateToolDetailView {
   return {
-    path: f.path,
-    description: f.description,
-    savedAt: isoTime(f.updateTime),
-    href: privateToolHref(workspacePath, f.path),
-    ...(policy ? { policy } : {}),
-  }
-}
-export function privateToolView(f: PrivateTool): PrivateToolView {
-  return {
-    path: f.path,
-    description: f.description,
-    declaration: f.declaration,
-    source: f.source,
-    diagnostics: f.diagnostics.map(diagnosticView),
-    diagnosticsTruncated: f.diagnosticsTruncated,
-    savedAt: isoTime(f.updateTime),
+    kind: 'private',
+    relativePath: saved.path,
+    description: saved.description,
+    declaration: saved.declaration,
+    source: saved.source,
+    diagnostics: saved.diagnostics.map(diagnosticView),
+    diagnosticsTruncated: saved.diagnosticsTruncated,
+    savedAt: isoTime(saved.updateTime),
   }
 }
 function diagnosticView(d: AuthoredToolDiagnostic): PrivateToolDiagnosticView {

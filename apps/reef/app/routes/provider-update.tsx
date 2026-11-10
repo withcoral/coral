@@ -82,7 +82,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         basePath,
         cancelPath,
         settingsPath,
-        providersPath: `${workspace.path}/providers`,
+        toolsPath: `${workspace.path}/tools`,
         setup,
         callbackUrl: callbackRedirectUri(request, context),
         attempt,

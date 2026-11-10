@@ -570,7 +570,7 @@ test("A workspace owner's Program asks for a shared API key in a header, and you
   })
 })
 
-test("A workspace owner declines their Program's rename, then approves it, and the providers page shows the new name", async (context) => {
+test("A workspace owner declines their Program's rename, then approves it, and the tools page shows the new name", async (context) => {
   await withOwnerSession(context, async (session) => {
     const { page, step } = session
     // Only addProvider runs without approval, so each updateProvider call waits for you.
@@ -603,8 +603,8 @@ test("A workspace owner declines their Program's rename, then approves it, and t
         value: { data: { status: 'published' } },
       })
     })
-    await step('Show the new name on the providers page', async () => {
-      await page.goto(`/workspaces/${workspace.name.split('/')[1]}/providers`)
+    await step('Show the new name on the tools page', async () => {
+      await page.goto(`/workspaces/${workspace.name.split('/')[1]}/tools`)
       await page
         .getByRole('navigation', { name: 'installed providers', exact: true })
         .getByRole('link', { name: 'Forecasts settings', exact: true })

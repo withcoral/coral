@@ -3,8 +3,8 @@ import { withOwnerSession } from '../../../../support/actors.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import { createWorkspace, publishWorkspaceProvider } from '../../../../support/providers.ts'
 
-// Selection roll-up and filtered selection are workspace-providers-page.dom.test.tsx
-// cases; this scenario keeps what needs a real layout.
+// Selection roll-up and filtered selection are tools-page.dom.test.tsx cases; this
+// scenario keeps what needs a real layout.
 test('A large catalog scrolls inside its table with aligned sticky rows', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const all = page.getByRole('checkbox', { name: 'Select all matching tools', exact: true })
@@ -41,7 +41,7 @@ test('A large catalog scrolls inside its table with aligned sticky rows', async 
         openApiDocument('Aside', { other: { tags: ['aside'] } }),
         'aside',
       )
-      await page.goto(`/workspaces/${workspace}/providers`)
+      await page.goto(`/workspaces/${workspace}/tools`)
       await table.waitFor()
       expect(await all.isDisabled()).toBe(false)
       expect(await checkbox('large tools').isDisabled()).toBe(false)

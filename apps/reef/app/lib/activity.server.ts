@@ -68,7 +68,7 @@ import {
   workspaceName,
   type ManagementApi,
 } from './management.server'
-import { privateToolHref } from './management-views.server'
+import { privateToolHref } from '@/views/tools/addresses'
 import { listAllTools, listAllProviders, providerPath } from './providers.server'
 import { privateToolPath, toolOwner } from './call-root'
 import { connectionState } from './accounts.server'
@@ -231,8 +231,8 @@ async function linkCurrentTargets(
       if (tools.get(provider)?.has(path))
         target.currentHref = `${providerPath(resourcePath(workspace), provider)}/tools/${encodeURIComponent(path)}`
   }
-  // Reef opens only the caller's own functions. A function that an Agent's
-  // search found belongs to the Agent, so the same path can name another function.
+  // Reef opens only the caller's own private tools. One that an Agent's search
+  // found belongs to the Agent, so the same path can name another private tool.
   if (!interaction.agent && targets.some((target) => target.kind === 'private_tool')) {
     const paths = new Set(
       await listedOrNone(async () => {

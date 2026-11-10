@@ -274,9 +274,11 @@ export async function openProviderSettings(page: Page) {
   // The gear sits in the rail beside its provider. Publication lands on the
   // provider route; the gear must belong to that document, not to the page a
   // redirect is about to replace.
-  await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
+  await page.waitForURL((url) =>
+    /\/(?:tools|providers\/(?!new(?:\/|$))[^/?#]+)$/.test(url.pathname),
+  )
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
-  // The bare list route is the All providers tab and names no provider. Each
+  // The Tools page's own route is the All tools tab and names no provider. Each
   // added provider's gear links to its settings route, beside the provider in
   // the rail; Coral has no gear. Wait for the
   // rail's gears before looking for the routed one, so a rail that has not

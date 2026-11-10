@@ -1394,14 +1394,14 @@ describe('hierarchical activity through the private server interface', () => {
   })
   it.each([
     {
-      name: 'links your own Private Tool hit to the current function',
+      name: 'links your own Private Tool hit to the current private tool',
       functions: ['github.openIssuesByLabel'],
-      href: `/${workspace}/functions/github.openIssuesByLabel`,
+      href: `/${workspace}/tools/private/github.openIssuesByLabel`,
       reads: 1,
     },
     { name: 'leaves a deleted Private Tool without a link', functions: [], href: null, reads: 1 },
     {
-      // Reef opens only your own functions, and the Agent owns the function that its search found.
+      // Reef opens only your own private tools, and the Agent owns the one that its search found.
       name: "leaves an Agent's Private Tool hit without a link",
       functions: ['github.openIssuesByLabel'],
       agentRun: true,

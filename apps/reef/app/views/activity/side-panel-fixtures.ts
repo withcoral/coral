@@ -494,7 +494,7 @@ export function discovery(
     const path = privateToolPath(target.callPath)
     target.currentHref = tool
       ? `/${workspace}/providers/${tool.namespace}/tools/${tool.relativePath}`
-      : `/${workspace}/functions/${path}`
+      : `/${workspace}/tools/private/${path}`
   }
   return { kind: 'discovery', context, response, view }
 }

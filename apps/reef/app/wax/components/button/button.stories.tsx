@@ -510,7 +510,7 @@ export const TruncatedLink: Story = {
       {
         Component: () => (
           <div style={{ display: 'flex', width: 220 }}>
-            <Button.Container as={Link} to="/functions/report" variant="link">
+            <Button.Container as={Link} to="/tools/report" variant="link">
               <Button.Text tooltip={longPath}>{longPath}</Button.Text>
             </Button.Container>
           </div>
