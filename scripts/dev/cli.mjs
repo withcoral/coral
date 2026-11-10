@@ -275,7 +275,7 @@ async function main(args) {
     )
     if (result.status !== 0)
       throw new Error('npm ci failed; fix the dependency installation and rerun setup')
-    const build = spawnSync('cargo', ['build', '--locked', '-p', 'coral', '--bin', 'coral'], {
+    const build = spawnSync('cargo', ['build', '--locked', '-p', 'coral-ee', '--bin', 'coral-ee'], {
       cwd: root,
       stdio: 'inherit',
     })

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: LicenseRef-Coral-Enterprise
+
+[package]
+name = "coral-ee"
+description = "The released Coral binary: Coral with the Enterprise Features in ee/."
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-Coral-Enterprise"
+rust-version.workspace = true
+publish = false
+
+# Named `coral-ee` so a `--workspace` build does not write two `coral`
+# binaries to one path. Packaging installs it as `coral`.
+[[bin]]
+name = "coral-ee"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+coral.workspace = true
+coral-app.workspace = true
