@@ -50,7 +50,7 @@ Coral does not start when `config.toml` holds an unknown key, or a value that a 
 | --------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------- |
 | `key_env` | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32` | No. If not present Coral will autogenerate an encryption key and save it to its config dir. | N/A     |
 
-To switch an existing install to `key_env`, put the key from the config folder's `credentials.key` file in the variable, then delete the file. Coral does not start while both exist.
+To switch an existing install to `key_env`, set the variable to the base64 encoding of the config folder's `credentials.key` file, then delete the file. For example, `base64 < credentials.key` prints the value. Coral does not start while both exist.
 
 ### `[outbound]`
 
@@ -96,11 +96,11 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 
 | Key                        | Description                                                                                                                                  | Required | Default              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
-| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. Must be greater than 8MiB.                                                                           | No       | 128MiB               |
-| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job. Must be greater than 8MiB.                                                           | No       | 512MiB               |
+| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. Must be at least 8MiB.                                                                               | No       | 128MiB               |
+| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job. Must be at least 8MiB.                                                               | No       | 512MiB               |
 | `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. Must be greater than 0. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
 | `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. Must be greater than 0.                                 | No       | `32`                 |
-| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. Must be greater than 2MiB.                                                  | No       | 8MiB                 |
+| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. Must be at least 2MiB.                                                      | No       | 8MiB                 |
 | `shutdown_drain_seconds`   | Seconds a stopping Coral process lets its running Runs finish before it interrupts them. `0` interrupts at once.                             | No       | `30`                 |
 
 ### `[search]`
