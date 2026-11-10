@@ -495,9 +495,11 @@ export const TreePrivateToolsAsMember: Story = {
     <ToolsPage
       {...treeProps}
       workspace={member}
+      // Every member reads the shared tools, as the page loads them for everyone.
       providers={[
         coral,
         github,
+        sharedTools,
         { ...privateTools, tools: privateTools.tools.filter((tool) => !tool.agent) },
       ]}
       selectedProvider="prov-private"
@@ -551,9 +553,11 @@ export const TreePrivateToolSelectedAsMember: Story = {
     <ToolsPage
       {...treeProps}
       workspace={member}
+      // Every member reads the shared tools, as the page loads them for everyone.
       providers={[
         coral,
         github,
+        sharedTools,
         { ...privateTools, tools: privateTools.tools.filter((tool) => !tool.agent) },
       ]}
       selectedProvider="prov-private"
@@ -762,6 +766,8 @@ export const PublishNextRevision: Story = {
           description: sharedTotals.description,
           source: sharedTotals.source,
           declaration: sharedTotals.declaration,
+          publisher: sharedTotals.publisher,
+          publishedAt: sharedTotals.publishedAt,
         },
         runtimeBuiltPaths: ['coral.providers.stripe'],
         defaultPolicy: 'approval_required',
@@ -821,6 +827,8 @@ export const RestoreRevision: Story = {
           description: sharedTotals.description,
           source: sharedTotals.source,
           declaration: sharedTotals.declaration,
+          publisher: sharedTotals.publisher,
+          publishedAt: sharedTotals.publishedAt,
         },
         defaultPolicy: 'enabled',
       },
@@ -972,8 +980,9 @@ export const TreeSearchIndexFailed: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getAllByText('Not in search', { exact: true })).toHaveLength(1)
+    // The table's heading says so once. A docked drawer sits in the page and says it too.
+    const table = within(within(canvasElement).getByRole('table', { name: 'Tools' }))
+    await expect(table.getAllByText('Not in search', { exact: true })).toHaveLength(1)
     const drawer = within(
       await within(canvasElement.ownerDocument.body).findByRole('dialog', {
         name: 'issues.create',
@@ -1010,9 +1019,10 @@ export const TreeSearchIndexPending: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getAllByText('Indexing…', { exact: true })).toHaveLength(1)
-    await expect(canvas.queryByText('Not in search', { exact: true })).toBeNull()
+    // The table's heading says so once. A docked drawer sits in the page and says it too.
+    const table = within(within(canvasElement).getByRole('table', { name: 'Tools' }))
+    await expect(table.getAllByText('Indexing…', { exact: true })).toHaveLength(1)
+    await expect(within(canvasElement).queryByText('Not in search', { exact: true })).toBeNull()
     const drawer = within(
       await within(canvasElement.ownerDocument.body).findByRole('dialog', {
         name: 'issues.create',

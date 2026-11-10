@@ -95,6 +95,10 @@ export interface PublishedRevisionView {
   description: string
   source: string
   declaration: string
+  /** Who published it; null when they are no longer an owner of the workspace. */
+  publisher: PersonView | null
+  /** ISO time of the publish. */
+  publishedAt: string
 }
 
 /**

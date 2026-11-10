@@ -35,6 +35,7 @@ import {
   CatalogLayout,
   CatalogRail,
   CatalogRailItem,
+  CatalogRailSection,
   CatalogToolbar,
   toolbarActionLabel,
   type CatalogRailEmpty,
@@ -397,10 +398,10 @@ function CatalogMatch({
   )
 }
 
-// The page names the shared and the private group by what each holds, as "All tools" does.
+// The rail lists the shared and the private group under "Custom tools", so one word names each.
 function providerLabel(provider: ProviderView) {
-  if (provider.kind === 'private') return 'Private tools'
-  if (provider.kind === 'shared') return 'Shared tools'
+  if (provider.kind === 'private') return 'Private'
+  if (provider.kind === 'shared') return 'Shared'
   return provider.displayName || provider.namespace
 }
 
@@ -418,14 +419,23 @@ function caseFolded(value: string) {
   return value.toLocaleLowerCase()
 }
 
-// Coral's own tools lead, then the shared tools and the private tools. The
-// providers an owner added follow by label.
+// The custom tools lead, shared then private, as the rail lists them. The
+// provider tools follow: Coral's own, then the providers an owner added by label.
 const KIND_ORDER: Record<ProviderView['kind'], number> = {
-  coral: 0,
-  shared: 1,
-  private: 2,
+  shared: 0,
+  private: 1,
+  coral: 2,
   added: 3,
 }
+
+/** The tools the workspace authors itself, apart from those its providers bring. */
+const isCustom = (provider: ProviderView) => holdsAuthoredTools(provider)
+
+// The rail lists the custom tools apart from the tools that providers bring.
+const RAIL_SECTIONS = [
+  { label: 'Custom tools', includes: isCustom },
+  { label: 'Provider tools', includes: (provider: ProviderView) => !isCustom(provider) },
+]
 function sortProviders(providers: ProviderView[]) {
   return providers.toSorted(
     (a, b) =>
@@ -1084,6 +1094,42 @@ function ToolsTableScreen({
     toggleTools([activeStop], !selected.has(activeStop.key))
   }
 
+  const railEntry = (provider: ProviderView) => (
+    <CatalogRailItem
+      key={provider.id}
+      to={provider.path}
+      current={provider.id === tab}
+      onSelect={() => openTab(provider.path)}
+      leading={
+        <>
+          <StatusDot
+            blockers={mutations.blockers(provider)}
+            personalAccountAction={provider.personalAccountAction}
+          />
+          <Logo name={providerLabel(provider)} icons={provider.icons} size="20" />
+        </>
+      }
+      name={providerLabel(provider)}
+      trailing={
+        // Only a provider an owner added has settings: nobody renames,
+        // reconfigures, or removes Coral's own groups.
+        provider.kind === 'added' && (
+          <Button.Container
+            as={Link}
+            id={providerSettingsDomId(provider.id)}
+            to={`${provider.path}/settings`}
+            preventScrollReset
+            variant="bare"
+            size="22"
+            ariaLabel={`${providerLabel(provider)} settings`}
+          >
+            <Button.Icon name="Settings" />
+          </Button.Container>
+        )
+      }
+    />
+  )
+
   return (
     <CatalogLayout
       rail={
@@ -1105,41 +1151,16 @@ function ToolsTableScreen({
             name="All tools"
             count={toolCount}
           />
-          {filteredProviders.map((provider) => (
-            <CatalogRailItem
-              key={provider.id}
-              to={provider.path}
-              current={provider.id === tab}
-              onSelect={() => openTab(provider.path)}
-              leading={
-                <>
-                  <StatusDot
-                    blockers={mutations.blockers(provider)}
-                    personalAccountAction={provider.personalAccountAction}
-                  />
-                  <Logo name={providerLabel(provider)} icons={provider.icons} size="20" />
-                </>
-              }
-              name={providerLabel(provider)}
-              trailing={
-                // Only a provider an owner added has settings: nobody renames,
-                // reconfigures, or removes Coral's own groups.
-                provider.kind === 'added' && (
-                  <Button.Container
-                    as={Link}
-                    id={providerSettingsDomId(provider.id)}
-                    to={`${provider.path}/settings`}
-                    preventScrollReset
-                    variant="bare"
-                    size="22"
-                    ariaLabel={`${providerLabel(provider)} settings`}
-                  >
-                    <Button.Icon name="Settings" />
-                  </Button.Container>
-                )
-              }
-            />
-          ))}
+          {RAIL_SECTIONS.map(({ label, includes }) => {
+            const entries = filteredProviders.filter(includes)
+            return (
+              entries.length > 0 && (
+                <CatalogRailSection key={label} label={label}>
+                  {entries.map(railEntry)}
+                </CatalogRailSection>
+              )
+            )
+          })}
         </CatalogRail>
       }
     >
@@ -1169,143 +1190,167 @@ function ToolsTableScreen({
       {!canChange && (
         <Banner variant="info">Only owners can change policy in an active workspace.</Banner>
       )}
-      <ActionBar.Frame>
-        <Table.Container
-          ariaLabel="Tools"
-          density={DENSITY}
-          groupHeadings={GROUP_HEADINGS}
-          layout="scroll"
-          ref={tableRef}
-          className={styles.toolsTable}
-          columns={[
-            { width: 44 },
-            { width: 'minmax(340px, 1fr)' },
-            ...(toolCalls ? [{ width: 'content' } as const] : []),
-            { width: 'max-content' },
-          ]}
-        >
-          <Table.Head>
-            <Table.Row>
-              <span role="columnheader" aria-label="Select" className={Table.selectionCell}>
-                <Inputs.Checkbox
-                  fill
-                  checked={allVisibleSelected}
-                  indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
-                  disabled={!canChange || mutations.bulkPending || visibleTools.length === 0}
-                  onCheckedChange={(checked) => toggleTools(visibleTools, checked)}
-                >
-                  <span className={visuallyHidden}>Select all matching tools</span>
-                </Inputs.Checkbox>
-              </span>
-              <span
-                role="columnheader"
-                className={classNames(styles.nameHeader, Table.groupToggleHeading)}
-              >
-                <Button.IconButton
-                  variant="bare"
-                  size="22"
-                  name={anyExpanded ? 'ChevronsDownUp' : 'ChevronsUpDown'}
-                  tooltipText={anyExpanded ? 'Collapse all' : 'Expand all'}
-                  disabled={sections.length === 0}
-                  onClick={toggleAllCollapsed}
-                />
-                Tool name
-              </span>
-              {toolCalls && (
-                <Table.Heading
-                  align="center"
-                  className={styles.callsColumn}
-                  sort={sortByUsage ? 'descending' : 'none'}
-                >
-                  <span className={styles.callsHeading}>
-                    <Table.SortButton
-                      label="Sort by usage"
-                      sort={sortByUsage ? 'descending' : 'none'}
-                      onClick={() => setSortByUsage((on) => !on)}
+      {/* On a wide screen the drawer docks beside the table, which shrinks to make room.
+          It starts level with the table, so the toolbar keeps the page's width. */}
+      <div className={styles.dockRow}>
+        <div className={styles.dockMain}>
+          <ActionBar.Frame>
+            <Table.Container
+              ariaLabel="Tools"
+              density={DENSITY}
+              groupHeadings={GROUP_HEADINGS}
+              layout="scroll"
+              ref={tableRef}
+              className={styles.toolsTable}
+              columns={[
+                { width: 44 },
+                { width: 'minmax(340px, 1fr)' },
+                ...(toolCalls ? [{ width: 'content' } as const] : []),
+                { width: 'max-content' },
+              ]}
+            >
+              <Table.Head>
+                <Table.Row>
+                  <span role="columnheader" aria-label="Select" className={Table.selectionCell}>
+                    <Inputs.Checkbox
+                      fill
+                      checked={allVisibleSelected}
+                      indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
+                      disabled={!canChange || mutations.bulkPending || visibleTools.length === 0}
+                      onCheckedChange={(checked) => toggleTools(visibleTools, checked)}
                     >
-                      Usage
-                    </Table.SortButton>
-                    <InfoTip ariaLabel="About usage">
-                      {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
-                    </InfoTip>
+                      <span className={visuallyHidden}>Select all matching tools</span>
+                    </Inputs.Checkbox>
                   </span>
-                </Table.Heading>
+                  <span
+                    role="columnheader"
+                    className={classNames(styles.nameHeader, Table.groupToggleHeading)}
+                  >
+                    <Button.IconButton
+                      variant="bare"
+                      size="22"
+                      name={anyExpanded ? 'ChevronsDownUp' : 'ChevronsUpDown'}
+                      tooltipText={anyExpanded ? 'Collapse all' : 'Expand all'}
+                      disabled={sections.length === 0}
+                      onClick={toggleAllCollapsed}
+                    />
+                    Tool name
+                  </span>
+                  {toolCalls && (
+                    <Table.Heading
+                      align="center"
+                      className={styles.callsColumn}
+                      sort={sortByUsage ? 'descending' : 'none'}
+                    >
+                      <span className={styles.callsHeading}>
+                        <Table.SortButton
+                          label="Sort by usage"
+                          sort={sortByUsage ? 'descending' : 'none'}
+                          onClick={() => setSortByUsage((on) => !on)}
+                        >
+                          Usage
+                        </Table.SortButton>
+                        <InfoTip ariaLabel="About usage">
+                          {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
+                        </InfoTip>
+                      </span>
+                    </Table.Heading>
+                  )}
+                  <span role="columnheader" className={styles.policyHeader}>
+                    Policy
+                  </span>
+                </Table.Row>
+              </Table.Head>
+              {filtering && visibleByProvider.length === 0 ? (
+                <Table.Status>
+                  <NoMatchStatus
+                    query={tableQuery.text}
+                    hidden={filterHiddenCount}
+                    onShow={showSelected}
+                  />
+                </Table.Status>
+              ) : ranked ? (
+                <RankedRows
+                  activeKey={activeKey}
+                  bulkPending={mutations.bulkPending}
+                  canChange={canChange}
+                  drawerOpen={drawerKey !== null}
+                  form={form}
+                  markRevealed={markRevealed}
+                  maxCalls={maxCalls}
+                  query={tableQuery}
+                  ranked={ranked}
+                  selected={selected}
+                  toggleTools={toggleTools}
+                  toolCalls={toolCalls}
+                  virtual={virtual}
+                />
+              ) : (
+                sections.length === 0 && <Table.Status>No providers match.</Table.Status>
               )}
-              <span role="columnheader" className={styles.policyHeader}>
-                Policy
-              </span>
-            </Table.Row>
-          </Table.Head>
-          {filtering && visibleByProvider.length === 0 ? (
-            <Table.Status>
-              <NoMatchStatus
-                query={tableQuery.text}
-                hidden={filterHiddenCount}
-                onShow={showSelected}
-              />
-            </Table.Status>
-          ) : ranked ? (
-            <RankedRows
-              activeKey={activeKey}
-              bulkPending={mutations.bulkPending}
-              canChange={canChange}
-              drawerOpen={drawerKey !== null}
-              form={form}
-              markRevealed={markRevealed}
-              maxCalls={maxCalls}
-              query={tableQuery}
-              ranked={ranked}
-              selected={selected}
-              toggleTools={toggleTools}
-              toolCalls={toolCalls}
-              virtual={virtual}
-            />
-          ) : (
-            sections.length === 0 && <Table.Status>No providers match.</Table.Status>
-          )}
-          {!ranked && (
-            <TableSections
-              activeKey={activeKey}
-              bulkPending={mutations.bulkPending}
-              canChange={canChange}
-              onToggleCollapsed={toggleCollapsed}
-              drawerOpen={drawerKey !== null}
-              markRevealed={markRevealed}
-              form={form}
-              query={tableQuery}
-              virtual={virtual}
-              sections={sections}
-              selected={selected}
-              toggleTools={toggleTools}
-              toolCalls={toolCalls}
-              maxCalls={maxCalls}
-            />
-          )}
-        </Table.Container>
-        {selected.size > 0 && (
-          <ActionBar.Bar>
-            <BulkPolicyForm
-              canChange={canChange}
-              form={form}
-              providers={providers}
-              selected={selected}
-              showingSelected={selectedView !== null}
-              onShowSelected={() => (selectedView ? setSelectedView(null) : showSelected())}
-              onClear={() => {
-                setSelected(new Set())
-                setSelectedView(null)
-              }}
-              onConfirmed={(confirmed) =>
-                setSelected((current) => {
-                  const next = new Set(current)
-                  for (const key of confirmed) next.delete(key)
-                  return next
-                })
-              }
-            />
-          </ActionBar.Bar>
-        )}
-      </ActionBar.Frame>
+              {!ranked && (
+                <TableSections
+                  activeKey={activeKey}
+                  bulkPending={mutations.bulkPending}
+                  canChange={canChange}
+                  onToggleCollapsed={toggleCollapsed}
+                  drawerOpen={drawerKey !== null}
+                  markRevealed={markRevealed}
+                  form={form}
+                  query={tableQuery}
+                  virtual={virtual}
+                  sections={sections}
+                  selected={selected}
+                  toggleTools={toggleTools}
+                  toolCalls={toolCalls}
+                  maxCalls={maxCalls}
+                />
+              )}
+            </Table.Container>
+            {selected.size > 0 && (
+              <ActionBar.Bar>
+                <BulkPolicyForm
+                  canChange={canChange}
+                  form={form}
+                  providers={providers}
+                  selected={selected}
+                  showingSelected={selectedView !== null}
+                  onShowSelected={() => (selectedView ? setSelectedView(null) : showSelected())}
+                  onClear={() => {
+                    setSelected(new Set())
+                    setSelectedView(null)
+                  }}
+                  onConfirmed={(confirmed) =>
+                    setSelected((current) => {
+                      const next = new Set(current)
+                      for (const key of confirmed) next.delete(key)
+                      return next
+                    })
+                  }
+                />
+              </ActionBar.Bar>
+            )}
+          </ActionBar.Frame>
+        </div>
+        <ToolDetailsDrawer
+          tool={selectedTool}
+          detail={selectedToolDetail}
+          toolCalls={toolCalls}
+          provider={selectedProvider ?? undefined}
+          canChange={canChange}
+          canDelete={active}
+          workspace={workspace}
+          form={form}
+          onClose={closeSelectedRoute}
+          // The drawer's keys stay in it, so it moves the cursor itself.
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowDown') moveCursor(1, true)(event)
+            if (event.key === 'ArrowUp') moveCursor(-1, true)(event)
+            if (event.key === 'ArrowRight' && !event.repeat) stepPolicy(1, true)(event)
+            if (event.key === 'ArrowLeft' && !event.repeat) stepPolicy(-1, true)(event)
+          }}
+        />
+      </div>
       {/* `cursorKeyApplies` decides which fields keep a key, so fields don't skip it here. */}
       <KeyboardShortcut shortcut="ArrowDown" handler={moveCursor(1)} ignore={never} />
       <KeyboardShortcut shortcut="ArrowUp" handler={moveCursor(-1)} ignore={never} />
@@ -1313,24 +1358,6 @@ function ToolsTableScreen({
       <KeyboardShortcut shortcut="ArrowLeft" handler={stepPolicy(-1)} ignore={repeated} />
       <KeyboardShortcut shortcut="Enter" handler={openCursor} ignore={repeated} />
       <KeyboardShortcut shortcut="Space" handler={checkCursor} ignore={repeated} />
-      <ToolDetailsDrawer
-        tool={selectedTool}
-        detail={selectedToolDetail}
-        toolCalls={toolCalls}
-        provider={selectedProvider ?? undefined}
-        canChange={canChange}
-        canDelete={active}
-        workspace={workspace}
-        form={form}
-        onClose={closeSelectedRoute}
-        // The dialog keeps arrow keys inside it, so it moves the cursor itself.
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowDown') moveCursor(1, true)(event)
-          if (event.key === 'ArrowUp') moveCursor(-1, true)(event)
-          if (event.key === 'ArrowRight' && !event.repeat) stepPolicy(1, true)(event)
-          if (event.key === 'ArrowLeft' && !event.repeat) stepPolicy(-1, true)(event)
-        }}
-      />
     </CatalogLayout>
   )
 }
@@ -2354,7 +2381,10 @@ function ToolDetailsDrawer({
     if (content) popup.current?.scrollTo?.({ top: 0 })
   }, [])
   return (
-    <Dialog.Root
+    // The table stays usable beside the drawer: a press on another row opens that tool.
+    // On a wide screen the drawer docks, as the activity page's does.
+    <Dialog.Rail
+      docked
       open={routed !== null}
       onOpenChange={(open) => {
         if (!open) onClose()
@@ -2364,9 +2394,11 @@ function ToolDetailsDrawer({
         <Dialog.Backdrop />
         <Dialog.Popup
           ref={popup}
-          // A private or a shared tool shows its source, which needs the room.
+          // Floating beside the table, a private or a shared tool shows its source,
+          // which needs the room. Docked, the drawer takes its share of the row.
           size={provider && holdsAuthoredTools(provider) ? 'xl' : 'm'}
           placement="right"
+          fullWidthOnMobile
           onKeyDown={(event) => onKeyDown(event.nativeEvent)}
         >
           <Dialog.Title>{tool?.relativePath ?? 'Tool details'}</Dialog.Title>
@@ -2438,7 +2470,11 @@ function ToolDetailsDrawer({
                   // An archived workspace accepts no publish, an owner's included.
                   publish={
                     canChange
-                      ? { workspacePath: workspace.path, policy: tool.policy }
+                      ? {
+                          workspacePath: workspace.path,
+                          policy: tool.policy,
+                          currentUser: workspace.currentUser,
+                        }
                       : canDelete && workspace.effectiveRole !== 'owner'
                         ? 'owner-only'
                         : null
@@ -2461,6 +2497,6 @@ function ToolDetailsDrawer({
           <Dialog.Close />
         </Dialog.Popup>
       </Dialog.Portal>
-    </Dialog.Root>
+    </Dialog.Rail>
   )
 }

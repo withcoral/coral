@@ -1,25 +1,40 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import classNames from 'classnames'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useFetcher } from 'react-router'
 
 import { PolicyToggle, type PolicyState } from '@/components/policy-toggle'
 import { sharedToolCallPath, sharedToolPath } from '@/lib/call-root'
+import { countLabel } from '@/utils/count-label'
 import { Fields } from '@/views/management/forms'
 import { Section } from '@/views/management/layout'
+import { SavedAt } from '@/views/management/saved-at'
 import type { ActionResult, FormContext } from '@/views/management/types'
 import { Banner, Button, Dialog, Inputs, Typography } from '@/wax/components'
-import { CodeBlock } from '@/wax/components/code-block'
+import { CodeBlock, sourceLines } from '@/wax/components/code-block'
 import { CodeChip } from '@/wax/components/code-chip'
-import { DiffView } from '@/wax/components/diff-view'
+import { DiffView, diffCounts } from '@/wax/components/diff-view'
+import { Icon, type IconColor, type IconName } from '@/wax/components/icon'
 import { Markdown } from '@/wax/components/markdown'
 import { SegmentedControl } from '@/wax/components/segmented-control'
+import { InfoTip } from '@/wax/components/tooltip'
 
 import { sharedToolPublishPath } from './addresses'
+import { publisherName } from './shared-tool-detail'
 import { Diagnostics } from './tool-source'
-import type { PublishOrigin, PublishReviewResult, PublishReviewView } from './types'
+import type {
+  PublishOrigin,
+  PublishReviewResult,
+  PublishReviewView,
+  PublishedRevisionView,
+  ToolDiagnosticView,
+} from './types'
 import * as styles from './tools.css'
 
 // The dialog caps the source and each diff; the rest scroll in place.
 const REVIEW_LINES = 24
+// A pause in typing this long reviews the path in the field.
+const PATH_REVIEW_DELAY_MS = 500
+const SHARED_ROOT = sharedToolCallPath('')
 
 export interface PublishDialogProps {
   open: boolean
@@ -32,6 +47,8 @@ export interface PublishDialogProps {
   path: string
   /** The policy the dialog starts on when no revision at the path sets one. */
   policy: PolicyState
+  /** The reader's user, so the dialog names their own revisions as theirs. */
+  currentUser: string
 }
 
 /**
@@ -74,12 +91,19 @@ function reviewQuery(origin: PublishOrigin, path: string) {
   return query
 }
 
+/** The shared tool path in the field, without the root the field shows before it. */
+function enteredPathOf(input: string) {
+  const path = input.trim()
+  return path.startsWith(SHARED_ROOT) ? path.slice(SHARED_ROOT.length) : path
+}
+
 function PublishDialogBody({
   workspacePath,
   form,
   origin,
   path: initialPath,
   policy,
+  currentUser,
   close,
   onPendingChange,
 }: Omit<PublishDialogProps, 'open' | 'onOpenChange'> & {
@@ -95,12 +119,22 @@ function PublishDialogBody({
   // The owner's choice, once they make one.
   const [chosenPolicy, setChosenPolicy] = useState<PolicyState | null>(null)
   const pathId = useId()
+  const pathStatusId = useId()
   const action = sharedToolPublishPath(workspacePath)
   const href = `${action}?${reviewQuery(origin, reviewPath)}`
   const { load } = review
   useEffect(() => {
     void load(href)
   }, [load, href])
+
+  // A pause in typing reviews the path in the field, so the owner sees at
+  // once what is there. Enter reviews it without the pause.
+  const enteredPath = enteredPathOf(pathInput)
+  useEffect(() => {
+    if (!enteredPath || enteredPath === reviewPath) return
+    const timer = setTimeout(() => setReviewPath(enteredPath), PATH_REVIEW_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [enteredPath, reviewPath])
 
   const publishing = publish.state !== 'idle'
   useEffect(() => {
@@ -122,62 +156,18 @@ function PublishDialogBody({
     else close()
   }, [publishing, error, load, href, close])
 
-  const reviewing = review.state !== 'idle' || !review.data
-  const shown = reviewing ? null : review.data!
+  // The last review stays on screen while the next one runs, so the dialog
+  // does not jump as the owner types. It cannot publish until the review of
+  // the path in the field arrives.
+  const loading = review.state !== 'idle'
+  const shown = review.data ?? null
   const reviewed = shown?.review ?? null
-  const enteredPath = pathInput.trim()
+  const checking = loading || !shown || enteredPath !== reviewPath
   const revision = (reviewed?.previous?.revision ?? 0) + 1
-  // The publish sends the review on screen, so it waits for one of the path in the field.
-  const cannotPublish = publishing || !reviewed || enteredPath !== reviewed.path
+  const cannotPublish = publishing || checking || !reviewed || enteredPath !== reviewed.path
+  const access = chosenPolicy ?? reviewed?.defaultPolicy ?? policy
   return (
     <Dialog.Popup size="xxl" fullWidthOnMobile>
-      <Dialog.Title>
-        {origin.kind === 'restore' ? `Restore revision ${origin.revision}` : 'Publish shared tool'}
-      </Dialog.Title>
-      {origin.kind === 'restore' ? (
-        <div className={styles.callPath}>
-          <CodeChip>{sharedToolCallPath(initialPath)}</CodeChip>
-        </div>
-      ) : (
-        <form
-          className={styles.publishPath}
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (enteredPath) setReviewPath(enteredPath)
-          }}
-        >
-          <div className={styles.publishPathField}>
-            <Typography.BodySmallStrong as="label" htmlFor={pathId}>
-              Shared tool path
-            </Typography.BodySmallStrong>
-            <Inputs.TextInput
-              id={pathId}
-              value={pathInput}
-              onChange={setPathInput}
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={256}
-              disabled={publishing}
-            />
-          </div>
-          <Button.TextButton
-            type="submit"
-            variant="secondary"
-            disabled={publishing || !enteredPath || enteredPath === reviewPath}
-          >
-            Review path
-          </Button.TextButton>
-        </form>
-      )}
-      {reviewing && (
-        <Typography.Body as="p" role="status">
-          Reviewing…
-        </Typography.Body>
-      )}
-      {shown?.refusal && shown.refusal !== error && (
-        <Banner variant="error">{shown.refusal}</Banner>
-      )}
-      {reviewed && <Review review={reviewed} />}
       <publish.Form
         method="post"
         action={action}
@@ -187,48 +177,158 @@ function PublishDialogBody({
           if (cannotPublish) event.preventDefault()
         }}
       >
-        <Fields form={submission} intent="publishSharedTool" />
-        {reviewed && (
-          <>
-            <PublishFields review={reviewed} />
-            <section aria-label="Default policy" className={styles.drawerSection}>
-              <Typography.HeadingSmall as="h2">Default policy</Typography.HeadingSmall>
-              <Typography.Body as="p">The shared tool starts with this policy.</Typography.Body>
-              <input
-                type="hidden"
-                name="access"
-                value={chosenPolicy ?? reviewed.defaultPolicy ?? policy}
-              />
-              <PolicyToggle
-                label="Default policy"
-                value={chosenPolicy ?? reviewed.defaultPolicy ?? policy}
-                onChange={setChosenPolicy}
+        <Dialog.Header>
+          <Dialog.Title>
+            {origin.kind === 'restore'
+              ? `Restore revision ${origin.revision}`
+              : 'Publish shared tool'}
+          </Dialog.Title>
+          <Dialog.Close ariaLabel="Close" />
+        </Dialog.Header>
+        <div className={styles.publishPath}>
+          {origin.kind === 'restore' ? (
+            <div className={styles.callPath}>
+              <CodeChip>{sharedToolCallPath(initialPath)}</CodeChip>
+            </div>
+          ) : (
+            <>
+              <Typography.BodySmallStrong as="label" htmlFor={pathId}>
+                Shared tool path
+              </Typography.BodySmallStrong>
+              <Inputs.TextInput
+                id={pathId}
+                // The owner starts on the path, the one thing they may change.
+                autoFocus
+                prefix={SHARED_ROOT}
+                value={pathInput}
+                onChange={setPathInput}
+                onKeyDown={(event) => {
+                  // Enter reviews the path. It does not publish a review of another path.
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  if (enteredPath) setReviewPath(enteredPath)
+                }}
+                ariaDescribedBy={pathStatusId}
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={256}
                 disabled={publishing}
+                invalid={!checking && Boolean(shown?.refusal)}
               />
-            </section>
-          </>
+            </>
+          )}
+          <div id={pathStatusId} role="status">
+            <PathStatus
+              empty={!enteredPath}
+              checking={checking}
+              review={reviewed}
+              currentUser={currentUser}
+            />
+          </div>
+        </div>
+        {!checking && shown?.refusal && shown.refusal !== error && (
+          <Banner variant="error">{shown.refusal}</Banner>
         )}
-        {error && <Banner variant="error">{error}</Banner>}
-        <Dialog.Actions>
-          <Button.TextButton
-            type="button"
-            variant="secondary"
-            disabled={publishing}
-            onClick={close}
-          >
-            Cancel
-          </Button.TextButton>
-          <Button.TextButton
-            type="submit"
-            variant="primary"
-            disabled={cannotPublish}
-            busy={publishing}
-          >
-            {reviewed ? `Publish revision ${revision}` : 'Publish'}
-          </Button.TextButton>
-        </Dialog.Actions>
+        {reviewed && <Review key={reviewed.path} review={reviewed} />}
+        <Fields form={submission} intent="publishSharedTool" />
+        {reviewed && <PublishFields review={reviewed} access={access} />}
+        <div
+          className={classNames(
+            styles.publishFooter,
+            Dialog.pinnedBottomClassName,
+            Dialog.flushInlineClassName,
+          )}
+        >
+          {error && <Banner variant="error">{error}</Banner>}
+          <div className={styles.publishFooterRow}>
+            {/* The policy shows once a review names the one the shared tool has, so it does not jump. */}
+            {reviewed ? (
+              <div className={styles.publishPolicy}>
+                <Typography.BodySmallStrong as="span">Default policy</Typography.BodySmallStrong>
+                <PolicyToggle
+                  label="Default policy"
+                  value={access}
+                  onChange={setChosenPolicy}
+                  disabled={publishing}
+                  withLabels
+                />
+                <InfoTip ariaLabel="About the default policy">
+                  The shared tool starts with this policy. You can change it on the tools page.
+                </InfoTip>
+              </div>
+            ) : (
+              <span />
+            )}
+            <Dialog.Actions>
+              <Button.TextButton
+                type="button"
+                variant="secondary"
+                disabled={publishing}
+                onClick={close}
+              >
+                Cancel
+              </Button.TextButton>
+              <Button.TextButton
+                type="submit"
+                variant="primary"
+                disabled={cannotPublish}
+                busy={publishing}
+              >
+                {reviewed ? `Publish revision ${revision}` : 'Publish'}
+              </Button.TextButton>
+            </Dialog.Actions>
+          </div>
+        </div>
       </publish.Form>
     </Dialog.Popup>
+  )
+}
+
+/**
+ * What is at the path: nothing yet, or the revision the publish replaces and
+ * who published it. An owner who overwrites another owner's tool sees whose.
+ */
+function PathStatus({
+  empty,
+  checking,
+  review,
+  currentUser,
+}: {
+  empty: boolean
+  checking: boolean
+  review: PublishReviewView | null
+  currentUser: string
+}) {
+  if (empty) return <Fact icon="Info">Enter a shared tool path.</Fact>
+  if (checking) return <Fact icon="Search">Checking the path…</Fact>
+  if (!review) return null
+  const { previous } = review
+  if (!previous) return <Fact icon="CirclePlus">This publish creates a new shared tool.</Fact>
+  return (
+    <Fact icon="RefreshCw" color="warning">
+      <span>
+        {`This publish replaces revision ${previous.revision}, published by ${publisherName(previous.publisher, currentUser)} on `}
+        <SavedAt at={previous.publishedAt} />.
+      </span>
+    </Fact>
+  )
+}
+
+/** One line of the review with an icon that tells its kind apart, not only its color. */
+function Fact({
+  icon,
+  color = 'secondary',
+  children,
+}: {
+  icon: IconName
+  color?: IconColor
+  children: ReactNode
+}) {
+  return (
+    <span className={styles.reviewFact}>
+      <Icon name={icon} size="16" color={color} className={styles.reviewFactIcon} />
+      <Typography.BodySmall as="span">{children}</Typography.BodySmall>
+    </span>
   )
 }
 
@@ -237,7 +337,7 @@ function PublishDialogBody({
  * revision it replaces, and the reviewed content. The content is one JSON
  * field, because a form post would rewrite the line breaks of the source.
  */
-function PublishFields({ review }: { review: PublishReviewView }) {
+function PublishFields({ review, access }: { review: PublishReviewView; access: PolicyState }) {
   const { origin } = review
   return (
     <>
@@ -251,6 +351,7 @@ function PublishFields({ review }: { review: PublishReviewView }) {
       )}
       <input type="hidden" name="path" value={review.path} />
       <input type="hidden" name="expectedRevision" value={review.previous?.revision ?? 0} />
+      <input type="hidden" name="access" value={access} />
       <input
         type="hidden"
         name="reviewed"
@@ -264,32 +365,115 @@ function PublishFields({ review }: { review: PublishReviewView }) {
   )
 }
 
-/** What the owner approves: the content, what it changes, and what it calls. */
+/** The diagnostics as counts by kind, errors first, such as "1 error, 2 warnings". */
+function diagnosticCounts(diagnostics: ToolDiagnosticView[]) {
+  const nouns = [
+    ['error', 'error'],
+    ['warning', 'warning'],
+    ['suggestion', 'suggestion'],
+    ['message', 'message'],
+  ] as const
+  return nouns
+    .map(([category, noun]) => {
+      const count = diagnostics.filter((d) => d.category === category).length
+      return count > 0 ? countLabel(count, noun) : null
+    })
+    .filter(Boolean)
+    .join(', ')
+}
+
+/** What the publish changes from `previous`, line by line, or what it creates. */
+function sourceChange(review: PublishReviewView, previous: PublishedRevisionView | null) {
+  if (!previous) {
+    const lines = sourceLines(review.source)
+    // A final line break ends the last line; it does not start another.
+    const count = lines.at(-1) === '' ? lines.length - 1 : lines.length
+    return `The source has ${countLabel(count, 'line')}.`
+  }
+  if (previous.source === review.source) return 'The source does not change.'
+  const { added, removed } = diffCounts(previous.source, review.source)
+  return `The source changes: ${countLabel(added, 'line')} added, ${removed.toLocaleString('en-US')} removed.`
+}
+
+/** The facts an owner decides on, before the details that show them. */
+function Summary({ review }: { review: PublishReviewView }) {
+  const { previous, calledTools, sharedTools, runtimeBuiltPaths, diagnostics } = review
+  const errors = diagnostics.some((d) => d.category === 'error')
+  const counts = diagnosticCounts(diagnostics)
+  return (
+    <ul aria-label="Summary" className={styles.reviewSummary}>
+      {previous && (
+        <li>
+          <Fact icon="NotepadText">
+            {previous.description === review.description
+              ? 'The description does not change.'
+              : 'The description changes.'}
+          </Fact>
+        </li>
+      )}
+      <li>
+        <Fact icon="FileCode">{sourceChange(review, previous)}</Fact>
+      </li>
+      <li>
+        <Fact icon="Waypoints">
+          {calledTools.length === 0
+            ? 'It calls no tool by a fixed path.'
+            : `It calls ${countLabel(calledTools.length, 'tool')} by a fixed path${
+                sharedTools.length > 0
+                  ? `, ${sharedTools.length.toLocaleString('en-US')} of them shared`
+                  : ''
+              }.`}
+          {runtimeBuiltPaths.length > 0 && ' It also builds tool paths when it runs.'}
+        </Fact>
+      </li>
+      <li>
+        <Fact icon={errors ? 'CircleAlert' : 'ListChecks'} color={errors ? 'error' : 'secondary'}>
+          {counts ? `Diagnostics: ${counts}.` : 'It has no diagnostics.'}
+        </Fact>
+      </li>
+    </ul>
+  )
+}
+
+/** What the owner approves: a summary, then the content, what it changes, and what it calls. */
 function Review({ review }: { review: PublishReviewView }) {
   const { previous } = review
   const [sourceView, setSourceView] = useState<'changes' | 'full'>(previous ? 'changes' : 'full')
-  const revisions = new Map(review.sharedTools.map((tool) => [tool.path, tool.revision]))
+  const revisions = useMemo(
+    () => new Map(review.sharedTools.map((tool) => [tool.path, tool.revision])),
+    [review.sharedTools],
+  )
   const sharedRevision = (callPath: string) => revisions.get(sharedToolPath(callPath) ?? '')
+  const declarationChanges = previous !== null && previous.declaration !== review.declaration
   return (
     <div className={styles.stack}>
-      <Typography.Body as="p">
-        {previous
-          ? `This publish replaces revision ${previous.revision} of ${sharedToolCallPath(review.path)}.`
-          : `This publish creates ${sharedToolCallPath(review.path)}.`}
-      </Typography.Body>
-      {review.origin.kind === 'private' && (
-        <Banner variant="warning" title="Remove tokens and IDs that only you should see.">
-          Every member of the workspace can read this source.
+      <Summary review={review} />
+      {declarationChanges && (
+        <Banner variant="warning" title="The declaration changes.">
+          Programs and tools that call this shared tool can fail. Check the declaration changes.
         </Banner>
       )}
       <Section title="Description">
-        <Markdown>{review.description}</Markdown>
-        {previous && previous.description !== review.description && (
+        {previous && previous.description !== review.description ? (
           <DiffView
             label="Description changes"
             before={previous.description}
             after={review.description}
           />
+        ) : (
+          <Markdown>{review.description}</Markdown>
+        )}
+      </Section>
+      <Section title="Declaration">
+        {declarationChanges ? (
+          <DiffView
+            label="Declaration changes"
+            before={previous.declaration}
+            after={review.declaration}
+            maxLines={REVIEW_LINES}
+          />
+        ) : (
+          <CodeBlock value={review.declaration} format="typescript" framed />
         )}
       </Section>
       <Section
@@ -308,6 +492,11 @@ function Review({ review }: { review: PublishReviewView }) {
           )
         }
       >
+        {review.origin.kind === 'private' && (
+          <Banner variant="warning" title="Remove tokens and IDs that only you should see.">
+            Every member of the workspace can read this source.
+          </Banner>
+        )}
         {previous && sourceView === 'changes' ? (
           <DiffView
             label="Source changes"
@@ -318,18 +507,6 @@ function Review({ review }: { review: PublishReviewView }) {
           />
         ) : (
           <CodeBlock value={review.source} format="typescript" framed maxLines={REVIEW_LINES} />
-        )}
-      </Section>
-      <Section title="Declaration">
-        <CodeBlock value={review.declaration} format="typescript" framed />
-        {previous && (
-          <DiffView
-            label="Declaration changes"
-            before={previous.declaration}
-            after={review.declaration}
-            maxLines={REVIEW_LINES}
-            unchanged="The declaration does not change."
-          />
         )}
       </Section>
       <Section title="Tools it calls">

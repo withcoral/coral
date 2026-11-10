@@ -115,6 +115,22 @@ export const RegistrationExpiration: Story = {
   },
 }
 
+// Fixed text before the value, such as the root of a path. It is not part of the value.
+export const Prefix: Story = {
+  args: {
+    ariaLabel: 'Shared tool path',
+    prefix: 'coral.shared.',
+    defaultValue: 'finance.monthlyTotals',
+  },
+  play: async ({ canvas }) => {
+    const input = canvas.getByRole('textbox', { name: 'Shared tool path' })
+    await expect(input).toHaveValue('finance.monthlyTotals')
+    // A press on the prefix puts the caret in the field.
+    await userEvent.click(canvas.getByText('coral.shared.'))
+    await expect(input).toHaveFocus()
+  },
+}
+
 export const Controlled: Story = {
   render: () => {
     const [value, setValue] = useState(

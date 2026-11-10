@@ -36,6 +36,8 @@ const published = (revision: number) => ({
   description: 'Remind someone',
   source: 'export default async () => "published"\n',
   declaration: 'export default function (): Promise<string>;\n',
+  publisher: { user: 'users/ada', name: 'Ada', email: 'ada@example.test', local: false },
+  publishedAt: '2026-11-09T14:27:00.000Z',
 })
 
 const user = userEvent.setup()
@@ -62,6 +64,7 @@ function open({
       origin={{ kind: 'private', path: 'people.remind', agent: null }}
       path="people.remind"
       policy="enabled"
+      currentUser="users/me"
       {...props}
     />,
     {
@@ -157,7 +160,7 @@ test('after a refused publish, says why and reviews again', async () => {
   expect(await screen.findByText(refusal)).toBeVisible()
   // The second review shows the other owner's revision as the one to replace.
   await publishButton('Publish revision 2')
-  expect(screen.getByText(/replaces revision 1 of coral\.shared\.people\.remind/)).toBeVisible()
+  expect(screen.getByText(/replaces revision 1, published by Ada on/)).toBeVisible()
   expect(reviewed).toHaveLength(2)
   expect(posted[0]!.get('expectedRevision')).toBe('0')
   expect(onOpenChange).not.toHaveBeenCalled()
@@ -168,9 +171,10 @@ test('after a refused publish, says why and reviews again', async () => {
   expect(posted[1]!.get('expectedRevision')).toBe('1')
 })
 
-// Catches: a publish at a path the owner typed but Coral never reviewed, or
-// a refused path that leaves the owner no way to enter another.
-test('reviews another path before it publishes there', async () => {
+// Catches: a publish at a path the owner typed but Coral never reviewed; a
+// refused path that leaves the owner no way to enter another; a review per
+// keystroke; or a pasted call path reviewed with its root as part of the path.
+test('reviews the path the owner enters before it publishes there', async () => {
   const taken = 'Another shared tool uses this path, or a part of it. Enter another path.'
   const { reviewed, posted } = open({
     reviews: [
@@ -182,18 +186,22 @@ test('reviews another path before it publishes there', async () => {
   const path = await screen.findByRole('textbox', { name: 'Shared tool path' })
   expect(path).toHaveValue('people.remind')
   await publishButton('Publish revision 1')
+  expect(screen.getByText('This publish creates a new shared tool.')).toBeVisible()
 
+  // Enter reviews the path at once. The field drops the root a pasted call path starts with.
   await user.clear(path)
-  await user.type(path, 'mail')
+  await user.type(path, 'coral.shared.mail')
   // The review on screen is of the first path, so it cannot publish at this one.
   expect(await publishButton()).toBeDisabled()
-  await user.click(screen.getByRole('button', { name: 'Review path' }))
+  await user.keyboard('{Enter}')
   expect(await screen.findByText(taken)).toBeVisible()
+  expect(path).toHaveAttribute('aria-invalid', 'true')
   expect(await publishButton()).toBeDisabled()
 
+  // A pause in typing reviews the path, once for all the keys typed before it.
   await user.type(path, '.remind')
-  await user.click(screen.getByRole('button', { name: 'Review path' }))
   await user.click(await publishButton('Publish revision 3'))
+  expect(screen.getByText(/replaces revision 2, published by Ada on/)).toBeVisible()
   await waitFor(() => expect(posted).toHaveLength(1))
   expect(reviewed.map((query) => query.get('path'))).toEqual([
     'people.remind',

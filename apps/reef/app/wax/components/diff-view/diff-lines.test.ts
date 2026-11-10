@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { sourceLines } from '@/wax/components/code-block'
 
-import { diffLines, foldUnchanged, type DiffLine } from './diff-lines'
+import { diffCounts, diffLines, foldUnchanged, type DiffLine } from './diff-lines'
 
 /** A diff as one string per line: its marker, both line numbers, and its text. */
 const rows = (lines: DiffLine[]) =>
@@ -13,7 +13,7 @@ const rows = (lines: DiffLine[]) =>
 
 // Catches: a diff that marks an unchanged line, that numbers a line by its
 // place in the diff, not in its own text, or that puts an added line before
-// the line it replaces.
+// the line it replaces; or counts that disagree with the lines it marks.
 it('marks only the lines that differ, each with its number on its own side', () => {
   const before = 'const a = 1\nconst b = 2\nreturn a + b'
   const after = 'const a = 1\nconst b = 3\nconst c = 4\nreturn a + b'
@@ -24,6 +24,7 @@ it('marks only the lines that differ, each with its number on its own side', () 
     '+ . 3 const c = 4',
     '  3 4 return a + b',
   ])
+  expect(diffCounts(before, after)).toEqual({ added: 2, removed: 1 })
 })
 
 const big = (lines: number, salt: string) =>

@@ -33,7 +33,7 @@ export function PrivateToolDetail({
    * active workspace reads that only an owner can. In an archived workspace
    * nobody can, so the drawer says nothing of it.
    */
-  publish: { workspacePath: string; policy: PolicyState } | 'owner-only' | null
+  publish: { workspacePath: string; policy: PolicyState; currentUser: string } | 'owner-only' | null
 }) {
   const [publishing, setPublishing] = useState(false)
   return (
@@ -56,6 +56,7 @@ export function PrivateToolDetail({
             origin={{ kind: 'private', path: detail.relativePath, agent: detail.agent }}
             path={detail.relativePath}
             policy={publish.policy}
+            currentUser={publish.currentUser}
           />
         </div>
       )}

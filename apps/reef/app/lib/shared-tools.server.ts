@@ -218,7 +218,7 @@ async function sharedToolAt(api: Pick<ManagementApi, 'sharedTools'>, parent: str
  * workspace's identifier, as for the publish and the removal.
  */
 export async function publishReview(
-  api: Pick<ManagementApi, 'privateTools' | 'sharedTools'>,
+  api: Pick<ManagementApi, 'privateTools' | 'sharedTools' | 'memberships'>,
   workspace: string,
   query: URLSearchParams,
 ): Promise<PublishReviewResult> {
@@ -260,6 +260,8 @@ export async function publishReview(
     })
     if (!review) throw new ConnectError('no review', Code.Unavailable)
     const previous = review.previousRevision
+    // The owner sees whose revision the publish replaces.
+    const person = previous ? await ownersByUser(api, parent) : null
     return {
       refusal: null,
       review: {
@@ -270,14 +272,17 @@ export async function publishReview(
         declaration: review.declaration,
         diagnostics: review.diagnostics.map(diagnosticView),
         diagnosticsTruncated: review.diagnosticsTruncated,
-        previous: previous
-          ? {
-              revision: Number(previous.revision),
-              description: previous.description,
-              source: previous.source,
-              declaration: previous.declaration,
-            }
-          : null,
+        previous:
+          previous && person
+            ? {
+                revision: Number(previous.revision),
+                description: previous.description,
+                source: previous.source,
+                declaration: previous.declaration,
+                publisher: person(previous.publisher),
+                publishedAt: isoTime(previous.publishTime),
+              }
+            : null,
         calledTools: review.calledTools,
         sharedTools: review.sharedTools.map((tool) => ({
           path: tool.path,

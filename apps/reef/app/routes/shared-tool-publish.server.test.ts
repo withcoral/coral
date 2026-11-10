@@ -27,6 +27,8 @@ const PUBLISHED = {
   source: 'export default async () => "published"\n',
   declaration: 'export default function (): Promise<string>;\n',
   defaultAccessState: ToolAccessState.DISABLED,
+  publisher: 'users/ada',
+  publishTime: { seconds: 1_762_700_000n, nanos: 0 },
 }
 const FIRST = {
   revision: 1n,
@@ -80,6 +82,11 @@ beforeEach(() => {
         displayName: 'Research',
         effectiveRole: WorkspaceRole.OWNER,
         state: WorkspaceState.ACTIVE,
+      }),
+    },
+    memberships: {
+      listWorkspaceOwners: () => ({
+        owners: [{ user: 'users/ada', profile: { user: 'users/ada', displayName: 'Ada' } }],
       }),
     },
     privateTools: {
@@ -174,8 +181,9 @@ it('reviews a private tool at its own path as the first revision', async () => {
 })
 
 // Catches: a review against the wrong revision, which Coral refuses as moved;
-// a diff with no other side; an agent's tool reviewed as the owner's own; or
-// a new revision that loses the policy the shared tool has.
+// a diff with no other side; a replaced revision that does not say whose it
+// is; an agent's tool reviewed as the owner's own; or a new revision that
+// loses the policy the shared tool has.
 it('reviews an agent’s private tool at the path of a shared tool', async () => {
   const result = await review(`tool=people.remind&agent=${workerId}&path=mail.remind`)
   expect(publishes).toMatchObject([
@@ -198,6 +206,8 @@ it('reviews an agent’s private tool at the path of a shared tool', async () =>
       description: PUBLISHED.description,
       source: PUBLISHED.source,
       declaration: PUBLISHED.declaration,
+      publisher: { user: 'users/ada', name: 'Ada', email: '', local: false },
+      publishedAt: '2025-11-09T14:53:20.000Z',
     },
     defaultPolicy: 'disabled',
   })

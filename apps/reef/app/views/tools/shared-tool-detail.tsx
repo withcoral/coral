@@ -194,6 +194,7 @@ export function SharedToolDetail({
           origin={{ kind: 'restore', revision: restoring }}
           path={detail.relativePath}
           policy={policy}
+          currentUser={workspace.currentUser}
         />
       )}
     </>

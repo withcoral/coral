@@ -34,6 +34,11 @@ export interface TextInputProps {
   /** A regular expression the whole value must match, checked by the browser on submit. */
   pattern?: string
   placeholder?: string
+  /**
+   * Fixed text inside the field, before the value, such as the start of a path
+   * that the reader cannot change. It is not part of the value.
+   */
+  prefix?: string
   readOnly?: boolean
   ref?: React.Ref<HTMLInputElement>
   required?: boolean
@@ -64,6 +69,7 @@ export function TextInput({
   onKeyDown,
   pattern,
   placeholder,
+  prefix,
   readOnly,
   ref,
   required,
@@ -80,7 +86,20 @@ export function TextInput({
   }
   return (
     <Field.Root disabled={disabled} invalid={invalid}>
-      <div className={styles.container}>
+      <div className={classNames(styles.container, prefix && styles.prefixedContainer)}>
+        {prefix && (
+          // A press on the prefix puts the caret in the field, as a press on its border does.
+          <span
+            aria-hidden
+            className={styles.prefix}
+            onMouseDown={(event) => {
+              event.preventDefault()
+              input.current?.focus()
+            }}
+          >
+            {prefix}
+          </span>
+        )}
         {icon && (
           <Icon
             className={styles.iconWrapper}
@@ -104,6 +123,7 @@ export function TextInput({
               [styles.inputWithIcon]: !!icon,
               [styles.inputWithClear]: clearable,
               [styles.bareInput]: bare,
+              [styles.prefixedInput]: !!prefix,
             },
             className,
           )}

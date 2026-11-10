@@ -81,3 +81,49 @@ export const clearButton = style({
   // The button's own `position: relative` is an equal wax rule; doubling wins in any CSS order.
   selectors: { '&&': { position: 'absolute' } },
 })
+
+// With a prefix, the container draws the field's border, so the prefix sits
+// inside it beside the value. It follows the input's own states.
+export const prefixedContainer = style([
+  baseInput,
+  {
+    gap: 0,
+    paddingBlock: 0,
+    // The input keeps its own end padding.
+    paddingInlineEnd: 0,
+    selectors: {
+      '&:has(input:hover:not(:focus):not(:disabled):not([data-invalid]))': {
+        borderColor: theme.input.stroke.hover,
+      },
+      '&:has(input:focus:not([data-invalid]))': { borderColor: theme.input.stroke.focus },
+      '&:has(input[data-invalid]:not(:disabled))': { borderColor: theme.input.stroke.error },
+      '&:has(input:disabled)': {
+        borderColor: theme.input.stroke.disabled,
+        cursor: 'not-allowed',
+      },
+    },
+  },
+])
+
+export const prefix = style({
+  // Quieter than the value, so the reader sees where the value starts.
+  color: theme.content.tertiary,
+  cursor: 'text',
+  flexShrink: 0,
+  userSelect: 'none',
+  whiteSpace: 'nowrap',
+  selectors: { [`${prefixedContainer}:has(input:disabled) &`]: { color: theme.content.disabled } },
+})
+
+// The container draws the border, so the input draws none and starts at the prefix.
+// Doubled, it outranks the input's own state rules in any CSS order.
+export const prefixedInput = style({
+  selectors: {
+    '&&': {
+      border: 'none',
+      // The border's pixel each side, so the field keeps its height.
+      paddingBlock: 7,
+      paddingInlineStart: 0,
+    },
+  },
+})

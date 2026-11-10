@@ -1,5 +1,13 @@
 import classNames from 'classnames'
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from 'react'
 import { Link } from 'react-router'
 
 import { Button, Inputs, Menu, ScrollArea, Typography } from '@/wax/components'
@@ -117,6 +125,19 @@ export function CatalogRail({
         </div>
       </ScrollArea.Container>
     </aside>
+  )
+}
+
+/** A named run of rail entries, such as the groups a workspace authors itself. */
+export function CatalogRailSection({ label, children }: { label: string; children: ReactNode }) {
+  const id = useId()
+  return (
+    <div role="group" aria-labelledby={id} className={styles.railSection}>
+      <Typography.BodySmall as="h2" id={id} variant="tertiary" className={styles.railSectionLabel}>
+        {label}
+      </Typography.BodySmall>
+      {children}
+    </div>
   )
 }
 

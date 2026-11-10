@@ -3,6 +3,17 @@ import { globalStyle, style } from '@vanilla-extract/css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const stack = style({ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 })
+// The table and its drawer, side by side, under the toolbar: docked, the drawer takes
+// its share of the row.
+export const dockRow = style({ display: 'flex', flex: '1 1 auto', minHeight: 0, minWidth: 0 })
+// The table: it shrinks when the drawer docks.
+export const dockMain = style({
+  display: 'flex',
+  flex: '1 1 0',
+  flexDirection: 'column',
+  minHeight: 0,
+  minWidth: 0,
+})
 export const callPath = style({
   alignItems: 'center',
   display: 'flex',
@@ -156,9 +167,51 @@ export const rankedProvider = style({
 })
 // The drawer's own actions on a tool, under its facts.
 export const drawerActions = style({ alignItems: 'center', display: 'flex', gap: 8 })
-// The publish dialog's path: its field, then the button that reviews the path.
-export const publishPath = style({ alignItems: 'end', display: 'flex', gap: 8, minWidth: 0 })
-export const publishPathField = style({ display: 'grid', flex: 1, gap: 6, minWidth: 0 })
+// The publish dialog's path: its label, its field, and what the review found there.
+export const publishPath = style({ display: 'grid', gap: 6, minWidth: 0 })
+// One fact with the icon that tells its kind apart, such as what the publish replaces.
+export const reviewFact = style({
+  alignItems: 'start',
+  display: 'flex',
+  gap: 8,
+  minWidth: 0,
+  overflowWrap: 'anywhere',
+})
+// The icon keeps to the first line of text that wraps beside it.
+export const reviewFactIcon = style({ flexShrink: 0, marginBlockStart: 1 })
+// What the publish changes, at a glance, above the details.
+export const reviewSummary = style({
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: 8,
+  display: 'grid',
+  gap: 8,
+  listStyle: 'none',
+  margin: 0,
+  padding: 12,
+})
+// The publish dialog's footer stays at the popup's bottom edge, so the policy
+// and the publish stay in view however far the owner scrolls. It reaches
+// through the popup's padding to its edges, which is 24px on each side.
+export const publishFooter = style({
+  background: theme.surface.floating,
+  borderTop: `1px solid ${theme.stroke.secondary}`,
+  display: 'grid',
+  gap: 12,
+  marginBlockEnd: -24,
+  paddingBlock: '12px 24px',
+  paddingInline: 24,
+  position: 'sticky',
+  zIndex: 1,
+})
+export const publishFooterRow = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 16,
+  justifyContent: 'space-between',
+})
+export const publishPolicy = style({ alignItems: 'center', display: 'flex', gap: 12 })
+globalStyle(`${publishFooterRow} > :last-child`, { marginBlockStart: 0 })
 // The tools a reviewed source calls, one call path a line.
 export const calledTools = style({
   display: 'grid',
