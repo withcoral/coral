@@ -3,13 +3,18 @@ title: "Configuration Reference"
 sidebarTitle: "Configuration"
 ---
 
-Your configuration lives in the `config.toml` file of Coral's configuration folder. By default the folder is located in:
+Your configuration lives in the `config.toml` file of Coral's configuration folder. Where that folder is depends on how you run Coral:
 
-- macOS: `~/Library/Application Support/com.withcoral.coral`
-- Linux: `~/.config/coral`
-- Windows: `%APPDATA%\withcoral\coral\config`
+- **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
+- **Coral Desktop.** Desktop uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. Desktop writes this `config.toml` again at each launch, so your edits to it are lost.
+- **The `coral` binary.** When you start the binary yourself, it uses:
+  - macOS: `~/Library/Application Support/com.withcoral.coral`
+  - Linux: `~/.config/coral`
+  - Windows: `%APPDATA%\withcoral\coral\config`
 
-You can override the location of the config folder with the `CORAL_CONFIG_DIR` environment variable.
+To use another folder with the container image or the binary, set `CORAL_CONFIG_DIR`.
+
+Coral does not start when `config.toml` holds an unknown key, or a value that a key does not accept. The error names the key.
 
 ## General
 
@@ -28,16 +33,16 @@ You can override the location of the config folder with the `CORAL_CONFIG_DIR` e
 
 ### `[listeners.auth]`
 
-| Key          | Description                                                                                                 | Required                  | Default                                                                    |
-| ------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------- |
-| `bind`       | Bind address and port for Coral's auth server                                                               | No                        | `127.0.0.1:0` for a shared server and `127.0.0.1:8779` for the desktop app |
-| `public_url` | Public URL of the Auth Server. Must be https or loopback http. May include a port; must not include a path. | Yes, when auth is enabled | N/A                                                                        |
+| Key          | Description                                                                                                 | Required                  | Default                                                                          |
+| ------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------- |
+| `bind`       | Bind address and port for Coral's auth server                                                               | No                        | `127.0.0.1:0`. In the desktop app, where user auth is disabled, `127.0.0.1:8779`. |
+| `public_url` | Public URL of the Auth Server. Must be https or loopback http. May include a port; must not include a path. | Yes, when auth is enabled | N/A                                                                              |
 
 ### `[listeners.web]`
 
-| Key          | Description                                                                                                  | Required                                 | Default |
-| ------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ------- |
-| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. | Not if `CORAL_LOCAL_WEB_URL` is provided | N/A     |
+| Key          | Description                                                                                                                                                                  | Required                                                                                              | Default |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------- |
+| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. Set `CORAL_WEB_PUBLIC_URL` on the UI to the same origin. | Yes. Without `[auth]`, you can set the `CORAL_LOCAL_WEB_URL` environment variable instead. Coral does not start when you set both. | N/A     |
 
 ### `[credentials]`
 
@@ -45,9 +50,15 @@ You can override the location of the config folder with the `CORAL_CONFIG_DIR` e
 | --------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------- |
 | `key_env` | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32` | No. If not present Coral will autogenerate an encryption key and save it to its config dir. | N/A     |
 
+To switch an existing install to `key_env`, set the variable to the base64 encoding of the config folder's `credentials.key` file, then delete the file. For example, `base64 < credentials.key` prints the value. Coral does not start while both exist.
+
 ### `[outbound]`
 
-Controls the policy for outbound calls from Coral to providers.
+Controls how Coral calls providers.
+
+#### Network policies
+
+`loopback` and `private_networks` set the policy for provider calls to those addresses.
 Policies can have one of the following values:
 
 - `deny`: Denies all requests to the policy target
@@ -56,27 +67,47 @@ Policies can have one of the following values:
 
 All provider calls not covered by an explicit policy in this section are treated under the `https` policy.
 
-| Key                | Description                                                   | Required | Default |
-| ------------------ | ------------------------------------------------------------- | -------- | ------- |
-| `loopback`         | Policy for provider calls to loopback addresses.              | No       | `deny`  |
-| `private_networks` | Policy for provider calls to addresses in non-public networks | No       | `deny`  |
+| Key                | Description                                                   | Required | Default                                  |
+| ------------------ | ------------------------------------------------------------- | -------- | ---------------------------------------- |
+| `loopback`         | Policy for provider calls to loopback addresses.              | No       | `deny`, or `http-and-https` without auth |
+| `private_networks` | Policy for provider calls to addresses in non-public networks | No       | `deny`, or `http-and-https` without auth |
+
+Without an `[auth]` section, `loopback` and `private_networks` default to `http-and-https`, so providers on your own machine and network work. With `[auth]`, both default to `deny`.
+
+Coral ignores `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` for provider calls. It connects to each provider directly.
+
+#### MCP OAuth clients
+
+| Key                          | Description                                                                                           | Required | Default     |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- | -------- | ----------- |
+| `mcp_oauth_client_bootstrap` | How Coral identifies itself to an MCP provider's authorization server when nobody enters a client ID. | No       | `automatic` |
+
+An MCP provider's authorization server can identify Coral in two ways. It can fetch Coral's Client ID Metadata Document from a URL, or Coral can register with Dynamic Client Registration. `mcp_oauth_client_bootstrap` selects between them:
+
+- `automatic`: Coral uses the metadata document when the server supports it and the document's URL resolves to public addresses. Otherwise, Coral registers.
+- `prefer-client-id-metadata-document`: Coral uses the metadata document whenever the server supports it. Use this with split DNS, or when the server can reach your internal network.
+- `dynamic-client-registration-only`: Coral only registers. A failed registration does not fall back to the metadata document. If the server has no registration endpoint, enter a client ID for the provider.
+
+The setting applies when Coral sets up a new OAuth client. It does not change a client ID that someone entered or a registration that Coral already holds.
 
 ### `[runtime]`
 
-| Key                        | Description                                                                                                       | Required | Default              |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
-| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate                                                                | No       | 128MiB               |
-| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job                                                | No       | 512MiB               |
-| `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. Not available on Windows. | No       | Unset (no CPU limit) |
-| `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. At least 1.      | No       | `32`                 |
-| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. At least 2MiB.                       | No       | 8MiB                 |
-| `shutdown_drain_seconds`   | Seconds a stopping Coral process lets its running Runs finish before it interrupts them. `0` interrupts at once.  | No       | `30`                 |
+Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
+
+| Key                        | Description                                                                                                                                  | Required | Default              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
+| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. Must be at least 8MiB.                                                                               | No       | 128MiB               |
+| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job. Must be at least 8MiB.                                                               | No       | 512MiB               |
+| `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. Must be greater than 0. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
+| `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. Must be greater than 0.                                 | No       | `32`                 |
+| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. Must be at least 2MiB.                                                      | No       | 8MiB                 |
+| `shutdown_drain_seconds`   | Seconds a stopping Coral process lets its running Runs finish before it interrupts them. `0` interrupts at once.                             | No       | `30`                 |
 
 ### `[search]`
 
-| Key                          | Description                                                                         | Required | Default |
-| ---------------------------- | ----------------------------------------------------------------------------------- | -------- | ------- |
-| `reconcile_interval_seconds` | Interval on which provider tool and saved function search indexing is executed | No       | `300`   |
+| Key                          | Description                                                                                         | Required | Default |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- | -------- | ------- |
+| `reconcile_interval_seconds` | Interval on which provider tool and saved function search indexing is executed. Must be greater than 0. | No       | `300`   |
 
 ### `[updates]`
 
@@ -96,12 +127,14 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 
 | Key            | Description                                                                        | Required | Default                                                                                                                                 |
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `endpoint`     | URL of the http otel endpoint to which telemetry will be sent.                     | No       | N/A                                                                                                                                     |
+| `endpoint`     | Base URL of an OTLP over HTTP endpoint. Coral sends to `/v1/traces`, `/v1/logs` and `/v1/metrics` under it. | No       | N/A                                                                                                                                     |
 | `headers`      | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                    |
 | `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
-| `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
+| `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 | `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
+
+If `log_filter` or `trace_filter` is not a valid filter, Coral logs a warning and uses the default.
 
 #### Trace UI requests
 
@@ -111,7 +144,8 @@ The UI also opens a span for each loader and action, and a client span for each 
 
 | Variable                                                              | Description                                                                                                                                        | Default                 |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP over HTTP endpoint. The UI exports only when you set one of these. The UI does not start if the value is not an `http` or `https` URL.            | None                    |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                                         | Base URL of an OTLP over HTTP endpoint. The UI sends traces to `/v1/traces` under it, as Coral does with `[otel].endpoint`. Use the same value for both. | None                    |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`                                  | Full URL for traces. The UI uses it as written, in place of `OTEL_EXPORTER_OTLP_ENDPOINT`.                                                           | None                    |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Must be `http/protobuf`. The UI does not start with any other value.                                                                                 | `http/protobuf`         |
 | `OTEL_EXPORTER_OTLP_HEADERS`                                          | Additional headers, formatted as `name=value,name=value`                                                                                           | None                    |
 | `OTEL_SERVICE_NAME`                                                   | Name of the service when exporting                                                                                                                 | `ui`                    |
@@ -119,7 +153,9 @@ The UI also opens a span for each loader and action, and a client span for each 
 | `OTEL_TRACES_SAMPLER`                                                 | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. The UI does not start with any other value. | `parentbased_always_on` |
 | `OTEL_TRACES_SAMPLER_ARG`                                             | The ratio for the `traceidratio` samplers, from `0` to `1`                                                                                         | `1`                     |
 | `OTEL_SDK_DISABLED`                                                   | Set to `true` to stop export                                                                                                                       | `false`                 |
-| `OTEL_TRACES_EXPORTER`                                                | Set to `none` to stop export                                                                                                                       | `otlp`                  |
+| `OTEL_TRACES_EXPORTER`                                                | Set to `none` to stop export. The UI exports over OTLP with any other value.                                                                      | `otlp`                  |
+
+The UI exports only when you set one of the two endpoint variables. The UI does not start if that value is not an `http` or `https` URL.
 
 Coral follows the sampled flag on each UI call, so `OTEL_TRACES_SAMPLER` decides which of these traces Coral exports. When the UI does not export, it forwards only a valid caller `traceparent`, and Coral follows that caller's sampled flag. A gRPC call with no `traceparent` starts its own trace, and `trace_sample_ratio` decides if Coral keeps it.
 
@@ -134,35 +170,35 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 - `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet. A run starts right after it is accepted, so this is usually 0. A run that waits for recovery by another Coral instance is not counted.
 - `coral.program.execution.heap.peak` is sampled each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
 
-| Metric                                   | Kind      | Attributes                                                              |
-| ---------------------------------------- | --------- | ----------------------------------------------------------------------- |
-| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                     |
-| `coral.program.compile.duration`         | Histogram | `outcome`                                                               |
-| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                 |
-| `coral.program.execution.heap.peak`      | Histogram | None                                                                    |
-| `coral.program.termination`              | Counter   | `outcome`                                                               |
-| `coral.run.accepted`                     | Counter   | `principal.kind`                                                        |
-| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                            |
-| `coral.run.duration`                     | Histogram | `run.status`                                                            |
-| `coral.run.phase.duration`               | Histogram | `run.phase`                                                             |
-| `coral.run.active`                       | Gauge     | None                                                                    |
-| `coral.run.queue.depth`                  | Gauge     | None                                                                    |
-| `coral.run.recovery`                     | Counter   | `outcome`                                                               |
-| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                  |
-| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                      |
+| Metric                                   | Kind      | Attributes                                                                   |
+| ---------------------------------------- | --------- | ---------------------------------------------------------------------------- |
+| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                          |
+| `coral.program.compile.duration`         | Histogram | `outcome`                                                                    |
+| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                      |
+| `coral.program.execution.heap.peak`      | Histogram | None                                                                         |
+| `coral.program.termination`              | Counter   | `outcome`                                                                    |
+| `coral.run.accepted`                     | Counter   | `principal.kind`                                                             |
+| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                                 |
+| `coral.run.duration`                     | Histogram | `run.status`                                                                 |
+| `coral.run.phase.duration`               | Histogram | `run.phase`                                                                  |
+| `coral.run.active`                       | Gauge     | None                                                                         |
+| `coral.run.queue.depth`                  | Gauge     | None                                                                         |
+| `coral.run.recovery`                     | Counter   | `outcome`                                                                    |
+| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                       |
+| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                           |
 | `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
-| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`            |
-| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                             |
-| `coral.invocation.active`                | Gauge     | None                                                                    |
-| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                          |
-| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                     |
-| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                     |
-| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                  |
-| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                             |
-| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                             |
-| `coral.output.size`                      | Histogram | `output.kind`                                                           |
-| `coral.output.rejections`                | Counter   | `output.kind`                                                           |
-| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
+| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`                 |
+| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                                  |
+| `coral.invocation.active`                | Gauge     | None                                                                         |
+| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                               |
+| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                          |
+| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                          |
+| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                       |
+| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                                  |
+| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                                  |
+| `coral.output.size`                      | Histogram | `output.kind`                                                                |
+| `coral.output.rejections`                | Counter   | `output.kind`                                                                |
+| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                                 |
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 
@@ -206,16 +242,16 @@ Use these signals together to separate database admission, compiler saturation, 
 | Key                 | Description                                                                            | Required | Default |
 | ------------------- | -------------------------------------------------------------------------------------- | -------- | ------- |
 | `allowed_audiences` | Array. Additional audiences for which Coral's auth server can mint tokens              | No       | `[]`    |
-| `trusted_clients`   | Array with client ids for which Coral's auth server will not display a consent screen. | No       | `[]`    |
+| `trusted_clients`   | Array with client ids for which Coral's auth server will not display a consent screen. Each entry is an `http` or `https` URL. Use a lowercase host and leave out the default port. A URL with no path must end in `/`, as in `https://client.example.com/`. | No       | `[]`    |
 
 ### `[auth.session]`
 
 | Key                         | Description                                                                                                                  | Required                                                                                                   | Default                     |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------- |
 | `signing_key_env`           | Name of the environment variable holding the key used to sign Coral's auth server tokens. Must be a base64 PKCS#8 P-256 key. | No, but if `[auth]` is present the environment variable must exist or `signing_key_file` must be defined   | `CORAL_SESSION_SIGNING_KEY` |
-| `signing_key_file`          | File path containing the key used to sign Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format.              | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
-| `access_token_ttl_seconds`  | Duration of Coral's access tokens, in seconds.                                                                               | No                                                                                                         | `2592000` (720h)            |
-| `refresh_token_ttl_seconds` | How long a client can refresh after one sign-in, in seconds. Refresh never extends it.                                       | No                                                                                                         | `2592000` (720h)            |
+| `signing_key_file`          | File path containing the key used to sign Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format. A relative path starts at the config folder. | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
+| `access_token_ttl_seconds`  | Duration of Coral's access tokens, in seconds. From 1 to 31536000 (365 days).                                                | No                                                                                                         | `2592000` (720h)            |
+| `refresh_token_ttl_seconds` | How long a client can refresh after one sign-in, in seconds. Refresh never extends it. From 1 to 31536000 (365 days).       | No                                                                                                         | `2592000` (720h)            |
 
 #### Refresh tokens
 
@@ -241,20 +277,24 @@ The web interface keeps your users signed in through a web session that Coral ho
 
 | Key                       | Description                                                                                                                | Required                                                                                                                  | Default                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `issuer`                  | URL of the OIDC issuer. Must be https.                                                                                     | Yes, if `[auth]` section is present                                                                                       | N/A                              |
+| `issuer`                  | URL of the OIDC issuer. Must be https, or loopback http.    | Yes, if `[auth]` section is present                                                                                       | N/A                              |
 | `client_id`               | Client ID used to connect to the OIDC issuer.                                                                              | Yes, if `[auth]` section is present                                                                                       | N/A                              |
-| `client_secret`           | Client secret used to connect to the OIDC issuer.                                                                          | Yes, if `[auth]` section is present and if `client_secret_env` is absent                                                  | N/A                              |
-| `client_secret_env`       | Name of the environment variable holding the client secret used to connect to the OIDC issuer                              | Yes, if `[auth]` section is present and if `client_secret` is absent                                                      | N/A                              |
-| `scopes`                  | Array of scopes to request to the OIDC Issuer. Must include `openid`                                                       | No                                                                                                                        | `["openid", "email", "profile"]` |
+| `client_secret`           | Client secret used to connect to the OIDC issuer.                                                                          | Yes, if `[auth]` section is present and if `client_secret_env` is absent. Do not set both.                                | N/A                              |
+| `client_secret_env`       | Name of the environment variable holding the client secret used to connect to the OIDC issuer                              | Yes, if `[auth]` section is present and if `client_secret` is absent. Do not set both.                                    | N/A                              |
+| `scopes`                  | Array of scopes to request to the OIDC Issuer. Must include `openid`. An empty array uses the default.                    | No                                                                                                                        | `["openid", "email", "profile"]` |
 | `display_name_claim`      | Name of the claim from the OIDC token used for user display names                                                          | No                                                                                                                        | `email`                          |
 | `name_claim`              | Name of the claim from the OIDC token used for user names                                                                  | No                                                                                                                        | `name`                           |
 | `email_claim`             | Name of the claim from the OIDC token used for user emails                                                                 | No                                                                                                                        | `email`                          |
 | `email_verified_claim`    | Name of the claim from the OIDC token used to check if user email is verified                                              | No                                                                                                                        | `email_verified`                 |
 | `bootstrap_owner_subject` | Value of the `sub` claim of the user that will have Coral's organization owner role. Applied at that user's first sign-in. | No, but Org owner admin operations will be disabled if left undefined. Omit the key rather than set it to an empty string | N/A                              |
-| `auth_params`             | Extra parameters that will be passed in the OIDC authorization request                                                     | No                                                                                                                        | `{}`                             |
-| `required_claims`         | Claim values that must be present on the OIDC ID token to allow login into Coral.                                          | No                                                                                                                        | `{}`                             |
+| `auth_params`             | Extra parameters that will be passed in the OIDC authorization request. See the reserved names below.                     | No                                                                                                                        | `{}`                             |
+| `required_claims`         | Claim values that must be present on the OIDC ID token to allow login into Coral. See the value types below.              | No                                                                                                                        | `{}`                             |
 
 Register `<listeners.auth.public_url>/auth/oidc/callback` as the redirect URI at the OIDC issuer.
+
+`auth_params` cannot set `response_type`, `response_mode`, `client_id`, `redirect_uri`, `scope`, `state`, `nonce`, `code_challenge` or `code_challenge_method`. Coral sets these itself.
+
+Each `required_claims` value is a string, a boolean, a number, or an array of those. Write the value as the ID token spells it: `3` does not match `3.0`. Put a date or a time in quotes.
 
 ### `[auth.provider.access_token]`
 
@@ -263,7 +303,7 @@ Optional section that can be used to require certain values on the OIDC's access
 | Key               | Description                                                                           | Required | Default |
 | ----------------- | ------------------------------------------------------------------------------------- | -------- | ------- |
 | `audience`        | `aud` claim that must be present on the OIDC access token                             | Yes      | N/A     |
-| `required_claims` | Claim values that must be present on the OIDC access token to allow login into Coral. | No       | `{}`    |
+| `required_claims` | Claim values that must be present on the OIDC access token to allow login into Coral. Same value types as `[auth.provider].required_claims`. | No       | `{}`    |
 
 ## Database
 
@@ -271,6 +311,58 @@ Optional section that can be used to require certain values on the OIDC's access
 
 | Key       | Description                                                                            | Required                             | Default                 |
 | --------- | -------------------------------------------------------------------------------------- | ------------------------------------ | ----------------------- |
-| `backend` | DB backend Coral will use. Either `sqlite` or `postgres`                               | No when the config section is absent | `sqlite`                |
-| `path`    | SQLite only. Path to the db file                                                       | No                                   | `<config dir>/coral.db` |
+| `backend` | DB backend Coral will use. Either `sqlite` or `postgres`                               | Yes, when `[database]` is present    | `sqlite`                |
+| `path`    | SQLite only. Path to the db file. A relative path starts at the config folder.         | No                                   | `<config dir>/coral.db` |
 | `url_env` | Postgres only. Name of the environment variable that has the connection URL to the DB. | Yes, when `backend` is `postgres`    | N/A                     |
+
+## Usage data
+
+Self-hosted Coral sends one anonymous usage report for each UTC day on which it runs. Sharing is on by default. Only official release builds send the data: Coral Desktop and the `ghcr.io/withcoral/coral` image.
+
+Coral sends the report to `https://telemetry.withcoral.com/v1/report`. The [`[outbound]`](#outbound) policy still applies.
+
+A report holds a random install ID, facts about your Coral build and where it runs, and dates, counts and totals of activity. It never holds your programs, tool arguments, tool results, credentials, names, email addresses or URLs. [`report.rs`](https://github.com/withcoral/coral/blob/main/crates/coral-usage/src/report.rs) lists every field. To read the exact report before Coral sends it, open **Help and feedback**, then **Usage data**.
+
+Nothing in a report identifies you or your organization. We do not store IP addresses.
+
+### Turn off sharing
+
+If you are an organization owner, open **Usage data** and turn off **Share anonymous usage data**. This setting applies to the full deployment. Other members can read the page but cannot change it.
+
+To stop sending from one Coral process, set one of these environment variables. Coral ignores spaces and letter case. Restart Coral after you change one. The **Usage data** page then shows a banner that names the variable.
+
+| Variable                   | Stops sending when it is                        |
+| -------------------------- | ----------------------------------------------- |
+| `CORAL_DISABLE_USAGE_DATA` | Set to a value other than empty, `0` or `false` |
+| `DO_NOT_TRACK`             | Set to a value other than empty, `0` or `false` |
+
+When you turn off sharing, Coral stops sending. We keep the reports that Coral sent before.
+
+## Container image
+
+The `ghcr.io/withcoral/coral` image prepares `config.toml` before it starts Coral:
+
+- **With `CORAL_CONFIG`.** The image writes the variable's value to `config.toml` at each start. Your edits to the file last until the next start. Coral does not start if a folder or a symbolic link is at that path.
+- **Without `CORAL_CONFIG`.** The image keeps an existing `config.toml`. On a first start with an empty volume, it writes a starter file with user auth disabled. The starter binds gRPC to `127.0.0.1:14555`, MCP to `127.0.0.1:14556` and auth to `127.0.0.1:8779`, and sets the web UI to `http://127.0.0.1:3000`. To change a setting, edit the file and restart the container.
+
+The image's Docker health check asks Coral's gRPC listener whether Coral is ready. It uses `127.0.0.1:14555` by default. If `[listeners.grpc]` binds another port, set `CORAL_HEALTHCHECK_ADDR` to a `host:port` that reaches it. Otherwise Docker never marks the container healthy. Kubernetes ignores this health check and uses the probes in your manifest.
+
+## Web interface
+
+The `coral-web` image reads these variables when it starts. It does not start when a value is not valid.
+
+| Variable                                  | Description                                                                                                                                                                                                       | Default                                            |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `CORAL_ENDPOINT`                          | Required. URL of Coral's gRPC listener, such as `http://coral:14555`. Must not include credentials, a query or a fragment.                                                                                       | None                                               |
+| `CORAL_WEB_AUTH_MODE`                     | Required. `required` signs users in through Coral. `disabled` disables user auth, for local use only.                                                                                                           | None                                               |
+| `CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT` | Set to `1` or `true` to let the UI reach Coral over plain `http` on another host when sign-in is required. Use it only on a private network, such as between two containers. `0` and `false` turn it off.       | Off                                                |
+| `CORAL_WEB_PUBLIC_URL`                    | Required with `required`. The UI's origin: https, or loopback http, with no path. Must equal `[listeners.web].public_url`.                                                                                       | None                                               |
+| `CORAL_WEB_AUTH_ISSUER`                   | Required with `required`. Must equal `[listeners.auth].public_url` exactly, with no trailing slash. Sign-in fails when they differ.                                                                               | None                                               |
+| `CORAL_WEB_SESSION_SECRET`                | Required with `required`. At least 32 characters. Signs the session cookie. Give every UI process the same value.                                                                                                | None                                               |
+| `CORAL_WEB_SESSION_MAX_AGE_SECONDS`       | How long a web session lasts, in seconds. See [Web sessions](#web-sessions).                                                                                                                                      | `2592000`                                          |
+| `CORAL_WEB_SESSION_COOKIE_NAME`           | Name of the session cookie. Must be a valid RFC 6265 cookie name. Over https, the UI adds the `__Host-` prefix. Your users must sign in again after you change it.                                             | `coral_web_session`                                |
+| `HOST`                                    | Address the UI listens on. With `disabled`, it must be `::1` or an IPv4 loopback address, such as `127.0.0.1`. With `required`, set `::` to listen on IPv6.                                                      | `0.0.0.0`, or `127.0.0.1` with `disabled`          |
+| `PORT`                                    | Port the UI listens on.                                                                                                                                                                                           | `3000`                                             |
+| `AGENTS_WITH_AVAILABLE_PLUGINS`           | MCP clients that may have a Coral plugin. See [Offering a Coral plugin](/getting-started/self-host/docker-compose#offering-a-coral-plugin).                                                                     | None                                               |
+
+The UI reads the OpenTelemetry variables in [Trace UI requests](#trace-ui-requests).

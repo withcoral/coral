@@ -5,7 +5,7 @@ export const contents =
   'Coral sends anonymous usage data. It never sends your programs, tool arguments, tool results, credentials or the names you give things.'
 
 /** What a report holds and how to turn sharing off. */
-export const docsUrl = 'https://withcoral.com/docs/reference/usage-data'
+export const docsUrl = 'https://withcoral.com/docs/reference/configuration#usage-data'
 
 export function place(kind: UsageDataView['kind']): string {
   return kind === 'desktop' ? 'your computer' : 'this server'
@@ -20,8 +20,6 @@ export function blockReason(block: SendBlock, kind: UsageDataView['kind']): stri
     case 'unknown':
       return sends
     case 'environment':
-      return block.variable === 'CORAL_TELEMETRY'
-        ? `CORAL_TELEMETRY is off. ${sends}`
-        : `${block.variable} is set. ${sends}`
+      return `${block.variable} is set. ${sends}`
   }
 }

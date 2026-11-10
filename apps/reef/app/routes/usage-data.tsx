@@ -64,10 +64,8 @@ function sendBlock(block: UsageSendBlock): SendBlock | undefined {
       return undefined
     case UsageSendBlock.DO_NOT_TRACK:
       return { kind: 'environment', variable: 'DO_NOT_TRACK' }
-    case UsageSendBlock.CORAL_TELEMETRY:
-      return { kind: 'environment', variable: 'CORAL_TELEMETRY' }
-    case UsageSendBlock.CI:
-      return { kind: 'environment', variable: 'CI' }
+    case UsageSendBlock.CORAL_DISABLE_USAGE_DATA:
+      return { kind: 'environment', variable: 'CORAL_DISABLE_USAGE_DATA' }
     case UsageSendBlock.SOURCE_BUILD:
       return { kind: 'build' }
     default:
