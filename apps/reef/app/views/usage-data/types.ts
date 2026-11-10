@@ -1,6 +1,6 @@
 /** What stops this process from sending, whatever the setting says. */
 export type SendBlock =
-  | { kind: 'environment'; variable: 'DO_NOT_TRACK' | 'CORAL_TELEMETRY' | 'CI' }
+  | { kind: 'environment'; variable: 'DO_NOT_TRACK' | 'CORAL_DISABLE_USAGE_DATA' }
   | { kind: 'build' }
   /** A reason a newer Coral sends that this Reef does not know. */
   | { kind: 'unknown' }
