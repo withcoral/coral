@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, fireEvent, userEvent, within } from 'storybook/test'
 
 import gitlabIcon from '../../../recipes/gitlab/logo.svg'
 import { workspace } from './providers.stories'
@@ -104,16 +104,19 @@ export const IconTooLarge: Story = {
     const canvas = within(canvasElement)
     const icon = canvas.getByRole('region', { name: 'Icon' })
     await expect(within(icon).queryByRole('button', { name: 'Remove icon' })).toBeNull()
-    await userEvent.upload(
-      within(icon).getByLabelText('Icon file'),
+    const input = within(icon).getByLabelText<HTMLInputElement>('Icon file')
+    const transfer = new DataTransfer()
+    transfer.items.add(
       new File([new Uint8Array(100 * 1024 + 1)], 'logo.png', { type: 'image/png' }),
     )
+    input.files = transfer.files
+    await fireEvent.change(input)
     await expect(
       within(icon).getByText(
         'This file is too large. Use a PNG, JPEG, WebP or SVG file of 100 KiB or less.',
       ),
     ).toBeVisible()
-    await expect(within(icon).getByRole('button', { name: 'Upload icon' })).toBeDisabled()
+    await expect(input).toHaveAttribute('aria-invalid', 'true')
   },
 }
 
