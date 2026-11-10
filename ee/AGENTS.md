@@ -12,5 +12,3 @@ The root `AGENTS.md` applies here too. These rules add to it.
 - An Enterprise Feature checks `EditionCheck::is_enterprise` each time it is
   used, not once at startup: a licence can change while Coral runs. Give each
   one a test that it refuses to work while the Edition is Community.
-- Never add a migration here. Put the general schema in
-  `crates/coral-db/migrations`.
