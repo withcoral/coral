@@ -134,7 +134,7 @@ export function WorkspaceOverview({
               <Button.IconLink
                 name="ChevronRight"
                 to={`${w.path}/tools`}
-                tooltipText="View all providers"
+                tooltipText="View all tools"
               />
             )}
           </div>
@@ -160,7 +160,7 @@ export function WorkspaceOverview({
             <Glimpse
               items={providers}
               itemKey={(provider) => provider.id}
-              more={{ to: `${w.path}/tools`, label: 'View all providers' }}
+              more={{ to: `${w.path}/tools`, label: 'View all tools' }}
               render={(provider) => (
                 <>
                   <span className={styles.row}>

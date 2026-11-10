@@ -6,7 +6,7 @@
  * Search Hits:
  * - `untrimmed`: the page for the query "github pulls", limit 5, no provider filter.
  * - `describeTool`: the describe answer for `issues.create`.
- * - `describeFunction`: the describe answer for a function saved for the
+ * - `describePrivateTool`: the describe answer for a private tool saved for the
  *   purpose. Its diagnostic is real.
  *
  * Built from those captures, to show each branch:
@@ -148,7 +148,7 @@ const subIssuesHit = {
   matched_tags: ['issues'],
 }
 
-const functionHit = {
+const privateToolHit = {
   kind: 'private_tool',
   call_path: 'coral.private.github.openIssuesByLabel',
   signature_line:
@@ -233,7 +233,7 @@ const withCursor = {
 
 const mixed = {
   hits: [
-    functionHit,
+    privateToolHit,
     {
       ...githubHits[2],
       guidance_snippet: 'API method documentation',
@@ -250,7 +250,7 @@ const mixed = {
 
 const sparse = {
   hits: [
-    trimmed(functionHit),
+    trimmed(privateToolHit),
     { call_path: 'coral.providers.github.pulls.get', signature_line: '', description_snippet: '' },
   ],
 }
@@ -273,7 +273,7 @@ const partial = {
 }
 
 const error = {
-  hits: [trimmed(functionHit)],
+  hits: [trimmed(privateToolHit)],
   retriever_statuses: [
     {
       retriever: 'provider_tool',
@@ -309,7 +309,7 @@ const describeTool = {
   approval_required: false,
 }
 
-const describeFunction = {
+const describePrivateTool = {
   kind: 'private_tool',
   call_path: 'coral.private.github.openIssuesByLabel',
   description:
@@ -334,7 +334,7 @@ export const stored = {
   partial: JSON.stringify(partial),
   error: JSON.stringify(error),
   describeTool: JSON.stringify(describeTool),
-  describeFunction: JSON.stringify(describeFunction),
+  describePrivateTool: JSON.stringify(describePrivateTool),
   earlierShape: JSON.stringify({
     items: [{ call_path: 'coral.providers.github.pulls.merge', typescript_declaration: '…' }],
     next_cursor: null,

@@ -72,7 +72,7 @@ it('lists the accepted program and every linked Private Tool as its own document
       linkedSharedTools: [],
       linkedPrivateTools: [
         {
-          privateTool: 'functions/abc',
+          privateTool: 'private-tools/abc',
           path: 'billing.calculate',
           source: 'export default () => 1',
         },
@@ -81,7 +81,7 @@ it('lists the accepted program and every linked Private Tool as its own document
   )
   expect(documents.map((document) => document.id)).toEqual([
     ACCEPTED_PROGRAM_DOCUMENT_ID,
-    'private-tool:functions/abc',
+    'private-tool:private-tools/abc',
   ])
   expect(documents[1]!.label).toBe('Private tool snapshot: billing.calculate')
 })
@@ -142,7 +142,7 @@ it('maps a Shared Tool frame to the linked revision, and lists it as its own doc
 
 // A retained Run keeps the frame sources it recorded under the old root.
 it.each(['coral.private', 'coral.functions'])(
-  'maps a Private Tool frame under %s to that linked function, by the path the Program called it with',
+  'maps a Private Tool frame under %s to that linked private tool, by the path the Program called it with',
   (root) => {
     const location = sourceLocationFor(
       failed(
@@ -151,7 +151,7 @@ it.each(['coral.private', 'coral.functions'])(
           linkedSharedTools: [],
           linkedPrivateTools: [
             {
-              privateTool: 'functions/abc',
+              privateTool: 'private-tools/abc',
               path: 'billing.calculate',
               source: 'export default () => 1',
             },
@@ -160,14 +160,14 @@ it.each(['coral.private', 'coral.functions'])(
       ),
     )
     expect(location).toEqual({
-      documentId: 'private-tool:functions/abc',
+      documentId: 'private-tool:private-tools/abc',
       highlight: { startLine: 1, endLine: 1 },
     })
   },
 )
 
 it('never guesses a document for an unrecognized frame source', () => {
-  // Names a linked function's prefix, but no linked function has this path: Coral
+  // Names a linked private tool's prefix, but no linked private tool has this path: Coral
   // retained no matching source, so this must not fall back to the accepted program.
   const location = sourceLocationFor(
     failed(

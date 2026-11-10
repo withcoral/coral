@@ -287,7 +287,7 @@ export const NoSeparateAccounts: Story = {
   play: async ({ canvas }) => {
     const table = within(canvas.getByRole('table', { name: 'Accounts' }))
     await expect(table.getByText('No accounts yet')).toBeVisible()
-    await expect(table.getByRole('link', { name: 'View providers' })).toHaveAttribute(
+    await expect(table.getByRole('link', { name: 'View tools' })).toHaveAttribute(
       'href',
       `${personal.workspace.path}/tools`,
     )

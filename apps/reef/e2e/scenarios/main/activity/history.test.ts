@@ -71,7 +71,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(new URL(page.url()).pathname).toBe(landing)
       })
       await step(
-        'Record discovery and an accepted Run before changing the current function',
+        'Record discovery and an accepted Run before changing the current private tool',
         async () => {
           const execute = programRunner(page, target, first, {
             accessToken: await mcpToken(page, first),
@@ -100,7 +100,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             (
               await execute.updateTool(
                 'history.snapshot',
-                'Changed current function',
+                'Changed current private tool',
                 replacement,
                 'snapshot',
               )
@@ -187,7 +187,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             .innerText(),
         ).not.toContain('No invoice export tool')
       })
-      await step('Inspect the recorded description instead of today’s function', async () => {
+      await step('Inspect the recorded description instead of today’s private tool', async () => {
         await page.goto(
           `/workspaces/${first}/activity?${new URLSearchParams({ expand: `workspaces/${first}/tasks/${task}` })}`,
         )

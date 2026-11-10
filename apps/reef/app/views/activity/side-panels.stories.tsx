@@ -442,7 +442,7 @@ const describedTool: Extract<DiscoveryContext, { kind: 'describe' }> = {
   callPath: 'coral.providers.github.issues.create',
   types: [],
 }
-const describedFunction: Extract<DiscoveryContext, { kind: 'describe' }> = {
+const describedPrivateTool: Extract<DiscoveryContext, { kind: 'describe' }> = {
   kind: 'describe',
   callPath: 'coral.private.github.openIssuesByLabel',
   types: ['Issue', 'Label'],
@@ -533,7 +533,7 @@ export const DescribePrivateTool = describeStory(
     'Describe · private tool, with diagnostics',
     toolPage(
       describeCall('openIssuesByLabel'),
-      discovery(describedFunction, stored.describeFunction),
+      discovery(describedPrivateTool, stored.describePrivateTool),
     ),
     { evidence: ['1 error', 'Issue', 'Label'] },
   ),
@@ -722,22 +722,22 @@ function execStory(
   }
 }
 const saveCall = (outcome: InteractionOutcome) =>
-  interaction('save_function', outcome, { intent: 'Save the reminder batch' })
+  interaction('save_private_tool', outcome, { intent: 'Save the reminder batch' })
 const deleteCall = (outcome: InteractionOutcome) =>
-  interaction('delete_function', outcome, { intent: 'Remove the old reminder batch' })
-/** A save or a delete retains only the function's identity, a Coral-generated ID. */
+  interaction('delete_private_tool', outcome, { intent: 'Remove the old reminder batch' })
+/** A save or a delete retains only the private tool's identity, a Coral-generated ID. */
 const savedId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
 const savedReference = `${workspace}/privateTools/${savedId}`
 const saveError = 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^'
 const deleteError = "Private tool 'billing.oldReminders' does not exist."
 /**
- * A save or a delete states its intent, the function it changed (its ID, with no link: no route
- * opens a function by ID), then its times, in one evenly spaced list. Its outcome shows only in
+ * A save or a delete states its intent, the private tool it changed (its ID, with no link: no route
+ * opens a private tool by ID), then its times, in one evenly spaced list. Its outcome shows only in
  * the badge. A rejection shows the exact error in the card a search result uses; otherwise a
  * notice may follow. The call retained no source, declaration or diagnostics, so nothing folds
  * into Details, and no record path or workspace shows.
  */
-function functionStory(
+function privateToolStory(
   story: Story,
   expected: {
     times: string[]
@@ -823,7 +823,7 @@ const toolEvidence = {
     ),
     { times: ['Started', 'Completed'], outcome: 'succeeded' },
   ),
-  private_tool: functionStory(
+  private_tool: privateToolStory(
     panel(
       'Save private tool · saved',
       toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
@@ -903,9 +903,9 @@ export const ExecEvidenceUnavailable = execStory(
     notice: 'The submission evidence is unavailable.',
   },
 )
-export const SaveFunctionSaved = toolEvidence.private_tool
+export const SavePrivateToolSaved = toolEvidence.private_tool
 /** A save on a phone: its intent and times, nothing wider than the screen. */
-export const SaveFunctionNarrow = functionStory(
+export const SavePrivateToolNarrow = privateToolStory(
   panel(
     'Save private tool · saved, narrow screen',
     toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
@@ -913,9 +913,9 @@ export const SaveFunctionNarrow = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', fits: true },
 )
-/** A save that retained no intent is titled by its tool. Its function ID opens no page, so it
+/** A save that retained no intent is titled by its tool. Its private tool ID opens no page, so it
  * shows nowhere, not even as the title. */
-const unnamedSave = functionStory(
+const unnamedSave = privateToolStory(
   panel(
     'Save private tool · saved, no intent retained',
     toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
@@ -923,16 +923,16 @@ const unnamedSave = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded' },
 )
-export const SaveFunctionWithoutIntent: Story = {
+export const SavePrivateToolWithoutIntent: Story = {
   ...unnamedSave,
   args: {
-    page: toolPage(interaction('save_function', 'succeeded', { intent: '' }), {
+    page: toolPage(interaction('save_private_tool', 'succeeded', { intent: '' }), {
       kind: 'private_tool',
       reference: savedReference,
     }),
   },
 }
-export const SaveFunctionRejected = functionStory(
+export const SavePrivateToolRejected = privateToolStory(
   panel(
     'Save private tool · rejected',
     toolPage(saveCall('rejected'), {
@@ -945,7 +945,7 @@ export const SaveFunctionRejected = functionStory(
   { times: ['Started', 'Completed'], outcome: 'rejected', error: saveError },
 )
 /** A long compiler report on a phone wraps inside its card and keeps its lines. */
-export const SaveFunctionRejectedNarrow = functionStory(
+export const SavePrivateToolRejectedNarrow = privateToolStory(
   panel(
     'Save private tool · rejected, long diagnostic, narrow screen',
     toolPage(saveCall('rejected'), {
@@ -957,7 +957,7 @@ export const SaveFunctionRejectedNarrow = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
 )
-export const SaveFunctionRejectedWithoutMessage = functionStory(
+export const SavePrivateToolRejectedWithoutMessage = privateToolStory(
   panel(
     'Save private tool · rejected, no message',
     toolPage(saveCall('rejected'), {
@@ -973,7 +973,7 @@ export const SaveFunctionRejectedWithoutMessage = functionStory(
     silent: ['Rejected with no message', 'private_tool_admission_failed'],
   },
 )
-export const SaveFunctionCompletionUnknown = functionStory(
+export const SavePrivateToolCompletionUnknown = privateToolStory(
   panel(
     'Save private tool · completion unknown',
     toolPage(saveCall('unknown'), { kind: 'unknown' }),
@@ -983,7 +983,7 @@ export const SaveFunctionCompletionUnknown = functionStory(
   ),
   { times: ['Started'], outcome: 'result unknown' },
 )
-export const SaveFunctionEvidenceUnavailable = functionStory(
+export const SavePrivateToolEvidenceUnavailable = privateToolStory(
   panel(
     'Save private tool · evidence unavailable',
     toolPage(saveCall('succeeded'), { kind: 'unknown' }),
@@ -991,7 +991,7 @@ export const SaveFunctionEvidenceUnavailable = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', silent: ['evidence is unavailable'] },
 )
-export const DeleteFunctionDeleted = functionStory(
+export const DeletePrivateToolDeleted = privateToolStory(
   panel(
     'Delete private tool · deleted',
     toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
@@ -999,7 +999,7 @@ export const DeleteFunctionDeleted = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted' },
 )
-export const DeleteFunctionNarrow = functionStory(
+export const DeletePrivateToolNarrow = privateToolStory(
   panel(
     'Delete private tool · deleted, narrow screen',
     toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
@@ -1007,7 +1007,7 @@ export const DeleteFunctionNarrow = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted', fits: true },
 )
-export const DeleteFunctionRejected = functionStory(
+export const DeletePrivateToolRejected = privateToolStory(
   panel(
     'Delete private tool · rejected',
     toolPage(deleteCall('rejected'), {
@@ -1019,7 +1019,7 @@ export const DeleteFunctionRejected = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'rejected', error: deleteError },
 )
-export const DeleteFunctionRejectedNarrow = functionStory(
+export const DeletePrivateToolRejectedNarrow = privateToolStory(
   panel(
     'Delete private tool · rejected, long message, narrow screen',
     toolPage(deleteCall('rejected'), {
@@ -1031,7 +1031,7 @@ export const DeleteFunctionRejectedNarrow = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
 )
-export const DeleteFunctionCompletionUnknown = functionStory(
+export const DeletePrivateToolCompletionUnknown = privateToolStory(
   panel(
     'Delete private tool · completion unknown',
     toolPage(deleteCall('unknown'), { kind: 'unknown' }),
@@ -1039,7 +1039,7 @@ export const DeleteFunctionCompletionUnknown = functionStory(
   ),
   { times: ['Started'], outcome: 'result unknown' },
 )
-export const DeleteFunctionEvidenceUnavailable = functionStory(
+export const DeletePrivateToolEvidenceUnavailable = privateToolStory(
   panel(
     'Delete private tool · evidence unavailable',
     toolPage(deleteCall('succeeded'), { kind: 'unknown' }),

@@ -106,7 +106,7 @@ test('Organization owner removes current work across workspaces through Members 
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
-      await step('Rejoin without restoring credentials or current functions', async () => {
+      await step('Rejoin without restoring credentials or current private tools', async () => {
         for (const workspace of workspaces) {
           await api.memberships.createWorkspaceMembership({
             parent: workspace.name,

@@ -762,7 +762,7 @@ it.each<[string, Detail, string]>([
     // A save states no target: its reference is an ID that no page opens.
     'a private tool without an intent by its tool, not its ID',
     tool(
-      { tool: 'save_function', intent: '' },
+      { tool: 'save_private_tool', intent: '' },
       { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
     'Save private tool',
@@ -770,14 +770,14 @@ it.each<[string, Detail, string]>([
   [
     'a deleted private tool without an intent by its tool, not its ID',
     tool(
-      { tool: 'delete_function', intent: '' },
+      { tool: 'delete_private_tool', intent: '' },
       { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
     'Delete private tool',
   ],
   [
     'a deleted private tool by its intent',
-    tool({ tool: 'delete_function', intent: 'Remove the old batch' }, { kind: 'unknown' }),
+    tool({ tool: 'delete_private_tool', intent: 'Remove the old batch' }, { kind: 'unknown' }),
     'Remove the old batch',
   ],
   [
@@ -1249,7 +1249,7 @@ const describedTool: Described = {
   callPath: 'coral.providers.github.issues.create',
   types: [],
 }
-const describedFunction: Described = {
+const describedPrivateTool: Described = {
   kind: 'describe',
   callPath: 'coral.private.github.openIssuesByLabel',
   types: ['Issue', 'Label'],
@@ -1284,8 +1284,8 @@ it.each([
   },
   {
     case: 'a private tool with diagnostics',
-    context: describedFunction,
-    response: stored.describeFunction,
+    context: describedPrivateTool,
+    response: stored.describePrivateTool,
     asked: ['Call path', 'Types', 'Intent'],
     title: 'coral.private.github.openIssuesByLabel',
     kind: 'private tool',
@@ -1513,7 +1513,7 @@ it.each<{
   expect(container.textContent).not.toMatch(/Run (succeeded|completed|accepted)/)
 })
 
-/** A retained `save_function` or `delete_function` call, selected, with `evidence` as stored. */
+/** A retained `save_private_tool` or `delete_private_tool` call, selected, with `evidence` as stored. */
 const functionPanel = (overrides: Partial<InteractionRow>, evidence: InteractionEvidence) => {
   const name = `${workspace}/tasks/one/interactions/${overrides.tool}`
   const container = document.createElement('div')
@@ -1529,7 +1529,7 @@ const privateToolId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
 const privateTool = `${workspace}/privateTools/${privateToolId}`
 const functionCalls = [
   {
-    tool: 'save_function',
+    tool: 'save_private_tool',
     intent: 'Save the reminder batch',
     // A save states no target: it retained only an ID that no page opens.
     done: null,
@@ -1539,7 +1539,7 @@ const functionCalls = [
     message: 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^',
   },
   {
-    tool: 'delete_function',
+    tool: 'delete_private_tool',
     intent: 'Remove the old reminder batch',
     done: 'Deleted',
     noun: 'delete',
@@ -1591,7 +1591,7 @@ const functionCases = functionCalls.flatMap((call) =>
 )
 
 // Catches: a save or delete that buries what it changed or why it failed under generic
-// headings, repeats its outcome, shows its record path or workspace, or shows a function's
+// headings, repeats its outcome, shows its record path or workspace, or shows a private tool's
 // documentation that the call did not retain.
 it.each(functionCases)('shows $case with its intent, target, then times', (row) => {
   const { call } = row
@@ -1601,7 +1601,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
   )
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(call.intent)
-  // One list without a heading: the intent, the function it changed, then the times at the
+  // One list without a heading: the intent, the private tool it changed, then the times at the
   // end. The badge states the outcome once.
   const lists = container.querySelectorAll('dl')
   expect(lists).toHaveLength(1)
@@ -1633,7 +1633,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
     expect(container.textContent).not.toContain(gone)
   // The call kept no source, declaration or diagnostics, so nothing folds into Details.
   expect(container.querySelector('details')).toBeNull()
-  // It retained only the function's ID. No route opens a function by ID, so it has no link.
+  // It retained only the private tool's ID. No route opens a private tool by ID, so it has no link.
   expect(container.querySelector('a')).toBeNull()
   if (changed) expect(factIn(lists[0], call.done!)!.textContent).toBe(privateToolId)
   else {
@@ -3038,12 +3038,12 @@ describe('each record states only what helps, once', () => {
     ],
     [
       'a save',
-      { tool: 'save_function' },
+      { tool: 'save_private_tool' },
       { kind: 'private_tool', reference: `${workspace}/privateTools/id` },
     ],
     [
       'a delete',
-      { tool: 'delete_function' },
+      { tool: 'delete_private_tool' },
       { kind: 'private_tool', reference: `${workspace}/privateTools/id` },
     ],
     ['another tool', { tool: 'inspect' }, { kind: 'unknown' }],

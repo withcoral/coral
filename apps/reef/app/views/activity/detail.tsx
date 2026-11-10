@@ -388,10 +388,11 @@ function RecordDetail({ page }: { page: ActivityPage }) {
   // rejection shows its error below.
   const save =
     detail.kind === 'tool' &&
-    (detail.interaction.tool === 'save_function' || detail.interaction.tool === 'delete_function')
+    (detail.interaction.tool === 'save_private_tool' ||
+      detail.interaction.tool === 'delete_private_tool')
       ? detail
       : null
-  const deleted = save?.interaction.tool === 'delete_function'
+  const deleted = save?.interaction.tool === 'delete_private_tool'
   // A tool call's intent, unless the title already states it.
   const intent = detail.kind === 'tool' &&
     detail.interaction.intent &&
@@ -484,7 +485,7 @@ function RecordDetail({ page }: { page: ActivityPage }) {
           ) : save ? (
             <DescriptionList.List>
               {intent}
-              {/* The call retains only the function's ID. No route opens a function by ID, so
+              {/* The call retains only the private tool's ID. No route opens a private tool by ID, so
                   a delete shows the ID without a link, and a save states no target. */}
               {deleted && save.evidence.kind === 'private_tool' && (
                 <DescriptionList.Row label="Deleted">
@@ -538,8 +539,8 @@ const toolKinds: Record<string, string> = {
   search: 'search',
   describe: 'describe',
   exec: 'exec submission',
-  save_function: 'save private tool',
-  delete_function: 'delete private tool',
+  save_private_tool: 'save private tool',
+  delete_private_tool: 'delete private tool',
 }
 /** The most specific retained name for a tool call: a search's intent, then its query; what a
  * describe call described; otherwise its intent, then the Run it started. The tool only when
@@ -554,7 +555,8 @@ function toolTitle(interaction: InteractionRow, evidence: InteractionEvidence) {
         : interaction.intent || (evidence.kind === 'run' ? evidence.reference : '')
   const kind = toolKinds[interaction.tool] ?? 'tool interaction'
   // A save or a delete retains only a private tool ID that no page opens, so its tool titles it.
-  const privateTool = interaction.tool === 'save_function' || interaction.tool === 'delete_function'
+  const privateTool =
+    interaction.tool === 'save_private_tool' || interaction.tool === 'delete_private_tool'
   return name || (privateTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
 }
 /** A retained event's identity. A log message or an emitted value is the program's own
@@ -672,7 +674,7 @@ function Evidence({
 /** What an exec submission, a save or a delete retained. A rejection shows its exact error in the card
  * a search result uses. An accepted submission shows nothing more: its Run is a row of its
  * own, and the submission's outcome says nothing about how the Run ends. A delete states the
- * function it removed in its list; a save states no target. */
+ * private tool it removed in its list; a save states no target. */
 function CallEvidence({
   evidence,
   outcome,

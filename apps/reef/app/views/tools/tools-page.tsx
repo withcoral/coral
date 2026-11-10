@@ -83,7 +83,7 @@ import type {
 } from '@/views/providers/types'
 import type { ToolDetailView, ToolsPageProps } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import * as styles from '@/views/providers/providers.css'
+import * as styles from './tools.css'
 
 const bulkPolicyOptions = policyOptions.map(({ icon, ...option }) => ({
   ...option,
@@ -1134,7 +1134,7 @@ function ToolsTableScreen({
           groupHeadings={GROUP_HEADINGS}
           layout="scroll"
           ref={tableRef}
-          className={styles.providersTable}
+          className={styles.toolsTable}
           columns={[
             { width: 44 },
             { width: 'minmax(340px, 1fr)' },

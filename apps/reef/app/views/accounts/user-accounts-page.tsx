@@ -111,7 +111,7 @@ export function UserAccountsPage({
               description="Your accounts show here when a provider uses individual accounts."
               action={
                 <Button.InternalLink to={`${v.workspace.path}/tools`} variant="secondary">
-                  View providers
+                  View tools
                 </Button.InternalLink>
               }
             />

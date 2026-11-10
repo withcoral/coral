@@ -91,8 +91,8 @@ const toolIcons = new Map<string, IconName>([
   ['search', 'Search'],
   ['describe', 'BookOpen'],
   ['exec', 'Play'],
-  ['save_function', 'Save'],
-  ['delete_function', 'Trash'],
+  ['save_private_tool', 'Save'],
+  ['delete_private_tool', 'Trash'],
 ])
 /** A record's kind icon. A call whose provider the workspace still has shows that provider's
  * logo in its name instead. */

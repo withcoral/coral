@@ -95,7 +95,7 @@ it.each([
 ])('lists %i providers and agents as %i rows', (count, shown, more) => {
   render({ agents: agents(count), providers: providers(count) })
   for (const [label, link] of [
-    ['Provider', 'View all providers'],
+    ['Provider', 'View all tools'],
     ['Automation', 'View all agents'],
   ]) {
     const rows = screen.getAllByRole('link', { name: new RegExp(`^${label} \\d$`) })

@@ -108,7 +108,7 @@ it('reads a shared tool hit and its description by the kind its Call Path names'
   const described = discoveryView(
     { kind: 'describe', callPath: 'coral.shared.mail.remind', types: [] },
     JSON.stringify({
-      ...JSON.parse(stored.describeFunction),
+      ...JSON.parse(stored.describePrivateTool),
       kind: 'shared_tool',
       call_path: 'coral.shared.mail.remind',
     }),
@@ -197,7 +197,7 @@ const exact: DiscoveryContext = {
 }
 
 it('reads a stored Private Tool description with its source and diagnostics', () => {
-  const view = discoveryView(exact, stored.describeFunction)
+  const view = discoveryView(exact, stored.describePrivateTool)
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
   expect(view.description).toMatchObject({
     kind: 'private_tool',
@@ -228,7 +228,7 @@ it('reads a Private Tool description returned for types, which has no source', (
     diagnostics: _d,
     diagnostics_truncated: _t,
     ...typesOnly
-  } = JSON.parse(stored.describeFunction)
+  } = JSON.parse(stored.describePrivateTool)
   const view = discoveryView({ ...exact, types: ['Issue'] }, JSON.stringify(typesOnly))
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
   expect(view.description).toMatchObject({ kind: 'private_tool', authoredTool: null })
@@ -259,7 +259,7 @@ it.each([
   ['partial', search, 'search'],
   ['error', search, 'search'],
   ['describeTool', exact, 'describe'],
-  ['describeFunction', exact, 'describe'],
+  ['describePrivateTool', exact, 'describe'],
   // The response before Search Hits has other keys: Reef shows it as stored.
   ['earlierShape', search, 'raw'],
   ['earlierShape', exact, 'raw'],

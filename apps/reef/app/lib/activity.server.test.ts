@@ -311,7 +311,7 @@ function catalog(
   options: {
     namespaces?: string[]
     tools?: string[]
-    functions?: string[]
+    privateTools?: string[]
     concealed?: boolean
   } = {},
 ): Handlers {
@@ -335,7 +335,7 @@ function catalog(
     },
     privateTools: {
       listPrivateTools: () => ({
-        privateTools: (options.functions ?? []).map((path) => ({ path })),
+        privateTools: (options.privateTools ?? []).map((path) => ({ path })),
       }),
     },
   }
@@ -1395,24 +1395,29 @@ describe('hierarchical activity through the private server interface', () => {
   it.each([
     {
       name: 'links your own Private Tool hit to the current private tool',
-      functions: ['github.openIssuesByLabel'],
+      privateTools: ['github.openIssuesByLabel'],
       href: `/${workspace}/tools/private/github.openIssuesByLabel`,
       reads: 1,
     },
-    { name: 'leaves a deleted Private Tool without a link', functions: [], href: null, reads: 1 },
+    {
+      name: 'leaves a deleted Private Tool without a link',
+      privateTools: [],
+      href: null,
+      reads: 1,
+    },
     {
       // Reef opens only your own private tools, and the Agent owns the one that its search found.
       name: "leaves an Agent's Private Tool hit without a link",
-      functions: ['github.openIssuesByLabel'],
+      privateTools: ['github.openIssuesByLabel'],
       agentRun: true,
       href: null,
       reads: 0,
     },
-  ])('$name', async ({ functions, agentRun, href, reads }) => {
+  ])('$name', async ({ privateTools, agentRun, href, reads }) => {
     const { api, calls } = coral(
       list(),
       interactionDetail({ response: stored.mixed, agentRun }),
-      catalog({ namespaces: ['github'], functions }),
+      catalog({ namespaces: ['github'], privateTools }),
     )
     const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
     const [privateTool, merge] = searchHits(page)

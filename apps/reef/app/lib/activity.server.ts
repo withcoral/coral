@@ -152,8 +152,8 @@ function interactionView(value: ActivityInteraction): InteractionRow {
       (
         {
           submit: 'exec',
-          save: 'save_function',
-          delete: 'delete_function',
+          save: 'save_private_tool',
+          delete: 'delete_private_tool',
         } as Record<string, string>
       )[value.kind] ?? value.kind,
     acceptedRun: value.acceptedRun,
@@ -191,7 +191,7 @@ async function listedOrNone<T>(read: () => Promise<T[]>) {
 }
 /**
  * Links each discovery target to today's catalog. A target keeps no link when
- * its tool, provider or function is gone, or when the caller cannot list them.
+ * its tool, provider or private tool is gone, or when the caller cannot list them.
  */
 async function linkCurrentTargets(
   view: DiscoveryView,

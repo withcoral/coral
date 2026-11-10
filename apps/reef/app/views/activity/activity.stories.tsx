@@ -1172,7 +1172,7 @@ export const RetainedSource: Story = {
         linkedSharedTools: [],
         linkedPrivateTools: [
           {
-            privateTool: 'old-function-id',
+            privateTool: 'old-private-tool-id',
             path: 'billing.calculate',
             source: 'export default () => 41;',
           },
@@ -1532,7 +1532,7 @@ export const HistoricalSearchMixedResults: Story = {
     // Each card folds its own retained guidance, description and signature into Details.
     const detailsIn = (row: HTMLElement) =>
       within(row).getByText('Details', { selector: 'summary' }).closest('details')!
-    const [functionDetails, mergeDetails] = [detailsIn(privateTool), detailsIn(merge)]
+    const [privateToolDetails, mergeDetails] = [detailsIn(privateTool), detailsIn(merge)]
     const signature = within(mergeDetails).getByText(codeContaining('merge(input: { body?'), {
       selector: 'pre',
     })
@@ -1545,22 +1545,22 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(guidance).toBeVisible()
     await expect(within(mergeDetails).getByText(/^> \[!NOTE\]/)).toBeVisible()
     // Opening one card leaves the others closed.
-    await expect(functionDetails).not.toHaveAttribute('open')
+    await expect(privateToolDetails).not.toHaveAttribute('open')
     await expect(
-      within(functionDetails).getByText(/^Lists the open issues of one repository/),
+      within(privateToolDetails).getByText(/^Lists the open issues of one repository/),
     ).not.toBeVisible()
     await userEvent.click(within(privateTool).getByText('Details'))
-    await waitFor(() => expect(functionDetails).toHaveAttribute('open'))
+    await waitFor(() => expect(privateToolDetails).toHaveAttribute('open'))
     await expect(mergeDetails).toHaveAttribute('open')
     await userEvent.click(within(merge).getByText('Details'))
     await waitFor(() => expect(mergeDetails).not.toHaveAttribute('open'))
-    await expect(functionDetails).toHaveAttribute('open')
+    await expect(privateToolDetails).toHaveAttribute('open')
     await expect(signature).not.toBeVisible()
     // The link and the approval hand stay in the summary, outside Details.
     await expect(mergeDetails).not.toContainElement(
       within(merge).getByRole('img', { name: /^Ask/ }),
     )
-    await expect(functionDetails).not.toContainElement(current)
+    await expect(privateToolDetails).not.toContainElement(current)
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.
     await expect(opened.getByRole('region', { name: 'Results (6+)' })).not.toHaveTextContent(
       /retriever|private_tool|results_found/,
@@ -1616,7 +1616,7 @@ export const HistoricalDescribePrivateTool: Story = {
       callPath: 'coral.private.github.openIssuesByLabel',
       types: ['Issue', 'Label'],
     },
-    stored.describeFunction,
+    stored.describePrivateTool,
   ),
   play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
@@ -1910,7 +1910,7 @@ export const InvocationWithRunEvidence: Story = {
           linkedSharedTools: [],
           linkedPrivateTools: [
             {
-              privateTool: 'old-function-id',
+              privateTool: 'old-private-tool-id',
               path: 'billing.remind',
               source: 'export default () => "snapshot"',
             },
