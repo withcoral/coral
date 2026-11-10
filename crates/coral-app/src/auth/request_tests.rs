@@ -574,10 +574,6 @@ struct Fixture {
     server: coral_mcp::RunningMcpHttpServer,
 }
 impl Fixture {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one fixture composes the authenticated MCP stack"
-    )]
     async fn new() -> Self {
         let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
@@ -637,24 +633,14 @@ impl Fixture {
             coral_run::RunInbox::table(database.clone()),
         )
         .unwrap();
-        let commands = coral_task::TaskCommands::new(
-            tasks.clone(),
-            coral_functions::SavedFunctionModule::new(
-                database.clone(),
-                workspaces.clone(),
-                coral_run::IsolateLimits::default(),
-                coral_test_support::TEST_COMPILATION_TIMEOUT,
-            )
-            .unwrap(),
-            coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
-            coral_search::SearchIndex::inert(database.clone()),
-            runs.clone(),
-        );
+        let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
+        let commands = coral_task::TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
         let modules = McpModules::new(
             workspaces.clone(),
             tasks.clone(),
             commands,
             runs,
+            search,
             coral_mcp::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
         );
         let server = coral_mcp::start_authenticated(

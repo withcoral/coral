@@ -1,6 +1,6 @@
 //! Task history types. Summaries never contain discovery responses or diagnostics.
 use crate::{Error, TaskId, TaskIntent};
-use coral_workspace::{AuthenticatedPrincipal, TraceId, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::fmt;
 use uuid::Uuid;
 
@@ -36,7 +36,6 @@ pub struct AttributedCommand {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) task_id: TaskId,
     pub(crate) intent: TaskIntent,
-    pub(crate) trace_id: TraceId,
 }
 impl AttributedCommand {
     /// Supplies exact authenticated scope and separate per-call intent.
@@ -46,14 +45,12 @@ impl AttributedCommand {
         workspace_id: WorkspaceId,
         task_id: TaskId,
         intent: TaskIntent,
-        trace_id: TraceId,
     ) -> Self {
         Self {
             actor,
             workspace_id,
             task_id,
             intent,
-            trace_id,
         }
     }
 }
@@ -67,7 +64,6 @@ pub struct NewTaskCommand {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) goal: TaskIntent,
     pub(crate) intent: TaskIntent,
-    pub(crate) trace_id: TraceId,
 }
 impl NewTaskCommand {
     /// Supplies exact authenticated scope, the goal, and per-call intent.
@@ -77,14 +73,12 @@ impl NewTaskCommand {
         workspace_id: WorkspaceId,
         goal: TaskIntent,
         intent: TaskIntent,
-        trace_id: TraceId,
     ) -> Self {
         Self {
             actor,
             workspace_id,
             goal,
             intent,
-            trace_id,
         }
     }
 }

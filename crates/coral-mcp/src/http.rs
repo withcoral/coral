@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tower::ServiceExt as _;
 
-use crate::authentication::{LocalAuthentication, now};
+use crate::authentication::LocalAuthentication;
 use crate::server::McpServer;
 use crate::{
     AuthenticationError, McpEndpoint, McpModules, McpRuntime, ORGANIZATION_MCP_ROUTE,
@@ -149,7 +149,9 @@ pub async fn start_local(
     modules: McpModules,
     readiness: ReadinessProbe,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
-    let authentication = Arc::new(LocalAuthentication(modules.workspaces.clone()));
+    let authentication = Arc::new(LocalAuthentication(
+        coral_auth::PrincipalAuthentication::local(modules.workspaces.clone()),
+    ));
     start_server(config, modules, authentication, None, readiness).await
 }
 
@@ -308,7 +310,7 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
         Ok(authenticated) => authenticated,
         Err(error) => return unauthorized(&state, &endpoint, error, bearer),
     };
-    let Ok(now) = now() else {
+    let Some(now) = now_unix_nanos() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     // At `/mcp` a lost Workspace answers 401 `invalid_token`, so the client
@@ -436,4 +438,13 @@ async fn metadata(State(state): State<Arc<HttpState>>, request: Request<Body>) -
 fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
         || matches!(ip, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
+}
+
+/// The request time that dates Principal inspection; `None` when the clock is unusable.
+fn now_unix_nanos() -> Option<i64> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    i64::try_from(nanos).ok()
 }

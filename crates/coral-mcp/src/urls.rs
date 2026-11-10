@@ -1,5 +1,6 @@
 //! The canonical MCP routes shared by serving and OAuth configuration.
 
+use coral_auth::WorkspaceFixedBy;
 use coral_workspace::WorkspaceId;
 
 /// The Workspace MCP route, parameterized by a stable Workspace identity.
@@ -18,6 +19,16 @@ pub enum McpEndpoint {
 }
 
 impl McpEndpoint {
+    /// What fixes the Workspace a request at this endpoint acts in: the URL
+    /// at a Workspace MCP URL, the credential at the Organization MCP Endpoint.
+    #[must_use]
+    pub const fn workspace_fixed_by(&self) -> WorkspaceFixedBy<'_> {
+        match self {
+            Self::Workspace(workspace) => WorkspaceFixedBy::Url(workspace),
+            Self::Organization => WorkspaceFixedBy::Credential,
+        }
+    }
+
     /// Returns this endpoint's canonical path.
     #[must_use]
     pub fn path(&self) -> String {

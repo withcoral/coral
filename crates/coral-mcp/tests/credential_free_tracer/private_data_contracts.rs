@@ -51,17 +51,12 @@ const FAILING_PROGRAMS: &[&str] = &[
 
 /// Tool calls Coral refuses, each with private text where an identifier, a
 /// name or a value belongs, and what Coral answers instead of echoing it.
-fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
+fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 6] {
     [
         (
-            "delete_function",
-            json!({"task_id": "task-c0ral-private", "intent": "Delete", "path": "weather"}),
+            "end_task",
+            json!({"task_id": "task-c0ral-private", "outcome": "success"}),
             "invalid input: task id is invalid: identifier must be four or five lowercase words joined by hyphens, or a canonical lowercase UUID",
-        ),
-        (
-            "delete_function",
-            json!({"task_id": task, "intent": "Delete", "path": "weather.c0ral-private"}),
-            "invalid input: Saved Function Path must contain 1 through 16 non-reserved safe JavaScript identifier segments and be at most 256 UTF-8 bytes",
         ),
         (
             "wait",
@@ -264,20 +259,39 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         assert_eq!(failed["structuredContent"]["state"], "failed", "{failed}");
     }
 
+    let task_id = task.as_str().expect("Task id");
     let saved = session
-        .tool(
-            "save_function",
-            json!({
-                "task_id": task, "intent": format!("save-intent-{CANARY}"),
-                "path": "diagnostics.fail",
-                "description": format!("description-{CANARY}"),
-                "source": format!(
-                    "export default function fail() {{ throw new Error('function-{CANARY}'); }}"
+        .saving_value(
+            task_id,
+            &super::Save {
+                path: "diagnostics.fail",
+                description: &format!("description-{CANARY}"),
+                declarations: &format!(
+                    "function fail() {{ throw new Error('function-{CANARY}'); }}"
                 ),
-            }),
+                name: "fail",
+            },
         )
         .await;
-    assert_ne!(saved["isError"], true, "{saved}");
+    assert_eq!(
+        saved["call_path"], "coral.functions.diagnostics.fail",
+        "{saved}"
+    );
+    // Coral's reason for a path it refuses never repeats the path.
+    let refused = session
+        .authoring_value(
+            task_id,
+            "deleteFunction",
+            &json!({ "path": format!("weather.{CANARY}") }),
+        )
+        .await;
+    assert_eq!(refused["code"], "invalid_input", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| !message.contains(CANARY)),
+        "{refused}"
+    );
     let linked = session
         .tool(
             "exec",
@@ -353,7 +367,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .filter(|point| point.name == "coral.request.duration")
         .filter_map(|point| point.attributes.get("operation").cloned())
         .collect::<std::collections::BTreeSet<_>>();
-    for tool in ["exec", "save_function", "end_task"] {
+    for tool in ["exec", "end_task"] {
         assert!(
             operations.contains(&format!("tools/call {tool}")),
             "each tool call's request is named by its tool: {operations:?}"

@@ -1,5 +1,7 @@
 //! Windowed totals of the execution history a caller can see in one Workspace.
 use crate::{CoralFailure, Error, InvocationResultKind, RunModule};
+use coral_catalog::ToolKey;
+use coral_provider::ProviderId;
 use coral_workspace::{HistoryAuthority, Principal};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -13,10 +15,10 @@ const NANOS_PER_DAY: i64 = 86_400 * 1_000_000_000;
 pub struct ActivitySummary {
     /// Invocations that ended in the window, by outcome.
     pub calls: CallOutcomes,
-    /// Call Paths with stopped Invocations, most stopped first. Only a resolved
-    /// Call Path is stored, so the list holds at most one row per Tool.
+    /// Tools with stopped Invocations, most stopped first, one row per Provider
+    /// and Tool Key.
     pub stopped: Vec<StoppedTool>,
-    /// Call Paths with ended Invocations, busiest first, bounded like `stopped`.
+    /// Tools with ended Invocations, busiest first, one row per Provider and Tool Key.
     pub tools: Vec<ToolCalls>,
     /// Approval requests decided in the window.
     pub approvals: ApprovalDecisions,
@@ -51,10 +53,23 @@ pub struct CallOutcomes {
     pub canceled: i64,
 }
 
-/// One Call Path's stopped Invocations, by who must act.
+/// The Provider-plus-Key address of one Tool. It names the same Tool across
+/// Provider Generations while the Key stays the same, so activity counts by it
+/// and keeps the Call Path only as a label.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ToolAddress {
+    /// The Tool's Provider.
+    pub provider_id: ProviderId,
+    /// The Tool's Key in that Provider.
+    pub tool_key: ToolKey,
+}
+
+/// One Tool's stopped Invocations, by who must act.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoppedTool {
-    /// Retained Program Call Path.
+    /// The Tool the Invocations called.
+    pub tool: ToolAddress,
+    /// The Call Path of the Tool's latest stopped Invocation.
     pub call_path: String,
     /// Invocations a rule stopped.
     pub blocked: i64,
@@ -64,13 +79,39 @@ pub struct StoppedTool {
     pub needs_setup: i64,
 }
 
-/// One Call Path's ended Invocations.
+/// The span a summary covers: whole days that end now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SummaryWindow {
+    since: i64,
+    days: u32,
+}
+
+impl SummaryWindow {
+    /// Unix nanoseconds at the window's start.
+    #[must_use]
+    pub const fn since(&self) -> i64 {
+        self.since
+    }
+
+    /// Days the window covers.
+    #[must_use]
+    pub const fn days(&self) -> u32 {
+        self.days
+    }
+}
+
+/// One Tool's ended Invocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCalls {
-    /// Retained Program Call Path.
+    /// The Tool the Invocations called.
+    pub tool: ToolAddress,
+    /// The Call Path of the Tool's latest ended Invocation.
     pub call_path: String,
     /// Ended Invocations.
     pub calls: i64,
+    /// The same Invocations in each day of the window, oldest first. A day is 24
+    /// hours counted from the window's start, so the last one ends now.
+    pub daily: Vec<i64>,
     /// The same Invocations per invoking Principal, busiest first.
     pub callers: Vec<CallerCalls>,
 }
@@ -148,7 +189,8 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 | F::CredentialRouteChanged
                 | F::ProviderUnavailable
                 | F::ProviderNamespaceConflict
-                | F::ToolUnavailable,
+                | F::ToolUnavailable
+                | F::UpstreamUnauthorized,
             ),
         ) => CallOutcome::NeedsSetup,
         (
@@ -157,6 +199,7 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 F::ToolNotFound
                 | F::ProviderNotFound
                 | F::ProviderPublicationFailed
+                | F::SavedFunctionNotFound
                 | F::InvalidInput
                 | F::InputTooLarge
                 | F::UpstreamIncomplete
@@ -170,11 +213,46 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
     }
 }
 
+/// One Tool's ended Invocations in one day of the window, as the repository returns them.
+pub(crate) struct DailyEvidence {
+    pub tool: ToolAddress,
+    /// Whole days from the window's start.
+    pub day: u32,
+    pub calls: i64,
+}
+
+/// Adds each day's Invocations to its Tool's row. A day past the window's last,
+/// from a clock that moved back, counts in the last.
+fn add_days(tools: &mut [ToolCalls], days: u32, evidence: Vec<DailyEvidence>) {
+    let len = usize::try_from(days).unwrap_or(usize::MAX);
+    let mut rows = BTreeMap::new();
+    for (row, tool) in tools.iter_mut().enumerate() {
+        tool.daily = vec![0; len];
+        rows.insert(tool.tool.clone(), row);
+    }
+    for day in evidence {
+        let Some(&row) = rows.get(&day.tool) else {
+            continue;
+        };
+        let index = usize::try_from(day.day)
+            .unwrap_or(usize::MAX)
+            .min(len.saturating_sub(1));
+        if let Some(total) = tools
+            .get_mut(row)
+            .and_then(|tool| tool.daily.get_mut(index))
+        {
+            *total += day.calls;
+        }
+    }
+}
+
 /// Grouped ended Invocations, as the repository returns them.
 pub(crate) struct OutcomeEvidence {
     pub principal: Principal,
     pub agent_label: Option<String>,
+    pub tool: ToolAddress,
     pub call_path: String,
+    pub last_ended_at_unix_nanos: i64,
     pub kind: InvocationResultKind,
     pub failure: Option<CoralFailure>,
     pub calls: i64,
@@ -235,40 +313,89 @@ struct Tally {
     callers: Vec<CallerCalls>,
 }
 
+/// The Call Path a Tool's row shows: the one its latest Invocation called.
+/// A Tool keeps its path while its Key stays active, so they rarely differ.
+#[derive(Default)]
+struct LatestPath {
+    /// The latest end time seen, and the Call Path called then.
+    latest: Option<(i64, String)>,
+}
+
+impl LatestPath {
+    fn offer(&mut self, group: &OutcomeEvidence) {
+        let candidate = (group.last_ended_at_unix_nanos, group.call_path.clone());
+        if self
+            .latest
+            .as_ref()
+            .is_none_or(|latest| candidate > *latest)
+        {
+            self.latest = Some(candidate);
+        }
+    }
+
+    fn path(self) -> String {
+        self.latest.map(|(_, path)| path).unwrap_or_default()
+    }
+}
+
 fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     let mut calls = CallOutcomes::default();
-    let mut stopped = BTreeMap::<String, StoppedTool>::new();
-    let mut ended = BTreeMap::<String, ToolCalls>::new();
+    let mut stopped = BTreeMap::<ToolAddress, (StoppedTool, LatestPath)>::new();
+    let mut ended = BTreeMap::<ToolAddress, (ToolCalls, LatestPath)>::new();
     let mut callers = Vec::new();
     for group in evidence {
         let outcome = outcome(group.kind, group.failure);
         *calls.total_mut(outcome) += group.calls;
-        let op = stopped
-            .entry(group.call_path.clone())
-            .or_insert_with(|| StoppedTool {
-                call_path: group.call_path.clone(),
-                blocked: 0,
-                not_allowed: 0,
-                needs_setup: 0,
-            });
+        let (op, path) = stopped.entry(group.tool.clone()).or_insert_with(|| {
+            (
+                StoppedTool {
+                    tool: group.tool.clone(),
+                    call_path: String::new(),
+                    blocked: 0,
+                    not_allowed: 0,
+                    needs_setup: 0,
+                },
+                LatestPath::default(),
+            )
+        });
         if let Some(total) = op.total_mut(outcome) {
             *total += group.calls;
+            path.offer(&group);
         }
-        let tool = ended
-            .entry(group.call_path.clone())
-            .or_insert_with(|| ToolCalls {
-                call_path: group.call_path.clone(),
-                calls: 0,
-                callers: Vec::new(),
-            });
+        let (tool, path) = ended.entry(group.tool.clone()).or_insert_with(|| {
+            (
+                ToolCalls {
+                    tool: group.tool.clone(),
+                    call_path: String::new(),
+                    calls: 0,
+                    daily: Vec::new(),
+                    callers: Vec::new(),
+                },
+                LatestPath::default(),
+            )
+        });
         tool.calls += group.calls;
+        path.offer(&group);
         add_caller(&mut tool.callers, &group);
         add_caller(&mut callers, &group);
     }
-    let mut stopped: Vec<_> = stopped.into_values().filter(|op| op.total() > 0).collect();
-    // Stable sorts keep Call Path order among equal counts.
+    let mut stopped: Vec<_> = stopped
+        .into_values()
+        .filter(|(op, _)| op.total() > 0)
+        .map(|(op, path)| StoppedTool {
+            call_path: path.path(),
+            ..op
+        })
+        .collect();
+    // Stable sorts keep Provider and Tool Key order among equal counts.
     stopped.sort_by_key(|op| Reverse(op.total()));
-    let mut tools: Vec<_> = ended.into_values().collect();
+    let mut tools: Vec<_> = ended
+        .into_values()
+        .map(|(tool, path)| ToolCalls {
+            call_path: path.path(),
+            ..tool
+        })
+        .collect();
     tools.sort_by_key(|op| Reverse(op.calls));
     for tool in &mut tools {
         busiest_first(&mut tool.callers);
@@ -283,17 +410,20 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
 }
 
 impl RunModule {
-    /// Returns the start of a summary window that ends now and spans `days`.
+    /// Returns the summary window that ends now and spans `days`.
     /// # Errors
     /// Rejects windows outside 1–30 days.
-    pub fn summary_window_start(&self, days: u32) -> Result<i64, Error> {
+    pub fn summary_window(&self, days: u32) -> Result<SummaryWindow, Error> {
         if !(1..=MAX_SUMMARY_DAYS).contains(&days) {
             return Err(Error::InvalidInput("invalid summary window".into()));
         }
-        Ok(self.now()?.saturating_sub(i64::from(days) * NANOS_PER_DAY))
+        Ok(SummaryWindow {
+            since: self.now()?.saturating_sub(i64::from(days) * NANOS_PER_DAY),
+            days,
+        })
     }
 
-    /// Sums the Runs in `authority` that ended at or after `since`. Never loads
+    /// Sums the Runs in `authority` that ended in `window`. Never loads
     /// arguments, results or source. `context` holds the net bytes that work
     /// outside Runs added in the same window; it joins each Principal's Run total.
     /// # Errors
@@ -302,10 +432,13 @@ impl RunModule {
         &self,
         tx: &mut coral_db::Transaction<'_>,
         authority: &HistoryAuthority,
-        since: i64,
+        window: &SummaryWindow,
         context: Vec<ActorContext>,
     ) -> Result<ActivitySummary, Error> {
+        let since = window.since();
         let evidence = crate::summary_repository::call_outcomes(tx, authority, since).await?;
+        let days =
+            crate::summary_repository::daily_calls(tx, authority, since, NANOS_PER_DAY).await?;
         let approvals = crate::summary_repository::approval_decisions(tx, authority, since).await?;
         let mut actors = crate::summary_repository::actor_context(tx, authority, since).await?;
         let context_impact_partial =
@@ -321,9 +454,10 @@ impl RunModule {
         let Tally {
             calls,
             stopped,
-            tools,
+            mut tools,
             callers,
         } = tally(evidence);
+        add_days(&mut tools, window.days(), days);
         Ok(ActivitySummary {
             calls,
             stopped,
@@ -366,8 +500,10 @@ mod tests {
             (failure(F::ProviderUnavailable), O::NeedsSetup),
             (failure(F::ProviderNamespaceConflict), O::NeedsSetup),
             (failure(F::ToolUnavailable), O::NeedsSetup),
+            (failure(F::UpstreamUnauthorized), O::NeedsSetup),
             (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
+            (failure(F::SavedFunctionNotFound), O::Failed),
             (failure(F::ProviderPublicationFailed), O::Failed),
             (failure(F::InvalidInput), O::Failed),
             (failure(F::InputTooLarge), O::Failed),

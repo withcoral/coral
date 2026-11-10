@@ -61,7 +61,7 @@ components:
         population: { type: integer }
 "##;
 
-const MIXED_MCP: &str = r#"{
+pub(crate) const MIXED_MCP: &str = r#"{
   "protocolVersion": "2025-11-25",
   "serverInfo": { "name": "mixed-mcp", "title": "Mixed MCP", "version": "1" },
   "server": { "transport": "streamable_http", "url": "https://mixed.example.test/mcp" },

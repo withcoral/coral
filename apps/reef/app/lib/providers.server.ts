@@ -22,13 +22,17 @@ import type {
   AccountLabel,
   ToolDetailView,
   ToolHintsView,
+  ToolUsage,
   ToolView,
   ProviderSettingsView,
   ProviderView,
   SearchIndexView,
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
+import { selectionKey, type SelectionKey } from '@/views/providers/selection'
+import type { ToolCalls } from './activity-summary'
 import { accountLabels } from '@/views/providers/account-labels'
+import { authorizationDiscoveryMessage } from './authorization-discovery'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -47,6 +51,17 @@ export function providerPath(workspacePath: string, name: string) {
 /** The Tool Key a tool's resource name encodes. */
 function toolKey(name: string) {
   return Buffer.from(name.split('/').at(-1)!, 'base64url').toString()
+}
+/** Each tool's usage in a summary, by provider and Tool Key. */
+export function toolUsage(
+  tools: readonly Pick<ToolCalls, 'tool' | 'calls' | 'daily' | 'callers'>[],
+): Record<SelectionKey, ToolUsage> {
+  return Object.fromEntries(
+    tools.flatMap(({ tool, calls, daily, callers }) => {
+      const provider = /\/providers\/([^/]+)\/tools\/[^/]+$/.exec(tool)?.[1]
+      return provider ? [[selectionKey(provider, toolKey(tool)), { calls, daily, callers }]] : []
+    }),
+  )
 }
 /** A tool's resource name, from a Provider's resource name and a Tool Key. */
 export function toolName(provider: string, key: string) {
@@ -435,6 +450,7 @@ const reasons: Record<string, string> = {
   INVALID_PROVIDER_INPUT: 'Coral cannot use this document. Check the fields.',
 }
 const statuses: Partial<Record<Code, number>> = {
+  [Code.Unauthenticated]: 401,
   [Code.PermissionDenied]: 403,
   [Code.NotFound]: 404,
   [Code.InvalidArgument]: 400,
@@ -442,26 +458,33 @@ const statuses: Partial<Record<Code, number>> = {
   [Code.AlreadyExists]: 409,
   [Code.Aborted]: 409,
 }
+const DISCOVERY_PREFIX = 'AUTHORIZATION_DISCOVERY_'
+function failureReason(code: string): string | undefined {
+  if (!code.startsWith(DISCOVERY_PREFIX)) return reasons[code]
+  const discovery = code.slice(DISCOVERY_PREFIX.length)
+  return (
+    authorizationDiscoveryMessage(discovery.toLowerCase()) ??
+    reasons[discovery] ??
+    "Coral does not support this server's sign-in requirements."
+  )
+}
 /** Maps a failed Provider mutation to one safe sentence and a status the form can show. */
 export function providerFailure(error: unknown, tool = 'Coral could not apply this change. ') {
   if (error instanceof Response) throw error
   if (!(error instanceof ConnectError)) console.error('Unexpected failure in a Reef action:', error)
   const status = error instanceof ConnectError ? (statuses[error.code] ?? 503) : 503
-  const reason =
-    error instanceof ConnectError && error.rawMessage.startsWith('AUTHORIZATION_DISCOVERY_')
-      ? "Coral does not support this server's sign-in requirements."
-      : error instanceof ConnectError
-        ? reasons[error.rawMessage]
-        : undefined
+  const reason = error instanceof ConnectError ? failureReason(error.rawMessage) : undefined
   const message =
     reason ??
     (status === 503
       ? 'Reload the page to check whether Coral applied the change before you submit it again.'
-      : status === 403
-        ? 'You do not have permission for this action.'
-        : status === 404
-          ? 'Coral cannot find this item. Reload the page.'
-          : 'Check the form fields. Correct any errors before you try again.')
+      : status === 401
+        ? 'Sign in again to continue.'
+        : status === 403
+          ? 'You do not have permission for this action.'
+          : status === 404
+            ? 'Coral cannot find this item. Reload the page.'
+            : 'Check the form fields. Correct any errors before you try again.')
   return data(
     {
       error: reason ? message : `${tool}${message}`,

@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod add_provider;
+mod functions;
 mod get_policy;
 mod get_provider;
 mod list_providers;
@@ -45,7 +46,11 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
+    SaveFunction(Box<functions::SaveFunction>),
+    DeleteFunction(functions::DeleteFunction),
 }
+
+pub use functions::SavedFunctions;
 
 impl BuiltinCall {
     /// The Built-in Tool an admitted target names, with its input checked
@@ -86,6 +91,13 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
+                    BuiltinArguments::SaveFunction(arguments) => {
+                        functions::SaveFunction::new(&arguments)
+                            .map(|call| Self::SaveFunction(Box::new(call)))
+                    }
+                    BuiltinArguments::DeleteFunction(arguments) => {
+                        functions::DeleteFunction::new(&arguments).map(Self::DeleteFunction)
+                    }
                 }),
         )
     }
@@ -100,6 +112,8 @@ impl BuiltinCall {
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
+            Self::SaveFunction(call) => call.perform(host).await,
+            Self::DeleteFunction(call) => call.perform(host).await,
         }
     }
 }
@@ -130,14 +144,17 @@ pub(crate) async fn recover(
         Some(BuiltinTool::UpdateProvider) => update_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
-        // A read leaves nothing behind, a policy change records no call to
-        // read, and this version cannot read a Tool it does not perform.
+        // A read leaves nothing behind, a policy change and a Saved Function
+        // change record no call to read, and this version cannot read a Tool
+        // it does not perform.
         Some(
             BuiltinTool::ListProviders
             | BuiltinTool::GetProvider
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
-            | BuiltinTool::Search,
+            | BuiltinTool::Search
+            | BuiltinTool::SaveFunction
+            | BuiltinTool::DeleteFunction,
         )
         | None => Ok(None),
     }
@@ -155,9 +172,10 @@ pub(crate) trait InvokingRun: Send + Sync {
     /// The current time on the Run's clock.
     fn now(&self) -> Result<i64, Error>;
 
-    /// Lets a test end the Run once the call's Setup exists.
+    /// Lets a test end the Run once the call prepared its work and before
+    /// it checks the Run: addProvider's Setup, or saveFunction's compile.
     #[cfg(test)]
-    fn setup_prepared(&self) {}
+    fn prepared(&self) {}
 }
 
 /// What a Built-in Tool acts through: the invoking Principal in the
@@ -172,6 +190,9 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) renamer: Option<&'a dyn ProviderRenamer>,
     /// Where `search` discovers, as the invoking Principal.
     pub(crate) search: &'a coral_search::UniversalSearchModule,
+    /// Where `saveFunction` and `deleteFunction` author; without it, they
+    /// fail as `tool_unavailable`.
+    pub(crate) functions: Option<&'a SavedFunctions>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.

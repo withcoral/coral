@@ -6,11 +6,14 @@ pub enum Error {
     /// Caller-supplied discovery input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    /// The Provider filter names no Provider the caller can search.
+    /// A Provider filter value names no Provider the caller can search.
     #[error("no Provider the caller can search has the requested Call Root")]
     UnknownProviderCallRoot {
         /// The Call Roots the caller can search, in order.
         searchable: Vec<ProviderCallRoot>,
+        /// The positions of the filter values that name none of them, in
+        /// order.
+        unmatched: Vec<usize>,
     },
     /// Search results could not be ranked, or a result page could not be
     /// produced.
@@ -53,6 +56,26 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the caller lost the Workspace: it is gone, or the caller may
+    /// no longer inspect it. Every later request of this caller fails the
+    /// same way, so a failed [`crate::UniversalSearchModule::searchable_providers`]
+    /// with it denies the request instead of serving it without the list.
+    #[must_use]
+    pub const fn lost_workspace_authority(&self) -> bool {
+        matches!(
+            self,
+            Self::PermissionDenied(_)
+                | Self::Workspace(
+                    coral_workspace::Error::WorkspaceNotFound
+                        | coral_workspace::Error::PermissionDenied(_)
+                        | coral_workspace::Error::AgentNotFound
+                        | coral_workspace::Error::InvalidAgentCredential
+                        | coral_workspace::Error::AgentDisabled
+                        | coral_workspace::Error::AgentRegistrationExpired
+                )
+        )
+    }
+
     /// Returns a safe definite rejection, excluding uncertain persistence or host errors.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
@@ -61,7 +84,7 @@ impl Error {
                 .safe_rejection()
                 .map(|(code, message)| (code, message.to_owned()));
         }
-        if let Self::UnknownProviderCallRoot { searchable } = self {
+        if let Self::UnknownProviderCallRoot { searchable, .. } = self {
             return Some(("invalid_input", unknown_call_root_message(searchable)));
         }
         if let Self::TypesLimit = self {
@@ -100,20 +123,31 @@ impl Error {
     }
 }
 
+/// Why one Provider filter value is refused, without the namespaces to use
+/// and without the value.
+pub const UNKNOWN_NAMESPACE_REASON: &str = "No Provider you can search has this namespace";
+
 /// Names only what the caller can search, never the value it asked for.
 fn unknown_call_root_message(searchable: &[ProviderCallRoot]) -> String {
-    if searchable.is_empty() {
-        return "No Provider you can search has this namespace. You can search no Provider."
-            .to_string();
-    }
     format!(
-        "No Provider you can search has this namespace. Use one of: {}.",
-        searchable
-            .iter()
-            .map(crate::provider_filter_value)
-            .collect::<Vec<_>>()
-            .join(", ")
+        "{UNKNOWN_NAMESPACE_REASON}. {}",
+        searchable_namespaces(searchable)
     )
+}
+
+/// The namespaces a refused Provider filter can use instead, as one
+/// sentence, sorted as `exec`'s description lists them.
+#[must_use]
+pub fn searchable_namespaces(searchable: &[ProviderCallRoot]) -> String {
+    if searchable.is_empty() {
+        return "You can search no Provider.".to_owned();
+    }
+    let mut namespaces = searchable
+        .iter()
+        .map(crate::provider_filter_value)
+        .collect::<Vec<_>>();
+    namespaces.sort_unstable();
+    format!("Use one of: {}.", namespaces.join(", "))
 }
 
 /// The most declared names an `undeclared_types` rejection lists.

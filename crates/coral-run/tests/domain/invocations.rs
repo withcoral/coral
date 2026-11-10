@@ -202,8 +202,7 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
             target.provider_access().id().clone(),
             target.tool().key().clone(),
         ),
-        target.tool().hints(),
-        target.tool().http_method(),
+        target.tool().policy_facts(),
         coral_db::RowLock::Shared,
     )
     .await

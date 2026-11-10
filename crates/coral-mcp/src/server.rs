@@ -3,20 +3,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
-use coral_workspace::{TraceId, WorkspaceId};
+use coral_telemetry::safe;
+use coral_workspace::WorkspaceId;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
     ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerCapabilities, ServerConfig,
+    ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
 
 use crate::McpRuntime;
 use crate::arguments::{
-    self, CancelArguments, DeleteFunctionArguments, EndTaskArguments, ExecArguments,
-    SaveFunctionArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
+    self, CancelArguments, EndTaskArguments, ExecArguments, TaskOutcomeArgument, ToolArguments,
+    WaitArguments,
 };
 use crate::projection::{self, Reporter, ToolFailure};
 
@@ -73,6 +74,36 @@ impl McpServer {
         self
     }
 
+    /// The tools this caller is served. `exec` names the namespaces the
+    /// caller can search, so an agent passes `provider` from its first
+    /// Program on. A caller that lost the Workspace meets that on every call,
+    /// so the list fails too. Any other failure only costs the namespaces:
+    /// `exec`'s description says so and tells the agent to leave `provider`
+    /// out.
+    async fn listed_tools(&self) -> Result<Vec<Tool>, ErrorData> {
+        let searchable = self
+            .runtime
+            .modules
+            .search
+            .searchable_providers(&self.runtime.principal, &self.workspace_id)
+            .await;
+        let namespaces = match &searchable {
+            Ok(providers) => arguments::Namespaces::Listed(providers),
+            Err(error) if error.lost_workspace_authority() => {
+                return Err(ErrorData::invalid_request("Permission was denied", None));
+            }
+            Err(error) => {
+                tracing::error!(
+                    coral.workspace.id = safe::id(&self.workspace_id),
+                    error.type = safe::kind(lookup_error_kind(error)),
+                    "failed to list the namespaces for exec's description"
+                );
+                arguments::Namespaces::Unavailable
+            }
+        };
+        Ok(arguments::tools(arguments::exec_description(&namespaces)))
+    }
+
     async fn dispatch(
         &self,
         request: CallToolRequestParams,
@@ -88,14 +119,6 @@ impl McpServer {
         }
         let name = request.name.as_ref();
         let complete = match name {
-            SaveFunctionArguments::NAME => {
-                let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
-                self.save_function(arguments).await
-            }
-            DeleteFunctionArguments::NAME => {
-                let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
-                self.delete_function(arguments).await
-            }
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
                 return self.exec(arguments).await;
@@ -120,45 +143,6 @@ impl McpServer {
         complete.map(Into::into)
     }
 
-    async fn save_function(
-        &self,
-        arguments: SaveFunctionArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let function = self
-            .runtime
-            .modules
-            .commands
-            .save_function(
-                &call,
-                &arguments.path,
-                &arguments.description,
-                &arguments.source,
-            )
-            .await
-            .map_err(task_failure)?;
-        projection::saved_function(&function)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
-    }
-
-    async fn delete_function(
-        &self,
-        arguments: DeleteFunctionArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        self.runtime
-            .modules
-            .commands
-            .delete_function(&call, &arguments.path)
-            .await
-            .map_err(task_failure)?;
-        projection::success(projection::DeletedFunction {
-            call_path: format!("coral.functions.{}", arguments.path),
-        })
-        .map_err(DispatchError::Tool)
-    }
-
     async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
         let target = match (&arguments.task_id, &arguments.goal) {
             (Some(task_id), None) => {
@@ -172,7 +156,6 @@ impl McpServer {
                 TaskIntent::parse(goal)
                     .map_err(|error| invalid_input(format!("`goal`: {error}")))?,
                 TaskIntent::parse(&arguments.intent).map_err(invalid_input)?,
-                TraceId::current_or_new(),
             )),
             _ => {
                 return Err(invalid_input_message(
@@ -379,7 +362,6 @@ impl McpServer {
             self.workspace_id.clone(),
             task_id,
             TaskIntent::parse(intent).map_err(invalid_input)?,
-            TraceId::current_or_new(),
         ))
     }
 }
@@ -439,17 +421,19 @@ impl ServerHandler for McpServer {
         call.run(dispatched).await
     }
 
-    fn list_tools(
+    async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
+    ) -> Result<ListToolsResult, ErrorData> {
+        let tools = self.listed_tools().await?;
         // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
         // and Claude Code rejects a tools/list result that omits them. Older
         // versions ignore the extra fields, so the hints are not version-gated.
-        std::future::ready(Ok(ListToolsResult::with_all_items(arguments::tools())
+        // The list is this caller's, never shared.
+        Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
+            .with_cache_scope(CacheScope::Private))
     }
 
     // Embedded output URIs label one result's blocks; they are never listed or read.
@@ -559,6 +543,16 @@ fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
     match error {
         DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
         protocol @ DispatchError::Protocol(_) => protocol,
+    }
+}
+
+/// The kind of a failed namespace lookup, as a log names it.
+const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
+    match error {
+        coral_search::Error::Database(_) => "database",
+        coral_search::Error::Provider(_) => "provider",
+        coral_search::Error::Workspace(_) => "workspace",
+        _ => "search",
     }
 }
 

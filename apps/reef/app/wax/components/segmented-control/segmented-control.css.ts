@@ -87,6 +87,17 @@ globalStyle(`${icon} svg, ${icon} svg *`, {
   vectorEffect: 'non-scaling-stroke',
 })
 
+// Only a labelled segment's icon sits before words; an icon alone stays centred.
+export const labelIcon = style({ marginInlineEnd: 6, verticalAlign: '-0.2em' })
+// A segment's count reads as a quieter number after its label.
+export const count = style({
+  color: theme.content.tertiary,
+  fontVariantNumeric: 'tabular-nums',
+  marginInlineStart: 2,
+})
+// A disabled segment greys its count with its label.
+globalStyle(`.${segment.classNames.base}:disabled ${count}`, { color: 'inherit' })
+
 export const tooltipLabel = style({
   color: theme.content.primary,
   display: 'block',

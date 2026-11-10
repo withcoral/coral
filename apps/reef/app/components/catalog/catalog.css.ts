@@ -214,3 +214,14 @@ export const toolbarFilter = style({
 })
 // In a narrow column the filter takes the rest of the row, so it stays beside its picker.
 export const toolbarFilterFill = style({ flex: '1 1 160px', minWidth: 0 })
+
+// A picker keeps its full width beside the filter's input. When the row has no
+// room for it, it takes a line of its own after the controls, at the end; only
+// a line narrower than it scrolls it.
+export const toolbarPicker = style({
+  display: 'flex',
+  flex: '0 0 auto',
+  maxWidth: '100%',
+  minWidth: 0,
+})
+export const toolbarPickerBelow = style({ flexBasis: '100%', justifyContent: 'flex-end' })

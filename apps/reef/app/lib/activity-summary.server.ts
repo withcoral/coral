@@ -31,14 +31,17 @@ export async function loadActivitySummary(
       canceled: toCount(value.calls?.canceled),
     },
     stopped: value.stopped.map((tool) => ({
+      tool: tool.tool,
       callPath: tool.callPath,
       blocked: toCount(tool.blocked),
       notAllowed: toCount(tool.notAllowed),
       needsSetup: toCount(tool.needsSetup),
     })),
     tools: value.tools.map((tool) => ({
+      tool: tool.tool,
       callPath: tool.callPath,
       calls: toCount(tool.calls),
+      daily: tool.daily.map(toCount),
       callers: tool.callers.map(toCaller),
     })),
     approvals: {
@@ -57,8 +60,14 @@ export async function loadActivitySummary(
   }
 }
 
-/** Coral answers that the summary is out of reach now, not that the request is wrong. */
-const UNAVAILABLE = new Set([Code.NotFound, Code.PermissionDenied, Code.Unavailable])
+/** Coral answers that the summary is out of reach now, or too slow to wait for, not that
+ * the request is wrong. */
+const UNAVAILABLE = new Set([
+  Code.NotFound,
+  Code.PermissionDenied,
+  Code.Unavailable,
+  Code.DeadlineExceeded,
+])
 
 /** As `loadActivitySummary`, for a page that shows the summary as a glimpse: an unavailable
  * summary is null, never zeros, and the rest of the page still loads. Any other failure,

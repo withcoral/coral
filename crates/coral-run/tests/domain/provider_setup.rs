@@ -681,14 +681,15 @@ async fn a_namespace_in_use_is_a_conflict() {
     );
 }
 
-/// Ends the Run just after addProvider prepares its Setup.
-struct RunEndsAfterSetup {
-    clock: Arc<TestClock>,
+/// Ends the Run just after a Built-in call prepares its work: addProvider's
+/// Setup, or saveFunction's compile.
+pub(super) struct RunEndsAfterPreparation {
+    pub(super) clock: Arc<TestClock>,
 }
 
 #[async_trait]
-impl InvocationObserver for RunEndsAfterSetup {
-    fn builtin_setup_prepared(&self) {
+impl InvocationObserver for RunEndsAfterPreparation {
+    fn builtin_prepared(&self) {
         // Past the Run timeout, not the claim lease.
         self.clock.next.store(100_000_000_000, Ordering::SeqCst);
     }
@@ -701,7 +702,7 @@ async fn a_run_that_ends_before_the_call_returns_leaves_nothing_behind() {
     let mut scope = AdminScope::new("user:ended-before-return").await;
     scope.fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
-    scope.fixture.runs.invocation_observer = Arc::new(RunEndsAfterSetup {
+    scope.fixture.runs.invocation_observer = Arc::new(RunEndsAfterPreparation {
         clock: scope.fixture.clock.clone(),
     });
     scope.set_access(ToolAccessState::Enabled).await;

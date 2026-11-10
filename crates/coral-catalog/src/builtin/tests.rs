@@ -24,6 +24,8 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
         BuiltinTool::Search => super::search::tests::valid_arguments(),
+        BuiltinTool::SaveFunction => super::save_function::valid_arguments(),
+        BuiltinTool::DeleteFunction => super::delete_function::valid_arguments(),
     }
 }
 
@@ -311,6 +313,36 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
         )])
 }
 
+/// What `saveFunction` and `deleteFunction` return.
+fn function_results() -> [(BuiltinTool, Value); 2] {
+    [
+        (
+            BuiltinTool::SaveFunction,
+            super::SaveFunctionResult {
+                call_path: "coral.functions.github.pulls.listStale".to_owned(),
+                description: "List stale pull requests.".to_owned(),
+                declaration: "export default function (): Promise<string[]>;".to_owned(),
+                diagnostics: vec![crate::SavedDiagnostic {
+                    category: crate::SavedDiagnosticCategory::Error,
+                    code: 2_322,
+                    message: "Type 'number' is not assignable to type 'string'.".to_owned(),
+                    line: Some(1),
+                    column: None,
+                }],
+                diagnostics_truncated: false,
+            }
+            .into_tool_result(),
+        ),
+        (
+            BuiltinTool::DeleteFunction,
+            super::DeleteFunctionResult {
+                call_path: "coral.functions.github.pulls.listStale".to_owned(),
+            }
+            .into_tool_result(),
+        ),
+    ]
+}
+
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
@@ -381,6 +413,7 @@ fn each_result_meets_its_output_schema() {
             .into_iter()
             .map(|result| (BuiltinTool::Search, result)),
     );
+    results.extend(function_results());
     for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),
@@ -416,5 +449,33 @@ fn a_missing_path_carries_at_most_three_suggestions() {
             }
             assert_eq!(schema.is_valid(&suggested), valid, "{count}: {suggested}");
         }
+    }
+}
+
+// Catches: a save that reaches the Tool without the module admission
+// extracts, as one through a computed path does, being read as anything
+// but a missing source.
+#[test]
+fn a_save_without_an_extracted_source_is_refused_naming_source() {
+    for arguments in [
+        json!({ "path": "a.b", "description": "d" }),
+        json!(["a.b", "d", "export default () => 1"]),
+        json!("export default () => 1"),
+    ] {
+        let problems = super::SaveFunctionArguments::parse(&arguments)
+            .map(|_arguments| ())
+            .expect_err("no source");
+        assert_eq!(
+            problems
+                .iter()
+                .map(|problem| (problem.field(), problem.reason()))
+                .collect::<Vec<_>>(),
+            [(
+                "source",
+                "pass a function declared at the top level, through a literal \
+                 coral.workspace.saveFunction call"
+            )],
+            "{arguments}"
+        );
     }
 }

@@ -94,7 +94,7 @@ fn candidates(now: i64) -> SelectStatement {
             Alias::new("connection_deadline"),
         )
         .and_where(crate::history_repository::active_run(now))
-        .and_where(col("i", "state").eq("pending"))
+        .and_where(crate::history_repository::invocation_pending())
         .to_owned()
 }
 fn requests(candidates: &SelectStatement) -> SelectStatement {
@@ -162,7 +162,10 @@ pub(crate) async fn next_authority_deadline(
 
 /// Each current request once, through the same current-request relation as
 /// exact Run summaries.
-fn distinct_requests(authority: &coral_workspace::HistoryAuthority, now: i64) -> SelectStatement {
+pub(crate) fn distinct_requests(
+    authority: &coral_workspace::HistoryAuthority,
+    now: i64,
+) -> SelectStatement {
     Query::select()
         .from_subquery(
             requests(&authorized_candidates(authority, now)),

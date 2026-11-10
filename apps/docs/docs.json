@@ -55,6 +55,40 @@
       }
     ]
   },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/withcoral/coral",
+      "linkedin": "https://linkedin.com/company/withcoral",
+      "slack": "https://withcoral.com/slack"
+    },
+    "links": [
+      {
+        "header": "Product",
+        "items": [
+          { "label": "Blog", "href": "https://withcoral.com/blog" },
+          { "label": "Download", "href": "https://withcoral.com/download" },
+          { "label": "Pricing", "href": "https://withcoral.com/pricing" }
+        ]
+      },
+      {
+        "header": "Community",
+        "items": [
+          { "label": "Contact us", "href": "https://withcoral.com/contact" },
+          { "label": "GitHub", "href": "https://github.com/withcoral/coral" },
+          { "label": "LinkedIn", "href": "https://linkedin.com/company/withcoral" },
+          { "label": "Slack", "href": "https://withcoral.com/slack" }
+        ]
+      },
+      {
+        "header": "Company",
+        "items": [
+          { "label": "Privacy policy", "href": "https://withcoral.com/privacy" },
+          { "label": "Terms of use", "href": "https://withcoral.com/terms" },
+          { "label": "Legal documents", "href": "/legal" }
+        ]
+      }
+    ]
+  },
   "navigation": {
     "groups": [
       {
@@ -84,7 +118,8 @@
       {
         "group": "Reference",
         "pages": [
-          "reference/configuration"
+          "reference/configuration",
+          "reference/usage-data"
         ]
       }
     ]

@@ -37,7 +37,8 @@ test('Activity automatically streams new rows and continuously loads bounded chi
             await runner.saveFunction(
               'live.fixture',
               'Describe fixture',
-              'export default () => 42;',
+              'const fixture = () => 42;',
+              'fixture',
             )
           ).isError,
         ).not.toBe(true)
@@ -181,20 +182,11 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     await step(
       'Expand an execution outside the first task window without fetching the whole history',
       async () => {
-        // Fill the Task with plain records, not Runs: only their place around the observed
-        // Run matters, and each Run costs a Program and more Activity work per read.
+        // Fill the Task with the shortest Runs: only their place around the observed Run
+        // matters. An agent adds nothing else to a Task.
         async function fill(count: number) {
           for (let index = 0; index < count; index++)
-            expect(
-              (
-                await latest.saveFunction(
-                  'live.filler',
-                  'Filler',
-                  'export default () => 1;',
-                  'Fill the task history',
-                )
-              ).isError,
-            ).not.toBe(true)
+            expect((await latest.exec('return null;')).isError).not.toBe(true)
         }
         await fill(200)
         const observed = await observeRun(
@@ -244,9 +236,9 @@ test('Activity automatically streams new rows and continuously loads bounded chi
             port.getBoundingClientRect().top -
             port.clientHeight
         })
-        const newLabel = 'Prepare current work before offboarding'
+        const newLabel = 'Save a reusable function'
         expect(
-          (await latest.saveFunction('live.added', 'New child', 'export default () => 43;'))
+          (await latest.saveFunction('live.added', 'New child', 'const added = () => 43;', 'added'))
             .isError,
         ).not.toBe(true)
         await taskSection()

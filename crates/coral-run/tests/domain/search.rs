@@ -171,12 +171,31 @@ async fn an_invalid_argument_names_what_to_correct() {
         (json!({ "limit": 51 }), " at `limit`: pass 1 to 50"),
         (
             json!({ "provider": "coral.providers.github" }),
-            " at `provider`: pass a namespace from coral.providers.<namespace>, or coral.workspace",
+            " at `provider`: No Provider you can search has this namespace. Use one of: \
+             coral.workspace.",
         ),
         (
             json!({ "provider": "github" }),
             " at `provider`: No Provider you can search has this namespace. Use one of: \
              coral.workspace.",
+        ),
+        (
+            json!({ "provider": ["coral.workspace", "github"] }),
+            " at `provider[1]`: No Provider you can search has this namespace. Use one of: \
+             coral.workspace.",
+        ),
+        (
+            json!({ "provider": ["github", "coral.workspace", "slack"] }),
+            ": `provider[0]`: No Provider you can search has this namespace; `provider[2]`: No \
+             Provider you can search has this namespace; Use one of: coral.workspace.",
+        ),
+        (
+            json!({ "provider": [] }),
+            " at `provider`: pass a namespace or an array of 1 to 32 namespaces",
+        ),
+        (
+            json!({ "provider": ["github", 7] }),
+            " at `provider`: pass a namespace or an array of 1 to 32 namespaces",
         ),
         (json!({ "offset": -1 }), " at `offset`: expected u32"),
         (

@@ -62,15 +62,6 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
           "return (await coral.workspace.search({ paths: ['coral.providers.contextFixture.read'] })).data.descriptions[0].typescript_declaration;",
         ),
       )
-      expect(
-        (
-          await execute.saveFunction(
-            'context.reuse',
-            'Reuse the result calculation',
-            'export default () => "ok";',
-          )
-        ).isError,
-      ).not.toBe(true)
       const run = `workspaces/${workspace}/runs/${observed.update.run_id}`
       const task = `workspaces/${workspace}/tasks/${execute.taskId()}`
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 100 })
@@ -90,36 +81,33 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
       expect(goal.task!.contextImpactBytes).toBe(
         discovered.run!.contextImpactBytes! + 10n - rawBytes,
       )
-      await step(
-        'Keep the parent total when a saved function has no applicable context measurement',
-        async () => {
-          const query = new URLSearchParams()
-          await page.goto(`/workspaces/${workspace}/activity`)
-          const table = page.getByRole('table', { name: 'Activity records', exact: true })
-          const root = table
-            .getByRole('row')
-            .filter({ has: page.getByRole('link', { name: intent, exact: true }) })
-          const total = await root.getByRole('cell').last().innerText()
-          expect(total).toBe('−1.97 MB')
-          query.append('expand', task)
-          query.append('expand', run)
-          await page.goto(`/workspaces/${workspace}/activity?${query}`)
-          expect(await root.getByRole('cell').last().innerText()).toBe(total)
-          expect(await table.locator('[aria-label$="B saved"]').count()).toBe(4)
-          // The log and the emission; the return value is the Run's own, on its panel.
-          expect(await table.locator('[aria-label$="B added"]').count()).toBe(2)
-          expect(await page.content()).not.toContain('x'.repeat(100))
-          await table.locator(`[data-record-key="${run}"]`).locator('a[href]').click()
-          await shownPayload(page, '"ok"').waitFor()
-          await page
-            .getByRole('region', { name: 'Agent context', exact: true })
-            .locator('div', { has: page.getByText('Return value sent', { exact: true }) })
-            .getByText('4 B', { exact: true })
-            .waitFor()
-          await page.getByRole('button', { name: 'Close details', exact: true }).click()
-          await page.waitForURL((url) => !url.searchParams.has('record'))
-        },
-      )
+      await step('Keep the parent total when its Task and Run expand', async () => {
+        const query = new URLSearchParams()
+        await page.goto(`/workspaces/${workspace}/activity`)
+        const table = page.getByRole('table', { name: 'Activity records', exact: true })
+        const root = table
+          .getByRole('row')
+          .filter({ has: page.getByRole('link', { name: intent, exact: true }) })
+        const total = await root.getByRole('cell').last().innerText()
+        expect(total).toBe('−1.97 MB')
+        query.append('expand', task)
+        query.append('expand', run)
+        await page.goto(`/workspaces/${workspace}/activity?${query}`)
+        expect(await root.getByRole('cell').last().innerText()).toBe(total)
+        expect(await table.locator('[aria-label$="B saved"]').count()).toBe(4)
+        // The log and the emission; the return value is the Run's own, on its panel.
+        expect(await table.locator('[aria-label$="B added"]').count()).toBe(2)
+        expect(await page.content()).not.toContain('x'.repeat(100))
+        await table.locator(`[data-record-key="${run}"]`).locator('a[href]').click()
+        await shownPayload(page, '"ok"').waitFor()
+        await page
+          .getByRole('region', { name: 'Agent context', exact: true })
+          .locator('div', { has: page.getByText('Return value sent', { exact: true }) })
+          .getByText('4 B', { exact: true })
+          .waitFor()
+        await page.getByRole('button', { name: 'Close details', exact: true }).click()
+        await page.waitForURL((url) => !url.searchParams.has('record'))
+      })
       await step('The Overview counts the same context as the Task', async () => {
         // Only an exact byte count tells the discovery Run apart from the other Run's saving.
         const saved = (-goal.task!.contextImpactBytes!).toLocaleString('en-US')

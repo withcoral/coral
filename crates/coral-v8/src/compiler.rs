@@ -33,6 +33,8 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n",
     include_str!("js/compiler/saved_function_authoring.js"),
     "\n",
+    include_str!("js/compiler/saved_function_extraction.js"),
+    "\n",
     include_str!("js/compiler/saved_function_linking.js"),
     "\n",
     include_str!("js/compiler/program_compilation.js"),
@@ -168,14 +170,17 @@ impl ProgramCompiler {
     ///
     /// JavaScript is valid input because it is valid TypeScript source. The
     /// official compiler applies syntax and Coral capability checks here;
-    /// ordinary semantic diagnostics are not an execution gate. The retained
-    /// source map contains authored locations only.
+    /// ordinary semantic diagnostics are not an execution gate. Each literal
+    /// `coral.workspace.saveFunction` call carries the module of the function
+    /// it names: that top-level declaration and every top-level declaration
+    /// it reaches, as written. The retained source map contains authored
+    /// locations only.
     ///
     /// # Errors
     ///
-    /// Returns blocking syntax or capability diagnostics, an emitted-source-map
-    /// failure, a compiler-isolate failure, or a compiler worker availability
-    /// error.
+    /// Returns blocking syntax or capability diagnostics, a save whose source
+    /// names no top-level function, an emitted-source-map failure, a
+    /// compiler-isolate failure, or a compiler worker availability error.
     pub fn compile(&self, deadline: Instant, source: &str) -> Result<CompiledProgram, Error> {
         let source = source.to_string();
         self.request(CompilerOperation::Program, deadline, move |compiler| {
@@ -334,12 +339,15 @@ impl ProgramCompiler {
     ///
     /// Linked modules initialize once in the supplied dependency order before
     /// the submitted body. Their callables are installed under immutable
-    /// `coral.functions` paths inside the package.
+    /// `coral.functions` paths inside the package. Saves in the body and in
+    /// each module carry their modules as [`Self::compile`] describes, each
+    /// from its own top level.
     ///
     /// # Errors
     ///
-    /// Returns blocking compiler diagnostics, invalid linked source, or a
-    /// compiler-isolate failure.
+    /// Returns blocking compiler diagnostics, invalid linked source, a save
+    /// whose source names no top-level function, or a compiler-isolate
+    /// failure.
     pub fn compile_with_saved_functions(
         &self,
         deadline: Instant,
@@ -470,7 +478,8 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
             | Error::InvalidSavedFunction(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. },
+            | Error::InvalidSavedFunctionReference { .. }
+            | Error::InvalidFunctionSave(_),
         ) => CompilerOutcome::Rejected,
         Err(_) => CompilerOutcome::Failed,
     }
@@ -506,6 +515,7 @@ struct CompileOutput {
     authored_mappings: Vec<AuthoredSourceMapping>,
     wrapper_valid: bool,
     validation_error: Option<String>,
+    save_refusal: Option<String>,
     diagnostics: Vec<CompilerDiagnostic>,
 }
 
@@ -823,6 +833,9 @@ fn decode_compiled_program(json: &str) -> Result<CompiledProgram, Error> {
     }
     if let Some(message) = output.validation_error {
         return Err(Error::ForbiddenCapability(message));
+    }
+    if let Some(message) = output.save_refusal {
+        return Err(Error::InvalidFunctionSave(message));
     }
     if !output.wrapper_valid {
         return Err(Error::InvalidProgramBody);

@@ -22,7 +22,8 @@ namespace under `coral.providers`, which special-cases the call path.
 Owners can only enable or disable the Built-in Provider and set its Operations' policy. Rename, reconfiguration,
 regeneration, account work and removal are rejected. When a Coral process boots, before it takes requests, it installs
 the Built-in Provider in any Workspace that has none and moves every Workspace's Built-in Provider to the catalog it
-serves, with Coral as the recorded actor. New Operations simply appear, at the Access State their hints give.
+serves, with Coral as the recorded actor. New Operations simply appear, at the Access State their hints give or the
+default Coral's catalog declares for them (ADR 0031).
 
 Catalogs are not ordered. An older Coral that boots after a newer one, in a rollback or a rolling deploy, moves
 Workspaces back to its own catalog, and the next newer boot moves them forward. Rejected: Owners reviewing and applying

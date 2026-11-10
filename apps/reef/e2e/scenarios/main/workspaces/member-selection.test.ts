@@ -80,7 +80,7 @@ test('Ambiguous email grants keep the dialog and values, allowing a safe correct
         await page.goto(`/${workspace.name}/members`)
         await page.getByRole('button', { name: 'Add members', exact: true }).click()
         await pickPerson(page, alice.email)
-        await page.getByRole('button', { name: 'Role', exact: true }).click()
+        await page.getByRole('button', { name: 'Role: Member', exact: true }).click()
         await page.getByRole('menuitemradio', { name: 'Owner', exact: true }).click()
         const duplicate = await loginActor(
           context,

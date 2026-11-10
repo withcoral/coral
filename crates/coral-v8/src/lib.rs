@@ -914,6 +914,11 @@ pub enum Error {
         /// One-based authored source column.
         column: u64,
     },
+    /// A literal `coral.workspace.saveFunction` call did not name a function
+    /// its source declares at the top level. The message starts with the
+    /// authored source and location.
+    #[error("{0}")]
+    InvalidFunctionSave(String),
     /// The private compiler bridge returned an invalid payload.
     #[error("TypeScript compiler protocol failed: {0}")]
     CompilerProtocol(String),
@@ -969,6 +974,7 @@ impl Error {
             Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
             Self::InvalidSavedFunctionReference { .. } => "invalid_saved_function_reference",
+            Self::InvalidFunctionSave { .. } => "invalid_function_save",
             Self::CompilerProtocol { .. } => "compiler_protocol",
             Self::InvalidSourceMap { .. } => "invalid_source_map",
             Self::Engine { .. } => "engine",
@@ -1017,6 +1023,7 @@ impl From<Error> for CompileFailure {
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
             | Error::InvalidSavedFunctionReference { .. }
+            | Error::InvalidFunctionSave(_)
             | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
             other => Self::Failed(other.code()),
         }

@@ -1,0 +1,53 @@
+{
+  "v": 1,
+  "install": "3f9c8d2e-5b41-4c7a-9e06-1d7b2c4fa21e",
+  "coral": {
+    "version": "1.5.0",
+    "os": "macos",
+    "arch": "arm64",
+    "kind": "desktop",
+    "auth": "disabled",
+    "database": "sqlite"
+  },
+  "build": "release",
+  "milestones": {
+    "first_successful_run": "2026-11-04",
+    "first_saved_function": "2026-11-05",
+    "function_reused_in_later_task": null
+  },
+  "day": {
+    "date": "2026-11-06",
+    "runs": { "succeeded": 41, "failed": 6, "timed_out": 1, "canceled": 2 },
+    "run_failures": {
+      "compile": 3,
+      "tool_error": 2,
+      "timeout": 1,
+      "cpu_budget": 1,
+      "interrupted": 0
+    },
+    "tool_invocations": { "succeeded": 212, "failed": 9, "approval_required": 4 },
+    "approvals": { "approved": 3, "denied": 1, "expired": 0 },
+    "saved_functions": { "saved": 2, "called": 17, "tasks_reusing_one": 3 },
+    "tasks": { "started": 9 },
+    "clients": {
+      "claude-code": 20,
+      "claude-desktop": 5,
+      "cursor": 11,
+      "codex": 3,
+      "chatgpt": 2,
+      "other": 7
+    }
+  },
+  "totals": {
+    "workspaces": 2,
+    "users": 1,
+    "agents": 1,
+    "saved_functions": 5,
+    "providers": {
+      "recipe": { "github": 1, "linear": 1, "google_ads_mcp": 1 },
+      "custom_openapi": 1,
+      "custom_mcp": 0
+    },
+    "accounts": { "oauth": 3, "secret": 1 }
+  }
+}

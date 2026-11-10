@@ -125,3 +125,24 @@ it('lists people who share a name and shows their emails on their chips', async 
   expect(within(dialog).getByRole('button', { name: 'Remove Ada (ada@other.com)' })).toBeTruthy()
   expect(submitted(dialog)).toEqual(['ada@example.com', 'ada@other.com'])
 })
+
+// Catches: a pasted email with a space around it hiding its own "Add" option,
+// because the list matched the untrimmed text, so Enter added no one.
+it('adds a typed email that has spaces around it', async () => {
+  renderDialog([])
+  const user = userEvent.setup()
+  const { dialog, people } = await openDialog(user)
+  await user.type(people, ' new@example.com {Enter}')
+  expect(submitted(dialog)).toEqual(['new@example.com'])
+})
+
+// Catches: the role menu's button named "Role" alone, so a screen reader
+// never hears the role it shows.
+it('names the role button with the chosen role', async () => {
+  renderDialog([])
+  const user = userEvent.setup()
+  const { dialog } = await openDialog(user)
+  await user.click(within(dialog).getByRole('button', { name: 'Role: Member' }))
+  await user.click(await screen.findByRole('menuitemradio', { name: 'Owner' }))
+  expect(within(dialog).getByRole('button', { name: 'Role: Owner' })).toBeTruthy()
+})

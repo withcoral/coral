@@ -60,7 +60,7 @@ export function CallsLens({
   const all = toolRows(summary, providers).toSorted((a, b) => b.calls - a.calls)
   const total = all.reduce((sum, row) => sum + row.calls, 0)
   const max = Math.max(0, ...all.map((row) => row.calls))
-  const rows = all.filter((row) => query.matches(row.namespace, row.tool, row.provider))
+  const rows = all.filter((row) => query.matches(row.namespace, row.relativePath, row.provider))
   return (
     <div className={styles.lens}>
       <Split summary={summary} />
@@ -110,7 +110,7 @@ export function CallsLens({
             {rows.map((row) => {
               const to = row.pages?.tool
               return (
-                <Table.Row key={row.callPath} to={to}>
+                <Table.Row key={row.tool} to={to}>
                   <Table.Cell title={row.callPath}>
                     <ToolName row={row} to={to} query={query} />
                   </Table.Cell>
