@@ -126,14 +126,14 @@ flowchart LR
         - `AWS_MCP_API_KEY`: the key from the previous step.
         - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: the IAM user's access key.
 
-        On Amazon EC2 or Amazon ECS, remove the two `AWS_` variables. On EC2, [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). On ECS, set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). The proxy then uses that role. On EC2, also set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
+        On Amazon EC2 or Amazon ECS, remove `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from the service. Keep `SUPERGATEWAY_API_KEY`. On EC2, [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). On ECS, set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). The proxy then uses that role. On EC2, also set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
 
         The bridge's MCP server URL is `http://aws-mcp-front:8080/mcp`.
       </Tab>
       <Tab title="Kubernetes">
         On Amazon EKS, let the role trust the bridge's service account with [IAM roles for service accounts](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) or [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html). The example uses IAM roles for service accounts.
 
-        The examples use the `coral` namespace from the [Kubernetes guide](/getting-started/self-host/kubernetes). If Coral runs in another namespace, change `coral` in each command and manifest. The role's trust policy must name the same namespace and the `aws-mcp` service account.
+        The examples use the `coral` namespace from the [Kubernetes guide](/getting-started/self-host/kubernetes). If Coral runs in another namespace, change `coral` in each command and manifest, and in the bridge's URL. The role's trust policy must name the same namespace and the `aws-mcp` service account.
 
         Store the API key in a Secret:
 
