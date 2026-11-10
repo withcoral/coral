@@ -20,12 +20,13 @@ use crate::{CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
 
 /// The kinds a rejection can carry. A kind off this list reads as
 /// `compilation`, so a peer never widens the set of `error.type` values.
-const REJECTION_KINDS: [&str; 5] = [
+const REJECTION_KINDS: [&str; 6] = [
     "compilation",
     "invalid_program_body",
     "invalid_saved_function",
     "source_too_deeply_nested",
     "forbidden_capability",
+    "invalid_function_save",
 ];
 /// The kinds a compiler failure can carry. Any other reads as
 /// `compiler_protocol`.
