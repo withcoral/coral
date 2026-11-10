@@ -103,9 +103,11 @@ export const ButtonOnly: Story = {
     await expect(args.onChange).toHaveBeenLastCalledWith(file)
   },
 }
+// A busy picker refuses a second selection until the work on the first ends.
 export const ButtonBusy: Story = {
   args: { buttonLabel: 'Upload document', busy: true },
-  play: async ({ canvas }) => {
+  play: async ({ canvas, canvasElement }) => {
+    await expect(picker(canvasElement)).toBeDisabled()
     await expect(canvas.getByRole('button', { name: 'Upload document' })).toHaveAttribute(
       'aria-busy',
       'true',

@@ -517,3 +517,22 @@ test('a new provider etag clears a too-large refusal', async () => {
   await settle()
   expect(iconFile()).not.toHaveAttribute('aria-invalid')
 })
+
+// Catches: a second selection, through assistive technology, superseding an
+// upload still in flight.
+test('the icon picker takes no selection while an upload runs', async () => {
+  let finish: (() => void) | undefined
+  const upload = new Promise<void>((resolve) => {
+    finish = resolve
+  })
+  await render({}, async () => {
+    await upload
+    return { error: null, message: 'Icon saved.' }
+  })
+  await chooseIcon(new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' }))
+  expect(iconFile()).toBeDisabled()
+
+  await act(async () => finish?.())
+  await settle()
+  expect(iconFile()).toBeEnabled()
+})

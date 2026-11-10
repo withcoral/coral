@@ -12,7 +12,7 @@ export interface FileInputProps {
   accept?: string
   /** Shows only a button with this label that opens the picker. */
   buttonLabel?: string
-  /** Marks the button busy while the caller works on a selection. */
+  /** Marks the button busy and disables the picker while the caller works on a selection. */
   busy?: boolean
   className?: string
   disabled?: boolean
@@ -79,7 +79,8 @@ export function FileInput({
       data-invalid={invalid || undefined}
       accept={accept}
       className={hidden ? visuallyHidden : classNames(inputStyles.input, className)}
-      disabled={disabled}
+      // A busy picker takes no new selection, even through assistive technology.
+      disabled={disabled || busy}
       id={id}
       name={name}
       onChange={(event) => {
