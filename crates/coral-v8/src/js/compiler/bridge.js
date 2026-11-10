@@ -26,27 +26,26 @@ globalThis.__coralPrepareSavedFunction = function prepareVirtualSavedFunction(
     prepareSavedFunction(source, JSON.parse(declarationsJson), fileName, targetName),
   );
 };
-globalThis.__coralAnalyzeSavedFunctionCallPaths = function analyzeVirtualSavedFunctionCallPaths(
+globalThis.__coralAnalyzeProgram = function analyzeVirtualProgram(body, fileName, targetName) {
+  return compilerResultJson(analysisResult(analyzeProgram(body, fileName, targetName)));
+};
+globalThis.__coralAnalyzeSavedFunction = function analyzeVirtualSavedFunction(
   source,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(analyzeSavedFunctionCallPaths(source, fileName, targetName));
+  return compilerResultJson(analysisResult(analyzeSavedFunction(source, fileName, targetName)));
 };
-globalThis.__coralAnalyzeSavedFunctionPaths = function analyzeVirtualProgramPaths(
-  source,
+globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(
+  body,
+  callPathsJson,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(analyzeSavedFunctionPaths(source, fileName, targetName));
+  return compilerResultJson(
+    unknownToolCalls(body, JSON.parse(callPathsJson), fileName, targetName),
+  );
 };
-globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(chainsJson, callPathsJson) {
-  return compilerResultJson(unknownToolCalls(JSON.parse(chainsJson), JSON.parse(callPathsJson)));
-};
-globalThis.__coralAnalyzeSavedFunctionDependencies =
-  function analyzeVirtualSavedFunctionDependencies(source, fileName, targetName) {
-    return compilerResultJson(analyzeSavedFunctionDependencies(source, fileName, targetName));
-  };
 globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   body,
   savedFunctionsJson,

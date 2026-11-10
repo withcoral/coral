@@ -23,7 +23,10 @@ mod pull_compiler;
 pub mod testing;
 
 pub use compile_wire::ProtocolError;
-pub use compiler::{CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
+pub use compiler::{
+    AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left,
+    tool_check_deadline,
+};
 pub use in_process::InProcessCompiler;
 pub use link::{
     AddressError, CoralAddress, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, RunError, RunExecutorConfig,

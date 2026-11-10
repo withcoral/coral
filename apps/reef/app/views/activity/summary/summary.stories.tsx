@@ -241,6 +241,30 @@ export const Pending: Story = {
   },
 }
 
+// The first numbers have not arrived. workspace.test.tsx owns when this shows.
+export const Loading: Story = {
+  args: { onDaysChange: () => {} },
+  render: (args) => <ActivitySummary {...args} summary={undefined} />,
+  // Catches: placeholders read out as a table or as tabs.
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('status')).toHaveTextContent('Loading activity…')
+    await expect(canvas.queryByRole('tablist')).toBeNull()
+    await expect(canvas.queryByRole('table')).toBeNull()
+  },
+}
+
+export const LoadingNarrow: Story = {
+  ...Loading,
+  play: undefined,
+  decorators: [
+    (Story) => (
+      <div style={{ width: 360 }}>
+        <Story />
+      </div>
+    ),
+  ],
+}
+
 export const ContextAdded: Story = {
   args: {
     summary: {

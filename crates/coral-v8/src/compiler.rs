@@ -12,10 +12,10 @@ use crate::profile::TYPESCRIPT_PROFILE;
 use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map};
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
-    CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
-    IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl, SavedFunctionCallPaths,
+    AnalyzedSource, CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory,
+    Error, IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl,
     SavedFunctionCompilation, SavedFunctionDeclarationField, SavedFunctionReference,
-    ToolReferences, UnknownToolCall,
+    SourceReferences, UnknownToolCall,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -238,52 +238,41 @@ impl ProgramCompiler {
         )
     }
 
-    /// Finds the Saved Functions and Tools one Saved Function module
-    /// names directly, to type it.
+    /// Finds the Saved Functions and Tools one source names directly: what
+    /// Program Admission links and checks, and what typed Saved Function
+    /// preparation types.
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.functions` access and malformed
-    /// module source.
-    pub fn saved_function_call_paths(
+    /// Rejects computed or aliased `coral.functions` access, a Program body
+    /// with malformed wrapper escapes, and a Saved Function module with
+    /// syntax errors.
+    pub fn analyze(
         &self,
         deadline: Instant,
-        source: &str,
-    ) -> Result<SavedFunctionCallPaths, Error> {
-        let source = source.to_string();
+        source: &AnalyzedSource,
+    ) -> Result<SourceReferences, Error> {
+        let (function, file_name, source) = match source {
+            AnalyzedSource::Program(body) => ("__coralAnalyzeProgram", PROGRAM_FILE_NAME, body),
+            AnalyzedSource::SavedFunction(module) => (
+                "__coralAnalyzeSavedFunction",
+                SAVED_FUNCTION_FILE_NAME,
+                module,
+            ),
+        };
+        let source = source.clone();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.saved_function_call_paths(&source)
+            compiler.analyze(function, file_name, &source)
         })
     }
 
-    /// Finds the Saved Functions and Tools one Program body names
-    /// directly, to link and check it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased `coral.functions` access and malformed
-    /// wrapper escapes.
-    pub fn program_call_paths(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<SavedFunctionCallPaths, Error> {
-        let source = source.to_string();
-        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.call_paths(
-                "__coralAnalyzeSavedFunctionPaths",
-                PROGRAM_FILE_NAME,
-                &source,
-            )
-        })
-    }
-
-    /// The called chains of `tools` that name no Tool among `callable`, the
-    /// complete Call Paths the caller can call, by the rule the
-    /// unknown-Tool diagnostic of typed Saved Function preparation applies:
-    /// a chain is known once a prefix of it is callable, and a prefix that
-    /// is only a namespace of a callable path reads on. A called chain that
-    /// ends at such a namespace is unknown too: calling it names no Tool.
+    /// The called literal Tool chains of one Program body that name no Tool
+    /// among `callable`, the complete Call Paths the caller can call, by the
+    /// rule the unknown-Tool diagnostic of typed Saved Function preparation
+    /// applies: a chain is known once a prefix of it is callable, and a
+    /// prefix that is only a namespace of a callable path reads on. A called
+    /// chain that ends at such a namespace is unknown too: calling it names
+    /// no Tool. A body that is not one async-function body names none.
     ///
     /// # Errors
     ///
@@ -291,47 +280,23 @@ impl ProgramCompiler {
     pub fn unknown_tool_calls(
         &self,
         deadline: Instant,
-        tools: &ToolReferences,
+        body: &str,
         callable: &[String],
     ) -> Result<Vec<UnknownToolCall>, Error> {
-        let chains = tools.chains_json()?;
         let callable = serde_json::to_string(callable)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        let body = body.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            let json = compiler.call("__coralUnknownToolCalls", &[&chains, &callable])?;
+            let json = compiler.call(
+                "__coralUnknownToolCalls",
+                &[
+                    &body,
+                    &callable,
+                    PROGRAM_FILE_NAME,
+                    TYPESCRIPT_PROFILE.javascript_target(),
+                ],
+            )?;
             serde_json::from_str(&json).map_err(|error| Error::CompilerProtocol(error.to_string()))
-        })
-    }
-
-    /// Finds directly named `coral.functions` paths in one Program body.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased access and malformed wrapper escapes.
-    pub fn saved_function_paths(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
-        let source = source.to_string();
-        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.saved_function_paths(&source)
-        })
-    }
-
-    /// Finds directly named `coral.functions` paths in one Saved Function module.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased access and malformed module source.
-    pub fn saved_function_dependency_paths(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
-        let source = source.to_string();
-        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.saved_function_dependency_paths(&source)
         })
     }
 
@@ -534,17 +499,10 @@ struct SavedFunctionOutput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionPathsOutput {
+struct AnalysisOutput {
     references: Vec<SavedFunctionReference>,
     validation_error: Option<SavedFunctionReferenceError>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedFunctionCallPathsOutput {
-    references: Vec<SavedFunctionReference>,
-    validation_error: Option<SavedFunctionReferenceError>,
-    tools: Option<ToolReferences>,
+    tool_call_paths: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -669,68 +627,27 @@ impl CompilerIsolate {
         ))
     }
 
-    fn saved_function_call_paths(&mut self, source: &str) -> Result<SavedFunctionCallPaths, Error> {
-        self.call_paths(
-            "__coralAnalyzeSavedFunctionCallPaths",
-            SAVED_FUNCTION_FILE_NAME,
-            source,
-        )
-    }
-
-    fn call_paths(
+    fn analyze(
         &mut self,
         function: &str,
         file_name: &str,
         source: &str,
-    ) -> Result<SavedFunctionCallPaths, Error> {
+    ) -> Result<SourceReferences, Error> {
         let json = self.call(
             function,
             &[source, file_name, TYPESCRIPT_PROFILE.javascript_target()],
         )?;
-        let output: SavedFunctionCallPathsOutput = serde_json::from_str(&json)
+        let output: AnalysisOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
-        match (output.validation_error, output.tools) {
+        match (output.validation_error, output.tool_call_paths) {
             (Some(error), _) => Err(invalid_saved_function_reference(error)),
-            (None, Some(tools)) => Ok(SavedFunctionCallPaths {
+            (None, Some(tool_call_paths)) => Ok(SourceReferences {
                 functions: output.references,
-                tools,
+                tool_call_paths,
             }),
             (None, None) => Err(Error::CompilerProtocol(
                 "compiler returned no Tool references".to_string(),
             )),
-        }
-    }
-
-    fn saved_function_paths(&mut self, source: &str) -> Result<Vec<SavedFunctionReference>, Error> {
-        self.analyze_saved_function_paths("__coralAnalyzeSavedFunctionPaths", source)
-    }
-
-    fn saved_function_dependency_paths(
-        &mut self,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
-        self.analyze_saved_function_paths("__coralAnalyzeSavedFunctionDependencies", source)
-    }
-
-    fn analyze_saved_function_paths(
-        &mut self,
-        function: &str,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, Error> {
-        let json = self.call(
-            function,
-            &[
-                source,
-                PROGRAM_FILE_NAME,
-                TYPESCRIPT_PROFILE.javascript_target(),
-            ],
-        )?;
-        let output: SavedFunctionPathsOutput = serde_json::from_str(&json)
-            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
-        if let Some(error) = output.validation_error {
-            Err(invalid_saved_function_reference(error))
-        } else {
-            Ok(output.references)
         }
     }
 
@@ -1273,7 +1190,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    compiler.saved_function_paths(deadline(), &source),
+                    compiler.analyze(deadline(), &AnalyzedSource::Program(source.clone())),
                     Err(Error::SourceTooDeeplyNested)
                 ),
                 "analysis"

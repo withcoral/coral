@@ -1,6 +1,7 @@
 //! A scripted Coral that serves the pull stream, for tests of the Run
-//! Executor's side of the link. Each stream it holds sends compiles through a
-//! [`PullStreamCompiler`] over [`PullStreams`], as Coral's listener does.
+//! Executor's side of the link, and a compiler client that counts calls.
+//! Each stream it holds sends compiles through a [`PullStreamCompiler`] over
+//! [`PullStreams`], as Coral's listener does.
 
 #![allow(
     clippy::missing_panics_doc,
@@ -19,6 +20,9 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::TcpIncoming;
 use tonic::{Code, Request, Response, Status, Streaming};
+
+mod counting;
+pub use counting::{CompilerCalls, CountingCompiler};
 
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{Hello, PullRequest, PullResponse, Welcome, pull_request, pull_response};

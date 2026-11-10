@@ -512,130 +512,49 @@ impl LinkedSavedFunctionSource {
     }
 }
 
-/// The Call Paths one Saved Function module or Program body names
-/// directly, as typed preparation and Program Admission need them.
+/// One source for [`ProgramCompiler::analyze`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SavedFunctionCallPaths {
-    functions: Vec<SavedFunctionReference>,
-    tools: ToolReferences,
+pub enum AnalyzedSource {
+    /// A Program body.
+    Program(String),
+    /// A Saved Function module.
+    SavedFunction(String),
 }
 
-impl SavedFunctionCallPaths {
-    /// The `functions` and `tools` one source names.
+/// What one Program body or Saved Function module names directly: the
+/// Saved Functions that link or type it, and the Tools it may call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceReferences {
+    functions: Vec<SavedFunctionReference>,
+    tool_call_paths: Vec<String>,
+}
+
+impl SourceReferences {
+    /// The `functions` and `tool_call_paths` one source names.
     #[must_use]
-    pub const fn new(functions: Vec<SavedFunctionReference>, tools: ToolReferences) -> Self {
-        Self { functions, tools }
+    pub const fn new(
+        functions: Vec<SavedFunctionReference>,
+        tool_call_paths: Vec<String>,
+    ) -> Self {
+        Self {
+            functions,
+            tool_call_paths,
+        }
     }
 
-    /// Returns the directly named `coral.functions` paths.
+    /// Returns the directly named `coral.functions` paths, in path order.
     #[must_use]
     pub fn functions(&self) -> &[SavedFunctionReference] {
         &self.functions
     }
 
-    /// Returns the literal `coral.providers` and `coral.workspace` chains.
+    /// Returns every prefix of a literal `coral.providers` or
+    /// `coral.workspace` chain that could be a Tool Call Path, such as
+    /// `coral.providers.github.repos.get`, so `get.call(...)` still names
+    /// `get`. Aliased roots are not followed.
     #[must_use]
-    pub const fn tools(&self) -> &ToolReferences {
-        &self.tools
-    }
-}
-
-/// The literal `coral.providers` and `coral.workspace` chains one source
-/// names. Aliased roots are not followed.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolReferences {
-    call_paths: Vec<String>,
-    chains: Vec<ToolChain>,
-}
-
-impl ToolReferences {
-    /// The `chains` one source names, and their `call_paths`.
-    #[must_use]
-    pub const fn new(call_paths: Vec<String>, chains: Vec<ToolChain>) -> Self {
-        Self { call_paths, chains }
-    }
-
-    /// Returns the chains.
-    #[must_use]
-    pub fn chains(&self) -> &[ToolChain] {
-        &self.chains
-    }
-
-    /// Returns every chain prefix that could be a Tool Call Path, such
-    /// as `coral.providers.github.repos.get`, so `get.call(...)` still names
-    /// `get`.
-    #[must_use]
-    pub fn call_paths(&self) -> &[String] {
-        &self.call_paths
-    }
-
-    fn chains_json(&self) -> Result<String, Error> {
-        serde_json::to_string(&self.chains)
-            .map_err(|error| Error::CompilerProtocol(error.to_string()))
-    }
-}
-
-/// One literal chain, relative to `coral`, where it starts in the source, and
-/// whether it is called.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ToolChain {
-    segments: Vec<String>,
-    start: u64,
-    called: bool,
-    /// The one-based authored line and column where it starts.
-    line: u64,
-    column: u64,
-}
-
-impl ToolChain {
-    /// The chain of `segments` at offset `start`, authored `line` and
-    /// `column`.
-    #[must_use]
-    pub const fn new(
-        segments: Vec<String>,
-        start: u64,
-        called: bool,
-        line: u64,
-        column: u64,
-    ) -> Self {
-        Self {
-            segments,
-            start,
-            called,
-            line,
-            column,
-        }
-    }
-
-    /// Returns the chain's segments.
-    #[must_use]
-    pub fn segments(&self) -> &[String] {
-        &self.segments
-    }
-
-    /// Returns its offset in the source.
-    #[must_use]
-    pub const fn start(&self) -> u64 {
-        self.start
-    }
-
-    /// Returns whether the source calls it.
-    #[must_use]
-    pub const fn called(&self) -> bool {
-        self.called
-    }
-
-    /// Returns the one-based authored line where it starts.
-    #[must_use]
-    pub const fn line(&self) -> u64 {
-        self.line
-    }
-
-    /// Returns the one-based authored column where it starts.
-    #[must_use]
-    pub const fn column(&self) -> u64 {
-        self.column
+    pub fn tool_call_paths(&self) -> &[String] {
+        &self.tool_call_paths
     }
 }
 
@@ -726,14 +645,8 @@ impl CallableDeclaration {
 #[serde(rename_all = "camelCase")]
 pub struct CoralDeclarations {
     declaration_max_bytes: usize,
-    tools: Option<TypedTools>,
+    tools: Option<Vec<CallableDeclaration>>,
     functions: Option<Vec<CallableDeclaration>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct TypedTools {
-    chains: Vec<ToolChain>,
-    declarations: Vec<CallableDeclaration>,
 }
 
 impl CoralDeclarations {
@@ -749,19 +662,11 @@ impl CoralDeclarations {
     }
 
     /// Types `coral.providers` and `coral.workspace` from the Tools the
-    /// caller can call. `references` are what
-    /// [`ProgramCompiler::saved_function_call_paths`] found in the same
-    /// source.
+    /// caller can call, such as those of the
+    /// [`SourceReferences::tool_call_paths`] that the source names.
     #[must_use]
-    pub fn with_tools(
-        mut self,
-        references: &ToolReferences,
-        declarations: Vec<CallableDeclaration>,
-    ) -> Self {
-        self.tools = Some(TypedTools {
-            chains: references.chains.clone(),
-            declarations,
-        });
+    pub fn with_tools(mut self, tools: Vec<CallableDeclaration>) -> Self {
+        self.tools = Some(tools);
         self
     }
 
@@ -778,12 +683,10 @@ impl CoralDeclarations {
         self.declaration_max_bytes
     }
 
-    /// Returns the chains and declarations that type the Tools, if any do.
+    /// Returns the declarations that type the Tools, if any do.
     #[must_use]
-    pub fn tools(&self) -> Option<(&[ToolChain], &[CallableDeclaration])> {
-        self.tools
-            .as_ref()
-            .map(|tools| (tools.chains.as_slice(), tools.declarations.as_slice()))
+    pub fn tools(&self) -> Option<&[CallableDeclaration]> {
+        self.tools.as_deref()
     }
 
     /// Returns the declarations that type `coral.functions`, if any do.

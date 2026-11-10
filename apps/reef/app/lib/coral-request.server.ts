@@ -21,11 +21,14 @@ export function healthClient(endpoint: CoralEndpointPolicy) {
   )
 }
 
+/** How long Reef waits for a Coral call by default. */
+export const CORAL_CALL_TIMEOUT_MS = 10_000
+
 /** Private first-party transport; used only by resource-specific server paths. */
 export function managementTransportForRequest(
   auth: RequestAuth,
   endpoint: CoralEndpointPolicy,
-  defaultTimeoutMs = 10_000,
+  defaultTimeoutMs = CORAL_CALL_TIMEOUT_MS,
 ) {
   warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
   return createGrpcTransport({
