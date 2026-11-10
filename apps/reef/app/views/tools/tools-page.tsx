@@ -732,7 +732,7 @@ function ToolsTableScreen({
       if (provider.tools.length === 0) {
         section.status =
           provider.kind === 'private'
-            ? 'No private tools yet. Ask your agent to save one.'
+            ? 'No private tools yet. Ask your agent to create one.'
             : 'No tools yet. Settings remain available.'
         section.statusIndex = flat.length
         flat.push({
