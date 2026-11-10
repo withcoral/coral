@@ -33,6 +33,6 @@ know.
 
 ## Consequences
 
-- Build a release from the released binary's package alone, never from a whole-workspace build: Cargo unifies
-  features across every package in one build.
+- Build a release from the released binary's package alone, never from a whole-workspace build: Cargo builds a
+  dependency shared by several packages once, with every feature any of them asks for.
 - Commit messages, PR descriptions and `ee/` code are all public.
