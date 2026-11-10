@@ -49,3 +49,7 @@ apps/reef/recipes/*/logo*.svg linguist-generated
 # GitHub's OpenAPI document, copied verbatim at a pinned commit for the search
 # smoke test.
 crates/coral-administration/src/tests/search_eval/github.openapi.yaml linguist-generated
+
+# The README demo, rendered frame by frame from the demo film's storyboard
+# and Reef's Storybook screens.
+apps/docs/images/demo.gif linguist-generated
