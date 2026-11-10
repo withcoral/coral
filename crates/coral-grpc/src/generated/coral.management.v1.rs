@@ -15302,6 +15302,10 @@ pub struct SharedToolSummary {
     /// When the current revision was published.
     #[prost(message, optional, tag = "4")]
     pub update_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// workspaces/{workspace}/sharedTools/{shared_tool}. Names the Shared Tool
+    /// for good, after a removal too.
+    #[prost(string, tag = "5")]
+    pub name: ::prost::alloc::string::String,
 }
 /// Reads one Shared Tool.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -15328,6 +15332,10 @@ pub struct SharedTool {
     /// The current revision, which every new Run links.
     #[prost(message, optional, tag = "4")]
     pub current_revision: ::core::option::Option<SharedToolRevision>,
+    /// workspaces/{workspace}/sharedTools/{shared_tool}. Names the Shared Tool
+    /// for good, after a removal too. Its revisions and events are read by it.
+    #[prost(string, tag = "5")]
+    pub name: ::prost::alloc::string::String,
 }
 /// One immutable, numbered publication of a Shared Tool.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -15366,15 +15374,12 @@ pub struct SharedToolRevision {
     #[prost(uint64, tag = "11")]
     pub restored_from_revision: u64,
 }
-/// Lists the revisions of one Shared Tool.
+/// Lists the revisions of one Shared Tool, live or removed.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListSharedToolRevisionsRequest {
-    /// workspaces/{workspace}.
+    /// workspaces/{workspace}/sharedTools/{shared_tool}.
     #[prost(string, tag = "1")]
-    pub parent: ::prost::alloc::string::String,
-    /// Shared Tool Path relative to coral.shared.
-    #[prost(string, tag = "2")]
-    pub path: ::prost::alloc::string::String,
+    pub shared_tool: ::prost::alloc::string::String,
 }
 /// Every revision of one Shared Tool, newest first.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -15408,17 +15413,14 @@ pub struct SharedToolRevisionSummary {
     #[prost(uint64, tag = "7")]
     pub restored_from_revision: u64,
 }
-/// Reads one revision of one Shared Tool.
+/// Reads one revision of one Shared Tool, live or removed.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetSharedToolRevisionRequest {
-    /// workspaces/{workspace}.
+    /// workspaces/{workspace}/sharedTools/{shared_tool}.
     #[prost(string, tag = "1")]
-    pub parent: ::prost::alloc::string::String,
-    /// Shared Tool Path relative to coral.shared.
-    #[prost(string, tag = "2")]
-    pub path: ::prost::alloc::string::String,
+    pub shared_tool: ::prost::alloc::string::String,
     /// Revision number, from 1.
-    #[prost(uint64, tag = "3")]
+    #[prost(uint64, tag = "2")]
     pub revision: u64,
 }
 /// Publishes the content an Owner reviewed as a Shared Tool Revision.
@@ -15520,6 +15522,119 @@ pub struct SharedToolCall {
     #[prost(uint64, tag = "2")]
     pub revision: u64,
 }
+/// Removes one Shared Tool.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RemoveSharedToolRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Shared Tool Path relative to coral.shared.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+    /// The revision the Owner expects to be current at the path.
+    #[prost(uint64, tag = "3")]
+    pub expected_revision: u64,
+}
+/// The outcome of a removal.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RemoveSharedToolResponse {
+    /// workspaces/{workspace}/sharedTools/{shared_tool} of the removed Shared
+    /// Tool, which still reads its revisions and events.
+    #[prost(string, tag = "1")]
+    pub shared_tool: ::prost::alloc::string::String,
+}
+/// Lists publishes and removals of Shared Tools.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSharedToolEventsRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/sharedTools/{shared_tool} to list the events of one
+    /// Shared Tool, live or removed. Empty lists those of every Shared Tool. A
+    /// name that no Shared Tool of the Workspace has lists nothing.
+    #[prost(string, tag = "2")]
+    pub shared_tool: ::prost::alloc::string::String,
+    /// Maximum results, bounded to 100; zero selects the default.
+    #[prost(int32, tag = "3")]
+    pub page_size: i32,
+    /// Opaque continuation from the preceding page in this scope.
+    #[prost(string, tag = "4")]
+    pub page_token: ::prost::alloc::string::String,
+}
+/// One page of Shared Tool events, newest first.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSharedToolEventsResponse {
+    /// The events on this page.
+    #[prost(message, repeated, tag = "1")]
+    pub events: ::prost::alloc::vec::Vec<SharedToolEvent>,
+    /// Empty when no further page remains.
+    #[prost(string, tag = "2")]
+    pub next_page_token: ::prost::alloc::string::String,
+}
+/// One publish or removal of a Shared Tool. It never holds source.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SharedToolEvent {
+    /// Stable identity of the event.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// What happened.
+    #[prost(enumeration = "SharedToolEventAction", tag = "2")]
+    pub action: i32,
+    /// workspaces/{workspace}/sharedTools/{shared_tool}, which may since have
+    /// been removed.
+    #[prost(string, tag = "3")]
+    pub shared_tool: ::prost::alloc::string::String,
+    /// The Shared Tool Path it had. After its removal, another Shared Tool may
+    /// have it.
+    #[prost(string, tag = "4")]
+    pub path: ::prost::alloc::string::String,
+    /// The revision a publish made current, or the revision that was current at
+    /// a removal.
+    #[prost(uint64, tag = "5")]
+    pub revision: u64,
+    /// Lowercase hex SHA-256 of that revision's description and source.
+    #[prost(string, tag = "6")]
+    pub content_hash: ::prost::alloc::string::String,
+    /// users/{user} who published or removed.
+    #[prost(string, tag = "7")]
+    pub actor: ::prost::alloc::string::String,
+    /// When it happened.
+    #[prost(message, optional, tag = "8")]
+    pub event_time: ::core::option::Option<::prost_types::Timestamp>,
+}
+/// What one Shared Tool event records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SharedToolEventAction {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// A publish made a new revision current.
+    Published = 1,
+    /// A removal freed the path and kept the revisions.
+    Removed = 2,
+}
+impl SharedToolEventAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SHARED_TOOL_EVENT_ACTION_UNSPECIFIED",
+            Self::Published => "SHARED_TOOL_EVENT_ACTION_PUBLISHED",
+            Self::Removed => "SHARED_TOOL_EVENT_ACTION_REMOVED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SHARED_TOOL_EVENT_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "SHARED_TOOL_EVENT_ACTION_PUBLISHED" => Some(Self::Published),
+            "SHARED_TOOL_EVENT_ACTION_REMOVED" => Some(Self::Removed),
+            _ => None,
+        }
+    }
+}
 /// Generated client implementations.
 pub mod shared_tool_service_client {
     #![allow(
@@ -15535,9 +15650,12 @@ pub mod shared_tool_service_client {
     /// Workspace Owner published, which the Workspace owns.
     ///
     /// Every User with a Workspace Membership reads them. Only a Workspace Owner
-    /// publishes. A Shared Tool Path names one live Shared Tool in its Workspace, so
-    /// requests carry the Workspace and path. A Workspace the caller cannot inspect
-    /// and an absent path return the same NOT_FOUND.
+    /// publishes or removes. A Shared Tool Path names one live Shared Tool in its
+    /// Workspace, so a read of the live Shared Tool, a publish and a removal carry
+    /// the Workspace and path. A removal frees the path and keeps the revisions, so
+    /// revisions and events are read by the Shared Tool's resource name, which
+    /// names it for good. A Workspace the caller cannot inspect and an absent path
+    /// or name return the same NOT_FOUND.
     #[derive(Debug, Clone)]
     pub struct SharedToolServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -15675,7 +15793,8 @@ pub mod shared_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Lists every revision of one Shared Tool, newest first, without source.
+        /// Lists every revision of one Shared Tool, live or removed, newest first,
+        /// without source.
         pub async fn list_shared_tool_revisions(
             &mut self,
             request: impl tonic::IntoRequest<super::ListSharedToolRevisionsRequest>,
@@ -15705,7 +15824,7 @@ pub mod shared_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Returns one revision of one Shared Tool with its source.
+        /// Returns one revision of one Shared Tool, live or removed, with its source.
         pub async fn get_shared_tool_revision(
             &mut self,
             request: impl tonic::IntoRequest<super::GetSharedToolRevisionRequest>,
@@ -15777,6 +15896,77 @@ pub mod shared_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Removes the Shared Tool at a path. The path is free for another Shared
+        /// Tool, and the revisions and events stay under the returned name. Programs
+        /// and Tools that call the path fail at their next admission.
+        ///
+        /// PERMISSION_DENIED unless the caller is a Workspace Owner.
+        /// NOT_FOUND when no Shared Tool is at the path.
+        /// ABORTED when the current revision is not expected_revision.
+        /// FAILED_PRECONDITION with reason SHARED_TOOL_HAS_DEPENDENTS while the
+        /// current revision of another Shared Tool calls it. The error metadata
+        /// "dependent" holds that Shared Tool's path: of several, the first in path
+        /// order.
+        pub async fn remove_shared_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RemoveSharedToolRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveSharedToolResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/RemoveSharedTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "RemoveSharedTool",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Lists one page of the publishes and removals of the Workspace's Shared
+        /// Tools, newest first, or those of one Shared Tool, live or removed.
+        pub async fn list_shared_tool_events(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSharedToolEventsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSharedToolEventsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SharedToolService/ListSharedToolEvents",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SharedToolService",
+                        "ListSharedToolEvents",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -15806,7 +15996,8 @@ pub(crate) mod shared_tool_service_server {
             &self,
             request: tonic::Request<super::GetSharedToolRequest>,
         ) -> std::result::Result<tonic::Response<super::SharedTool>, tonic::Status>;
-        /// Lists every revision of one Shared Tool, newest first, without source.
+        /// Lists every revision of one Shared Tool, live or removed, newest first,
+        /// without source.
         async fn list_shared_tool_revisions(
             &self,
             request: tonic::Request<super::ListSharedToolRevisionsRequest>,
@@ -15814,7 +16005,7 @@ pub(crate) mod shared_tool_service_server {
             tonic::Response<super::ListSharedToolRevisionsResponse>,
             tonic::Status,
         >;
-        /// Returns one revision of one Shared Tool with its source.
+        /// Returns one revision of one Shared Tool, live or removed, with its source.
         async fn get_shared_tool_revision(
             &self,
             request: tonic::Request<super::GetSharedToolRevisionRequest>,
@@ -15842,14 +16033,44 @@ pub(crate) mod shared_tool_service_server {
             tonic::Response<super::PublishSharedToolResponse>,
             tonic::Status,
         >;
+        /// Removes the Shared Tool at a path. The path is free for another Shared
+        /// Tool, and the revisions and events stay under the returned name. Programs
+        /// and Tools that call the path fail at their next admission.
+        ///
+        /// PERMISSION_DENIED unless the caller is a Workspace Owner.
+        /// NOT_FOUND when no Shared Tool is at the path.
+        /// ABORTED when the current revision is not expected_revision.
+        /// FAILED_PRECONDITION with reason SHARED_TOOL_HAS_DEPENDENTS while the
+        /// current revision of another Shared Tool calls it. The error metadata
+        /// "dependent" holds that Shared Tool's path: of several, the first in path
+        /// order.
+        async fn remove_shared_tool(
+            &self,
+            request: tonic::Request<super::RemoveSharedToolRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveSharedToolResponse>,
+            tonic::Status,
+        >;
+        /// Lists one page of the publishes and removals of the Workspace's Shared
+        /// Tools, newest first, or those of one Shared Tool, live or removed.
+        async fn list_shared_tool_events(
+            &self,
+            request: tonic::Request<super::ListSharedToolEventsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSharedToolEventsResponse>,
+            tonic::Status,
+        >;
     }
     /// The Shared Tools of one Workspace: the Tools at coral.shared that a
     /// Workspace Owner published, which the Workspace owns.
     ///
     /// Every User with a Workspace Membership reads them. Only a Workspace Owner
-    /// publishes. A Shared Tool Path names one live Shared Tool in its Workspace, so
-    /// requests carry the Workspace and path. A Workspace the caller cannot inspect
-    /// and an absent path return the same NOT_FOUND.
+    /// publishes or removes. A Shared Tool Path names one live Shared Tool in its
+    /// Workspace, so a read of the live Shared Tool, a publish and a removal carry
+    /// the Workspace and path. A removal frees the path and keeps the revisions, so
+    /// revisions and events are read by the Shared Tool's resource name, which
+    /// names it for good. A Workspace the caller cannot inspect and an absent path
+    /// or name return the same NOT_FOUND.
     #[derive(Debug)]
     pub struct SharedToolServiceServer<T> {
         inner: Arc<T>,
@@ -16152,6 +16373,104 @@ pub(crate) mod shared_tool_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PublishSharedToolSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SharedToolService/RemoveSharedTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct RemoveSharedToolSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::RemoveSharedToolRequest>
+                    for RemoveSharedToolSvc<T> {
+                        type Response = super::RemoveSharedToolResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RemoveSharedToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::remove_shared_tool(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RemoveSharedToolSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SharedToolService/ListSharedToolEvents" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSharedToolEventsSvc<T: SharedToolService>(pub Arc<T>);
+                    impl<
+                        T: SharedToolService,
+                    > tonic::server::UnaryService<super::ListSharedToolEventsRequest>
+                    for ListSharedToolEventsSvc<T> {
+                        type Response = super::ListSharedToolEventsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListSharedToolEventsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SharedToolService>::list_shared_tool_events(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSharedToolEventsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

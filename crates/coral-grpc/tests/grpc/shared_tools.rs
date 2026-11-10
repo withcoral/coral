@@ -1,6 +1,6 @@
 //! The Shared Tool service's contract: its status mapping and projection.
-//! Publishing rules are tested at their owner, coral-tools.
-use super::{Fixture, change, error_reason, management, request};
+//! Publishing and removal rules are tested at their owner, coral-tools.
+use super::{Fixture, change, error_info, error_reason, management, request};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
     PrivateToolSave,
@@ -73,14 +73,7 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
     let f = Fixture::new().await;
     save_draft(&f, &f.owner).await;
     save_draft(&f, &f.member).await;
-    let outsider = AuthenticatedUser::organization_member(
-        UserId::parse("outsider").unwrap(),
-        OrganizationRole::Member,
-    );
-    OrganizationModule::new(f.database.database())
-        .provision_login(&change(&outsider))
-        .await
-        .unwrap();
+    let outsider = outsider(&f).await;
     send(&f, &f.owner, publish(&f, "mail.remind", 0))
         .await
         .expect("publish the first revision");
@@ -302,20 +295,15 @@ async fn a_member_reads_the_shared_tool_its_summary_and_its_revisions() {
             .starts_with(&format!("{parent}/providers/")),
         "{listed:?}"
     );
-    let revisions = f
-        .shared_tools()
-        .list_shared_tool_revisions(request(
-            management::ListSharedToolRevisionsRequest {
-                parent: parent.clone(),
-                path: "mail.remind".into(),
-            },
-            &token,
-            "reef",
-        ))
-        .await
-        .expect("list revisions")
-        .into_inner()
-        .revisions;
+    assert_eq!(
+        listed.shared_tools.first().map(|summary| &summary.name),
+        Some(&tool.name)
+    );
+    assert!(
+        tool.name.starts_with(&format!("{parent}/sharedTools/")),
+        "{tool:?}"
+    );
+    let revisions = revisions(&f, &f.member, &tool.name).await;
     assert!(
         matches!(
             revisions.as_slice(),
@@ -326,19 +314,333 @@ async fn a_member_reads_the_shared_tool_its_summary_and_its_revisions() {
         ),
         "{revisions:?}"
     );
-    let revision = f
-        .shared_tools()
+    assert_eq!(first_revision(&f, &f.member, &tool.name).await, current);
+}
+
+/// A User of the Organization with no Membership of the Workspace.
+async fn outsider(f: &Fixture) -> AuthenticatedUser {
+    let outsider = AuthenticatedUser::organization_member(
+        UserId::parse("outsider").unwrap(),
+        OrganizationRole::Member,
+    );
+    OrganizationModule::new(f.database.database())
+        .provision_login(&change(&outsider))
+        .await
+        .unwrap();
+    outsider
+}
+
+/// The source-free revisions of the Shared Tool named `shared_tool`.
+async fn revisions(
+    f: &Fixture,
+    user: &AuthenticatedUser,
+    shared_tool: &str,
+) -> Vec<management::SharedToolRevisionSummary> {
+    f.shared_tools()
+        .list_shared_tool_revisions(request(
+            management::ListSharedToolRevisionsRequest {
+                shared_tool: shared_tool.into(),
+            },
+            &f.token(user, "reef"),
+            "reef",
+        ))
+        .await
+        .expect("list revisions")
+        .into_inner()
+        .revisions
+}
+
+/// Revision 1 of the Shared Tool named `shared_tool`.
+async fn first_revision(
+    f: &Fixture,
+    user: &AuthenticatedUser,
+    shared_tool: &str,
+) -> management::SharedToolRevision {
+    f.shared_tools()
         .get_shared_tool_revision(request(
             management::GetSharedToolRevisionRequest {
-                parent,
-                path: "mail.remind".into(),
+                shared_tool: shared_tool.into(),
                 revision: 1,
             },
-            &token,
+            &f.token(user, "reef"),
             "reef",
         ))
         .await
         .expect("get the revision")
-        .into_inner();
-    assert_eq!(revision, current);
+        .into_inner()
+}
+
+/// A removal of the Shared Tool at `path`.
+async fn remove(
+    f: &Fixture,
+    user: &AuthenticatedUser,
+    path: &str,
+    expected_revision: u64,
+) -> Result<management::RemoveSharedToolResponse, tonic::Status> {
+    f.shared_tools()
+        .remove_shared_tool(request(
+            management::RemoveSharedToolRequest {
+                parent: format!("workspaces/{}", f.workspace.id()),
+                path: path.into(),
+                expected_revision,
+            },
+            &f.token(user, "reef"),
+            "reef",
+        ))
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+/// One page of Shared Tool events, of `shared_tool` alone unless it is
+/// empty.
+async fn events(
+    f: &Fixture,
+    user: &AuthenticatedUser,
+    shared_tool: &str,
+    page_size: i32,
+    page_token: &str,
+) -> Result<management::ListSharedToolEventsResponse, tonic::Status> {
+    f.shared_tools()
+        .list_shared_tool_events(request(
+            management::ListSharedToolEventsRequest {
+                parent: format!("workspaces/{}", f.workspace.id()),
+                shared_tool: shared_tool.into(),
+                page_size,
+                page_token: page_token.into(),
+            },
+            &f.token(user, "reef"),
+            "reef",
+        ))
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+// Catches: a removal refusal that reaches Reef with the wrong status, or a
+// refusal over dependents that does not say which Shared Tool to deal with.
+#[tokio::test]
+async fn a_refused_removal_maps_to_its_status_and_reason() {
+    let f = Fixture::new().await;
+    save_draft(&f, &f.owner).await;
+    send(&f, &f.owner, publish(&f, "mail.remind", 0))
+        .await
+        .expect("publish the Shared Tool");
+    send(
+        &f,
+        &f.owner,
+        management::PublishSharedToolRequest {
+            source:
+                "export default async function digest() { return coral.shared.mail.remind(\"a\"); }"
+                    .into(),
+            ..publish(&f, "mail.digest", 0)
+        },
+    )
+    .await
+    .expect("publish a Shared Tool that calls it");
+    let outsider = outsider(&f).await;
+
+    // (case, who removes, the path, the expected revision, status and reason)
+    let cases = [
+        (
+            "a Member removes",
+            &f.member,
+            "mail.digest",
+            1,
+            (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
+        ),
+        (
+            "no Shared Tool is at the path",
+            &f.owner,
+            "mail.absent",
+            1,
+            (tonic::Code::NotFound, "NOT_FOUND"),
+        ),
+        (
+            "the revision moved",
+            &f.owner,
+            "mail.digest",
+            2,
+            (tonic::Code::Aborted, "ABORTED"),
+        ),
+        (
+            "another Shared Tool calls it",
+            &f.owner,
+            "mail.remind",
+            1,
+            (
+                tonic::Code::FailedPrecondition,
+                "SHARED_TOOL_HAS_DEPENDENTS",
+            ),
+        ),
+        (
+            "the caller is outside the Workspace",
+            &outsider,
+            "mail.digest",
+            1,
+            (tonic::Code::NotFound, "NOT_FOUND"),
+        ),
+    ];
+    for (case, user, path, expected_revision, expected) in cases {
+        let status = remove(&f, user, path, expected_revision)
+            .await
+            .expect_err(case);
+        assert_eq!(
+            (status.code(), error_reason(&status).as_str()),
+            expected,
+            "{case}"
+        );
+        // Only the refusal over dependents names a Shared Tool.
+        assert_eq!(
+            error_info(&status)
+                .metadata
+                .get("dependent")
+                .map(String::as_str),
+            (expected.1 == "SHARED_TOOL_HAS_DEPENDENTS").then_some("mail.digest"),
+            "{case}"
+        );
+    }
+}
+
+// Catches: a User outside the Workspace reading its history, or a malformed
+// or foreign Shared Tool name reaching the domain.
+#[tokio::test]
+async fn a_refused_history_read_maps_to_its_status_and_reason() {
+    let f = Fixture::new().await;
+    let outsider = outsider(&f).await;
+    let other_workspace = format!(
+        "workspaces/{}/sharedTools/{}",
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4()
+    );
+    for (case, user, shared_tool, expected) in [
+        (
+            "the caller is outside the Workspace",
+            &outsider,
+            "",
+            (tonic::Code::NotFound, "NOT_FOUND"),
+        ),
+        (
+            "the name is not a Shared Tool's",
+            &f.member,
+            "mail.remind",
+            (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
+        ),
+        (
+            "the name is in another Workspace",
+            &f.member,
+            other_workspace.as_str(),
+            (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
+        ),
+    ] {
+        let status = events(&f, user, shared_tool, 10, "").await.expect_err(case);
+        assert_eq!(
+            (status.code(), error_reason(&status).as_str()),
+            expected,
+            "{case}"
+        );
+    }
+}
+
+// Catches: a projection that drops or mislabels what Reef shows of a
+// removed Shared Tool: its name, its events and its kept revisions; or a
+// page token that repeats or skips an event.
+#[tokio::test]
+async fn a_member_reads_the_history_and_the_revisions_of_a_removed_shared_tool() {
+    use management::SharedToolEventAction::{Published, Removed};
+    let f = Fixture::new().await;
+    save_draft(&f, &f.owner).await;
+    let tool = send(&f, &f.owner, publish(&f, "mail.remind", 0))
+        .await
+        .expect("publish")
+        .shared_tool
+        .expect("the Shared Tool");
+    let current = tool.current_revision.clone().expect("the current revision");
+    let other = send(&f, &f.owner, publish(&f, "mail.other", 0))
+        .await
+        .expect("publish another")
+        .shared_tool
+        .expect("the other Shared Tool");
+
+    let removed = remove(&f, &f.owner, "mail.remind", 1)
+        .await
+        .expect("remove");
+    assert_eq!(removed.shared_tool, tool.name);
+
+    let project = |events: &[management::SharedToolEvent]| {
+        events
+            .iter()
+            .map(|event| {
+                assert!(event.event_time.is_some(), "{event:?}");
+                (
+                    event.action(),
+                    event.shared_tool.clone(),
+                    event.path.clone(),
+                    event.revision,
+                    event.content_hash.clone(),
+                    event.actor.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let event = |action, tool: &management::SharedTool| {
+        (
+            action,
+            tool.name.clone(),
+            tool.path.clone(),
+            1,
+            tool.current_revision
+                .as_ref()
+                .expect("the current revision")
+                .content_hash
+                .clone(),
+            "users/owner".to_string(),
+        )
+    };
+    let whole = events(&f, &f.member, "", 10, "")
+        .await
+        .expect("list events");
+    assert_eq!(
+        project(&whole.events),
+        [
+            event(Removed, &tool),
+            event(Published, &other),
+            event(Published, &tool),
+        ]
+    );
+    assert_eq!(whole.next_page_token, "");
+    let of_the_removed = events(&f, &f.member, &tool.name, 10, "")
+        .await
+        .expect("list the removed Shared Tool's events");
+    assert_eq!(
+        project(&of_the_removed.events),
+        [event(Removed, &tool), event(Published, &tool)]
+    );
+
+    // Each page continues the one before it, in its own listing only.
+    let first = events(&f, &f.member, "", 2, "").await.expect("page one");
+    let second = events(&f, &f.member, "", 2, &first.next_page_token)
+        .await
+        .expect("page two");
+    assert_eq!(
+        [first.events.clone(), second.events.clone()].concat(),
+        whole.events
+    );
+    assert_eq!(second.next_page_token, "");
+    let reused = events(&f, &f.member, &tool.name, 2, &first.next_page_token)
+        .await
+        .expect_err("a token of another listing");
+    assert_eq!(
+        (reused.code(), error_reason(&reused).as_str()),
+        (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
+    );
+
+    // The removed Shared Tool's name still reads its revisions.
+    let revisions = revisions(&f, &f.member, &tool.name).await;
+    assert!(
+        matches!(
+            revisions.as_slice(),
+            [summary] if summary.revision == 1 && summary.content_hash == current.content_hash
+        ),
+        "{revisions:?}"
+    );
+    assert_eq!(first_revision(&f, &f.member, &tool.name).await, current);
 }

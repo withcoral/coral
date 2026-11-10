@@ -217,14 +217,27 @@ pub(super) fn annotate(status: Status) -> Status {
 }
 
 pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
+    safe_status_with(code, reason, [])
+}
+
+/// A status whose `ErrorInfo` also carries `metadata`: safe values that the
+/// client acts on, never an error's text.
+pub(super) fn safe_status_with(
+    code: tonic::Code,
+    reason: &str,
+    metadata: impl IntoIterator<Item = (&'static str, String)>,
+) -> Status {
     let detail = ErrorInfo {
         reason: reason.into(),
         domain: "coral.management".into(),
-        metadata: [(
-            "trace_id".into(),
-            TraceId::current_or_new().as_str().to_owned(),
-        )]
-        .into(),
+        metadata: metadata
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .chain([(
+                "trace_id".to_owned(),
+                TraceId::current_or_new().as_str().to_owned(),
+            )])
+            .collect(),
     };
     let status = RpcStatus {
         code: code as i32,

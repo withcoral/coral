@@ -1,7 +1,8 @@
 //! Calls to `coral.shared.*`, over the real V8 engine: every Principal in
 //! the Workspace calls a Shared Tool with its own authority, each Run links
-//! and records the current revision, and a publish during admission fails
-//! that admission. Publishing rules are tested at their owner, coral-tools.
+//! and records the current revision, a publish or a removal during admission
+//! fails that admission, and a removed Shared Tool fails the next one.
+//! Publishing and removal rules are tested at their owner, coral-tools.
 use super::provider_setup::{AdminScope, final_value};
 use super::*;
 use crate::{SourceDocument, SourceLocation};
@@ -117,6 +118,20 @@ impl SharedScope {
             )
             .await
             .expect("publish the Shared Tool");
+    }
+
+    /// Removes `coral.shared.mail.remind` as the Owner, at its revision
+    /// `expected_revision`.
+    async fn remove(&self, expected_revision: u64) {
+        self.shared_tools
+            .remove(
+                &change(self.scope.owner_user(), 71, '6'),
+                &self.scope.workspace_id,
+                &SharedToolPath::parse("mail.remind").expect("a path"),
+                expected_revision,
+            )
+            .await
+            .expect("remove the Shared Tool");
     }
 
     /// Who reads the Activity of `principal`'s Runs: a User itself, or the
@@ -418,6 +433,109 @@ async fn a_publish_during_admission_fails_that_admission_once() {
     assert_eq!(
         shared.linked(&shared.member, &run).await,
         [("mail.remind".to_string(), 2)]
+    );
+}
+
+// Catches: a Program or a Private Tool that still links a removed Shared
+// Tool, an admission that accepts a Shared Tool removed while it was being
+// admitted, or a Run already accepted that loses the revision it linked.
+#[tokio::test]
+async fn a_removal_fails_the_next_admission_and_leaves_an_accepted_run_as_it_was() {
+    let shared = SharedScope::new("user:shared-removal").await;
+    let owner = shared.scope.owner.clone();
+    let source = "export default async () => 1;";
+    shared.save_private(&owner, "draft", source).await;
+    shared.publish(source, ToolAccessState::Enabled, 0).await;
+    shared
+        .save_private(
+            &shared.member,
+            "relay",
+            "export default async () => coral.shared.mail.remind();",
+        )
+        .await;
+    let runs = &shared.scope.fixture.runs;
+    let program = "return await coral.shared.mail.remind();";
+    let (accepted, value) = shared.run(&shared.member, program).await;
+    assert_eq!(value, json!(1));
+    let linked = async || {
+        shared
+            .snapshots(&shared.member, &accepted)
+            .await
+            .into_iter()
+            .map(|snapshot| (snapshot.path, snapshot.revision, snapshot.source))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        linked().await,
+        [("mail.remind".to_string(), 1, source.to_string())]
+    );
+    let before = runs.count_runs().await.expect("count Runs");
+
+    let prepared = runs
+        .prepare(
+            &shared.member,
+            &shared.scope.workspace_id,
+            submission(program),
+        )
+        .await
+        .expect("prepare against the live Shared Tool");
+    shared.remove(1).await;
+    let mut transaction = shared.scope.fixture.database.begin().await.expect("begin");
+    let refused = runs.accept_in_transaction(&mut transaction, prepared).await;
+    transaction.rollback().await.expect("roll back");
+    assert!(
+        matches!(
+            &refused,
+            Err(crate::Error::ProgramAdmission(message))
+                if message == "Shared Tool changed during Program admission"
+        ),
+        "{:?}",
+        refused.as_ref().err()
+    );
+
+    // The next admission finds no Tool at the path, in the Program and in
+    // a Private Tool that still calls it.
+    // (case, the Program, what the refusal names)
+    let cases = [
+        (
+            "a Program calls it",
+            program,
+            ["Program:1:", "coral.shared.mail.remind"],
+        ),
+        (
+            "a Private Tool calls it",
+            "return await coral.private.relay();",
+            [
+                "Private Tool coral.private.relay:1:",
+                "coral.shared.mail.remind",
+            ],
+        ),
+    ];
+    for (case, source, named) in cases {
+        let refused = runs
+            .start(
+                &shared.member,
+                &shared.scope.workspace_id,
+                submission(source),
+            )
+            .await;
+        let Err(crate::Error::ProgramAdmission(message)) = refused else {
+            panic!("{case}: {refused:?}");
+        };
+        for expected in named {
+            assert!(message.contains(expected), "{case}: {message}");
+        }
+    }
+    assert_eq!(
+        runs.count_runs().await.expect("count Runs"),
+        before,
+        "no refused admission created a Run"
+    );
+
+    // The Run accepted before the removal keeps the revision it linked.
+    assert_eq!(
+        linked().await,
+        [("mail.remind".to_string(), 1, source.to_string())]
     );
 }
 

@@ -1,7 +1,7 @@
 //! What the Private Tool and Shared Tool services share: one status for
 //! each coral-tools failure, and the diagnostic projection.
 use super::management as wire;
-use super::workspaces::{error as workspace_error, safe_status};
+use super::workspaces::{error as workspace_error, safe_status, safe_status_with};
 use coral_catalog::AuthoredToolKind::{Private, Shared};
 use coral_tools::{AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory};
 use tonic::Status;
@@ -22,6 +22,15 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
             "SHARED_TOOL_SOURCE_UNREADABLE",
         ),
         E::PathConflict(Shared) => (tonic::Code::FailedPrecondition, "SHARED_TOOL_PATH_TAKEN"),
+        // The Owner must first deal with the Shared Tool that calls this one,
+        // so the status names it.
+        E::SharedToolHasDependents { dependent } => {
+            return safe_status_with(
+                tonic::Code::FailedPrecondition,
+                "SHARED_TOOL_HAS_DEPENDENTS",
+                [("dependent", dependent.as_str().to_owned())],
+            );
+        }
         // Only a publish compiles a source here.
         E::Admission(Shared, _) | E::NotData(Shared, _) | E::PackageTooLarge { .. } => {
             (tonic::Code::InvalidArgument, "SHARED_TOOL_SOURCE_REJECTED")

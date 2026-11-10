@@ -1,12 +1,18 @@
 //! Shared Tools: the Workspace-owned Tools at `coral.shared` that a
 //! Workspace Owner publishes (ADR 0033).
 //!
-//! [`SharedToolModule`] owns publishing and the reads of every Principal in
-//! the Workspace. A publish compiles the reviewed source outside its write
-//! transaction, then holds Owner authority, the source it copies and the
-//! current revision at its path, and writes one immutable revision, its
-//! dependencies and one lifecycle Event together. Its author is attribution
-//! only: no access removal reads or writes these rows.
+//! [`SharedToolModule`] owns publishing, removal and the reads of every
+//! Principal in the Workspace. A publish compiles the reviewed source outside
+//! its write transaction, then holds Owner authority, the source it copies
+//! and the current revision at its path, and writes one immutable revision,
+//! its dependencies and one lifecycle Event together. Its author is
+//! attribution only: no access removal reads or writes these rows.
+//!
+//! A Shared Tool has two names. Its path names it while it is live: a
+//! publish, a removal and the reads of every Principal go by path. Its
+//! [`SharedToolId`] names it for good: a removal frees the path and keeps the
+//! revisions, so the history (every revision and every lifecycle Event) goes
+//! by identity. Member Users read the history; Agents do not.
 
 use std::fmt;
 use std::sync::Arc;
@@ -34,7 +40,7 @@ use crate::types::{
 };
 use crate::{Error, repository, shared_tool_repository};
 
-/// The most Shared Tools one page lists.
+/// The most Shared Tools, or lifecycle Events of them, one page lists.
 pub const SHARED_TOOL_PAGE_MAX_SIZE: u32 = 100;
 
 /// Stable Coral-generated identity of one Shared Tool, kept across its
@@ -530,8 +536,154 @@ impl SharedToolPage {
     }
 }
 
-/// The Workspace's Shared Tools: Owner publishing, and reads for every
-/// Principal in the Workspace.
+/// What one lifecycle Event of a Shared Tool records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedToolLifecycleAction {
+    /// A publish made a new revision current.
+    Published,
+    /// A removal tombstoned the Shared Tool and freed its path.
+    Removed,
+}
+
+impl SharedToolLifecycleAction {
+    pub(crate) const fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::Published => "shared_tool.published",
+            Self::Removed => "shared_tool.removed",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self, Error> {
+        match value {
+            "shared_tool.published" => Ok(Self::Published),
+            "shared_tool.removed" => Ok(Self::Removed),
+            _ => Err(Error::CorruptData(
+                "Shared Tool lifecycle Event has an unrecognized action".to_string(),
+            )),
+        }
+    }
+}
+
+/// Stable identity of one lifecycle Event of a Shared Tool. A page of
+/// Events continues after the Event it names.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SharedToolLifecycleEventId(Uuid);
+
+impl SharedToolLifecycleEventId {
+    pub(crate) fn generate() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Parses an Event identity at an Adapter boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] unless the value is a canonical UUID.
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        let invalid = || Error::InvalidInput("Shared Tool Event id must be a UUID".to_string());
+        let id = Uuid::parse_str(value).map_err(|_error| invalid())?;
+        if id.hyphenated().to_string() != value {
+            return Err(invalid());
+        }
+        Ok(Self(id))
+    }
+}
+
+impl fmt::Display for SharedToolLifecycleEventId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0.hyphenated())
+    }
+}
+
+/// Safe immutable evidence of one publish or removal of a Shared Tool: who
+/// did it, to which revision, and when. It never holds source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedToolLifecycleEvent {
+    pub(crate) id: SharedToolLifecycleEventId,
+    pub(crate) action: SharedToolLifecycleAction,
+    pub(crate) actor: UserId,
+    pub(crate) shared_tool_id: SharedToolId,
+    pub(crate) path: SharedToolPath,
+    pub(crate) revision: u64,
+    pub(crate) content_hash: String,
+    pub(crate) occurred_at_unix_nanos: i64,
+}
+
+impl SharedToolLifecycleEvent {
+    /// Returns its stable identity.
+    #[must_use]
+    pub const fn id(&self) -> &SharedToolLifecycleEventId {
+        &self.id
+    }
+
+    /// Returns what happened.
+    #[must_use]
+    pub const fn action(&self) -> SharedToolLifecycleAction {
+        self.action
+    }
+
+    /// Returns the Workspace Owner who published or removed.
+    #[must_use]
+    pub const fn actor(&self) -> &UserId {
+        &self.actor
+    }
+
+    /// Returns the Shared Tool, which may since have been removed.
+    #[must_use]
+    pub const fn shared_tool_id(&self) -> &SharedToolId {
+        &self.shared_tool_id
+    }
+
+    /// Returns the path the Shared Tool had. After its removal, another
+    /// Shared Tool may have it.
+    #[must_use]
+    pub const fn path(&self) -> &SharedToolPath {
+        &self.path
+    }
+
+    /// Returns the revision a publish made current, or the revision that
+    /// was current when a removal tombstoned the Shared Tool.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the content hash of that revision.
+    #[must_use]
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// Returns when it happened.
+    #[must_use]
+    pub const fn occurred_at_unix_nanos(&self) -> i64 {
+        self.occurred_at_unix_nanos
+    }
+}
+
+/// One page of lifecycle Events, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedToolLifecycleEventPage {
+    pub(crate) events: Vec<SharedToolLifecycleEvent>,
+    pub(crate) next_after: Option<SharedToolLifecycleEventId>,
+}
+
+impl SharedToolLifecycleEventPage {
+    /// Returns the Events on this page.
+    #[must_use]
+    pub fn events(&self) -> &[SharedToolLifecycleEvent] {
+        &self.events
+    }
+
+    /// Returns the Event the next page follows, when there is one.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<&SharedToolLifecycleEventId> {
+        self.next_after.as_ref()
+    }
+}
+
+/// The Workspace's Shared Tools: Owner publishing and removal, reads for
+/// every Principal in the Workspace, and their history for Member Users.
 #[derive(Clone)]
 pub struct SharedToolModule {
     database: Arc<Database>,
@@ -641,6 +793,51 @@ impl SharedToolModule {
         })
     }
 
+    /// Removes the live Shared Tool at `path` and returns its identity,
+    /// which still names its revisions and its history.
+    ///
+    /// The removal leaves a tombstone: the path is free for another Shared
+    /// Tool, and every revision is kept. A Program or a Tool that still
+    /// calls the path fails at its next admission as any path that names
+    /// no Tool, and a Run already accepted keeps the revision it linked.
+    /// The write transaction holds the Owner's authority and the Shared
+    /// Tool, checks that no other Shared Tool calls it, then writes the
+    /// tombstone and one lifecycle Event together.
+    ///
+    /// This removal does not notify Universal Search.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::PermissionDenied`] unless the actor is a Workspace Owner by
+    ///   Workspace Membership.
+    /// - [`Error::NotFound`] when no live Shared Tool is at the path.
+    /// - [`Error::RevisionConflict`] when its current revision is not
+    ///   `expected_revision`.
+    /// - [`Error::SharedToolHasDependents`] while the current revision of
+    ///   another live Shared Tool calls it, naming that Shared Tool.
+    ///
+    /// Failure changes nothing.
+    pub async fn remove(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        path: &SharedToolPath,
+        expected_revision: u64,
+    ) -> Result<SharedToolId, Error> {
+        let mut transaction = self.database.begin().await?;
+        let removed = self
+            .remove_in_transaction(
+                &mut transaction,
+                context,
+                workspace_id,
+                path,
+                expected_revision,
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(removed)
+    }
+
     /// Returns the live Shared Tool at `path` with its current revision, to
     /// any Principal in the Workspace.
     ///
@@ -697,66 +894,97 @@ impl SharedToolModule {
         Ok(page)
     }
 
-    /// Lists every revision of the live Shared Tool at `path`, newest first,
-    /// to any Principal in the Workspace.
+    /// Lists every revision of the Shared Tool `id`, newest first, to a
+    /// Member User. Its identity names it whether it is live or removed: a
+    /// removal keeps its revisions.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NotFound`] when no live Shared Tool is
-    /// there or the caller cannot inspect the Workspace.
+    /// Returns [`Error::PermissionDenied`] to an Agent, and
+    /// [`Error::NotFound`] when the Workspace has no such Shared Tool or the
+    /// caller cannot inspect the Workspace.
     pub async fn list_revisions(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SharedToolPath,
+        id: &SharedToolId,
     ) -> Result<Vec<SharedToolRevision>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize_inspection(&mut transaction, actor, workspace_id)
+        self.authorize_history(&mut transaction, actor, workspace_id)
             .await?;
-        let Some(record) =
-            shared_tool_repository::find_live_record(&mut transaction, workspace_id, path).await?
-        else {
-            return Err(Error::NotFound(AuthoredToolKind::Shared));
-        };
         let revisions =
-            shared_tool_repository::list_revisions(&mut transaction, workspace_id, &record.id)
-                .await?;
+            shared_tool_repository::list_revisions(&mut transaction, workspace_id, id).await?;
         transaction.commit().await?;
+        // Every Shared Tool has its first revision.
+        if revisions.is_empty() {
+            return Err(Error::NotFound(AuthoredToolKind::Shared));
+        }
         Ok(revisions)
     }
 
-    /// Returns one revision of the live Shared Tool at `path`, to any
-    /// Principal in the Workspace.
+    /// Returns one revision of the Shared Tool `id`, live or removed, to a
+    /// Member User.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NotFound`] when no live Shared Tool is
-    /// there, it has no such revision, or the caller cannot inspect the
-    /// Workspace.
+    /// Returns [`Error::PermissionDenied`] to an Agent, and
+    /// [`Error::NotFound`] when the Workspace has no such Shared Tool, it
+    /// has no such revision, or the caller cannot inspect the Workspace.
     pub async fn get_revision(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        path: &SharedToolPath,
+        id: &SharedToolId,
         revision: u64,
     ) -> Result<SharedToolRevision, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize_inspection(&mut transaction, actor, workspace_id)
+        self.authorize_history(&mut transaction, actor, workspace_id)
             .await?;
-        let Some(record) =
-            shared_tool_repository::find_live_record(&mut transaction, workspace_id, path).await?
-        else {
-            return Err(Error::NotFound(AuthoredToolKind::Shared));
-        };
-        let found = shared_tool_repository::find_revision(
+        let found =
+            shared_tool_repository::find_revision(&mut transaction, workspace_id, id, revision)
+                .await?;
+        transaction.commit().await?;
+        found.ok_or(Error::NotFound(AuthoredToolKind::Shared))
+    }
+
+    /// Lists one page of the lifecycle Events of the Workspace's Shared
+    /// Tools, newest first after the Event `after`, to a Member User: every
+    /// publish and removal, of removed Shared Tools too. With `shared_tool`,
+    /// lists the Events of that Shared Tool alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PermissionDenied`] to an Agent,
+    /// [`Error::InvalidInput`] unless `page_size` is between one and
+    /// [`SHARED_TOOL_PAGE_MAX_SIZE`] and `after` names an Event of the
+    /// Workspace, and [`Error::NotFound`] when the caller cannot inspect the
+    /// Workspace.
+    pub async fn list_lifecycle_events(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        shared_tool: Option<&SharedToolId>,
+        after: Option<&SharedToolLifecycleEventId>,
+        page_size: u32,
+    ) -> Result<SharedToolLifecycleEventPage, Error> {
+        if !(1..=SHARED_TOOL_PAGE_MAX_SIZE).contains(&page_size) {
+            return Err(Error::InvalidInput(
+                "Shared Tool Event page size is out of range".to_string(),
+            ));
+        }
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.authorize_history(&mut transaction, actor, workspace_id)
+            .await?;
+        let page = shared_tool_repository::list_lifecycle_event_page(
             &mut transaction,
             workspace_id,
-            &record.id,
-            revision,
+            shared_tool,
+            after,
+            page_size,
         )
         .await?;
         transaction.commit().await?;
-        found.ok_or(Error::NotFound(AuthoredToolKind::Shared))
+        Ok(page)
     }
 
     /// The publish's review and compiled source, from read snapshots: the
@@ -778,7 +1006,7 @@ impl SharedToolModule {
                 WorkspaceAction::Inspect,
             )
             .await?;
-        require_publishing_owner(&evidence)?;
+        require_owner(&evidence, PUBLISH_DENIED)?;
         read_origin(&mut transaction, context, workspace_id, publish).await?;
         let previous = self
             .current_at_path(&mut transaction, workspace_id, publish)
@@ -861,17 +1089,8 @@ impl SharedToolModule {
         publish: &SharedToolPublish,
         compiled: PreparedAuthoredTool,
     ) -> Result<SharedTool, Error> {
-        let evidence = self
-            .workspaces
-            .check_configuration_in_transaction(transaction, context.actor(), workspace_id)
-            .await
-            .map_err(|error| match error {
-                coral_workspace::Error::PermissionDenied(_) => {
-                    Error::PermissionDenied("only a Workspace Owner can publish a Shared Tool")
-                }
-                other => other.into(),
-            })?;
-        require_publishing_owner(&evidence)?;
+        self.hold_owner_authority(transaction, context, workspace_id, PUBLISH_DENIED)
+            .await?;
         let origin = read_origin(transaction, context, workspace_id, publish).await?;
         // The Workspace hold acquired above serializes the path and
         // namespace decisions, for an absent path too.
@@ -946,6 +1165,111 @@ impl SharedToolModule {
         )
         .await?;
         Ok(tool)
+    }
+
+    async fn remove_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        path: &SharedToolPath,
+        expected_revision: u64,
+    ) -> Result<SharedToolId, Error> {
+        self.hold_owner_authority(transaction, context, workspace_id, REMOVAL_DENIED)
+            .await?;
+        let Some(record) =
+            shared_tool_repository::hold_live_record(transaction, workspace_id, path).await?
+        else {
+            return Err(Error::NotFound(AuthoredToolKind::Shared));
+        };
+        if record.current_revision != expected_revision {
+            return Err(Error::RevisionConflict {
+                kind: AuthoredToolKind::Shared,
+                current: record.current_revision,
+            });
+        }
+        // The Workspace hold keeps a publish from adding a caller before
+        // this removal commits.
+        if let Some(dependent) =
+            shared_tool_repository::first_dependent(transaction, workspace_id, &record.id).await?
+        {
+            return Err(Error::SharedToolHasDependents { dependent });
+        }
+        let current = shared_tool_repository::find_revision(
+            transaction,
+            workspace_id,
+            &record.id,
+            record.current_revision,
+        )
+        .await?
+        .ok_or_else(|| Error::CorruptData("Shared Tool lost its current revision".to_string()))?;
+        shared_tool_repository::tombstone(
+            transaction,
+            workspace_id,
+            &record.id,
+            record.current_revision,
+            context.occurred_at_unix_nanos(),
+        )
+        .await?;
+        shared_tool_repository::insert_lifecycle_event(
+            transaction,
+            shared_tool_repository::NewLifecycleEvent {
+                workspace_id,
+                actor: context.actor().user_id(),
+                action: SharedToolLifecycleAction::Removed,
+                target_id: &record.id,
+                target_path: &record.path,
+                revision: record.current_revision,
+                content_hash: current.content_hash(),
+                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                trace_id: context.trace_id(),
+            },
+        )
+        .await?;
+        Ok(record.id)
+    }
+
+    /// Holds the Workspace and the actor's authority over its Shared Tools
+    /// for the write that follows: only a Workspace Owner by Workspace
+    /// Membership publishes or removes. The Workspace hold serializes every
+    /// publish and removal in the Workspace. `denial` says what a Member
+    /// cannot do.
+    async fn hold_owner_authority(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        denial: &'static str,
+    ) -> Result<(), Error> {
+        let evidence = self
+            .workspaces
+            .check_configuration_in_transaction(transaction, context.actor(), workspace_id)
+            .await
+            .map_err(|error| match error {
+                coral_workspace::Error::PermissionDenied(_) => Error::PermissionDenied(denial),
+                other => other.into(),
+            })?;
+        require_owner(&evidence, denial)
+    }
+
+    /// Checks that `actor` can read the history of the Workspace's Shared
+    /// Tools, which is every revision and lifecycle Event of the live and
+    /// the removed ones: every current User Member can, and no Agent.
+    async fn authorize_history(
+        &self,
+        transaction: &mut Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+    ) -> Result<(), Error> {
+        // The Workspace first, so an Agent of another one learns nothing.
+        self.authorize_inspection(transaction, actor, workspace_id)
+            .await?;
+        if actor.authenticated_user().is_none() {
+            return Err(Error::PermissionDenied(
+                "Agents cannot read Shared Tool history",
+            ));
+        }
+        Ok(())
     }
 
     /// Checks that `actor` can read the Workspace's Shared Tools: every
@@ -1034,30 +1358,17 @@ struct PreparedPublish {
     compiled: PreparedAuthoredTool,
 }
 
-/// A publish's lifecycle action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SharedToolLifecycleAction {
-    Published,
-}
+const PUBLISH_DENIED: &str = "only a Workspace Owner can publish a Shared Tool";
+const REMOVAL_DENIED: &str = "only a Workspace Owner can remove a Shared Tool";
 
-impl SharedToolLifecycleAction {
-    pub(crate) const fn as_storage_str(self) -> &'static str {
-        match self {
-            Self::Published => "shared_tool.published",
-        }
-    }
-}
-
-/// Only a Workspace Owner by Workspace Membership publishes.
-fn require_publishing_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
+/// Only a Workspace Owner by Workspace Membership publishes or removes.
+fn require_owner(evidence: &WorkspaceEvidence, denial: &'static str) -> Result<(), Error> {
     if evidence.effective_role() == WorkspaceRole::Owner
         && evidence.authority_source() == AuthoritySource::WorkspaceMembership
     {
         Ok(())
     } else {
-        Err(Error::PermissionDenied(
-            "only a Workspace Owner can publish a Shared Tool",
-        ))
+        Err(Error::PermissionDenied(denial))
     }
 }
 

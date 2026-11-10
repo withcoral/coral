@@ -169,6 +169,10 @@ CREATE INDEX idx_shared_tool_lifecycle_events_target_order
         id
     );
 
+-- The Workspace's whole history, which reaches a removed Shared Tool.
+CREATE INDEX idx_shared_tool_lifecycle_events_workspace_order
+    ON shared_tool_lifecycle_events (workspace_id, occurred_at_unix_nanos, id);
+
 -- The Shared Tool revisions one Run linked, with the source it ran. A Run
 -- keeps them after the Shared Tool is removed.
 CREATE TABLE program_run_shared_tool_snapshots (

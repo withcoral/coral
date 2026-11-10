@@ -11,8 +11,10 @@ use sqlx::FromRow;
 use crate::Error;
 use crate::repository::{access_state_from_storage, decode_diagnostics, stored_revision};
 use crate::shared_tool::{
-    SharedTool, SharedToolDependency, SharedToolId, SharedToolLifecycleAction, SharedToolPage,
-    SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSummary,
+    SharedTool, SharedToolDependency, SharedToolId, SharedToolLifecycleAction,
+    SharedToolLifecycleEvent, SharedToolLifecycleEventId, SharedToolLifecycleEventPage,
+    SharedToolPage, SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin,
+    SharedToolSummary,
 };
 use crate::types::{
     AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDescription,
@@ -587,6 +589,92 @@ pub(crate) async fn advance_current(
     Ok(())
 }
 
+/// The path of a live Shared Tool whose current revision calls the Shared
+/// Tool `id`: of several, the first in path order.
+pub(crate) async fn first_dependent(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SharedToolId,
+) -> Result<Option<SharedToolPath>, Error> {
+    let calls_at_its_current_revision = Expr::col((
+        SharedToolRevisionDependencies::Table,
+        SharedToolRevisionDependencies::SharedToolId,
+    ))
+    .equals((SharedToolRecords::Table, SharedToolRecords::Id))
+    .and(
+        Expr::col((
+            SharedToolRevisionDependencies::Table,
+            SharedToolRevisionDependencies::Revision,
+        ))
+        .equals((SharedToolRecords::Table, SharedToolRecords::CurrentRevision)),
+    )
+    .and(
+        Expr::col((
+            SharedToolRevisionDependencies::Table,
+            SharedToolRevisionDependencies::WorkspaceId,
+        ))
+        .equals((SharedToolRecords::Table, SharedToolRecords::WorkspaceId)),
+    );
+    let statement = Query::select()
+        .column((SharedToolRecords::Table, SharedToolRecords::Path))
+        .from(SharedToolRecords::Table)
+        .inner_join(
+            SharedToolRevisionDependencies::Table,
+            calls_at_its_current_revision,
+        )
+        .and_where(
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
+                .eq(workspace_id.to_string()),
+        )
+        .and_where(
+            Expr::col((
+                SharedToolRecords::Table,
+                SharedToolRecords::RemovedAtUnixNanos,
+            ))
+            .is_null(),
+        )
+        .and_where(
+            Expr::col((
+                SharedToolRevisionDependencies::Table,
+                SharedToolRevisionDependencies::DependencySharedToolId,
+            ))
+            .eq(id.to_string()),
+        )
+        .to_owned();
+    let rows: Vec<(String,)> = transaction.fetch_all(statement).await?;
+    // Chosen here, so it is the same whatever the database's locale.
+    let paths = rows
+        .iter()
+        .map(|(path,)| decode_path(path))
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok(paths.into_iter().min())
+}
+
+/// Tombstones the live record `id` at its revision `current`: its path is
+/// free from here on, and its revisions stay.
+pub(crate) async fn tombstone(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SharedToolId,
+    current: u64,
+    removed_at_unix_nanos: i64,
+) -> Result<(), Error> {
+    let statement = Query::update()
+        .table(SharedToolRecords::Table)
+        .value(SharedToolRecords::RemovedAtUnixNanos, removed_at_unix_nanos)
+        .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SharedToolRecords::Id).eq(id.to_string()))
+        .and_where(Expr::col(SharedToolRecords::CurrentRevision).eq(stored_revision(current)?))
+        .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
+        .to_owned();
+    if transaction.execute_change(statement).await? != 1 {
+        return Err(Error::CorruptData(
+            "a held Shared Tool moved inside its transaction".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Inserts one immutable revision.
 pub(crate) async fn insert_revision(
     transaction: &mut Transaction<'_>,
@@ -711,7 +799,7 @@ pub(crate) async fn insert_lifecycle_event(
             SharedToolLifecycleEvents::TraceId,
         ])
         .values_panic([
-            Expr::val(uuid::Uuid::new_v4().hyphenated().to_string()),
+            Expr::val(SharedToolLifecycleEventId::generate().to_string()),
             Expr::val(event.workspace_id.to_string()),
             Expr::val(event.actor.as_str()),
             Expr::val(coral_workspace::AuthoritySource::WorkspaceMembership.as_storage_str()),
@@ -726,4 +814,109 @@ pub(crate) async fn insert_lifecycle_event(
         .to_owned();
     transaction.execute_change(statement).await?;
     Ok(())
+}
+
+#[derive(Debug, FromRow)]
+struct EventRow {
+    id: String,
+    actor_user_id: String,
+    action: String,
+    target_shared_tool_id: String,
+    target_path: String,
+    revision: i64,
+    content_hash: String,
+    occurred_at_unix_nanos: i64,
+}
+
+impl EventRow {
+    fn decode(self) -> Result<SharedToolLifecycleEvent, Error> {
+        Ok(SharedToolLifecycleEvent {
+            id: SharedToolLifecycleEventId::parse(&self.id).map_err(|_error| {
+                Error::CorruptData("Shared Tool lifecycle Event has invalid identity".to_string())
+            })?,
+            action: SharedToolLifecycleAction::from_storage(&self.action)?,
+            actor: decode_user(&self.actor_user_id)?,
+            shared_tool_id: decode_id(&self.target_shared_tool_id)?,
+            path: decode_path(&self.target_path)?,
+            revision: decode_revision(self.revision)?,
+            content_hash: self.content_hash,
+            occurred_at_unix_nanos: self.occurred_at_unix_nanos,
+        })
+    }
+}
+
+/// One page of the Workspace's lifecycle Events, newest first after the
+/// Event `after`: those of the Shared Tool `shared_tool` alone, or of every
+/// Shared Tool, live and removed. Events that occurred together follow one
+/// another in identity order.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] when `after` names no Event of the
+/// Workspace.
+pub(crate) async fn list_lifecycle_event_page(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    shared_tool: Option<&SharedToolId>,
+    after: Option<&SharedToolLifecycleEventId>,
+    page_size: u32,
+) -> Result<SharedToolLifecycleEventPage, Error> {
+    let mut statement = Query::select()
+        .columns([
+            SharedToolLifecycleEvents::Id,
+            SharedToolLifecycleEvents::ActorUserId,
+            SharedToolLifecycleEvents::Action,
+            SharedToolLifecycleEvents::TargetSharedToolId,
+            SharedToolLifecycleEvents::TargetPath,
+            SharedToolLifecycleEvents::Revision,
+            SharedToolLifecycleEvents::ContentHash,
+            SharedToolLifecycleEvents::OccurredAtUnixNanos,
+        ])
+        .from(SharedToolLifecycleEvents::Table)
+        .and_where(Expr::col(SharedToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()))
+        .order_by(SharedToolLifecycleEvents::OccurredAtUnixNanos, Order::Desc)
+        .order_by(SharedToolLifecycleEvents::Id, Order::Desc)
+        .limit(u64::from(page_size) + 1)
+        .to_owned();
+    if let Some(shared_tool) = shared_tool {
+        statement.and_where(
+            Expr::col(SharedToolLifecycleEvents::TargetSharedToolId).eq(shared_tool.to_string()),
+        );
+    }
+    if let Some(after) = after {
+        let position = Query::select()
+            .column(SharedToolLifecycleEvents::OccurredAtUnixNanos)
+            .from(SharedToolLifecycleEvents::Table)
+            .and_where(
+                Expr::col(SharedToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()),
+            )
+            .and_where(Expr::col(SharedToolLifecycleEvents::Id).eq(after.to_string()))
+            .to_owned();
+        let Some((occurred_at,)): Option<(i64,)> = transaction.fetch_optional(position).await?
+        else {
+            return Err(Error::InvalidInput(
+                "no Shared Tool Event is at this page position".to_string(),
+            ));
+        };
+        statement.and_where(
+            Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
+                .lt(occurred_at)
+                .or(Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
+                    .eq(occurred_at)
+                    .and(Expr::col(SharedToolLifecycleEvents::Id).lt(after.to_string()))),
+        );
+    }
+    let rows: Vec<EventRow> = transaction.fetch_all(statement).await?;
+    let mut events = rows
+        .into_iter()
+        .map(EventRow::decode)
+        .collect::<Result<Vec<_>, Error>>()?;
+    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
+    let next_after = if events.len() > page_size {
+        events.truncate(page_size);
+        events.last().map(|event| event.id.clone())
+    } else {
+        None
+    };
+    Ok(SharedToolLifecycleEventPage { events, next_after })
 }

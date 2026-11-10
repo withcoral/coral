@@ -1,5 +1,7 @@
 use coral_catalog::AuthoredToolKind;
 
+use crate::shared_tool::SharedToolPath;
+
 /// Private and Shared Tool authoring, inspection, and persistence failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -7,13 +9,15 @@ pub enum Error {
     #[error("invalid input: {0}")]
     InvalidInput(String),
     /// The Tool is absent or concealed from this Principal: no Private
-    /// Tool of the caller's, or no live Shared Tool, is at the path.
+    /// Tool of the caller's, or no live Shared Tool, is at the path, or the
+    /// Workspace has no Shared Tool with the identity.
     #[error("{} was not found", .0.name())]
     NotFound(AuthoredToolKind),
     /// A create-only save found a Private Tool at its path.
     #[error("a Private Tool is already at this path")]
     PrivateToolExists,
-    /// A save or a publish expected a revision other than the current one.
+    /// A save, a publish or a removal expected a revision other than the
+    /// current one.
     #[error("the {} is at revision {current}", .kind.name())]
     RevisionConflict {
         /// The kind of Tool at the path.
@@ -30,6 +34,14 @@ pub enum Error {
     /// existed.
     #[error("the source of this Shared Tool Publish cannot be read")]
     SharedToolSourceUnreadable,
+    /// The removal names a Shared Tool that the current revision of another
+    /// live Shared Tool calls. Removing it would break that one.
+    #[error("coral.shared.{} calls this Shared Tool", .dependent.as_str())]
+    SharedToolHasDependents {
+        /// The path of a Shared Tool that calls it: of several, the first
+        /// in path order.
+        dependent: SharedToolPath,
+    },
     /// The path names a namespace that holds other Tools of its kind, or
     /// lies under one of them: the caller's other Private Tools, or other
     /// live Shared Tools.
@@ -109,6 +121,7 @@ impl Error {
             Self::Admission(Private, _) => "private_tool_admission",
             Self::Admission(Shared, _) => "shared_tool_admission",
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
+            Self::SharedToolHasDependents { .. } => "shared_tool_has_dependents",
             Self::PathConflict(Private) => "private_tool_path_conflict",
             Self::PathConflict(Shared) => "shared_tool_path_conflict",
             Self::NotData(Private, _) => "private_tool_not_data",
@@ -148,6 +161,7 @@ impl Error {
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
             Self::NotFound(_)
             | Self::RevisionConflict { .. }
+            | Self::SharedToolHasDependents { .. }
             | Self::PathConflict(Shared)
             | Self::NotData(..)
             | Self::CompilationTimedOut(_) => self.code(),

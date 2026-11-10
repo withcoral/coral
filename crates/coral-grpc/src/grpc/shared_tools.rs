@@ -5,8 +5,9 @@ use super::workspaces::{
 };
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{
-    AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolOrigin,
-    SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision,
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
+    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
+    SharedToolOrigin, SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision,
     SharedToolRevisionOrigin, SharedToolSummary,
 };
 use coral_workspace::{
@@ -23,12 +24,42 @@ fn user_name(user: &coral_workspace::UserId) -> String {
     format!("users/{user}")
 }
 
-fn summary(summary: &SharedToolSummary) -> wire::SharedToolSummary {
+/// The resource name that names a Shared Tool for good, after a removal too.
+fn resource_name(workspace: &WorkspaceId, id: &SharedToolId) -> String {
+    format!("workspaces/{workspace}/sharedTools/{id}")
+}
+
+/// The Workspace and identity a Shared Tool's resource name holds.
+fn parse_resource_name(name: &str) -> Result<(WorkspaceId, SharedToolId), Status> {
+    let (workspace, id) = resource(name, "sharedTools")?;
+    let id = SharedToolId::parse(id).map_err(|_error| invalid("invalid Shared Tool name"))?;
+    Ok((workspace, id))
+}
+
+fn summary(workspace: &WorkspaceId, summary: &SharedToolSummary) -> wire::SharedToolSummary {
     wire::SharedToolSummary {
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
         revision: summary.current_revision(),
         update_time: Some(timestamp(summary.published_at_unix_nanos())),
+        name: resource_name(workspace, summary.id()),
+    }
+}
+
+fn event(workspace: &WorkspaceId, event: &SharedToolLifecycleEvent) -> wire::SharedToolEvent {
+    let action = match event.action() {
+        SharedToolLifecycleAction::Published => wire::SharedToolEventAction::Published,
+        SharedToolLifecycleAction::Removed => wire::SharedToolEventAction::Removed,
+    };
+    wire::SharedToolEvent {
+        id: event.id().to_string(),
+        action: action.into(),
+        shared_tool: resource_name(workspace, event.shared_tool_id()),
+        path: event.path().as_str().to_owned(),
+        revision: event.revision(),
+        content_hash: event.content_hash().to_owned(),
+        actor: user_name(event.actor()),
+        event_time: Some(timestamp(event.occurred_at_unix_nanos())),
     }
 }
 
@@ -75,6 +106,7 @@ fn shared_tool(tool: &SharedTool) -> wire::SharedTool {
         creator: user_name(tool.created_by()),
         create_time: Some(timestamp(tool.created_at_unix_nanos())),
         current_revision: Some(revision(tool.current())),
+        name: resource_name(tool.workspace_id(), tool.id()),
     }
 }
 
@@ -170,7 +202,11 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             .transpose()?
             .unwrap_or_default();
         Ok(Response::new(wire::ListSharedToolsResponse {
-            shared_tools: page.summaries().iter().map(summary).collect(),
+            shared_tools: page
+                .summaries()
+                .iter()
+                .map(|listed| summary(&w, listed))
+                .collect(),
             next_page_token,
             shared_provider: super::providers::provider_name(&shared_provider),
         }))
@@ -200,11 +236,10 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
     ) -> Result<Response<wire::ListSharedToolRevisionsResponse>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let w = workspace_id(&input.parent)?;
-        let path = path(&input.path)?;
+        let (w, id) = parse_resource_name(&input.shared_tool)?;
         let revisions = self
             .shared_tools
-            .list_revisions(&AuthenticatedPrincipal::user(user), &w, &path)
+            .list_revisions(&AuthenticatedPrincipal::user(user), &w, &id)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolRevisionsResponse {
@@ -219,16 +254,10 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
     ) -> Result<Response<wire::SharedToolRevision>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let w = workspace_id(&input.parent)?;
-        let path = path(&input.path)?;
+        let (w, id) = parse_resource_name(&input.shared_tool)?;
         let found = self
             .shared_tools
-            .get_revision(
-                &AuthenticatedPrincipal::user(user),
-                &w,
-                &path,
-                input.revision,
-            )
+            .get_revision(&AuthenticatedPrincipal::user(user), &w, &id, input.revision)
             .await
             .map_err(error)?;
         Ok(Response::new(revision(&found)))
@@ -268,6 +297,84 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         Ok(Response::new(wire::PublishSharedToolResponse {
             shared_tool: published.published().map(shared_tool),
             review: Some(review(published.review())),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.remove_shared_tool")]
+    async fn remove_shared_tool(
+        &self,
+        request: Request<wire::RemoveSharedToolRequest>,
+    ) -> Result<Response<wire::RemoveSharedToolResponse>, Status> {
+        let user = self.management_user(&request).await?;
+        let input = request.into_inner();
+        let w = workspace_id(&input.parent)?;
+        let path = path(&input.path)?;
+        let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
+        let removed = self
+            .shared_tools
+            .remove(&context, &w, &path, input.expected_revision)
+            .await
+            .map_err(error)?;
+        Ok(Response::new(wire::RemoveSharedToolResponse {
+            shared_tool: resource_name(&w, &removed),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.list_shared_tool_events")]
+    async fn list_shared_tool_events(
+        &self,
+        request: Request<wire::ListSharedToolEventsRequest>,
+    ) -> Result<Response<wire::ListSharedToolEventsResponse>, Status> {
+        let user = self.management_user(&request).await?;
+        let input = request.into_inner();
+        let w = workspace_id(&input.parent)?;
+        let shared_tool = if input.shared_tool.is_empty() {
+            None
+        } else {
+            let (workspace, id) = parse_resource_name(&input.shared_tool)?;
+            if workspace != w {
+                return Err(invalid("invalid Shared Tool name"));
+            }
+            Some(id)
+        };
+        // A page continues only the listing that began it.
+        let scope = format!(
+            "{}:{w}:sharedToolEvents:{}",
+            user.user_id(),
+            input.shared_tool
+        );
+        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
+        let after = if after.is_empty() {
+            None
+        } else {
+            Some(
+                SharedToolLifecycleEventId::parse(&after)
+                    .map_err(|_error| invalid("invalid page token"))?,
+            )
+        };
+        let page = self
+            .shared_tools
+            .list_lifecycle_events(
+                &AuthenticatedPrincipal::user(user),
+                &w,
+                shared_tool.as_ref(),
+                after.as_ref(),
+                page_size,
+            )
+            .await
+            .map_err(error)?;
+        let next_page_token = page
+            .next_after()
+            .map(|after| page_token(&scope, &after.to_string()))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Response::new(wire::ListSharedToolEventsResponse {
+            events: page
+                .events()
+                .iter()
+                .map(|listed| event(&w, listed))
+                .collect(),
+            next_page_token,
         }))
     }
 }

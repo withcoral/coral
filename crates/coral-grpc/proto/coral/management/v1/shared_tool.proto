@@ -10,17 +10,21 @@ import "google/protobuf/timestamp.proto";
 // Workspace Owner published, which the Workspace owns.
 //
 // Every User with a Workspace Membership reads them. Only a Workspace Owner
-// publishes. A Shared Tool Path names one live Shared Tool in its Workspace, so
-// requests carry the Workspace and path. A Workspace the caller cannot inspect
-// and an absent path return the same NOT_FOUND.
+// publishes or removes. A Shared Tool Path names one live Shared Tool in its
+// Workspace, so a read of the live Shared Tool, a publish and a removal carry
+// the Workspace and path. A removal frees the path and keeps the revisions, so
+// revisions and events are read by the Shared Tool's resource name, which
+// names it for good. A Workspace the caller cannot inspect and an absent path
+// or name return the same NOT_FOUND.
 service SharedToolService {
   // Lists one page of the Workspace's Shared Tools in path order, without source.
   rpc ListSharedTools(ListSharedToolsRequest) returns (ListSharedToolsResponse);
   // Returns one Shared Tool with its current revision and source.
   rpc GetSharedTool(GetSharedToolRequest) returns (SharedTool);
-  // Lists every revision of one Shared Tool, newest first, without source.
+  // Lists every revision of one Shared Tool, live or removed, newest first,
+  // without source.
   rpc ListSharedToolRevisions(ListSharedToolRevisionsRequest) returns (ListSharedToolRevisionsResponse);
-  // Returns one revision of one Shared Tool with its source.
+  // Returns one revision of one Shared Tool, live or removed, with its source.
   rpc GetSharedToolRevision(GetSharedToolRevisionRequest) returns (SharedToolRevision);
   // Publishes the exact source and description of the request as the next
   // revision of the Shared Tool at its path, and makes it current. The Private
@@ -36,6 +40,21 @@ service SharedToolService {
   // INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
   // cannot become a Tool.
   rpc PublishSharedTool(PublishSharedToolRequest) returns (PublishSharedToolResponse);
+  // Removes the Shared Tool at a path. The path is free for another Shared
+  // Tool, and the revisions and events stay under the returned name. Programs
+  // and Tools that call the path fail at their next admission.
+  //
+  // PERMISSION_DENIED unless the caller is a Workspace Owner.
+  // NOT_FOUND when no Shared Tool is at the path.
+  // ABORTED when the current revision is not expected_revision.
+  // FAILED_PRECONDITION with reason SHARED_TOOL_HAS_DEPENDENTS while the
+  // current revision of another Shared Tool calls it. The error metadata
+  // "dependent" holds that Shared Tool's path: of several, the first in path
+  // order.
+  rpc RemoveSharedTool(RemoveSharedToolRequest) returns (RemoveSharedToolResponse);
+  // Lists one page of the publishes and removals of the Workspace's Shared
+  // Tools, newest first, or those of one Shared Tool, live or removed.
+  rpc ListSharedToolEvents(ListSharedToolEventsRequest) returns (ListSharedToolEventsResponse);
 }
 
 // Lists the Shared Tools of one Workspace.
@@ -68,6 +87,9 @@ message SharedToolSummary {
   uint64 revision = 3;
   // When the current revision was published.
   google.protobuf.Timestamp update_time = 4;
+  // workspaces/{workspace}/sharedTools/{shared_tool}. Names the Shared Tool
+  // for good, after a removal too.
+  string name = 5;
 }
 
 // Reads one Shared Tool.
@@ -88,6 +110,9 @@ message SharedTool {
   google.protobuf.Timestamp create_time = 3;
   // The current revision, which every new Run links.
   SharedToolRevision current_revision = 4;
+  // workspaces/{workspace}/sharedTools/{shared_tool}. Names the Shared Tool
+  // for good, after a removal too. Its revisions and events are read by it.
+  string name = 5;
 }
 
 // One immutable, numbered publication of a Shared Tool.
@@ -116,12 +141,10 @@ message SharedToolRevision {
   uint64 restored_from_revision = 11;
 }
 
-// Lists the revisions of one Shared Tool.
+// Lists the revisions of one Shared Tool, live or removed.
 message ListSharedToolRevisionsRequest {
-  // workspaces/{workspace}.
-  string parent = 1;
-  // Shared Tool Path relative to coral.shared.
-  string path = 2;
+  // workspaces/{workspace}/sharedTools/{shared_tool}.
+  string shared_tool = 1;
 }
 
 // Every revision of one Shared Tool, newest first.
@@ -148,14 +171,12 @@ message SharedToolRevisionSummary {
   uint64 restored_from_revision = 7;
 }
 
-// Reads one revision of one Shared Tool.
+// Reads one revision of one Shared Tool, live or removed.
 message GetSharedToolRevisionRequest {
-  // workspaces/{workspace}.
-  string parent = 1;
-  // Shared Tool Path relative to coral.shared.
-  string path = 2;
+  // workspaces/{workspace}/sharedTools/{shared_tool}.
+  string shared_tool = 1;
   // Revision number, from 1.
-  uint64 revision = 3;
+  uint64 revision = 2;
 }
 
 // Publishes the content an Owner reviewed as a Shared Tool Revision.
@@ -226,4 +247,76 @@ message SharedToolCall {
   string path = 1;
   // Its current revision, from 1.
   uint64 revision = 2;
+}
+
+// Removes one Shared Tool.
+message RemoveSharedToolRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Shared Tool Path relative to coral.shared.
+  string path = 2;
+  // The revision the Owner expects to be current at the path.
+  uint64 expected_revision = 3;
+}
+
+// The outcome of a removal.
+message RemoveSharedToolResponse {
+  // workspaces/{workspace}/sharedTools/{shared_tool} of the removed Shared
+  // Tool, which still reads its revisions and events.
+  string shared_tool = 1;
+}
+
+// Lists publishes and removals of Shared Tools.
+message ListSharedToolEventsRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // workspaces/{workspace}/sharedTools/{shared_tool} to list the events of one
+  // Shared Tool, live or removed. Empty lists those of every Shared Tool. A
+  // name that no Shared Tool of the Workspace has lists nothing.
+  string shared_tool = 2;
+  // Maximum results, bounded to 100; zero selects the default.
+  int32 page_size = 3;
+  // Opaque continuation from the preceding page in this scope.
+  string page_token = 4;
+}
+
+// One page of Shared Tool events, newest first.
+message ListSharedToolEventsResponse {
+  // The events on this page.
+  repeated SharedToolEvent events = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
+}
+
+// One publish or removal of a Shared Tool. It never holds source.
+message SharedToolEvent {
+  // Stable identity of the event.
+  string id = 1;
+  // What happened.
+  SharedToolEventAction action = 2;
+  // workspaces/{workspace}/sharedTools/{shared_tool}, which may since have
+  // been removed.
+  string shared_tool = 3;
+  // The Shared Tool Path it had. After its removal, another Shared Tool may
+  // have it.
+  string path = 4;
+  // The revision a publish made current, or the revision that was current at
+  // a removal.
+  uint64 revision = 5;
+  // Lowercase hex SHA-256 of that revision's description and source.
+  string content_hash = 6;
+  // users/{user} who published or removed.
+  string actor = 7;
+  // When it happened.
+  google.protobuf.Timestamp event_time = 8;
+}
+
+// What one Shared Tool event records.
+enum SharedToolEventAction {
+  // Unknown to this client.
+  SHARED_TOOL_EVENT_ACTION_UNSPECIFIED = 0;
+  // A publish made a new revision current.
+  SHARED_TOOL_EVENT_ACTION_PUBLISHED = 1;
+  // A removal freed the path and kept the revisions.
+  SHARED_TOOL_EVENT_ACTION_REMOVED = 2;
 }

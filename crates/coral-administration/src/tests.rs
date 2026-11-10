@@ -831,17 +831,21 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
             .await
             .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
         let reader = AuthenticatedPrincipal::user(owner.clone());
+        // The Shared Tool, its revisions and its history.
         let read = async || {
-            (
-                shared_tools
-                    .get(&reader, workspace.id(), &path)
-                    .await
-                    .unwrap_or_else(|error| panic!("{loss:?}: {error}")),
-                shared_tools
-                    .list_revisions(&reader, workspace.id(), &path)
-                    .await
-                    .unwrap_or_else(|error| panic!("{loss:?}: {error}")),
-            )
+            let tool = shared_tools
+                .get(&reader, workspace.id(), &path)
+                .await
+                .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+            let revisions = shared_tools
+                .list_revisions(&reader, workspace.id(), tool.id())
+                .await
+                .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+            let events = shared_tools
+                .list_lifecycle_events(&reader, workspace.id(), Some(tool.id()), None, 100)
+                .await
+                .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+            (tool, revisions, events)
         };
         let before = read().await;
         let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());

@@ -166,8 +166,8 @@ policy. _Avoid_: MCP clientInfo, Program identity, secret URL, recoverable crede
 **Administrative Lifecycle Event**: An immutable, non-secret record of an accepted control-plane or authoring change
 that can affect future authority, configuration, or code. It covers Organization Membership, Workspace and Workspace
 Membership changes, Agents and Agent Registrations, Provider setup, publication, Credential Route and lifecycle changes,
-Provider Account authorization, connection and disconnection, Tool policy, approval decisions, and Private Tool
-saves and deletions. It records an actor that is either the accountable Principal or Coral itself, together with the
+Provider Account authorization, connection and disconnection, Tool policy, approval decisions, Private Tool
+saves and deletions, and Shared Tool publishes and removals. It records an actor that is either the accountable Principal or Coral itself, together with the
 action, safe target, outcome, changed field paths, timestamp, and trace identifier, without copying credentials,
 before-and-after values, or Invocation arguments. It also records whether a Workspace Membership or Organization Owner
 governance authorized the change. Organization Owners can inspect Organization Membership events and the events for
@@ -819,7 +819,9 @@ that every Principal in the Workspace can find, read, and call. It runs with the
 Provider Accounts, takes and returns only data, and returns its own value rather than a Tool Result. It belongs to the
 Workspace's one Shared Provider, which Coral performs, as it does the Built-in Provider. Its author is attribution only:
 removing, disabling, or deleting the author never affects it. Only a Workspace Owner removes one; removal frees its path,
-keeps its revisions, and is refused while another Shared Tool's current revision calls it. _Avoid_: Shared function, public
+keeps its revisions, and is refused while another Shared Tool's current revision calls it. Its path names it only while
+it is live. Its identity names it for good: by it, Member Users, but not Agents, read its history, which is every
+revision and every publish and removal event, after a removal too. _Avoid_: Shared function, public
 function, library function, package
 
 **Shared Tool Revision**: One immutable, numbered publication of a Shared Tool's source, description, and declaration.

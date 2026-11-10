@@ -8,8 +8,8 @@ use coral_workspace::{
 };
 
 use super::{
-    SharedToolModule, SharedToolOrigin, SharedToolPath, SharedToolPublication, SharedToolPublish,
-    SharedToolRevisionOrigin,
+    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolModule, SharedToolOrigin,
+    SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolRevisionOrigin,
 };
 use crate::{
     AuthoredToolDescription, AuthoredToolSource, Error, LinkedToolPath, LinkedToolSelection,
@@ -126,9 +126,22 @@ impl SharedToolFixture {
         source: &str,
         expected_revision: u64,
     ) -> Result<SharedToolPublication, Error> {
+        self.publish_at(30, actor, path, source, expected_revision)
+            .await
+    }
+
+    /// Publishes as [`Self::publish`] does, at the time `at`.
+    async fn publish_at(
+        &self,
+        at: i64,
+        actor: &AuthenticatedUser,
+        path: &str,
+        source: &str,
+        expected_revision: u64,
+    ) -> Result<SharedToolPublication, Error> {
         self.shared_tools
             .publish(
-                &change(actor.clone(), 30, 'c'),
+                &change(actor.clone(), at, 'c'),
                 &self.workspace,
                 publish(
                     path,
@@ -155,7 +168,7 @@ impl SharedToolFixture {
         for summary in page.summaries() {
             let revisions = self
                 .shared_tools
-                .list_revisions(&reader, &self.workspace, summary.path())
+                .list_revisions(&reader, &self.workspace, summary.id())
                 .await
                 .expect("list revisions");
             everything.push((
@@ -168,6 +181,43 @@ impl SharedToolFixture {
             ));
         }
         everything
+    }
+
+    /// The first of `selected` that no longer holds at an acceptance by
+    /// `principal`, if any.
+    async fn first_changed(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        selected: Vec<LinkedToolSelection>,
+    ) -> Option<LinkedToolPath> {
+        let mut transaction = self.database.begin().await.expect("begin");
+        let changed = hold_linked_tools_in_transaction(
+            &mut transaction,
+            &self.workspace,
+            principal.principal(),
+            &selected,
+        )
+        .await
+        .expect("hold")
+        .map(|selection| selection.path().clone());
+        transaction.commit().await.expect("commit");
+        changed
+    }
+
+    /// Every lifecycle Event of the Workspace's Shared Tools, newest first.
+    async fn events(&self) -> Vec<SharedToolLifecycleEvent> {
+        self.shared_tools
+            .list_lifecycle_events(
+                &AuthenticatedPrincipal::user(self.owner.clone()),
+                &self.workspace,
+                None,
+                None,
+                100,
+            )
+            .await
+            .expect("list events")
+            .events()
+            .to_vec()
     }
 }
 
@@ -448,19 +498,20 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
         .publish(&fixture.owner, "mail.remind", DRAFT, 0)
         .await
         .expect("publish revision 1");
-    fixture
+    let second = fixture
         .publish(&fixture.owner, "mail.remind", REVIEWED, 1)
         .await
         .expect("publish revision 2");
+    let id = second.published().expect("the Shared Tool").id();
     let path = shared_path("mail.remind");
     let first = fixture
         .shared_tools
-        .get_revision(&owner, &fixture.workspace, &path, 1)
+        .get_revision(&owner, &fixture.workspace, id, 1)
         .await
         .expect("read revision 1");
     let before = fixture
         .shared_tools
-        .list_revisions(&owner, &fixture.workspace, &path)
+        .list_revisions(&owner, &fixture.workspace, id)
         .await
         .expect("list revisions");
 
@@ -492,7 +543,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     assert_eq!(current.origin(), &SharedToolRevisionOrigin::Revision(1));
     let after = fixture
         .shared_tools
-        .list_revisions(&owner, &fixture.workspace, &path)
+        .list_revisions(&owner, &fixture.workspace, id)
         .await
         .expect("list revisions");
     assert_eq!(
@@ -551,7 +602,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     assert_eq!(
         fixture
             .shared_tools
-            .list_revisions(&owner, &fixture.workspace, &path)
+            .list_revisions(&owner, &fixture.workspace, id)
             .await
             .expect("list revisions"),
         after
@@ -781,37 +832,67 @@ async fn a_linked_selection_holds_only_while_it_is_current() {
         [(&shared, 1, DRAFT), (&private, 1, DRAFT)]
     );
 
-    let changed = |fixture: &SharedToolFixture, selected: Vec<LinkedToolSelection>| {
-        let database = fixture.database.clone();
-        let workspace = fixture.workspace.clone();
-        let principal = owner.principal().clone();
-        async move {
-            let mut transaction = database.begin().await.expect("begin");
-            let changed = hold_linked_tools_in_transaction(
-                &mut transaction,
-                &workspace,
-                &principal,
-                &selected,
-            )
-            .await
-            .expect("hold")
-            .map(|selection| selection.path().clone());
-            transaction.commit().await.expect("commit");
-            changed
-        }
-    };
-    assert_eq!(changed(&fixture, selected.clone()).await, None);
+    assert_eq!(fixture.first_changed(&owner, selected.clone()).await, None);
     fixture
         .publish(&fixture.owner, "mail.remind", REVIEWED, 1)
         .await
         .expect("publish revision 2");
     assert_eq!(
-        changed(&fixture, selected.clone()).await,
+        fixture.first_changed(&owner, selected.clone()).await,
         Some(shared.clone())
     );
     fixture.save_private(&owner, "draft", REVIEWED).await;
     // Private Tools are held first, so the replaced draft is the one named.
-    assert_eq!(changed(&fixture, selected).await, Some(private));
+    assert_eq!(fixture.first_changed(&owner, selected).await, Some(private));
+}
+
+// Catches: a Run that links a removed Shared Tool, or an acceptance that
+// keeps a selection of it made before its removal.
+#[tokio::test]
+async fn a_removed_shared_tool_is_selected_by_nothing_and_a_selection_of_it_no_longer_holds() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    fixture
+        .publish(&fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish revision 1");
+    let shared = LinkedToolPath::Shared(shared_path("mail.remind"));
+    let select = async || {
+        let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+        let selection = select_linked_tool_in_transaction(
+            &mut transaction,
+            &fixture.workspace,
+            owner.principal(),
+            &shared,
+        )
+        .await
+        .expect("select");
+        transaction.commit().await.expect("commit");
+        selection
+    };
+    let selected = select().await.expect("revision 1");
+    assert_eq!(
+        fixture.first_changed(&owner, vec![selected.clone()]).await,
+        None
+    );
+
+    fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 50, 'e'),
+            &fixture.workspace,
+            &shared_path("mail.remind"),
+            1,
+        )
+        .await
+        .expect("remove the Shared Tool");
+
+    assert_eq!(select().await, None);
+    assert_eq!(
+        fixture.first_changed(&owner, vec![selected]).await,
+        Some(shared)
+    );
 }
 
 // Catches: a publish that drops the Provider Tool typing a Private Tool
@@ -900,4 +981,466 @@ async fn one_source_is_typed_alike_when_saved_and_when_published() {
     // Without the Owner's declarations, Provider Tools stay untyped.
     let untyped = review_of(None).await;
     assert_eq!(codes(untyped.review().diagnostics()), [2554]);
+}
+
+// Catches: a removal that deletes the Shared Tool's revisions, that leaves
+// its path taken or still readable, or a replacement at the path that
+// continues the removed tool's identity and revisions.
+#[tokio::test]
+async fn a_removal_tombstones_the_shared_tool_frees_its_path_and_keeps_its_revisions() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    fixture
+        .publish(&fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish revision 1");
+    let published = fixture
+        .publish(&fixture.owner, "mail.remind", REVIEWED, 1)
+        .await
+        .expect("publish revision 2");
+    let tool = published.published().expect("the Shared Tool");
+    let path = shared_path("mail.remind");
+    let kept = fixture
+        .shared_tools
+        .list_revisions(&owner, &fixture.workspace, tool.id())
+        .await
+        .expect("list revisions");
+
+    let removed = fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 50, 'e'),
+            &fixture.workspace,
+            &path,
+            2,
+        )
+        .await
+        .expect("remove the Shared Tool");
+
+    assert_eq!(&removed, tool.id());
+    let read = fixture
+        .shared_tools
+        .get(&owner, &fixture.workspace, &path)
+        .await;
+    assert!(
+        matches!(read, Err(Error::NotFound(AuthoredToolKind::Shared))),
+        "{read:?}"
+    );
+    assert_eq!(fixture.everything().await, []);
+    // Its identity still names its revisions, exactly as they were.
+    let revisions_of = async |id| {
+        fixture
+            .shared_tools
+            .list_revisions(&owner, &fixture.workspace, id)
+            .await
+            .expect("list revisions")
+    };
+    assert_eq!(revisions_of(&removed).await, kept);
+    assert_eq!(
+        fixture
+            .shared_tools
+            .get_revision(&owner, &fixture.workspace, &removed, 1)
+            .await
+            .expect("read a kept revision")
+            .source()
+            .as_str(),
+        DRAFT
+    );
+
+    // The path is free: the next publish there creates another Shared Tool.
+    let replacement = fixture
+        .publish(&fixture.owner, "mail.remind", REVIEWED, 0)
+        .await
+        .expect("publish at the freed path");
+    let replacement = replacement.published().expect("the replacement");
+    assert_ne!(replacement.id(), &removed);
+    assert_eq!(replacement.current().revision(), 1);
+    assert_eq!(revisions_of(&removed).await, kept);
+    assert_eq!(
+        revisions_of(replacement.id())
+            .await
+            .iter()
+            .map(super::SharedToolRevision::revision)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+}
+
+// Catches: a Member or a stale request removing a Shared Tool, a removal
+// that breaks a Shared Tool whose current revision calls the removed one,
+// a refusal that leaves a tombstone behind, or a Shared Tool that stays
+// unremovable after its callers moved on or were removed themselves.
+#[tokio::test]
+async fn a_refused_removal_names_its_reason_and_changes_nothing() {
+    const CALLS_SEND: &str =
+        "export default async function relay() { return coral.shared.mail.send(); }";
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    for (path, source) in [
+        ("mail.send", DRAFT),
+        ("mail.remind", CALLS_SEND),
+        ("mail.digest", CALLS_SEND),
+    ] {
+        fixture
+            .publish(&fixture.owner, path, source, 0)
+            .await
+            .unwrap_or_else(|error| panic!("publish {path}: {error}"));
+    }
+    let remove = async |actor: &AuthenticatedUser, path: &str, expected_revision: u64| {
+        fixture
+            .shared_tools
+            .remove(
+                &change(actor.clone(), 50, 'e'),
+                &fixture.workspace,
+                &shared_path(path),
+                expected_revision,
+            )
+            .await
+    };
+    let before = (fixture.everything().await, fixture.events().await);
+    // (case, who removes, the path, the expected revision, the refusal)
+    let cases: [(&str, &AuthenticatedUser, &str, u64, Refusal); 4] = [
+        (
+            "a Member removes",
+            &fixture.member,
+            "mail.remind",
+            1,
+            |error| matches!(error, Error::PermissionDenied(_)),
+        ),
+        (
+            "no Shared Tool is at the path",
+            &fixture.owner,
+            "mail.absent",
+            1,
+            |error| matches!(error, Error::NotFound(AuthoredToolKind::Shared)),
+        ),
+        (
+            "the revision moved",
+            &fixture.owner,
+            "mail.remind",
+            2,
+            |error| {
+                matches!(
+                    error,
+                    Error::RevisionConflict {
+                        kind: AuthoredToolKind::Shared,
+                        current: 1
+                    }
+                )
+            },
+        ),
+        (
+            "other Shared Tools call it",
+            &fixture.owner,
+            "mail.send",
+            1,
+            // Of the two that call it, the first in path order is named.
+            |error| {
+                matches!(error, Error::SharedToolHasDependents { dependent }
+                    if dependent.as_str() == "mail.digest")
+            },
+        ),
+    ];
+    for (case, actor, path, expected_revision, refused) in cases {
+        let error = remove(actor, path, expected_revision)
+            .await
+            .expect_err(case);
+        assert!(refused(&error), "{case}: {error:?}");
+        assert_eq!(
+            (fixture.everything().await, fixture.events().await),
+            before,
+            "{case}"
+        );
+    }
+
+    // A Shared Tool whose current revision no longer calls it does not hold
+    // it, and neither does one that was removed.
+    fixture
+        .publish(&fixture.owner, "mail.digest", DRAFT, 1)
+        .await
+        .expect("publish a digest that calls nothing");
+    let held = remove(&fixture.owner, "mail.send", 1)
+        .await
+        .expect_err("the reminder still calls it");
+    assert!(
+        matches!(&held, Error::SharedToolHasDependents { dependent }
+            if dependent.as_str() == "mail.remind"),
+        "{held:?}"
+    );
+    remove(&fixture.owner, "mail.remind", 1)
+        .await
+        .expect("remove the reminder");
+    remove(&fixture.owner, "mail.send", 1)
+        .await
+        .expect("remove the Shared Tool nothing calls");
+}
+
+// Catches: an Agent or a User outside the Workspace reading history, a
+// Member refused it, a history that loses a removed Shared Tool or mixes it
+// with the Shared Tool that took its path, or an Event that names the wrong
+// actor, revision, content or time.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey gives every reader the same history to read"
+)]
+async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
+    use SharedToolLifecycleAction::{Published, Removed};
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    // The reminder is published twice and removed, and another Shared Tool
+    // then takes its path.
+    let mut hashes = Vec::new();
+    let mut ids = Vec::new();
+    for (at, path, source, expected_revision) in [
+        (30, "mail.remind", DRAFT, 0),
+        (31, "mail.remind", REVIEWED, 1),
+        (32, "mail.send", DRAFT, 0),
+    ] {
+        let published = fixture
+            .publish_at(at, &fixture.owner, path, source, expected_revision)
+            .await
+            .unwrap_or_else(|error| panic!("publish {path}: {error}"));
+        let tool = published.published().expect("the Shared Tool");
+        hashes.push(tool.current().content_hash().to_string());
+        ids.push(tool.id().clone());
+    }
+    let [first_hash, second_hash, send_hash] = hashes.try_into().expect("three publishes");
+    let [reminder, _, send] = ids.try_into().expect("three publishes");
+    fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 33, 'e'),
+            &fixture.workspace,
+            &shared_path("mail.remind"),
+            2,
+        )
+        .await
+        .expect("remove the reminder");
+    let replacement = fixture
+        .publish_at(34, &fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish at the freed path");
+    let replacement = replacement.published().expect("the replacement").id();
+
+    // (action, Shared Tool, path, revision, content hash, time), newest first.
+    let whole = [
+        (Published, replacement, "mail.remind", 1, &first_hash, 34),
+        (Removed, &reminder, "mail.remind", 2, &second_hash, 33),
+        (Published, &send, "mail.send", 1, &send_hash, 32),
+        (Published, &reminder, "mail.remind", 2, &second_hash, 31),
+        (Published, &reminder, "mail.remind", 1, &first_hash, 30),
+    ];
+    let of_the_reminder = [whole[1], whole[3], whole[4]];
+    let read = |events: &[SharedToolLifecycleEvent]| {
+        events
+            .iter()
+            .map(|event| {
+                assert_eq!(event.actor(), fixture.owner.user_id());
+                (
+                    event.action(),
+                    event.shared_tool_id().clone(),
+                    event.path().as_str().to_string(),
+                    event.revision(),
+                    event.content_hash().to_string(),
+                    event.occurred_at_unix_nanos(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = |events: &[(
+        SharedToolLifecycleAction,
+        &super::SharedToolId,
+        &str,
+        u64,
+        &String,
+        i64,
+    )]| {
+        events
+            .iter()
+            .map(|(action, id, path, revision, hash, at)| {
+                (
+                    *action,
+                    (*id).clone(),
+                    (*path).to_string(),
+                    *revision,
+                    (*hash).clone(),
+                    *at,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let outsider = provision_user(
+        fixture.database.clone(),
+        "user:outsider",
+        OrganizationRole::Member,
+    )
+    .await;
+    // (reader, who it is, the refusal if any)
+    let readers: [(&str, AuthenticatedPrincipal, Option<Refusal>); 4] = [
+        ("the Owner", owner.clone(), None),
+        (
+            "a Member User",
+            AuthenticatedPrincipal::user(fixture.member.clone()),
+            None,
+        ),
+        (
+            "an Agent",
+            fixture.agent.clone(),
+            Some(|error| matches!(error, Error::PermissionDenied(_))),
+        ),
+        (
+            "a User outside the Workspace",
+            AuthenticatedPrincipal::user(outsider),
+            Some(|error| matches!(error, Error::NotFound(AuthoredToolKind::Shared))),
+        ),
+    ];
+    for (case, reader, refusal) in readers {
+        let events = async |shared_tool| {
+            fixture
+                .shared_tools
+                .list_lifecycle_events(&reader, &fixture.workspace, shared_tool, None, 100)
+                .await
+        };
+        let revisions = fixture
+            .shared_tools
+            .list_revisions(&reader, &fixture.workspace, &reminder)
+            .await;
+        let revision = fixture
+            .shared_tools
+            .get_revision(&reader, &fixture.workspace, &reminder, 1)
+            .await;
+        match refusal {
+            None => {
+                let all = events(None)
+                    .await
+                    .unwrap_or_else(|error| panic!("{case}: {error}"));
+                assert_eq!(read(all.events()), expected(&whole), "{case}");
+                assert!(all.next_after().is_none(), "{case}");
+                // One Shared Tool's history is its own, removed or not.
+                let one = events(Some(&reminder))
+                    .await
+                    .unwrap_or_else(|error| panic!("{case}: {error}"));
+                assert_eq!(read(one.events()), expected(&of_the_reminder), "{case}");
+                // The removed Shared Tool's revisions are still read.
+                let revisions = revisions.unwrap_or_else(|error| panic!("{case}: {error}"));
+                assert_eq!(
+                    revisions
+                        .iter()
+                        .map(|revision| (revision.revision(), revision.content_hash()))
+                        .collect::<Vec<_>>(),
+                    [(2, second_hash.as_str()), (1, first_hash.as_str())],
+                    "{case}"
+                );
+                assert_eq!(
+                    revision
+                        .unwrap_or_else(|error| panic!("{case}: {error}"))
+                        .source()
+                        .as_str(),
+                    DRAFT,
+                    "{case}"
+                );
+            }
+            Some(refused) => {
+                for error in [
+                    events(None).await.expect_err(case),
+                    events(Some(&reminder)).await.expect_err(case),
+                    revisions.expect_err(case),
+                    revision.expect_err(case),
+                ] {
+                    assert!(refused(&error), "{case}: {error:?}");
+                }
+            }
+        }
+    }
+
+    // An identity that names no Shared Tool of the Workspace reads nothing.
+    let unknown = super::SharedToolId::parse("00000000-0000-4000-8000-000000000000").expect("id");
+    for absent in [
+        fixture
+            .shared_tools
+            .list_revisions(&owner, &fixture.workspace, &unknown)
+            .await
+            .map(drop),
+        fixture
+            .shared_tools
+            .get_revision(&owner, &fixture.workspace, &unknown, 1)
+            .await
+            .map(drop),
+        fixture
+            .shared_tools
+            .get_revision(&owner, &fixture.workspace, &reminder, 3)
+            .await
+            .map(drop),
+    ] {
+        assert!(
+            matches!(absent, Err(Error::NotFound(AuthoredToolKind::Shared))),
+            "{absent:?}"
+        );
+    }
+    let of_none = fixture
+        .shared_tools
+        .list_lifecycle_events(&owner, &fixture.workspace, Some(&unknown), None, 100)
+        .await
+        .expect("list the events of no Shared Tool");
+    assert_eq!(of_none.events(), []);
+}
+
+// Catches: a page that repeats or skips an Event, among Events that occurred
+// together too, or a page request that is out of bounds or continues from
+// nowhere being served.
+#[tokio::test]
+async fn pages_of_history_follow_one_another_without_a_gap_or_a_repeat() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    // Three Shared Tools published at one instant, and one after them.
+    for (at, path) in [(30, "a.one"), (30, "a.two"), (30, "a.three"), (31, "b.one")] {
+        fixture
+            .publish_at(at, &fixture.owner, path, DRAFT, 0)
+            .await
+            .unwrap_or_else(|error| panic!("publish {path}: {error}"));
+    }
+    let whole = fixture.events().await;
+    assert_eq!(
+        whole.first().map(|event| event.path().as_str()),
+        Some("b.one"),
+        "the newest Event is first"
+    );
+    let page = async |after: Option<&super::SharedToolLifecycleEventId>, page_size| {
+        fixture
+            .shared_tools
+            .list_lifecycle_events(&owner, &fixture.workspace, None, after, page_size)
+            .await
+    };
+
+    let mut paged = Vec::new();
+    let mut after = None;
+    loop {
+        let one = page(after.as_ref(), 1).await.expect("list a page");
+        assert!(one.events().len() <= 1);
+        paged.extend(one.events().iter().cloned());
+        after = one.next_after().cloned();
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(paged, whole);
+
+    let nowhere = super::SharedToolLifecycleEventId::parse("00000000-0000-4000-8000-000000000000")
+        .expect("id");
+    for refused in [
+        page(None, 0).await,
+        page(None, super::SHARED_TOOL_PAGE_MAX_SIZE + 1).await,
+        page(Some(&nowhere), 1).await,
+    ] {
+        assert!(
+            matches!(refused, Err(Error::InvalidInput(_))),
+            "{refused:?}"
+        );
+    }
 }

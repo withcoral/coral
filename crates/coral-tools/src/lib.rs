@@ -16,8 +16,9 @@
 //! explicit deletion evidence in Administration's transaction.
 //!
 //! [`SharedToolModule`] owns the Workspace's Shared Tools: a Workspace Owner
-//! publishes immutable revisions from the exact content they reviewed, and
-//! every Principal in the Workspace reads them.
+//! publishes immutable revisions from the exact content they reviewed and
+//! removes a Shared Tool, every Principal in the Workspace reads the live
+//! ones, and Member Users read their history.
 //!
 //! [`PrivateToolInspection`] reads the caller's own current definitions
 //! without a compiler, for read-only surfaces. [`PrivateToolDeletion`]
@@ -67,9 +68,11 @@ pub use private_tool::{
     PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
 };
 pub use shared_tool::{
-    SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDependency, SharedToolId, SharedToolModule,
-    SharedToolOrigin, SharedToolPage, SharedToolPath, SharedToolPublication, SharedToolPublish,
-    SharedToolReview, SharedToolRevision, SharedToolRevisionOrigin, SharedToolSummary,
+    SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDependency, SharedToolId,
+    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
+    SharedToolLifecycleEventPage, SharedToolModule, SharedToolOrigin, SharedToolPage,
+    SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolReview, SharedToolRevision,
+    SharedToolRevisionOrigin, SharedToolSummary,
 };
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{
