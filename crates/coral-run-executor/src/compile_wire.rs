@@ -39,8 +39,8 @@ const FAILURE_KINDS: [&str; 4] = [
 
 /// A compile message that breaks the protocol: a missing field, an answer
 /// of the wrong kind, or a package whose digest does not match. The side
-/// that reads one ends the stream that carried it: Coral's handler when
-/// [`crate::PullStreamCompiler::answer`] returns it, and the Run Executor
+/// that reads one ends the stream that carried it: Coral's
+/// [`crate::LinkServer`] when a `Compiled` breaks it, and the Run Executor
 /// when it cannot serve a `Compile`.
 #[derive(Debug, thiserror::Error)]
 #[error("a compile message broke the protocol")]
@@ -438,6 +438,70 @@ fn compiler_diagnostic(diagnostic: wire::Diagnostic) -> Result<CompilerDiagnosti
         diagnostic.line,
         diagnostic.column,
     ))
+}
+
+/// The answer a call takes, besides a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Takes {
+    CallPaths,
+    UnknownToolCalls,
+    References,
+    Package,
+    Prepared,
+}
+
+impl Takes {
+    pub(crate) const fn of(call: &Call) -> Self {
+        match call {
+            Call::ProgramReferences(_) | Call::CallPaths(_) => Self::CallPaths,
+            Call::UnknownToolCalls(_) => Self::UnknownToolCalls,
+            Call::DependencyReferences(_) => Self::References,
+            Call::Compile(_) => Self::Package,
+            Call::Prepare(_) => Self::Prepared,
+        }
+    }
+}
+
+/// An answer read back into the value the in-process client returns.
+#[derive(Debug)]
+pub(crate) enum Read {
+    CallPaths(SavedFunctionCallPaths),
+    UnknownToolCalls(Vec<UnknownToolCall>),
+    References(Vec<SavedFunctionReference>),
+    Package(CompiledProgram),
+    Prepared(SavedFunctionCompilation),
+    Failure(CompileError),
+}
+
+impl Read {
+    pub(crate) fn answer(answer: Answer) -> Result<Self, ProtocolError> {
+        Ok(match answer {
+            Answer::CallPaths(paths) => Self::CallPaths(saved_function_call_paths(paths)?),
+            Answer::UnknownToolCalls(calls) => Self::UnknownToolCalls(unknown_tool_calls(calls)),
+            Answer::References(found) => Self::References(
+                found
+                    .references
+                    .into_iter()
+                    .map(saved_function_reference)
+                    .collect(),
+            ),
+            Answer::Package(package) => Self::Package(compiled_program(package)?),
+            Answer::Prepared(prepared) => Self::Prepared(saved_function_compilation(prepared)?),
+            Answer::Failure(failure) => Self::Failure(compile_error(failure)?),
+        })
+    }
+
+    pub(crate) const fn answers(&self, takes: Takes) -> bool {
+        matches!(
+            (self, takes),
+            (Self::Failure(_), _)
+                | (Self::CallPaths(_), Takes::CallPaths)
+                | (Self::UnknownToolCalls(_), Takes::UnknownToolCalls)
+                | (Self::References(_), Takes::References)
+                | (Self::Package(_), Takes::Package)
+                | (Self::Prepared(_), Takes::Prepared)
+        )
+    }
 }
 
 #[cfg(test)]

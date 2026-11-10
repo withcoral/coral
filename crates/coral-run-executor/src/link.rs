@@ -28,12 +28,13 @@ use crate::{CompilerClient, InProcessCompiler};
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
 pub const PROTOCOL_LEVEL: u32 = 1;
-/// The largest message either side of the link sends or accepts. Coral's
-/// listener sets the same bound. It holds a compile's TypeScript, at most
-/// 512 KiB in all, and a package well past the 1 MiB script and 2 MiB source
-/// map Coral accepts, so Coral, not the link, refuses an oversized package.
-/// A typed prepare's declarations, up to 256 KiB for each callable Tool, have
-/// no total bound: a message past this one ends the stream.
+/// The largest message either side of the link sends or accepts: the Run
+/// Executor's client and Coral's listener, [`crate::LinkServer`], both set
+/// it. It holds a compile's TypeScript, at most 512 KiB in all, and a
+/// package well past the 1 MiB script and 2 MiB source map Coral accepts, so
+/// Coral, not the link, refuses an oversized package. A typed prepare's
+/// declarations, up to 256 KiB for each callable Tool, have no total bound: a
+/// message past this one ends the stream.
 pub const MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// The longest Run this Run Executor holds: the Run deadline's maximum.

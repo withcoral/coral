@@ -1,6 +1,6 @@
 //! A scripted Coral that serves the pull stream, for tests of the Run
 //! Executor's side of the link. Each stream it holds sends compiles through a
-//! [`PullStreamCompiler`].
+//! [`PullStreamCompiler`] over [`PullStreams`], as Coral's listener does.
 
 #![allow(
     clippy::missing_panics_doc,
@@ -22,7 +22,7 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{Hello, PullRequest, PullResponse, Welcome, pull_request, pull_response};
-use crate::{MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler};
+use crate::{Kind, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, PullStreams};
 
 /// How the scripted Coral answers one pull stream.
 #[derive(Clone, Copy, Debug)]
@@ -168,8 +168,11 @@ impl LinkService for Script {
                 _ => None,
             },
         };
+        let streams = PullStreams::default();
         let (to_send, mut sent) = mpsc::unbounded_channel();
-        let compiler = Arc::new(PullStreamCompiler::new(to_send));
+        let free = hello.as_ref().map_or(0, |hello| hello.free);
+        let held = streams.insert("scripted".to_owned(), Kind::Dialed, free, to_send);
+        let compiler = Arc::new(PullStreamCompiler::new(streams.clone(), held));
         let (rooms, reported) = mpsc::unbounded_channel();
         drop(self.calls.send(PullCall {
             at,
@@ -181,11 +184,11 @@ impl LinkService for Script {
         }));
         let protocol_level = match answer {
             Answer::Refuse(code) => {
-                compiler.close();
+                streams.end(held, None);
                 return Err(Status::new(code, "scripted refusal"));
             }
             Answer::Close => {
-                compiler.close();
+                streams.end(held, None);
                 return Ok(Response::new(Box::pin(tokio_stream::empty())));
             }
             Answer::Welcome(level) => level,
@@ -211,29 +214,27 @@ impl LinkService for Script {
                         }
                         () = outbound.closed() => break,
                         Some(compile) = sent.recv() => {
-                            if outbound.send(Ok(compile)).await.is_err() {
+                            if outbound.send(compile).await.is_err() {
                                 break;
                             }
                         }
                         message = inbound.message() => match message {
-                            Ok(Some(PullRequest {
-                                message: Some(pull_request::Message::Compiled(reply)),
-                            })) => {
-                                if compiler.answer(reply).is_err() {
-                                    let violation = Status::invalid_argument("broke the protocol");
+                            Ok(Some(request)) => {
+                                if let Some(pull_request::Message::Room(room)) = &request.message {
+                                    // A test that reads no rooms drops their receiver.
+                                    let _unread = rooms.send(room.free).is_err();
+                                }
+                                if let Err(violation) = streams.receive(held, request) {
                                     drop(outbound.send(Err(violation)).await);
                                     break;
                                 }
                             }
-                            Ok(Some(PullRequest {
-                                message: Some(pull_request::Message::Room(room)),
-                            })) => drop(rooms.send(room.free)),
                             _ => break,
                         },
                     }
                 }
             }
-            compiler.close();
+            streams.end(held, None);
             // Holds the Run Executor's side open until Coral's side ends.
             drop(inbound);
         });

@@ -999,8 +999,9 @@ impl Error {
 pub enum CompileFailure {
     /// The source was rejected, with a safe bounded diagnostic for its author.
     Rejected(String),
-    /// The compiler queue had no room for the request. No compiler returns
-    /// it now that the queue has no bound.
+    /// The compiler had no room for the request. This crate's compiler
+    /// never returns it; a Run Executor's pull stream whose room is spent
+    /// does.
     Busy,
     /// The compile deadline expired.
     TimedOut,
