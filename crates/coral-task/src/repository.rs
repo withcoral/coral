@@ -332,3 +332,27 @@ fn base_select() -> sea_query::SelectStatement {
         .from(TaskRecords::Table)
         .to_owned()
 }
+
+/// Counts the Tasks started in `[start, end)` unix nanoseconds, across every
+/// Workspace. The caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn tasks_started(
+    tx: &mut coral_db::Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    let tasks: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(TaskRecords::Id).count())
+                .from(TaskRecords::Table)
+                .and_where(Expr::col(TaskRecords::StartedAtUnixNanos).gte(start))
+                .and_where(Expr::col(TaskRecords::StartedAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    Ok(tasks.map_or(0, |(tasks,)| u64::try_from(tasks).unwrap_or_default()))
+}

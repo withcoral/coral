@@ -732,3 +732,19 @@ pub(super) async fn all_workspace_ids(
         .map(|(id,)| WorkspaceId::parse(&id))
         .collect()
 }
+
+/// Counts the active Workspaces.
+pub(crate) async fn active_workspace_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
+    let total: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(WorkspaceRecords::Id).count())
+                .from(WorkspaceRecords::Table)
+                .and_where(
+                    Expr::col(WorkspaceRecords::State).eq(WorkspaceState::Active.as_storage_str()),
+                )
+                .to_owned(),
+        )
+        .await?;
+    Ok(total.map_or(0, |(total,)| u64::try_from(total).unwrap_or_default()))
+}
