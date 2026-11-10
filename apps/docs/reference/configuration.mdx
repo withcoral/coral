@@ -3,16 +3,16 @@ title: "Configuration Reference"
 sidebarTitle: "Configuration"
 ---
 
-Your configuration lives in the `config.toml` file of Coral's configuration folder. When you run the `coral` runtime yourself, the folder is located by default in:
+Your configuration lives in the `config.toml` file of Coral's configuration folder. Where that folder is depends on how you run Coral:
 
-- macOS: `~/Library/Application Support/com.withcoral.coral`
-- Linux: `~/.config/coral`
-- Windows: `%APPDATA%\withcoral\coral\config`
+- **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
+- **Coral Desktop.** Desktop uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. Desktop writes this `config.toml` again at each launch, so your edits to it are lost.
+- **The `coral` binary.** When you start the binary yourself, it uses:
+  - macOS: `~/Library/Application Support/com.withcoral.coral`
+  - Linux: `~/.config/coral`
+  - Windows: `%APPDATA%\withcoral\coral\config`
 
-You can override the location of the config folder with the `CORAL_CONFIG_DIR` environment variable.
-
-- **Container image.** The `coral` image sets `CORAL_CONFIG_DIR` to `/var/lib/coral/config`. See [Container image](#container-image) for how the image writes `config.toml`.
-- **Coral Desktop.** Desktop keeps its runtime state in the `runtime` folder of its own data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. Desktop writes that `config.toml` again at each launch, so your edits to it are lost.
+To use another folder with the container image or the binary, set `CORAL_CONFIG_DIR`.
 
 Coral does not start when `config.toml` holds an unknown key, or a value that a key does not accept. The error names the key.
 
