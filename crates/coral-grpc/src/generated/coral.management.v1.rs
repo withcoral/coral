@@ -15888,11 +15888,12 @@ pub mod shared_tool_service_client {
         /// revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
         /// path is inside another Shared Tool's namespace, or holds one.
         /// ABORTED when the current revision is not expected_revision.
-        /// INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
-        /// cannot become a Tool; with reason SHARED_TOOL_RESTORE_DIFFERS when the
-        /// source or the description is not that of the revision to restore. For
-        /// both, the error metadata "message" says what to correct. A validate_only
-        /// request is refused as the publish would be.
+        /// INVALID_ARGUMENT with reason SHARED_TOOL_PATH_INVALID when the path is
+        /// not a Shared Tool Path; with reason SHARED_TOOL_SOURCE_REJECTED when the
+        /// source cannot become a Tool; with reason SHARED_TOOL_RESTORE_DIFFERS when
+        /// the source or the description is not that of the revision to restore.
+        /// For these three, the error metadata "message" says what to correct. A
+        /// validate_only request is refused as the publish would be.
         pub async fn publish_shared_tool(
             &mut self,
             request: impl tonic::IntoRequest<super::PublishSharedToolRequest>,
@@ -16050,11 +16051,12 @@ pub(crate) mod shared_tool_service_server {
         /// revision that never existed; with reason SHARED_TOOL_PATH_TAKEN when the
         /// path is inside another Shared Tool's namespace, or holds one.
         /// ABORTED when the current revision is not expected_revision.
-        /// INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
-        /// cannot become a Tool; with reason SHARED_TOOL_RESTORE_DIFFERS when the
-        /// source or the description is not that of the revision to restore. For
-        /// both, the error metadata "message" says what to correct. A validate_only
-        /// request is refused as the publish would be.
+        /// INVALID_ARGUMENT with reason SHARED_TOOL_PATH_INVALID when the path is
+        /// not a Shared Tool Path; with reason SHARED_TOOL_SOURCE_REJECTED when the
+        /// source cannot become a Tool; with reason SHARED_TOOL_RESTORE_DIFFERS when
+        /// the source or the description is not that of the revision to restore.
+        /// For these three, the error metadata "message" says what to correct. A
+        /// validate_only request is refused as the publish would be.
         async fn publish_shared_tool(
             &self,
             request: tonic::Request<super::PublishSharedToolRequest>,

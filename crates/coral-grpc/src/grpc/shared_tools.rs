@@ -1,4 +1,4 @@
-use super::authored_tools::{diagnostic, error, private_tool_agent};
+use super::authored_tools::{correctable, diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
 use super::workspaces::{
     annotate, invalid, page_start, page_token, resource, timestamp, workspace_id,
@@ -263,8 +263,12 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
+        // The Owner names the path of a publish, so its refusal says what a
+        // Shared Tool Path is.
+        let path = SharedToolPath::parse(&input.path)
+            .map_err(|refusal| correctable("SHARED_TOOL_PATH_INVALID", &refusal))?;
         let mut publish = SharedToolPublish::new(
-            path(&input.path)?,
+            path,
             origin(input.origin, &w, &user)?,
             AuthoredToolDescription::parse(&input.description)
                 .map_err(|_error| invalid("invalid description"))?,

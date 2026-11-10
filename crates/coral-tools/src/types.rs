@@ -257,8 +257,9 @@ impl AuthoredToolPath {
         self.kind().call_path(self.relative_path())
     }
 
-    /// How a message and a stack frame name the Tool's source, such as
-    /// `Shared Tool coral.shared.mail.remind`.
+    /// How a Run's admission refusal and a stack frame name the Tool's
+    /// source, such as `Shared Tool coral.shared.mail.remind`. An authoring
+    /// refusal names the kind itself, and then the Call Path alone.
     #[must_use]
     pub fn source_name(&self) -> String {
         self.kind().source_name(self.relative_path())

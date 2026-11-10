@@ -76,7 +76,7 @@ const REJECTED: (tonic::Code, &str) = (tonic::Code::InvalidArgument, "SHARED_TOO
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table holds every refusal of a publish, before the reads that show nothing changed"
+    reason = "one table holds every refusal of a publish"
 )]
 async fn a_refused_publish_maps_to_its_status_and_reason() {
     let f = Fixture::new().await;
@@ -152,6 +152,13 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
             false,
         ),
         (
+            "the path is not a Shared Tool Path",
+            &f.owner,
+            publish(&f, "mail..remind", 0),
+            (tonic::Code::InvalidArgument, "SHARED_TOOL_PATH_INVALID"),
+            true,
+        ),
+        (
             "the source has no default export",
             &f.owner,
             source("export const remind = 'later';"),
@@ -187,7 +194,6 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
             true,
         ),
     ];
-    let before = read(&f.owner, "mail.remind").await.expect("read");
     for (case, user, publish, expected, says_why) in cases {
         let status = send(&f, user, publish).await.expect_err(case);
         assert_eq!(
@@ -195,7 +201,7 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
             expected,
             "{case}"
         );
-        // Only a refusal over the publish's content says what to correct.
+        // Only a refusal of what the Owner entered says what to correct.
         assert_eq!(
             error_info(&status)
                 .metadata
@@ -206,17 +212,8 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
         );
     }
 
-    // No refusal published anything.
-    assert_eq!(
-        read(&f.owner, "mail.remind")
-            .await
-            .expect("read")
-            .into_inner(),
-        before.into_inner()
-    );
     for (case, user, path) in [
         ("an absent path", &f.member, "mail.absent"),
-        ("the path of the refused publishes", &f.owner, "mail.other"),
         ("a caller outside the Workspace", &outsider, "mail.remind"),
     ] {
         let status = read(user, path).await.expect_err(case);

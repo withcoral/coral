@@ -68,8 +68,11 @@ pub enum Error {
     /// Current Principal authority does not permit the operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
-    /// Compiler output exceeded a fixed authoring limit.
-    #[error("Program package exceeds the {component} limit of {maximum_bytes} bytes")]
+    /// Compiler output exceeded a fixed authoring limit. The declaration is
+    /// the one bounded output, so the text says how to make it smaller.
+    #[error(
+        "the {component} exceeds {maximum_bytes} bytes. Return fewer fields, or annotate the return type."
+    )]
     PackageTooLarge {
         /// Component that crossed its bound.
         component: &'static str,

@@ -53,8 +53,9 @@ impl AuthoredToolKind {
         format!("{}.{relative_path}", self.call_root())
     }
 
-    /// How a message and a stack frame name the source of the Tool at
-    /// `relative_path`, such as `Shared Tool coral.shared.mail.remind`.
+    /// How a Run's admission refusal and a stack frame name the source of
+    /// the Tool at `relative_path`, such as
+    /// `Shared Tool coral.shared.mail.remind`.
     #[must_use]
     pub fn source_name(self, relative_path: &str) -> String {
         format!("{} {}", self.name(), self.call_path(relative_path))

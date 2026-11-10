@@ -861,9 +861,7 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
             "mail.other",
             "export default async function other() { return coral.shared.mail.absent(); }",
             |error| {
-                matches!(error, Error::Admission(AuthoredToolKind::Shared, message)
-                    if message.contains("coral.shared.mail.absent"))
-                    && authoring_refused(error)
+                authoring_refused(error) && error.to_string().contains("coral.shared.mail.absent")
             },
         ),
         (

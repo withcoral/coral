@@ -29,13 +29,25 @@ fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
     let maximum_declaration = "d".repeat(crate::AUTHORED_TOOL_DECLARATION_MAX_BYTES);
     crate::AuthoredToolDeclaration::from_compiler(&maximum_declaration)
         .expect("maximum Private Tool declaration");
-    assert!(matches!(
-        crate::AuthoredToolDeclaration::from_compiler(&format!("{maximum_declaration}d")),
-        Err(Error::PackageTooLarge {
-            component: "Tool declaration",
-            ..
-        })
-    ));
+    let oversized =
+        crate::AuthoredToolDeclaration::from_compiler(&format!("{maximum_declaration}d"))
+            .expect_err("oversized declaration");
+    assert!(
+        matches!(
+            oversized,
+            Error::PackageTooLarge {
+                component: "Tool declaration",
+                ..
+            }
+        ),
+        "{oversized:?}"
+    );
+    // The refusal reaches the author inside an authoring failure, so it
+    // says what is too large and how to make it smaller.
+    assert_eq!(
+        oversized.to_string(),
+        "the Tool declaration exceeds 262144 bytes. Return fewer fields, or annotate the return type."
+    );
 }
 
 #[tokio::test]

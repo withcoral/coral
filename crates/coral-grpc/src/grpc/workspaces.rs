@@ -252,20 +252,6 @@ pub(super) fn safe_status_with(
     Status::with_details(code, reason, status.encode_to_vec().into())
 }
 
-/// The `ErrorInfo` metadata of a status this module built.
-#[cfg(test)]
-pub(super) fn metadata(status: &Status) -> std::collections::HashMap<String, String> {
-    let details = RpcStatus::decode(status.details())
-        .expect("a google.rpc.Status")
-        .details;
-    let [detail] = details.as_slice() else {
-        panic!("one ErrorInfo detail: {details:?}")
-    };
-    ErrorInfo::decode(detail.value.as_slice())
-        .expect("an ErrorInfo")
-        .metadata
-}
-
 /// Tokens are opaque continuation positions, never authority. Every page reloads
 /// current visibility; binding to User, parent and collection prevents reuse elsewhere.
 /// Decodes a non-authorizing continuation before a bounded repository read.

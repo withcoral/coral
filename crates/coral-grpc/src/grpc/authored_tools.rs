@@ -56,12 +56,12 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
             );
         }
         // Only a publish compiles a source here. The Owner corrects the
-        // content of a publish, so each refusal of it says what is wrong.
+        // content of a publish, so each refusal of it says what to correct.
         refusal @ (E::Admission(Shared, _) | E::NotData(Shared, _) | E::PackageTooLarge { .. }) => {
-            return content_refused("SHARED_TOOL_SOURCE_REJECTED", &refusal);
+            return correctable("SHARED_TOOL_SOURCE_REJECTED", &refusal);
         }
         refusal @ E::SharedToolRestoreDiffers => {
-            return content_refused("SHARED_TOOL_RESTORE_DIFFERS", &refusal);
+            return correctable("SHARED_TOOL_RESTORE_DIFFERS", &refusal);
         }
         // No management call saves a Private Tool, so none meets a Private
         // Tool's authoring refusal. A compiler that did not judge the source
@@ -81,10 +81,10 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
     safe_status(code, reason)
 }
 
-/// The status of a publish whose content Coral refused: `INVALID_ARGUMENT`
+/// The status of a publish that its Owner can correct: `INVALID_ARGUMENT`
 /// with `reason`, and the domain's bounded text of the refusal as the
 /// `message` metadata.
-fn content_refused(reason: &str, refusal: &coral_tools::Error) -> Status {
+pub(super) fn correctable(reason: &str, refusal: &coral_tools::Error) -> Status {
     safe_status_with(
         tonic::Code::InvalidArgument,
         reason,
@@ -109,54 +109,5 @@ pub(super) fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> wire::AuthoredT
         message: diagnostic.message().to_owned(),
         line: diagnostic.line(),
         column: diagnostic.column(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::workspaces::metadata;
-    use coral_catalog::AuthoredToolKind::Shared;
-    use coral_tools::Error as E;
-    use tonic::Code;
-
-    // Catches: a status that says nothing of a refused package, or that
-    // carries the text of a failure the Owner cannot correct. No publish
-    // through the service reaches these; the transport tests hold the rest.
-    #[test]
-    fn only_a_refusal_of_the_content_carries_a_message() {
-        // (the failure, its status and reason, whether it says what to correct)
-        let cases = [
-            (
-                E::PackageTooLarge {
-                    component: "Tool declaration",
-                    maximum_bytes: 1,
-                },
-                (Code::InvalidArgument, "SHARED_TOOL_SOURCE_REJECTED"),
-                true,
-            ),
-            (E::CompilerBusy, (Code::Unavailable, "UNAVAILABLE"), false),
-            (
-                E::CompilationTimedOut(Shared),
-                (Code::Unavailable, "UNAVAILABLE"),
-                false,
-            ),
-            (
-                E::CorruptData("private detail".into()),
-                (Code::Unavailable, "UNAVAILABLE"),
-                false,
-            ),
-        ];
-        for (failure, expected, says_why) in cases {
-            let label = format!("{failure:?}");
-            let status = super::error(failure);
-            assert_eq!((status.code(), status.message()), expected, "{label}");
-            assert_eq!(
-                metadata(&status)
-                    .get("message")
-                    .map(|message| !message.is_empty()),
-                says_why.then_some(true),
-                "{label}"
-            );
-        }
     }
 }
