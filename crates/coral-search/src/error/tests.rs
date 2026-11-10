@@ -7,8 +7,8 @@ use crate::ProviderCallRoot;
 fn an_unknown_provider_filter_is_refused_with_only_the_searchable_namespaces() {
     for (searchable, message) in [
         (
-            &["coral", "coral.providers.github"][..],
-            "No Provider you can search has this namespace. Use one of: coral, github.",
+            &["coral", "coral.providers.acme"][..],
+            "No Provider you can search has this namespace. Use one of: acme, coral.",
         ),
         (
             &[],

@@ -14,10 +14,10 @@ sandbox, adds the credentials, and checks every call against your policy.
 In this example, an agent posts unreviewed PRs to Slack for the first time. The
 agent searches for tools and runs a program. It isn't allowed to post to Slack
 without approval, so the user approves it before it posts. Coral saves the
-workflow as a function. The next day, the agent runs the same task by calling
-the saved function.
+workflow as a private tool. The next day, the agent runs the same task by
+calling that private tool.
 
-![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, runs a program, and waits for approval before posting. The Coral app then shows the run, who approved it, and the program saved as a function. The next day, the same request runs by calling the saved function. A final card compares the two days: 35% fewer tokens and 31% faster, in line with our benchmarks.](./apps/docs/images/demo.gif)
+![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, runs a program, and waits for approval before posting. The Coral app then shows the run, who approved it, and the program saved as a private tool. The next day, the same request runs by calling that private tool. A final card compares the two days: 35% fewer tokens and 31% faster, in line with our benchmarks.](./apps/docs/images/demo.gif)
 
 ## Why Coral
 

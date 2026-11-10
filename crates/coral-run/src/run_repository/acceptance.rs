@@ -237,7 +237,7 @@ fn stored_usize(value: usize) -> Result<i64, Error> {
 }
 
 #[derive(Iden)]
-enum ProgramRunPrivateToolSnapshots {
+pub(super) enum ProgramRunPrivateToolSnapshots {
     Table,
     RunId,
     WorkspaceId,

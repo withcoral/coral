@@ -15,7 +15,7 @@ use crate::retriever::{
     EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
     end_query,
 };
-use crate::{EntityKind, Error, ProviderCallRoot, query_terms};
+use crate::{EntityKind, Error, ProviderCallRoot, ProviderFilter, query_terms};
 
 /// The most Call Paths one missing path names.
 pub const SUGGESTIONS_MAX: usize = 3;

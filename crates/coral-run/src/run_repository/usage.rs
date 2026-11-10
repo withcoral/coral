@@ -5,7 +5,7 @@ use coral_db::Transaction;
 use sea_query::{Asterisk, Expr, ExprTrait as _, JoinType, Order, Query};
 
 use super::ProgramRunRecords;
-use super::acceptance::ProgramRunSavedFunctionSnapshots;
+use super::acceptance::ProgramRunPrivateToolSnapshots;
 use super::run_row::decode_program_error;
 use crate::usage_repository::RunEndings;
 use crate::{Error, RunFailureCode, RunState};
@@ -89,9 +89,10 @@ pub(crate) async fn run_endings(
     Ok(endings)
 }
 
-/// Counts the Saved Function snapshots of the Runs accepted in
-/// `[start, end)`, across every Workspace: one per function a Run used.
-pub(crate) async fn saved_function_calls(
+/// Counts the Private Tool snapshots of the Runs accepted in
+/// `[start, end)`, across every Workspace: one per Private Tool a Run used.
+/// Shared Tool snapshots are not counted.
+pub(crate) async fn private_tool_calls(
     tx: &mut Transaction<'_>,
     start: i64,
     end: i64,
@@ -106,19 +107,19 @@ pub(crate) async fn saved_function_calls(
         .fetch_optional(
             Query::select()
                 .expr(Expr::col(Asterisk).count())
-                .from(ProgramRunSavedFunctionSnapshots::Table)
+                .from(ProgramRunPrivateToolSnapshots::Table)
                 .join(
                     JoinType::InnerJoin,
                     ProgramRunRecords::Table,
                     Expr::col((ProgramRunRecords::Table, ProgramRunRecords::WorkspaceId))
                         .equals((
-                            ProgramRunSavedFunctionSnapshots::Table,
-                            ProgramRunSavedFunctionSnapshots::WorkspaceId,
+                            ProgramRunPrivateToolSnapshots::Table,
+                            ProgramRunPrivateToolSnapshots::WorkspaceId,
                         ))
                         .and(
                             Expr::col((ProgramRunRecords::Table, ProgramRunRecords::Id)).equals((
-                                ProgramRunSavedFunctionSnapshots::Table,
-                                ProgramRunSavedFunctionSnapshots::RunId,
+                                ProgramRunPrivateToolSnapshots::Table,
+                                ProgramRunPrivateToolSnapshots::RunId,
                             )),
                         ),
                 )

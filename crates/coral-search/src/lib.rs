@@ -94,12 +94,13 @@ pub use storage::{StorageError, prepare_storage};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoredToolAuthoringDescription, AuthoringDescription, CallPath,
-    EntityKind, ExactAuthoredToolDetail, ExactAuthoringDescription, ProviderCallRoot, ProviderId,
-    RetrieverCoverage, RetrieverState, RetrieverStatus, SEARCH_DEFAULT_LIMIT,
-    SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX,
-    SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SearchEvidence,
-    SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit, SearchPage,
-    SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit, provider_filter_value,
+    EntityKind, ExactAuthoredToolDetail, ExactAuthoringDescription, ProviderCallRoot,
+    ProviderFilter, ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus,
+    SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
+    SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
+    SEARCH_RESULT_LIMIT_MAX, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState,
+    SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest, SearchableProvider,
+    ToolAuthoringDescription, ToolHit, provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The

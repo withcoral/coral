@@ -130,19 +130,19 @@ pub async fn approval_outcomes(
     Ok(outcomes)
 }
 
-/// Counts the Saved Functions that Runs accepted in `[start, end)` unix
-/// nanoseconds used, one per function each Run used, across every
+/// Counts the Private Tools that Runs accepted in `[start, end)` unix
+/// nanoseconds used, one per Private Tool each Run used, across every
 /// Workspace. The caller authorizes the read.
 ///
 /// # Errors
 ///
 /// Returns a database failure.
-pub async fn saved_function_calls(
+pub async fn private_tool_calls(
     tx: &mut Transaction<'_>,
     start: i64,
     end: i64,
 ) -> Result<u64, Error> {
-    crate::run_repository::saved_function_calls(tx, start, end).await
+    crate::run_repository::private_tool_calls(tx, start, end).await
 }
 
 /// When the first Run that Coral still keeps succeeded, before `end` unix
@@ -165,7 +165,7 @@ mod tests {
 
     use super::{
         ApprovalOutcomes, InvocationEndings, approval_outcomes, approval_requests,
-        first_success_before, invocation_endings, saved_function_calls,
+        first_success_before, invocation_endings, private_tool_calls,
     };
     use crate::approval::ApprovalState;
     use crate::{InvocationResultKind, RunState};
@@ -287,10 +287,10 @@ mod tests {
         tx.commit().await.expect("commit");
     }
 
-    /// A Run counts each Saved Function it used once, by when it was
+    /// A Run counts each Private Tool it used once, by when it was
     /// accepted. Only a succeeded Run dates the first success.
     #[tokio::test]
-    async fn saved_function_calls_and_the_first_success_hold_to_their_window() {
+    async fn private_tool_calls_and_the_first_success_hold_to_their_window() {
         let db = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("test database");
@@ -303,11 +303,11 @@ mod tests {
             run("r2", RunState::Succeeded, 10),
             run("r3", RunState::Succeeded, 20),
         ];
-        for (run, function) in [("r2", "f1"), ("r2", "f2"), ("r3", "f1")] {
+        for (run, tool) in [("r2", "f1"), ("r2", "f2"), ("r3", "f1")] {
             fixture.push(format!(
-                "INSERT INTO program_run_saved_function_snapshots (run_id, workspace_id, \
-                    saved_function_id, path, source) \
-                 VALUES ('{run}', 'ws1', '{function}', '{function}', 'return 1')"
+                "INSERT INTO program_run_private_tool_snapshots (run_id, workspace_id, \
+                    private_tool_id, path, source) \
+                 VALUES ('{run}', 'ws1', '{tool}', '{tool}', 'return 1')"
             ));
         }
         for statement in &fixture {
@@ -318,7 +318,7 @@ mod tests {
         let mut tx = database.begin_read_snapshot().await.expect("snapshot");
         for (start, end, calls) in [(0, 20, 2), (0, 21, 3), (11, 20, 0)] {
             assert_eq!(
-                saved_function_calls(&mut tx, start, end)
+                private_tool_calls(&mut tx, start, end)
                     .await
                     .expect("calls"),
                 calls,

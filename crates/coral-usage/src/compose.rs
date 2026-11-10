@@ -7,8 +7,9 @@ use crate::Error;
 use crate::day::{day_of, day_string};
 use crate::environment::Build;
 use crate::report::{
-    Accounts, ApprovalCounts, Clients, CoralBlock, Day, Host, Milestones, Providers, RunCounts,
-    RunFailures, SavedFunctionCounts, TaskCounts, ToolInvocationCounts, Totals, UsageReport, count,
+    Accounts, ApprovalCounts, Clients, CoralBlock, Day, Host, Milestones, PrivateToolCounts,
+    Providers, RunCounts, RunFailures, TaskCounts, ToolInvocationCounts, Totals, UsageReport,
+    count,
 };
 use crate::repository::activity::{self, Window};
 use crate::repository::install::{Install, MilestoneDays};
@@ -45,12 +46,12 @@ pub(crate) async fn compose(
         coral_run::usage_repository::approval_outcomes(tx, window.start, window.end).await?;
     let tasks = coral_task::usage_repository::tasks_started(tx, window.start, window.end).await?;
     let saved =
-        coral_functions::usage_repository::functions_created(tx, window.start, window.end).await?;
+        coral_tools::usage_repository::private_tools_created(tx, window.start, window.end).await?;
     let called =
-        coral_run::usage_repository::saved_function_calls(tx, window.start, window.end).await?;
+        coral_run::usage_repository::private_tool_calls(tx, window.start, window.end).await?;
     let reuse_today = activity::reuse(tx, window).await?;
     let totals = coral_workspace::usage_repository::workspace_totals(tx).await?;
-    let saved_functions = coral_functions::usage_repository::function_total(tx).await?;
+    let private_tools = coral_tools::usage_repository::private_tool_total(tx).await?;
     let providers = coral_provider::usage_repository::provider_totals(tx).await?;
 
     let milestones = milestones(tx, install.milestones, day, window.end).await?;
@@ -62,8 +63,8 @@ pub(crate) async fn compose(
         build: build.wire(),
         milestones: Milestones {
             first_successful_run: milestones.first_successful_run.map(day_string),
-            first_saved_function: milestones.first_saved_function.map(day_string),
-            function_reused_in_later_task: milestones.function_reused.map(day_string),
+            first_private_tool: milestones.first_private_tool.map(day_string),
+            private_tool_reused_in_later_task: milestones.private_tool_reused.map(day_string),
         },
         day: Day {
             date: day_string(day),
@@ -91,7 +92,7 @@ pub(crate) async fn compose(
                 denied: count(approvals.declined),
                 expired: count(approvals.expired),
             },
-            saved_functions: SavedFunctionCounts {
+            private_tools: PrivateToolCounts {
                 saved: count(saved),
                 called: count(called),
                 tasks_reusing_one: count(reuse_today.tasks),
@@ -105,7 +106,7 @@ pub(crate) async fn compose(
             workspaces: count(totals.workspaces),
             users: count(totals.users),
             agents: count(totals.agents),
-            saved_functions: count(saved_functions),
+            private_tools: count(private_tools),
             providers: Providers {
                 // Coral does not record which recipe made a provider yet, so
                 // every provider counts by its kind.
@@ -146,12 +147,12 @@ async fn milestones(
             kept.first_successful_run,
             coral_run::usage_repository::first_success_before(tx, end).await?,
         ),
-        first_saved_function: earliest(
+        first_private_tool: earliest(
             day,
-            kept.first_saved_function,
-            coral_functions::usage_repository::first_created_before(tx, end).await?,
+            kept.first_private_tool,
+            coral_tools::usage_repository::first_created_before(tx, end).await?,
         ),
-        function_reused: earliest(day, kept.function_reused, reuse.first_at),
+        private_tool_reused: earliest(day, kept.private_tool_reused, reuse.first_at),
     })
 }
 

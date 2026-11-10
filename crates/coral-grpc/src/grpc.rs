@@ -11,6 +11,7 @@ mod private_tools;
 mod providers;
 mod releases;
 mod shared_tools;
+mod usage_data;
 mod workspaces;
 use std::sync::Arc;
 
@@ -144,6 +145,9 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         .add_service(management::release_service_server::ReleaseServiceServer::new(
             services.clone(),
         ))
+        .add_service(
+            management::usage_data_service_server::UsageDataServiceServer::new(services.clone()),
+        )
         .add_service(
             management::private_tool_service_server::PrivateToolServiceServer::new(
                 services.clone(),

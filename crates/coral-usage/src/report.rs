@@ -102,11 +102,15 @@ fn wire_version(version: &str) -> &str {
         .map_or(version, |(version, _)| version)
 }
 
+/// The collector's contract names a Private Tool by its earlier name, a
+/// Saved Function, so each key that counts Private Tools keeps that name.
 #[derive(Serialize)]
 pub(crate) struct Milestones {
     pub first_successful_run: Option<String>,
-    pub first_saved_function: Option<String>,
-    pub function_reused_in_later_task: Option<String>,
+    #[serde(rename = "first_saved_function")]
+    pub first_private_tool: Option<String>,
+    #[serde(rename = "function_reused_in_later_task")]
+    pub private_tool_reused_in_later_task: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -116,7 +120,8 @@ pub(crate) struct Day {
     pub run_failures: RunFailures,
     pub tool_invocations: ToolInvocationCounts,
     pub approvals: ApprovalCounts,
-    pub saved_functions: SavedFunctionCounts,
+    #[serde(rename = "saved_functions")]
+    pub private_tools: PrivateToolCounts,
     pub tasks: TaskCounts,
     pub clients: Clients,
 }
@@ -152,8 +157,9 @@ pub(crate) struct ApprovalCounts {
     pub expired: u64,
 }
 
+/// Private Tools created, used by Runs, and reused in a later Task.
 #[derive(Serialize, Default)]
-pub(crate) struct SavedFunctionCounts {
+pub(crate) struct PrivateToolCounts {
     pub saved: u64,
     pub called: u64,
     pub tasks_reusing_one: u64,
@@ -174,7 +180,8 @@ pub(crate) struct Totals {
     pub workspaces: u64,
     pub users: u64,
     pub agents: u64,
-    pub saved_functions: u64,
+    #[serde(rename = "saved_functions")]
+    pub private_tools: u64,
     pub providers: Providers,
     pub accounts: Accounts,
 }

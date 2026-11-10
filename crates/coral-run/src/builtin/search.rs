@@ -116,7 +116,6 @@ fn value_reason(field: &str) -> String {
             "pass keywords that are not blank, with no null character, in at most {} UTF-8 bytes",
             coral_search::SEARCH_QUERY_MAX_BYTES
         ),
-        "provider" => "pass a namespace from coral.providers.<namespace>, or coral".to_owned(),
         _ => format!("pass 1 to {}", coral_search::SEARCH_RESULT_LIMIT_MAX),
     }
 }

@@ -1727,7 +1727,7 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         list.lines()
             .map(|line| line.split('\t').next().expect("a namespace"))
             .collect::<Vec<_>>(),
-        ["acme_code", "coral.workspace", "weather"],
+        ["acme_code", "coral", "weather"],
         "{list}"
     );
 
@@ -1758,11 +1758,13 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         else {
             panic!("three fields of a hit: {hit}");
         };
-        // The filter keeps `acme_code`'s tools and Saved Functions.
+        // The filter keeps `acme_code`'s tools, shared tools and the
+        // caller's private tools.
         assert!(
             call_path.as_str().is_some_and(|path| {
                 path.starts_with("coral.providers.acme_code.")
-                    || path.starts_with("coral.functions.")
+                    || path.starts_with("coral.private.")
+                    || path.starts_with("coral.shared.")
             }),
             "{hit}"
         );
@@ -1773,10 +1775,9 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         );
         assert!(description_snippet.is_string(), "{hit}");
     }
-    // The tracer's search for pull requests finds `coral.search`,
-    // whose line is never complete: it has one overload per mode. So the
-    // example reads that declaration by its path, and every path it read
-    // exists.
+    // The search finds `createPullRequest`, whose line names its body type
+    // without showing it. So the example reads that declaration by its path,
+    // and every path it read exists.
     let declarations = found["declarations"].as_array().expect("declarations");
     assert!(
         declarations

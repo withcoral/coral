@@ -383,12 +383,13 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     sql.push(run("r5", "t1", "timed_out", d7(8), d7(8), ""));
     sql.push(run("r6", "t1", "interrupted", d7(9), d7(9), ""));
     sql.push(run("r7", "t1", "canceled", d7(10), d7(10), ""));
-    // Saved during r1 (in t1), used again by t1 (r8) and then by t2 (r9).
+    // A Private Tool created during r1 (in t1), used again by t1 (r8) and
+    // then by t2 (r9). The report's keys keep the name Saved Function.
     sql.push(format!(
-        "INSERT INTO saved_function_lifecycle_events (id, workspace_id, actor_principal_id, \
-            actor_principal_kind, action, target_saved_function_id, target_path, outcome, \
+        "INSERT INTO private_tool_lifecycle_events (id, workspace_id, actor_principal_id, \
+            actor_principal_kind, action, target_private_tool_id, target_path, outcome, \
             changed_field_paths, occurred_at_unix_nanos, trace_id) \
-         VALUES ('e1', 'ws1', 'usage-owner', 'user', 'saved_function.created', 'f1', 'triage', \
+         VALUES ('e1', 'ws1', 'usage-owner', 'user', 'private_tool.created', 'f1', 'triage', \
             'accepted', '[]', {saved}, '{trace}');",
         saved = d7(3),
         trace = "0".repeat(32)
@@ -397,7 +398,7 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     sql.push(run("r9", "t2", "succeeded", d8(2), d8(2), ""));
     for run_id in ["r8", "r9"] {
         sql.push(format!(
-            "INSERT INTO program_run_saved_function_snapshots (run_id, workspace_id, saved_function_id, path, source) \
+            "INSERT INTO program_run_private_tool_snapshots (run_id, workspace_id, private_tool_id, path, source) \
              VALUES ('{run_id}', 'ws1', 'f1', 'triage', 'return 1');"
         ));
     }
@@ -455,7 +456,7 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     fixture.sql("DELETE FROM tool_invocations").await;
     fixture.sql("DELETE FROM task_interactions").await;
     fixture
-        .sql("DELETE FROM program_run_saved_function_snapshots")
+        .sql("DELETE FROM program_run_private_tool_snapshots")
         .await;
     fixture.sql("DELETE FROM program_run_records").await;
     fixture

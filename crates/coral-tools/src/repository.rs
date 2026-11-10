@@ -805,3 +805,76 @@ fn decode_revision(stored: i64) -> Result<u64, Error> {
             Error::CorruptData("Private Tool has invalid definition revision".to_string())
         })
 }
+
+/// Counts the Private Tools created in `[start, end)` unix nanoseconds,
+/// across every Workspace. A replacement is not a new one. The caller
+/// authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn private_tools_created(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    let created: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(PrivateToolLifecycleEvents::Id).count())
+                .from(PrivateToolLifecycleEvents::Table)
+                .and_where(
+                    Expr::col(PrivateToolLifecycleEvents::Action)
+                        .eq(LifecycleAction::Created.as_storage_str()),
+                )
+                .and_where(Expr::col(PrivateToolLifecycleEvents::OccurredAtUnixNanos).gte(start))
+                .and_where(Expr::col(PrivateToolLifecycleEvents::OccurredAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    Ok(created.map_or(0, |(created,)| u64::try_from(created).unwrap_or_default()))
+}
+
+/// When the first Private Tool was created, before `end` unix nanoseconds.
+/// The caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn first_created_before(
+    tx: &mut Transaction<'_>,
+    end: i64,
+) -> Result<Option<i64>, Error> {
+    let first: Option<(Option<i64>,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(PrivateToolLifecycleEvents::OccurredAtUnixNanos).min())
+                .from(PrivateToolLifecycleEvents::Table)
+                .and_where(
+                    Expr::col(PrivateToolLifecycleEvents::Action)
+                        .eq(LifecycleAction::Created.as_storage_str()),
+                )
+                .and_where(Expr::col(PrivateToolLifecycleEvents::OccurredAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    Ok(first.and_then(|(at,)| at))
+}
+
+/// Counts the Private Tools that exist now, across every Workspace. The
+/// caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn private_tool_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
+    let total: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(PrivateToolRecords::Id).count())
+                .from(PrivateToolRecords::Table)
+                .to_owned(),
+        )
+        .await?;
+    Ok(total.map_or(0, |(total,)| u64::try_from(total).unwrap_or_default()))
+}

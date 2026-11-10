@@ -16,6 +16,7 @@ import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderService, ProviderSetupService } from '@/generated/coral/management/v1/provider_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
+import { UsageDataService } from '@/generated/coral/management/v1/usage_data_pb'
 import { WorkspaceService } from '@/generated/coral/management/v1/workspace_pb'
 
 import type { ManagementApi } from './management.server'

@@ -159,7 +159,8 @@ async fn an_invalid_argument_names_what_to_correct() {
         (json!({ "limit": 51 }), " at `limit`: pass 1 to 50"),
         (
             json!({ "provider": "coral.providers.github" }),
-            " at `provider`: pass a namespace from coral.providers.<namespace>, or coral",
+            " at `provider`: No Provider you can search has this namespace. Use one of: \
+             coral.",
         ),
         (
             json!({ "provider": "github" }),
@@ -167,14 +168,14 @@ async fn an_invalid_argument_names_what_to_correct() {
              coral.",
         ),
         (
-            json!({ "provider": ["coral.workspace", "github"] }),
+            json!({ "provider": ["coral", "github"] }),
             " at `provider[1]`: No Provider you can search has this namespace. Use one of: \
-             coral.workspace.",
+             coral.",
         ),
         (
-            json!({ "provider": ["github", "coral.workspace", "slack"] }),
+            json!({ "provider": ["github", "coral", "slack"] }),
             ": `provider[0]`: No Provider you can search has this namespace; `provider[2]`: No \
-             Provider you can search has this namespace; Use one of: coral.workspace.",
+             Provider you can search has this namespace; Use one of: coral.",
         ),
         (
             json!({ "provider": [] }),

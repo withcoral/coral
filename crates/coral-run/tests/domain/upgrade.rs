@@ -8,7 +8,7 @@ use super::*;
 async fn upgrade_moves_the_builtin_tools_and_private_tools_to_the_new_roots() {
     // The step that rewrites the stored roots; every other step has run.
     let fixture = TestModules::without_migration(
-        61,
+        64,
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),

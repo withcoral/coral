@@ -1574,7 +1574,7 @@ async fn search_request_validation_happens_after_durable_begin() {
         // The retained record names one Provider.
         (
             coral_search::SearchInput {
-                provider: vec!["coral.workspace".into(), "coral.workspace".into()],
+                provider: vec!["coral".into(), "coral".into()],
                 ..Default::default()
             },
             "invalid_input",

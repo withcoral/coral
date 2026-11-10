@@ -98,11 +98,12 @@ struct QueryInput {
     query: Option<String>,
     #[serde(default)]
     #[schemars(
-        with = "String",
-        description = "A namespace from coral.providers.<namespace>, or coral for Coral's own \
-                       tools. It narrows provider tools to one Provider; shared tools and \
-                       your private tools stay. Omit it unless you know which service holds \
-                       the data."
+        schema_with = "provider_schema",
+        description = "When the user names a service, all its namespaces from \
+                       coral.providers.<namespace>, or coral for Coral's own tools. \
+                       Otherwise leave it out. It narrows provider tools to those Providers; \
+                       shared tools and your private tools stay. A namespace you cannot \
+                       search is refused with the full list."
     )]
     provider: Option<String>,
     #[serde(default)]

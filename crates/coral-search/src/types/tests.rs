@@ -3,21 +3,21 @@ use coral_catalog::SEARCH_PROVIDERS_MAX;
 
 use crate::Error;
 
-// Catches: an agent that filters by a complete Call Root, such as
-// `coral.providers.github`, getting a rejection that does not name the
-// namespace to use, or a bare `workspace` selecting the Built-in Provider
-// instead of an Owner's Provider named `workspace`.
+// Catches: a bare `workspace` selecting the Built-in Provider instead of an
+// Owner's Provider named `workspace`, a complete Call Root such as
+// `coral.providers.github` selecting its Provider instead of being refused
+// with the namespaces to use, the old root `coral.workspace` or the Private
+// or Shared Provider's root selecting anything, or a filter past the bound.
 #[test]
-fn the_provider_filter_takes_a_namespace_or_coral() {
-    for (provider, expected) in [
-        ("github", Ok("coral.providers.github")),
-        ("workspace", Ok("coral.providers.workspace")),
-        ("coral", Ok("coral")),
-        ("coral.workspace", Err("invalid Provider namespace")),
+fn the_provider_filter_takes_namespaces_or_coral() {
+    let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
+    let workspace = ProviderCallRoot::parse("coral.providers.workspace").unwrap();
+    let roots = [&ProviderCallRoot::Builtin, &github, &workspace];
+    for (values, admitted, unmatched) in [
         (
             &[][..],
             &[
-                "coral.workspace",
+                "coral",
                 "coral.providers.github",
                 "coral.providers.workspace",
             ][..],
@@ -26,14 +26,19 @@ fn the_provider_filter_takes_a_namespace_or_coral() {
         (&["github"], &["coral.providers.github"], &[]),
         (&["workspace"], &["coral.providers.workspace"], &[]),
         (
-            &["coral.workspace", "github"],
-            &["coral.workspace", "coral.providers.github"],
+            &["coral", "github"],
+            &["coral", "coral.providers.github"],
             &[],
         ),
         (
             &["coral.providers.github", "then", "github"],
             &["coral.providers.github"],
             &[0, 1],
+        ),
+        (
+            &["coral.workspace", "coral.private", "coral.shared", "coral"],
+            &["coral"],
+            &[0, 1, 2],
         ),
     ] {
         let request = SearchRequest::try_from(SearchInput {

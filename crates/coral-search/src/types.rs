@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use coral_catalog::{AuthoredToolKind, ToolHints, ToolPresentation};
+use coral_catalog::{AuthoredToolKind, SEARCH_PROVIDERS_MAX, ToolHints, ToolPresentation};
 pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
 use coral_provider::access::ProviderNamespace;
@@ -92,10 +92,10 @@ impl Default for SearchLimit {
 }
 
 /// The `provider` filter: namespaces as the caller wrote them, such as
-/// `github`, or `coral.workspace` for the Built-in Provider. Each value is
-/// compared with the namespaces the caller can search, so a value that names
-/// none of them, such as a complete Call Root, is refused with that list.
-/// An empty filter leaves every Provider.
+/// `github`, or `coral` for the Built-in Provider. Each value is compared
+/// with the namespaces the caller can search, so a value that names none of
+/// them, such as a complete Call Root, `coral.private` or `coral.shared`, is
+/// refused with that list. An empty filter leaves every Provider.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderFilter(Vec<String>);
 
@@ -176,8 +176,8 @@ impl SearchableProvider {
         &self.call_root
     }
 
-    /// The value a `provider` filter names it by: its namespace, or
-    /// `coral.workspace` for the Built-in Provider.
+    /// The value a `provider` filter names it by: its namespace, or `coral`
+    /// for the Built-in Provider.
     #[must_use]
     pub fn namespace(&self) -> &str {
         provider_filter_value(&self.call_root)
@@ -206,8 +206,9 @@ pub struct SearchRequest {
 pub struct SearchInput {
     /// Optional caller query, preserved exactly when accepted.
     pub query: Option<String>,
-    /// Optional Provider filter: a namespace, such as `github`, or `coral`.
-    pub provider: Option<String>,
+    /// Provider filter: namespaces, such as `github`, or `coral`. Empty
+    /// leaves every Provider.
+    pub provider: Vec<String>,
     /// Optional requested page size.
     pub limit: Option<u16>,
     /// Optional count of ranked results to skip: the `next_offset` of an
@@ -230,28 +231,6 @@ impl TryFrom<SearchInput> for SearchRequest {
             request = request.with_offset(offset);
         }
         Ok(request)
-    }
-}
-
-/// Parses the `provider` filter: a Provider Namespace, such as `github`, or
-/// `coral` for the Built-in Provider. A complete `coral.providers` Call
-/// Root is rejected with the namespace to use instead.
-fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
-    match ProviderCallRoot::parse(value) {
-        Ok(ProviderCallRoot::Builtin) => Ok(ProviderCallRoot::Builtin),
-        Ok(ProviderCallRoot::Owner(namespace)) => Err(Error::InvalidInput(format!(
-            "provider must be a Provider namespace, such as `{}`",
-            namespace.as_str()
-        ))),
-        // The Private and Shared Providers' catalogs hold no Tool for a
-        // filter to keep.
-        Ok(ProviderCallRoot::Private | ProviderCallRoot::Shared) | Err(_) => {
-            ProviderNamespace::parse(value)
-                .map(ProviderCallRoot::Owner)
-                .map_err(|_invalid_namespace| {
-                    Error::InvalidInput("invalid Provider namespace".into())
-                })
-        }
     }
 }
 

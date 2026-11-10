@@ -20,11 +20,12 @@ const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or 
 /// `exec`'s description, with the one example of discovery an agent reads.
 /// A test runs its first Program against a real `coral.search` and
 /// saves it as a Private Tool to type-check it, so keep that Program whole.
+/// [`exec_description`] adds the caller's namespaces after it.
 pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find provider, shared and private tools with `coral.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`.
+Find provider, shared and private tools with `coral.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`. When the user names a service, pass all its namespaces in `provider`, as one string or an array; otherwise leave it out. `coral` holds Coral's own tools. A wrong namespace is refused with the full list.
 ```ts
-const { data } = await coral.search({ query: "list pull requests", limit: 5 });
+const { data } = await coral.search({ query: "list pull requests", provider: "acme_code", limit: 5 });
 const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);
 const read = paths.length ? (await coral.search({ paths })).data : undefined;
 return {
@@ -80,7 +81,7 @@ pub(crate) fn exec_description(namespaces: &Namespaces<'_>) -> String {
             String::new()
         } else {
             format!(
-                "\nand {count} more: read them with `coral.workspace.listProviders` (its active \
+                "\nand {count} more: read them with `coral.listProviders` (its active \
                  ones), or pass one and a wrong `provider` is refused with all of them."
             )
         }
@@ -529,7 +530,7 @@ mod tests {
     }
 
     fn searchable(namespace: &str, display_name: &str) -> coral_search::SearchableProvider {
-        let call_root = if namespace == "coral.workspace" {
+        let call_root = if namespace == "coral" {
             coral_search::ProviderCallRoot::Builtin
         } else {
             coral_search::ProviderCallRoot::parse(&format!("coral.providers.{namespace}")).unwrap()
@@ -538,14 +539,15 @@ mod tests {
     }
 
     // Catches: a display name that repeats its namespace wasting the budget,
-    // one that breaks the list with a line break, a Unicode line or paragraph
-    // separator or a tab, or runs past its bound; a failed lookup or an empty
-    // Workspace changing the fixed text.
+    // as the Built-in Provider's "Coral" does at `coral`; one that breaks the
+    // list with a line break, a Unicode line or paragraph separator or a tab,
+    // or runs past its bound; a failed lookup or an empty Workspace changing
+    // the fixed text.
     #[test]
     fn exec_names_each_namespace_with_a_display_name_that_says_more() {
         let providers = [
             searchable("aws_sandbox", "AWS Sandbox"),
-            searchable("coral.workspace", "Coral"),
+            searchable("coral", "Coral"),
             searchable("github", "GitHub"),
             searchable("hackernews", "Hacker News"),
             searchable("notes", "Team\nnotes\t(shared)"),
@@ -557,8 +559,8 @@ mod tests {
             exec_description(&Namespaces::Listed(&providers)),
             format!(
                 "{EXEC_TOOL_DESCRIPTION}\n\nNamespaces for `provider`:\naws_sandbox\
-                 \ncoral.workspace\tCoral\ngithub\nhackernews\tHacker News\nnotes\tTeam notes \
-                 (shared)\nwiki\tTeam wiki pages\nslack\nlong\t{}…",
+                 \ncoral\ngithub\nhackernews\tHacker News\nnotes\tTeam notes (shared)\
+                 \nwiki\tTeam wiki pages\nslack\nlong\t{}…",
                 "x".repeat(39)
             )
         );
@@ -606,7 +608,7 @@ mod tests {
         assert_eq!(
             tail,
             format!(
-                "and {} more: read them with `coral.workspace.listProviders` (its active ones), \
+                "and {} more: read them with `coral.listProviders` (its active ones), \
                  or pass one and a wrong `provider` is refused with all of them.",
                 providers.len() - shown.len()
             )
@@ -617,7 +619,7 @@ mod tests {
         let left = providers.len() - shown.len();
         let one_more = format!(
             "{uncounted}\nprovider_{:03}\tA Provider\nand {} more: read them with \
-             `coral.workspace.listProviders` (its active ones), or pass one and a wrong \
+             `coral.listProviders` (its active ones), or pass one and a wrong \
              `provider` is refused with all of them.",
             shown.len(),
             left - 1

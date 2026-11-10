@@ -18,7 +18,7 @@ const TOOL_NAMES: i64 = 46;
 /// The first of the steps that make every callable a Tool (ADR 0033).
 /// Together they rename Saved Functions to Private Tools, in the schema and
 /// in the stored values that named them.
-const EVERY_CALLABLE_IS_A_TOOL: i64 = 60;
+const EVERY_CALLABLE_IS_A_TOOL: i64 = 63;
 
 /// A row in each table that the step renames or rebuilds, and an approval
 /// whose foreign key names a rebuilt table, as an earlier release wrote them.

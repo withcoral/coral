@@ -508,8 +508,8 @@ fn mcp_modules(
     let runs = runs
         .with_human_interface(human_interface.clone())
         .with_private_tools(coral_run::PrivateTools::new(private_tools, search_index));
-    let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
-    McpModules::new(workspaces, tasks, commands, runs, human_interface)
+    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
+    McpModules::new(workspaces, tasks, commands, runs, search, human_interface)
 }
 
 #[cfg(test)]

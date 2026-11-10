@@ -28,7 +28,7 @@ use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
     ApprovalRequirement, AuthoredToolAuthoringDescription, CallPath, EntityKind, Error,
-    ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage, SearchEvidence, SearchHit,
+    ExactAuthoringDescription, ProviderFilter, RetrieverCoverage, SearchEvidence, SearchHit,
 };
 
 /// Ranks, hydrates, and describes the Authored Tools of one kind.
