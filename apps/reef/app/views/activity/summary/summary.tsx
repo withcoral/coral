@@ -189,9 +189,10 @@ export function ActivitySummary({
 const LOADING_ROWS = 3
 
 /**
- * The card as the Calls lens will fill it: the three metrics, the outcome cards, the tools
- * filter and the tools table. It holds the summary's place, so the page does not move when
- * the summary arrives. Assistive technology hears only the status.
+ * A placeholder that approximates the Calls lens: the three metrics, the outcome cards, the
+ * tools filter and a tools table of `LOADING_ROWS` rows. The summary that arrives can still
+ * change the card's height, with its own number of tools and a taller lens. Assistive
+ * technology hears only the status.
  */
 function LoadingSummary() {
   return (
