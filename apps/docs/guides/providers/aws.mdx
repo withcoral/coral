@@ -100,8 +100,8 @@ flowchart LR
               - none
             environment:
               SUPERGATEWAY_API_KEY: ${AWS_MCP_API_KEY}
-              AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-              AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+              AWS_ACCESS_KEY_ID: ${AWS_MCP_ACCESS_KEY_ID}
+              AWS_SECRET_ACCESS_KEY: ${AWS_MCP_SECRET_ACCESS_KEY}
 
           aws-mcp-front:
             image: caddy:2
@@ -124,7 +124,9 @@ flowchart LR
         Set these variables in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file:
 
         - `AWS_MCP_API_KEY`: the key from the previous step.
-        - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: the IAM user's access key.
+        - `AWS_MCP_ACCESS_KEY_ID` and `AWS_MCP_SECRET_ACCESS_KEY`: the IAM user's access key.
+
+        These names are not the standard AWS variable names. The bridge then never uses AWS credentials that are already set in your shell.
 
         On Amazon EC2 or Amazon ECS, remove `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from the service. Keep `SUPERGATEWAY_API_KEY`. On EC2, [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). On ECS, set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). The proxy then uses that role. On EC2, also set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
 
@@ -322,26 +324,26 @@ Open the provider in Coral. It lists the AWS MCP Server's tools, such as `awsRun
 
 Then ask your agent which AWS account it uses through Coral. The answer names the bridge's IAM identity.
 
-Coral marks `awsRunScript` as destructive, so each call waits for your approval. To change that, set the tool's policy on the provider's page. See [permissions](/guides/permissions).
+`awsRunScript` and `awsGetPresignedUrl` are not read-only tools, so each call waits for your approval. To change that, set each tool's policy on the provider's page. See [permissions](/guides/permissions).
 
 ## Why the bridge needs Caddy
 
 When a server asks for credentials, Coral looks for the server's OAuth metadata under `/.well-known/`. A server without OAuth must answer `404` there. Coral then offers the other sign-in methods, such as **Bearer token**.
 
-Supergateway answers `401` on every path when the key is missing. Coral then stops the setup. Caddy answers `404` on the `/.well-known/` paths and passes every other request to Supergateway, which still checks the key.
+When the key is missing, Supergateway answers `401` on every path except its health endpoint. Coral then stops the setup. Caddy answers `404` on the `/.well-known/` paths and passes every other request to Supergateway, which still checks the key.
 
 ## Troubleshooting
 
 With `--logLevel none`, the bridge logs nothing. Remove the option to see the errors in the bridge's logs.
 
-| Problem | What to do |
-| --- | --- |
-| "Coral's outbound settings do not allow this address." | Add the `[outbound]` policy to Coral's configuration, then restart Coral. |
-| "Coral cannot read this server's OAuth resource metadata." | The URL reaches Supergateway directly. Use the Caddy URL, on port `8080`. |
-| The bridge returns `401 Unauthorized` | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key. |
-| `No AWS credentials found` in the bridge's logs | The proxy found no credentials. Check the environment variables, the instance profile or the service account's role. |
-| `InvalidSignatureException` in the bridge's logs | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong. |
-| A tool returns an access denied error | The bridge's IAM identity lacks the permission. Attach a policy that grants it. |
-| The first call after a restart is slow | The bridge downloads the proxy when it first runs it. Later calls are faster. |
+| Problem                                                    | What to do                                                                                                           |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| "Coral's outbound settings do not allow this address."     | Add the `[outbound]` policy to Coral's configuration, then restart Coral.                                            |
+| "Coral cannot read this server's OAuth resource metadata." | The URL reaches Supergateway directly. Use the Caddy URL, on port `8080`.                                            |
+| The bridge returns `401 Unauthorized`                      | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key.            |
+| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the environment variables, the instance profile or the service account's role. |
+| `InvalidSignatureException` in the bridge's logs           | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong.                         |
+| A tool returns an access denied error                      | The bridge's IAM identity lacks the permission. Attach a policy that grants it.                                      |
+| The first call after a restart is slow                     | The bridge downloads the proxy when it first runs it. Later calls are faster.                                        |
 
 For other errors, see [AWS's troubleshooting table](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html#troubleshooting-auth-errors).
