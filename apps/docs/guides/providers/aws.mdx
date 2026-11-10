@@ -15,7 +15,7 @@ The bridge uses three existing tools in two containers.
 
 - [MCP Proxy for AWS](https://github.com/aws/mcp-proxy-for-aws) signs each request with the bridge's AWS credentials and sends it to the AWS MCP Server.
 - [Supergateway](https://github.com/supercorp-ai/supergateway) runs the proxy, serves it as a Streamable HTTP endpoint and checks an API key on each request.
-- [Caddy](https://caddyserver.com) sits in front of Supergateway. See [Why the bridge needs Caddy](#why-the-bridge-needs-caddy).
+- [Caddy](https://caddyserver.com) sits in front of Supergateway and answers Coral's lookups for OAuth metadata, which Supergateway does not handle.
 
 ```mermaid
 flowchart LR
@@ -291,12 +291,6 @@ Open the provider in Coral. It lists the AWS MCP Server's tools, such as `awsRun
 Then ask your agent which AWS account it uses through Coral. The answer names the bridge's IAM role.
 
 `awsRunScript` and `awsGetPresignedUrl` are not read-only tools, so each call waits for your approval. To change that, set each tool's policy on the provider's page. See [permissions](/guides/permissions).
-
-## Why the bridge needs Caddy
-
-When a server asks for credentials, Coral looks for the server's OAuth metadata under `/.well-known/`. A server without OAuth must answer `404` there. Coral then offers the other sign-in methods, such as **Bearer token**.
-
-When the key is missing, Supergateway answers `401` on every path except its health endpoint. Coral then stops the setup. Caddy answers `404` on the `/.well-known/` paths and passes every other request to Supergateway, which still checks the key.
 
 ## Troubleshooting
 
