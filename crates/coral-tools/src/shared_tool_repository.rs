@@ -848,11 +848,7 @@ impl EventRow {
 /// One page of the Workspace's lifecycle Events, newest first after the
 /// Event `after`: those of the Shared Tool `shared_tool` alone, or of every
 /// Shared Tool, live and removed. Events that occurred together follow one
-/// another in identity order.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidInput`] when `after` names no Event of the
+/// another in identity order. `None` when `after` names no Event of the
 /// Workspace.
 pub(crate) async fn list_lifecycle_event_page(
     transaction: &mut Transaction<'_>,
@@ -860,7 +856,7 @@ pub(crate) async fn list_lifecycle_event_page(
     shared_tool: Option<&SharedToolId>,
     after: Option<&SharedToolLifecycleEventId>,
     page_size: u32,
-) -> Result<SharedToolLifecycleEventPage, Error> {
+) -> Result<Option<SharedToolLifecycleEventPage>, Error> {
     let mut statement = Query::select()
         .columns([
             SharedToolLifecycleEvents::Id,
@@ -894,9 +890,7 @@ pub(crate) async fn list_lifecycle_event_page(
             .to_owned();
         let Some((occurred_at,)): Option<(i64,)> = transaction.fetch_optional(position).await?
         else {
-            return Err(Error::InvalidInput(
-                "no Shared Tool Event is at this page position".to_string(),
-            ));
+            return Ok(None);
         };
         statement.and_where(
             Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
@@ -918,5 +912,5 @@ pub(crate) async fn list_lifecycle_event_page(
     } else {
         None
     };
-    Ok(SharedToolLifecycleEventPage { events, next_after })
+    Ok(Some(SharedToolLifecycleEventPage { events, next_after }))
 }

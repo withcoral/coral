@@ -984,7 +984,9 @@ impl SharedToolModule {
         )
         .await?;
         transaction.commit().await?;
-        Ok(page)
+        page.ok_or_else(|| {
+            Error::InvalidInput("no Shared Tool Event is at this page position".to_string())
+        })
     }
 
     /// The publish's review and compiled source, from read snapshots: the

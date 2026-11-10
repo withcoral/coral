@@ -15551,7 +15551,8 @@ pub struct ListSharedToolEventsRequest {
     pub parent: ::prost::alloc::string::String,
     /// workspaces/{workspace}/sharedTools/{shared_tool} to list the events of one
     /// Shared Tool, live or removed. Empty lists those of every Shared Tool. A
-    /// name that no Shared Tool of the Workspace has lists nothing.
+    /// name in this Workspace that no Shared Tool has lists nothing. A name in
+    /// another Workspace is INVALID_ARGUMENT.
     #[prost(string, tag = "2")]
     pub shared_tool: ::prost::alloc::string::String,
     /// Maximum results, bounded to 100; zero selects the default.

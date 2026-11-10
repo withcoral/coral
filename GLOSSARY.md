@@ -826,8 +826,8 @@ function, library function, package
 
 **Shared Tool Revision**: One immutable, numbered publication of a Shared Tool's source, description, and declaration.
 Exactly one revision is current; each Run links the current one and records which. Program admission selects it, and
-acceptance refuses the Run if a publish moved it in between. _Avoid_: Version, pin, Provider
-Generation
+acceptance refuses the Run if a publish moved it, or a removal took its Shared Tool, in between. _Avoid_: Version,
+pin, Provider Generation
 
 **Shared Tool Publish**: A Workspace Owner's act in Reef that copies one of their own or an Agent's Private Tools into
 a new Shared Tool Revision and makes it current. The Owner reviews the exact content that is published and chooses the

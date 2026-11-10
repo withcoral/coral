@@ -1210,10 +1210,28 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
     }
     let [first_hash, second_hash, send_hash] = hashes.try_into().expect("three publishes");
     let [reminder, _, send] = ids.try_into().expect("three publishes");
+    // Another Owner removes it, so a removal names who removed, not who
+    // published.
+    let workspaces = WorkspaceModule::new(fixture.database.clone());
+    let remover = provision_user(
+        fixture.database.clone(),
+        "user:co-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    workspaces
+        .set_membership(
+            &change(fixture.owner.clone(), 32, 'a'),
+            &fixture.workspace,
+            &remover,
+            WorkspaceRole::Owner,
+        )
+        .await
+        .expect("add another Owner");
     fixture
         .shared_tools
         .remove(
-            &change(fixture.owner.clone(), 33, 'e'),
+            &change(remover.clone(), 33, 'e'),
             &fixture.workspace,
             &shared_path("mail.remind"),
             2,
@@ -1239,7 +1257,11 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
         events
             .iter()
             .map(|event| {
-                assert_eq!(event.actor(), fixture.owner.user_id());
+                let actor = match event.action() {
+                    Published => &fixture.owner,
+                    Removed => &remover,
+                };
+                assert_eq!(event.actor(), actor.user_id());
                 (
                     event.action(),
                     event.shared_tool_id().clone(),
@@ -1388,6 +1410,52 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
         .await
         .expect("list the events of no Shared Tool");
     assert_eq!(of_none.events(), []);
+
+    // Another Workspace of the same Owner reads none of it, by the Shared
+    // Tool's real identity or from one of its Events.
+    let elsewhere = workspaces
+        .create(
+            &change(fixture.owner.clone(), 40, 'a'),
+            WorkspaceDisplayName::parse("Elsewhere").expect("display name"),
+        )
+        .await
+        .expect("create another Workspace")
+        .id()
+        .clone();
+    let an_event = fixture.events().await.swap_remove(0);
+    for absent in [
+        fixture
+            .shared_tools
+            .list_revisions(&owner, &elsewhere, &reminder)
+            .await
+            .map(drop),
+        fixture
+            .shared_tools
+            .get_revision(&owner, &elsewhere, &reminder, 1)
+            .await
+            .map(drop),
+    ] {
+        assert!(
+            matches!(absent, Err(Error::NotFound(AuthoredToolKind::Shared))),
+            "{absent:?}"
+        );
+    }
+    for shared_tool in [None, Some(&reminder)] {
+        let page = fixture
+            .shared_tools
+            .list_lifecycle_events(&owner, &elsewhere, shared_tool, None, 100)
+            .await
+            .expect("list the other Workspace's events");
+        assert_eq!(page.events(), [], "{shared_tool:?}");
+    }
+    let continued = fixture
+        .shared_tools
+        .list_lifecycle_events(&owner, &elsewhere, None, Some(an_event.id()), 100)
+        .await;
+    assert!(
+        matches!(continued, Err(Error::InvalidInput(_))),
+        "{continued:?}"
+    );
 }
 
 // Catches: a page that repeats or skips an Event, among Events that occurred

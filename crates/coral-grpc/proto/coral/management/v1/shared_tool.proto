@@ -272,7 +272,8 @@ message ListSharedToolEventsRequest {
   string parent = 1;
   // workspaces/{workspace}/sharedTools/{shared_tool} to list the events of one
   // Shared Tool, live or removed. Empty lists those of every Shared Tool. A
-  // name that no Shared Tool of the Workspace has lists nothing.
+  // name in this Workspace that no Shared Tool has lists nothing. A name in
+  // another Workspace is INVALID_ARGUMENT.
   string shared_tool = 2;
   // Maximum results, bounded to 100; zero selects the default.
   int32 page_size = 3;

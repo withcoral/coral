@@ -134,6 +134,28 @@ impl SharedScope {
             .expect("remove the Shared Tool");
     }
 
+    /// Prepares `program` as the Member, applies `change`, then accepts it:
+    /// the refusal of the admission that `change` interrupted.
+    async fn admission_interrupted_by(
+        &self,
+        program: &str,
+        change: impl Future<Output = ()>,
+    ) -> String {
+        let runs = &self.scope.fixture.runs;
+        let prepared = runs
+            .prepare(&self.member, &self.scope.workspace_id, submission(program))
+            .await
+            .expect("prepare before the change");
+        change.await;
+        let mut transaction = self.scope.fixture.database.begin().await.expect("begin");
+        let accepted = runs.accept_in_transaction(&mut transaction, prepared).await;
+        transaction.rollback().await.expect("roll back");
+        match accepted {
+            Err(crate::Error::ProgramAdmission(message)) => message,
+            other => panic!("the admission was not refused: {:?}", other.err()),
+        }
+    }
+
     /// Who reads the Activity of `principal`'s Runs: a User itself, or the
     /// Owner of an Agent.
     fn reader<'a>(&'a self, principal: &'a AuthenticatedPrincipal) -> &'a AuthenticatedPrincipal {
@@ -389,29 +411,13 @@ async fn a_publish_during_admission_fails_that_admission_once() {
     let program = "return await coral.shared.mail.remind();";
     let before = runs.count_runs().await.expect("count Runs");
 
-    let prepared = runs
-        .prepare(
-            &shared.member,
-            &shared.scope.workspace_id,
-            submission(program),
+    let refused = shared
+        .admission_interrupted_by(
+            program,
+            shared.publish(&revision(2), ToolAccessState::Enabled, 1),
         )
-        .await
-        .expect("prepare against revision 1");
-    shared
-        .publish(&revision(2), ToolAccessState::Enabled, 1)
         .await;
-    let mut transaction = shared.scope.fixture.database.begin().await.expect("begin");
-    let refused = runs.accept_in_transaction(&mut transaction, prepared).await;
-    transaction.rollback().await.expect("roll back");
-    assert!(
-        matches!(
-            &refused,
-            Err(crate::Error::ProgramAdmission(message))
-                if message == "Shared Tool changed during Program admission"
-        ),
-        "{:?}",
-        refused.as_ref().err()
-    );
+    assert_eq!(refused, "Shared Tool changed during Program admission");
     assert_eq!(
         runs.count_runs().await.expect("count Runs"),
         before,
@@ -471,27 +477,10 @@ async fn a_removal_fails_the_next_admission_and_leaves_an_accepted_run_as_it_was
     );
     let before = runs.count_runs().await.expect("count Runs");
 
-    let prepared = runs
-        .prepare(
-            &shared.member,
-            &shared.scope.workspace_id,
-            submission(program),
-        )
-        .await
-        .expect("prepare against the live Shared Tool");
-    shared.remove(1).await;
-    let mut transaction = shared.scope.fixture.database.begin().await.expect("begin");
-    let refused = runs.accept_in_transaction(&mut transaction, prepared).await;
-    transaction.rollback().await.expect("roll back");
-    assert!(
-        matches!(
-            &refused,
-            Err(crate::Error::ProgramAdmission(message))
-                if message == "Shared Tool changed during Program admission"
-        ),
-        "{:?}",
-        refused.as_ref().err()
-    );
+    let refused = shared
+        .admission_interrupted_by(program, shared.remove(1))
+        .await;
+    assert_eq!(refused, "Shared Tool changed during Program admission");
 
     // The next admission finds no Tool at the path, in the Program and in
     // a Private Tool that still calls it.
@@ -500,14 +489,17 @@ async fn a_removal_fails_the_next_admission_and_leaves_an_accepted_run_as_it_was
         (
             "a Program calls it",
             program,
-            ["Program:1:", "coral.shared.mail.remind"],
+            [
+                "Program:1:",
+                "coral.shared.mail.remind names no Tool that you can call",
+            ],
         ),
         (
             "a Private Tool calls it",
             "return await coral.private.relay();",
             [
                 "Private Tool coral.private.relay:1:",
-                "coral.shared.mail.remind",
+                "coral.shared.mail.remind names no Tool that you can call",
             ],
         ),
     ];
@@ -536,6 +528,51 @@ async fn a_removal_fails_the_next_admission_and_leaves_an_accepted_run_as_it_was
     assert_eq!(
         linked().await,
         [("mail.remind".to_string(), 1, source.to_string())]
+    );
+}
+
+// Catches: a Run accepted before a removal that fails, or loses its body,
+// when it calls the removed Shared Tool afterwards.
+#[tokio::test]
+async fn a_run_accepted_before_a_removal_still_runs_the_revision_it_linked() {
+    let shared = SharedScope::new("user:shared-removal-accepted").await;
+    let owner = shared.scope.owner.clone();
+    let source = "export default async () => 'linked before the removal';";
+    shared.save_private(&owner, "draft", source).await;
+    // The call waits for an approval, so the Run is accepted with its body
+    // not yet run.
+    shared
+        .publish(source, ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let run = shared
+        .scope
+        .start(
+            &shared.member,
+            submission("return await coral.shared.mail.remind();"),
+        )
+        .await;
+    let approvals = shared.scope.fixture.approvals();
+    let request =
+        wait_for_approval(&approvals, &shared.member, &shared.scope.workspace_id, &run).await;
+
+    shared.remove(1).await;
+
+    approvals
+        .decide(
+            &shared.member,
+            &shared.scope.workspace_id,
+            &request.id,
+            crate::approval::ApprovalDecision::Approve,
+            None,
+            &TraceId::parse(&"d".repeat(32)).unwrap(),
+        )
+        .await
+        .expect("approve the call");
+    let update = shared.scope.terminal(&shared.member, &run).await;
+    assert_eq!(final_value(&update), json!("linked before the removal"));
+    assert_eq!(
+        shared.linked(&shared.member, &run).await,
+        [("mail.remind".to_string(), 1)]
     );
 }
 
