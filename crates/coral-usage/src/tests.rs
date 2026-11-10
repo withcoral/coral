@@ -340,15 +340,14 @@ fn task(id: &str, started: i64) -> String {
     )
 }
 
-/// `run`'s Tool Invocations at `at`: an upstream answer, a Coral failure, an
-/// unknown result, and one the Run's end cut short. Two needed approval, and
-/// one request settled each way it can. A closed one is not a decision.
+/// `run`'s Tool Invocations at `at`: an upstream answer, a Coral failure and
+/// an unknown result. Two needed approval, and one request settled each way
+/// it counts. coral-run's tests own which kinds count.
 fn tool_calls(run: &str, at: i64) -> String {
     let mut sql: Vec<String> = [
         ("v1", "upstream_outcome"),
         ("v2", "coral_failure"),
         ("v3", "indeterminate"),
-        ("v4", "run_terminated"),
     ]
     .into_iter()
     .map(|(id, result)| invocation(id, run, at, result))
@@ -360,7 +359,7 @@ fn tool_calls(run: &str, at: i64) -> String {
             ('a2', 'ws1', 'v2', '{run}', {deadline}, {at}, 'pending', NULL, NULL);",
         deadline = at + 1,
     ));
-    for state in ["approved", "declined", "expired", "closed"] {
+    for state in ["approved", "declined", "expired"] {
         sql.push(format!(
             "INSERT INTO approval_lifecycle_events (id, workspace_id, request_id, state, \
                 occurred_at_unix_nanos, trace_id) VALUES ('e-{state}', 'ws1', 'a1', '{state}', {at}, '{trace}');",

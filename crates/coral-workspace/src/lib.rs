@@ -107,6 +107,7 @@ mod principal;
 mod principal_authority;
 mod repository;
 mod types;
+pub mod usage_repository;
 
 use std::sync::Arc;
 

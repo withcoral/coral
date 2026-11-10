@@ -764,3 +764,38 @@ async fn has_for_run(
         .await?;
     Ok(row.is_some())
 }
+
+/// Counts the Tool Invocations that ended in `[start, end)`, in every
+/// Workspace, by result kind.
+pub(crate) async fn ended_by_result_kind(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<Vec<(InvocationResultKind, u64)>, Error> {
+    let rows: Vec<(Option<String>, i64)> = tx
+        .fetch_all(
+            Query::select()
+                .column(ToolInvocations::ResultKind)
+                .expr(Expr::col(ToolInvocations::Id).count())
+                .from(ToolInvocations::Table)
+                .and_where(
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Ended.as_storage_str()),
+                )
+                .and_where(Expr::col(ToolInvocations::EndedAtUnixNanos).gte(start))
+                .and_where(Expr::col(ToolInvocations::EndedAtUnixNanos).lt(end))
+                .group_by_col(ToolInvocations::ResultKind)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(kind, invocations)| {
+            let kind = kind.ok_or_else(|| {
+                Error::CorruptData("ended Invocation has no result kind".to_string())
+            })?;
+            Ok((
+                InvocationResultKind::from_storage_str(&kind)?,
+                u64::try_from(invocations).unwrap_or_default(),
+            ))
+        })
+        .collect()
+}

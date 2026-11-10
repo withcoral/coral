@@ -1153,6 +1153,7 @@ version = "1.5.0"
 dependencies = [
  "chrono",
  "coral-db",
+ "coral-functions",
  "coral-outbound",
  "coral-provider",
  "coral-run",
