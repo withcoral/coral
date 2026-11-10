@@ -1,4 +1,4 @@
-use super::authored_tools::{diagnostic, error};
+use super::authored_tools::{diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
 use super::workspaces::{
     annotate, invalid, page_start, page_token, resource, timestamp, workspace_id,
@@ -11,8 +11,8 @@ use coral_tools::{
     SharedToolRevisionOrigin, SharedToolSummary,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalId,
-    PrincipalKind, TraceId, WorkspaceId,
+    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalKind, TraceId,
+    WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -139,19 +139,11 @@ fn origin(
     use wire::publish_shared_tool_request::Origin;
     match origin {
         Some(Origin::PrivateTool(private_tool)) => {
-            let owner = if private_tool.agent.is_empty() {
-                AuthenticatedPrincipal::user(user.clone())
+            let owner = match private_tool_agent(&private_tool.agent, workspace)? {
+                Some(agent) => Principal::from_parts(agent, PrincipalKind::Agent),
+                None => AuthenticatedPrincipal::user(user.clone())
                     .principal()
-                    .clone()
-            } else {
-                let (agent_workspace, agent) = resource(&private_tool.agent, "agents")?;
-                if &agent_workspace != workspace {
-                    return Err(invalid("invalid Agent name"));
-                }
-                Principal::from_parts(
-                    PrincipalId::parse(agent).map_err(|_error| invalid("invalid Agent name"))?,
-                    PrincipalKind::Agent,
-                )
+                    .clone(),
             };
             Ok(SharedToolOrigin::PrivateTool {
                 owner,

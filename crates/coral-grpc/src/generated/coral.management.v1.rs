@@ -14403,7 +14403,7 @@ pub struct PrivateToolSummary {
     #[prost(message, optional, tag = "3")]
     pub update_time: ::core::option::Option<::prost_types::Timestamp>,
 }
-/// Reads one of the caller's own current Private Tools.
+/// Reads one current Private Tool: the caller's own, or an Agent's.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPrivateToolRequest {
     /// workspaces/{workspace}.
@@ -14412,8 +14412,12 @@ pub struct GetPrivateToolRequest {
     /// Private Tool Path relative to coral.private.
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/agents/{agent} for an Agent's Private Tool, in the
+    /// Workspace of parent. Empty for the caller's own.
+    #[prost(string, tag = "3")]
+    pub agent: ::prost::alloc::string::String,
 }
-/// Deletes one of the caller's own current Private Tools.
+/// Deletes one current Private Tool: the caller's own, or an Agent's.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeletePrivateToolRequest {
     /// workspaces/{workspace}.
@@ -14422,6 +14426,10 @@ pub struct DeletePrivateToolRequest {
     /// Private Tool Path relative to coral.private.
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/agents/{agent} for an Agent's Private Tool, in the
+    /// Workspace of parent. Empty for the caller's own.
+    #[prost(string, tag = "3")]
+    pub agent: ::prost::alloc::string::String,
 }
 /// One current Private Tool with its authoring material.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -14459,12 +14467,16 @@ pub mod private_tool_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    /// Inspection and deletion of the calling User's own current Private Tools.
+    /// Inspection and deletion of current Private Tools: the calling User's own,
+    /// and for a Workspace Owner each Agent's.
     ///
     /// A Private Tool Path names a definition only for its owning Principal in
     /// one Workspace, so requests carry the Workspace and path rather than a
-    /// resource name. Another Principal's Private Tool and an absent path return the
-    /// same NOT_FOUND. Workspace-owned Agent Private Tools never appear.
+    /// resource name, and name an Agent to select that Agent's Private Tool.
+    /// Another User's Private Tool cannot be named. An absent path, and an Agent's
+    /// Private Tool for a caller who is not a Workspace Owner, return the same
+    /// NOT_FOUND. ToolPolicyService.ListToolAccess on the Private Provider lists
+    /// each Agent's Private Tools to a Workspace Owner.
     #[derive(Debug, Clone)]
     pub struct PrivateToolServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -14575,7 +14587,8 @@ pub mod private_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Returns one of the caller's own Private Tools with its source and saved diagnostics.
+        /// Returns one Private Tool with its source and saved diagnostics: the
+        /// caller's own, or an Agent's for a Workspace Owner.
         pub async fn get_private_tool(
             &mut self,
             request: impl tonic::IntoRequest<super::GetPrivateToolRequest>,
@@ -14602,7 +14615,8 @@ pub mod private_tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Deletes one of the caller's own Private Tools and records its lifecycle Event.
+        /// Deletes one Private Tool and records its lifecycle Event with the caller
+        /// as its actor: the caller's own, or an Agent's for a Workspace Owner.
         /// Coral keeps no reverse references: Programs that call the path fail at admission.
         pub async fn delete_private_tool(
             &mut self,
@@ -14654,24 +14668,30 @@ pub(crate) mod private_tool_service_server {
             tonic::Response<super::ListPrivateToolsResponse>,
             tonic::Status,
         >;
-        /// Returns one of the caller's own Private Tools with its source and saved diagnostics.
+        /// Returns one Private Tool with its source and saved diagnostics: the
+        /// caller's own, or an Agent's for a Workspace Owner.
         async fn get_private_tool(
             &self,
             request: tonic::Request<super::GetPrivateToolRequest>,
         ) -> std::result::Result<tonic::Response<super::PrivateTool>, tonic::Status>;
-        /// Deletes one of the caller's own Private Tools and records its lifecycle Event.
+        /// Deletes one Private Tool and records its lifecycle Event with the caller
+        /// as its actor: the caller's own, or an Agent's for a Workspace Owner.
         /// Coral keeps no reverse references: Programs that call the path fail at admission.
         async fn delete_private_tool(
             &self,
             request: tonic::Request<super::DeletePrivateToolRequest>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
     }
-    /// Inspection and deletion of the calling User's own current Private Tools.
+    /// Inspection and deletion of current Private Tools: the calling User's own,
+    /// and for a Workspace Owner each Agent's.
     ///
     /// A Private Tool Path names a definition only for its owning Principal in
     /// one Workspace, so requests carry the Workspace and path rather than a
-    /// resource name. Another Principal's Private Tool and an absent path return the
-    /// same NOT_FOUND. Workspace-owned Agent Private Tools never appear.
+    /// resource name, and name an Agent to select that Agent's Private Tool.
+    /// Another User's Private Tool cannot be named. An absent path, and an Agent's
+    /// Private Tool for a caller who is not a Workspace Owner, return the same
+    /// NOT_FOUND. ToolPolicyService.ListToolAccess on the Private Provider lists
+    /// each Agent's Private Tools to a Workspace Owner.
     #[derive(Debug)]
     pub struct PrivateToolServiceServer<T> {
         inner: Arc<T>,

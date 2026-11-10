@@ -20,9 +20,10 @@
 //! removes a Shared Tool, every Principal in the Workspace reads the live
 //! ones, and Member Users read their history.
 //!
-//! [`PrivateToolInspection`] reads the caller's own current definitions
-//! without a compiler, for read-only surfaces. [`PrivateToolDeletion`]
-//! deletes them without a compiler, for management surfaces.
+//! [`PrivateToolInspection`] reads the caller's own current definitions, and
+//! an Agent's for a Workspace Owner, without a compiler, for read-only
+//! surfaces. [`PrivateToolDeletion`] deletes them without a compiler, for
+//! management surfaces.
 //!
 //! The discovery facets serve Universal Search for both kinds: they join the
 //! caller's authorized read snapshot and separate metadata, declaration

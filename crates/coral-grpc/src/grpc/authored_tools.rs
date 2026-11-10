@@ -1,10 +1,34 @@
 //! What the Private Tool and Shared Tool services share: one status for
-//! each coral-tools failure, and the diagnostic projection.
+//! each coral-tools failure, the diagnostic projection, and the Agent a
+//! request names as a Private Tool's owner.
 use super::management as wire;
-use super::workspaces::{error as workspace_error, safe_status, safe_status_with};
+use super::workspaces::{
+    error as workspace_error, invalid, resource, safe_status, safe_status_with,
+};
 use coral_catalog::AuthoredToolKind::{Private, Shared};
 use coral_tools::{AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory};
+use coral_workspace::{PrincipalId, WorkspaceId};
 use tonic::Status;
+
+/// The Agent whose Private Tool a request names with
+/// `workspaces/{workspace}/agents/{agent}`, or none when `name` is empty and
+/// the request means the caller's own. The Agent must be named in `workspace`,
+/// the Workspace of the request.
+pub(super) fn private_tool_agent(
+    name: &str,
+    workspace: &WorkspaceId,
+) -> Result<Option<PrincipalId>, Status> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let (agent_workspace, agent) = resource(name, "agents")?;
+    if &agent_workspace != workspace {
+        return Err(invalid("invalid Agent name"));
+    }
+    PrincipalId::parse(agent)
+        .map(Some)
+        .map_err(|_error| invalid("invalid Agent name"))
+}
 
 /// The status of one coral-tools failure, for both services. Each variant
 /// is named, so a new one needs a wire decision.

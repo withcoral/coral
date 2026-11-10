@@ -5,8 +5,8 @@ use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
 use coral_run_executor::CompilerClient;
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
-    PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, PrincipalId, PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId,
+    WorkspaceModule,
 };
 
 use crate::authoring::{
@@ -311,25 +311,17 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
         agent_id: &PrincipalId,
     ) -> Result<Vec<PrivateTool>, Error> {
-        let user = actor.authenticated_user().ok_or(Error::PermissionDenied(
-            "only a Workspace Owner can inspect Agent Private Tools",
-        ))?;
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize_agent_inspection_in_transaction(&mut transaction, user, workspace_id)
-            .await?;
-        let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let tools =
-            repository::list_current_in_transaction(&mut transaction, workspace_id, &agent).await?;
-        transaction.commit().await?;
-        Ok(tools)
+        self.inspection
+            .list_agent(actor, workspace_id, agent_id)
+            .await
     }
 
     /// Returns one Workspace-owned Agent Private Tool to a Workspace Owner.
     ///
     /// # Errors
     ///
-    /// Requires Workspace Owner authority. An absent path remains
-    /// [`Error::NotFound`].
+    /// Requires Workspace Owner authority. A caller without it and an absent
+    /// path get the same [`Error::NotFound`].
     pub async fn get_agent(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -337,20 +329,9 @@ impl PrivateToolModule {
         agent_id: &PrincipalId,
         path: &PrivateToolPath,
     ) -> Result<PrivateTool, Error> {
-        let user = actor
-            .authenticated_user()
-            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize_agent_inspection_in_transaction(&mut transaction, user, workspace_id)
+        self.inspection
+            .get_agent(actor, workspace_id, agent_id, path)
             .await
-            .map_err(conceal_inspection_error)?;
-        let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let tool =
-            repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
-                .await?
-                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        transaction.commit().await?;
-        Ok(tool)
     }
 
     /// Atomically deletes one Workspace-owned Agent Private Tool as a Workspace Owner.
@@ -360,8 +341,8 @@ impl PrivateToolModule {
     ///
     /// # Errors
     ///
-    /// Requires Workspace Owner authority in an active Workspace. Absence is
-    /// [`Error::NotFound`].
+    /// Requires Workspace Owner authority in an active Workspace. A caller
+    /// without it and an absent path get the same [`Error::NotFound`].
     pub async fn delete_agent(
         &self,
         context: &PrivateToolChangeContext,
@@ -369,24 +350,9 @@ impl PrivateToolModule {
         agent_id: &PrincipalId,
         path: &PrivateToolPath,
     ) -> Result<PrivateToolId, Error> {
-        let user = context
-            .actor()
-            .authenticated_user()
-            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        let mut transaction = self.database.begin().await?;
-        self.workspaces
-            .check_configuration_in_transaction(&mut transaction, user, workspace_id)
+        self.deletion
+            .delete_agent(context, workspace_id, agent_id, path)
             .await
-            .map_err(conceal_agent_private_tool_error)?;
-        let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let tool =
-            repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
-                .await?
-                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        let deleted_id =
-            delete_current_with_event(&mut transaction, context, workspace_id, &tool).await?;
-        transaction.commit().await?;
-        Ok(deleted_id)
     }
 
     /// Atomically deletes one current path and records its lifecycle Event.
@@ -521,24 +487,6 @@ impl PrivateToolModule {
         Ok((authority, previous))
     }
 
-    async fn authorize_agent_inspection_in_transaction(
-        &self,
-        transaction: &mut Transaction<'_>,
-        user: &AuthenticatedUser,
-        workspace_id: &WorkspaceId,
-    ) -> Result<(), Error> {
-        let evidence = self
-            .workspaces
-            .check_in_transaction(transaction, user, workspace_id, WorkspaceAction::Inspect)
-            .await?;
-        if evidence.effective_role() != WorkspaceRole::Owner {
-            return Err(Error::PermissionDenied(
-                "only a Workspace Owner can inspect Agent Private Tools",
-            ));
-        }
-        Ok(())
-    }
-
     /// The revision of the actor's Private Tool at `path`, from a snapshot.
     /// Only a precheck reads it: the save decides under its hold.
     async fn current_revision(
@@ -648,23 +596,4 @@ pub(crate) async fn delete_current_with_event(
     )
     .await?;
     Ok(tool.id().clone())
-}
-
-pub(crate) fn conceal_inspection_error(error: Error) -> Error {
-    match error {
-        Error::PermissionDenied(_)
-        | Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::NotFound(AuthoredToolKind::Private),
-        other => other,
-    }
-}
-
-fn conceal_agent_private_tool_error(error: coral_workspace::Error) -> Error {
-    match error {
-        coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_) => {
-            Error::NotFound(AuthoredToolKind::Private)
-        }
-        other => Error::Workspace(other),
-    }
 }

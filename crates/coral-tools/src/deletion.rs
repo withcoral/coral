@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
-use coral_workspace::{WorkspaceId, WorkspaceModule};
+use coral_workspace::{Principal, PrincipalId, PrincipalKind, WorkspaceId, WorkspaceModule};
 
 use crate::Error;
 use crate::authoring::now_unix_nanos;
@@ -10,7 +10,8 @@ use crate::private_tool::delete_current_with_event;
 use crate::repository;
 use crate::types::{PrivateToolChangeContext, PrivateToolId, PrivateToolPath};
 
-/// Deletion of the authenticated Principal's own current Private Tools.
+/// Deletion of current Private Tools: the authenticated Principal's own, and
+/// for a Workspace Owner a Workspace-owned Agent's.
 ///
 /// It starts no compiler, so management surfaces can delete without the
 /// authoring cost of [`crate::PrivateToolModule`].
@@ -50,6 +51,42 @@ impl PrivateToolDeletion {
         Ok(id)
     }
 
+    /// Atomically deletes one Workspace-owned Agent Private Tool as a Workspace Owner.
+    ///
+    /// The accountable User remains the lifecycle actor and never authors or
+    /// executes as the Agent.
+    ///
+    /// # Errors
+    ///
+    /// Requires Workspace Owner authority in an active Workspace. A caller
+    /// without it and an absent path get the same [`Error::NotFound`].
+    pub async fn delete_agent(
+        &self,
+        context: &PrivateToolChangeContext,
+        workspace_id: &WorkspaceId,
+        agent_id: &PrincipalId,
+        path: &PrivateToolPath,
+    ) -> Result<PrivateToolId, Error> {
+        let user = context
+            .actor()
+            .authenticated_user()
+            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
+        let mut transaction = self.database.begin().await?;
+        self.workspaces
+            .check_configuration_in_transaction(&mut transaction, user, workspace_id)
+            .await
+            .map_err(conceal_agent_private_tool_error)?;
+        let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
+        let tool =
+            repository::find_current_in_transaction(&mut transaction, workspace_id, &agent, path)
+                .await?
+                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
+        let deleted_id =
+            delete_current_with_event(&mut transaction, context, workspace_id, &tool).await?;
+        transaction.commit().await?;
+        Ok(deleted_id)
+    }
+
     /// Stages deletion and lifecycle evidence in the caller's transaction.
     ///
     /// # Errors
@@ -80,5 +117,14 @@ impl PrivateToolDeletion {
         .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         authority.require_current_at(now_unix_nanos()?)?;
         delete_current_with_event(transaction, context, workspace_id, &tool).await
+    }
+}
+
+fn conceal_agent_private_tool_error(error: coral_workspace::Error) -> Error {
+    match error {
+        coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_) => {
+            Error::NotFound(AuthoredToolKind::Private)
+        }
+        other => Error::Workspace(other),
     }
 }

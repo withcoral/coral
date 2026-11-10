@@ -749,6 +749,58 @@ async fn only_designated_owners_inspect_and_delete_agent_private_tools_without_a
     );
 }
 
+// Catches: an Owner's read or delete of an Agent's Private Tool that selects
+// a User's when the request names that User's Principal as the Agent.
+#[tokio::test]
+async fn naming_a_user_as_the_agent_selects_no_private_tool() {
+    let fixture = PrivateToolTestModules::new().await;
+    let (workspace_id, owner) = fixture.user_workspace("user:workspace-owner").await;
+    let path = PrivateToolPath::parse("private.answer").expect("path");
+    let saved = fixture
+        .private_tools
+        .save(
+            &private_tool_change(owner.clone(), 20, '7'),
+            &workspace_id,
+            PrivateToolSave::new(
+                path.clone(),
+                AuthoredToolDescription::parse("A User's answer").expect("description"),
+                AuthoredToolSource::parse("export default () => 'user';").expect("source"),
+            ),
+        )
+        .await
+        .expect("User saves their tool");
+    let user_id = owner.principal().id();
+
+    assert!(matches!(
+        fixture
+            .private_tools
+            .get_agent(&owner, &workspace_id, user_id, &path)
+            .await,
+        Err(Error::NotFound(AuthoredToolKind::Private))
+    ));
+    assert!(matches!(
+        fixture
+            .private_tools
+            .delete_agent(
+                &private_tool_change(owner.clone(), 30, '8'),
+                &workspace_id,
+                user_id,
+                &path,
+            )
+            .await,
+        Err(Error::NotFound(AuthoredToolKind::Private))
+    ));
+    assert_eq!(
+        fixture
+            .private_tools
+            .get(&owner, &workspace_id, &path)
+            .await
+            .expect("the refused delete keeps the User's tool")
+            .id(),
+        saved.id()
+    );
+}
+
 /// The Saved Function rows the release before Private Tools wrote, at step
 /// 62, for one User and one Agent, read back after the upgrade as each
 /// owner's Private Tools, with every part of the definition kept.

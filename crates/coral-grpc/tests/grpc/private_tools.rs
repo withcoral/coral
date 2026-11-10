@@ -6,10 +6,14 @@ use coral_tools::{
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, TraceId};
 
 async fn save(f: &Fixture, user: &AuthenticatedUser, path: &str, source: &str) {
+    save_as(f, AuthenticatedPrincipal::user(user.clone()), path, source).await;
+}
+
+async fn save_as(f: &Fixture, actor: AuthenticatedPrincipal, path: &str, source: &str) {
     f.private_tools
         .save(
             &PrivateToolChangeContext::new(
-                AuthenticatedPrincipal::user(user.clone()),
+                actor,
                 1_700_000_000_000_000_007,
                 TraceId::current_or_new(),
             ),
@@ -23,6 +27,47 @@ async fn save(f: &Fixture, user: &AuthenticatedUser, path: &str, source: &str) {
         .await
         .unwrap();
 }
+
+/// A new Agent of the Workspace with one Private Tool saved at `path`, and
+/// the Agent's resource name.
+async fn agent_with_private_tool(
+    f: &Fixture,
+    path: &str,
+    source: &str,
+) -> (AuthenticatedPrincipal, String) {
+    let issued = f
+        .workspaces
+        .create_agent(
+            &super::change(&f.owner),
+            f.workspace.id(),
+            coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = f
+        .workspaces
+        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .await
+        .unwrap();
+    save_as(f, agent.clone(), path, source).await;
+    let name = format!(
+        "workspaces/{}/agents/{}",
+        f.workspace.id(),
+        agent.principal().id()
+    );
+    (agent, name)
+}
+
+/// `agent`, an Agent's resource name, with another Workspace in its place.
+fn in_another_workspace(agent: &str) -> String {
+    let id = agent.rsplit('/').next().unwrap();
+    format!("workspaces/{}/agents/{id}", uuid::Uuid::new_v4())
+}
+
+const NOT_FOUND: (tonic::Code, &str) = (tonic::Code::NotFound, "NOT_FOUND");
+const INVALID: (tonic::Code, &str) = (tonic::Code::InvalidArgument, "INVALID_ARGUMENT");
+const DENIED: (tonic::Code, &str) = (tonic::Code::PermissionDenied, "PERMISSION_DENIED");
 
 #[tokio::test]
 async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
@@ -68,12 +113,13 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
     assert!(second.next_page_token.is_empty());
 
     let foreign = list(&f.member, first.next_page_token).await.unwrap_err();
-    assert_eq!(
-        (foreign.code(), error_reason(&foreign).as_str()),
-        (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
-    );
+    assert_eq!((foreign.code(), error_reason(&foreign).as_str()), INVALID);
 }
 
+// Catches: a read that ignores `agent` and answers with the caller's own
+// Private Tool, drops the source or the saved diagnostics, takes an Agent of
+// another Workspace, or maps a concealed Private Tool to anything but
+// NOT_FOUND.
 #[tokio::test]
 async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found() {
     let f = Fixture::new().await;
@@ -84,12 +130,19 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
         "export default function total(): number { return missing; }",
     )
     .await;
-    let get = async |user: &AuthenticatedUser, path: &str, audience: &str| {
+    let (_principal, agent) = agent_with_private_tool(
+        &f,
+        "reports.total",
+        "export default function total(): number { return absent; }",
+    )
+    .await;
+    let get = async |user: &AuthenticatedUser, agent: &str, path: &str, audience: &str| {
         f.private_tools()
             .get_private_tool(request(
                 management::GetPrivateToolRequest {
                     parent: format!("workspaces/{}", f.workspace.id()),
                     path: path.into(),
+                    agent: agent.into(),
                 },
                 &f.token(user, audience),
                 audience,
@@ -97,122 +150,130 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
             .await
     };
 
-    let function = get(&f.owner, "reports.total", "reef")
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(function.path, "reports.total");
-    assert_eq!(function.description, "Describe reports.total");
-    assert!(function.source.contains("return missing;"));
-    assert!(function.declaration.contains("export default"));
-    assert!(matches!(
-        function.diagnostics.as_slice(),
-        [diagnostic]
-            if diagnostic.category() == management::AuthoredToolDiagnosticCategory::Error
-                && diagnostic.message.contains("missing")
-                && diagnostic.line == Some(1)
-    ));
-    assert!(!function.diagnostics_truncated);
+    for (of_agent, undeclared) in [("", "missing"), (agent.as_str(), "absent")] {
+        let tool = get(&f.owner, of_agent, "reports.total", "reef")
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(tool.path, "reports.total");
+        assert_eq!(tool.description, "Describe reports.total");
+        assert!(
+            tool.source.contains(&format!("return {undeclared};")),
+            "{of_agent:?}: {}",
+            tool.source
+        );
+        assert!(tool.declaration.contains("export default"));
+        assert!(
+            matches!(
+                tool.diagnostics.as_slice(),
+                [diagnostic]
+                    if diagnostic.category() == management::AuthoredToolDiagnosticCategory::Error
+                        && diagnostic.message.contains(undeclared)
+                        && diagnostic.line == Some(1)
+            ),
+            "{of_agent:?}: {:?}",
+            tool.diagnostics
+        );
+        assert!(!tool.diagnostics_truncated);
+    }
 
-    for (user, path, audience, expected) in [
-        (
-            &f.member,
-            "reports.total",
-            "reef",
-            (tonic::Code::NotFound, "NOT_FOUND"),
-        ),
-        (
-            &f.owner,
-            "reports.absent",
-            "reef",
-            (tonic::Code::NotFound, "NOT_FOUND"),
-        ),
-        (
-            &f.owner,
-            "reports..total",
-            "reef",
-            (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        ),
-        (
-            &f.owner,
-            "reports.total",
-            "mcp",
-            (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
-        ),
+    let (agent, elsewhere) = (agent.as_str(), in_another_workspace(&agent));
+    for (user, of_agent, path, audience, expected) in [
+        (&f.member, "", "reports.total", "reef", NOT_FOUND),
+        (&f.owner, "", "reports.absent", "reef", NOT_FOUND),
+        (&f.owner, "", "reports..total", "reef", INVALID),
+        (&f.owner, "", "reports.total", "mcp", DENIED),
+        (&f.member, agent, "reports.total", "reef", NOT_FOUND),
+        (&f.owner, agent, "reports.absent", "reef", NOT_FOUND),
+        (&f.owner, &elsewhere, "reports.total", "reef", INVALID),
+        (&f.owner, "agents/worker", "reports.total", "reef", INVALID),
     ] {
-        let status = get(user, path, audience).await.unwrap_err();
+        let status = get(user, of_agent, path, audience).await.unwrap_err();
         assert_eq!(
             (status.code(), error_reason(&status).as_str()),
             expected,
-            "{path} via {audience}"
+            "{path} of {of_agent:?} via {audience}"
         );
     }
 }
 
+// Catches: a delete that ignores `agent` and removes the caller's own Private
+// Tool, removes an Agent's for a Member, takes an Agent of another Workspace,
+// or maps a concealed Private Tool to anything but NOT_FOUND.
 #[tokio::test]
-async fn delete_removes_only_the_callers_own_private_tool() {
+async fn delete_removes_only_the_private_tool_the_request_names() {
     let f = Fixture::new().await;
     save(&f, &f.owner, "reports.total", "export default () => 1;").await;
+    let (agent_principal, agent) =
+        agent_with_private_tool(&f, "reports.total", "export default () => 2;").await;
     let parent = format!("workspaces/{}", f.workspace.id());
-    let delete = async |user: &AuthenticatedUser, path: &str, audience: &str| {
+    let delete = async |user: &AuthenticatedUser, agent: &str, path: &str, audience: &str| {
         f.private_tools()
             .delete_private_tool(request(
                 management::DeletePrivateToolRequest {
                     parent: parent.clone(),
                     path: path.into(),
+                    agent: agent.into(),
                 },
                 &f.token(user, audience),
                 audience,
             ))
             .await
     };
-    let exists = async || {
-        f.private_tools
-            .get(
-                &AuthenticatedPrincipal::user(f.owner.clone()),
-                f.workspace.id(),
-                &PrivateToolPath::parse("reports.total").unwrap(),
-            )
-            .await
-            .is_ok()
+    // Whether [the Owner's, the Agent's] Private Tool at the path exists.
+    let exist = async || {
+        let path = PrivateToolPath::parse("reports.total").unwrap();
+        let owner = AuthenticatedPrincipal::user(f.owner.clone());
+        let mut exist = [false; 2];
+        for (exists, principal) in exist.iter_mut().zip([&owner, &agent_principal]) {
+            *exists = f
+                .private_tools
+                .get(principal, f.workspace.id(), &path)
+                .await
+                .is_ok();
+        }
+        exist
     };
 
-    for (user, path, audience, expected) in [
-        (
-            &f.member,
-            "reports.total",
-            "reef",
-            (tonic::Code::NotFound, "NOT_FOUND"),
-        ),
-        (
-            &f.owner,
-            "reports..total",
-            "reef",
-            (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        ),
-        (
-            &f.owner,
-            "reports.total",
-            "mcp",
-            (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
-        ),
+    let (agent, elsewhere) = (agent.as_str(), in_another_workspace(&agent));
+    for (user, of_agent, path, audience, expected) in [
+        (&f.member, "", "reports.total", "reef", NOT_FOUND),
+        (&f.owner, "", "reports..total", "reef", INVALID),
+        (&f.owner, "", "reports.total", "mcp", DENIED),
+        (&f.member, agent, "reports.total", "reef", NOT_FOUND),
+        (&f.owner, agent, "reports.absent", "reef", NOT_FOUND),
+        (&f.owner, &elsewhere, "reports.total", "reef", INVALID),
+        (&f.owner, "agents/worker", "reports.total", "reef", INVALID),
     ] {
-        let status = delete(user, path, audience).await.unwrap_err();
+        let status = delete(user, of_agent, path, audience).await.unwrap_err();
         assert_eq!(
             (status.code(), error_reason(&status).as_str()),
             expected,
-            "{path} via {audience}"
+            "{path} of {of_agent:?} via {audience}"
         );
-        assert!(exists().await, "a refused delete keeps the function");
+        assert_eq!(
+            exist().await,
+            [true, true],
+            "a refused delete keeps both Private Tools"
+        );
     }
 
-    delete(&f.owner, "reports.total", "reef").await.unwrap();
-    assert!(!exists().await);
-    let again = delete(&f.owner, "reports.total", "reef").await.unwrap_err();
-    assert_eq!(
-        (again.code(), error_reason(&again).as_str()),
-        (tonic::Code::NotFound, "NOT_FOUND")
-    );
+    delete(&f.owner, agent, "reports.total", "reef")
+        .await
+        .unwrap();
+    assert_eq!(exist().await, [true, false]);
+    delete(&f.owner, "", "reports.total", "reef").await.unwrap();
+    assert_eq!(exist().await, [false, false]);
+    for of_agent in ["", agent] {
+        let again = delete(&f.owner, of_agent, "reports.total", "reef")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (again.code(), error_reason(&again).as_str()),
+            NOT_FOUND,
+            "{of_agent:?}"
+        );
+    }
 }
 
 /// Each `ToolAccess` row of `provider` as `user` lists it: (relative path,
@@ -262,33 +323,8 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
     let f = Fixture::new().await;
     save(&f, &f.owner, "people.greet", "export default () => 1;").await;
     save(&f, &f.member, "people.greet", "export default () => 2;").await;
-    let issued = f
-        .workspaces
-        .create_agent(
-            &super::change(&f.owner),
-            f.workspace.id(),
-            coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let agent = f
-        .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
-        .await
-        .unwrap();
-    f.private_tools
-        .save(
-            &PrivateToolChangeContext::new(agent.clone(), 3, TraceId::current_or_new()),
-            f.workspace.id(),
-            PrivateToolSave::new(
-                PrivateToolPath::parse("people.greet").unwrap(),
-                AuthoredToolDescription::parse("Describe the Agent's").unwrap(),
-                AuthoredToolSource::parse("export default () => 3;").unwrap(),
-            ),
-        )
-        .await
-        .unwrap();
+    let (_principal, agent_name) =
+        agent_with_private_tool(&f, "people.greet", "export default () => 3;").await;
 
     let provider = f
         .private_tools()
@@ -313,11 +349,6 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
     let enabled = i32::from(management::ToolAccessState::Enabled);
     let mut owner_rows = private_tool_access(&f, &f.owner, &provider).await;
     owner_rows.sort_by(|a, b| a.1.cmp(&b.1));
-    let agent_name = format!(
-        "workspaces/{}/agents/{}",
-        f.workspace.id(),
-        agent.principal().id()
-    );
     assert_eq!(
         owner_rows
             .iter()
@@ -359,10 +390,7 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
     let hidden = update(&f.owner, member_tool, management::ToolAccessState::Disabled)
         .await
         .unwrap_err();
-    assert_eq!(
-        (hidden.code(), error_reason(&hidden).as_str()),
-        (tonic::Code::NotFound, "NOT_FOUND")
-    );
+    assert_eq!((hidden.code(), error_reason(&hidden).as_str()), NOT_FOUND);
     let set = update(
         &f.owner,
         &owner_rows.get(1).expect("the Agent's row").4,

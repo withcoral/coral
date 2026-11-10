@@ -1,4 +1,4 @@
-use super::authored_tools::{diagnostic, error};
+use super::authored_tools::{diagnostic, error, private_tool_agent};
 use super::workspaces::{annotate, invalid, page_start, page_token, timestamp, workspace_id};
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{PrivateTool, PrivateToolChangeContext, PrivateToolPath, PrivateToolSummary};
@@ -82,12 +82,17 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let function = self
-            .private_tools
-            .get(&AuthenticatedPrincipal::user(user), &w, &path)
-            .await
-            .map_err(error)?;
-        Ok(Response::new(private_tool(&function)))
+        let actor = AuthenticatedPrincipal::user(user);
+        let tool = match private_tool_agent(&input.agent, &w)? {
+            Some(agent) => {
+                self.private_tools
+                    .get_agent(&actor, &w, &agent, &path)
+                    .await
+            }
+            None => self.private_tools.get(&actor, &w, &path).await,
+        }
+        .map_err(error)?;
+        Ok(Response::new(private_tool(&tool)))
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.delete_private_tool")]
@@ -104,10 +109,15 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
             now().map_err(annotate)?,
             TraceId::current_or_new(),
         );
-        self.private_tool_deletion
-            .delete(&context, &w, &path)
-            .await
-            .map_err(error)?;
+        match private_tool_agent(&input.agent, &w)? {
+            Some(agent) => {
+                self.private_tool_deletion
+                    .delete_agent(&context, &w, &agent, &path)
+                    .await
+            }
+            None => self.private_tool_deletion.delete(&context, &w, &path).await,
+        }
+        .map_err(error)?;
         Ok(Response::new(()))
     }
 }

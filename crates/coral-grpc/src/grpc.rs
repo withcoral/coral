@@ -44,9 +44,9 @@ pub struct Dependencies {
     pub runs: coral_run::RunModule,
     /// Task inspection.
     pub tasks: coral_task::TaskModule,
-    /// The caller's own current Private Tool inspection.
+    /// Current Private Tool inspection: the caller's own, and an Agent's for an Owner.
     pub private_tools: coral_tools::PrivateToolInspection,
-    /// The caller's own current Private Tool deletion.
+    /// Current Private Tool deletion: the caller's own, and an Agent's for an Owner.
     pub private_tool_deletion: coral_tools::PrivateToolDeletion,
     /// The Workspace's Shared Tools: reads.
     pub shared_tools: coral_tools::SharedToolModule,
