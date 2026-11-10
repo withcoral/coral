@@ -29,10 +29,16 @@ $(CONTAINER_ENGINE) build "$$@"
 endef
 
 # Installs the released binary, built from ee/crates/coral-ee, as `coral`.
+# Cargo reports where it wrote the binary, wherever CARGO_TARGET_DIR or a
+# build target put it.
 install:
-	cargo build --locked --release -p coral-ee --bin coral-ee
-	install -d "$${CARGO_HOME:-$$HOME/.cargo}/bin"
-	install -m 0755 target/release/coral-ee "$${CARGO_HOME:-$$HOME/.cargo}/bin/coral"
+	set -eu; \
+	built="$$(cargo build --locked --release -p coral-ee --bin coral-ee \
+	  --message-format=json-render-diagnostics | \
+	  jq -r 'select(.reason == "compiler-artifact" and .target.name == "coral-ee") | .executable')"; \
+	test -n "$$built"; \
+	install -d "$${CARGO_HOME:-$$HOME/.cargo}/bin"; \
+	install -m 0755 "$$built" "$${CARGO_HOME:-$$HOME/.cargo}/bin/coral"
 
 # ----------------------------------------------------------------------------
 # Images
