@@ -27,7 +27,7 @@ async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, oneshot::Sender<()>
 fn compiled(source: &str) -> Package {
     let compiler = InProcessCompiler::new(coral_v8::IsolateLimits::defaults()).unwrap();
     let program = compiler
-        .compile(TEST_COMPILATION_TIMEOUT, source, &[])
+        .compile(TEST_COMPILATION_TIMEOUT, source, &[], None)
         .unwrap();
     package(program.javascript(), program.source_map())
 }

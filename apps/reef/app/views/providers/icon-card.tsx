@@ -1,9 +1,8 @@
-import { useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useFetcher, type FetcherWithComponents } from 'react-router'
 
 import { Button, Inputs } from '@/wax/components'
 import { Card } from '@/wax/components/card/card'
-import { ErrorMessage } from '@/wax/components/error-message/error-message'
 import { Logo } from '@/wax/components/logo'
 import {
   PROVIDER_ICON_ACCEPT,
@@ -12,13 +11,14 @@ import {
 } from '@/lib/provider-input-limits'
 import { ActionNotice, Fields } from '@/views/management/forms'
 import type { ActionResult } from '@/views/management/types'
+import { FieldError } from './fields'
 import type { FormContext, ProviderSettingsView } from './types'
 import * as styles from './providers.css'
 
 /**
  * The logo that stands for a provider, and an owner's upload or removal of
  * their own. The preview shows the current logo: an uploaded one, a recipe's,
- * or the lettermark.
+ * or the lettermark. Choosing a file within the limits uploads it at once.
  */
 export function IconCard({
   provider,
@@ -37,7 +37,7 @@ export function IconCard({
       <Card title="Icon" description={PROVIDER_ICON_RULE}>
         <div className={styles.iconRow}>
           <Logo name={provider.displayName} icons={provider.icons} size="40" />
-          {/* A new etag follows each change, which remounts the form and clears the file. */}
+          {/* A new etag follows each change, which remounts the form and clears its error. */}
           <UploadForm
             key={provider.etag}
             provider={provider}
@@ -79,34 +79,43 @@ function UploadForm({
   upload: FetcherWithComponents<ActionResult>
   disabled: boolean
 }) {
-  const uploading = upload.state !== 'idle'
-  const [file, setFile] = useState<File | null>(null)
-  const tooLarge = file !== null && file.size > PROVIDER_ICON_MAX_BYTES
+  const picker = useRef<HTMLInputElement>(null)
+  const [tooLarge, setTooLarge] = useState(false)
+  const errorId = useId()
+  const choose = (file: File | null) => {
+    const input = picker.current
+    if (!file || !input?.form) return
+    setTooLarge(file.size > PROVIDER_ICON_MAX_BYTES)
+    if (file.size <= PROVIDER_ICON_MAX_BYTES) {
+      upload.submit(new FormData(input.form), {
+        method: 'post',
+        encType: 'multipart/form-data',
+      })
+    }
+    // A browser reports no change for the same file, so clear it to allow a retry.
+    input.value = ''
+  }
   return (
     <upload.Form method="post" encType="multipart/form-data" className={styles.iconUpload}>
       <Fields form={form} intent="setProviderIcon" etag={provider.etag} />
       <input type="hidden" name="provider" value={provider.id} />
-      <div className={styles.rowActions}>
-        <Inputs.FileInput
-          ariaLabel="Icon file"
-          name="icon"
-          accept={PROVIDER_ICON_ACCEPT}
-          required
-          disabled={disabled || uploading}
-          invalid={tooLarge}
-          onChange={setFile}
-        />
-        <Button.TextButton
-          type="submit"
-          variant="secondary"
-          size="32"
-          busy={uploading}
-          disabled={disabled || file === null || tooLarge}
-        >
-          Upload icon
-        </Button.TextButton>
-      </div>
-      {tooLarge && <ErrorMessage message={`This file is too large. ${PROVIDER_ICON_RULE}`} />}
+      <Inputs.FileInput
+        ref={picker}
+        ariaLabel="Icon file"
+        buttonLabel="Upload icon"
+        name="icon"
+        accept={PROVIDER_ICON_ACCEPT}
+        busy={upload.state !== 'idle'}
+        disabled={disabled}
+        invalid={tooLarge}
+        ariaDescribedBy={tooLarge ? errorId : undefined}
+        onChange={choose}
+      />
+      {tooLarge && (
+        <div className={styles.iconError}>
+          <FieldError id={errorId} message={`This file is too large. ${PROVIDER_ICON_RULE}`} />
+        </div>
+      )}
     </upload.Form>
   )
 }
