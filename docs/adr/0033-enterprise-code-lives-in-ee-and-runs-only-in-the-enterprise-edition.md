@@ -12,10 +12,11 @@ Dependencies point one way: `ee/` depends on core, and core never depends on, im
 Enterprise Feature needs something new from core, core gains a general extension point and `ee/` implements it. A plain
 `cargo build` at the root builds only core, so a source build is pure Apache-2.0.
 
-We release one binary built from `ee/`. Whether enterprise code runs is decided at runtime by the Edition, not by a
-compile-time feature: the Edition can change while Coral runs, so each Enterprise Feature checks it every time it is
-used, and an Enterprise Feature used while the Edition is Community fails closed without deleting anything. `ee/`
-registers its Enterprise Features with core; core keeps no list of them, so a source build does not know they exist.
+We release one binary built from `ee/`. It always starts its `ee/` code and registers its Enterprise Features with
+core; core keeps no list of them, so a source build does not know they exist. Whether an Enterprise Feature works is
+decided at runtime by the Edition, not by a compile-time feature: the Edition can change while Coral runs, so each
+Enterprise Feature checks it every time it is used, and one used while the Edition is Community fails closed without
+deleting anything.
 
 `ee/` never adds a migration. The schema an Enterprise Feature needs is general and lives in core's one migration
 chain, so a deployment can move between the released binary and a source build without meeting migrations it does not
