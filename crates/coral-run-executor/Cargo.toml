@@ -15,9 +15,12 @@ test-support = []
 
 [dependencies]
 coral-credentials.workspace = true
+coral-db.workspace = true
 coral-telemetry.workspace = true
 coral-v8.workspace = true
 prost.workspace = true
+sea-query.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true
@@ -29,3 +32,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 coral-test-support.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
+tower = { workspace = true, features = ["util"] }

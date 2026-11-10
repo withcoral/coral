@@ -1006,16 +1006,21 @@ name = "coral-run-executor"
 version = "1.5.0"
 dependencies = [
  "coral-credentials",
+ "coral-db",
  "coral-telemetry",
  "coral-test-support",
  "coral-v8",
+ "hyper-util",
  "prost",
+ "sea-query",
+ "sha2 0.11.1",
  "thiserror",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-health",
  "tonic-prost",
+ "tower",
  "tracing",
  "uuid",
 ]
@@ -1153,6 +1158,7 @@ version = "1.5.0"
 dependencies = [
  "chrono",
  "coral-db",
+ "coral-functions",
  "coral-outbound",
  "coral-provider",
  "coral-run",

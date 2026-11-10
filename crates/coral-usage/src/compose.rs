@@ -37,14 +37,20 @@ pub(crate) async fn compose(
             .filter(|(code, _)| coral_run::Error::is_compile_rejection(code))
             .map(|(_, submissions)| submissions)
             .sum();
-    let tools = activity::tool_invocations(tx, window).await?;
-    let approval_required = activity::approval_requests(tx, window).await?;
-    let approvals = activity::approvals(tx, window).await?;
-    let tasks = activity::tasks_started(tx, window).await?;
-    let saved = activity::functions_saved(tx, window).await?;
-    let called = activity::functions_called(tx, window).await?;
+    let tools =
+        coral_run::usage_repository::invocation_endings(tx, window.start, window.end).await?;
+    let approval_required =
+        coral_run::usage_repository::approval_requests(tx, window.start, window.end).await?;
+    let approvals =
+        coral_run::usage_repository::approval_outcomes(tx, window.start, window.end).await?;
+    let tasks = coral_task::usage_repository::tasks_started(tx, window.start, window.end).await?;
+    let saved =
+        coral_functions::usage_repository::functions_created(tx, window.start, window.end).await?;
+    let called =
+        coral_run::usage_repository::saved_function_calls(tx, window.start, window.end).await?;
     let reuse_today = activity::reuse(tx, window).await?;
-    let totals = activity::totals(tx).await?;
+    let totals = coral_workspace::usage_repository::workspace_totals(tx).await?;
+    let saved_functions = coral_functions::usage_repository::function_total(tx).await?;
     let providers = coral_provider::usage_repository::provider_totals(tx).await?;
 
     let milestones = milestones(tx, install.milestones, day, window.end).await?;
@@ -82,7 +88,7 @@ pub(crate) async fn compose(
             },
             approvals: ApprovalCounts {
                 approved: count(approvals.approved),
-                denied: count(approvals.denied),
+                denied: count(approvals.declined),
                 expired: count(approvals.expired),
             },
             saved_functions: SavedFunctionCounts {
@@ -99,7 +105,7 @@ pub(crate) async fn compose(
             workspaces: count(totals.workspaces),
             users: count(totals.users),
             agents: count(totals.agents),
-            saved_functions: count(totals.saved_functions),
+            saved_functions: count(saved_functions),
             providers: Providers {
                 // Coral does not record which recipe made a provider yet, so
                 // every provider counts by its kind.
@@ -138,12 +144,12 @@ async fn milestones(
         first_successful_run: earliest(
             day,
             kept.first_successful_run,
-            activity::first_successful_run(tx, end).await?,
+            coral_run::usage_repository::first_success_before(tx, end).await?,
         ),
         first_saved_function: earliest(
             day,
             kept.first_saved_function,
-            activity::first_saved_function(tx, end).await?,
+            coral_functions::usage_repository::first_created_before(tx, end).await?,
         ),
         function_reused: earliest(day, kept.function_reused, reuse.first_at),
     })

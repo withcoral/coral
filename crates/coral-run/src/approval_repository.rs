@@ -453,3 +453,51 @@ pub(super) async fn list_lifecycle_events(
         .map(StoredLifecycleEvent::try_from)
         .collect()
 }
+
+/// Counts the Approval Requests made in `[start, end)`, in every Workspace.
+pub(crate) async fn created_between(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    let requests: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::col(InvocationApprovals::Id).count())
+                .from(InvocationApprovals::Table)
+                .and_where(Expr::col(InvocationApprovals::CreatedAtUnixNanos).gte(start))
+                .and_where(Expr::col(InvocationApprovals::CreatedAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    Ok(requests.map_or(0, |(requests,)| u64::try_from(requests).unwrap_or_default()))
+}
+
+/// Counts the Approval Request lifecycle Events in `[start, end)`, in every
+/// Workspace, by the state each recorded.
+pub(crate) async fn lifecycle_states_between(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<Vec<(ApprovalState, u64)>, Error> {
+    let rows: Vec<(String, i64)> = tx
+        .fetch_all(
+            Query::select()
+                .column(ApprovalLifecycleEvents::State)
+                .expr(Expr::col(ApprovalLifecycleEvents::Id).count())
+                .from(ApprovalLifecycleEvents::Table)
+                .and_where(Expr::col(ApprovalLifecycleEvents::OccurredAtUnixNanos).gte(start))
+                .and_where(Expr::col(ApprovalLifecycleEvents::OccurredAtUnixNanos).lt(end))
+                .group_by_col(ApprovalLifecycleEvents::State)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(state, events)| {
+            Ok((
+                ApprovalState::try_from(state)?,
+                u64::try_from(events).unwrap_or_default(),
+            ))
+        })
+        .collect()
+}

@@ -38,7 +38,8 @@ message PullResponse {
 
 // What a Run Executor declares when it opens its pull stream.
 message Hello {
-  // A random id generated at each start, for operators only.
+  // A random UUID generated at each start, for operators only. Coral refuses
+  // a pull stream whose id is not a UUID.
   string run_executor_id = 1;
   // The Run Executor's protocol level.
   uint32 protocol_level = 2;

@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 chrono.workspace = true
 coral-db.workspace = true
+coral-functions.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
 coral-provider.workspace = true
 coral-run.workspace = true
