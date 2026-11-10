@@ -9,9 +9,9 @@ The [AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/
 - **OAuth.** The **AWS** provider in Coral's catalog signs each member in with AWS. Use it when each member has an AWS sign-in. AWS keeps a sign-in for [at most 12 hours](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html#oauth-token-lifecycle). After that, you reconnect the account in Coral.
 - **IAM.** Coral calls AWS with one IAM role or user. Use it when you want a fixed identity with its own IAM policies, or access that does not need a new sign-in every 12 hours. This guide covers this option.
 
-With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). Coral does not sign requests with SigV4. Run a small bridge next to Coral and add the bridge as a provider.
+With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). You'll need a small bridge next to Coral so requests going to the AWS MCP Server are signed with SigV4.
 
-The bridge uses three existing tools in two containers. You do not build an image.
+The bridge uses three existing tools in two containers.
 
 - [MCP Proxy for AWS](https://github.com/aws/mcp-proxy-for-aws) signs each request with the bridge's AWS credentials and sends it to the AWS MCP Server.
 - [Supergateway](https://github.com/supercorp-ai/supergateway) runs the proxy, serves it as a Streamable HTTP endpoint and checks an API key on each request.
