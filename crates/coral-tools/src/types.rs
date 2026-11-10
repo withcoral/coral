@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::Error;
+use crate::shared_tool::{SharedToolId, SharedToolPath};
 
 /// Maximum UTF-8 byte length of one Private or Shared Tool Path.
 pub const AUTHORED_TOOL_PATH_MAX_BYTES: usize = 256;
@@ -113,6 +114,154 @@ impl PrivateToolPath {
     #[must_use]
     pub fn segments(&self) -> Vec<String> {
         self.0.split('.').map(ToString::to_string).collect()
+    }
+}
+
+/// The stable identity of one Authored Tool, which names its kind. It is the
+/// Tool Key of the Tool in its kind's Provider.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AuthoredToolId {
+    /// A Principal's own Private Tool.
+    Private(PrivateToolId),
+    /// The Workspace's Shared Tool.
+    Shared(SharedToolId),
+}
+
+impl AuthoredToolId {
+    /// Parses the identity of a Tool of `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] unless the value is a canonical UUID.
+    pub fn parse(kind: AuthoredToolKind, value: &str) -> Result<Self, Error> {
+        match kind {
+            AuthoredToolKind::Private => PrivateToolId::parse(value).map(Self::Private),
+            AuthoredToolKind::Shared => SharedToolId::parse(value).map(Self::Shared),
+        }
+    }
+
+    /// The kind of Tool the identity names.
+    #[must_use]
+    pub const fn kind(&self) -> AuthoredToolKind {
+        match self {
+            Self::Private(_) => AuthoredToolKind::Private,
+            Self::Shared(_) => AuthoredToolKind::Shared,
+        }
+    }
+
+    /// The Tool Key in the kind's Provider, which an exact rule names.
+    #[must_use]
+    pub fn tool_key(&self) -> coral_catalog::ToolKey {
+        match self {
+            Self::Private(id) => id.tool_key(),
+            Self::Shared(id) => id.tool_key(),
+        }
+    }
+
+    /// The identity when it names a Private Tool.
+    #[must_use]
+    pub const fn private(&self) -> Option<&PrivateToolId> {
+        match self {
+            Self::Private(id) => Some(id),
+            Self::Shared(_) => None,
+        }
+    }
+
+    /// The identity when it names a Shared Tool.
+    #[must_use]
+    pub const fn shared(&self) -> Option<&SharedToolId> {
+        match self {
+            Self::Private(_) => None,
+            Self::Shared(id) => Some(id),
+        }
+    }
+}
+
+impl fmt::Display for AuthoredToolId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Private(id) => id.fmt(formatter),
+            Self::Shared(id) => id.fmt(formatter),
+        }
+    }
+}
+
+impl From<PrivateToolId> for AuthoredToolId {
+    fn from(id: PrivateToolId) -> Self {
+        Self::Private(id)
+    }
+}
+
+impl From<SharedToolId> for AuthoredToolId {
+    fn from(id: SharedToolId) -> Self {
+        Self::Shared(id)
+    }
+}
+
+/// The path of one Authored Tool under its kind's Call Root: what a source
+/// names to link it, and what Universal Search finds it by.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AuthoredToolPath {
+    /// The invoking Principal's own Private Tool, under `coral.private`.
+    Private(PrivateToolPath),
+    /// The Workspace's Shared Tool, under `coral.shared`.
+    Shared(SharedToolPath),
+}
+
+impl AuthoredToolPath {
+    /// Parses the path of a Tool of `kind`, relative to the kind's Call
+    /// Root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for a path outside the authoring
+    /// bounds.
+    pub fn parse(kind: AuthoredToolKind, relative_path: &str) -> Result<Self, Error> {
+        match kind {
+            AuthoredToolKind::Private => PrivateToolPath::parse(relative_path).map(Self::Private),
+            AuthoredToolKind::Shared => SharedToolPath::parse(relative_path).map(Self::Shared),
+        }
+    }
+
+    /// The kind of Tool the path names.
+    #[must_use]
+    pub const fn kind(&self) -> AuthoredToolKind {
+        match self {
+            Self::Private(_) => AuthoredToolKind::Private,
+            Self::Shared(_) => AuthoredToolKind::Shared,
+        }
+    }
+
+    /// The dotted path under the kind's Call Root.
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        match self {
+            Self::Private(path) => path.as_str(),
+            Self::Shared(path) => path.as_str(),
+        }
+    }
+
+    /// The validated segments under the kind's Call Root, for the
+    /// compiler's linked source input.
+    #[must_use]
+    pub fn segments(&self) -> Vec<String> {
+        match self {
+            Self::Private(path) => path.segments(),
+            Self::Shared(path) => path.segments(),
+        }
+    }
+
+    /// The complete Call Path, such as `coral.shared.mail.remind`.
+    #[must_use]
+    pub fn call_path(&self) -> String {
+        self.kind().call_path(self.relative_path())
+    }
+
+    /// How a message and a stack frame name the Tool's source, such as
+    /// `Shared Tool coral.shared.mail.remind`.
+    #[must_use]
+    pub fn source_name(&self) -> String {
+        self.kind().source_name(self.relative_path())
     }
 }
 
@@ -769,185 +918,6 @@ impl PrivateTool {
     }
 }
 
-/// Minimal owner evidence for comparing a Private Tool's search projection;
-/// contains no source, declaration, description, or caller visibility decision.
-#[derive(Debug, Clone)]
-pub struct PrivateToolIndexRevision {
-    pub(crate) id: PrivateToolId,
-    pub(crate) workspace_id: WorkspaceId,
-    pub(crate) revision: u64,
-}
-impl PrivateToolIndexRevision {
-    /// The Private Tool's stable identity.
-    #[must_use]
-    pub const fn id(&self) -> &PrivateToolId {
-        &self.id
-    }
-    /// Its owning Workspace.
-    #[must_use]
-    pub const fn workspace_id(&self) -> &WorkspaceId {
-        &self.workspace_id
-    }
-    /// The currently accepted definition revision.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-}
-
-/// What Universal Search indexes about one current Private Tool. Never the source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateToolEntry {
-    id: PrivateToolId,
-    workspace_id: WorkspaceId,
-    principal: Principal,
-    path: PrivateToolPath,
-    description: AuthoredToolDescription,
-    declaration: AuthoredToolDeclaration,
-    declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
-    revision: u64,
-}
-
-impl PrivateToolEntry {
-    /// Returns what an accepted save hands to search after its commit.
-    #[must_use]
-    pub fn from_saved(tool: &PrivateTool) -> Self {
-        Self {
-            id: tool.id.clone(),
-            workspace_id: tool.workspace_id.clone(),
-            principal: tool.principal.clone(),
-            path: tool.path.clone(),
-            description: tool.description.clone(),
-            declaration: tool.declaration.clone(),
-            declaration_fields: tool
-                .declaration_field_projection
-                .fields()
-                .map(<[_]>::to_vec),
-            revision: tool.revision,
-        }
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one entry is decoded once at its persistence boundary"
-    )]
-    pub(crate) const fn new(
-        id: PrivateToolId,
-        workspace_id: WorkspaceId,
-        principal: Principal,
-        path: PrivateToolPath,
-        description: AuthoredToolDescription,
-        declaration: AuthoredToolDeclaration,
-        declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
-        revision: u64,
-    ) -> Self {
-        Self {
-            id,
-            workspace_id,
-            principal,
-            path,
-            description,
-            declaration,
-            declaration_fields,
-            revision,
-        }
-    }
-
-    /// Returns the stable identity retained across replacements at this path.
-    #[must_use]
-    pub const fn id(&self) -> &PrivateToolId {
-        &self.id
-    }
-
-    /// Returns the Workspace that owns the Private Tool.
-    #[must_use]
-    pub const fn workspace_id(&self) -> &WorkspaceId {
-        &self.workspace_id
-    }
-
-    /// Returns the owning Principal, the only one who can see the Private Tool.
-    #[must_use]
-    pub const fn principal(&self) -> &Principal {
-        &self.principal
-    }
-
-    /// Returns the path below `coral.private`, the rest of the Call Path.
-    #[must_use]
-    pub const fn path(&self) -> &PrivateToolPath {
-        &self.path
-    }
-
-    /// Returns the exact explicit description.
-    #[must_use]
-    pub const fn description(&self) -> &AuthoredToolDescription {
-        &self.description
-    }
-
-    /// Returns the exact self-contained compiler-emitted declaration.
-    #[must_use]
-    pub const fn declaration(&self) -> &AuthoredToolDeclaration {
-        &self.declaration
-    }
-
-    /// Returns the readable declaration paths with their text, or `None` when
-    /// the save projected none or the stored projection is unreadable. The
-    /// Private Tool is still searchable by path and description.
-    #[must_use]
-    pub fn declaration_fields(&self) -> Option<&[AuthoredToolDeclarationField]> {
-        self.declaration_fields.as_deref()
-    }
-
-    /// Returns the definition revision.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-}
-
-/// Current Principal-owned material supplied to ordinary Universal Search.
-///
-/// This projection contains only secret-free authoring contract fields. It
-/// carries no source, diagnostics, Private Tool identity, revision,
-/// Membership, Run, or accepted executable evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateToolAuthoringMaterial {
-    path: PrivateToolPath,
-    description: AuthoredToolDescription,
-    declaration: AuthoredToolDeclaration,
-}
-
-impl PrivateToolAuthoringMaterial {
-    pub(crate) const fn new(
-        path: PrivateToolPath,
-        description: AuthoredToolDescription,
-        declaration: AuthoredToolDeclaration,
-    ) -> Self {
-        Self {
-            path,
-            description,
-            declaration,
-        }
-    }
-
-    /// Returns the path relative to `coral.private`.
-    #[must_use]
-    pub const fn path(&self) -> &PrivateToolPath {
-        &self.path
-    }
-
-    /// Returns the exact explicit authoring description.
-    #[must_use]
-    pub const fn description(&self) -> &AuthoredToolDescription {
-        &self.description
-    }
-
-    /// Returns the exact self-contained compiler-emitted declaration.
-    #[must_use]
-    pub const fn declaration(&self) -> &AuthoredToolDeclaration {
-        &self.declaration
-    }
-}
-
 /// Most summaries one list page returns.
 pub const PRIVATE_TOOL_PAGE_MAX_SIZE: u32 = 100;
 
@@ -1083,189 +1053,6 @@ pub enum PrivateToolScope {
     Own,
     /// The reader's own and every Agent's, as a Workspace Owner reads them.
     OwnAndAgents,
-}
-
-/// Metadata-only Private Tool target supplied before listing or ranking.
-///
-/// This projection contains no source, declaration, relevance material,
-/// diagnostics, revision, or accepted executable material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateToolSearchMaterial {
-    id: PrivateToolId,
-    path: PrivateToolPath,
-    description: AuthoredToolDescription,
-    default_access_state: ToolAccessState,
-}
-
-impl PrivateToolSearchMaterial {
-    pub(crate) const fn new(
-        id: PrivateToolId,
-        path: PrivateToolPath,
-        description: AuthoredToolDescription,
-        default_access_state: ToolAccessState,
-    ) -> Self {
-        Self {
-            id,
-            path,
-            description,
-            default_access_state,
-        }
-    }
-
-    /// Returns the Private Tool's Tool Access State when no exact rule
-    /// matches it.
-    #[must_use]
-    pub const fn default_access_state(&self) -> ToolAccessState {
-        self.default_access_state
-    }
-
-    /// Returns the Private Tool's stable identity.
-    #[must_use]
-    pub const fn id(&self) -> &PrivateToolId {
-        &self.id
-    }
-
-    /// Returns the path relative to `coral.private`.
-    #[must_use]
-    pub const fn path(&self) -> &PrivateToolPath {
-        &self.path
-    }
-
-    /// Returns the exact explicit description.
-    #[must_use]
-    pub const fn description(&self) -> &AuthoredToolDescription {
-        &self.description
-    }
-}
-
-/// Per-Tool declaration-lane material loaded only for relevance search.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateToolDeclarationSearchMaterial {
-    path: PrivateToolPath,
-    declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
-}
-
-impl PrivateToolDeclarationSearchMaterial {
-    pub(crate) const fn new(
-        path: PrivateToolPath,
-        declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
-    ) -> Self {
-        Self {
-            path,
-            declaration_fields,
-        }
-    }
-
-    /// Returns the path relative to `coral.private`.
-    #[must_use]
-    pub const fn path(&self) -> &PrivateToolPath {
-        &self.path
-    }
-
-    /// Returns fields when this Private Tool's declaration lane is healthy.
-    #[must_use]
-    pub fn declaration_fields(&self) -> Option<&[AuthoredToolDeclarationField]> {
-        self.declaration_fields.as_deref()
-    }
-}
-
-/// Exact owner-editing material supplied only to exact description.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactPrivateToolAuthoringMaterial {
-    source: AuthoredToolSource,
-    diagnostics: Vec<AuthoredToolDiagnostic>,
-    diagnostics_truncated: bool,
-}
-
-impl ExactPrivateToolAuthoringMaterial {
-    pub(crate) const fn new(
-        source: AuthoredToolSource,
-        diagnostics: Vec<AuthoredToolDiagnostic>,
-        diagnostics_truncated: bool,
-    ) -> Self {
-        Self {
-            source,
-            diagnostics,
-            diagnostics_truncated,
-        }
-    }
-
-    /// Returns the exact current source for authorized exact description.
-    #[must_use]
-    pub const fn source(&self) -> &AuthoredToolSource {
-        &self.source
-    }
-
-    /// Returns bounded advisory authoring diagnostics.
-    #[must_use]
-    pub fn diagnostics(&self) -> &[AuthoredToolDiagnostic] {
-        &self.diagnostics
-    }
-
-    /// Returns whether additional diagnostics were omitted by the authoring bound.
-    #[must_use]
-    pub const fn diagnostics_truncated(&self) -> bool {
-        self.diagnostics_truncated
-    }
-}
-
-/// Complete relevance-independent exact Private Tool description material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactPrivateToolDescriptionMaterial {
-    id: PrivateToolId,
-    authoring: PrivateToolAuthoringMaterial,
-    detail: ExactPrivateToolAuthoringMaterial,
-    revision: u64,
-    default_access_state: ToolAccessState,
-}
-
-impl ExactPrivateToolDescriptionMaterial {
-    pub(crate) const fn new(
-        id: PrivateToolId,
-        authoring: PrivateToolAuthoringMaterial,
-        detail: ExactPrivateToolAuthoringMaterial,
-        revision: u64,
-        default_access_state: ToolAccessState,
-    ) -> Self {
-        Self {
-            id,
-            authoring,
-            detail,
-            revision,
-            default_access_state,
-        }
-    }
-
-    /// Returns the Private Tool's stable identity, its Tool Key.
-    #[must_use]
-    pub const fn id(&self) -> &PrivateToolId {
-        &self.id
-    }
-
-    /// Returns the Private Tool's current definition revision.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// Returns the Private Tool's Tool Access State when no exact rule
-    /// matches it.
-    #[must_use]
-    pub const fn default_access_state(&self) -> ToolAccessState {
-        self.default_access_state
-    }
-
-    /// Returns source-free public authoring material.
-    #[must_use]
-    pub const fn authoring(&self) -> &PrivateToolAuthoringMaterial {
-        &self.authoring
-    }
-
-    /// Returns source and diagnostics for exact owner editing.
-    #[must_use]
-    pub const fn detail(&self) -> &ExactPrivateToolAuthoringMaterial {
-        &self.detail
-    }
 }
 
 /// Accepted Private Tool lifecycle action.

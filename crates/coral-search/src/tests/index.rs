@@ -675,7 +675,7 @@ async fn a_pass_leaves_a_private_tool_that_a_notified_write_indexed_at_a_newer_r
         .await;
     world
         .index
-        .sync_private_tool(newer.workspace_id().clone(), newer.id().clone());
+        .sync_authored_tool(newer.workspace_id().clone(), newer.id().clone());
     // The notified write queues for the mutex ahead of the pass's next item.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(hold);
@@ -1287,7 +1287,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
             "coral.search.reconcile.remove_superseded",
             "coral.search.reconcile.remove_orphaned",
             "coral.search.reconcile.generations",
-            "coral.search.reconcile.private_tools",
+            "coral.search.reconcile.authored_tools",
             "coral.search.reconcile.statistics",
         ]
     );
@@ -1372,7 +1372,7 @@ async fn a_failed_step_marks_its_span_and_the_pass() {
     for name in [
         "coral.search.reconcile",
         "coral.search.reconcile.generations",
-        "coral.search.reconcile.private_tools",
+        "coral.search.reconcile.authored_tools",
     ] {
         let span = pass
             .iter()

@@ -4,6 +4,12 @@
 -- `saved_function.*`, the declaration fields format, and the Search Entity
 -- and search state kind `saved_function`. Each is now `private_tool`.
 --
+-- Universal Search indexes Shared Tools beside Private Tools, so the search
+-- tables name what the two kinds share: the Search Entity and search state
+-- kind `shared_tool` joins `private_tool`, and one `authored_tool_id` column
+-- holds the identity of either. Only a Private Tool's row names a Principal.
+-- Neither table references a Private or Shared Tool's own tables (ADR 0017).
+--
 -- Each Private Tool keeps its path, source, declaration, diagnostics and
 -- revision, and gains the Tool Access State that applies when no exact rule
 -- matches it: every existing row is `enabled`.
@@ -237,7 +243,7 @@ CREATE TABLE search_entities_new (
     provider_id TEXT,
     provider_generation_id TEXT,
     tool_key TEXT,
-    private_tool_id TEXT,
+    authored_tool_id TEXT,
     principal_id TEXT,
     principal_kind TEXT,
     call_path TEXT NOT NULL,
@@ -252,22 +258,30 @@ CREATE TABLE search_entities_new (
 
     CONSTRAINT search_entities_pk PRIMARY KEY (workspace_id, doc_id),
     CONSTRAINT search_entities_kind_valid
-        CHECK (kind IN ('provider_tool', 'private_tool')),
+        CHECK (kind IN ('provider_tool', 'private_tool', 'shared_tool')),
     CONSTRAINT search_entities_owner_keys_valid CHECK (
         (kind = 'provider_tool'
             AND provider_id IS NOT NULL
             AND provider_generation_id IS NOT NULL
             AND tool_key IS NOT NULL
             AND doc_id = provider_generation_id || ':' || tool_key
-            AND private_tool_id IS NULL
+            AND authored_tool_id IS NULL
             AND principal_id IS NULL
             AND principal_kind IS NULL)
         OR (kind = 'private_tool'
-            AND private_tool_id IS NOT NULL
-            AND doc_id = private_tool_id
+            AND authored_tool_id IS NOT NULL
+            AND doc_id = authored_tool_id
             AND principal_id IS NOT NULL
             AND principal_kind IS NOT NULL
             AND principal_kind IN ('user', 'agent')
+            AND provider_id IS NULL
+            AND provider_generation_id IS NULL
+            AND tool_key IS NULL)
+        OR (kind = 'shared_tool'
+            AND authored_tool_id IS NOT NULL
+            AND doc_id = authored_tool_id
+            AND principal_id IS NULL
+            AND principal_kind IS NULL
             AND provider_id IS NULL
             AND provider_generation_id IS NULL
             AND tool_key IS NULL)
@@ -285,7 +299,7 @@ INSERT INTO search_entities_new (
     provider_id,
     provider_generation_id,
     tool_key,
-    private_tool_id,
+    authored_tool_id,
     principal_id,
     principal_kind,
     call_path,
@@ -388,7 +402,7 @@ CREATE TABLE search_index_states_new (
     provider_id TEXT,
     provider_generation_id TEXT,
     provider_display_name TEXT,
-    private_tool_id TEXT,
+    authored_tool_id TEXT,
     principal_id TEXT,
     principal_kind TEXT,
     state TEXT NOT NULL,
@@ -398,14 +412,14 @@ CREATE TABLE search_index_states_new (
     failed_attempts BIGINT,
     retry_after_unix_nanos BIGINT,
     failed_coral_version TEXT,
-    failed_private_tool_revision BIGINT,
+    failed_authored_tool_revision BIGINT,
     indexer_revision BIGINT,
     ever_visible BOOLEAN,
     unavailable_since_unix_nanos BIGINT,
 
     CONSTRAINT search_index_states_pk PRIMARY KEY (target_id),
     CONSTRAINT search_index_states_kind_valid
-        CHECK (kind IN ('provider_tool', 'private_tool')),
+        CHECK (kind IN ('provider_tool', 'private_tool', 'shared_tool')),
     CONSTRAINT search_index_states_state_valid CHECK (
         (state = 'complete' AND error IS NULL)
         OR (state = 'failed' AND error IS NOT NULL AND error <> '')
@@ -416,16 +430,25 @@ CREATE TABLE search_index_states_new (
             AND provider_generation_id IS NOT NULL
             AND target_id = provider_generation_id
             AND provider_display_name IS NOT NULL
-            AND private_tool_id IS NULL
+            AND authored_tool_id IS NULL
             AND principal_id IS NULL
             AND principal_kind IS NULL)
         OR (kind = 'private_tool'
             AND state = 'failed'
-            AND private_tool_id IS NOT NULL
-            AND target_id = private_tool_id
+            AND authored_tool_id IS NOT NULL
+            AND target_id = authored_tool_id
             AND principal_id IS NOT NULL
             AND principal_kind IS NOT NULL
             AND principal_kind IN ('user', 'agent')
+            AND provider_id IS NULL
+            AND provider_generation_id IS NULL
+            AND provider_display_name IS NULL)
+        OR (kind = 'shared_tool'
+            AND state = 'failed'
+            AND authored_tool_id IS NOT NULL
+            AND target_id = authored_tool_id
+            AND principal_id IS NULL
+            AND principal_kind IS NULL
             AND provider_id IS NULL
             AND provider_generation_id IS NULL
             AND provider_display_name IS NULL)
@@ -443,7 +466,7 @@ INSERT INTO search_index_states_new (
     provider_id,
     provider_generation_id,
     provider_display_name,
-    private_tool_id,
+    authored_tool_id,
     principal_id,
     principal_kind,
     state,
@@ -453,7 +476,7 @@ INSERT INTO search_index_states_new (
     failed_attempts,
     retry_after_unix_nanos,
     failed_coral_version,
-    failed_private_tool_revision,
+    failed_authored_tool_revision,
     indexer_revision,
     ever_visible,
     unavailable_since_unix_nanos

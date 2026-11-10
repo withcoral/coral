@@ -5,6 +5,7 @@ mod discover;
 mod index;
 mod ranking;
 mod retrieval;
+mod shared_tools;
 mod storage;
 
 use coral_outbound::DestinationPolicy;
@@ -336,9 +337,9 @@ async fn queries_match_safe_tool_fields_and_private_tool_declarations() {
             "query {query:?}: guidance and tags appear only where a term matched"
         );
     }
-    let private_tool_results = scope.query(&fixture, "formatForecast").await;
+    let authored_tool_results = scope.query(&fixture, "formatForecast").await;
     assert_eq!(
-        private_tool_results
+        authored_tool_results
             .hits()
             .first()
             .map(|result| result.call_path().as_str()),
@@ -396,7 +397,7 @@ async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state()
     let approval = || async {
         match scope.describe(&fixture, TracerScope::FUNCTION).await {
             Ok(described) => match described.authoring() {
-                AuthoringDescription::PrivateTool(private) => Some(private.approval_requirement()),
+                AuthoringDescription::AuthoredTool(private) => Some(private.approval_requirement()),
                 AuthoringDescription::Tool(_) => panic!("the tracer function is a Private Tool"),
             },
             Err(Error::AuthoringDescriptionNotFound) => None,
@@ -468,7 +469,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
         )
     );
     assert!(declaration.ends_with(", 200, \"application/json\">>;"));
-    assert!(described_tool.private_tool_detail().is_none());
+    assert!(described_tool.authored_tool_detail().is_none());
 
     let described_private_tool = scope
         .describe(&fixture, TracerScope::FUNCTION)
@@ -483,7 +484,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     assert!(declaration.contains("interface Forecast"));
     assert!(!declaration.contains(SAVED_SOURCE_CANARY));
     let editable = described_private_tool
-        .private_tool_detail()
+        .authored_tool_detail()
         .expect("owned Private Tool editable detail");
     assert!(editable.source().as_str().contains(SAVED_SOURCE_CANARY));
     assert_eq!(editable.diagnostics(), scope.saved.diagnostics());
@@ -494,7 +495,7 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
 
     // A Private Tool's description is a Tool Description of the
     // Workspace's Private Provider.
-    let AuthoringDescription::PrivateTool(private) = described_private_tool.authoring() else {
+    let AuthoringDescription::AuthoredTool(private) = described_private_tool.authoring() else {
         panic!("the tracer function is a Private Tool");
     };
     let provider = private_provider(&fixture, &scope).await;
@@ -2333,9 +2334,8 @@ fn describe_requires_one_complete_safe_call_path() {
         "coral.emit.value",
         "coral.providers.weather.bad-segment",
         "coral.private.internal.bad-segment",
-        // Universal Search holds no Shared Tool yet.
         "coral.shared",
-        "coral.shared.internal.formatForecast",
+        "coral.shared.internal.bad-segment",
     ] {
         assert!(CallPath::parse(invalid).is_err(), "accepted {invalid:?}");
     }
@@ -2345,6 +2345,7 @@ fn describe_requires_one_complete_safe_call_path() {
         "coral.weather",
         "coral.private.internal.formatForecast",
         "coral.private.天気.予報",
+        "coral.shared.internal.formatForecast",
     ] {
         assert_eq!(
             CallPath::parse(valid).expect("valid Call Path").as_str(),
@@ -3279,7 +3280,11 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .await;
     }
     // Relevance health never controls exact description, even for a credentialed route.
-    let failing = fixture.failing_search(&[EntityKind::ProviderTool, EntityKind::PrivateTool]);
+    let failing = fixture.failing_search(&[
+        EntityKind::ProviderTool,
+        EntityKind::PrivateTool,
+        EntityKind::SharedTool,
+    ]);
     for actor in [&principal, &agent] {
         assert!(matches!(
             failing
@@ -4092,17 +4097,23 @@ impl TestModules {
             .expect("create Workspace")
             .id()
             .clone();
+        // Every Workspace Coral serves has its Private and Shared Providers.
         let mut transaction = self.search.database.begin().await.unwrap();
-        self.providers
-            .install_coral_defined_in_transaction(
-                &mut transaction,
-                &change(user.clone(), 10, '1'),
-                &workspace_id,
-                coral_provider::CoralDefinedProvider::Private,
-            )
-            .await
-            .expect("install the Private Provider")
-            .skip_search();
+        for provider in [
+            coral_provider::CoralDefinedProvider::Private,
+            coral_provider::CoralDefinedProvider::Shared,
+        ] {
+            self.providers
+                .install_coral_defined_in_transaction(
+                    &mut transaction,
+                    &change(user.clone(), 10, '1'),
+                    &workspace_id,
+                    provider,
+                )
+                .await
+                .expect("install a Provider Coral defines")
+                .skip_search();
+        }
         transaction.commit().await.unwrap();
         workspace_id
     }

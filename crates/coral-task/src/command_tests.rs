@@ -94,7 +94,7 @@ impl Fixture {
             .await?;
         transaction.commit().await?;
         self.index
-            .sync_private_tool(call.workspace_id.clone(), function.id().clone());
+            .sync_authored_tool(call.workspace_id.clone(), function.id().clone());
         Ok(function)
     }
 
@@ -114,7 +114,7 @@ impl Fixture {
             )
             .await?;
         self.index
-            .sync_private_tool(call.workspace_id.clone(), deleted.clone());
+            .sync_authored_tool(call.workspace_id.clone(), deleted.clone());
         Ok(deleted)
     }
 

@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { privateToolPath } from '@/lib/call-root'
+import { privateToolPath, sharedToolPath } from '@/lib/call-root'
 import type {
   Description,
   DiscoveryContext,
+  DiscoveryEntityKind,
   DiscoveryView,
   ToolFacts,
   ToolFlags,
@@ -18,7 +19,7 @@ import type {
  * their schemas. `response.test.ts` checks each key and type here against
  * those snapshots, so change both together.
  */
-const entityKind = z.enum(['provider_tool', 'private_tool'])
+const entityKind = z.enum(['provider_tool', 'private_tool', 'shared_tool'])
 const hints = z.object({
   read_only: z.boolean().optional(),
   destructive: z.boolean().optional(),
@@ -104,6 +105,24 @@ const authoringFields = {
   typescript_declaration: z.string(),
 }
 const position = z.int().min(0).nullable()
+/** What a private tool and a shared tool both state. */
+const authoredToolFields = {
+  ...authoringFields,
+  // Absent when `describe` returned only the types it was asked for.
+  source: z.string().optional(),
+  diagnostics: z
+    .array(
+      z.object({
+        category: z.enum(['message', 'warning', 'error', 'suggestion']),
+        code: z.int().min(0),
+        message: z.string(),
+        line: position,
+        column: position,
+      }),
+    )
+    .optional(),
+  diagnostics_truncated: z.boolean().optional(),
+}
 export const descriptionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('provider_tool'),
@@ -116,24 +135,8 @@ export const descriptionSchema = z.discriminatedUnion('kind', [
     hints,
     approval_required: z.boolean(),
   }),
-  z.object({
-    kind: z.literal('private_tool'),
-    ...authoringFields,
-    // Absent when `describe` returned only the types it was asked for.
-    source: z.string().optional(),
-    diagnostics: z
-      .array(
-        z.object({
-          category: z.enum(['message', 'warning', 'error', 'suggestion']),
-          code: z.int().min(0),
-          message: z.string(),
-          line: position,
-          column: position,
-        }),
-      )
-      .optional(),
-    diagnostics_truncated: z.boolean().optional(),
-  }),
+  z.object({ kind: z.literal('private_tool'), ...authoredToolFields }),
+  z.object({ kind: z.literal('shared_tool'), ...authoredToolFields }),
 ])
 
 function toolFlags(value: {
@@ -158,11 +161,22 @@ function toolFacts(
   return { providerLabel: value.provider_display_name, ...toolFlags(value) }
 }
 /**
- * A Private Tool shows its path. A Tool without a title shows its Call
- * Path until the loader links it to a provider and shortens it.
+ * A Private Tool or a Shared Tool shows its path. A Tool without a title
+ * shows its Call Path until the loader links it to a provider and shortens it.
  */
 function title(value: { call_path: string; title?: string | null }) {
-  return value.title || privateToolPath(value.call_path) || value.call_path
+  return (
+    value.title ||
+    privateToolPath(value.call_path) ||
+    sharedToolPath(value.call_path) ||
+    value.call_path
+  )
+}
+
+/** The Call Path names the kind: its root is `coral.private` or `coral.shared`. */
+function kindOf(callPath: string): DiscoveryEntityKind {
+  if (privateToolPath(callPath) !== null) return 'private_tool'
+  return sharedToolPath(callPath) === null ? 'provider_tool' : 'shared_tool'
 }
 
 function searchCoverage({
@@ -181,11 +195,10 @@ function searchCoverage({
   }
 }
 
-/** The Call Path names the kind: Private Tools live under `coral.private`. */
 function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
   return {
     hits: value.hits.map((hit): SearchHit => {
-      const kind = privateToolPath(hit.call_path) === null ? 'provider_tool' : 'private_tool'
+      const kind = kindOf(hit.call_path)
       return {
         kind,
         callPath: hit.call_path,
@@ -240,8 +253,8 @@ function description(value: z.infer<typeof descriptionSchema>): Description {
       value.kind === 'provider_tool'
         ? { ...toolFacts(value), tags: value.tags, guidance: value.guidance }
         : null,
-    privateTool:
-      value.kind === 'private_tool' && value.source !== undefined
+    authoredTool:
+      value.kind !== 'provider_tool' && value.source !== undefined
         ? {
             source: value.source,
             diagnostics: value.diagnostics ?? [],

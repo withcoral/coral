@@ -19,9 +19,10 @@ use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, NamedCall
 use coral_workspace::{Principal, WorkspaceId};
 use tokio::time::timeout_at;
 
-use crate::linking::{LinkedToolPath, LinkedToolReference};
+use crate::linking::LinkedToolReference;
 use crate::shared_tool::SharedToolPath;
 use crate::tool_typing::{self, ToolDeclarationReader};
+use crate::types::AuthoredToolPath;
 use crate::types::{
     AUTHORED_TOOL_DECLARATION_MAX_BYTES, AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT,
     AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDiagnostic,
@@ -210,7 +211,7 @@ impl Authoring {
     pub(crate) async fn prepare(
         &self,
         workspace_id: &WorkspaceId,
-        path: &LinkedToolPath,
+        path: &AuthoredToolPath,
         source: &str,
         typing: Typing<'_>,
     ) -> Result<PreparedAuthoredTool, Error> {
@@ -233,7 +234,7 @@ impl Authoring {
     async fn declarations(
         &self,
         workspace_id: &WorkspaceId,
-        path: &LinkedToolPath,
+        path: &AuthoredToolPath,
         source: &str,
         typing: Typing<'_>,
         deadline: Instant,
@@ -261,15 +262,15 @@ impl Authoring {
             let private_paths = linked
                 .iter()
                 .filter_map(|reference| match reference.path() {
-                    LinkedToolPath::Private(named) => Some(named),
-                    LinkedToolPath::Shared(_) => None,
+                    AuthoredToolPath::Private(named) => Some(named),
+                    AuthoredToolPath::Shared(_) => None,
                 })
                 .collect::<Vec<_>>();
             let shared_paths = linked
                 .iter()
                 .filter_map(|reference| match reference.path() {
-                    LinkedToolPath::Shared(named) => Some(named),
-                    LinkedToolPath::Private(_) => None,
+                    AuthoredToolPath::Shared(named) => Some(named),
+                    AuthoredToolPath::Private(_) => None,
                 })
                 .collect::<Vec<_>>();
             // A Private Tool that names itself is typed by its current
@@ -289,7 +290,7 @@ impl Authoring {
             } else {
                 let others = shared_paths
                     .into_iter()
-                    .filter(|named| LinkedToolPath::Shared((*named).clone()) != *path)
+                    .filter(|named| AuthoredToolPath::Shared((*named).clone()) != *path)
                     .collect::<Vec<_>>();
                 self.shared_declarations(workspace_id, &others).await
             };
@@ -388,7 +389,7 @@ impl Authoring {
     async fn compile(
         &self,
         deadline: Instant,
-        path: &LinkedToolPath,
+        path: &AuthoredToolPath,
         source: &str,
         declarations: Option<CoralDeclarations>,
     ) -> Result<PreparedAuthoredTool, Error> {
@@ -446,7 +447,7 @@ fn untyped_on_failure(
 /// Tool is at: worded as any path that names no Tool. Authoring looks up no
 /// suggestions.
 pub(crate) fn missing_linked_tool(
-    source: &LinkedToolPath,
+    source: &AuthoredToolPath,
     reference: &LinkedToolReference,
 ) -> Error {
     Error::Admission(

@@ -156,8 +156,8 @@ async fn a_private_tool_described_for_types_leaves_out_its_source() {
     let whole = describe(Vec::new()).await;
     let forecast = describe(vec!["Forecast".to_string()]).await;
 
-    assert!(whole.private_tool_detail().is_some());
-    assert!(forecast.private_tool_detail().is_none());
+    assert!(whole.authored_tool_detail().is_some());
+    assert!(forecast.authored_tool_detail().is_none());
     assert!(
         forecast
             .authoring()

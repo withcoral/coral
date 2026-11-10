@@ -2,7 +2,8 @@
 //! caller can call, so a Program can correct a guessed path without a
 //! separate search. Only Tools of the path's own Call Root are suggested,
 //! and only ones the caller can already discover: under `coral.private`,
-//! the caller's own Private Tools.
+//! the caller's own Private Tools, and under `coral.shared`, the Workspace's
+//! Shared Tools.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -53,8 +54,8 @@ pub(crate) async fn suggestions(
         // The caller's own Private Tools are the Entities under its Private
         // root.
         ProviderCallRoot::Private => EntityKind::PrivateTool,
-        // Universal Search holds no Shared Tool yet (#2981), so none is near.
-        ProviderCallRoot::Shared => return Ok(Vec::new()),
+        // Every Principal of the Workspace discovers its Shared Tools.
+        ProviderCallRoot::Shared => EntityKind::SharedTool,
     };
     let Some(tools) = retrievers.iter().find(|retriever| retriever.kind() == kind) else {
         return Ok(Vec::new());

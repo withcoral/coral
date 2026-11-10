@@ -923,14 +923,18 @@ pub(crate) async fn start_server(
         compiler.clone(),
         runtime_limits.compilation_timeout(),
     );
+    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
             organization: coral_workspace::OrganizationModule::new(database.clone()),
-            provider_readiness: coral_search::UniversalSearchModule::new(
-                database.clone(),
-                workspaces.clone(),
+            // A publish and a removal tell the search index after they commit.
+            shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
+                shared_tools.clone(),
+                search.clone(),
+                search_index.clone(),
             ),
+            provider_readiness: search,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             access_lifecycle: coral_administration::AccessLifecycleModule::new(
                 database.clone(),

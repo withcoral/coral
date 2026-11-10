@@ -32,8 +32,8 @@ use crate::authoring::{
     Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
     tool_paths_overlap, v8_compiler,
 };
-use crate::linking::LinkedToolPath;
 use crate::tool_typing::ToolDeclarationReader;
+use crate::types::AuthoredToolPath;
 use crate::types::{
     AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDescription,
     AuthoredToolDiagnostic, AuthoredToolSource, PrivateToolId, PrivateToolPath, authored_tool_path,
@@ -746,7 +746,10 @@ impl SharedToolModule {
     /// the revision, the Shared Tools it calls and one lifecycle Event
     /// together. The Private Tool it copies stays as it was.
     ///
-    /// This publish does not notify Universal Search.
+    /// This publish does not notify Universal Search: coral-search depends on
+    /// this crate. The composing caller sends the Shared Tool's id to
+    /// `SearchIndex::sync_authored_tool` after the commit, and supplies
+    /// `tools`, as `coral_administration::SharedToolWorkflow` does.
     ///
     /// # Errors
     ///
@@ -804,7 +807,9 @@ impl SharedToolModule {
     /// Tool, checks that no other Shared Tool calls it, then writes the
     /// tombstone and one lifecycle Event together.
     ///
-    /// This removal does not notify Universal Search.
+    /// This removal does not notify Universal Search: the composing caller
+    /// sends the returned id to `SearchIndex::sync_authored_tool` after the
+    /// commit, as `coral_administration::SharedToolWorkflow` does.
     ///
     /// # Errors
     ///
@@ -1019,7 +1024,7 @@ impl SharedToolModule {
             .authoring
             .prepare(
                 workspace_id,
-                &LinkedToolPath::Shared(publish.path.clone()),
+                &AuthoredToolPath::Shared(publish.path.clone()),
                 publish.source.as_str(),
                 Typing {
                     private_tools_of: None,
@@ -1459,10 +1464,10 @@ async fn current_dependencies(
     own_path: &SharedToolPath,
     compiled: &PreparedAuthoredTool,
 ) -> Result<Vec<SharedToolDependency>, Error> {
-    let own = LinkedToolPath::Shared(own_path.clone());
+    let own = AuthoredToolPath::Shared(own_path.clone());
     let mut dependencies = Vec::new();
     for reference in &compiled.linked {
-        let LinkedToolPath::Shared(path) = reference.path() else {
+        let AuthoredToolPath::Shared(path) = reference.path() else {
             continue;
         };
         if path == own_path {

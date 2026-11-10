@@ -7,6 +7,7 @@ mod provisional;
 mod repository;
 mod search_eval;
 mod setup;
+mod shared_tools;
 mod workspaces;
 
 use super::*;

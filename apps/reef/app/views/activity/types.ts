@@ -480,7 +480,7 @@ export type DiscoveryContext =
   | { kind: 'describe'; callPath: string; types: string[] }
   | { kind: 'unknown' }
 /** A kind of Search Entity, as Coral stores it. */
-export type DiscoveryEntityKind = 'provider_tool' | 'private_tool'
+export type DiscoveryEntityKind = 'provider_tool' | 'private_tool' | 'shared_tool'
 /** What a Tool's provider and Workspace policy state about a call. */
 export interface ToolFlags {
   approvalRequired: boolean
@@ -535,7 +535,8 @@ export interface Description {
   description: string
   declaration: string
   tool: (ToolFacts & { tags: string[]; guidance: string | null }) | null
-  privateTool: {
+  /** The source of a private tool or a shared tool, with its diagnostics. */
+  authoredTool: {
     source: string
     diagnostics: DescriptionDiagnostic[]
     diagnosticsTruncated: boolean

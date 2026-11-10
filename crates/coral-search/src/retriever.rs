@@ -8,8 +8,8 @@
 //! of its kind. Every method joins the caller's read snapshot and opens no
 //! connection of its own.
 
+pub(crate) mod authored_tools;
 pub(crate) mod plan;
-pub(crate) mod private_tools;
 mod repository;
 pub(crate) mod tools;
 
@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, LoadedGenerations};
-use coral_tools::PrivateToolSearchMaterial;
+use coral_tools::AuthoredToolSearchMaterial;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceId};
 
 use crate::{
@@ -47,7 +47,7 @@ pub(crate) struct RequestContext<'a> {
 #[derive(Clone)]
 pub(crate) enum EntityRef {
     Tool(ToolRef),
-    PrivateTool(PrivateToolRef),
+    AuthoredTool(AuthoredToolRef),
 }
 
 /// A Tool of a Provider's active Generation, with what hydration needs:
@@ -63,11 +63,12 @@ pub(crate) struct ToolRef {
     near_spellings: Arc<[String]>,
 }
 
-/// A Private Tool of the requesting Principal, with the near-spellings its
-/// ranking matched.
+/// An Authored Tool the requesting Principal can discover, one of its own
+/// Private Tools or a Shared Tool of the Workspace, with the near-spellings
+/// its ranking matched.
 #[derive(Clone)]
-pub(crate) struct PrivateToolRef {
-    material: PrivateToolSearchMaterial,
+pub(crate) struct AuthoredToolRef {
+    material: AuthoredToolSearchMaterial,
     call_path: CallPath,
     near_spellings: Arc<[String]>,
 }
@@ -75,8 +76,8 @@ pub(crate) struct PrivateToolRef {
 /// The Call Path of an entity a retriever ranked, as a span field.
 pub(crate) struct RankedCallPath<'a>(pub(crate) &'a CallPath);
 
-/// The search index holds only the Tools and Private Tools Coral serves,
-/// so a ranked entity's Call Path names one of them.
+/// The search index holds only the Provider, Private and Shared Tools Coral
+/// serves, so a ranked entity's Call Path names one of them.
 impl coral_telemetry::safe::Identifier for RankedCallPath<'_> {}
 
 impl std::fmt::Display for RankedCallPath<'_> {
@@ -89,13 +90,14 @@ impl EntityRef {
     pub(crate) const fn call_path(&self) -> &CallPath {
         match self {
             Self::Tool(tool) => &tool.call_path,
-            Self::PrivateTool(function) => &function.call_path,
+            Self::AuthoredTool(tool) => &tool.call_path,
         }
     }
 }
 
 /// Every Entity of one kind the Principal may see, and how many units they
-/// come from: Providers for Tools, and each Private Tool for itself.
+/// come from: Providers for Tools, and each Private or Shared Tool for
+/// itself.
 pub(crate) struct Listing {
     pub(crate) entities: Vec<EntityRef>,
     pub(crate) units: usize,

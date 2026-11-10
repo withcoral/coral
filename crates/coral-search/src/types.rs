@@ -5,7 +5,7 @@ pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
 use coral_provider::access::ProviderNamespace;
 
-pub use coral_tools::ExactPrivateToolAuthoringMaterial as ExactPrivateToolDetail;
+pub use coral_tools::ExactAuthoredToolAuthoringMaterial as ExactAuthoredToolDetail;
 
 use crate::Error;
 use crate::signature::SignatureLine;
@@ -335,29 +335,25 @@ impl SearchRequest {
     }
 }
 
-/// Complete public JavaScript path for one Tool or Private Tool.
+/// Complete public JavaScript path for one Provider Tool, Private Tool or
+/// Shared Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);
 
 impl CallPath {
-    /// Parses one complete Call Path: a Provider Call Root or `coral.private`
-    /// followed by the relative path.
+    /// Parses one complete Call Path: a Provider Call Root, `coral.private`
+    /// or `coral.shared`, followed by the relative path.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] unless every path member is a safe
     /// JavaScript identifier under `coral` with a root and a relative path.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let shaped = match ProviderCallRoot::split_call_path(value).map(|(root, _relative)| root) {
-            Some(
-                ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin | ProviderCallRoot::Private,
-            ) => true,
-            // Universal Search holds no Shared Tool yet (#2981).
-            Some(ProviderCallRoot::Shared) | None => false,
-        };
-        if !shaped || value.split('.').any(|segment| !safe_path_segment(segment)) {
+        if ProviderCallRoot::split_call_path(value).is_none()
+            || value.split('.').any(|segment| !safe_path_segment(segment))
+        {
             return Err(Error::InvalidInput(
-                "Call Path must be a complete safe JavaScript path under coral, coral.providers or coral.private"
+                "Call Path must be a complete safe JavaScript path under coral, coral.providers, coral.private or coral.shared"
                     .to_string(),
             ));
         }
@@ -368,14 +364,18 @@ impl CallPath {
         Self::parse(&format!("{}.{relative_path}", call_root.as_str()))
     }
 
-    pub(crate) fn private_tool(relative_path: &str) -> Result<Self, Error> {
-        Self::parse(&AuthoredToolKind::Private.call_path(relative_path))
+    pub(crate) fn authored_tool(path: &coral_tools::AuthoredToolPath) -> Result<Self, Error> {
+        Self::parse(&path.call_path())
     }
 
-    /// Returns the path relative to `coral.private`, for a Private Tool's
-    /// Call Path.
-    pub(crate) fn private_tool_path(&self) -> Option<&str> {
-        AuthoredToolKind::Private.relative_path(&self.0)
+    /// Returns the path of the Tool of `kind` this Call Path names, under
+    /// the kind's Call Root. `None` for another kind's Call Path, and for a
+    /// path outside the authoring bounds, which names no Authored Tool.
+    pub(crate) fn authored_tool_path(
+        &self,
+        kind: AuthoredToolKind,
+    ) -> Option<coral_tools::AuthoredToolPath> {
+        coral_tools::AuthoredToolPath::parse(kind, kind.relative_path(&self.0)?).ok()
     }
 
     /// Returns the last segment: the name a signature line calls it by.
@@ -409,6 +409,8 @@ pub enum EntityKind {
     ProviderTool,
     /// One current Principal-owned Private Tool.
     PrivateTool,
+    /// One live Shared Tool of the Workspace.
+    SharedTool,
 }
 
 impl EntityKind {
@@ -417,6 +419,15 @@ impl EntityKind {
         match self {
             Self::ProviderTool => "provider_tool",
             Self::PrivateTool => "private_tool",
+            Self::SharedTool => "shared_tool",
+        }
+    }
+
+    /// The Search Entity kind of an Authored Tool of `kind`.
+    pub(crate) const fn authored(kind: AuthoredToolKind) -> Self {
+        match kind {
+            AuthoredToolKind::Private => Self::PrivateTool,
+            AuthoredToolKind::Shared => Self::SharedTool,
         }
     }
 }
@@ -544,11 +555,13 @@ impl ToolAuthoringDescription {
     }
 }
 
-/// Complete Tool Description of one of the caller's own Private Tools: its
-/// TypeScript authoring contract, its Private Provider, its current revision
-/// and whether a person must approve each call.
+/// Complete Tool Description of one Authored Tool the caller can discover,
+/// one of its own Private Tools or one of the Workspace's Shared Tools: its
+/// TypeScript authoring contract, its kind's Provider, its current revision
+/// and whether a person must approve each call. It names no author.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateToolAuthoringDescription {
+pub struct AuthoredToolAuthoringDescription {
+    kind: AuthoredToolKind,
     call_path: CallPath,
     description: String,
     typescript_declaration: String,
@@ -558,8 +571,13 @@ pub struct PrivateToolAuthoringDescription {
     approval_requirement: ApprovalRequirement,
 }
 
-impl PrivateToolAuthoringDescription {
+impl AuthoredToolAuthoringDescription {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one description is built once, where its retriever describes it"
+    )]
     pub(crate) const fn new(
+        kind: AuthoredToolKind,
         call_path: CallPath,
         description: String,
         typescript_declaration: String,
@@ -569,6 +587,7 @@ impl PrivateToolAuthoringDescription {
         approval_requirement: ApprovalRequirement,
     ) -> Self {
         Self {
+            kind,
             call_path,
             description,
             typescript_declaration,
@@ -579,13 +598,19 @@ impl PrivateToolAuthoringDescription {
         }
     }
 
+    /// Returns whether this is a Private Tool or a Shared Tool.
+    #[must_use]
+    pub const fn kind(&self) -> AuthoredToolKind {
+        self.kind
+    }
+
     /// Returns the complete callable path.
     #[must_use]
     pub const fn call_path(&self) -> &CallPath {
         &self.call_path
     }
 
-    /// Returns the exact explicit Private Tool description.
+    /// Returns the exact explicit description.
     #[must_use]
     pub fn description(&self) -> &str {
         &self.description
@@ -598,19 +623,21 @@ impl PrivateToolAuthoringDescription {
         &self.typescript_declaration
     }
 
-    /// Returns the identity of the Workspace's Private Provider.
+    /// Returns the identity of the kind's Provider in the Workspace: its
+    /// Private Provider or its Shared Provider.
     #[must_use]
     pub const fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
 
-    /// Returns the Private Provider's display name.
+    /// Returns that Provider's display name.
     #[must_use]
     pub fn provider_display_name(&self) -> &str {
         &self.provider_display_name
     }
 
-    /// Returns the current definition revision.
+    /// Returns a Private Tool's definition revision, or a Shared Tool's
+    /// current revision.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
@@ -628,8 +655,9 @@ impl PrivateToolAuthoringDescription {
 pub enum AuthoringDescription {
     /// A visible Tool contract.
     Tool(ToolAuthoringDescription),
-    /// The authenticated Principal's own current Private Tool.
-    PrivateTool(PrivateToolAuthoringDescription),
+    /// The authenticated Principal's own current Private Tool, or a live
+    /// Shared Tool of the Workspace.
+    AuthoredTool(AuthoredToolAuthoringDescription),
 }
 
 impl AuthoringDescription {
@@ -638,7 +666,7 @@ impl AuthoringDescription {
     pub const fn kind(&self) -> EntityKind {
         match self {
             Self::Tool(_) => EntityKind::ProviderTool,
-            Self::PrivateTool(_) => EntityKind::PrivateTool,
+            Self::AuthoredTool(description) => EntityKind::authored(description.kind()),
         }
     }
 
@@ -647,7 +675,7 @@ impl AuthoringDescription {
     pub const fn call_path(&self) -> &CallPath {
         match self {
             Self::Tool(description) => description.call_path(),
-            Self::PrivateTool(description) => description.call_path(),
+            Self::AuthoredTool(description) => description.call_path(),
         }
     }
 
@@ -656,7 +684,7 @@ impl AuthoringDescription {
     pub fn description(&self) -> &str {
         match self {
             Self::Tool(description) => description.description(),
-            Self::PrivateTool(description) => description.description(),
+            Self::AuthoredTool(description) => description.description(),
         }
     }
 
@@ -665,7 +693,7 @@ impl AuthoringDescription {
     pub fn typescript_declaration(&self) -> &str {
         match self {
             Self::Tool(description) => description.typescript_declaration(),
-            Self::PrivateTool(description) => description.typescript_declaration(),
+            Self::AuthoredTool(description) => description.typescript_declaration(),
         }
     }
 }
@@ -800,7 +828,7 @@ impl SearchHit {
         )
     }
 
-    pub(crate) fn from_private_tool(
+    pub(crate) fn from_authored_tool(
         call_path: CallPath,
         text: HitText,
         evidence: SearchEvidence,
@@ -827,11 +855,14 @@ impl SearchHit {
 
     /// Returns the Search Entity kind.
     #[must_use]
-    pub const fn kind(&self) -> EntityKind {
+    pub fn kind(&self) -> EntityKind {
         if self.tool.is_some() {
-            EntityKind::ProviderTool
-        } else {
-            EntityKind::PrivateTool
+            return EntityKind::ProviderTool;
+        }
+        // The Call Path names the kind of an Authored Tool.
+        match AuthoredToolKind::of_call_path(self.call_path.as_str()) {
+            Some(AuthoredToolKind::Shared) => EntityKind::SharedTool,
+            Some(AuthoredToolKind::Private) | None => EntityKind::PrivateTool,
         }
     }
 
@@ -954,7 +985,8 @@ impl RetrieverCoverage {
     }
 
     /// Returns the units the caller may search: visible, ready Providers for
-    /// Tools; the Principal's current Private Tools for functions.
+    /// Tools; each Private or Shared Tool the Principal can discover for
+    /// its own kind.
     #[must_use]
     pub const fn eligible_units(&self) -> u64 {
         self.eligible_units
@@ -1070,38 +1102,38 @@ impl SearchPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactAuthoringDescription {
     authoring: AuthoringDescription,
-    private_tool_detail: Option<ExactPrivateToolDetail>,
+    authored_tool_detail: Option<ExactAuthoredToolDetail>,
 }
 
 impl ExactAuthoringDescription {
     pub(crate) const fn tool(authoring: ToolAuthoringDescription) -> Self {
         Self {
             authoring: AuthoringDescription::Tool(authoring),
-            private_tool_detail: None,
+            authored_tool_detail: None,
         }
     }
 
-    pub(crate) const fn private_tool(
-        authoring: PrivateToolAuthoringDescription,
-        detail: ExactPrivateToolDetail,
+    pub(crate) const fn authored_tool(
+        authoring: AuthoredToolAuthoringDescription,
+        detail: ExactAuthoredToolDetail,
     ) -> Self {
         Self {
-            authoring: AuthoringDescription::PrivateTool(authoring),
-            private_tool_detail: Some(detail),
+            authoring: AuthoringDescription::AuthoredTool(authoring),
+            authored_tool_detail: Some(detail),
         }
     }
 
     /// The same description, with its declaration abridged, or cut to the
-    /// `types` it names. A description cut to `types` leaves out a Private
+    /// `types` it names. A description cut to `types` leaves out an Authored
     /// Tool's source and diagnostics, which the caller already has.
     pub(crate) fn abridge(mut self, types: &[String]) -> Result<Self, crate::Error> {
         if !types.is_empty() {
-            self.private_tool_detail = None;
+            self.authored_tool_detail = None;
         }
         let kind = self.authoring.kind();
         let declaration = match &mut self.authoring {
             AuthoringDescription::Tool(description) => &mut description.typescript_declaration,
-            AuthoringDescription::PrivateTool(description) => {
+            AuthoringDescription::AuthoredTool(description) => {
                 &mut description.typescript_declaration
             }
         };
@@ -1115,10 +1147,11 @@ impl ExactAuthoringDescription {
         &self.authoring
     }
 
-    /// Returns editable Private Tool detail for an exact owned Private Tool.
+    /// Returns the source and stored diagnostics of an exact Private or
+    /// Shared Tool.
     #[must_use]
-    pub const fn private_tool_detail(&self) -> Option<&ExactPrivateToolDetail> {
-        self.private_tool_detail.as_ref()
+    pub const fn authored_tool_detail(&self) -> Option<&ExactAuthoredToolDetail> {
+        self.authored_tool_detail.as_ref()
     }
 }
 

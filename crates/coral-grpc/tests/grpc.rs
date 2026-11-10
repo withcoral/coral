@@ -223,6 +223,13 @@ impl Fixture {
         .unwrap();
         // Search notification tests drive the workflow at its owner.
         let search_index = coral_search::SearchIndex::inert(database.clone());
+        let shared_tools = coral_tools::SharedToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
         let mcp_origin = Arc::new(OnceLock::new());
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let readiness = ready.clone();
@@ -261,13 +268,12 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
-                shared_tools: coral_tools::SharedToolModule::new(
-                    database.clone(),
-                    workspaces.clone(),
-                    coral_tools::IsolateLimits::default(),
-                    coral_test_support::TEST_COMPILATION_TIMEOUT,
-                )
-                .unwrap(),
+                shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
+                    shared_tools.clone(),
+                    coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
+                    search_index.clone(),
+                ),
+                shared_tools,
                 releases,
                 usage: Some(coral_usage::UsageData::new(
                     database.clone(),

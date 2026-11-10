@@ -20,6 +20,11 @@
 //! joins that transaction and returns each one's search change, which the
 //! workflow hands on after the commit.
 //!
+//! [`SharedToolWorkflow`] publishes and removes Shared Tools. Tools owns each
+//! change's transaction. The workflow types a publish from the Tools its
+//! publishing Owner can discover, and hands search the Shared Tool's id after
+//! the commit.
+//!
 //! [`AccessLifecycleModule`] removes Workspace Membership (including self-service
 //! leave), Organization Membership, or an exact Workspace-owned Agent. Callers
 //! submit one command with its change context and target, not a cleanup scope list.
@@ -41,9 +46,11 @@
 //! sufficient to block later dispatch at the Policy Enforcement Point; no
 //! post-commit cleanup is required.
 mod providers;
+mod shared_tools;
 mod workspaces;
 
 pub use providers::ProviderWorkflow;
+pub use shared_tools::SharedToolWorkflow;
 pub use workspaces::WorkspaceWorkflow;
 
 use coral_db::{Database, Transaction};

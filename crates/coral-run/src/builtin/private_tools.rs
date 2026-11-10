@@ -149,7 +149,7 @@ impl SaveTool {
         private_tools
             .inner
             .index
-            .sync_private_tool(host.workspace_id.clone(), private_tool.id().clone());
+            .sync_authored_tool(host.workspace_id.clone(), private_tool.id().clone());
         Ok(result.into_tool_result())
     }
 }
@@ -189,7 +189,7 @@ impl RemoveTool {
         private_tools
             .inner
             .index
-            .sync_private_tool(host.workspace_id.clone(), deleted);
+            .sync_authored_tool(host.workspace_id.clone(), deleted);
         Ok(RemovedToolResult {
             call_path: call_path(&self.path),
         }

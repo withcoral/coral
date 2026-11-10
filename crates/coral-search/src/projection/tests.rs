@@ -109,8 +109,8 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
         ),
         (
             "a Private Tool that matched in its declaration",
-            SearchHit::from_private_tool(
-                CallPath::private_tool("github.openPulls").expect("Call Path"),
+            SearchHit::from_authored_tool(
+                CallPath::parse("coral.private.github.openPulls").expect("Call Path"),
                 text(None, &[]),
                 SearchEvidence::new(vec!["title".into()], vec!["input.repo".into()]),
             ),

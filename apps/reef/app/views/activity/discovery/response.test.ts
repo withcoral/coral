@@ -73,6 +73,57 @@ it('reads the kind of each hit from its Call Path, and an absent flag as unset',
   expect(subIssues.matched.paths).toEqual(['input.per_page'])
 })
 
+// Catches: a shared tool's hit labelled a provider tool, and a shared tool's
+// description shown as raw JSON.
+it('reads a shared tool hit and its description by the kind its Call Path names', () => {
+  const page = discoveryView(
+    search,
+    JSON.stringify({
+      hits: [
+        {
+          call_path: 'coral.shared.mail.remind',
+          signature_line: 'remind(name: string): Promise<{ to: string }>',
+          description_snippet: 'Remind someone',
+        },
+      ],
+      retriever_statuses: [
+        {
+          retriever: 'shared_tool',
+          state: 'partial',
+          coverage: {
+            eligible_units: 2,
+            searched_units: 1,
+            failed_units: 0,
+            returned_count: 1,
+            has_more: false,
+          },
+        },
+      ],
+    }),
+  )
+  if (page.kind !== 'search') throw new Error(`expected a search page, got ${page.kind}`)
+  expect(page.page.hits).toMatchObject([{ kind: 'shared_tool', title: 'mail.remind', tool: null }])
+  expect(page.page.coverage).toMatchObject([{ kind: 'shared_tool', state: 'partial' }])
+
+  const described = discoveryView(
+    { kind: 'describe', callPath: 'coral.shared.mail.remind', types: [] },
+    JSON.stringify({
+      ...JSON.parse(stored.describeFunction),
+      kind: 'shared_tool',
+      call_path: 'coral.shared.mail.remind',
+    }),
+  )
+  if (described.kind !== 'describe')
+    throw new Error(`expected a description, got ${described.kind}`)
+  expect(described.description).toMatchObject({
+    kind: 'shared_tool',
+    title: 'mail.remind',
+    tool: null,
+    authoredTool: { diagnosticsTruncated: false },
+  })
+  expect(described.description.authoredTool?.source).toMatch(/^export default async function/)
+})
+
 it('reads Search Coverage for a kind whose results may be missing', () => {
   const view = discoveryView(search, stored.partial)
   if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
@@ -153,7 +204,7 @@ it('reads a stored Private Tool description with its source and diagnostics', ()
     callPath: 'coral.private.github.openIssuesByLabel',
     title: 'github.openIssuesByLabel',
     tool: null,
-    privateTool: {
+    authoredTool: {
       diagnostics: [
         {
           category: 'error',
@@ -168,7 +219,7 @@ it('reads a stored Private Tool description with its source and diagnostics', ()
     currentHref: null,
   })
   expect(view.description.declaration).toMatch(/^export default function openIssuesByLabel/)
-  expect(view.description.privateTool?.source).toMatch(/^export default async function/)
+  expect(view.description.authoredTool?.source).toMatch(/^export default async function/)
 })
 
 it('reads a Private Tool description returned for types, which has no source', () => {
@@ -180,7 +231,7 @@ it('reads a Private Tool description returned for types, which has no source', (
   } = JSON.parse(stored.describeFunction)
   const view = discoveryView({ ...exact, types: ['Issue'] }, JSON.stringify(typesOnly))
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
-  expect(view.description).toMatchObject({ kind: 'private_tool', privateTool: null })
+  expect(view.description).toMatchObject({ kind: 'private_tool', authoredTool: null })
 })
 
 it('reads a stored Tool description with its provider facts', () => {
@@ -197,7 +248,7 @@ it('reads a stored Tool description with its provider facts', () => {
       tags: ['issues'],
       guidance: 'API method documentation',
     },
-    privateTool: null,
+    authoredTool: null,
   })
 })
 

@@ -5,7 +5,7 @@
 //! reads nothing but those tables. It joins the caller's transaction;
 //! [`crate::SearchIndex`] owns when each transaction begins and ends.
 
-pub(crate) mod private_tools;
+pub(crate) mod authored_tools;
 mod repository;
 mod retry;
 pub(crate) mod tools;
@@ -26,7 +26,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 /// The revision of the indexed text that this indexer writes. Raise it with
-/// each change to the text or columns of a Tool or Private Tool row.
+/// each change to the text or columns of a Tool or Authored Tool row.
 /// A reconcile pass then indexes again what an older indexer revision wrote.
 ///
 /// 1: schema text holds each word once.
@@ -66,9 +66,9 @@ pub(crate) enum IndexError {
     /// Reading the Providers' active Generations or preparing one failed.
     #[error(transparent)]
     Provider(#[from] coral_provider::Error),
-    /// Reading the current Private Tools failed.
+    /// Reading the current Private Tools or Shared Tools failed.
     #[error(transparent)]
-    PrivateTools(#[from] coral_tools::Error),
+    AuthoredTools(#[from] coral_tools::Error),
     /// Database access failed.
     #[error(transparent)]
     Database(#[from] coral_db::Error),
@@ -85,12 +85,12 @@ impl IndexError {
             Self::Clock => "clock",
             Self::Corrupt(_) => "corrupt",
             Self::Provider(_) => "provider",
-            Self::PrivateTools(_) => "private_tools",
+            Self::AuthoredTools(_) => "authored_tools",
             Self::Database(_) => "database",
         }
     }
 
-    /// The kind a failed Generation attempt records. A Private Tool error
+    /// The kind a failed Generation attempt records. An Authored Tool error
     /// never fails a Generation.
     pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
         match self {
@@ -102,7 +102,7 @@ impl IndexError {
             Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
             Self::Provider(_) => Some(SearchIndexFailure::Provider),
             Self::Database(_) => Some(SearchIndexFailure::Database),
-            Self::PrivateTools(_) => None,
+            Self::AuthoredTools(_) => None,
         }
     }
 
@@ -366,6 +366,7 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
 pub(crate) struct ProjectionBacklog {
     pub catalogs: u64,
     pub private_tools: u64,
+    pub shared_tools: u64,
     /// None when a legacy failed row has unknown visibility history.
     pub first_visibility: Option<Vec<coral_catalog::ProviderGenerationId>>,
 }
@@ -373,7 +374,7 @@ pub(crate) struct ProjectionBacklog {
 pub(crate) async fn projection_backlog(
     transaction: &mut Transaction<'_>,
     providers: &[coral_provider::ActiveGeneration],
-    private_tools: &[coral_tools::PrivateToolIndexRevision],
+    authored_tools: &[coral_tools::AuthoredToolIndexRevision],
 ) -> Result<ProjectionBacklog, IndexError> {
     let generations = repository::recorded_generations(transaction)
         .await?
@@ -402,24 +403,29 @@ pub(crate) async fn projection_backlog(
             Some(repository::RecordedVisibility::Visible { .. }) => {}
         }
     }
-    let recorded = repository::recorded_private_tools(transaction)
+    let recorded = repository::recorded_authored_tools(transaction)
         .await?
         .into_iter()
-        .map(|row| (row.private_tool, row.fingerprint))
+        .map(|row| (row.tool, row.fingerprint))
         .collect::<std::collections::HashMap<_, _>>();
-    let missing_private_tools = private_tools
-        .iter()
-        .filter(|entry| {
-            let key = repository::WorkspacePrivateTool {
-                workspace_id: entry.workspace_id().clone(),
-                private_tool_id: entry.id().clone(),
-            };
-            recorded.get(&key) != Some(&repository::private_tool_fingerprint(entry.revision()))
-        })
-        .count();
+    let missing = |kind| {
+        let missing = authored_tools
+            .iter()
+            .filter(|tool| tool.id().kind() == kind)
+            .filter(|tool| {
+                let key = repository::WorkspaceAuthoredTool {
+                    workspace_id: tool.workspace_id().clone(),
+                    id: tool.id().clone(),
+                };
+                recorded.get(&key) != Some(&repository::authored_tool_fingerprint(tool.revision()))
+            })
+            .count();
+        u64::try_from(missing).unwrap_or(u64::MAX)
+    };
     Ok(ProjectionBacklog {
         catalogs,
-        private_tools: u64::try_from(missing_private_tools).unwrap_or(u64::MAX),
+        private_tools: missing(coral_catalog::AuthoredToolKind::Private),
+        shared_tools: missing(coral_catalog::AuthoredToolKind::Shared),
         first_visibility,
     })
 }

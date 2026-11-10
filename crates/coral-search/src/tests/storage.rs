@@ -74,7 +74,12 @@ async fn sqlite_text_index_follows_a_private_tool_removal() {
         .await;
     let doc = saved.id().to_string();
     database
-        .execute(private_tool_row(&tracer.workspace, &doc, Some("user")))
+        .execute(authored_tool_row(
+            &tracer.workspace,
+            &doc,
+            "private_tool",
+            OWNED,
+        ))
         .await
         .expect("insert the Private Tool row");
     assert_eq!(
@@ -95,7 +100,7 @@ async fn sqlite_text_index_follows_a_private_tool_removal() {
     tracer
         .modules
         .index
-        .sync_private_tool(tracer.workspace.clone(), saved.id().clone());
+        .sync_authored_tool(tracer.workspace.clone(), saved.id().clone());
     tracer.modules.index.settled().await;
 
     assert!(
@@ -225,8 +230,11 @@ async fn index_two_rows_before_key_step(
         .expect("index two rows");
 }
 
+// Catches: a Private Tool row without its owner's kind, which no Principal
+// could match, and a Shared Tool row that names a Principal, which would
+// hide a Workspace's Tool behind one owner.
 #[tokio::test]
-async fn private_tool_rows_without_a_principal_kind_fail_their_check() {
+async fn an_authored_tool_row_names_a_principal_only_for_a_private_tool() {
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
     let database = tracer.modules.search.database.clone();
@@ -239,36 +247,39 @@ async fn private_tool_rows_without_a_principal_kind_fail_their_check() {
             40,
         )
         .await;
-    let doc = saved.id().to_string();
+    let private = saved.id().to_string();
+    let shared = format!("{private}-shared");
 
-    for (table, without_kind, with_kind) in [
-        (
-            "search_entities",
-            private_tool_row(&tracer.workspace, &doc, None),
-            private_tool_row(&tracer.workspace, &doc, Some("user")),
-        ),
-        (
-            "search_index_states",
-            failed_private_tool_state(&tracer.workspace, &doc, None),
-            failed_private_tool_state(&tracer.workspace, &doc, Some("user")),
-        ),
+    for (kind, doc, refused, valid) in [
+        ("private_tool", &private, (Some(USER), None), OWNED),
+        ("shared_tool", &shared, OWNED, (None, None)),
     ] {
-        let error = database
-            .execute(without_kind)
-            .await
-            .expect_err("a Private Tool row needs its Principal kind");
-        assert!(
-            matches!(
-                &error,
-                coral_db::Error::Sqlx(sqlx::Error::Database(error))
-                    if error.kind() == sqlx::error::ErrorKind::CheckViolation
+        for (table, row) in [
+            (
+                "search_entities",
+                authored_tool_row as fn(&WorkspaceId, &str, &str, Owner) -> InsertStatement,
             ),
-            "{table}: expected a check violation, got {error}"
-        );
-        database
-            .execute(with_kind)
-            .await
-            .unwrap_or_else(|error| panic!("{table}: the same row with a kind is valid: {error}"));
+            ("search_index_states", failed_authored_tool_state),
+        ] {
+            let error = database
+                .execute(row(&tracer.workspace, doc, kind, refused))
+                .await
+                .expect_err("the row names the wrong owner for its kind");
+            assert!(
+                matches!(
+                    &error,
+                    coral_db::Error::Sqlx(sqlx::Error::Database(error))
+                        if error.kind() == sqlx::error::ErrorKind::CheckViolation
+                ),
+                "{table}, {kind}: expected a check violation, got {error}"
+            );
+            database
+                .execute(row(&tracer.workspace, doc, kind, valid))
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("{table}, {kind}: the row with its kind's owner is valid: {error}")
+                });
+        }
     }
 }
 
@@ -659,10 +670,18 @@ impl Tracer {
     }
 }
 
-fn private_tool_row(
+/// The Principal id and kind a row names: both for a Private Tool's owner,
+/// neither for a Shared Tool.
+type Owner = (Option<&'static str>, Option<&'static str>);
+
+/// The owner a Private Tool's row names.
+const OWNED: Owner = (Some(USER), Some("user"));
+
+fn authored_tool_row(
     workspace: &WorkspaceId,
     doc: &str,
-    principal_kind: Option<&str>,
+    kind: &str,
+    owner: Owner,
 ) -> InsertStatement {
     Query::insert()
         .into_table(Alias::new("search_entities"))
@@ -670,13 +689,13 @@ fn private_tool_row(
         .values_panic([
             workspace.to_string().into(),
             doc.into(),
-            "private_tool".into(),
+            kind.into(),
             Option::<String>::None.into(),
             Option::<String>::None.into(),
             Option::<String>::None.into(),
             Some(doc.to_string()).into(),
-            Some(USER.to_string()).into(),
-            principal_kind.map(str::to_string).into(),
+            owner.0.map(str::to_string).into(),
+            owner.1.map(str::to_string).into(),
             "coral.private.internal.formatForecast".into(),
             "internal.formatForecast".into(),
             "".into(),
@@ -690,10 +709,11 @@ fn private_tool_row(
         .to_owned()
 }
 
-fn failed_private_tool_state(
+fn failed_authored_tool_state(
     workspace: &WorkspaceId,
     doc: &str,
-    principal_kind: Option<&str>,
+    kind: &str,
+    owner: Owner,
 ) -> InsertStatement {
     Query::insert()
         .into_table(Alias::new("search_index_states"))
@@ -702,7 +722,7 @@ fn failed_private_tool_state(
                 "workspace_id",
                 "target_id",
                 "kind",
-                "private_tool_id",
+                "authored_tool_id",
                 "principal_id",
                 "principal_kind",
                 "state",
@@ -714,10 +734,10 @@ fn failed_private_tool_state(
         .values_panic([
             workspace.to_string().into(),
             doc.into(),
-            "private_tool".into(),
+            kind.into(),
             Some(doc.to_string()).into(),
-            Some(USER.to_string()).into(),
-            principal_kind.map(str::to_string).into(),
+            owner.0.map(str::to_string).into(),
+            owner.1.map(str::to_string).into(),
             "failed".into(),
             1_i64.into(),
             Some("indexing failed".to_string()).into(),
@@ -733,7 +753,7 @@ fn row_columns() -> [Alias; 18] {
         "provider_id",
         "provider_generation_id",
         "tool_key",
-        "private_tool_id",
+        "authored_tool_id",
         "principal_id",
         "principal_kind",
         "call_path",

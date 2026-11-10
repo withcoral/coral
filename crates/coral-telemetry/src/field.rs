@@ -58,6 +58,9 @@ const CORAL: &[&str] = &[
     // The Private Tool and its Call Path.
     "coral.private_tool.id",
     "coral.private_tool.call_path",
+    // The Shared Tool and its Call Path.
+    "coral.shared_tool.id",
+    "coral.shared_tool.call_path",
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
     // A Run Executor's protocol level and its peer's, when a link refuses
@@ -83,6 +86,8 @@ const CORAL: &[&str] = &[
     "coral.search.reconcile.generations_failed",
     "coral.search.reconcile.private_tools_indexed",
     "coral.search.reconcile.private_tools_failed",
+    "coral.search.reconcile.shared_tools_indexed",
+    "coral.search.reconcile.shared_tools_failed",
     "coral.search.reconcile.workspaces_checked",
     "coral.search.reconcile.workspaces_recounted",
     "coral.search.reconcile.rows_written",

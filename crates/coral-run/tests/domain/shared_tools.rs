@@ -20,6 +20,10 @@ struct SharedScope {
     agent: AuthenticatedPrincipal,
     private_tools: PrivateToolModule,
     shared_tools: SharedToolModule,
+    /// The workflow Reef publishes and removes through, which notifies
+    /// Universal Search after each commit.
+    workflow: coral_administration::SharedToolWorkflow,
+    index: coral_search::SearchIndex,
 }
 
 impl SharedScope {
@@ -43,11 +47,23 @@ impl SharedScope {
             scope.fixture.database.clone(),
             Duration::from_secs(3_600),
         );
-        scope.fixture.runs = scope
-            .fixture
-            .runs
-            .clone()
-            .with_private_tools(crate::PrivateTools::new(private_tools.clone(), index));
+        scope.fixture.runs =
+            scope
+                .fixture
+                .runs
+                .clone()
+                .with_private_tools(crate::PrivateTools::new(
+                    private_tools.clone(),
+                    index.clone(),
+                ));
+        let workflow = coral_administration::SharedToolWorkflow::new(
+            shared_tools.clone(),
+            coral_search::UniversalSearchModule::new(
+                scope.fixture.database.clone(),
+                scope.fixture.workspaces.clone(),
+            ),
+            index.clone(),
+        );
         let member_user = organization_user(
             scope.fixture.database.clone(),
             &format!("{user}-member"),
@@ -72,6 +88,8 @@ impl SharedScope {
             agent,
             private_tools,
             shared_tools,
+            workflow,
+            index,
             scope,
         }
     }
@@ -97,33 +115,33 @@ impl SharedScope {
     }
 
     /// Publishes `source` at `coral.shared.mail.remind` as the Owner, from
-    /// the Owner's Private Tool `draft`, expecting `expected_revision`.
+    /// the Owner's Private Tool `draft`, expecting `expected_revision`, as
+    /// Reef does: Universal Search hears of it after the commit.
     async fn publish(&self, source: &str, default: ToolAccessState, expected_revision: u64) {
-        self.shared_tools
-            .publish(
-                &change(self.scope.owner_user(), 70, '6'),
-                &self.scope.workspace_id,
-                SharedToolPublish::new(
-                    SharedToolPath::parse("mail.remind").expect("a path"),
-                    SharedToolOrigin::PrivateTool {
-                        owner: self.scope.owner.principal().clone(),
-                        path: PrivateToolPath::parse("draft").expect("a path"),
-                    },
-                    AuthoredToolDescription::parse("Remind someone").expect("a description"),
-                    AuthoredToolSource::parse(source).expect("a source"),
-                    default,
-                    expected_revision,
-                ),
-                None,
-            )
-            .await
-            .expect("publish the Shared Tool");
+        let publish = SharedToolPublish::new(
+            SharedToolPath::parse("mail.remind").expect("a path"),
+            SharedToolOrigin::PrivateTool {
+                owner: self.scope.owner.principal().clone(),
+                path: PrivateToolPath::parse("draft").expect("a path"),
+            },
+            AuthoredToolDescription::parse("Remind someone").expect("a description"),
+            AuthoredToolSource::parse(source).expect("a source"),
+            default,
+            expected_revision,
+        );
+        Box::pin(self.workflow.publish(
+            &change(self.scope.owner_user(), 70, '6'),
+            &self.scope.workspace_id,
+            publish,
+        ))
+        .await
+        .expect("publish the Shared Tool");
     }
 
     /// Removes `coral.shared.mail.remind` as the Owner, at its revision
-    /// `expected_revision`.
+    /// `expected_revision`, as Reef does.
     async fn remove(&self, expected_revision: u64) {
-        self.shared_tools
+        self.workflow
             .remove(
                 &change(self.scope.owner_user(), 71, '6'),
                 &self.scope.workspace_id,
@@ -574,6 +592,79 @@ async fn a_run_accepted_before_a_removal_still_runs_the_revision_it_linked() {
         shared.linked(&shared.member, &run).await,
         [("mail.remind".to_string(), 1)]
     );
+}
+
+// Catches: a publish or a removal that a Program's `coral.search` does not
+// follow: a Shared Tool that a Member or an Agent cannot find or describe,
+// a description that names its publisher or lacks the source and the current
+// revision, and a removed Shared Tool that search still returns or describes.
+// Ranking, visibility and policy are tested at their owner, coral-search.
+#[tokio::test]
+async fn every_principal_finds_and_describes_a_shared_tool_until_it_is_removed() {
+    let shared = SharedScope::new("user:shared-search").await;
+    let owner = shared.scope.owner.clone();
+    shared
+        .save_private(&owner, "contacts.find", &contacts("owner"))
+        .await;
+    shared.save_private(&owner, "draft", REMIND_SOURCE).await;
+    shared
+        .publish(REMIND_SOURCE, ToolAccessState::Enabled, 0)
+        .await;
+    shared.index.settled().await;
+    let callers = [
+        ("member", shared.member.clone()),
+        ("agent", shared.agent.clone()),
+    ];
+    let search = "const [found, exact] = await Promise.all([
+        coral.search({ query: 'remind someone' }),
+        coral.search({ paths: ['coral.shared.mail.remind'] }),
+    ]);
+    return {
+        hits: found.data.hits.map((hit) => hit.call_path),
+        descriptions: exact.data.descriptions,
+        missing: exact.data.missing.map((missing) => missing.call_path),
+    };";
+
+    for (name, caller) in &callers {
+        let (_run, found) = shared.run(caller, search).await;
+        assert_eq!(
+            found.pointer("/hits"),
+            Some(&json!([REMIND])),
+            "{name}: {found}"
+        );
+        let Some([described]) = found
+            .pointer("/descriptions")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+        else {
+            panic!("{name}: one description in {found}");
+        };
+        for (field, expected) in [
+            ("/kind", json!("shared_tool")),
+            ("/call_path", json!(REMIND)),
+            ("/source", json!(REMIND_SOURCE)),
+            ("/revision", json!(1)),
+        ] {
+            assert_eq!(described.pointer(field), Some(&expected), "{name}: {field}");
+        }
+        // The publisher is attribution only: no description carries it.
+        let publisher = owner.principal().id().as_str();
+        assert!(
+            !described.to_string().contains(publisher),
+            "{name}: {described}"
+        );
+    }
+
+    shared.remove(1).await;
+    shared.index.settled().await;
+    for (name, caller) in &callers {
+        let (_run, found) = shared.run(caller, search).await;
+        assert_eq!(
+            found,
+            json!({ "hits": [], "descriptions": [], "missing": [REMIND] }),
+            "{name}"
+        );
+    }
 }
 
 // Catches: a Shared Tool that ignores the default its publishing Owner

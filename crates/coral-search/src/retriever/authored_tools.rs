@@ -1,48 +1,63 @@
-//! The Private Tool retriever: the requesting Principal's own Private
-//! Tools, ranked inside the database.
+//! The Authored Tool retriever: one kind of Authored Tool the requesting
+//! Principal can discover, ranked inside the database. Universal Search
+//! runs one for the Principal's own Private Tools and one for the
+//! Workspace's Shared Tools.
 //!
-//! coral-tools decides that a Private Tool is visible to its owner
-//! only; the statement holds that as a condition on the row's own Principal
-//! columns.
+//! coral-tools decides who discovers an Authored Tool: a Private Tool is
+//! visible to its owner only, and a live Shared Tool to every Principal of
+//! its Workspace. The statement holds the first as a condition on the row's
+//! own Principal columns; a Shared Tool's row names no Principal.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coral_catalog::AuthoredToolKind;
 use coral_db::Transaction;
 use coral_telemetry::safe;
-use coral_tools::PrivateToolSearchMaterial;
+use coral_tools::AuthoredToolSearchMaterial;
 
 use super::plan::QueryPlan;
 use super::repository;
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, Listing, PrivateToolRef, QueryError,
+    Answer, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, Listing, QueryError,
     QueryRequest, RequestContext, WindowEntry, count,
 };
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
-    ApprovalRequirement, CallPath, EntityKind, Error, ExactAuthoringDescription,
-    PrivateToolAuthoringDescription, ProviderCallRoot, RetrieverCoverage, SearchEvidence,
-    SearchHit,
+    ApprovalRequirement, AuthoredToolAuthoringDescription, CallPath, EntityKind, Error,
+    ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage, SearchEvidence, SearchHit,
 };
 
-/// Ranks, hydrates, and describes Private Tools.
-#[derive(Debug, Default)]
-pub(crate) struct PrivateToolRetriever {
+/// Ranks, hydrates, and describes the Authored Tools of one kind.
+#[derive(Debug)]
+pub(crate) struct AuthoredToolRetriever {
+    pub(crate) kind: AuthoredToolKind,
     /// Makes the ranked statement fail, for tests of a retriever error.
     #[cfg(test)]
     pub(crate) fail_ranking: bool,
 }
 
+impl AuthoredToolRetriever {
+    /// The retriever of the Authored Tools of `kind`.
+    pub(crate) const fn new(kind: AuthoredToolKind) -> Self {
+        Self {
+            kind,
+            #[cfg(test)]
+            fail_ranking: false,
+        }
+    }
+}
+
 #[async_trait]
-impl EntityRetriever for PrivateToolRetriever {
+impl EntityRetriever for AuthoredToolRetriever {
     fn kind(&self) -> EntityKind {
-        EntityKind::PrivateTool
+        EntityKind::authored(self.kind)
     }
 
-    // TODO: a Provider filter could keep only the Private Tools that call
+    // TODO: a Provider filter could keep only the Authored Tools that call
     // the named Providers. Until then the filter narrows Tools only.
     async fn list(
         &self,
@@ -50,10 +65,11 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         _provider_filter: &ProviderFilter,
     ) -> Result<Listing, Error> {
-        let entities = current_private_tools(transaction, context)
+        let entities = self
+            .current(transaction, context)
             .await?
             .into_iter()
-            .map(private_tool_ref)
+            .map(authored_tool_ref)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Listing {
             units: entities.len(),
@@ -67,27 +83,28 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         request: &QueryRequest<'_>,
     ) -> Result<Answer, QueryError> {
-        let private_tools = current_private_tools(transaction, context)
+        let current = self
+            .current(transaction, context)
             .await?
             .into_iter()
-            .map(|private_tool| (private_tool.id().clone(), private_tool))
+            .map(|tool| (tool.id().clone(), tool))
             .collect::<HashMap<_, _>>();
         let Some(plan) = QueryPlan::build(request.terms) else {
             // No term can select anything, so no unit waits on the index.
-            let eligible = count(private_tools.len());
+            let eligible = count(current.len());
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
             });
         };
-        let indexed = repository::indexed_private_tools(
-            transaction,
-            context.workspace_id,
-            context.actor.principal(),
-        )
-        .await
-        .map_err(QueryError::retrieval)?;
-        let searched = private_tools
+        let scope = repository::AuthoredToolScope {
+            kind: self.kind,
+            principal: context.actor.principal(),
+        };
+        let indexed = repository::indexed_authored_tools(transaction, context.workspace_id, scope)
+            .await
+            .map_err(QueryError::retrieval)?;
+        let searched = current
             .keys()
             .filter(|id| indexed.contains(&id.to_string()))
             .count();
@@ -100,10 +117,10 @@ impl EntityRetriever for PrivateToolRetriever {
         }
 
         let ranked = if searched > 0 {
-            repository::rank_private_tools(
+            repository::rank_authored_tools(
                 transaction,
                 context.workspace_id,
-                context.actor.principal(),
+                scope,
                 &plan,
                 request.window + 1,
             )
@@ -118,24 +135,24 @@ impl EntityRetriever for PrivateToolRetriever {
         let has_more = ranked.entities.len() > request.window;
         let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
-        for private_tool in ranked.entities.into_iter().take(request.window) {
-            // A function's delete leaves its row for a later write, so only
-            // what the owner holds now may answer.
-            let Some(material) = private_tools.get(&private_tool.private_tool_id) else {
+        for ranked in ranked.entities.into_iter().take(request.window) {
+            // A delete or a removal leaves the Tool's row for a later
+            // write, so only what the caller discovers now may answer.
+            let Some(material) = current.get(&ranked.id) else {
                 continue;
             };
             window.push(WindowEntry {
-                entity: EntityRef::PrivateTool(PrivateToolRef {
+                entity: EntityRef::AuthoredTool(AuthoredToolRef {
                     material: material.clone(),
-                    call_path: private_tool.call_path,
+                    call_path: ranked.call_path,
                     near_spellings: Arc::clone(&near_spellings),
                 }),
-                strong: strong_private_tool(&plan, &private_tool.matched),
+                strong: strong_authored_tool(&plan, &ranked.matched),
             });
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
-                count(private_tools.len()),
+                count(current.len()),
                 count(searched),
                 count(window.len()),
                 has_more,
@@ -150,69 +167,73 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         entity: &EntityRef,
     ) -> Result<Hydrated, Error> {
-        let EntityRef::PrivateTool(private_tool) = entity else {
+        let EntityRef::AuthoredTool(tool) = entity else {
             return Ok(Hydrated::Dropped);
         };
-        let material = match coral_tools::hydrate_private_tool_search_material_in_transaction(
+        if tool.material.id().kind() != self.kind {
+            return Ok(Hydrated::Dropped);
+        }
+        let material = match coral_tools::hydrate_authored_tool_search_material_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
-            &private_tool.material,
+            &tool.material,
         )
         .await
         {
             Ok(Some(material)) => material,
             Ok(None) => return Ok(Hydrated::Dropped),
-            // A corrupt function leaves the page; the others stay.
+            // A corrupt Tool leaves the page; the others stay.
             Err(coral_tools::Error::CorruptData(_)) => return Ok(Hydrated::Unreadable),
             Err(error) => return Err(error.into()),
         };
         let hit_material = HitMaterial {
             declaration: material.declaration().as_str(),
-            callable: Callable::PrivateTool {
-                leaf: private_tool.call_path.leaf(),
+            callable: Callable::AuthoredTool {
+                leaf: tool.call_path.leaf(),
             },
             description: material.description().as_str(),
             guidance: None,
             tags: &[],
         };
         let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_private_tool(
-                private_tool.call_path.clone(),
+            return Ok(Hydrated::Hit(Box::new(SearchHit::from_authored_tool(
+                tool.call_path.clone(),
                 hit_text(&hit_material, None),
                 SearchEvidence::default(),
             ))));
         };
-        let terms = EvidenceTerms::new(terms, &private_tool.near_spellings);
+        let terms = EvidenceTerms::new(terms, &tool.near_spellings);
         let mut evidence = EvidenceBuilder::new(&terms);
         evidence
-            .field("call_path", [private_tool.call_path.as_str()])
+            .field("call_path", [tool.call_path.as_str()])
             .field("description", [hit_material.description]);
-        let declaration = coral_tools::private_tool_declaration_search_material_in_transaction(
+        let declaration_fields = coral_tools::authored_tool_declaration_fields_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
-            private_tool.material.path(),
+            tool.material.path(),
         )
         .await?;
-        for field in declaration
-            .as_ref()
-            .and_then(coral_tools::PrivateToolDeclarationSearchMaterial::declaration_fields)
-            .unwrap_or_default()
-        {
+        for field in &declaration_fields {
             evidence.path(field.path(), field.text());
         }
         let Some(matched) = evidence.build() else {
+            let ranked = super::RankedCallPath(&tool.call_path);
+            let (private, shared) = match self.kind {
+                AuthoredToolKind::Private => (Some(&ranked), None),
+                AuthoredToolKind::Shared => (None, Some(&ranked)),
+            };
             tracing::debug!(
-                coral.private_tool.call_path =
-                    safe::id(&super::RankedCallPath(&private_tool.call_path)),
-                "a ranked Private Tool has no evidence and leaves the page"
+                coral.private_tool.call_path = private.map(safe::id),
+                coral.shared_tool.call_path = shared.map(safe::id),
+                "a ranked Authored Tool has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);
         };
         let text = hit_text(&hit_material, Some((&terms, &matched)));
-        Ok(Hydrated::Hit(Box::new(SearchHit::from_private_tool(
-            private_tool.call_path.clone(),
+        Ok(Hydrated::Hit(Box::new(SearchHit::from_authored_tool(
+            tool.call_path.clone(),
             text,
             matched.evidence,
         ))))
@@ -224,13 +245,10 @@ impl EntityRetriever for PrivateToolRetriever {
         context: RequestContext<'_>,
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
-        let Some(path) = call_path
-            .private_tool_path()
-            .and_then(|relative| coral_tools::PrivateToolPath::parse(relative).ok())
-        else {
+        let Some(path) = call_path.authored_tool_path(self.kind) else {
             return Ok(None);
         };
-        let Some(exact) = coral_tools::exact_private_tool_description_in_transaction(
+        let Some(exact) = coral_tools::exact_authored_tool_description_in_transaction(
             transaction,
             context.workspace_id,
             context.actor.principal(),
@@ -240,7 +258,7 @@ impl EntityRetriever for PrivateToolRetriever {
         else {
             return Ok(None);
         };
-        let Some(policy) = PrivateToolPolicy::load(transaction, context).await? else {
+        let Some(policy) = AuthoredToolPolicy::load(transaction, context, self.kind).await? else {
             return Ok(None);
         };
         // A disabled Tool leaves describe, as a disabled Provider Tool does.
@@ -250,8 +268,9 @@ impl EntityRetriever for PrivateToolRetriever {
                 coral_policy::ToolAccessState::ApprovalRequired => ApprovalRequirement::Required,
                 coral_policy::ToolAccessState::Disabled => return Ok(None),
             };
-        Ok(Some(ExactAuthoringDescription::private_tool(
-            PrivateToolAuthoringDescription::new(
+        Ok(Some(ExactAuthoringDescription::authored_tool(
+            AuthoredToolAuthoringDescription::new(
+                self.kind,
                 call_path.clone(),
                 exact.authoring().description().as_str().to_string(),
                 exact.authoring().declaration().as_str().to_string(),
@@ -265,94 +284,104 @@ impl EntityRetriever for PrivateToolRetriever {
     }
 }
 
-/// Whether a ranked Private Tool is a strong match, by its retriever's own
+impl AuthoredToolRetriever {
+    /// The Authored Tools of this kind that the Principal can discover and
+    /// that policy lets it call: none while the kind's Provider is
+    /// disabled, and none that policy disables. Reads no source or
+    /// declaration.
+    async fn current(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+    ) -> Result<Vec<AuthoredToolSearchMaterial>, Error> {
+        let Some(policy) = AuthoredToolPolicy::load(transaction, context, self.kind).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(coral_tools::authored_tool_search_material_in_transaction(
+            transaction,
+            context.workspace_id,
+            context.actor.principal(),
+            self.kind,
+        )
+        .await?
+        .into_iter()
+        .filter(|tool| {
+            policy.access_state(tool.id(), tool.default_access_state())
+                != coral_policy::ToolAccessState::Disabled
+        })
+        .collect())
+    }
+}
+
+/// Whether a ranked Authored Tool is a strong match, by its retriever's own
 /// rule: a field holds the query's words in order, or a word of its path
 /// starts with a content word of the query. One that shares only description
 /// words with the query is weak, so it follows every strong Tool.
-fn strong_private_tool(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
+fn strong_authored_tool(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
     matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
 }
 
-/// How the caller's own Private Tools are decided, read once per request:
-/// the Workspace's active Private Provider, the Owners' exact rules, and
-/// whether they apply to the caller's Private Tools.
-struct PrivateToolPolicy {
+/// How the Authored Tools of one kind are decided for the caller, read once
+/// per request: the Workspace's active Provider of the kind, the Owners'
+/// exact rules, and the caller's standing, which decides whether a rule
+/// applies to its own Private Tools.
+struct AuthoredToolPolicy {
+    kind: AuthoredToolKind,
     provider: coral_provider::Provider,
     rules: coral_policy::ExactToolRules,
-    owner: coral_policy::PrivateToolOwner,
+    caller: coral_policy::PrivateToolOwner,
 }
 
-impl PrivateToolPolicy {
-    /// `None` while an Owner disables the Private Provider, which stops
-    /// every Private Tool. Coral installs it in every Workspace before it
-    /// serves requests.
+impl AuthoredToolPolicy {
+    /// `None` while an Owner disables the kind's Provider, which stops
+    /// every Tool of the kind. Coral installs it in every Workspace before
+    /// it serves requests.
     async fn load(
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
+        kind: AuthoredToolKind,
     ) -> Result<Option<Self>, Error> {
         let Some(provider) = coral_provider::authored_tool_provider_in_transaction(
             transaction,
             context.workspace_id,
-            coral_catalog::AuthoredToolKind::Private,
+            kind,
         )
         .await?
         .filter(|provider| provider.state() == coral_provider::ProviderState::Active) else {
             return Ok(None);
         };
         Ok(Some(Self {
+            kind,
             provider,
             rules: coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id)
                 .await?,
-            owner: coral_policy::PrivateToolOwner::of(
+            caller: coral_policy::PrivateToolOwner::of(
                 context.actor.principal().kind(),
                 context.authority.effective_user_role(),
             ),
         }))
     }
 
-    /// The decision for the caller's Private Tool `id`, whose author
-    /// declared `declared`.
+    /// The decision for the Authored Tool `id`, whose current revision
+    /// declares `declared`.
     fn access_state(
         &self,
-        id: &coral_tools::PrivateToolId,
+        id: &coral_tools::AuthoredToolId,
         declared: coral_policy::ToolAccessState,
     ) -> coral_policy::ToolAccessState {
-        self.rules.private_tool_access_state(
+        self.rules.authored_tool_access_state(
             self.provider.id(),
             &id.tool_key(),
+            self.kind,
             declared,
-            self.owner,
+            self.caller,
         )
     }
 }
 
-/// The Principal's current Private Tools that policy lets it call: none
-/// while the Private Provider is disabled, and none that policy disables.
-/// Reads no source or declaration.
-async fn current_private_tools(
-    transaction: &mut Transaction<'_>,
-    context: RequestContext<'_>,
-) -> Result<Vec<PrivateToolSearchMaterial>, Error> {
-    let Some(policy) = PrivateToolPolicy::load(transaction, context).await? else {
-        return Ok(Vec::new());
-    };
-    Ok(coral_tools::private_tool_search_material_in_transaction(
-        transaction,
-        context.workspace_id,
-        context.actor.principal(),
-    )
-    .await?
-    .into_iter()
-    .filter(|private_tool| {
-        policy.access_state(private_tool.id(), private_tool.default_access_state())
-            != coral_policy::ToolAccessState::Disabled
-    })
-    .collect())
-}
-
-fn private_tool_ref(material: PrivateToolSearchMaterial) -> Result<EntityRef, Error> {
-    Ok(EntityRef::PrivateTool(PrivateToolRef {
-        call_path: CallPath::private_tool(material.path().as_str())?,
+fn authored_tool_ref(material: AuthoredToolSearchMaterial) -> Result<EntityRef, Error> {
+    Ok(EntityRef::AuthoredTool(AuthoredToolRef {
+        call_path: CallPath::authored_tool(material.path())?,
         material,
         near_spellings: Arc::new([]),
     }))

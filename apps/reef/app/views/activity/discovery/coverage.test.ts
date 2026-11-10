@@ -14,6 +14,10 @@ it.each([
     row('private_tool', 'results_found', { returned: 1, hasMore: true }),
     ['Private tools', '1+ found', 'success', null],
   ],
+  [
+    row('shared_tool', 'results_found', { returned: 2 }),
+    ['Shared tools', '2 found', 'success', null],
+  ],
   [row('provider_tool', 'empty'), ['Tools', 'none match', 'neutral', null]],
   [
     row('private_tool', 'empty', { eligible: 0, searched: 0 }),
@@ -31,6 +35,10 @@ it.each([
   [
     row('private_tool', 'partial', { searched: 1, failed: 2 }),
     ['Private tools', '2 of 3 private tools failed', 'warning', 'Results may be missing.'],
+  ],
+  [
+    row('shared_tool', 'partial', { searched: 2, failed: 1 }),
+    ['Shared tools', '1 of 3 shared tools failed', 'warning', 'Results may be missing.'],
   ],
   [
     row('provider_tool', 'partial', { searched: 2 }),

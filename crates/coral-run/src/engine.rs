@@ -31,7 +31,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_catalog::AuthoredToolKind;
 use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
-use coral_tools::{LinkedToolPath, LinkedToolReference, LinkedToolSelection};
+use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 
 use crate::execution::ExecutionStop;
@@ -77,7 +77,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
     fn linked_tool_references(
         &self,
         _deadline: Instant,
-        _path: &LinkedToolPath,
+        _path: &AuthoredToolPath,
         _source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         Ok(ProgramReferences::default())
@@ -195,7 +195,7 @@ impl ProgramEngine for V8ProgramEngine {
     fn linked_tool_references(
         &self,
         deadline: Instant,
-        path: &LinkedToolPath,
+        path: &AuthoredToolPath,
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         let source_name = path.source_name();

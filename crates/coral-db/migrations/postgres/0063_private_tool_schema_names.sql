@@ -4,6 +4,12 @@
 -- `saved_function.*`, the declaration fields format, and the Search Entity
 -- and search state kind `saved_function`. Each is now `private_tool`.
 --
+-- Universal Search indexes Shared Tools beside Private Tools, so the search
+-- tables name what the two kinds share: the Search Entity and search state
+-- kind `shared_tool` joins `private_tool`, and one `authored_tool_id` column
+-- holds the identity of either. Only a Private Tool's row names a Principal.
+-- Neither table references a Private or Shared Tool's own tables (ADR 0017).
+--
 -- Each Private Tool keeps its path, source, declaration, diagnostics and
 -- revision, and gains the Tool Access State that applies when no exact rule
 -- matches it: every existing row is `enabled`.
@@ -77,59 +83,76 @@ ALTER TABLE program_run_private_tool_snapshots RENAME CONSTRAINT program_run_sav
 ALTER TABLE program_run_private_tool_snapshots RENAME CONSTRAINT program_run_saved_function_snapshots_path_not_empty TO program_run_private_tool_snapshots_path_not_empty;
 ALTER TABLE program_run_private_tool_snapshots RENAME CONSTRAINT program_run_saved_function_snapshots_source_not_empty TO program_run_private_tool_snapshots_source_not_empty;
 
-ALTER TABLE search_entities RENAME COLUMN saved_function_id TO private_tool_id;
+ALTER TABLE search_entities RENAME COLUMN saved_function_id TO authored_tool_id;
 ALTER TABLE search_entities
     DROP CONSTRAINT search_entities_kind_valid,
     DROP CONSTRAINT search_entities_owner_keys_valid;
 UPDATE search_entities SET kind = 'private_tool' WHERE kind = 'saved_function';
 ALTER TABLE search_entities
     ADD CONSTRAINT search_entities_kind_valid
-        CHECK (kind IN ('provider_tool', 'private_tool')),
+        CHECK (kind IN ('provider_tool', 'private_tool', 'shared_tool')),
     ADD CONSTRAINT search_entities_owner_keys_valid CHECK (
         (kind = 'provider_tool'
             AND provider_id IS NOT NULL
             AND provider_generation_id IS NOT NULL
             AND tool_key IS NOT NULL
             AND doc_id = provider_generation_id || ':' || tool_key
-            AND private_tool_id IS NULL
+            AND authored_tool_id IS NULL
             AND principal_id IS NULL
             AND principal_kind IS NULL)
         OR (kind = 'private_tool'
-            AND private_tool_id IS NOT NULL
-            AND doc_id = private_tool_id
+            AND authored_tool_id IS NOT NULL
+            AND doc_id = authored_tool_id
             AND principal_id IS NOT NULL
             AND principal_kind IS NOT NULL
             AND principal_kind IN ('user', 'agent')
             AND provider_id IS NULL
             AND provider_generation_id IS NULL
             AND tool_key IS NULL)
+        OR (kind = 'shared_tool'
+            AND authored_tool_id IS NOT NULL
+            AND doc_id = authored_tool_id
+            AND principal_id IS NULL
+            AND principal_kind IS NULL
+            AND provider_id IS NULL
+            AND provider_generation_id IS NULL
+            AND tool_key IS NULL)
     );
 
-ALTER TABLE search_index_states RENAME COLUMN saved_function_id TO private_tool_id;
-ALTER TABLE search_index_states RENAME COLUMN failed_saved_function_revision TO failed_private_tool_revision;
+ALTER TABLE search_index_states RENAME COLUMN saved_function_id TO authored_tool_id;
+ALTER TABLE search_index_states RENAME COLUMN failed_saved_function_revision TO failed_authored_tool_revision;
 ALTER TABLE search_index_states
     DROP CONSTRAINT search_index_states_kind_valid,
     DROP CONSTRAINT search_index_states_target_valid;
 UPDATE search_index_states SET kind = 'private_tool' WHERE kind = 'saved_function';
 ALTER TABLE search_index_states
     ADD CONSTRAINT search_index_states_kind_valid
-        CHECK (kind IN ('provider_tool', 'private_tool')),
+        CHECK (kind IN ('provider_tool', 'private_tool', 'shared_tool')),
     ADD CONSTRAINT search_index_states_target_valid CHECK (
         (kind = 'provider_tool'
             AND provider_id IS NOT NULL
             AND provider_generation_id IS NOT NULL
             AND target_id = provider_generation_id
             AND provider_display_name IS NOT NULL
-            AND private_tool_id IS NULL
+            AND authored_tool_id IS NULL
             AND principal_id IS NULL
             AND principal_kind IS NULL)
         OR (kind = 'private_tool'
             AND state = 'failed'
-            AND private_tool_id IS NOT NULL
-            AND target_id = private_tool_id
+            AND authored_tool_id IS NOT NULL
+            AND target_id = authored_tool_id
             AND principal_id IS NOT NULL
             AND principal_kind IS NOT NULL
             AND principal_kind IN ('user', 'agent')
+            AND provider_id IS NULL
+            AND provider_generation_id IS NULL
+            AND provider_display_name IS NULL)
+        OR (kind = 'shared_tool'
+            AND state = 'failed'
+            AND authored_tool_id IS NOT NULL
+            AND target_id = authored_tool_id
+            AND principal_id IS NULL
+            AND principal_kind IS NULL
             AND provider_id IS NULL
             AND provider_generation_id IS NULL
             AND provider_display_name IS NULL)

@@ -772,11 +772,7 @@ pub async fn authored_tool_decision_in_transaction(
     caller: PrivateToolOwner,
     lock: coral_db::RowLock,
 ) -> Result<ToolPolicyDecision, Error> {
-    let rule_applies = match kind {
-        coral_catalog::AuthoredToolKind::Shared => true,
-        coral_catalog::AuthoredToolKind::Private => caller.takes_rules(),
-    };
-    let explicit = if rule_applies {
+    let explicit = if caller.takes_rule_on(kind) {
         repository::access_state_in_transaction(transaction, target, lock).await?
     } else {
         None

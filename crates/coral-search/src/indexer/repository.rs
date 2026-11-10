@@ -5,10 +5,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use coral_catalog::AuthoredToolKind;
 use coral_catalog::{ProviderGenerationId, ToolKey};
 use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_provider::ProviderId;
-use coral_tools::PrivateToolId;
+use coral_tools::AuthoredToolId;
 use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{
     Alias, Asterisk, BinOper, Cond, DeleteStatement, Expr, ExprTrait as _, Func, Iden, JoinType,
@@ -20,7 +21,7 @@ use super::{INDEXER_REVISION, IndexError};
 use crate::{CallPath, SearchIndexFailure, SearchIndexState};
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
-/// one Search Entity that indexed: a Tool or a Private Tool.
+/// one Search Entity that indexed: a Provider Tool, a Private Tool or a Shared Tool.
 #[derive(Clone, Copy, Iden)]
 enum SearchEntities {
     Table,
@@ -30,7 +31,7 @@ enum SearchEntities {
     ProviderId,
     ProviderGenerationId,
     ToolKey,
-    PrivateToolId,
+    AuthoredToolId,
     PrincipalId,
     PrincipalKind,
     CallPath,
@@ -47,7 +48,7 @@ enum SearchEntities {
 
 /// The `search_index_states` table and its columns, for sea-query. Each row
 /// is the state of one indexing attempt: one per Generation attempt, one per
-/// failed Private Tool attempt.
+/// failed Authored Tool attempt.
 #[derive(Clone, Copy, Iden)]
 enum SearchIndexStates {
     Table,
@@ -57,7 +58,7 @@ enum SearchIndexStates {
     ProviderId,
     ProviderGenerationId,
     ProviderDisplayName,
-    PrivateToolId,
+    AuthoredToolId,
     PrincipalId,
     PrincipalKind,
     State,
@@ -73,8 +74,8 @@ enum SearchIndexStates {
     FailedAttempts,
     RetryAfterUnixNanos,
     FailedCoralVersion,
-    /// The definition revision a failed Private Tool attempt tried.
-    FailedPrivateToolRevision,
+    /// The revision a failed Authored Tool attempt tried.
+    FailedAuthoredToolRevision,
 }
 
 /// The columns of a failed attempt's [`RetryRule`], in [`retry_values`]
@@ -122,7 +123,17 @@ enum SearchStats {
 }
 
 const TOOL: &str = "provider_tool";
-const PRIVATE_TOOL: &str = "private_tool";
+
+/// The `kind` value of the rows of an Authored Tool of `kind`.
+const fn authored_tool(kind: AuthoredToolKind) -> &'static str {
+    crate::EntityKind::authored(kind).as_str()
+}
+
+/// The `kind` value of every Authored Tool's rows.
+const AUTHORED_TOOL_KINDS: [&str; 2] = [
+    authored_tool(AuthoredToolKind::Private),
+    authored_tool(AuthoredToolKind::Shared),
+];
 const COMPLETE: &str = "complete";
 const FAILED: &str = "failed";
 
@@ -562,13 +573,13 @@ pub(super) async fn delete_provider(
     Ok(removed)
 }
 
-/// The columns a Private Tool row sets, in [`PrivateToolRow::values`] order.
+/// The columns an Authored Tool row sets, in [`AuthoredToolRow::values`] order.
 /// The first two are the key.
-const PRIVATE_TOOL_COLUMNS: [SearchEntities; 15] = [
+const AUTHORED_TOOL_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::WorkspaceId,
     SearchEntities::DocId,
     SearchEntities::Kind,
-    SearchEntities::PrivateToolId,
+    SearchEntities::AuthoredToolId,
     SearchEntities::PrincipalId,
     SearchEntities::PrincipalKind,
     SearchEntities::CallPath,
@@ -582,13 +593,14 @@ const PRIVATE_TOOL_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::IndexedAtUnixNanos,
 ];
 
-/// One Private Tool's row in `search_entities`. The document id is the
-/// Private Tool id; the fingerprint is [`private_tool_fingerprint`] of the
-/// definition revision. The write stamps the row when it upserts it.
-pub(crate) struct PrivateToolRow<'a> {
+/// One Authored Tool's row in `search_entities`. The document id is the
+/// Tool's id; the fingerprint is [`authored_tool_fingerprint`] of its
+/// revision. Only a Private Tool's row names a Principal, its owner. The
+/// write stamps the row when it upserts it.
+pub(crate) struct AuthoredToolRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
-    pub(super) private_tool_id: &'a PrivateToolId,
-    pub(super) principal: &'a Principal,
+    pub(super) id: &'a AuthoredToolId,
+    pub(super) principal: Option<&'a Principal>,
     pub(super) call_path: CallPath,
     pub(super) qualified_name: &'a str,
     pub(super) description: &'a str,
@@ -596,16 +608,17 @@ pub(crate) struct PrivateToolRow<'a> {
     pub(super) revision: u64,
 }
 
-impl PrivateToolRow<'_> {
-    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; PRIVATE_TOOL_COLUMNS.len()] {
-        let private_tool_id = self.private_tool_id.to_string();
+impl AuthoredToolRow<'_> {
+    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; AUTHORED_TOOL_COLUMNS.len()] {
+        let id = self.id.to_string();
+        let [principal_id, principal_kind] = principal_values(self.principal);
         [
             self.workspace_id.to_string().into(),
-            private_tool_id.clone().into(),
-            PRIVATE_TOOL.into(),
-            private_tool_id.into(),
-            self.principal.id().as_str().into(),
-            self.principal.kind().as_storage_str().into(),
+            id.clone().into(),
+            authored_tool(self.id.kind()).into(),
+            id.into(),
+            principal_id,
+            principal_kind,
             self.call_path.as_str().into(),
             self.qualified_name.into(),
             "".into(),
@@ -613,47 +626,58 @@ impl PrivateToolRow<'_> {
             "".into(),
             self.searchable_text.clone().into(),
             false.into(),
-            private_tool_fingerprint(self.revision).into(),
+            authored_tool_fingerprint(self.revision).into(),
             indexed_at_unix_nanos.into(),
         ]
     }
 }
 
-/// The fingerprint of a Private Tool row: the definition revision and the
+/// The `principal_id` and `principal_kind` values of an Authored Tool's row:
+/// those of a Private Tool's owner, and `NULL` for a Shared Tool.
+fn principal_values(principal: Option<&Principal>) -> [SimpleExpr; 2] {
+    [
+        principal.map(|principal| principal.id().as_str()).into(),
+        principal
+            .map(|principal| principal.kind().as_storage_str())
+            .into(),
+    ]
+}
+
+/// The fingerprint of an Authored Tool row: the Tool's revision and the
 /// indexer revision, as `3.1`. A row that an older indexer revision wrote
 /// holds another fingerprint, so a reconcile pass indexes it again. A Coral
 /// without indexer revisions wrote the definition revision alone.
-pub(super) fn private_tool_fingerprint(revision: u64) -> String {
+pub(super) fn authored_tool_fingerprint(revision: u64) -> String {
     format!("{revision}.{INDEXER_REVISION}")
 }
 
-/// One failed Private Tool attempt's row in `search_index_states`.
-pub(super) struct FailedPrivateToolState<'a> {
+/// One failed Authored Tool attempt's row in `search_index_states`.
+pub(super) struct FailedAuthoredToolState<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
-    pub(super) private_tool_id: &'a PrivateToolId,
-    pub(super) principal: &'a Principal,
+    pub(super) id: &'a AuthoredToolId,
+    pub(super) principal: Option<&'a Principal>,
     pub(super) attempted_at_unix_nanos: i64,
     pub(super) error: String,
     pub(super) retry: RetryRule,
-    /// The definition revision the attempt tried.
+    /// The revision the attempt tried.
     pub(super) revision: u64,
 }
 
-/// Upserts a Private Tool row by Workspace and document id, stamped with
+/// Upserts an Authored Tool row by Workspace and document id, stamped with
 /// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
 /// never `INSERT OR REPLACE`, for the reason [`upsert_tool_rows`]
 /// gives.
-pub(super) async fn upsert_private_tool_row(
+pub(super) async fn upsert_authored_tool_row(
     transaction: &mut Transaction<'_>,
-    row: &PrivateToolRow<'_>,
+    row: &AuthoredToolRow<'_>,
     indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let on_conflict = changed_rows_only(PRIVATE_TOOL_COLUMNS);
+    let on_conflict = changed_rows_only(AUTHORED_TOOL_COLUMNS);
     transaction
         .execute(
             Query::insert()
                 .into_table(SearchEntities::Table)
-                .columns(PRIVATE_TOOL_COLUMNS)
+                .columns(AUTHORED_TOOL_COLUMNS)
                 .values_panic(row.values(indexed_at_unix_nanos))
                 .on_conflict(on_conflict)
                 .to_owned(),
@@ -662,49 +686,47 @@ pub(super) async fn upsert_private_tool_row(
     Ok(())
 }
 
-/// Deletes a Private Tool's row and state row. Returns the rows it
+/// Deletes an Authored Tool's row and state row. Returns the rows it
 /// deleted from the search table.
-pub(super) async fn delete_private_tool_entry(
+pub(super) async fn delete_authored_tool_entry(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    private_tool_id: &PrivateToolId,
+    id: &AuthoredToolId,
 ) -> Result<u64, Error> {
     let removed = transaction
-        .execute(private_tool_row(workspace_id, private_tool_id))
+        .execute(authored_tool_row(workspace_id, id))
         .await?;
-    delete_private_tool_state(transaction, workspace_id, private_tool_id).await?;
+    delete_authored_tool_state(transaction, workspace_id, id).await?;
     Ok(removed)
 }
 
-fn private_tool_row(
-    workspace_id: &WorkspaceId,
-    private_tool_id: &PrivateToolId,
-) -> DeleteStatement {
+fn authored_tool_row(workspace_id: &WorkspaceId, id: &AuthoredToolId) -> DeleteStatement {
     Query::delete()
         .from_table(SearchEntities::Table)
         .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SearchEntities::DocId).eq(private_tool_id.to_string()))
-        .and_where(Expr::col(SearchEntities::Kind).eq(PRIVATE_TOOL))
+        .and_where(Expr::col(SearchEntities::DocId).eq(id.to_string()))
+        .and_where(Expr::col(SearchEntities::Kind).eq(authored_tool(id.kind())))
         .to_owned()
 }
 
-/// Deletes a Private Tool's row. Returns the rows it deleted.
-pub(super) async fn delete_private_tool_row(
+/// Deletes an Authored Tool's row. Returns the rows it deleted.
+pub(super) async fn delete_authored_tool_row(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    private_tool_id: &PrivateToolId,
+    id: &AuthoredToolId,
 ) -> Result<u64, Error> {
     transaction
-        .execute(private_tool_row(workspace_id, private_tool_id))
+        .execute(authored_tool_row(workspace_id, id))
         .await
 }
 
-/// Upserts a Private Tool's `failed` state row.
-pub(super) async fn write_failed_private_tool_state(
+/// Upserts an Authored Tool's `failed` state row.
+pub(super) async fn write_failed_authored_tool_state(
     transaction: &mut Transaction<'_>,
-    state: FailedPrivateToolState<'_>,
+    state: FailedAuthoredToolState<'_>,
 ) -> Result<(), Error> {
-    let private_tool_id = state.private_tool_id.to_string();
+    let id = state.id.to_string();
+    let [principal_id, principal_kind] = principal_values(state.principal);
     transaction
         .execute(
             Query::insert()
@@ -713,22 +735,22 @@ pub(super) async fn write_failed_private_tool_state(
                     SearchIndexStates::WorkspaceId,
                     SearchIndexStates::TargetId,
                     SearchIndexStates::Kind,
-                    SearchIndexStates::PrivateToolId,
+                    SearchIndexStates::AuthoredToolId,
                     SearchIndexStates::PrincipalId,
                     SearchIndexStates::PrincipalKind,
                     SearchIndexStates::State,
                     SearchIndexStates::AttemptedAtUnixNanos,
                     SearchIndexStates::Error,
-                    SearchIndexStates::FailedPrivateToolRevision,
+                    SearchIndexStates::FailedAuthoredToolRevision,
                 ]))
                 .values_panic(
                     [
                         state.workspace_id.to_string().into(),
-                        private_tool_id.clone().into(),
-                        PRIVATE_TOOL.into(),
-                        private_tool_id.into(),
-                        state.principal.id().as_str().into(),
-                        state.principal.kind().as_storage_str().into(),
+                        id.clone().into(),
+                        authored_tool(state.id.kind()).into(),
+                        id.into(),
+                        principal_id,
+                        principal_kind,
                         FAILED.into(),
                         state.attempted_at_unix_nanos.into(),
                         state.error.into(),
@@ -742,7 +764,7 @@ pub(super) async fn write_failed_private_tool_state(
                         .update_columns(with_retry_columns([
                             SearchIndexStates::AttemptedAtUnixNanos,
                             SearchIndexStates::Error,
-                            SearchIndexStates::FailedPrivateToolRevision,
+                            SearchIndexStates::FailedAuthoredToolRevision,
                         ]))
                         .to_owned(),
                 )
@@ -769,7 +791,7 @@ fn retry_values(retry: Option<&RetryRule>) -> [SimpleExpr; 3] {
     }
 }
 
-/// A definition revision as its `BIGINT` column holds it. A revision past
+/// An Authored Tool's revision as its `BIGINT` column holds it. A revision past
 /// the column's range is stored as `NULL`, which matches no revision.
 fn revision_value(revision: u64) -> SimpleExpr {
     i64::try_from(revision).ok().into()
@@ -778,7 +800,7 @@ fn revision_value(revision: u64) -> SimpleExpr {
 /// What a target's `failed` state row records for its next attempt.
 #[derive(sqlx::FromRow)]
 struct FailedStateRow {
-    failed_private_tool_revision: Option<i64>,
+    failed_authored_tool_revision: Option<i64>,
     #[sqlx(flatten)]
     retry: RetryColumns,
 }
@@ -795,7 +817,7 @@ async fn failed_state(
         .fetch_optional(
             Query::select()
                 .columns(with_retry_columns([
-                    SearchIndexStates::FailedPrivateToolRevision,
+                    SearchIndexStates::FailedAuthoredToolRevision,
                 ]))
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
@@ -818,55 +840,55 @@ pub(super) async fn failed_generation_retry_rule(
     Ok(row.map(|row| row.retry.into()))
 }
 
-/// The failure a Private Tool's state row records.
-pub(super) struct PrivateToolFailure {
+/// The failure an Authored Tool's state row records.
+pub(super) struct AuthoredToolFailure {
     pub(super) retry: RetryRule,
-    /// The definition revision the attempt tried. `None` on a row written
+    /// The revision the attempt tried. `None` on a row written
     /// before Coral recorded it.
     pub(super) revision: Option<u64>,
 }
 
-impl From<FailedStateRow> for PrivateToolFailure {
+impl From<FailedStateRow> for AuthoredToolFailure {
     fn from(row: FailedStateRow) -> Self {
         Self {
             retry: row.retry.into(),
             revision: row
-                .failed_private_tool_revision
+                .failed_authored_tool_revision
                 .and_then(|revision| u64::try_from(revision).ok()),
         }
     }
 }
 
-/// Reads the failure of the Private Tool's state row, when its last
+/// Reads the failure of the Authored Tool's state row, when its last
 /// attempt failed.
-pub(super) async fn failed_private_tool(
+pub(super) async fn failed_authored_tool(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    private_tool_id: &PrivateToolId,
-) -> Result<Option<PrivateToolFailure>, Error> {
+    id: &AuthoredToolId,
+) -> Result<Option<AuthoredToolFailure>, Error> {
     let row = failed_state(
         transaction,
         workspace_id,
-        PRIVATE_TOOL,
-        private_tool_id.to_string(),
+        authored_tool(id.kind()),
+        id.to_string(),
     )
     .await?;
-    Ok(row.map(PrivateToolFailure::from))
+    Ok(row.map(AuthoredToolFailure::from))
 }
 
-/// Deletes a Private Tool's state row, if an earlier attempt left one.
-pub(super) async fn delete_private_tool_state(
+/// Deletes an Authored Tool's state row, if an earlier attempt left one.
+pub(super) async fn delete_authored_tool_state(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    private_tool_id: &PrivateToolId,
+    id: &AuthoredToolId,
 ) -> Result<(), Error> {
     transaction
         .execute(
             Query::delete()
                 .from_table(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(PRIVATE_TOOL))
-                .and_where(Expr::col(SearchIndexStates::TargetId).eq(private_tool_id.to_string()))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(authored_tool(id.kind())))
+                .and_where(Expr::col(SearchIndexStates::TargetId).eq(id.to_string()))
                 .to_owned(),
         )
         .await?;
@@ -1211,53 +1233,55 @@ pub(super) async fn delete_generation_in_workspace(
     Ok(removed)
 }
 
-/// One Private Tool in its Workspace.
+/// One Authored Tool in its Workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct WorkspacePrivateTool {
+pub(super) struct WorkspaceAuthoredTool {
     pub(super) workspace_id: WorkspaceId,
-    pub(super) private_tool_id: PrivateToolId,
+    pub(super) id: AuthoredToolId,
 }
 
-/// One Private Tool's row, as a reconcile pass compares it.
-pub(super) struct RecordedPrivateTool {
-    pub(super) private_tool: WorkspacePrivateTool,
-    /// The row's fingerprint, as [`private_tool_fingerprint`] writes it.
+/// One Authored Tool's row, as a reconcile pass compares it.
+pub(super) struct RecordedAuthoredTool {
+    pub(super) tool: WorkspaceAuthoredTool,
+    /// The row's fingerprint, as [`authored_tool_fingerprint`] writes it.
     pub(super) fingerprint: String,
 }
 
-/// Reads every Private Tool row in every Workspace.
-pub(super) async fn recorded_private_tools(
+/// Reads the row of every Authored Tool, of either kind, in every
+/// Workspace.
+pub(super) async fn recorded_authored_tools(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<RecordedPrivateTool>, IndexError> {
-    let rows: Vec<(String, String, String)> = transaction
+) -> Result<Vec<RecordedAuthoredTool>, IndexError> {
+    let rows: Vec<(String, String, String, String)> = transaction
         .fetch_all(
             Query::select()
                 .columns([
+                    SearchEntities::Kind,
                     SearchEntities::WorkspaceId,
-                    SearchEntities::PrivateToolId,
+                    SearchEntities::AuthoredToolId,
                     SearchEntities::Fingerprint,
                 ])
                 .from(SearchEntities::Table)
-                .and_where(Expr::col(SearchEntities::Kind).eq(PRIVATE_TOOL))
+                .and_where(Expr::col(SearchEntities::Kind).is_in(AUTHORED_TOOL_KINDS))
                 .to_owned(),
         )
         .await?;
     rows.into_iter()
-        .map(|(workspace_id, private_tool_id, fingerprint)| {
-            Ok(RecordedPrivateTool {
-                private_tool: workspace_private_tool(&workspace_id, &private_tool_id)?,
+        .map(|(kind, workspace_id, id, fingerprint)| {
+            Ok(RecordedAuthoredTool {
+                tool: workspace_authored_tool(&kind, &workspace_id, &id)?,
                 fingerprint,
             })
         })
         .collect()
 }
 
-/// Reads the fingerprint of one Private Tool's row, `None` when it has no
+/// Reads the fingerprint of one Authored Tool's row, `None` when it has no
 /// row.
-pub(super) async fn recorded_private_tool_fingerprint(
+pub(super) async fn recorded_authored_tool_fingerprint(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    private_tool_id: &PrivateToolId,
+    id: &AuthoredToolId,
 ) -> Result<Option<String>, IndexError> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
@@ -1265,50 +1289,52 @@ pub(super) async fn recorded_private_tool_fingerprint(
                 .column(SearchEntities::Fingerprint)
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchEntities::Kind).eq(PRIVATE_TOOL))
-                .and_where(Expr::col(SearchEntities::DocId).eq(private_tool_id.to_string()))
+                .and_where(Expr::col(SearchEntities::Kind).eq(authored_tool(id.kind())))
+                .and_where(Expr::col(SearchEntities::DocId).eq(id.to_string()))
                 .to_owned(),
         )
         .await?;
     Ok(row.map(|(fingerprint,)| fingerprint))
 }
 
-/// One Private Tool whose last attempt failed, as a reconcile pass
+/// One Authored Tool whose last attempt failed, as a reconcile pass
 /// compares it.
-pub(super) struct FailedPrivateTool {
-    pub(super) private_tool: WorkspacePrivateTool,
-    pub(super) failure: PrivateToolFailure,
+pub(super) struct FailedAuthoredTool {
+    pub(super) tool: WorkspaceAuthoredTool,
+    pub(super) failure: AuthoredToolFailure,
 }
 
 #[derive(sqlx::FromRow)]
-struct FailedPrivateToolRow {
+struct FailedAuthoredToolRow {
+    kind: String,
     workspace_id: String,
-    private_tool_id: String,
+    authored_tool_id: String,
     #[sqlx(flatten)]
     failure: FailedStateRow,
 }
 
-/// Reads every Private Tool whose last attempt failed.
-pub(super) async fn failed_private_tools(
+/// Reads every Authored Tool, of either kind, whose last attempt failed.
+pub(super) async fn failed_authored_tools(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<FailedPrivateTool>, IndexError> {
-    let rows: Vec<FailedPrivateToolRow> = transaction
+) -> Result<Vec<FailedAuthoredTool>, IndexError> {
+    let rows: Vec<FailedAuthoredToolRow> = transaction
         .fetch_all(
             Query::select()
                 .columns(with_retry_columns([
+                    SearchIndexStates::Kind,
                     SearchIndexStates::WorkspaceId,
-                    SearchIndexStates::PrivateToolId,
-                    SearchIndexStates::FailedPrivateToolRevision,
+                    SearchIndexStates::AuthoredToolId,
+                    SearchIndexStates::FailedAuthoredToolRevision,
                 ]))
                 .from(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(PRIVATE_TOOL))
+                .and_where(Expr::col(SearchIndexStates::Kind).is_in(AUTHORED_TOOL_KINDS))
                 .to_owned(),
         )
         .await?;
     rows.into_iter()
         .map(|row| {
-            Ok(FailedPrivateTool {
-                private_tool: workspace_private_tool(&row.workspace_id, &row.private_tool_id)?,
+            Ok(FailedAuthoredTool {
+                tool: workspace_authored_tool(&row.kind, &row.workspace_id, &row.authored_tool_id)?,
                 failure: row.failure.into(),
             })
         })
@@ -1458,14 +1484,21 @@ fn workspace_generation(
     })
 }
 
-fn workspace_private_tool(
+fn workspace_authored_tool(
+    kind: &str,
     workspace_id: &str,
-    private_tool_id: &str,
-) -> Result<WorkspacePrivateTool, IndexError> {
-    Ok(WorkspacePrivateTool {
+    id: &str,
+) -> Result<WorkspaceAuthoredTool, IndexError> {
+    let kind = [AuthoredToolKind::Private, AuthoredToolKind::Shared]
+        .into_iter()
+        .find(|authored| authored_tool(*authored) == kind)
+        .ok_or(IndexError::Corrupt(
+            "a search index row of an Authored Tool has another kind",
+        ))?;
+    Ok(WorkspaceAuthoredTool {
         workspace_id: parse_workspace_id(workspace_id)?,
-        private_tool_id: PrivateToolId::parse(private_tool_id).map_err(|_error| {
-            IndexError::Corrupt("a search index row has an invalid Private Tool id")
+        id: AuthoredToolId::parse(kind, id).map_err(|_error| {
+            IndexError::Corrupt("a search index row has an invalid Authored Tool id")
         })?,
     })
 }

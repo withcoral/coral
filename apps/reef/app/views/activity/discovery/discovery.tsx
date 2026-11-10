@@ -254,14 +254,17 @@ function HitDetails({ hit }: { hit: SearchHit }) {
   )
 }
 
+/** How Reef names each kind. The text tells the kinds apart; the color only adds to it. */
+const kinds = {
+  provider_tool: { label: 'tool', color: 'blue' },
+  private_tool: { label: 'private tool', color: 'purple' },
+  shared_tool: { label: 'shared tool', color: 'green' },
+} as const
+
 function KindPill({ kind }: { kind: DiscoveryEntityKind }) {
-  return kind === 'provider_tool' ? (
-    <Pill color="blue" size="small" variant="outline">
-      tool
-    </Pill>
-  ) : (
-    <Pill color="purple" size="small" variant="outline">
-      private tool
+  return (
+    <Pill color={kinds[kind].color} size="small" variant="outline">
+      {kinds[kind].label}
     </Pill>
   )
 }
@@ -375,7 +378,7 @@ function CurrentIconLink({
   target: Pick<SearchHit, 'kind' | 'callPath' | 'currentHref'>
 }) {
   if (target.currentHref === null) return null
-  const subject = target.kind === 'provider_tool' ? 'tool' : 'private tool'
+  const subject = kinds[target.kind].label
   return (
     <Button.IconLink
       name="ExternalLink"
@@ -402,11 +405,11 @@ function DescriptionResult({
   record?: string | null
 }) {
   const id = useId()
-  const { tool, privateTool } = description
+  const { tool, authoredTool } = description
   const problems = (['error', 'warning'] as const)
     .map((category) => ({
       category,
-      count: privateTool?.diagnostics.filter((item) => item.category === category).length ?? 0,
+      count: authoredTool?.diagnostics.filter((item) => item.category === category).length ?? 0,
     }))
     .filter(({ count }) => count > 0)
   return (
@@ -436,7 +439,7 @@ function DescriptionResult({
                 <Pill key={category} color={diagnosticColors[category]} size="small">
                   {count} {category}
                   {count === 1 ? '' : 's'}
-                  {privateTool?.diagnosticsTruncated ? '+' : ''}
+                  {authoredTool?.diagnosticsTruncated ? '+' : ''}
                 </Pill>
               ))}
             </div>
@@ -456,7 +459,7 @@ function DescribeDetails({
   description: Description
   record?: string | null
 }) {
-  const privateTool = description.privateTool
+  const authoredTool = description.authoredTool
   return (
     <Disclosure title="Details">
       {description.tool?.guidance && (
@@ -472,20 +475,20 @@ function DescribeDetails({
         framed
         maxLines={DECLARATION_LINES}
       />
-      {privateTool && (
+      {authoredTool && (
         <>
           <Typography.HeadingXSmall as="h4">Source</Typography.HeadingXSmall>
           <CodeBlock
-            value={privateTool.source}
+            value={authoredTool.source}
             format="typescript"
             framed
             maxLines={DECLARATION_LINES}
           />
-          {(privateTool.diagnostics.length > 0 || privateTool.diagnosticsTruncated) && (
+          {(authoredTool.diagnostics.length > 0 || authoredTool.diagnosticsTruncated) && (
             <>
               <Typography.HeadingXSmall as="h4">Diagnostics</Typography.HeadingXSmall>
               <ul className={styles.diagnostics}>
-                {privateTool.diagnostics.map((diagnostic, index) => (
+                {authoredTool.diagnostics.map((diagnostic, index) => (
                   <li key={index} className={styles.row}>
                     <Pill color={diagnosticColors[diagnostic.category]} size="small">
                       {diagnostic.category} TS{diagnostic.code}
@@ -500,7 +503,7 @@ function DescribeDetails({
                   </li>
                 ))}
               </ul>
-              {privateTool.diagnosticsTruncated && (
+              {authoredTool.diagnosticsTruncated && (
                 <Typography.BodySmall variant="tertiary">
                   Coral kept only the first diagnostics.
                 </Typography.BodySmall>

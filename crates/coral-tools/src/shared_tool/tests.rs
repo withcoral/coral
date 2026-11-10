@@ -12,7 +12,7 @@ use super::{
     SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolRevisionOrigin,
 };
 use crate::{
-    AuthoredToolDescription, AuthoredToolSource, Error, LinkedToolPath, LinkedToolSelection,
+    AuthoredToolDescription, AuthoredToolPath, AuthoredToolSource, Error, LinkedToolSelection,
     PrivateToolChangeContext, PrivateToolModule, PrivateToolPath, PrivateToolSave,
     hold_linked_tools_in_transaction, select_linked_tool_in_transaction,
 };
@@ -189,7 +189,7 @@ impl SharedToolFixture {
         &self,
         principal: &AuthenticatedPrincipal,
         selected: Vec<LinkedToolSelection>,
-    ) -> Option<LinkedToolPath> {
+    ) -> Option<AuthoredToolPath> {
         let mut transaction = self.database.begin().await.expect("begin");
         let changed = hold_linked_tools_in_transaction(
             &mut transaction,
@@ -202,6 +202,92 @@ impl SharedToolFixture {
         .map(|selection| selection.path().clone());
         transaction.commit().await.expect("commit");
         changed
+    }
+
+    /// What `principal` discovers: the Call Path of each Authored Tool it
+    /// lists, Private Tools first, each of which hydrates, and the identity,
+    /// revision and source of the exact description at `path`.
+    async fn discovered(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        path: &AuthoredToolPath,
+    ) -> (Vec<String>, Option<(crate::AuthoredToolId, u64, String)>) {
+        let mut transaction = self.database.begin_read_snapshot().await.expect("begin");
+        let mut listed = Vec::new();
+        for kind in [AuthoredToolKind::Private, AuthoredToolKind::Shared] {
+            for material in crate::authored_tool_search_material_in_transaction(
+                &mut transaction,
+                &self.workspace,
+                principal.principal(),
+                kind,
+            )
+            .await
+            .expect("list search material")
+            {
+                let hydrated = crate::hydrate_authored_tool_search_material_in_transaction(
+                    &mut transaction,
+                    &self.workspace,
+                    principal.principal(),
+                    &material,
+                )
+                .await
+                .expect("hydrate")
+                .expect("a listed Tool hydrates");
+                assert_eq!(hydrated.path(), material.path());
+                assert!(hydrated.declaration().as_str().contains("Promise<string>"));
+                listed.push(material.path().call_path());
+            }
+        }
+        let exact = crate::exact_authored_tool_description_in_transaction(
+            &mut transaction,
+            &self.workspace,
+            principal.principal(),
+            path,
+        )
+        .await
+        .expect("describe")
+        .map(|exact| {
+            (
+                exact.id().clone(),
+                exact.revision(),
+                exact.detail().source().as_str().to_owned(),
+            )
+        });
+        transaction.rollback().await.expect("finish");
+        (listed, exact)
+    }
+
+    /// What Universal Search indexes of Shared Tools: every entry, the
+    /// entry of `id`, and every identity with its current revision.
+    async fn indexed(
+        &self,
+        id: &crate::AuthoredToolId,
+    ) -> (
+        Vec<crate::AuthoredToolEntry>,
+        Option<crate::AuthoredToolEntry>,
+        Vec<(crate::AuthoredToolId, u64)>,
+    ) {
+        let mut transaction = self.database.begin_read_snapshot().await.expect("begin");
+        let shared = |id: &crate::AuthoredToolId| id.kind() == AuthoredToolKind::Shared;
+        let entries = crate::authored_tool_entries_in_transaction(&mut transaction)
+            .await
+            .expect("read entries")
+            .into_iter()
+            .filter(|entry| shared(entry.id()))
+            .collect();
+        let entry =
+            crate::authored_tool_entry_in_transaction(&mut transaction, &self.workspace, id)
+                .await
+                .expect("read the entry");
+        let revisions = crate::authored_tool_index_revisions_in_transaction(&mut transaction)
+            .await
+            .expect("read index revisions")
+            .into_iter()
+            .filter(|revision| shared(revision.id()))
+            .map(|revision| (revision.id().clone(), revision.revision()))
+            .collect();
+        transaction.rollback().await.expect("finish");
+        (entries, entry, revisions)
     }
 
     /// Every lifecycle Event of the Workspace's Shared Tools, newest first.
@@ -782,8 +868,8 @@ async fn a_linked_selection_holds_only_while_it_is_current() {
         .publish(&fixture.owner, "mail.remind", DRAFT, 0)
         .await
         .expect("publish revision 1");
-    let private = LinkedToolPath::Private(PrivateToolPath::parse("draft").expect("path"));
-    let shared = LinkedToolPath::Shared(shared_path("mail.remind"));
+    let private = AuthoredToolPath::Private(PrivateToolPath::parse("draft").expect("path"));
+    let shared = AuthoredToolPath::Shared(shared_path("mail.remind"));
 
     let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
     let mut selected = Vec::new();
@@ -803,8 +889,8 @@ async fn a_linked_selection_holds_only_while_it_is_current() {
     // Each root names only its own kind: no Shared Tool is at `draft`, and
     // the Owner has no Private Tool at `mail.remind`.
     for absent in [
-        LinkedToolPath::Shared(shared_path("draft")),
-        LinkedToolPath::Private(PrivateToolPath::parse("mail.remind").expect("path")),
+        AuthoredToolPath::Shared(shared_path("draft")),
+        AuthoredToolPath::Private(PrivateToolPath::parse("mail.remind").expect("path")),
     ] {
         assert_eq!(
             select_linked_tool_in_transaction(
@@ -857,7 +943,7 @@ async fn a_removed_shared_tool_is_selected_by_nothing_and_a_selection_of_it_no_l
         .publish(&fixture.owner, "mail.remind", DRAFT, 0)
         .await
         .expect("publish revision 1");
-    let shared = LinkedToolPath::Shared(shared_path("mail.remind"));
+    let shared = AuthoredToolPath::Shared(shared_path("mail.remind"));
     let select = async || {
         let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
         let selection = select_linked_tool_in_transaction(
@@ -1065,6 +1151,76 @@ async fn a_removal_tombstones_the_shared_tool_frees_its_path_and_keeps_its_revis
             .collect::<Vec<_>>(),
         [1]
     );
+}
+
+// Catches: a Shared Tool that only its publisher discovers, a discovery read
+// of a superseded revision or of a removed Shared Tool, a search entry that
+// names the publisher, and a Private Tool that another Principal discovers.
+#[tokio::test]
+async fn every_principal_discovers_a_live_shared_tool_at_its_current_revision() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    fixture
+        .publish(&fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish revision 1");
+    let published = fixture
+        .publish(&fixture.owner, "mail.remind", REVIEWED, 1)
+        .await
+        .expect("publish revision 2");
+    let id = crate::AuthoredToolId::from(published.published().expect("the tool").id().clone());
+    let path = AuthoredToolPath::parse(AuthoredToolKind::Shared, "mail.remind").expect("a path");
+    let principals = [
+        owner.clone(),
+        AuthenticatedPrincipal::user(fixture.member.clone()),
+        fixture.agent.clone(),
+    ];
+    for (principal, private) in principals
+        .iter()
+        .zip([&["coral.private.draft"][..], &[], &[]])
+    {
+        let (listed, exact) = fixture.discovered(principal, &path).await;
+        let mut expected = private.to_vec();
+        expected.push("coral.shared.mail.remind");
+        assert_eq!(listed, expected, "{principal:?}");
+        assert_eq!(
+            exact,
+            Some((id.clone(), 2, REVIEWED.to_owned())),
+            "{principal:?}"
+        );
+    }
+    let (entries, entry, revisions) = fixture.indexed(&id).await;
+    let entry = entry.expect("a live Shared Tool has an entry");
+    assert_eq!(entries, std::slice::from_ref(&entry));
+    assert_eq!(entry.id(), &id);
+    assert_eq!(entry.principal(), None, "the Workspace owns it");
+    assert_eq!(entry.path(), &path);
+    assert_eq!(entry.revision(), 2);
+    assert_eq!(revisions, [(id.clone(), 2)]);
+
+    fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 50, 'e'),
+            &fixture.workspace,
+            &shared_path("mail.remind"),
+            2,
+        )
+        .await
+        .expect("remove the Shared Tool");
+
+    for (principal, private) in principals
+        .iter()
+        .zip([&["coral.private.draft"][..], &[], &[]])
+    {
+        assert_eq!(
+            fixture.discovered(principal, &path).await,
+            (private.iter().map(ToString::to_string).collect(), None),
+            "{principal:?}"
+        );
+    }
+    assert_eq!(fixture.indexed(&id).await, (Vec::new(), None, Vec::new()));
 }
 
 // Catches: a Member or a stale request removing a Shared Tool, a removal

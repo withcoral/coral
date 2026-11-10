@@ -22,7 +22,7 @@ use crate::types::{
 };
 
 #[derive(Iden)]
-enum SharedToolRecords {
+pub(crate) enum SharedToolRecords {
     Table,
     Id,
     WorkspaceId,
@@ -34,7 +34,7 @@ enum SharedToolRecords {
 }
 
 #[derive(Iden)]
-enum SharedToolRevisions {
+pub(crate) enum SharedToolRevisions {
     Table,
     SharedToolId,
     Revision,
@@ -225,7 +225,7 @@ fn revision_columns() -> [SharedToolRevisions; 17] {
 }
 
 /// Joins a record to its current revision, in the record's own Workspace.
-fn is_current_revision() -> sea_query::SimpleExpr {
+pub(crate) fn is_current_revision() -> sea_query::SimpleExpr {
     Expr::col((
         SharedToolRevisions::Table,
         SharedToolRevisions::SharedToolId,

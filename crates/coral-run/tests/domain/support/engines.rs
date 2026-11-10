@@ -1,7 +1,7 @@
 //! Scripted Program engines that gate or observe execution.
 use crate::engine::ProgramReferences;
 use crate::tests::*;
-use coral_tools::{LinkedToolPath, LinkedToolReference, LinkedToolSelection};
+use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
 
 #[derive(Clone)]
 pub(crate) struct ClosureReadGateEngine {
@@ -35,7 +35,7 @@ impl ProgramEngine for ClosureReadGateEngine {
     fn linked_tool_references(
         &self,
         _deadline: std::time::Instant,
-        _path: &LinkedToolPath,
+        _path: &AuthoredToolPath,
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         if !source.contains("root-v1") {
@@ -580,7 +580,7 @@ impl ProgramEngine for ReferenceScanningEngine {
     fn linked_tool_references(
         &self,
         _deadline: std::time::Instant,
-        _path: &LinkedToolPath,
+        _path: &AuthoredToolPath,
         source: &str,
     ) -> Result<ProgramReferences, CompileFailure> {
         Self::references(source)
@@ -622,7 +622,7 @@ pub(crate) fn test_private_tool_reference(
 ) -> Result<LinkedToolReference, CompileFailure> {
     let path = PrivateToolPath::parse(path).map_err(|error| error.to_string())?;
     Ok(LinkedToolReference::new(
-        LinkedToolPath::Private(path),
+        AuthoredToolPath::Private(path),
         1,
         1,
     ))

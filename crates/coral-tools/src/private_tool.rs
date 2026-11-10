@@ -13,9 +13,10 @@ use crate::authoring::{
     Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
     tool_paths_overlap, v8_compiler,
 };
-use crate::linking::{LinkedToolPath, LinkedToolReference};
+use crate::linking::LinkedToolReference;
 use crate::repository;
 use crate::tool_typing::ToolDeclarationReader;
+use crate::types::AuthoredToolPath;
 use crate::types::{
     AdministrativeLifecycleEvent, LifecycleAction, PrivateTool, PrivateToolChangeContext,
     PrivateToolId, PrivateToolPath, PrivateToolSave,
@@ -120,7 +121,7 @@ impl PrivateToolModule {
     ///
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
-    /// `SearchIndex::sync_private_tool` after its commit, as
+    /// `SearchIndex::sync_authored_tool` after its commit, as
     /// `coral.addTool` and `coral.updateTool` do. Until then, the reconcile task
     /// indexes the Private Tool.
     ///
@@ -170,7 +171,7 @@ impl PrivateToolModule {
             .authoring
             .prepare(
                 workspace_id,
-                &LinkedToolPath::Private(save.path().clone()),
+                &AuthoredToolPath::Private(save.path().clone()),
                 save.source().as_str(),
                 Typing {
                     private_tools_of: Some(context.actor().principal()),
@@ -484,8 +485,8 @@ impl PrivateToolModule {
         let private_references = references
             .iter()
             .filter_map(|reference| match reference.path() {
-                LinkedToolPath::Private(named) => Some((named, reference)),
-                LinkedToolPath::Shared(_) => None,
+                AuthoredToolPath::Private(named) => Some((named, reference)),
+                AuthoredToolPath::Shared(_) => None,
             })
             .collect::<Vec<_>>();
         let mut held_paths = private_references
@@ -509,7 +510,7 @@ impl PrivateToolModule {
                     .find(|(named, _reference)| *named == held_path)
             {
                 return Err(missing_linked_tool(
-                    &LinkedToolPath::Private(path.clone()),
+                    &AuthoredToolPath::Private(path.clone()),
                     reference,
                 ));
             }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
 use coral_telemetry::safe;
-use coral_tools::{LinkedToolPath, LinkedToolSelection};
+use coral_tools::{AuthoredToolPath, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
@@ -37,7 +37,7 @@ const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 enum ReferenceSource {
     SubmittedProgram,
-    Linked(LinkedToolPath),
+    Linked(AuthoredToolPath),
 }
 
 impl ReferenceSource {
@@ -53,13 +53,13 @@ impl ReferenceSource {
 /// and the literal Tool chains each one's source names.
 type LinkedClosure = (
     Vec<LinkedToolSelection>,
-    Vec<(LinkedToolPath, coral_v8::ToolReferences)>,
+    Vec<(AuthoredToolPath, coral_v8::ToolReferences)>,
 );
 
 /// One literal reference to a linked Tool, and where its source names it.
 struct PendingReference {
     source: ReferenceSource,
-    path: LinkedToolPath,
+    path: AuthoredToolPath,
     line: u64,
     column: u64,
 }
@@ -688,7 +688,7 @@ impl RunModule {
     async fn analyze_linked_tool(
         &self,
         source: String,
-        path: LinkedToolPath,
+        path: AuthoredToolPath,
         compilation_deadline: Instant,
     ) -> Result<ProgramReferences, Error> {
         self.analyze(compilation_deadline, move |engine, deadline| {
@@ -808,16 +808,16 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
 }
 
 fn order_linked_closure(
-    roots: &[LinkedToolPath],
-    dependencies: &BTreeMap<LinkedToolPath, Vec<LinkedToolPath>>,
-    snapshots: &BTreeMap<LinkedToolPath, LinkedToolSelection>,
+    roots: &[AuthoredToolPath],
+    dependencies: &BTreeMap<AuthoredToolPath, Vec<AuthoredToolPath>>,
+    snapshots: &BTreeMap<AuthoredToolPath, LinkedToolSelection>,
 ) -> Result<Vec<LinkedToolSelection>, Error> {
     fn visit(
-        path: &LinkedToolPath,
-        dependencies: &BTreeMap<LinkedToolPath, Vec<LinkedToolPath>>,
-        snapshots: &BTreeMap<LinkedToolPath, LinkedToolSelection>,
-        visiting: &mut BTreeSet<LinkedToolPath>,
-        visited: &mut BTreeSet<LinkedToolPath>,
+        path: &AuthoredToolPath,
+        dependencies: &BTreeMap<AuthoredToolPath, Vec<AuthoredToolPath>>,
+        snapshots: &BTreeMap<AuthoredToolPath, LinkedToolSelection>,
+        visiting: &mut BTreeSet<AuthoredToolPath>,
+        visited: &mut BTreeSet<AuthoredToolPath>,
         ordered: &mut Vec<LinkedToolSelection>,
     ) -> Result<(), Error> {
         if visited.contains(path) || !visiting.insert(path.clone()) {

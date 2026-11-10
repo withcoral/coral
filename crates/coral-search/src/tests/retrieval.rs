@@ -586,9 +586,13 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
     );
 
     assert!(matches!(
-        search(&[EntityKind::ProviderTool, EntityKind::PrivateTool])
-            .search(&corpus.principal, &corpus.workspace, &issues)
-            .await,
+        search(&[
+            EntityKind::ProviderTool,
+            EntityKind::PrivateTool,
+            EntityKind::SharedTool
+        ])
+        .search(&corpus.principal, &corpus.workspace, &issues)
+        .await,
         Err(crate::Error::ServiceUnavailable)
     ));
 
@@ -827,7 +831,11 @@ async fn a_query_without_a_searchable_term_is_empty_even_while_entities_wait() {
     for corpus in [Corpus::unconverged().await, Corpus::new().await] {
         for query in ["ab", "...", "___"] {
             let page = corpus.search(Corpus::query(query)).await;
-            for kind in [EntityKind::ProviderTool, EntityKind::PrivateTool] {
+            for kind in [
+                EntityKind::ProviderTool,
+                EntityKind::PrivateTool,
+                EntityKind::SharedTool,
+            ] {
                 let status = status(&page, kind);
                 assert_eq!(status.state(), RetrieverState::Empty, "{query:?}: {kind:?}");
                 assert_eq!(status.coverage().failed_units(), 0, "{query:?}: {kind:?}");
@@ -849,7 +857,11 @@ async fn a_query_of_the_largest_size_still_ranks_by_its_phrase_patterns() {
             query.push_str(filler);
         }
         let page = corpus.search(Corpus::query(&query)).await;
-        for kind in [EntityKind::ProviderTool, EntityKind::PrivateTool] {
+        for kind in [
+            EntityKind::ProviderTool,
+            EntityKind::PrivateTool,
+            EntityKind::SharedTool,
+        ] {
             assert_eq!(
                 status(&page, kind).coverage().failed_units(),
                 0,

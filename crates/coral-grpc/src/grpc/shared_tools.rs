@@ -284,14 +284,9 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             publish = publish.validate_only();
         }
         let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
-        // The source is typed from the Tools its publishing Owner can
-        // discover, as a Private Tool save types it (ADR 0020).
-        let author = AuthenticatedPrincipal::user(context.actor().clone());
-        let declarations =
-            coral_search::CallerToolDeclarations::new(&self.provider_readiness, &author, &w);
         let published = self
-            .shared_tools
-            .publish(&context, &w, publish, Some(&declarations))
+            .shared_tool_workflow
+            .publish(&context, &w, publish)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::PublishSharedToolResponse {
@@ -311,7 +306,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let path = path(&input.path)?;
         let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
         let removed = self
-            .shared_tools
+            .shared_tool_workflow
             .remove(&context, &w, &path, input.expected_revision)
             .await
             .map_err(error)?;

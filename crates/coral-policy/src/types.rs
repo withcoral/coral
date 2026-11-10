@@ -99,6 +99,18 @@ impl PrivateToolOwner {
     pub const fn takes_rules(self) -> bool {
         !matches!(self, Self::Member)
     }
+
+    /// Whether an Owner's exact rule on an Authored Tool of `kind` applies
+    /// to a call by this caller. A Shared Tool is the Workspace's, so its
+    /// rule applies to every caller. A Private Tool is its caller's own, so
+    /// its rule applies only while the caller takes rules.
+    #[must_use]
+    pub const fn takes_rule_on(self, kind: coral_catalog::AuthoredToolKind) -> bool {
+        match kind {
+            coral_catalog::AuthoredToolKind::Shared => true,
+            coral_catalog::AuthoredToolKind::Private => self.takes_rules(),
+        }
+    }
 }
 
 /// Every exact Tool rule of one Workspace, read once for discovery.
@@ -130,20 +142,24 @@ impl ExactToolRules {
             .unwrap_or_else(|| crate::default_access_state(facts))
     }
 
-    /// Returns the Workspace decision for the Private Tool `tool_key` of the
-    /// Private Provider `provider_id`, whose author declared `declared` and
-    /// which `owner` owns: an Owner's exact rule when it applies to that
-    /// owner, else `declared`.
+    /// Returns the Workspace decision for the Authored Tool `tool_key` of
+    /// its kind's Provider `provider_id`, whose current revision declares
+    /// `declared`, as [`crate::authored_tool_decision_in_transaction`]
+    /// decides a call: an Owner's exact rule when it applies, else
+    /// `declared`. A rule on a Shared Tool applies to every caller. A rule
+    /// on a Private Tool applies only while `caller`, whose Tool it is,
+    /// takes rules.
     #[must_use]
-    pub fn private_tool_access_state(
+    pub fn authored_tool_access_state(
         &self,
         provider_id: &ProviderId,
         tool_key: &ToolKey,
+        kind: coral_catalog::AuthoredToolKind,
         declared: ToolAccessState,
-        owner: PrivateToolOwner,
+        caller: PrivateToolOwner,
     ) -> ToolAccessState {
-        owner
-            .takes_rules()
+        caller
+            .takes_rule_on(kind)
             .then(|| self.rules.get(provider_id)?.get(tool_key).copied())
             .flatten()
             .unwrap_or(declared)

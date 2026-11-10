@@ -1,5 +1,5 @@
-//! The Tool declarations a Private Tool save is typed from, read as one
-//! caller discovers them.
+//! The Tool declarations a Private Tool save or a Shared Tool Publish is
+//! typed from, read as one caller discovers them.
 
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 

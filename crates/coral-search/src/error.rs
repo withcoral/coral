@@ -44,7 +44,7 @@ pub enum Error {
     /// Exact Tool policy could not be resolved.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
-    /// Private Tool authoring material could not be resolved.
+    /// Private or Shared Tool authoring material could not be resolved.
     #[error(transparent)]
     Tools(#[from] coral_tools::Error),
     /// Workspace authority rejected discovery.

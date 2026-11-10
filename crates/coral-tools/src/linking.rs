@@ -2,7 +2,7 @@
 //! by a literal path, the current definition of each, and the hold that
 //! keeps every definition as selected through the acceptance commit.
 //!
-//! A [`LinkedToolPath`] resolves by the root its source wrote (ADR 0033):
+//! An [`AuthoredToolPath`] resolves by the root its source wrote (ADR 0033):
 //! `coral.private` is always the invoking Principal's, also inside a Shared
 //! Tool, and `coral.shared` is always the Workspace's. These facets do not
 //! authorize callers or commit transactions.
@@ -11,80 +11,13 @@ use coral_catalog::{AuthoredToolKind, CodeExecutionBinding, ToolAccessState, Too
 use coral_db::Transaction;
 use coral_workspace::{Principal, WorkspaceId};
 
-use crate::shared_tool::SharedToolPath;
-use crate::types::{AuthoredToolSource, PrivateTool, PrivateToolPath};
+use crate::types::{AuthoredToolPath, AuthoredToolSource, PrivateTool};
 use crate::{Error, repository, shared_tool_repository};
-
-/// The path of one Tool a Run links from its source.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum LinkedToolPath {
-    /// The invoking Principal's own Private Tool, under `coral.private`.
-    Private(PrivateToolPath),
-    /// The Workspace's Shared Tool, under `coral.shared`.
-    Shared(SharedToolPath),
-}
-
-impl LinkedToolPath {
-    /// Parses the path of a Tool of `kind`, relative to the kind's Call
-    /// Root.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidInput`] for a path outside the authoring
-    /// bounds.
-    pub fn parse(kind: AuthoredToolKind, relative_path: &str) -> Result<Self, Error> {
-        match kind {
-            AuthoredToolKind::Private => PrivateToolPath::parse(relative_path).map(Self::Private),
-            AuthoredToolKind::Shared => SharedToolPath::parse(relative_path).map(Self::Shared),
-        }
-    }
-
-    /// The kind of Tool the path names.
-    #[must_use]
-    pub const fn kind(&self) -> AuthoredToolKind {
-        match self {
-            Self::Private(_) => AuthoredToolKind::Private,
-            Self::Shared(_) => AuthoredToolKind::Shared,
-        }
-    }
-
-    /// The dotted path under the kind's Call Root.
-    #[must_use]
-    pub fn relative_path(&self) -> &str {
-        match self {
-            Self::Private(path) => path.as_str(),
-            Self::Shared(path) => path.as_str(),
-        }
-    }
-
-    /// The validated segments under the kind's Call Root, for the
-    /// compiler's linked source input.
-    #[must_use]
-    pub fn segments(&self) -> Vec<String> {
-        match self {
-            Self::Private(path) => path.segments(),
-            Self::Shared(path) => path.segments(),
-        }
-    }
-
-    /// The complete Call Path, such as `coral.shared.mail.remind`.
-    #[must_use]
-    pub fn call_path(&self) -> String {
-        self.kind().call_path(self.relative_path())
-    }
-
-    /// How a message and a stack frame name the Tool's source, such as
-    /// `Shared Tool coral.shared.mail.remind`.
-    #[must_use]
-    pub fn source_name(&self) -> String {
-        self.kind().source_name(self.relative_path())
-    }
-}
 
 /// One linked Tool a source names by a literal path, and where it names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedToolReference {
-    path: LinkedToolPath,
+    path: AuthoredToolPath,
     line: u64,
     column: u64,
 }
@@ -92,13 +25,13 @@ pub struct LinkedToolReference {
 impl LinkedToolReference {
     /// A reference to `path` at a one-based authored `line` and `column`.
     #[must_use]
-    pub const fn new(path: LinkedToolPath, line: u64, column: u64) -> Self {
+    pub const fn new(path: AuthoredToolPath, line: u64, column: u64) -> Self {
         Self { path, line, column }
     }
 
     /// Returns the Tool the source names.
     #[must_use]
-    pub const fn path(&self) -> &LinkedToolPath {
+    pub const fn path(&self) -> &AuthoredToolPath {
         &self.path
     }
 
@@ -129,7 +62,7 @@ impl LinkedToolReference {
             references
                 .iter()
                 .map(move |reference| {
-                    LinkedToolPath::parse(kind, reference.path())
+                    AuthoredToolPath::parse(kind, reference.path())
                         .map(|path| Self::new(path, reference.line(), reference.column()))
                         .map_err(|error| InvalidLinkedToolReference {
                             line: reference.line(),
@@ -165,7 +98,7 @@ pub struct InvalidLinkedToolReference {
 /// and source in its own durable accepted package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedToolSelection {
-    path: LinkedToolPath,
+    path: AuthoredToolPath,
     key: ToolKey,
     revision: u64,
     source: AuthoredToolSource,
@@ -175,7 +108,7 @@ pub struct LinkedToolSelection {
 impl LinkedToolSelection {
     pub(crate) fn of_private_tool(tool: &PrivateTool) -> Self {
         Self {
-            path: LinkedToolPath::Private(tool.path().clone()),
+            path: AuthoredToolPath::Private(tool.path().clone()),
             key: tool.id().tool_key(),
             revision: tool.revision(),
             source: tool.source().clone(),
@@ -185,7 +118,7 @@ impl LinkedToolSelection {
 
     pub(crate) fn of_shared_tool(selection: shared_tool_repository::CurrentRevision) -> Self {
         Self {
-            path: LinkedToolPath::Shared(selection.path),
+            path: AuthoredToolPath::Shared(selection.path),
             key: selection.id.tool_key(),
             revision: selection.revision,
             source: selection.source,
@@ -201,7 +134,7 @@ impl LinkedToolSelection {
 
     /// Returns the selected path, for static linking.
     #[must_use]
-    pub const fn path(&self) -> &LinkedToolPath {
+    pub const fn path(&self) -> &AuthoredToolPath {
         &self.path
     }
 
@@ -256,15 +189,15 @@ pub async fn select_linked_tool_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    path: &LinkedToolPath,
+    path: &AuthoredToolPath,
 ) -> Result<Option<LinkedToolSelection>, Error> {
     match path {
-        LinkedToolPath::Private(path) => {
+        AuthoredToolPath::Private(path) => {
             repository::find_current_in_transaction(transaction, workspace_id, principal, path)
                 .await
                 .map(|tool| tool.as_ref().map(LinkedToolSelection::of_private_tool))
         }
-        LinkedToolPath::Shared(path) => {
+        AuthoredToolPath::Shared(path) => {
             shared_tool_repository::select_current_source(transaction, workspace_id, path)
                 .await
                 .map(|selection| selection.map(LinkedToolSelection::of_shared_tool))
@@ -299,7 +232,7 @@ pub async fn hold_linked_tools_in_transaction<'a>(
     in_hold_order.sort_by(|left, right| left.path.cmp(&right.path));
     for selection in in_hold_order {
         let held = match &selection.path {
-            LinkedToolPath::Private(path) => {
+            AuthoredToolPath::Private(path) => {
                 repository::hold_current_revision(
                     transaction,
                     workspace_id,
@@ -310,7 +243,7 @@ pub async fn hold_linked_tools_in_transaction<'a>(
                 )
                 .await?
             }
-            LinkedToolPath::Shared(path) => {
+            AuthoredToolPath::Shared(path) => {
                 shared_tool_repository::hold_current(
                     transaction,
                     workspace_id,

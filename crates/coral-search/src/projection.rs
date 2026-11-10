@@ -126,6 +126,7 @@ fn retriever_status(status: &RetrieverStatus) -> Option<SearchRetrieverStatus> {
         retriever: match status.retriever() {
             crate::EntityKind::ProviderTool => SearchRetriever::ProviderTool,
             crate::EntityKind::PrivateTool => SearchRetriever::PrivateTool,
+            crate::EntityKind::SharedTool => SearchRetriever::SharedTool,
         },
         state,
         coverage: SearchRetrieverCoverage {
@@ -138,8 +139,8 @@ fn retriever_status(status: &RetrieverStatus) -> Option<SearchRetrieverStatus> {
     })
 }
 
-/// Projects the complete exact response, including owned source and saved
-/// diagnostics.
+/// Projects the complete exact response, including an Authored Tool's source
+/// and stored diagnostics.
 #[must_use]
 pub fn description(exact: &ExactAuthoringDescription) -> Description {
     match exact.authoring() {
@@ -155,21 +156,41 @@ pub fn description(exact: &ExactAuthoringDescription) -> Description {
             hints: DeclaredHints::from(tool.hints()),
             approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
         },
-        // The kind keeps the name retained Task history uses.
-        AuthoringDescription::PrivateTool(tool) => Description::PrivateTool {
-            authoring: authoring(exact.authoring()),
-            provider_id: tool.provider_id().to_string(),
-            provider_display_name: tool.provider_display_name().to_owned(),
-            // A Private Tool declares no hints.
-            hints: DeclaredHints::from(coral_catalog::ToolHints::default()),
-            approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
-            revision: tool.revision(),
-            detail: exact.private_tool_detail().map(|detail| SavedDetail {
+        AuthoringDescription::AuthoredTool(tool) => {
+            let authoring = authoring(exact.authoring());
+            let provider_id = tool.provider_id().to_string();
+            let provider_display_name = tool.provider_display_name().to_owned();
+            // An Authored Tool declares no hints.
+            let hints = DeclaredHints::from(coral_catalog::ToolHints::default());
+            let approval_required = tool.approval_requirement() == ApprovalRequirement::Required;
+            let revision = tool.revision();
+            let detail = exact.authored_tool_detail().map(|detail| SavedDetail {
                 source: detail.source().as_str().to_owned(),
                 diagnostics: detail.diagnostics().iter().map(diagnostic).collect(),
                 diagnostics_truncated: detail.diagnostics_truncated(),
-            }),
-        },
+            });
+            match tool.kind() {
+                // The kind keeps the name retained Task history uses.
+                coral_catalog::AuthoredToolKind::Private => Description::PrivateTool {
+                    authoring,
+                    provider_id,
+                    provider_display_name,
+                    hints,
+                    approval_required,
+                    revision,
+                    detail,
+                },
+                coral_catalog::AuthoredToolKind::Shared => Description::SharedTool {
+                    authoring,
+                    provider_id,
+                    provider_display_name,
+                    hints,
+                    approval_required,
+                    revision,
+                    detail,
+                },
+            }
+        }
     }
 }
 

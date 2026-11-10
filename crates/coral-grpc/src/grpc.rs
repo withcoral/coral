@@ -47,8 +47,10 @@ pub struct Dependencies {
     pub private_tools: coral_tools::PrivateToolInspection,
     /// The caller's own current Private Tool deletion.
     pub private_tool_deletion: coral_tools::PrivateToolDeletion,
-    /// The Workspace's Shared Tools: reads, and Owner publishing.
+    /// The Workspace's Shared Tools: reads.
     pub shared_tools: coral_tools::SharedToolModule,
+    /// Shared Tool publishing and removal, which tell Universal Search.
+    pub shared_tool_workflow: coral_administration::SharedToolWorkflow,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
@@ -91,6 +93,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         private_tools: dependencies.private_tools,
         private_tool_deletion: dependencies.private_tool_deletion,
         shared_tools: dependencies.shared_tools,
+        shared_tool_workflow: dependencies.shared_tool_workflow,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
@@ -182,6 +185,7 @@ struct GrpcServices {
     private_tools: coral_tools::PrivateToolInspection,
     private_tool_deletion: coral_tools::PrivateToolDeletion,
     shared_tools: coral_tools::SharedToolModule,
+    shared_tool_workflow: coral_administration::SharedToolWorkflow,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,

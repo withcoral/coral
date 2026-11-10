@@ -33,11 +33,11 @@ pub const SEARCH_PROVIDERS_MAX: usize = 32;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::Search.key(),
-        summary: "Search the provider tools and private tools you can call",
+        summary: "Search the provider tools, shared tools and private tools you can call",
         presentation: ToolPresentation::new(
             Some("Search".to_string()),
-            "Find the provider tools and private tools you can call, ranked by a query, or \
-             read the exact descriptions of the Call Paths you name."
+            "Find the provider tools, shared tools and private tools you can call, ranked by \
+             a query, or read the exact descriptions of the Call Paths you name."
                 .to_string(),
             false,
             vec!["discovery".to_string()],
@@ -100,8 +100,9 @@ struct QueryInput {
     #[schemars(
         with = "String",
         description = "A namespace from coral.providers.<namespace>, or coral for Coral's own \
-                       tools. It narrows provider tools to one Provider; your \
-                       private tools stay. Omit it unless you know which service holds the data."
+                       tools. It narrows provider tools to one Provider; shared tools and \
+                       your private tools stay. Omit it unless you know which service holds \
+                       the data."
     )]
     provider: Option<String>,
     #[serde(default)]
@@ -430,7 +431,8 @@ pub struct SearchHit {
     /// The complete Call Path.
     #[schemars(
         description = "`coral.providers.<namespace>.…` for a provider tool, `coral.…` \
-                       for one of Coral's own, `coral.private.…` for one of your private tools."
+                       for one of Coral's own, `coral.shared.…` for one of your workspace's \
+                       shared tools, `coral.private.…` for one of your private tools."
     )]
     pub call_path: String,
     /// The callable's signature, within its byte limit.
@@ -439,7 +441,7 @@ pub struct SearchHit {
                        its result, which the line always keeps: a provider tool's result data as its \
                        top-level field names when they fit, or by type name; for an MCP tool that \
                        declares no output, a note that the result is text, usually JSON, in \
-                       `data.content[0].text`; and a private tool's result members one level \
+                       `data.content[0].text`; and a shared or private tool's result members one level \
                        deep. `{…}` marks an object the line does not show, a bare `…` a type it \
                        cannot read, and a last `…` member or final `…` what it cut to fit. At most \
                        512 UTF-8 bytes."
@@ -548,8 +550,10 @@ pub struct SearchRetrieverStatus {
 pub enum SearchRetriever {
     /// Provider tools.
     ProviderTool,
-    /// Private Tools.
+    /// The caller's own Private Tools.
     PrivateTool,
+    /// The Workspace's Shared Tools.
+    SharedTool,
 }
 
 impl JsonSchema for SearchRetriever {
@@ -558,7 +562,7 @@ impl JsonSchema for SearchRetriever {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        words_schema(&["provider_tool", "private_tool"])
+        words_schema(&["provider_tool", "private_tool", "shared_tool"])
     }
 }
 
@@ -581,7 +585,7 @@ impl JsonSchema for SearchRetrieverState {
         let mut schema = words_schema(&["partial", "error"]);
         schema.insert(
             "description".to_owned(),
-            "- `partial`: some Providers or private tools are not indexed yet, or failed; \
+            "- `partial`: some Providers, shared tools or private tools are not indexed yet, or failed; \
              results may be missing.\n- `error`: the retriever could not rank; its results are \
              missing.\n\nRetry shortly or list without a query."
                 .into(),
@@ -718,17 +722,50 @@ pub enum Description {
         #[serde(flatten)]
         detail: Option<SavedDetail>,
     },
+    /// One of the Workspace's Shared Tools, at its current revision. It
+    /// never names who published it.
+    #[schemars(description = "")]
+    SharedTool {
+        /// What every kind has.
+        #[serde(flatten)]
+        authoring: DescriptionAuthoring,
+        /// Its Provider's id: the Workspace's Shared Provider.
+        #[schemars(
+            description = "",
+            extend("format" = "uuid", "minLength" = 36, "maxLength" = 36)
+        )]
+        provider_id: String,
+        /// Its Provider's display name.
+        #[schemars(description = "")]
+        provider_display_name: String,
+        /// The hints it declares.
+        #[schemars(description = "")]
+        hints: DeclaredHints,
+        /// Whether a person must approve each call.
+        #[schemars(description = "")]
+        approval_required: bool,
+        /// Its current revision.
+        #[schemars(description = "", range(max = JSON_SAFE_INTEGER_MAX))]
+        revision: u64,
+        /// Its source and the diagnostics published with it; absent when
+        /// the lookup named `types`.
+        #[serde(flatten)]
+        detail: Option<SavedDetail>,
+    },
 }
 
 impl Description {
-    /// Whether a JSON reader holds every integer in it exactly: a Private
-    /// Tool's revision, and a saved diagnostic's code, line and column. See
+    /// Whether a JSON reader holds every integer in it exactly: a Private or
+    /// Shared Tool's revision, and a saved diagnostic's code, line and column. See
     /// [`SearchOutput::is_exact_in_json`].
     #[must_use]
     pub fn is_exact_in_json(&self) -> bool {
         match self {
             Self::ProviderTool { .. } => true,
             Self::PrivateTool {
+                revision, detail, ..
+            }
+            | Self::SharedTool {
                 revision, detail, ..
             } => {
                 *revision <= JSON_SAFE_INTEGER_MAX
@@ -758,7 +795,8 @@ pub struct DescriptionAuthoring {
     pub typescript_declaration: String,
 }
 
-/// A Private Tool's current source and the diagnostics saved with it.
+/// A Private or Shared Tool's current source and the diagnostics saved with
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(description = "")]
 pub struct SavedDetail {
@@ -776,7 +814,7 @@ pub struct SavedDetail {
 /// The largest integer a JSON reader holds exactly.
 const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-/// One advisory TypeScript diagnostic saved with a Private Tool.
+/// One advisory TypeScript diagnostic saved with a Private or Shared Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(rename = "Diagnostic", deny_unknown_fields, description = "")]
 pub struct SavedDiagnostic {
@@ -923,6 +961,7 @@ pub(super) mod tests {
                 retriever_statuses: vec![
                     status(SearchRetriever::ProviderTool, SearchRetrieverState::Partial),
                     status(SearchRetriever::PrivateTool, SearchRetrieverState::Error),
+                    status(SearchRetriever::SharedTool, SearchRetrieverState::Partial),
                 ],
             }),
             SearchOutput::Page(SearchResult {
@@ -960,6 +999,19 @@ pub(super) mod tests {
                                 line: Some(1),
                                 column: None,
                             }],
+                            diagnostics_truncated: false,
+                        }),
+                    },
+                    Description::SharedTool {
+                        authoring: authoring("coral.shared.mail.remind"),
+                        provider_id: "0190f1a2-0000-7000-8000-000000000002".to_owned(),
+                        provider_display_name: "Shared".to_owned(),
+                        hints: DeclaredHints::from(crate::ToolHints::default()),
+                        approval_required: true,
+                        revision: 2,
+                        detail: Some(SavedDetail {
+                            source: "export default async function remind() {}".to_owned(),
+                            diagnostics: Vec::new(),
                             diagnostics_truncated: false,
                         }),
                     },

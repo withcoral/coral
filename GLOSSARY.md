@@ -458,19 +458,22 @@ Tool can still require that User to connect an Account before dispatch. Search i
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Private
-Tools, which Programs reach through the Built-in Tool `coral.search`. A query returns Search Hits with
+Tools and the Workspace's Shared Tools, which Programs reach through the Built-in Tool `coral.search`. A query returns Search Hits with
 evidence; exact Call Paths return their Authoring Descriptions fitted to the describe budget, or the types named in
 `types`, and name the paths that match nothing with nearby Discoverable Call Paths. It searches only
-secret-free catalog material and does not execute a Private Tool or dispatch to an Upstream Service. Provider-native
+secret-free catalog material and does not execute a Private or Shared Tool or dispatch to an Upstream Service. Provider-native
 search is an ordinary Tool that only a Coral Program can invoke. V1 Universal Search stores no Tool Result,
 Program Value, Run data, or observed memory. Reef exact catalog inspection is a separate administration projection. _Avoid_: Provider search fanout, observed-value memory, exact catalog administration
 
-**Search Entity**: One thing Universal Search can find: a Discoverable Tool of one current Provider, or one of
-the Principal's current Private Tools. Each Search Entity has one complete Call Path, one Authoring Description,
+**Search Entity**: One thing Universal Search can find: a Discoverable Tool of one current Provider, one of
+the Principal's current Private Tools, or one of the Workspace's live Shared Tools, which every Principal of the
+Workspace can find. Each Search Entity has one complete Call Path, one Authoring Description,
 and one set of secret-free fields, its metadata and declaration-field paths, that Universal Search indexes for it. An
 Tool whose declaration-field paths exceed the index bound keeps only its shallower paths, and the index logs a
 warning; no search bound makes a Tool unavailable. Universal Search returns a Search Hit for it, and an exact lookup
-its Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
+its Authoring Description, never the Entity's private material. The Authoring Description of a Private or Shared Tool
+carries its source and current revision, and that of a Shared Tool never names who published it.
+_Avoid_: Authoring Kind, search document
 
 **Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
 Path, signature line, whether that line is complete enough to call from, and Description Snippet; a Guidance Snippet
@@ -483,7 +486,7 @@ the rank reflects why the hit matched, and an exact lookup gives
 the rest. Never the declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
-Entities it examined and why results may be missing: how many Providers or Private Tools were eligible, searched, and
+Entities it examined and why results may be missing: how many Providers, Private Tools or Shared Tools were eligible, searched, and
 failed, how many results the kind returned, and whether more remain. A kind that the Provider filter leaves out is
 skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
 page at the time of the search, not the current catalog.

@@ -108,10 +108,10 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
                 .test_database
                 .execute_fixture_sql(&format!(
                     "INSERT INTO search_index_states (workspace_id, target_id, kind, \
-                     private_tool_id, principal_id, principal_kind, state, \
+                     authored_tool_id, principal_id, principal_kind, state, \
                      attempted_at_unix_nanos, error, failed_attempts, \
                      retry_after_unix_nanos, failed_coral_version, \
-                     failed_private_tool_revision) \
+                     failed_authored_tool_revision) \
                      VALUES ('{workspace}', '{function}', 'private_tool', '{function}', \
                      '{principal}', 'user', 'failed', {attempted_at}, '{INJECTED_FAULT}', 1, \
                      {retry_after}, '{version}', {revision})",
@@ -168,7 +168,7 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
     for change in [
         "failed_coral_version = '0.0.0'",
         "failed_coral_version = NULL",
-        "failed_private_tool_revision = 0",
+        "failed_authored_tool_revision = 0",
     ] {
         let fixture = Fixture::new().await;
         let goal = fixture.goal().await;
@@ -184,7 +184,7 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
             .with_write_limit(std::time::Duration::from_millis(100))
             .with_stall_after_lock(std::time::Duration::from_hours(1));
         lose_private_tool_rows(&fixture).await;
-        stalled.sync_private_tool(saved.workspace_id().clone(), saved.id().clone());
+        stalled.sync_authored_tool(saved.workspace_id().clone(), saved.id().clone());
         stalled.settled().await;
         let failed = private_tool_states(&fixture).await;
         let [state] = failed.as_slice() else {
@@ -416,7 +416,7 @@ async fn a_notification_reads_the_private_tool_as_it_stands() {
     index.settled().await;
     let stamps = indexed_at(&fixture).await;
 
-    index.sync_private_tool(saved.workspace_id().clone(), saved.id().clone());
+    index.sync_authored_tool(saved.workspace_id().clone(), saved.id().clone());
     index.settled().await;
     assert_eq!(
         indexed_at(&fixture).await,
@@ -426,7 +426,7 @@ async fn a_notification_reads_the_private_tool_as_it_stands() {
 
     fixture.delete_private_tool(&call, "answer").await.unwrap();
     index.settled().await;
-    index.sync_private_tool(saved.workspace_id().clone(), saved.id().clone());
+    index.sync_authored_tool(saved.workspace_id().clone(), saved.id().clone());
     index.settled().await;
     assert_eq!(
         indexed_paths(&fixture).await,
@@ -453,7 +453,7 @@ async fn a_delete_commits_while_an_index_write_holds_the_private_tools_search_ro
     let mut index_write = fixture.tasks.database.begin().await.unwrap();
     index_write
         .execute_sql(
-            "UPDATE search_entities SET description = description WHERE private_tool_id = $1",
+            "UPDATE search_entities SET description = description WHERE authored_tool_id = $1",
             sea_query::Values(vec![saved.id().to_string().into()]),
         )
         .await
@@ -747,7 +747,7 @@ async fn private_tool_rows(fixture: &Fixture) -> Vec<PrivateToolRow> {
                 .columns(
                     [
                         "doc_id",
-                        "private_tool_id",
+                        "authored_tool_id",
                         "principal_id",
                         "principal_kind",
                         "call_path",
@@ -820,7 +820,7 @@ async fn private_tool_states(fixture: &Fixture) -> Vec<PrivateToolState> {
             Query::select()
                 .columns(
                     [
-                        "private_tool_id",
+                        "authored_tool_id",
                         "principal_id",
                         "principal_kind",
                         "state",

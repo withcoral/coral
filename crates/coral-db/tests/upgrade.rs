@@ -525,11 +525,11 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
                 ["tool", "private_tool", "saved_function says hi"],
             ),
             (
-                "SELECT kind, private_tool_id, fingerprint FROM search_entities",
+                "SELECT kind, authored_tool_id, fingerprint FROM search_entities",
                 ["private_tool", "tool", "fingerprint"],
             ),
             (
-                "SELECT kind, private_tool_id, CAST(failed_private_tool_revision AS TEXT) \
+                "SELECT kind, authored_tool_id, CAST(failed_authored_tool_revision AS TEXT) \
                  FROM search_index_states",
                 ["private_tool", "tool", "3"],
             ),

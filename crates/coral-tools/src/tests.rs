@@ -396,11 +396,7 @@ async fn entry_reads_return_current_private_tools_with_revision_and_declaration_
     .await;
 
     let mut transaction = fixture.database.begin().await.expect("begin entry read");
-    let workspace_entries =
-        crate::private_tool_entries_in_transaction(&mut transaction, &workspace_id)
-            .await
-            .expect("read one Workspace's entries");
-    let every_entry = crate::all_private_tool_entries_in_transaction(&mut transaction)
+    let every_entry = crate::authored_tool_entries_in_transaction(&mut transaction)
         .await
         .expect("read every Workspace's entries");
     for (workspace, tool, revision) in [
@@ -410,81 +406,69 @@ async fn entry_reads_return_current_private_tools_with_revision_and_declaration_
         (&workspace_id, gone.id(), None),
     ] {
         assert_eq!(
-            crate::private_tool_entry_in_transaction(&mut transaction, workspace, tool)
-                .await
-                .expect("read one tool's entry")
-                .map(|entry| entry.revision()),
+            crate::authored_tool_entry_in_transaction(
+                &mut transaction,
+                workspace,
+                &tool.clone().into()
+            )
+            .await
+            .expect("read one tool's entry")
+            .map(|entry| entry.revision()),
             revision
         );
     }
     transaction.rollback().await.expect("finish entry read");
 
-    let summary = |entries: &[crate::PrivateToolEntry]| {
-        let mut summary = entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.workspace_id().clone(),
-                    entry.principal().clone(),
-                    entry.path().as_str().to_string(),
-                    entry.description().as_str().to_string(),
-                    entry.revision(),
-                )
-            })
-            .collect::<Vec<_>>();
-        summary.sort_by(|left, right| (&left.2, &left.3).cmp(&(&right.2, &right.3)));
-        summary
-    };
+    let mut summary = every_entry
+        .iter()
+        .map(|entry| {
+            (
+                entry.workspace_id().clone(),
+                entry.principal().cloned(),
+                entry.path().call_path(),
+                entry.description().as_str().to_string(),
+                entry.revision(),
+            )
+        })
+        .collect::<Vec<_>>();
+    summary.sort_by(|left, right| (&left.2, &left.3).cmp(&(&right.2, &right.3)));
     assert_eq!(
-        summary(&workspace_entries),
+        summary,
         [
             (
                 workspace_id.clone(),
-                agent.principal().clone(),
-                "agent.answer".to_string(),
+                Some(agent.principal().clone()),
+                "coral.private.agent.answer".to_string(),
                 "Answer a question".to_string(),
                 1,
             ),
             (
                 workspace_id.clone(),
-                user.principal().clone(),
-                "reports.total".to_string(),
+                Some(user.principal().clone()),
+                "coral.private.reports.total".to_string(),
                 "Total a report again".to_string(),
                 2,
             ),
+            (
+                other_workspace_id.clone(),
+                Some(other_user.principal().clone()),
+                "coral.private.reports.total".to_string(),
+                "Total elsewhere".to_string(),
+                1,
+            ),
         ],
-        "every Principal's current tools of this Workspace, at their current revision"
+        "every Principal's current tools of every Workspace, at their current revision"
     );
-    let mut expected = summary(&workspace_entries);
-    expected.push((
-        other_workspace_id.clone(),
-        other_user.principal().clone(),
-        "reports.total".to_string(),
-        "Total elsewhere".to_string(),
-        1,
-    ));
-    assert_eq!(
-        summary(&every_entry),
-        expected,
-        "the cross-Workspace read adds the other Workspace's tool"
-    );
-    for (entries, saved) in [
-        (&workspace_entries, &replaced),
-        (&workspace_entries, &agent_private_tool),
-        (&every_entry, &replaced),
-        (&every_entry, &agent_private_tool),
-        (&every_entry, &elsewhere),
-    ] {
-        let read = entries
+    for saved in [&replaced, &agent_private_tool, &elsewhere] {
+        let read = every_entry
             .iter()
-            .find(|entry| entry.id() == saved.id())
+            .find(|entry| entry.id().private() == Some(saved.id()))
             .expect("current tool has an entry");
         assert_eq!(
-            read,
-            &crate::PrivateToolEntry::from_saved(saved),
-            "the read agrees with what a save hands to search"
+            read.declaration_fields(),
+            saved.declaration_field_projection().fields(),
+            "the read agrees with what the save projected"
         );
-        assert_eq!(read.declaration(), saved.declaration());
         assert!(
             read.declaration_fields()
                 .expect("ready declaration fields")
@@ -500,14 +484,15 @@ async fn entry_reads_return_current_private_tools_with_revision_and_declaration_
     )
     .await;
     let mut transaction = fixture.database.begin().await.expect("begin entry read");
-    let entries = crate::private_tool_entries_in_transaction(&mut transaction, &workspace_id)
-        .await
-        .expect("a corrupt projection does not fail the read");
+    let corrupt = crate::authored_tool_entry_in_transaction(
+        &mut transaction,
+        &workspace_id,
+        &agent_private_tool.id().clone().into(),
+    )
+    .await
+    .expect("a corrupt projection does not fail the read")
+    .expect("the tool stays readable by path and description");
     transaction.rollback().await.expect("finish entry read");
-    let corrupt = entries
-        .iter()
-        .find(|entry| entry.id() == agent_private_tool.id())
-        .expect("the tool stays readable by path and description");
     assert_eq!(corrupt.declaration_fields(), None);
     assert_eq!(corrupt.description().as_str(), "Answer a question");
 }
@@ -2108,7 +2093,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
             .begin_read_snapshot()
             .await
             .expect("read snapshot");
-        let entries = crate::private_tool_entries_in_transaction(&mut transaction, &workspace_id)
+        let entries = crate::authored_tool_entries_in_transaction(&mut transaction)
             .await
             .expect("entries");
         transaction.commit().await.expect("commit read");
