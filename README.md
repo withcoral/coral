@@ -17,7 +17,7 @@ without approval, so the user approves it before it posts. Coral saves the
 workflow as a function. The next day, the agent runs the same task by calling
 the saved function.
 
-![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, runs a program, and waits for approval before posting. The Coral app then shows the run, who approved it, and the program saved as a function. The next day, the same request runs by calling the saved function, with 35% fewer tokens and in 31% less time.](./apps/docs/images/demo.gif)
+![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, runs a program, and waits for approval before posting. The Coral app then shows the run, who approved it, and the program saved as a function. The next day, the same request runs by calling the saved function. A final card compares the two days: 35% fewer tokens and 31% faster, in line with our benchmarks.](./apps/docs/images/demo.gif)
 
 ## Why Coral
 
