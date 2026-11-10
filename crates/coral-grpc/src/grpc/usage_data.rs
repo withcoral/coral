@@ -12,10 +12,9 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
             Some(SendBlock::Environment(BlockingVariable::DoNotTrack)) => {
                 wire::UsageSendBlock::DoNotTrack
             }
-            Some(SendBlock::Environment(BlockingVariable::CoralTelemetry)) => {
-                wire::UsageSendBlock::CoralTelemetry
+            Some(SendBlock::Environment(BlockingVariable::CoralDisableUsageData)) => {
+                wire::UsageSendBlock::CoralDisableUsageData
             }
-            Some(SendBlock::Environment(BlockingVariable::Ci)) => wire::UsageSendBlock::Ci,
             Some(SendBlock::SourceBuild) => wire::UsageSendBlock::SourceBuild,
         }
         .into(),
