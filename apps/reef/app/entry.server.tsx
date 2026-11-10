@@ -15,8 +15,11 @@ import { requestInstrumentation } from '../server-tracing.js'
 export const instrumentations = [requestInstrumentation]
 
 // How long a streamed promise, such as the Overview's activity summary, may stay pending
-// before React Router rejects it. It outlasts one Coral call, so a summary that Coral
-// answers within its deadline still arrives. No page renders a Suspense boundary, so
+// before React Router rejects it. React Router starts this clock when it encodes the
+// loader's data, after the summary's Coral call has started its own deadline. The extra
+// second leaves room for that call's answer, or its deadline failure, to settle and be
+// encoded before this timeout fires. It is a margin, not a guarantee: a busy event loop
+// can still let this timeout win. No page renders a Suspense boundary, so
 // the timeout only bounds streamed data, never a page's first render.
 export const streamTimeout = CORAL_CALL_TIMEOUT_MS + 1_000
 
