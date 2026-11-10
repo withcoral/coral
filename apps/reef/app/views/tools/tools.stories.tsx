@@ -6,6 +6,7 @@ import { CORAL_ICONS, PRIVATE_ICONS, SHARED_ICONS } from '@/views/providers/cora
 import type { ProviderToolDetailView, ProviderView, ToolView } from '@/views/providers/types'
 import { selectionKey } from '@/views/providers/selection'
 import { ToolsPage } from '@/views/tools/tools-page'
+import { resizeViewport } from '../../../.storybook/browser'
 import type {
   PrivateToolDetailView,
   PublishReviewResult,
@@ -636,18 +637,6 @@ const sharedTotals: SharedToolDetailView = {
       restoredFrom: null,
     },
   ],
-  events: [
-    { id: 'e3', action: 'published', revision: 3, actor: ada, at: '2026-11-09T14:27:03.000Z' },
-    {
-      id: 'e2',
-      action: 'published',
-      revision: 2,
-      actor: { ...workspace.profile },
-      at: '2026-11-05T10:02:41.000Z',
-    },
-    { id: 'e1', action: 'published', revision: 1, actor: null, at: '2026-10-28T08:15:00.000Z' },
-  ],
-  eventsTruncated: false,
 }
 const sharedPage = {
   ...treeProps,
@@ -684,14 +673,20 @@ export const TreeSharedToolSelected: Story = {
 export const TreeSharedToolRevisions: Story = {
   ...TreeSharedToolSelected,
   play: async () => {
-    await userEvent.click(await screen.findByRole('tab', { name: 'Revisions' }))
+    await userEvent.click(await screen.findByRole('tab', { name: /^Revisions/ }))
   },
 }
-// Each publish, with who did it. A person who is no longer an owner has no name.
-export const TreeSharedToolHistory: Story = {
+// Docked beside the table, the drawer leaves the policy to the tool's row. Narrower, it
+// floats over the table's policy column, so it shows the policy itself.
+export const TreeSharedToolDocked: Story = {
   ...TreeSharedToolSelected,
   play: async () => {
-    await userEvent.click(await screen.findByRole('tab', { name: 'History' }))
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
+    if (!(await resizeViewport(1440, 900))) return
+    const drawer = within(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' }))
+    await waitFor(() => expect(drawer.queryByRole('heading', { name: 'Policy' })).toBeNull())
+    await resizeViewport(1100, 900)
+    await expect(await drawer.findByRole('heading', { name: 'Policy' })).toBeVisible()
   },
 }
 // A member reads a shared tool, and restores or removes nothing.
@@ -709,7 +704,8 @@ export const TreeSharedToolRemovalRefused: Story = {
       'The shared tool coral.shared.finance.yearlyTotals calls this one. Change or remove that shared tool first.',
   },
   play: async () => {
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove shared tool' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'More actions' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Remove shared tool' }))
     const dialog = await screen.findByRole('dialog', { name: 'Remove shared tool' })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Remove shared tool' }))
     await within(dialog).findByText(/calls this one/)
@@ -835,7 +831,7 @@ export const RestoreRevision: Story = {
     } satisfies PublishReviewResult,
   },
   play: async () => {
-    await userEvent.click(await screen.findByRole('tab', { name: 'Revisions' }))
+    await userEvent.click(await screen.findByRole('tab', { name: /^Revisions/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'Restore revision 2' }))
     await screen.findByRole('button', { name: 'Publish revision 4' })
   },
@@ -916,10 +912,10 @@ export const TreeToolSelected: Story = {
         name: 'issues.create',
       }),
     )
-    // The drawer shows only the hints declared true, and the policy under its own heading.
+    // The drawer shows only the hints declared true. Where it shows the policy is
+    // TreeSharedToolDocked's to show.
     await expect(drawer.getByText('Open world', { exact: true })).toBeVisible()
     await expect(drawer.queryByText(/read-only|destructive|idempotent/i)).toBeNull()
-    await expect(drawer.getByRole('heading', { name: 'Policy' })).toBeVisible()
   },
 }
 // Weather declares no hints, so its row shows no labels.

@@ -165,8 +165,36 @@ export const rankedProvider = style({
   flexShrink: 0,
   gap: 6,
 })
-// The drawer's own actions on a tool, under its facts.
-export const drawerActions = style({ alignItems: 'center', display: 'flex', gap: 8 })
+// The drawer's header: the group and the name, then the tool's actions and the close.
+export const drawerHeader = style({
+  alignItems: 'flex-start',
+  display: 'flex',
+  gap: 12,
+  justifyContent: 'space-between',
+  minWidth: 0,
+})
+export const drawerName = style({ display: 'grid', gap: 4, minWidth: 0 })
+export const drawerGroup = style({ alignItems: 'center', display: 'flex', gap: 6, minWidth: 0 })
+export const drawerHeaderActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
+  gap: 4,
+})
+// The call path, then the line on where the tool comes from.
+export const identity = style({ display: 'grid', gap: 6, minWidth: 0 })
+// Rows of two lines, such as revisions and diagnostics, which fit the narrow drawer
+// where a table's columns would cut off. A row's action sits at its end.
+export const lines = style({ display: 'grid', listStyle: 'none', margin: 0, padding: 0 })
+export const line = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 12,
+  justifyContent: 'space-between',
+  paddingBlock: 10,
+  selectors: { '& + &': { borderTop: `1px solid ${theme.stroke.secondary}` } },
+})
+export const lineMain = style({ display: 'grid', gap: 2, minWidth: 0 })
 // The publish dialog's path: its label, its field, and what the review found there.
 export const publishPath = style({ display: 'grid', gap: 6, minWidth: 0 })
 // One fact with the icon that tells its kind apart, such as what the publish replaces.

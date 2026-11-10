@@ -52,19 +52,7 @@ export interface SharedToolRevisionView {
   restoredFrom: number | null
 }
 
-/** One publish or removal of a shared tool. */
-export interface SharedToolEventView {
-  id: string
-  action: 'published' | 'removed'
-  /** The revision a publish made current, or the one current at a removal. */
-  revision: number
-  /** Who did it; null when they are no longer an owner of the workspace. */
-  actor: PersonView | null
-  /** ISO time of the event. */
-  at: string
-}
-
-/** One shared tool with its current revision, its revisions and its history, for the drawer. */
+/** One shared tool with its current revision and its revisions, for the drawer. */
 export interface SharedToolDetailView extends ToolSourceView {
   kind: 'shared'
   /** Its path under `coral.shared`. */
@@ -76,12 +64,11 @@ export interface SharedToolDetailView extends ToolSourceView {
   publisher: PersonView | null
   /** ISO time of that publish. */
   publishedAt: string
-  /** Every revision, newest first. */
+  /**
+   * Every revision, newest first. Each publish makes one, so they are the
+   * shared tool's history too.
+   */
   revisions: SharedToolRevisionView[]
-  /** The latest publishes and removals, newest first. */
-  events: SharedToolEventView[]
-  /** Coral holds more events than `events` lists. */
-  eventsTruncated: boolean
 }
 
 /** What a publish copies: a private tool, or an earlier revision to restore. */

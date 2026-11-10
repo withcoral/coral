@@ -1,11 +1,11 @@
-import { Table, Typography } from '@/wax/components'
+import { Typography } from '@/wax/components'
 import { CodeBlock } from '@/wax/components/code-block'
 import { Section } from '@/views/management/layout'
 import type { ToolDiagnosticView, ToolSourceView } from './types'
+import * as styles from './tools.css'
 
-// The drawer caps the source and diagnostics; the rest scroll in place.
+// The drawer caps the source; the rest scrolls in place.
 const SOURCE_LINES = 20
-const DIAGNOSTIC_ROWS = 8
 
 const categories: Record<ToolDiagnosticView['category'], string> = {
   error: 'Error',
@@ -20,8 +20,9 @@ function location(d: ToolDiagnosticView) {
 }
 
 /**
- * The diagnostics Coral kept of a source, or `none` when it kept none. They
- * are advisory: a source with diagnostics still runs.
+ * The diagnostics Coral kept of a source, each on two lines: its message, then
+ * its kind and where it is. They are advisory: a source with diagnostics still
+ * runs. With none, it says `none`.
  */
 export function Diagnostics({
   diagnostics,
@@ -38,27 +39,18 @@ export function Diagnostics({
       {diagnostics.length === 0 ? (
         <Typography.Body as="p">{none}</Typography.Body>
       ) : (
-        <Table.Container
-          ariaLabel="Diagnostics"
-          layout="fixed"
-          maxRows={DIAGNOSTIC_ROWS}
-          columns={[
-            { label: 'Type', width: { fill: 1 } },
-            { label: 'Location', width: { fill: 1.4 } },
-            { label: 'Message', width: { fill: 4 } },
-          ]}
-        >
-          <Table.Head />
-          <Table.Body>
-            {diagnostics.map((d, index) => (
-              <Table.Row key={index}>
-                <Table.Cell>{categories[d.category]}</Table.Cell>
-                <Table.Cell>{location(d)}</Table.Cell>
-                <Table.Cell wrap>{`TS${d.code}: ${d.message}`}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Container>
+        <ul aria-label="Diagnostics" className={styles.lines}>
+          {diagnostics.map((d, index) => (
+            <li key={index} className={styles.line}>
+              <span className={styles.lineMain}>
+                <Typography.BodySmall as="span">{`TS${d.code}: ${d.message}`}</Typography.BodySmall>
+                <Typography.BodySmall as="span" variant="secondary">
+                  {`${categories[d.category]} · ${location(d)}`}
+                </Typography.BodySmall>
+              </span>
+            </li>
+          ))}
+        </ul>
       )}
       {truncated && (
         <Typography.BodySmall as="p" variant="secondary">
@@ -72,16 +64,15 @@ export function Diagnostics({
 /**
  * What Coral keeps of a private or a shared tool's source: its declaration,
  * the source, and the diagnostics of the save or the publish that made it.
+ * A source with no diagnostics shows no section for them.
  */
 export function ToolSource({
   source,
   diagnosticsNote,
-  noDiagnostics,
 }: {
   source: ToolSourceView
   /** Says which save or publish the diagnostics are from. */
   diagnosticsNote: string
-  noDiagnostics: string
 }) {
   return (
     <>
@@ -91,13 +82,15 @@ export function ToolSource({
       <Section title="Source">
         <CodeBlock value={source.source} format="typescript" framed maxLines={SOURCE_LINES} />
       </Section>
-      <Section title="Diagnostics" description={diagnosticsNote}>
-        <Diagnostics
-          diagnostics={source.diagnostics}
-          truncated={source.diagnosticsTruncated}
-          none={noDiagnostics}
-        />
-      </Section>
+      {source.diagnostics.length > 0 && (
+        <Section title="Diagnostics" description={diagnosticsNote}>
+          <Diagnostics
+            diagnostics={source.diagnostics}
+            truncated={source.diagnosticsTruncated}
+            none=""
+          />
+        </Section>
+      )}
     </>
   )
 }

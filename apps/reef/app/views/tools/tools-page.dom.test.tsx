@@ -223,6 +223,8 @@ test('the drawer starts at the top for a tool with the same key in another provi
   expect(scrollTo).toHaveBeenCalledWith({ top: 0 })
 })
 
+// Catches: the drawer showing another tool's prose, or a line that says the
+// tool has no description in place of none.
 test('the drawer ignores prose that belongs to another tool', () => {
   renderPage({
     entry: `${github.path}/tools/issues.list`,
@@ -236,7 +238,8 @@ test('the drawer ignores prose that belongs to another tool', () => {
   })
   const drawer = screen.getByRole('dialog')
   expect(within(drawer).queryByText('Stale prose')).not.toBeInTheDocument()
-  expect(within(drawer).getByText('No description.')).toBeInTheDocument()
+  expect(within(drawer).queryByText('Stale')).not.toBeInTheDocument()
+  expect(within(drawer).queryByText('No description.')).not.toBeInTheDocument()
 })
 
 const user = userEvent.setup()
@@ -671,12 +674,13 @@ const greet: ToolDetailView = {
   savedAt: '2026-11-09T14:27:03.000Z',
 }
 
-// Catches: a private tool's drawer without what Coral saved of it, with a
-// provider tool's call path, or offering a delete an archived workspace refuses.
+// Catches: a private tool's drawer without what Coral saved of it or who saved
+// it, with a provider tool's call path, or offering a delete an archived
+// workspace refuses.
 test.each([
   ['an active', 'active', true],
   ['an archived', 'archived', false],
-] as const)('the drawer shows your private tool in %s workspace', (_, state, deletes) => {
+] as const)('the drawer shows your private tool in %s workspace', async (_, state, deletes) => {
   renderPage({
     providers: [github, mine],
     entry: '/workspaces/demo/tools/private/people.greet',
@@ -688,13 +692,18 @@ test.each([
   expect(within(drawer).getByRole('heading', { name: 'people.greet' })).toBeInTheDocument()
   expect(within(drawer).getByText('one').tagName).toBe('STRONG')
   expect(within(drawer).getByText('coral.private.people.greet')).toBeInTheDocument()
+  expect(within(drawer).getByText('Your private tool')).toBeInTheDocument()
+  expect(within(drawer).getByText(/^Saved by you ·/)).toBeInTheDocument()
   expect(within(drawer).getByText('2026-11-09 14:27 UTC')).toBeInTheDocument()
   for (const section of ['Policy', 'Declaration', 'Source', 'Diagnostics'])
     expect(within(drawer).getByRole('heading', { name: section })).toBeInTheDocument()
   expect(within(drawer).getByText('TS6133: Unused.')).toBeInTheDocument()
-  expect(within(drawer).queryAllByRole('button', { name: 'Delete private tool' })).toHaveLength(
-    deletes ? 1 : 0,
-  )
+  // The delete is in the header's menu, which an archived workspace does not offer.
+  const menu = within(drawer).queryByRole('button', { name: 'More actions' })
+  expect(menu !== null).toBe(deletes)
+  if (!menu) return
+  await user.click(menu)
+  expect(await screen.findByRole('menuitem', { name: 'Delete private tool' })).toBeInTheDocument()
 })
 
 // Catches: a member offered a publish Coral refuses, with nothing to say an
@@ -760,17 +769,6 @@ const remind: SharedToolDetailView = {
       restoredFrom: null,
     },
   ],
-  events: [
-    { id: 'event-2', action: 'published', revision: 2, actor: ada, at: '2026-11-09T14:27:03.000Z' },
-    {
-      id: 'event-1',
-      action: 'published',
-      revision: 1,
-      actor: null,
-      at: '2026-11-02T09:00:00.000Z',
-    },
-  ],
-  eventsTruncated: false,
 }
 const openShared = (options: Parameters<typeof renderPage>[0] = {}) => {
   const rendered = renderPage({
@@ -819,35 +817,28 @@ test('tells a member that only an owner publishes a shared tool', () => {
 })
 
 // Catches: a shared tool's drawer that does not say who published it and at
-// which revision, that names a person who is no longer an owner by an
-// identifier, or that leaves out its revisions or its history.
-test('the drawer shows a shared tool with who published it, its revisions and its history', async () => {
+// which revision; that names a person who is no longer an owner by an
+// identifier; that leaves out its revisions; that shows a diagnostics section
+// with nothing in it; or that keeps a history tab that repeats the revisions.
+test('the drawer shows a shared tool with who published it and its revisions', async () => {
   const { drawer } = openShared()
   expect(within(drawer).getByRole('heading', { name: 'mail.remind' })).toBeInTheDocument()
+  expect(within(drawer).getByText('Shared tool')).toBeInTheDocument()
   expect(within(drawer).getByText('coral.shared.mail.remind')).toBeInTheDocument()
-  expect(within(drawer).getByText('Published by Ada · Revision 2')).toBeInTheDocument()
-  for (const section of ['Policy', 'Declaration', 'Source', 'Diagnostics'])
+  expect(within(drawer).getByText(/^Revision 2 · published by Ada ·/)).toBeInTheDocument()
+  for (const section of ['Policy', 'Declaration', 'Source'])
     expect(within(drawer).getByRole('heading', { name: section })).toBeInTheDocument()
+  expect(within(drawer).queryByRole('heading', { name: 'Diagnostics' })).toBeNull()
+  expect(within(drawer).queryByRole('tab', { name: /History/ })).toBeNull()
 
-  await user.click(within(drawer).getByRole('tab', { name: 'Revisions' }))
-  const revisions = within(within(drawer).getByRole('table', { name: 'Revisions' }))
-    .getAllByRole('row')
-    .slice(1)
+  await user.click(within(drawer).getByRole('tab', { name: 'Revisions 2' }))
+  const revisions = within(within(drawer).getByRole('list', { name: 'Revisions' }))
+    .getAllByRole('listitem')
     .map((row) => row.textContent)
   expect(revisions).toEqual([
-    expect.stringMatching(/^Revision 2Current.*Ada.*2026-11-09 14:27 UTC/),
+    expect.stringMatching(/^Revision 2Current.*Ada · 2026-11-09 14:27 UTC/),
     // Whoever published revision 1 is no longer an owner of the workspace.
-    expect.stringMatching(/^Revision 1A former owner2026-11-02 09:00 UTC/),
-  ])
-
-  await user.click(within(drawer).getByRole('tab', { name: 'History' }))
-  const history = within(within(drawer).getByRole('table', { name: 'History' }))
-    .getAllByRole('row')
-    .slice(1)
-    .map((row) => row.textContent)
-  expect(history).toEqual([
-    expect.stringMatching(/^Published revision 2Ada/),
-    expect.stringMatching(/^Published revision 1A former owner/),
+    expect.stringMatching(/^Revision 1a former owner · 2026-11-02 09:00 UTC/),
   ])
 })
 
@@ -855,7 +846,9 @@ test('the drawer shows a shared tool with who published it, its revisions and it
 // that heads the drawer.
 test('the drawer names a publisher who is no longer an owner as a former owner', () => {
   const { drawer } = openShared({ selectedToolDetail: { ...remind, publisher: null } })
-  expect(within(drawer).getByText('Published by a former owner · Revision 2')).toBeInTheDocument()
+  expect(
+    within(drawer).getByText(/^Revision 2 · published by a former owner ·/),
+  ).toBeInTheDocument()
 })
 
 const restoreReview: PublishReviewResult = {
@@ -899,7 +892,7 @@ test('an owner restores an earlier revision of a shared tool from its revisions'
       },
     ],
   })
-  await user.click(within(drawer).getByRole('tab', { name: 'Revisions' }))
+  await user.click(within(drawer).getByRole('tab', { name: /^Revisions/ }))
   expect(within(drawer).queryByRole('button', { name: 'Restore revision 2' })).toBeNull()
   await user.click(within(drawer).getByRole('button', { name: 'Restore revision 1' }))
 
@@ -911,8 +904,8 @@ test('an owner restores an earlier revision of a shared tool from its revisions'
 // Catches: a member offered a restore or a removal that Coral refuses.
 test('a member reads a shared tool and changes nothing', async () => {
   const { drawer } = openShared({ workspace: { ...workspaceView, effectiveRole: 'member' } })
-  expect(within(drawer).queryByRole('button', { name: 'Remove shared tool' })).toBeNull()
-  await user.click(within(drawer).getByRole('tab', { name: 'Revisions' }))
+  expect(within(drawer).queryByRole('button', { name: 'More actions' })).toBeNull()
+  await user.click(within(drawer).getByRole('tab', { name: /^Revisions/ }))
   expect(within(drawer).queryByRole('button', { name: /^Restore/ })).toBeNull()
 })
 
@@ -930,7 +923,8 @@ test('a refused removal of a shared tool stays in its dialog with the reason', a
       return { error: refusal, credential: null }
     },
   })
-  await user.click(within(drawer).getByRole('button', { name: 'Remove shared tool' }))
+  await user.click(within(drawer).getByRole('button', { name: 'More actions' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Remove shared tool' }))
   const dialog = await screen.findByRole('dialog', { name: 'Remove shared tool' })
   await user.click(within(dialog).getByRole('button', { name: 'Remove shared tool' }))
 

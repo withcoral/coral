@@ -14,7 +14,6 @@ import { Link, useLocation, useNavigate } from 'react-router'
 
 import { ActionBar, Banner, Button, Dialog, Inputs, Typography } from '@/wax/components'
 import { animations } from '@/wax/animations'
-import { CodeChip } from '@/wax/components/code-chip'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
@@ -72,8 +71,9 @@ import {
   SHARED_TOOL_REMOVED,
   toolPath,
 } from './addresses'
-import { PrivateToolDetail } from './private-tool-detail'
-import { publisherName, SharedToolDetail } from './shared-tool-detail'
+import { PrivateToolActions, PrivateToolDetail } from './private-tool-detail'
+import { SharedToolActions, SharedToolDetail, SharedToolProvenance } from './shared-tool-detail'
+import { ToolDrawerHeader, ToolIdentity } from './tool-drawer'
 import { PolicyMutations, usePolicyMutations } from '@/views/providers/policy-mutations'
 import { useReadRecipe } from '@/views/providers/read-recipe'
 import {
@@ -2325,6 +2325,19 @@ function ToolUsageSection({ usage }: { usage: ToolUsage }) {
   )
 }
 
+/** Names the group of the tool the drawer shows, above its name. */
+function drawerGroupLabel(provider: ProviderView, tool: ToolView) {
+  if (provider.kind === 'shared') return 'Shared tool'
+  if (provider.kind === 'private')
+    return tool.agent ? `Private tool of ${tool.agent.label}` : 'Your private tool'
+  return `${providerLabel(provider)} tool`
+}
+
+/** Its children, unless the drawer docks beside the table, whose rows already show them. */
+function UnlessDocked({ children }: { children: ReactNode }) {
+  return Dialog.useRailMode() === 'docked' ? null : children
+}
+
 function ToolDetailsDrawer({
   provider: routedProvider,
   canChange,
@@ -2401,57 +2414,65 @@ function ToolDetailsDrawer({
           fullWidthOnMobile
           onKeyDown={(event) => onKeyDown(event.nativeEvent)}
         >
-          <Dialog.Title>{tool?.relativePath ?? 'Tool details'}</Dialog.Title>
-          {tool && (
+          {tool && provider ? (
             // Two private tools can have one call path: your own and an agent's.
             <div key={`${callPath}:${tool.key}`} ref={scrollToTop} className={styles.stack}>
-              {authored ? (
-                <Markdown>{authored.description}</Markdown>
-              ) : description && description !== summary ? (
-                <Markdown>{prose!.description}</Markdown>
-              ) : (
-                <Typography.BodySmall as="p">
-                  {prose?.summary || 'No description.'}
-                </Typography.BodySmall>
-              )}
-              <div className={styles.callPath}>
-                <CodeChip>{callPath}</CodeChip>
-                <Button.CopyButton
-                  textToCopy={callPath}
-                  ariaLabel="Copy call path"
-                  size="22"
-                  variant="bare"
-                />
-              </div>
-              {saved && (
-                <Typography.BodySmall as="p">
-                  Last saved <SavedAt at={saved.savedAt} />
-                </Typography.BodySmall>
-              )}
-              {shared && (
-                <Typography.BodySmall as="p">
-                  {`Published by ${publisherName(shared.publisher, workspace.currentUser)} · Revision ${shared.revision}`}
-                </Typography.BodySmall>
-              )}
-              {shownHints(tool.hints).length > 0 && (
-                <div className={styles.pills}>
-                  <HintLabels hints={tool.hints} />
-                </div>
-              )}
-              {provider && (
-                <ToolPolicySection
-                  canChange={canChange}
-                  form={form}
-                  provider={provider}
-                  tool={tool}
-                />
-              )}
-              {provider?.searchIndex?.state === 'pending' && (
+              <ToolDrawerHeader
+                group={{
+                  label: drawerGroupLabel(provider, tool),
+                  logo: providerLabel(provider),
+                  icons: provider.icons,
+                }}
+                title={tool.relativePath}
+                actions={
+                  saved ? (
+                    <PrivateToolActions
+                      detail={saved}
+                      callPath={callPath}
+                      form={form}
+                      canDelete={canDelete}
+                      // An archived workspace accepts no publish, an owner's included.
+                      publish={
+                        canChange
+                          ? {
+                              workspacePath: workspace.path,
+                              policy: tool.policy,
+                              currentUser: workspace.currentUser,
+                            }
+                          : canDelete && workspace.effectiveRole !== 'owner'
+                            ? 'owner-only'
+                            : null
+                      }
+                    />
+                  ) : shared ? (
+                    <SharedToolActions
+                      detail={shared}
+                      callPath={callPath}
+                      form={form}
+                      canChange={canChange}
+                    />
+                  ) : null
+                }
+              />
+              <ToolIdentity
+                callPath={callPath}
+                provenance={
+                  saved ? (
+                    <>
+                      {`Saved by ${tool.agent?.label ?? 'you'} · `}
+                      <SavedAt at={saved.savedAt} />
+                    </>
+                  ) : shared ? (
+                    <SharedToolProvenance detail={shared} currentUser={workspace.currentUser} />
+                  ) : null
+                }
+              />
+              {provider.searchIndex?.state === 'pending' && (
                 <Banner variant="info" title="Indexing…">
                   Search cannot find this tool yet. Agents can still call it.
                 </Banner>
               )}
-              {provider?.searchIndex?.state === 'failed' && (
+              {provider.searchIndex?.state === 'failed' && (
                 <Banner variant="info" title="Not in search">
                   Search cannot find this tool. Agents can still call it.
                 </Banner>
@@ -2461,40 +2482,55 @@ function ToolDetailsDrawer({
                   {tool.reasons.join(' ') || 'Coral did not provide a reason.'}
                 </Banner>
               )}
-              {saved && (
-                <PrivateToolDetail
-                  detail={saved}
-                  callPath={callPath}
-                  form={form}
-                  canDelete={canDelete}
-                  // An archived workspace accepts no publish, an owner's included.
-                  publish={
-                    canChange
-                      ? {
-                          workspacePath: workspace.path,
-                          policy: tool.policy,
-                          currentUser: workspace.currentUser,
-                        }
-                      : canDelete && workspace.effectiveRole !== 'owner'
-                        ? 'owner-only'
-                        : null
-                  }
-                />
+              {/* A tool with no description shows none, not a line that says so. */}
+              {authored ? (
+                <Markdown>{authored.description}</Markdown>
+              ) : description && description !== summary ? (
+                <Markdown>{prose!.description}</Markdown>
+              ) : (
+                summary && <Typography.BodySmall as="p">{summary}</Typography.BodySmall>
               )}
+              {shownHints(tool.hints).length > 0 && (
+                <div className={styles.pills}>
+                  <HintLabels hints={tool.hints} />
+                </div>
+              )}
+              {/* Docked, the drawer sits beside the tool's row, which shows and changes its
+                  policy. Floating, the drawer covers that column, so it shows the policy. */}
+              <UnlessDocked>
+                <ToolPolicySection
+                  canChange={canChange}
+                  form={form}
+                  provider={provider}
+                  tool={tool}
+                />
+              </UnlessDocked>
+              {usage ? (
+                <ToolUsageSection usage={usage} />
+              ) : (
+                toolCalls && (
+                  <Typography.BodySmall as="p" variant="secondary">
+                    {`No calls in the last ${toolCalls.days} days.`}
+                  </Typography.BodySmall>
+                )
+              )}
+              {saved && <PrivateToolDetail detail={saved} />}
               {shared && (
                 <SharedToolDetail
                   detail={shared}
-                  callPath={callPath}
                   form={form}
                   workspace={workspace}
                   canChange={canChange}
                   policy={tool.policy}
                 />
               )}
-              {usage && <ToolUsageSection usage={usage} />}
             </div>
+          ) : (
+            <>
+              <Dialog.Title>Tool details</Dialog.Title>
+              <Dialog.Close />
+            </>
           )}
-          <Dialog.Close />
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Rail>

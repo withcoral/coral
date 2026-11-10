@@ -5,7 +5,6 @@ import { AuthoredToolDiagnosticCategory } from '@/generated/coral/management/v1/
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderBlocker, ProviderState } from '@/generated/coral/management/v1/provider_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
-import { SharedToolEventAction } from '@/generated/coral/management/v1/shared_tool_pb'
 import { coralRefusal, fakeManagementTransport } from '@/lib/management.test-support'
 import { action, loader } from './tools'
 import { loader as formerListLoader } from './providers-redirect'
@@ -208,38 +207,6 @@ function serve(role: WorkspaceRole, { disabled = false } = {}) {
               ]
             : [],
       }),
-      listSharedToolEvents: record(
-        'listSharedToolEvents',
-        ({ sharedTool }: { sharedTool: string }) => ({
-          events:
-            sharedTool === remind
-              ? [
-                  {
-                    id: 'event-2',
-                    action: SharedToolEventAction.PUBLISHED,
-                    revision: 2n,
-                    actor: 'users/ada',
-                    eventTime: at(1_700_000_200),
-                  },
-                  // An action a newer Coral records, which this Reef does not know.
-                  {
-                    id: 'event-x',
-                    action: 9 as SharedToolEventAction,
-                    revision: 1n,
-                    actor: 'users/ada',
-                  },
-                  {
-                    id: 'event-1',
-                    action: SharedToolEventAction.PUBLISHED,
-                    revision: 1n,
-                    actor: 'users/gone',
-                    eventTime: at(1_700_000_100),
-                  },
-                ]
-              : [],
-          nextPageToken: 'more',
-        }),
-      ),
       removeSharedTool: record(
         'removeSharedTool',
         ({ path, expectedRevision }: { path: string; expectedRevision: bigint }) => {
@@ -439,11 +406,9 @@ it('reads an agent’s private tool for an owner only', async () => {
     await expect(refused(args(address, agentTool) as never)).rejects.toMatchObject({ status: 404 })
 })
 
-// Catches: a drawer without the source, the revisions or the history; a
-// publisher who left shown by an identifier, or a person named who is no
-// longer an owner; an event this Reef cannot name shown as a publish; or a
-// history that reads as complete when Coral holds more.
-it('reads the open shared tool with its revisions, its history and who published', async () => {
+// Catches: a drawer without the source or the revisions; or a publisher who
+// left shown by an identifier, or a person named who is no longer an owner.
+it('reads the open shared tool with its revisions and who published', async () => {
   serve(WorkspaceRole.MEMBER)
   const result = await selectionLoader(
     args('tools/shared/mail.remind', { group: 'shared', tool: 'mail.remind' }) as never,
@@ -477,28 +442,7 @@ it('reads the open shared tool with its revisions, its history and who published
         restoredFrom: null,
       },
     ],
-    events: [
-      {
-        id: 'event-2',
-        action: 'published',
-        revision: 2,
-        actor: ada,
-        at: '2023-11-14T22:16:40.000Z',
-      },
-      {
-        id: 'event-1',
-        action: 'published',
-        revision: 1,
-        actor: null,
-        at: '2023-11-14T22:15:00.000Z',
-      },
-    ],
-    eventsTruncated: true,
   })
-  // The history is this shared tool's own, not the workspace's.
-  expect(called('listSharedToolEvents').map((call) => call.request)).toMatchObject([
-    { parent, sharedTool: remind },
-  ])
   await expect(
     selectionLoader(args('tools/shared/gone', { group: 'shared', tool: 'gone' }) as never),
   ).rejects.toMatchObject({ status: 404 })

@@ -1,10 +1,7 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data, redirect, type RouterContextProvider } from 'react-router'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
-import {
-  SharedToolEventAction,
-  type SharedToolRevision,
-} from '@/generated/coral/management/v1/shared_tool_pb'
+import type { SharedToolRevision } from '@/generated/coral/management/v1/shared_tool_pb'
 import type { PersonView } from '@/views/management/types'
 import { SHARED_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderView, WorkspaceView } from '@/views/providers/types'
@@ -62,12 +59,9 @@ export async function sharedGroup(
   }
 }
 
-// The drawer lists this many events. A shared tool rarely has more.
-const EVENT_PAGE_SIZE = 100
-
 /**
  * Reads the one shared tool the drawer shows: its current revision with its
- * source, every revision, and its latest publishes and removals.
+ * source, and every revision.
  */
 export async function sharedToolDetail(
   api: Pick<ManagementApi, 'sharedTools' | 'memberships'>,
@@ -82,13 +76,8 @@ export async function sharedToolDetail(
   })
   const current = tool.currentRevision
   if (!current) throw new Response('Coral is not available.', { status: 503 })
-  const [{ revisions }, history, person] = await Promise.all([
+  const [{ revisions }, person] = await Promise.all([
     api.sharedTools.listSharedToolRevisions({ sharedTool: tool.name }),
-    api.sharedTools.listSharedToolEvents({
-      parent: workspace,
-      sharedTool: tool.name,
-      pageSize: EVENT_PAGE_SIZE,
-    }),
     ownersByUser(api, workspace),
   ])
   return {
@@ -106,25 +95,7 @@ export async function sharedToolDetail(
       publishedAt: isoTime(revision.publishTime),
       restoredFrom: Number(revision.restoredFromRevision) || null,
     })),
-    events: history.events.flatMap((event) => {
-      const action = eventActions[event.action]
-      // A newer Coral may record an action this Reef does not know.
-      if (!action) return []
-      return {
-        id: event.id,
-        action,
-        revision: Number(event.revision),
-        actor: person(event.actor),
-        at: isoTime(event.eventTime),
-      }
-    }),
-    eventsTruncated: history.nextPageToken !== '',
   }
-}
-
-const eventActions: Partial<Record<SharedToolEventAction, 'published' | 'removed'>> = {
-  [SharedToolEventAction.PUBLISHED]: 'published',
-  [SharedToolEventAction.REMOVED]: 'removed',
 }
 
 function sourceView(
