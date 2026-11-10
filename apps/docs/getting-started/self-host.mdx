@@ -39,7 +39,7 @@ pre-v1 Coral state detected at '<configuration folder>'; move or remove it befor
 pre-v1 Coral database state detected; move or remove it, or configure a fresh database before starting this version of Coral
 ```
 
-Coral never deletes, converts or archives old state. Don't start a Coral 1.0 container on a 0.x volume, because the container overwrites `config.toml` there.
+Coral never deletes, converts or archives old state. Don't start a Coral 1.0 container with `CORAL_CONFIG` on a 0.x volume, because the container then overwrites `config.toml` there. See [Container image](/reference/configuration#container-image).
 
 To start Coral 1.0:
 

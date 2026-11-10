@@ -57,9 +57,9 @@ Each of these variables stops sending for the Coral process that reads it:
 
 | Variable          | Stops sending when it is                   |
 | ----------------- | ------------------------------------------ |
-| `DO_NOT_TRACK`    | Set to a value other than `0` or `false`   |
-| `CORAL_TELEMETRY` | `0` or `false`                             |
-| `CI`              | Set, to any value                          |
+| `DO_NOT_TRACK`    | Set to a value other than empty, `0` or `false` |
+| `CORAL_TELEMETRY` | `0` or `false`                                  |
+| `CI`              | Set, to any value, even an empty one            |
 
 Coral ignores spaces around a value and ignores letter case. Coral reads these variables only when it starts. Restart Coral after you change one.
 
