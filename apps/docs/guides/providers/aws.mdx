@@ -42,9 +42,9 @@ flowchart LR
 
 <Steps titleSize="h3">
   <Step title="Create the IAM identity">
-    Create an IAM role for the bridge. Outside AWS, create an IAM user with an access key instead.
+    [Create an IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create.html) for the bridge. The role's trust policy depends on where the bridge runs. Step 3 links to the AWS page for each platform. Outside AWS, [create an IAM user](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html) with an [access key](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html) instead.
 
-    The AWS MCP Server needs no permissions of its own. Each tool call reaches the AWS service with the bridge's identity, and that service checks the identity's IAM policies. Attach the policies for the access you want. For read-only access, the AWS managed policy `ReadOnlyAccess` is a good start:
+    The AWS MCP Server needs no permissions of its own. Each tool call reaches the AWS service with the bridge's identity, and that service checks the identity's IAM policies. Attach the policies for the access you want. For read-only access, the AWS managed policy `ReadOnlyAccess` is a good start. For a role, attach it with this command:
 
     ```bash
     aws iam attach-role-policy \
@@ -96,6 +96,8 @@ flowchart LR
               - "8000"
               - --healthEndpoint
               - /healthz
+              - --logLevel
+              - none
             environment:
               SUPERGATEWAY_API_KEY: ${AWS_MCP_API_KEY}
               AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
@@ -119,7 +121,10 @@ flowchart LR
               }
         ```
 
-        Set `AWS_MCP_API_KEY` to the key from the previous step.
+        Set these variables in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file:
+
+        - `AWS_MCP_API_KEY`: the key from the previous step.
+        - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: the IAM user's access key.
 
         On Amazon EC2 or Amazon ECS, remove the two `AWS_` variables. On EC2, [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). On ECS, set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). The proxy then uses that role. On EC2, also set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
 
@@ -197,6 +202,8 @@ flowchart LR
                     - "8000"
                     - --healthEndpoint
                     - /healthz
+                    - --logLevel
+                    - none
                   env:
                     - name: SUPERGATEWAY_API_KEY
                       valueFrom:
@@ -249,26 +256,28 @@ flowchart LR
     | `--metadata AWS_REGION=<region>` | The default Region for AWS operations. Change it when your resources are in a different Region from the endpoint. |
     | `--read-only` | Optional. Hides the tools that can write. This includes the run script tool, the only tool that calls AWS APIs, so the documentation and Region tools remain. For read-only access to AWS, use IAM policies instead. |
 
-    Supergateway writes each MCP request and result to the container's logs. To keep AWS data out of the logs, add `--logLevel none` to Supergateway's arguments. It then also hides the proxy's error messages.
+    The examples set `--logLevel none`. Without it, Supergateway writes each MCP request and result to the container's logs, which puts AWS data there. The option also hides the proxy's error messages. Remove it while you debug the bridge.
 
     The `4.2.2-uvx` and `1.8.0` versions are examples. Check [Supergateway's tags](https://hub.docker.com/r/supercorp/supergateway/tags) and the [proxy's releases](https://github.com/aws/mcp-proxy-for-aws/releases) for newer ones.
 
   </Step>
   <Step title="Let Coral reach the bridge">
-    With `[auth]` configured, Coral denies provider calls to private network addresses. The bridge has a private address and serves plain HTTP, so set the [`[outbound]`](/reference/configuration#outbound) policy in Coral's `config.toml`:
+    With `[auth]` configured, Coral denies provider calls to private network addresses. The bridge has a private address and serves plain HTTP, so add the [`[outbound]`](/reference/configuration#outbound) policy to Coral's configuration. In the Docker Compose guide, that is the `CORAL_CONFIG` value in the compose file. In the Kubernetes guide, it is the `config.toml` key of the Coral ConfigMap.
 
     ```toml
     [outbound]
     private_networks = "http-and-https"
     ```
 
-    Restart Coral after you change the file.
+    Then recreate the Coral container, or restart the Coral Deployment.
 
     <Note>
-      This policy applies to every provider. A workspace owner can then add a
-      provider at any private address that Coral can reach. To keep the `https`
-      policy, serve the bridge over TLS and use its `https://` URL in the next
-      step.
+      Over plain HTTP, the API key is not encrypted between Coral and the
+      bridge. Use it only where you trust the network between them, such as the
+      compose project's own network. The policy also applies to every provider:
+      a workspace owner can then add a provider at any private address that
+      Coral can reach. To avoid both, serve the bridge over TLS, keep the
+      `https` policy and use the bridge's `https://` URL in the next step.
     </Note>
 
   </Step>
@@ -300,9 +309,11 @@ Supergateway answers `401` on every path when the key is missing. Coral then sto
 
 ## Troubleshooting
 
+With `--logLevel none`, the bridge logs nothing. Remove the option to see the errors in the bridge's logs.
+
 | Problem | What to do |
 | --- | --- |
-| "Coral's outbound settings do not allow this address." | Set the `[outbound]` policy, then restart Coral. |
+| "Coral's outbound settings do not allow this address." | Add the `[outbound]` policy to Coral's configuration, then restart Coral. |
 | "Coral cannot read this server's OAuth resource metadata." | The URL reaches Supergateway directly. Use the Caddy URL, on port `8080`. |
 | The bridge returns `401 Unauthorized` | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key. |
 | `No AWS credentials found` in the bridge's logs | The proxy found no credentials. Check the environment variables, the instance profile or the service account's role. |
