@@ -1,7 +1,9 @@
 import { useNavigate, useSearchParams } from 'react-router'
 import { Card, Tabs, Typography } from '@/wax/components'
 import { SegmentedControl } from '@/wax/components/segmented-control'
-import { Skeleton } from '@/wax/components/skeleton'
+import { Skeleton, SkeletonText } from '@/wax/components/skeleton'
+import { Meter } from '@/wax/components/charts'
+import * as Table from '@/wax/components/table'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { SUMMARY_DAYS, type ActivitySummaryData, type SummaryDays } from '@/lib/activity-summary'
 import { describeContextImpact } from '../context-impact'
@@ -11,6 +13,7 @@ import { isYou, joined, number, share } from './format'
 import { NeedsYouLens } from './needs-you-lens'
 import type { SummaryProvider } from './tools'
 import { Note } from './parts'
+import { OUTCOME_PARTS, TOOL_COLUMNS } from './calls-lens'
 import * as styles from './summary.css'
 
 export type { SummaryProvider } from './tools'
@@ -149,14 +152,7 @@ export function ActivitySummary({
         )}
       </div>
       {loading ? (
-        <Card.Container>
-          <div className={styles.loading} role="status">
-            <span className={visuallyHidden}>Loading activity…</span>
-            {LENSES.map((value) => (
-              <Skeleton key={value} height="56px" width="100%" />
-            ))}
-          </div>
-        </Card.Container>
+        <LoadingSummary />
       ) : summary ? (
         <Card.Container flush>
           <Tabs.Root value={lens} onValueChange={(value) => setLens(value as Lens)}>
@@ -186,5 +182,84 @@ export function ActivitySummary({
         </Card.Container>
       )}
     </section>
+  )
+}
+
+/** Rows the tools table shows while the summary loads. */
+const LOADING_ROWS = 3
+
+/**
+ * The card as the Calls lens will fill it: the three metrics, the outcome cards, the tools
+ * filter and the tools table. It holds the summary's place, so the page does not move when
+ * the summary arrives. Assistive technology hears only the status.
+ */
+function LoadingSummary() {
+  return (
+    <Card.Container flush>
+      <span role="status" className={visuallyHidden}>
+        Loading activity…
+      </span>
+      <div aria-hidden>
+        <Tabs.MetricListSkeleton count={LENSES.length} />
+        <div className={`${styles.panel} ${styles.lens}`}>
+          <div className={styles.statCards}>
+            {OUTCOME_PARTS.map((part) => (
+              <Card.Container key={part.key} compact>
+                <div className={styles.loadingStat}>
+                  <SkeletonText variant="bodySmall" width="72px" />
+                  <SkeletonText variant="headingSmall" width="56px" />
+                </div>
+              </Card.Container>
+            ))}
+          </div>
+          <div className={styles.tools}>
+            <SkeletonText variant="bodySmall" width="40px" />
+            <div className={`${styles.filter} ${styles.loadingFilter}`}>
+              <Skeleton height="100%" width="100%" borderRadius="8px" />
+            </div>
+          </div>
+          <Table.Container variant="card" layout="fixed" columns={TOOL_COLUMNS}>
+            <Table.Head>
+              <Table.Row>
+                {TOOL_COLUMNS.map((column, index) => (
+                  <Table.Heading key={index} align={column.align}>
+                    {column.label}
+                  </Table.Heading>
+                ))}
+              </Table.Row>
+            </Table.Head>
+            <Table.Body>
+              {Array.from({ length: LOADING_ROWS }, (_, index) => (
+                <Table.Row key={index}>
+                  <Table.Cell>
+                    <span className={styles.tool}>
+                      <Skeleton
+                        height="20px"
+                        width="20px"
+                        borderRadius="4px"
+                        style={{ flexShrink: 0 }}
+                      />
+                      <SkeletonText variant="bodySmall" width="160px" />
+                    </span>
+                  </Table.Cell>
+                  <Table.Cell>
+                    <span className={styles.barCell}>
+                      <SkeletonText variant="bodySmall" width="24px" />
+                      <Meter value={0} max={1} size="small" />
+                    </span>
+                  </Table.Cell>
+                  <Table.Cell>
+                    <SkeletonText variant="bodySmall" width="32px" />
+                  </Table.Cell>
+                  <Table.Cell>
+                    <SkeletonText variant="bodySmall" width="12px" />
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Container>
+        </div>
+      </div>
+    </Card.Container>
   )
 }

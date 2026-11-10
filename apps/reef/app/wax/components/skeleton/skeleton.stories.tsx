@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Skeleton } from './skeleton'
+import { Skeleton, SkeletonText } from './skeleton'
 
 const meta = {
   argTypes: {
@@ -98,6 +98,18 @@ export const AllSizes: Story = {
       <Skeleton height="20px" width="250px" />
       <Skeleton height="24px" width="300px" />
       <Skeleton height="32px" width="350px" />
+    </div>
+  ),
+}
+
+/** Lines as tall as the text that replaces them: a label, a heading-sized number, a detail. */
+export const TextLines: Story = {
+  args: {},
+  render: () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '200px' }}>
+      <SkeletonText variant="bodySmall" width="64px" />
+      <SkeletonText variant="headingMedium" width="56px" />
+      <SkeletonText variant="bodySmall" width="96px" />
     </div>
   ),
 }
