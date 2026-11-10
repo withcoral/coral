@@ -4,6 +4,9 @@ status: accepted
 
 # Universal Search never gates the catalog
 
+Amended by [ADR 0033](0033-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md) on 2026-11-10: the
+vector table keeps no foreign key, not even to `workspace_records`; the Reconcile task removes its orphans.
+
 Universal Search is a projection of the catalog. It never changes whether an Operation can be called, and no Setup or
 Publication waits for it. An index bound or an indexing failure is logged when the index is written and is never a
 reason to refuse a call. An agent that cannot find an Operation through search can still call it.

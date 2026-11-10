@@ -474,8 +474,9 @@ Tool can still require that User to connect an Account before dispatch. Search i
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Private
-Tools and the Workspace's Shared Tools, which Programs reach through the Built-in Tool `coral.search`. A query returns Search Hits with
-evidence; exact Call Paths return their Authoring Descriptions fitted to the describe budget, or the types named in
+Tools and the Workspace's Shared Tools, which Programs reach through the Built-in Tool `coral.search`. A query returns
+ranked Search Hits, matched by words and by meaning; exact Call Paths return their Authoring Descriptions fitted to the
+describe budget, or the types named in
 `types`, and name the paths that match nothing with nearby Discoverable Call Paths. It searches only
 secret-free catalog material and does not execute a Private or Shared Tool or dispatch to an Upstream Service. Provider-native
 search is an ordinary Tool that only a Coral Program can invoke. V1 Universal Search stores no Tool Result,
@@ -492,10 +493,8 @@ carries its source and current revision, and that of a Shared Tool never names w
 _Avoid_: Authoring Kind, search document
 
 **Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
-Path, signature line, whether that line is complete enough to call from, and Description Snippet; a Guidance Snippet
-and matched tags only where a query term matched them, and the matched arguments that its cut signature line does not
-show; for a Tool, its declared Tool
-Hints, and its approval requirement and deprecation flag only when set.
+Path, signature line, whether that line is complete enough to call from, and Description Snippet; for a Tool, its
+declared Tool Hints, and its approval requirement and deprecation flag only when set.
 The signature line puts required inputs first and always keeps the result, stating plainly when the result is text,
 usually JSON. Whether the line is complete depends on its inputs alone. The Call Path names the kind and the Provider,
 the rank reflects why the hit matched, and an exact lookup gives
@@ -512,10 +511,11 @@ attempt completes, then indexed or failed by its outcome. A later attempt can tu
 Generation's state is never the Provider's. Reef shows pending and failed on the Provider and its Tools. The state never
 changes what a caller may invoke. _Avoid_: search readiness, index health
 
-**Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
-matched query term when the description matched, otherwise its beginning.
+**Description Snippet**: The beginning of an Entity's description, cut to a bound.
 
-**Guidance Snippet**: The same bounded window over an Entity's guidance, shown only when a query term matched in it.
+**Embedder**: The Universal Search component that gives each Search Entity a vector of its text, so a query can match
+meaning as well as words. It runs after indexing, never on the catalog's path, and a Search Entity without a current
+vector ranks by words alone. _Avoid_: semantic retriever, embedding service, vector index
 
 **Tool Invocation**: One child record of a Program Run and one attempt to call one Tool, making at most one
 upstream dispatch in v1. A call to a Private Tool or Shared Tool makes none: each Tool call its body makes is a child

@@ -4,6 +4,10 @@ status: accepted
 
 # Split Universal Search into an engine and one retriever per Search Entity kind
 
+Amended by [ADR 0033](0033-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md) on 2026-11-10: Search
+Hits carry no evidence, so only positions and whether each entry is a strong match cross into the engine, and each
+retriever merges a vector list with its lexical list.
+
 Universal Search has one engine and one retriever per Search Entity kind: Tools and Saved Functions. The engine
 normalizes the query, asks every retriever, fuses their ranked lists by position and pages the result; it never
 branches on kind. A retriever owns everything about its kind: applying its owners' visibility rules, matching, ranking,
