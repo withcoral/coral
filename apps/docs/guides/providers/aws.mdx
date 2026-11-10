@@ -15,7 +15,7 @@ The bridge uses three existing tools in two containers.
 
 - [MCP Proxy for AWS](https://github.com/aws/mcp-proxy-for-aws) signs each request with the bridge's AWS credentials and sends it to the AWS MCP Server.
 - [Supergateway](https://github.com/supercorp-ai/supergateway) runs the proxy, serves it as a Streamable HTTP endpoint and checks an API key on each request.
-- [Caddy](https://caddyserver.com) sits in front of Supergateway and answers Coral's lookups for OAuth metadata, which Supergateway does not handle.
+- [Caddy](https://caddyserver.com) sits in front of Supergateway. It answers `404` to Coral's lookups for OAuth metadata, so that Coral offers bearer token sign-in.
 
 ```mermaid
 flowchart LR
