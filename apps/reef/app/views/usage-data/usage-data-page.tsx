@@ -1,10 +1,10 @@
-import { Banner, Card, Typography } from '@/wax/components'
+import { Banner, Button, Card, Typography } from '@/wax/components'
 import { CodeBlock } from '@/wax/components/code-block'
 import { Switch } from '@/wax/components/inputs/switch'
 import { PageLayout } from '@/wax/components/page-layout'
 import { SettingsLayout } from '@/wax/components/settings-layout'
 import { SavedAt } from '@/views/functions/saved-at'
-import { blockReason, contents } from './copy'
+import { blockReason, contents, docsUrl } from './copy'
 import type { UsageDataView } from './types'
 import * as styles from './usage-data.css'
 
@@ -14,9 +14,12 @@ const REPORT_LINES = 20
 /** The deployment's usage data setting and the exact reports. Every member can read it. */
 export function UsageDataPage({
   view: v,
+  error,
   onChoose,
 }: {
   view: UsageDataView
+  /** Why Coral did not apply the owner's last change. */
+  error?: string
   onChoose: (share: boolean) => void
 }) {
   return (
@@ -26,9 +29,11 @@ export function UsageDataPage({
         header={
           <div className={styles.heading}>
             <Typography.HeadingLarge as="h2">Usage data</Typography.HeadingLarge>
+            <Button.ExternalLink href={docsUrl}>Read the usage data docs</Button.ExternalLink>
           </div>
         }
       >
+        {error && <Banner variant="error">{error}</Banner>}
         {v.block && <Banner variant="info">{blockReason(v.block, v.kind)}</Banner>}
         <Card.Card
           title="Share anonymous usage data"

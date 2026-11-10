@@ -40,6 +40,9 @@ pub struct Launch {
     /// A config directory the launcher selects. Without one, the environment
     /// or the platform default selects it.
     pub config_dir: Option<std::path::PathBuf>,
+    /// The variables that stop this process from sending usage data, as
+    /// bootstrap read them. Without them, the process sends nothing.
+    pub usage_environment: Option<coral_usage::SendEnvironment>,
 }
 
 impl Launch {
@@ -55,6 +58,10 @@ impl Launch {
         };
         let builder = match self.config_dir {
             Some(config_dir) => builder.with_config_dir(config_dir),
+            None => builder,
+        };
+        let builder = match self.usage_environment {
+            Some(environment) => builder.with_usage_environment(environment),
             None => builder,
         };
         if self.desktop {

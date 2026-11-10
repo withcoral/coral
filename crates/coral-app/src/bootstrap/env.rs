@@ -4,8 +4,8 @@ use std::env::VarError;
 use std::path::PathBuf;
 
 use super::consts::{
-    CORAL_CONFIG_DIR, CORAL_DESKTOP, CORAL_LOCAL_WEB_URL, CORAL_STOP_ON_STDIN_CLOSE,
-    CORAL_TRACE_PARENT,
+    CI, CORAL_CONFIG_DIR, CORAL_DESKTOP, CORAL_LOCAL_WEB_URL, CORAL_STOP_ON_STDIN_CLOSE,
+    CORAL_TELEMETRY, CORAL_TRACE_PARENT, DO_NOT_TRACK,
 };
 use super::error::AppError;
 use super::runtime::Launch;
@@ -94,6 +94,11 @@ fn env_var(name: &str) -> Result<Option<String>, VarError> {
     }
 }
 
+/// A variable's value, with a value that is not Unicode still counting as set.
+fn set_even_if_not_unicode(value: Result<Option<String>, VarError>) -> Option<String> {
+    value.unwrap_or_else(|_not_unicode| Some("set".to_owned()))
+}
+
 impl Launch {
     /// Reads what the launching process set for this launch.
     ///
@@ -101,6 +106,7 @@ impl Launch {
     /// closing its stdin sets `CORAL_STOP_ON_STDIN_CLOSE=1`; it is opt-in
     /// because a container without an attached stdin starts with stdin closed.
     /// `CORAL_LOCAL_WEB_URL` is a local launcher's web origin.
+    /// `DO_NOT_TRACK`, `CORAL_TELEMETRY` and `CI` can stop usage data.
     ///
     /// # Errors
     ///
@@ -121,6 +127,13 @@ impl Launch {
             stop_on_stdin_close: flag(CORAL_STOP_ON_STDIN_CLOSE),
             service_version: None,
             config_dir: None,
+            usage_environment: Some(coral_usage::SendEnvironment {
+                // A DO_NOT_TRACK or CI that is not Unicode is still set. A
+                // CORAL_TELEMETRY that is not Unicode is not `0` or `false`.
+                do_not_track: set_even_if_not_unicode(env_var(DO_NOT_TRACK)),
+                coral_telemetry: env_var(CORAL_TELEMETRY).ok().flatten(),
+                ci: set_even_if_not_unicode(env_var(CI)),
+            }),
         })
     }
 }

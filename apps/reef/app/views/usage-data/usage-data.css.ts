@@ -3,6 +3,7 @@ import { style } from '@/wax/css'
 export const heading = style({
   display: 'flex',
   flexDirection: 'column',
+  alignItems: 'flex-start',
   gap: '6px',
 })
 

@@ -140,11 +140,12 @@ const sharing: UsageDataView = {
 }
 
 /** The page with a working switch. A real owner's choice goes to the server. */
-function Demo({ view: initial }: { view: UsageDataView }) {
+function Demo({ view: initial, error }: { view: UsageDataView; error?: string }) {
   const [view, setView] = useState(initial)
   return (
     <UsageDataPage
       view={view}
+      error={error}
       onChoose={(share) => setView((v) => ({ ...v, choice: share ? 'on' : 'off' }))}
     />
   )
@@ -224,6 +225,31 @@ export const TurnedOffByCoralTelemetry: Story = {
 
 export const TurnedOffByCi: Story = {
   args: { view: { ...sharing, block: { kind: 'environment', variable: 'CI' } } },
+}
+
+/** A reason from a newer Coral that this Reef cannot name still shows a banner. */
+export const TurnedOffForAnUnknownReason: Story = {
+  args: { view: { ...sharing, block: { kind: 'unknown' } } },
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText(
+        'Coral sends no usage data from your computer, even when sharing is on.',
+      ),
+    ).toBeVisible()
+  },
+}
+
+const refused =
+  'Coral could not change usage data sharing. You do not have permission for this action.'
+
+/** The owner's change failed; the switch shows what Coral still has. */
+export const ChangeFailed: Story = {
+  args: { view: sharing, error: refused },
+  // Coral refused the change, so a click changes nothing here either.
+  render: ({ view, error }) => <UsageDataPage view={view} error={error} onChoose={() => {}} />,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole('alert')).toHaveTextContent(refused)
+  },
 }
 
 /** Source and dev builds show the report but never send it. */

@@ -118,7 +118,8 @@
       {
         "group": "Reference",
         "pages": [
-          "reference/configuration"
+          "reference/configuration",
+          "reference/usage-data"
         ]
       }
     ]
