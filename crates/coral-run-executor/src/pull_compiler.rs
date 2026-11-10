@@ -3,14 +3,15 @@ use std::sync::mpsc as sync_mpsc;
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource, SavedFunctionCallPaths,
-    SavedFunctionCompilation, SavedFunctionReference, ToolReferences, UnknownToolCall,
+    AnalyzedSource, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
+    SavedFunctionCompilation, SourceReferences,
 };
 
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::wire::v1::compile::Call;
-use crate::wire::v1::{self as wire};
-use crate::{CompileError, CompilerClient, PullStreams, Refused, StreamId, Unavailable};
+use crate::{
+    AnalysisError, CompileError, CompilerClient, PullStreams, Refused, StreamId, Unavailable,
+};
 
 /// Coral's side of the compiles one held pull stream carries: a
 /// [`CompilerClient`] that sends each call down the stream as `Compile` and
@@ -41,9 +42,9 @@ impl PullStreamCompiler {
         Self { streams, stream }
     }
 
-    /// Sends `call` and waits for its answer, which is no failure. The time
-    /// left runs from `called`, when its caller called, so building and
-    /// sending the call count.
+    /// Sends `call` and waits for its answer, which is no compile or
+    /// prepare failure. The time left runs from `called`, when its caller
+    /// called, so building and sending the call count.
     fn call(&self, called: Instant, time_left: Duration, call: Call) -> Result<Read, CompileError> {
         let left = || time_left.saturating_sub(called.elapsed());
         if left().is_zero() {
@@ -68,107 +69,52 @@ impl PullStreamCompiler {
             }
         }
     }
-
-    fn named(
-        &self,
-        called: Instant,
-        time_left: Duration,
-        call: Call,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        match self.call(called, time_left, call)? {
-            Read::CallPaths(paths) => Ok(paths),
-            _ => Err(ProtocolError.into()),
-        }
-    }
-}
-
-fn source(source: &str) -> wire::Source {
-    wire::Source {
-        source: source.to_owned(),
-    }
 }
 
 impl CompilerClient for PullStreamCompiler {
-    fn program_references(
+    fn analyze(
         &self,
         time_left: Duration,
-        source_text: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        let called = Instant::now();
-        self.named(
-            called,
-            time_left,
-            Call::ProgramReferences(source(source_text)),
-        )
-    }
-
-    fn unknown_tool_calls(
-        &self,
-        time_left: Duration,
-        tools: &ToolReferences,
-        callable: &[String],
-    ) -> Result<Vec<UnknownToolCall>, CompileError> {
-        let called = Instant::now();
-        let call = Call::UnknownToolCalls(wire::ToolCalls {
-            tools: Some(codec::tools_wire(tools)),
-            callable: callable.to_vec(),
-        });
-        match self.call(called, time_left, call)? {
-            Read::UnknownToolCalls(calls) => Ok(calls),
-            _ => Err(ProtocolError.into()),
+        sources: &[AnalyzedSource],
+    ) -> Result<Vec<SourceReferences>, AnalysisError> {
+        // Nothing to analyze takes no room, as in process.
+        if sources.is_empty() {
+            return Ok(Vec::new());
         }
-    }
-
-    fn dependency_references(
-        &self,
-        time_left: Duration,
-        source_text: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileError> {
         let called = Instant::now();
-        let call = Call::DependencyReferences(source(source_text));
-        match self.call(called, time_left, call)? {
-            Read::References(references) => Ok(references),
-            _ => Err(ProtocolError.into()),
+        // A call that never reached a source stops at the first.
+        let stopped = |error| AnalysisError { index: 0, error };
+        let call = codec::analyze_call(sources);
+        match self.call(called, time_left, call).map_err(stopped)? {
+            Read::Analyzed(analyzed) => Ok(analyzed),
+            Read::AnalysisFailure(failure) => Err(failure),
+            _ => Err(stopped(ProtocolError.into())),
         }
     }
 
     fn compile(
         &self,
         time_left: Duration,
-        source_text: &str,
+        source: &str,
         saved_functions: &[LinkedSavedFunctionSource],
+        callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let called = Instant::now();
-        let call = Call::Compile(wire::ProgramSource {
-            source: source_text.to_owned(),
-            saved_functions: saved_functions.iter().map(codec::linked_wire).collect(),
-        });
+        let call = codec::compile_call(source, saved_functions, callable);
         match self.call(called, time_left, call)? {
             Read::Package(program) => Ok(program),
             _ => Err(ProtocolError.into()),
         }
     }
 
-    fn call_paths(
-        &self,
-        time_left: Duration,
-        source_text: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        let called = Instant::now();
-        self.named(called, time_left, Call::CallPaths(source(source_text)))
-    }
-
     fn prepare(
         &self,
         time_left: Duration,
-        source_text: &str,
+        source: &str,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<SavedFunctionCompilation, CompileError> {
         let called = Instant::now();
-        let call = Call::Prepare(wire::SavedFunctionSource {
-            source: source_text.to_owned(),
-            declarations: declarations.map(codec::declarations_wire),
-        });
+        let call = codec::prepare_call(source, declarations);
         match self.call(called, time_left, call)? {
             Read::Prepared(prepared) => Ok(prepared),
             _ => Err(ProtocolError.into()),
@@ -188,7 +134,7 @@ mod tests {
     use crate::pull::tests::{compiled, up};
     use crate::wire::v1::compile_failure::Failure;
     use crate::wire::v1::compiled::Answer;
-    use crate::wire::v1::{Compiled, PullResponse, pull_response};
+    use crate::wire::v1::{self as wire, Compiled, PullResponse, pull_response};
 
     /// What Coral's side does once the call's `Compile`, with this number,
     /// is sent on the stream.
@@ -260,7 +206,7 @@ mod tests {
             let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, free, outbound);
             let caller = PullStreamCompiler::new(streams.clone(), stream);
             let calling = thread::spawn(move || {
-                let program = caller.compile(time_left, "return 42;", &[])?;
+                let program = caller.compile(time_left, "return 42;", &[], None)?;
                 Ok(program.javascript().to_owned())
             });
             if let Some(answering) = answering {
@@ -287,10 +233,14 @@ mod tests {
         let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
         streams.end(stream, None);
         let ended = PullStreamCompiler::new(streams, stream);
-        let after = ended.program_references(TEST_COMPILATION_TIMEOUT, "return 1;");
+        let program = AnalyzedSource::Program("return 1;".to_owned());
+        let after = ended.analyze(TEST_COMPILATION_TIMEOUT, &[program]);
         assert_eq!(
             after.map(drop),
-            Err(stopped),
+            Err(AnalysisError {
+                index: 0,
+                error: stopped
+            }),
             "a call once the stream ended"
         );
     }

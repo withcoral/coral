@@ -360,6 +360,12 @@ impl CompiledProgram {
     pub const fn profile(&self) -> TypeScriptProfile {
         TYPESCRIPT_PROFILE
     }
+
+    /// The JavaScript, source map and diagnostics, without a copy.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, Vec<CompilerDiagnostic>) {
+        (self.javascript, self.source_map, self.diagnostics)
+    }
 }
 
 /// One callable-rooted field projected from an emitted Saved Function declaration.
@@ -532,10 +538,7 @@ pub struct SourceReferences {
 impl SourceReferences {
     /// The `functions` and `tool_call_paths` one source names.
     #[must_use]
-    pub const fn new(
-        functions: Vec<SavedFunctionReference>,
-        tool_call_paths: Vec<String>,
-    ) -> Self {
+    pub const fn new(functions: Vec<SavedFunctionReference>, tool_call_paths: Vec<String>) -> Self {
         Self {
             functions,
             tool_call_paths,

@@ -124,7 +124,7 @@ pub struct Compile {
     #[prost(uint32, tag = "2")]
     pub time_left_ms: u32,
     /// The call: one kind per call of the compiler client.
-    #[prost(oneof = "compile::Call", tags = "3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "compile::Call", tags = "3, 4, 5")]
     pub call: ::core::option::Option<compile::Call>,
 }
 /// Nested message and enum types in `Compile`.
@@ -132,25 +132,14 @@ pub mod compile {
     /// The call: one kind per call of the compiler client.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
-        /// The Saved Functions and Tools a Program body names: CallPaths.
+        /// What each source names: Analyzed.
         #[prost(message, tag = "3")]
-        ProgramReferences(super::Source),
-        /// The called Tool chains that name no callable Call Path:
-        /// UnknownToolCalls.
-        #[prost(message, tag = "4")]
-        UnknownToolCalls(super::ToolCalls),
-        /// The Saved Functions one Saved Function module names: References.
-        #[prost(message, tag = "5")]
-        DependencyReferences(super::Source),
+        Analyze(super::Analyze),
         /// A Program body lowered with the Saved Functions it links: Package.
-        #[prost(message, tag = "6")]
+        #[prost(message, tag = "4")]
         Compile(super::ProgramSource),
-        /// The Saved Functions and Tools a Saved Function module names:
-        /// CallPaths.
-        #[prost(message, tag = "7")]
-        CallPaths(super::Source),
         /// One Saved Function's declaration and diagnostics: Prepared.
-        #[prost(message, tag = "8")]
+        #[prost(message, tag = "5")]
         Prepare(super::SavedFunctionSource),
     }
 }
@@ -161,7 +150,7 @@ pub struct Compiled {
     #[prost(uint64, tag = "1")]
     pub number: u64,
     /// The answer of the kind its call names, or why there is none.
-    #[prost(oneof = "compiled::Answer", tags = "2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "compiled::Answer", tags = "2, 3, 4, 5, 6")]
     pub answer: ::core::option::Option<compiled::Answer>,
 }
 /// Nested message and enum types in `Compiled`.
@@ -169,44 +158,79 @@ pub mod compiled {
     /// The answer of the kind its call names, or why there is none.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Answer {
-        /// For program_references and call_paths.
+        /// For analyze.
         #[prost(message, tag = "2")]
-        CallPaths(super::CallPaths),
-        /// For unknown_tool_calls.
-        #[prost(message, tag = "3")]
-        UnknownToolCalls(super::UnknownToolCalls),
-        /// For dependency_references.
-        #[prost(message, tag = "4")]
-        References(super::References),
+        Analyzed(super::Analyzed),
         /// For compile.
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "3")]
         Package(super::Package),
         /// For prepare.
-        #[prost(message, tag = "6")]
+        #[prost(message, tag = "4")]
         Prepared(super::Prepared),
-        /// For any call that returned no result.
-        #[prost(message, tag = "7")]
+        /// For compile or prepare, when it returned no result.
+        #[prost(message, tag = "5")]
         Failure(super::CompileFailure),
+        /// For analyze, when it returned no result.
+        #[prost(message, tag = "6")]
+        AnalysisFailure(super::AnalysisFailure),
     }
 }
-/// One TypeScript source.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Source {
-    /// The source text.
-    #[prost(string, tag = "1")]
-    pub source: ::prost::alloc::string::String,
-}
-/// Called Tool chains, checked against the Call Paths the caller can call.
+/// The sources to analyze, in order.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ToolCalls {
-    /// The chains, as program_references or call_paths found them.
-    #[prost(message, optional, tag = "1")]
-    pub tools: ::core::option::Option<ToolReferences>,
-    /// The complete Call Paths the caller can call.
-    #[prost(string, repeated, tag = "2")]
-    pub callable: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+pub struct Analyze {
+    /// The sources.
+    #[prost(message, repeated, tag = "1")]
+    pub sources: ::prost::alloc::vec::Vec<AnalyzedSource>,
 }
-/// A Program body and the Saved Functions it links.
+/// One source to analyze.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AnalyzedSource {
+    /// The source, by what it is.
+    #[prost(oneof = "analyzed_source::Source", tags = "1, 2")]
+    pub source: ::core::option::Option<analyzed_source::Source>,
+}
+/// Nested message and enum types in `AnalyzedSource`.
+pub mod analyzed_source {
+    /// The source, by what it is.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Source {
+        /// A Program body.
+        #[prost(string, tag = "1")]
+        Program(::prost::alloc::string::String),
+        /// A Saved Function module.
+        #[prost(string, tag = "2")]
+        SavedFunction(::prost::alloc::string::String),
+    }
+}
+/// What each source names, in the order of the sources.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Analyzed {
+    /// One per source.
+    #[prost(message, repeated, tag = "1")]
+    pub sources: ::prost::alloc::vec::Vec<SourceReferences>,
+}
+/// What one source names directly.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SourceReferences {
+    /// The coral.functions references, in path order.
+    #[prost(message, repeated, tag = "1")]
+    pub functions: ::prost::alloc::vec::Vec<Reference>,
+    /// Every prefix of a literal coral.providers or coral.workspace chain that
+    /// could be a Tool Call Path.
+    #[prost(string, repeated, tag = "2")]
+    pub tool_call_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// Why analyze stopped.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AnalysisFailure {
+    /// The index of the source it stopped at.
+    #[prost(uint64, tag = "1")]
+    pub index: u64,
+    /// Why that source returned no result.
+    #[prost(message, optional, tag = "2")]
+    pub failure: ::core::option::Option<CompileFailure>,
+}
+/// A Program body, the Saved Functions it links, and the Tools it may call.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProgramSource {
     /// The Program body.
@@ -215,6 +239,9 @@ pub struct ProgramSource {
     /// The linked Saved Functions, in the order they initialize.
     #[prost(message, repeated, tag = "2")]
     pub saved_functions: ::prost::alloc::vec::Vec<LinkedSavedFunction>,
+    /// The Call Paths the caller can call. Unset: the calls are not checked.
+    #[prost(message, optional, tag = "3")]
+    pub callable: ::core::option::Option<Callable>,
 }
 /// One Saved Function source linked into a Program.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -225,6 +252,13 @@ pub struct LinkedSavedFunction {
     /// Its module source.
     #[prost(string, tag = "2")]
     pub source: ::prost::alloc::string::String,
+}
+/// The complete Call Paths the caller can call.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Callable {
+    /// The Call Paths.
+    #[prost(string, repeated, tag = "1")]
+    pub call_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// One Saved Function module to prepare.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -244,25 +278,15 @@ pub struct Declarations {
     pub declaration_max_bytes: u64,
     /// Types coral.providers and coral.workspace. Unset: they stay untyped.
     #[prost(message, optional, tag = "2")]
-    pub tools: ::core::option::Option<TypedTools>,
+    pub tools: ::core::option::Option<CallableDeclarations>,
     /// Types coral.functions. Unset: it stays untyped.
     #[prost(message, optional, tag = "3")]
-    pub functions: ::core::option::Option<TypedFunctions>,
+    pub functions: ::core::option::Option<CallableDeclarations>,
 }
-/// The Tools a save may call, and the chains its source names.
+/// The declarations that type one part of the coral namespace.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TypedTools {
-    /// The chains its source names.
-    #[prost(message, repeated, tag = "1")]
-    pub chains: ::prost::alloc::vec::Vec<ToolChain>,
-    /// One declaration per Tool the caller can call.
-    #[prost(message, repeated, tag = "2")]
-    pub declarations: ::prost::alloc::vec::Vec<CallableDeclaration>,
-}
-/// The Saved Functions a save may call.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TypedFunctions {
-    /// One declaration per Saved Function.
+pub struct CallableDeclarations {
+    /// One declaration per Call Path.
     #[prost(message, repeated, tag = "1")]
     pub declarations: ::prost::alloc::vec::Vec<CallableDeclaration>,
 }
@@ -276,52 +300,6 @@ pub struct CallableDeclaration {
     /// Self-contained TypeScript with one default export.
     #[prost(string, tag = "2")]
     pub declaration: ::prost::alloc::string::String,
-}
-/// The literal coral.providers and coral.workspace chains one source names.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ToolReferences {
-    /// Every chain prefix that could be a Tool Call Path.
-    #[prost(string, repeated, tag = "1")]
-    pub call_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// The chains.
-    #[prost(message, repeated, tag = "2")]
-    pub chains: ::prost::alloc::vec::Vec<ToolChain>,
-}
-/// One literal chain, relative to coral.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ToolChain {
-    /// The chain's segments.
-    #[prost(string, repeated, tag = "1")]
-    pub segments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Its offset in the source.
-    #[prost(uint64, tag = "2")]
-    pub start: u64,
-    /// Whether the source calls it.
-    #[prost(bool, tag = "3")]
-    pub called: bool,
-    /// The one-based authored line where it starts.
-    #[prost(uint64, tag = "4")]
-    pub line: u64,
-    /// The one-based authored column where it starts.
-    #[prost(uint64, tag = "5")]
-    pub column: u64,
-}
-/// The Saved Functions and Tools one source names directly.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CallPaths {
-    /// The coral.functions paths.
-    #[prost(message, repeated, tag = "1")]
-    pub functions: ::prost::alloc::vec::Vec<Reference>,
-    /// The Tool chains.
-    #[prost(message, optional, tag = "2")]
-    pub tools: ::core::option::Option<ToolReferences>,
-}
-/// Saved Function references in path order.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct References {
-    /// The references.
-    #[prost(message, repeated, tag = "1")]
-    pub references: ::prost::alloc::vec::Vec<Reference>,
 }
 /// One statically named Saved Function reference.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -339,7 +317,7 @@ pub struct Reference {
 /// The called chains that name no Tool the caller can call.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnknownToolCalls {
-    /// The chains.
+    /// The chains, in source order.
     #[prost(message, repeated, tag = "1")]
     pub calls: ::prost::alloc::vec::Vec<UnknownToolCall>,
 }
@@ -440,16 +418,16 @@ pub struct Diagnostic {
     pub column: ::core::option::Option<u64>,
 }
 /// Why a call returned no result.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CompileFailure {
     /// The failure.
-    #[prost(oneof = "compile_failure::Failure", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "compile_failure::Failure", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub failure: ::core::option::Option<compile_failure::Failure>,
 }
 /// Nested message and enum types in `CompileFailure`.
 pub mod compile_failure {
     /// The failure.
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Failure {
         /// The call's time ran out while it waited or compiled.
         #[prost(bool, tag = "1")]
@@ -474,6 +452,10 @@ pub mod compile_failure {
         /// failure's kind, without its text.
         #[prost(string, tag = "7")]
         Failed(::prost::alloc::string::String),
+        /// Called literal Tool chains that name no Tool the caller can call. Only
+        /// a compile with callable Call Paths fails this way.
+        #[prost(message, tag = "8")]
+        UnknownTools(super::UnknownToolCalls),
     }
 }
 /// A rejected source.

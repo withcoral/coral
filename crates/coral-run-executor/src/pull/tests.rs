@@ -15,9 +15,10 @@ use tonic::transport::{Channel, Endpoint};
 
 use super::*;
 use crate::CompileError;
-use crate::compile_wire::package_sha256;
+use crate::compile_wire::{analyze_call, failure, package_sha256};
 use crate::wire::v1::compiled::Answer;
 use crate::wire::v1::{self as wire, Hello, Room};
+use coral_v8::AnalyzedSource;
 
 const TOKEN: &str = "an-operator-token-of-at-least-32-characters";
 const ROTATED: &str = "the-next-operator-token-during-a-rotation";
@@ -34,7 +35,24 @@ fn call() -> Call {
     Call::Compile(wire::ProgramSource {
         source: "return 42;".to_owned(),
         saved_functions: Vec::new(),
+        callable: None,
     })
+}
+
+/// An analysis of two sources.
+fn analyze() -> Call {
+    analyze_call(
+        &["return 1;", "return 2;"].map(|source| AnalyzedSource::Program(source.to_owned())),
+    )
+}
+
+/// An analysis answer with `found` results.
+fn analyzed(number: u64, found: usize) -> Compiled {
+    let sources = vec![wire::SourceReferences::default(); found];
+    Compiled {
+        number,
+        answer: Some(Answer::Analyzed(wire::Analyzed { sources })),
+    }
 }
 
 /// The `Compile` that carries [`call`] as `number`.
@@ -562,27 +580,72 @@ async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_an
 
 #[test]
 fn an_answer_that_breaks_the_protocol_changes_nothing() {
-    type Break = (&'static str, fn(u64) -> Compiled);
-    let breaks: [Break; 5] = [
-        ("a number never sent", |number| compiled(number + 1)),
-        ("an empty answer", |number| Compiled {
+    // A call, its sound answer, and whether a read is the one it takes.
+    type Fixture = (fn() -> Call, fn(u64) -> Compiled, fn(&Read) -> bool);
+    const COMPILE: Fixture = (call, compiled, |read| matches!(read, Read::Package(_)));
+    const ANALYSIS: Fixture = (
+        analyze,
+        |number| analyzed(number, 2),
+        |read| matches!(read, Read::Analyzed(found) if found.len() == 2),
+    );
+    // A case: its name, the call, and the answer that breaks it.
+    type Break = (&'static str, Fixture, fn(u64) -> Compiled);
+    let breaks: [Break; 11] = [
+        ("a number never sent", COMPILE, |number| {
+            compiled(number + 1)
+        }),
+        ("an empty answer", COMPILE, |number| Compiled {
             number,
             answer: None,
         }),
-        ("a digest that does not match", |number| Compiled {
+        ("a digest that does not match", COMPILE, |number| Compiled {
             number,
             answer: Some(package("42", package_sha256("4", "2{}"))),
         }),
-        ("a failure with no kind", |number| Compiled {
+        ("a failure with no kind", COMPILE, |number| Compiled {
             number,
             answer: Some(Answer::Failure(wire::CompileFailure::default())),
         }),
-        ("an answer to another call", |number| Compiled {
-            number,
-            answer: Some(Answer::References(wire::References::default())),
+        ("an analysis for a compile", COMPILE, |number| {
+            analyzed(number, 1)
+        }),
+        ("an analysis failure for a compile", COMPILE, |number| {
+            Compiled {
+                number,
+                answer: Some(Answer::AnalysisFailure(wire::AnalysisFailure {
+                    index: 0,
+                    failure: Some(failure(CompileError::TimedOut)),
+                })),
+            }
+        }),
+        ("a package for an analysis", ANALYSIS, |number| {
+            compiled(number)
+        }),
+        ("an analysis that misses a source", ANALYSIS, |number| {
+            analyzed(number, 1)
+        }),
+        ("an analysis with an extra result", ANALYSIS, |number| {
+            analyzed(number, 3)
+        }),
+        (
+            "an analysis that stops past its sources",
+            ANALYSIS,
+            |number| Compiled {
+                number,
+                answer: Some(Answer::AnalysisFailure(wire::AnalysisFailure {
+                    index: 2,
+                    failure: Some(failure(CompileError::TimedOut)),
+                })),
+            },
+        ),
+        ("a compile failure for an analysis", ANALYSIS, |number| {
+            Compiled {
+                number,
+                answer: Some(Answer::Failure(failure(CompileError::TimedOut))),
+            }
         }),
     ];
-    for (name, broken) in breaks {
+    for (name, (call, sound, takes), broken) in breaks {
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
         let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
@@ -596,10 +659,11 @@ fn an_answer_that_breaks_the_protocol_changes_nothing() {
         // The compile still waits, and takes its answer.
         assert!(streams.compiles_in_flight(stream), "{name}");
         assert!(answer.try_recv().is_err(), "{name}");
-        streams.receive(stream, up(compiled(1))).unwrap();
-        assert!(matches!(answer.try_recv(), Ok(Read::Package(_))), "{name}");
+        streams.receive(stream, up(sound(1))).unwrap();
+        let read = answer.try_recv().unwrap();
+        assert!(takes(&read), "{name}: {read:?}");
         // A second answer answers no compile in flight.
-        let again = streams.receive(stream, up(compiled(1)));
+        let again = streams.receive(stream, up(sound(1)));
         assert_eq!(
             again.map_err(|status| status.code()),
             Err(Code::InvalidArgument),

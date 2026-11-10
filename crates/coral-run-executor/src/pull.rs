@@ -184,7 +184,7 @@ struct Held {
 struct InFlight {
     /// When its time runs out.
     due: Instant,
-    /// The answer it takes, besides a failure.
+    /// The answers it accepts.
     takes: Takes,
     /// Where its answer goes: a channel of one, sent on once.
     answered: sync_mpsc::SyncSender<Read>,

@@ -100,20 +100,12 @@ message Compile {
   uint32 time_left_ms = 2;
   // The call: one kind per call of the compiler client.
   oneof call {
-    // The Saved Functions and Tools a Program body names: CallPaths.
-    Source program_references = 3;
-    // The called Tool chains that name no callable Call Path:
-    // UnknownToolCalls.
-    ToolCalls unknown_tool_calls = 4;
-    // The Saved Functions one Saved Function module names: References.
-    Source dependency_references = 5;
+    // What each source names: Analyzed.
+    Analyze analyze = 3;
     // A Program body lowered with the Saved Functions it links: Package.
-    ProgramSource compile = 6;
-    // The Saved Functions and Tools a Saved Function module names:
-    // CallPaths.
-    Source call_paths = 7;
+    ProgramSource compile = 4;
     // One Saved Function's declaration and diagnostics: Prepared.
-    SavedFunctionSource prepare = 8;
+    SavedFunctionSource prepare = 5;
   }
 }
 
@@ -123,41 +115,67 @@ message Compiled {
   uint64 number = 1;
   // The answer of the kind its call names, or why there is none.
   oneof answer {
-    // For program_references and call_paths.
-    CallPaths call_paths = 2;
-    // For unknown_tool_calls.
-    UnknownToolCalls unknown_tool_calls = 3;
-    // For dependency_references.
-    References references = 4;
+    // For analyze.
+    Analyzed analyzed = 2;
     // For compile.
-    Package package = 5;
+    Package package = 3;
     // For prepare.
-    Prepared prepared = 6;
-    // For any call that returned no result.
-    CompileFailure failure = 7;
+    Prepared prepared = 4;
+    // For compile or prepare, when it returned no result.
+    CompileFailure failure = 5;
+    // For analyze, when it returned no result.
+    AnalysisFailure analysis_failure = 6;
   }
 }
 
-// One TypeScript source.
-message Source {
-  // The source text.
-  string source = 1;
+// The sources to analyze, in order.
+message Analyze {
+  // The sources.
+  repeated AnalyzedSource sources = 1;
 }
 
-// Called Tool chains, checked against the Call Paths the caller can call.
-message ToolCalls {
-  // The chains, as program_references or call_paths found them.
-  ToolReferences tools = 1;
-  // The complete Call Paths the caller can call.
-  repeated string callable = 2;
+// One source to analyze.
+message AnalyzedSource {
+  // The source, by what it is.
+  oneof source {
+    // A Program body.
+    string program = 1;
+    // A Saved Function module.
+    string saved_function = 2;
+  }
 }
 
-// A Program body and the Saved Functions it links.
+// What each source names, in the order of the sources.
+message Analyzed {
+  // One per source.
+  repeated SourceReferences sources = 1;
+}
+
+// What one source names directly.
+message SourceReferences {
+  // The coral.functions references, in path order.
+  repeated Reference functions = 1;
+  // Every prefix of a literal coral.providers or coral.workspace chain that
+  // could be a Tool Call Path.
+  repeated string tool_call_paths = 2;
+}
+
+// Why analyze stopped.
+message AnalysisFailure {
+  // The index of the source it stopped at.
+  uint64 index = 1;
+  // Why that source returned no result.
+  CompileFailure failure = 2;
+}
+
+// A Program body, the Saved Functions it links, and the Tools it may call.
 message ProgramSource {
   // The Program body.
   string source = 1;
   // The linked Saved Functions, in the order they initialize.
   repeated LinkedSavedFunction saved_functions = 2;
+  // The Call Paths the caller can call. Unset: the calls are not checked.
+  Callable callable = 3;
 }
 
 // One Saved Function source linked into a Program.
@@ -166,6 +184,12 @@ message LinkedSavedFunction {
   repeated string path_segments = 1;
   // Its module source.
   string source = 2;
+}
+
+// The complete Call Paths the caller can call.
+message Callable {
+  // The Call Paths.
+  repeated string call_paths = 1;
 }
 
 // One Saved Function module to prepare.
@@ -181,22 +205,14 @@ message Declarations {
   // Above this size, a typed declaration is saved untyped.
   uint64 declaration_max_bytes = 1;
   // Types coral.providers and coral.workspace. Unset: they stay untyped.
-  TypedTools tools = 2;
+  CallableDeclarations tools = 2;
   // Types coral.functions. Unset: it stays untyped.
-  TypedFunctions functions = 3;
+  CallableDeclarations functions = 3;
 }
 
-// The Tools a save may call, and the chains its source names.
-message TypedTools {
-  // The chains its source names.
-  repeated ToolChain chains = 1;
-  // One declaration per Tool the caller can call.
-  repeated CallableDeclaration declarations = 2;
-}
-
-// The Saved Functions a save may call.
-message TypedFunctions {
-  // One declaration per Saved Function.
+// The declarations that type one part of the coral namespace.
+message CallableDeclarations {
+  // One declaration per Call Path.
   repeated CallableDeclaration declarations = 1;
 }
 
@@ -207,42 +223,6 @@ message CallableDeclaration {
   repeated string path_segments = 1;
   // Self-contained TypeScript with one default export.
   string declaration = 2;
-}
-
-// The literal coral.providers and coral.workspace chains one source names.
-message ToolReferences {
-  // Every chain prefix that could be a Tool Call Path.
-  repeated string call_paths = 1;
-  // The chains.
-  repeated ToolChain chains = 2;
-}
-
-// One literal chain, relative to coral.
-message ToolChain {
-  // The chain's segments.
-  repeated string segments = 1;
-  // Its offset in the source.
-  uint64 start = 2;
-  // Whether the source calls it.
-  bool called = 3;
-  // The one-based authored line where it starts.
-  uint64 line = 4;
-  // The one-based authored column where it starts.
-  uint64 column = 5;
-}
-
-// The Saved Functions and Tools one source names directly.
-message CallPaths {
-  // The coral.functions paths.
-  repeated Reference functions = 1;
-  // The Tool chains.
-  ToolReferences tools = 2;
-}
-
-// Saved Function references in path order.
-message References {
-  // The references.
-  repeated Reference references = 1;
 }
 
 // One statically named Saved Function reference.
@@ -257,7 +237,7 @@ message Reference {
 
 // The called chains that name no Tool the caller can call.
 message UnknownToolCalls {
-  // The chains.
+  // The chains, in source order.
   repeated UnknownToolCall calls = 1;
 }
 
@@ -364,6 +344,9 @@ message CompileFailure {
     // The compiler failed for a reason the source did not cause: the
     // failure's kind, without its text.
     string failed = 7;
+    // Called literal Tool chains that name no Tool the caller can call. Only
+    // a compile with callable Call Paths fails this way.
+    UnknownToolCalls unknown_tools = 8;
   }
 }
 

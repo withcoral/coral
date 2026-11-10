@@ -2,9 +2,8 @@ use std::time::{Duration, Instant};
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
 use coral_v8::{
-    CallableDeclaration, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
-    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference, ToolReferences,
-    UnknownToolCall,
+    AnalyzedSource, CallableDeclaration, CompiledProgram, CoralDeclarations,
+    LinkedSavedFunctionSource, SavedFunctionCompilation, SourceReferences,
 };
 use tokio::sync::oneshot;
 use tonic::Code;
@@ -13,7 +12,7 @@ use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
 use crate::testing::{Answer, ScriptedCoral};
-use crate::{CompileError, PullStreamCompiler};
+use crate::{AnalysisError, CompileError, PullStreamCompiler};
 
 const TOKEN: &str = "test-run-executor-token";
 
@@ -198,73 +197,74 @@ const SAVED: &str = "export default async function repo(input: { owner: string }
     ?? coral.functions.team.lookup({});\n}";
 const REPOS_GET: &str = "export default function (input: { \"owner\": string; \"repo\": string }): Promise<{ status: 200; data: { \"id\": number } }>;";
 
-/// A named call, which returns its result's debug text: it carries every
-/// field.
-type NamedCall = (&'static str, fn(&dyn CompilerClient) -> String);
+/// The Tool the callable checks below allow.
+const REPOS_GET_PATH: &str = "coral.providers.github.repos.get";
+
+/// What a call returned: its result's debug text, which carries every field,
+/// and its error's code.
+type Called = (String, Option<&'static str>);
+
+/// A call: its name, the error code it ends with, and the call.
+type NamedCall = (
+    &'static str,
+    Option<&'static str>,
+    fn(&dyn CompilerClient) -> Called,
+);
+
+fn called<T: std::fmt::Debug>(result: &Result<T, CompileError>) -> Called {
+    let code = result.as_ref().err().map(CompileError::code);
+    (format!("{result:?}"), code)
+}
+
+fn analyzed<T: std::fmt::Debug>(result: &Result<T, AnalysisError>) -> Called {
+    let code = result.as_ref().err().map(|stopped| stopped.error.code());
+    (format!("{result:?}"), code)
+}
 
 /// One call of each kind, on success and on a typed error.
-const CALLS: [NamedCall; 11] = [
-    ("program references", |client| {
-        format!(
-            "{:?}",
-            client.program_references(TEST_COMPILATION_TIMEOUT, PROGRAM)
-        )
+const CALLS: [NamedCall; 10] = [
+    ("an analysis", None, |client| {
+        let sources = [
+            AnalyzedSource::Program(PROGRAM.to_owned()),
+            AnalyzedSource::SavedFunction(SAVED.to_owned()),
+        ];
+        analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources))
     }),
-    ("an invalid reference", |client| {
-        let source = "return await coral.functions[name]();";
-        format!(
-            "{:?}",
-            client.program_references(TEST_COMPILATION_TIMEOUT, source)
-        )
+    (
+        "an invalid reference in the second source",
+        Some("invalid_saved_function_reference"),
+        |client| {
+            let sources = [
+                AnalyzedSource::Program(PROGRAM.to_owned()),
+                AnalyzedSource::Program("return await coral.functions[name]();".to_owned()),
+            ];
+            analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources))
+        },
+    ),
+    ("a compile", None, |client| {
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None))
     }),
-    ("unknown Tool calls", |client| {
-        let named = client
-            .program_references(TEST_COMPILATION_TIMEOUT, PROGRAM)
-            .unwrap();
-        let callable = ["coral.providers.github.repos.get".to_owned()];
-        let unknown = client.unknown_tool_calls(TEST_COMPILATION_TIMEOUT, named.tools(), &callable);
-        format!("{unknown:?}")
-    }),
-    ("dependency references", |client| {
-        format!(
-            "{:?}",
-            client.dependency_references(TEST_COMPILATION_TIMEOUT, SAVED)
-        )
-    }),
-    ("a compile", |client| {
-        format!(
-            "{:?}",
-            client.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
-        )
-    }),
-    ("a linked compile", |client| {
-        let lookup = LinkedSavedFunctionSource::new(
-            vec!["team".to_owned(), "lookup".to_owned()],
-            LOOKUP.to_owned(),
-        );
+    ("a linked compile", None, |client| {
         let source = "return await coral.functions.team.lookup({});";
-        format!(
-            "{:?}",
-            client.compile(TEST_COMPILATION_TIMEOUT, source, &[lookup])
-        )
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, source, &[lookup()], None))
     }),
-    ("a rejected compile", |client| {
-        format!(
-            "{:?}",
-            client.compile(TEST_COMPILATION_TIMEOUT, "return (", &[])
-        )
+    ("a checked compile", None, |client| {
+        let source = "return await coral.providers.github.repos.get({});";
+        let callable = [REPOS_GET_PATH.to_owned()];
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, source, &[], Some(&callable)))
     }),
-    ("call paths", |client| {
-        format!("{:?}", client.call_paths(TEST_COMPILATION_TIMEOUT, SAVED))
+    ("unknown Tool calls", Some("unknown_tool_calls"), |client| {
+        let callable = [REPOS_GET_PATH.to_owned()];
+        let linked = [lookup()];
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, PROGRAM, &linked, Some(&callable)))
     }),
-    ("an untyped prepare", |client| {
-        format!(
-            "{:?}",
-            client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, None)
-        )
+    ("a rejected compile", Some("compilation"), |client| {
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return (", &[], None))
     }),
-    ("a typed prepare", |client| {
-        let named = client.call_paths(TEST_COMPILATION_TIMEOUT, SAVED).unwrap();
+    ("an untyped prepare", None, |client| {
+        called(&client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, None))
+    }),
+    ("a typed prepare", None, |client| {
         let declaration = |path: &str, text: &str| {
             CallableDeclaration::new(
                 path.split('.').map(str::to_owned).collect(),
@@ -272,24 +272,26 @@ const CALLS: [NamedCall; 11] = [
             )
         };
         let declarations = CoralDeclarations::new(256 * 1024)
-            .with_tools(
-                named.tools(),
-                vec![declaration("providers.github.repos.get", REPOS_GET)],
-            )
+            .with_tools(vec![declaration("providers.github.repos.get", REPOS_GET)])
             .with_functions(vec![declaration(
                 "team.lookup",
                 "export default function lookup(): Promise<string>;",
             )]);
-        let prepared = client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, Some(&declarations));
-        format!("{prepared:?}")
+        called(&client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, Some(&declarations)))
     }),
-    ("a rejected prepare", |client| {
-        format!(
-            "{:?}",
-            client.prepare(TEST_COMPILATION_TIMEOUT, "import x from \"y\";", None)
-        )
-    }),
+    (
+        "a rejected prepare",
+        Some("invalid_saved_function"),
+        |client| called(&client.prepare(TEST_COMPILATION_TIMEOUT, "import x from \"y\";", None)),
+    ),
 ];
+
+fn lookup() -> LinkedSavedFunctionSource {
+    LinkedSavedFunctionSource::new(
+        vec!["team".to_owned(), "lookup".to_owned()],
+        LOOKUP.to_owned(),
+    )
+}
 
 #[tokio::test]
 async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns() {
@@ -299,22 +301,16 @@ async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns()
     let remote = Arc::clone(&call.compiler);
     let results = tokio::task::spawn_blocking(move || {
         let local = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
-        CALLS.map(|(name, call)| (name, call(remote.as_ref()), call(&local)))
+        CALLS.map(|(name, code, call)| (name, code, call(remote.as_ref()), call(&local)))
     })
     .await
     .unwrap();
-    for (name, remote, local) in &results {
+    for (name, code, remote, local) in &results {
         assert_eq!(remote, local, "{name}");
+        assert_eq!(remote.1, *code, "{name}: {}", remote.0);
     }
-    assert!(
-        results
-            .iter()
-            .any(|(_, result, _)| result.starts_with("Err(Diagnostics(Reference"))
-    );
-    // Each answer frees the unit its compile held and reports the room. The
-    // eleven cases send thirteen calls: two cases call twice.
-    let answers = 13;
-    for _ in 0..answers {
+    // Each answer frees the unit its compile held and reports the room.
+    for _ in CALLS {
         assert_eq!(call.rooms.recv().await, Some(8));
     }
 }
@@ -327,29 +323,12 @@ struct Gated {
 }
 
 impl CompilerClient for Gated {
-    fn program_references(
+    fn analyze(
         &self,
         time_left: Duration,
-        source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        self.compiler.program_references(time_left, source)
-    }
-
-    fn unknown_tool_calls(
-        &self,
-        time_left: Duration,
-        tools: &ToolReferences,
-        callable: &[String],
-    ) -> Result<Vec<UnknownToolCall>, CompileError> {
-        self.compiler.unknown_tool_calls(time_left, tools, callable)
-    }
-
-    fn dependency_references(
-        &self,
-        time_left: Duration,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileError> {
-        self.compiler.dependency_references(time_left, source)
+        sources: &[AnalyzedSource],
+    ) -> Result<Vec<SourceReferences>, AnalysisError> {
+        self.compiler.analyze(time_left, sources)
     }
 
     fn compile(
@@ -357,20 +336,14 @@ impl CompilerClient for Gated {
         time_left: Duration,
         source: &str,
         saved_functions: &[LinkedSavedFunctionSource],
+        callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let stopped = || CompileError::Unavailable(crate::Unavailable::Stopped);
         self.entered.send(()).map_err(|_gone| stopped())?;
         let released = self.released.lock().map_err(|_poisoned| stopped())?;
         released.recv().map_err(|_gone| stopped())?;
-        self.compiler.compile(time_left, source, saved_functions)
-    }
-
-    fn call_paths(
-        &self,
-        time_left: Duration,
-        source: &str,
-    ) -> Result<SavedFunctionCallPaths, CompileError> {
-        self.compiler.call_paths(time_left, source)
+        self.compiler
+            .compile(time_left, source, saved_functions, callable)
     }
 
     fn prepare(
@@ -407,7 +380,7 @@ async fn a_compile_holds_a_unit_of_room_until_it_is_answered() {
         let compiler = Arc::clone(compiler);
         std::thread::spawn(move || {
             compiler
-                .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
+                .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None)
                 .map(drop)
         })
     };

@@ -5,10 +5,9 @@
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    CallableDeclaration, CompiledProgram, CompilerDiagnostic, CoralDeclarations,
-    DiagnosticCategory, LinkedSavedFunctionSource, SavedFunctionCallPaths,
-    SavedFunctionCompilation, SavedFunctionDeclarationField, SavedFunctionReference, ToolChain,
-    ToolReferences, UnknownToolCall,
+    AnalyzedSource, CallableDeclaration, CompiledProgram, CompilerDiagnostic, CoralDeclarations,
+    DiagnosticCategory, LinkedSavedFunctionSource, SavedFunctionCompilation,
+    SavedFunctionDeclarationField, SavedFunctionReference, SourceReferences, UnknownToolCall,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -16,7 +15,7 @@ use crate::wire::v1::compile::Call;
 use crate::wire::v1::compile_failure::Failure;
 use crate::wire::v1::compiled::Answer;
 use crate::wire::v1::{self as wire, Compile, Compiled};
-use crate::{CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
+use crate::{AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
 
 /// The kinds a rejection can carry. A kind off this list reads as
 /// `compilation`, so a peer never widens the set of `error.type` values.
@@ -38,8 +37,8 @@ const FAILURE_KINDS: [&str; 4] = [
 ];
 
 /// A compile message that breaks the protocol: a missing field, an answer
-/// of the wrong kind, or a package whose digest does not match. The side
-/// that reads one ends the stream that carried it: Coral's
+/// of the wrong kind or count, or a package whose digest does not match. The
+/// side that reads one ends the stream that carried it: Coral's
 /// [`crate::LinkServer`] when a `Compiled` breaks it, and the Run Executor
 /// when it cannot serve a `Compile`.
 #[derive(Debug, thiserror::Error)]
@@ -75,45 +74,37 @@ pub(crate) fn serve(
 ) -> Result<Compiled, ProtocolError> {
     let time_left = time_left(received + Duration::from_millis(compile.time_left_ms.into()));
     let answer = match compile.call.ok_or(ProtocolError)? {
-        Call::ProgramReferences(wire::Source { source }) => {
-            answer(compiler.program_references(time_left, &source), |paths| {
-                Answer::CallPaths(call_paths(&paths))
-            })
+        Call::Analyze(wire::Analyze { sources }) => {
+            let sources = sources
+                .into_iter()
+                .map(analyzed_source)
+                .collect::<Result<Vec<_>, _>>()?;
+            match compiler.analyze(time_left, &sources) {
+                Ok(analyzed) => Answer::Analyzed(wire::Analyzed {
+                    sources: analyzed.iter().map(source_references_wire).collect(),
+                }),
+                Err(AnalysisError { index, error }) => {
+                    Answer::AnalysisFailure(wire::AnalysisFailure {
+                        index: u64::try_from(index).unwrap_or(u64::MAX),
+                        failure: Some(failure(error)),
+                    })
+                }
+            }
         }
-        Call::UnknownToolCalls(wire::ToolCalls { tools, callable }) => {
-            let tools = tool_references(tools.ok_or(ProtocolError)?);
-            answer(
-                compiler.unknown_tool_calls(time_left, &tools, &callable),
-                |calls| {
-                    let calls = calls.iter().map(unknown_tool_call).collect();
-                    Answer::UnknownToolCalls(wire::UnknownToolCalls { calls })
-                },
-            )
-        }
-        Call::DependencyReferences(wire::Source { source }) => answer(
-            compiler.dependency_references(time_left, &source),
-            |found| {
-                Answer::References(wire::References {
-                    references: found.iter().map(reference).collect(),
-                })
-            },
-        ),
         Call::Compile(wire::ProgramSource {
             source,
             saved_functions,
+            callable,
         }) => {
             let linked: Vec<_> = saved_functions
                 .into_iter()
                 .map(|linked| LinkedSavedFunctionSource::new(linked.path_segments, linked.source))
                 .collect();
-            answer(compiler.compile(time_left, &source, &linked), |program| {
-                Answer::Package(package(&program))
-            })
-        }
-        Call::CallPaths(wire::Source { source }) => {
-            answer(compiler.call_paths(time_left, &source), |paths| {
-                Answer::CallPaths(call_paths(&paths))
-            })
+            let callable = callable.map(|callable| callable.call_paths);
+            answer(
+                compiler.compile(time_left, &source, &linked, callable.as_deref()),
+                |program| Answer::Package(package(program)),
+            )
         }
         Call::Prepare(wire::SavedFunctionSource {
             source,
@@ -129,6 +120,37 @@ pub(crate) fn serve(
     Ok(Compiled {
         number: compile.number,
         answer: Some(answer),
+    })
+}
+
+/// The call that analyzes `sources`.
+pub(crate) fn analyze_call(sources: &[AnalyzedSource]) -> Call {
+    Call::Analyze(wire::Analyze {
+        sources: sources.iter().map(analyzed_source_wire).collect(),
+    })
+}
+
+/// The call that compiles `source` with `saved_functions`, checked against
+/// `callable` when it is set.
+pub(crate) fn compile_call(
+    source: &str,
+    saved_functions: &[LinkedSavedFunctionSource],
+    callable: Option<&[String]>,
+) -> Call {
+    Call::Compile(wire::ProgramSource {
+        source: source.to_owned(),
+        saved_functions: saved_functions.iter().map(linked_wire).collect(),
+        callable: callable.map(|call_paths| wire::Callable {
+            call_paths: call_paths.to_vec(),
+        }),
+    })
+}
+
+/// The call that prepares `source`, typed by `declarations` when it is set.
+pub(crate) fn prepare_call(source: &str, declarations: Option<&CoralDeclarations>) -> Call {
+    Call::Prepare(wire::SavedFunctionSource {
+        source: source.to_owned(),
+        declarations: declarations.map(declarations_wire),
     })
 }
 
@@ -157,6 +179,11 @@ pub(crate) fn failure(error: CompileError) -> wire::CompileFailure {
             line,
             column,
         }),
+        CompileError::Diagnostics(Diagnostics::UnknownTools(calls)) => {
+            Failure::UnknownTools(wire::UnknownToolCalls {
+                calls: calls.iter().map(unknown_tool_call).collect(),
+            })
+        }
         CompileError::MemoryLimit => Failure::MemoryLimit(true),
         CompileError::Unavailable(Unavailable::Busy) => Failure::Busy(true),
         CompileError::Unavailable(Unavailable::Stopped) => Failure::Stopped(true),
@@ -193,6 +220,9 @@ pub(crate) fn compile_error(failure: wire::CompileFailure) -> Result<CompileErro
             line,
             column,
         }),
+        Failure::UnknownTools(calls) => {
+            CompileError::Diagnostics(Diagnostics::UnknownTools(unknown_tool_calls(calls)))
+        }
         Failure::MemoryLimit(_) => CompileError::MemoryLimit,
         Failure::Busy(_) => CompileError::Unavailable(Unavailable::Busy),
         Failure::Stopped(_) => CompileError::Unavailable(Unavailable::Stopped),
@@ -204,51 +234,38 @@ pub(crate) fn compile_error(failure: wire::CompileFailure) -> Result<CompileErro
     })
 }
 
-fn call_paths(paths: &SavedFunctionCallPaths) -> wire::CallPaths {
-    wire::CallPaths {
-        functions: paths.functions().iter().map(reference).collect(),
-        tools: Some(tools_wire(paths.tools())),
+fn analyzed_source_wire(source: &AnalyzedSource) -> wire::AnalyzedSource {
+    use wire::analyzed_source::Source;
+    let source = match source {
+        AnalyzedSource::Program(source) => Source::Program(source.clone()),
+        AnalyzedSource::SavedFunction(source) => Source::SavedFunction(source.clone()),
+    };
+    wire::AnalyzedSource {
+        source: Some(source),
     }
 }
 
-pub(crate) fn saved_function_call_paths(
-    paths: wire::CallPaths,
-) -> Result<SavedFunctionCallPaths, ProtocolError> {
-    let functions = paths.functions.into_iter().map(saved_function_reference);
-    let tools = tool_references(paths.tools.ok_or(ProtocolError)?);
-    Ok(SavedFunctionCallPaths::new(functions.collect(), tools))
+fn analyzed_source(source: wire::AnalyzedSource) -> Result<AnalyzedSource, ProtocolError> {
+    use wire::analyzed_source::Source;
+    Ok(match source.source.ok_or(ProtocolError)? {
+        Source::Program(source) => AnalyzedSource::Program(source),
+        Source::SavedFunction(source) => AnalyzedSource::SavedFunction(source),
+    })
 }
 
-pub(crate) fn tools_wire(tools: &ToolReferences) -> wire::ToolReferences {
-    wire::ToolReferences {
-        call_paths: tools.call_paths().to_vec(),
-        chains: tools.chains().iter().map(chain_wire).collect(),
+fn source_references_wire(references: &SourceReferences) -> wire::SourceReferences {
+    wire::SourceReferences {
+        functions: references.functions().iter().map(reference).collect(),
+        tool_call_paths: references.tool_call_paths().to_vec(),
     }
 }
 
-fn tool_references(tools: wire::ToolReferences) -> ToolReferences {
-    let chains = tools.chains.into_iter().map(tool_chain).collect();
-    ToolReferences::new(tools.call_paths, chains)
-}
-
-fn chain_wire(chain: &ToolChain) -> wire::ToolChain {
-    wire::ToolChain {
-        segments: chain.segments().to_vec(),
-        start: chain.start(),
-        called: chain.called(),
-        line: chain.line(),
-        column: chain.column(),
-    }
-}
-
-fn tool_chain(chain: wire::ToolChain) -> ToolChain {
-    ToolChain::new(
-        chain.segments,
-        chain.start,
-        chain.called,
-        chain.line,
-        chain.column,
-    )
+fn source_references(references: wire::SourceReferences) -> SourceReferences {
+    let functions = references
+        .functions
+        .into_iter()
+        .map(saved_function_reference);
+    SourceReferences::new(functions.collect(), references.tool_call_paths)
 }
 
 fn reference(reference: &SavedFunctionReference) -> wire::Reference {
@@ -259,7 +276,7 @@ fn reference(reference: &SavedFunctionReference) -> wire::Reference {
     }
 }
 
-pub(crate) fn saved_function_reference(reference: wire::Reference) -> SavedFunctionReference {
+fn saved_function_reference(reference: wire::Reference) -> SavedFunctionReference {
     SavedFunctionReference::new(reference.path, reference.line, reference.column)
 }
 
@@ -271,52 +288,43 @@ fn unknown_tool_call(call: &UnknownToolCall) -> wire::UnknownToolCall {
     }
 }
 
-pub(crate) fn unknown_tool_calls(calls: wire::UnknownToolCalls) -> Vec<UnknownToolCall> {
+fn unknown_tool_calls(calls: wire::UnknownToolCalls) -> Vec<UnknownToolCall> {
     let calls = calls.calls.into_iter();
     calls
         .map(|call| UnknownToolCall::new(call.call_path, call.line, call.column))
         .collect()
 }
 
-pub(crate) fn linked_wire(linked: &LinkedSavedFunctionSource) -> wire::LinkedSavedFunction {
+fn linked_wire(linked: &LinkedSavedFunctionSource) -> wire::LinkedSavedFunction {
     wire::LinkedSavedFunction {
         path_segments: linked.path_segments().to_vec(),
         source: linked.source().to_owned(),
     }
 }
 
-pub(crate) fn declarations_wire(declarations: &CoralDeclarations) -> wire::Declarations {
-    let callables = |declarations: &[CallableDeclaration]| {
-        let declarations = declarations.iter();
-        declarations
+fn declarations_wire(declarations: &CoralDeclarations) -> wire::Declarations {
+    let callables = |declarations: &[CallableDeclaration]| wire::CallableDeclarations {
+        declarations: declarations
+            .iter()
             .map(|declaration| wire::CallableDeclaration {
                 path_segments: declaration.path_segments().to_vec(),
                 declaration: declaration.declaration().to_owned(),
             })
-            .collect()
+            .collect(),
     };
     wire::Declarations {
         declaration_max_bytes: u64::try_from(declarations.declaration_max_bytes())
             .unwrap_or(u64::MAX),
-        tools: declarations
-            .tools()
-            .map(|(chains, tools)| wire::TypedTools {
-                chains: chains.iter().map(chain_wire).collect(),
-                declarations: callables(tools),
-            }),
-        functions: declarations
-            .functions()
-            .map(|functions| wire::TypedFunctions {
-                declarations: callables(functions),
-            }),
+        tools: declarations.tools().map(callables),
+        functions: declarations.functions().map(callables),
     }
 }
 
 fn coral_declarations(
     declarations: wire::Declarations,
 ) -> Result<CoralDeclarations, ProtocolError> {
-    let callables = |declarations: Vec<wire::CallableDeclaration>| {
-        let declarations = declarations.into_iter();
+    let callables = |callables: wire::CallableDeclarations| {
+        let declarations = callables.declarations.into_iter();
         declarations
             .map(|callable| CallableDeclaration::new(callable.path_segments, callable.declaration))
             .collect()
@@ -325,28 +333,26 @@ fn coral_declarations(
         usize::try_from(declarations.declaration_max_bytes).map_err(|_overflow| ProtocolError)?;
     let mut typed = CoralDeclarations::new(max_bytes);
     if let Some(tools) = declarations.tools {
-        // Typing reads only the chains of the references.
-        let chains = tools.chains.into_iter().map(tool_chain).collect();
-        let references = ToolReferences::new(Vec::new(), chains);
-        typed = typed.with_tools(&references, callables(tools.declarations));
+        typed = typed.with_tools(callables(tools));
     }
     if let Some(functions) = declarations.functions {
-        typed = typed.with_functions(callables(functions.declarations));
+        typed = typed.with_functions(callables(functions));
     }
     Ok(typed)
 }
 
-fn package(program: &CompiledProgram) -> wire::Package {
+fn package(program: CompiledProgram) -> wire::Package {
+    let (script, source_map, diagnostics) = program.into_parts();
     wire::Package {
-        script: program.javascript().to_owned(),
-        source_map: program.source_map().to_owned(),
-        sha256: package_sha256(program.javascript(), program.source_map()).to_vec(),
-        diagnostics: program.diagnostics().iter().map(diagnostic).collect(),
+        sha256: package_sha256(&script, &source_map).to_vec(),
+        script,
+        source_map,
+        diagnostics: diagnostics.iter().map(diagnostic).collect(),
     }
 }
 
 /// The program a package carries, once its digest matches.
-pub(crate) fn compiled_program(package: wire::Package) -> Result<CompiledProgram, ProtocolError> {
+fn compiled_program(package: wire::Package) -> Result<CompiledProgram, ProtocolError> {
     if package.sha256 != package_sha256(&package.script, &package.source_map) {
         return Err(ProtocolError);
     }
@@ -380,7 +386,7 @@ fn prepared_answer(prepared: &SavedFunctionCompilation) -> wire::Prepared {
     }
 }
 
-pub(crate) fn saved_function_compilation(
+fn saved_function_compilation(
     prepared: wire::Prepared,
 ) -> Result<SavedFunctionCompilation, ProtocolError> {
     use wire::prepared::Projection;
@@ -440,22 +446,19 @@ fn compiler_diagnostic(diagnostic: wire::Diagnostic) -> Result<CompilerDiagnosti
     ))
 }
 
-/// The answer a call takes, besides a failure.
+/// The answers a call accepts: its result, or the failure of its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Takes {
-    CallPaths,
-    UnknownToolCalls,
-    References,
+    /// One `SourceReferences` per source it sent.
+    Analyzed(usize),
     Package,
     Prepared,
 }
 
 impl Takes {
-    pub(crate) const fn of(call: &Call) -> Self {
+    pub(crate) fn of(call: &Call) -> Self {
         match call {
-            Call::ProgramReferences(_) | Call::CallPaths(_) => Self::CallPaths,
-            Call::UnknownToolCalls(_) => Self::UnknownToolCalls,
-            Call::DependencyReferences(_) => Self::References,
+            Call::Analyze(analyze) => Self::Analyzed(analyze.sources.len()),
             Call::Compile(_) => Self::Package,
             Call::Prepare(_) => Self::Prepared,
         }
@@ -465,9 +468,8 @@ impl Takes {
 /// An answer read back into the value the in-process client returns.
 #[derive(Debug)]
 pub(crate) enum Read {
-    CallPaths(SavedFunctionCallPaths),
-    UnknownToolCalls(Vec<UnknownToolCall>),
-    References(Vec<SavedFunctionReference>),
+    Analyzed(Vec<SourceReferences>),
+    AnalysisFailure(AnalysisError),
     Package(CompiledProgram),
     Prepared(SavedFunctionCompilation),
     Failure(CompileError),
@@ -476,31 +478,36 @@ pub(crate) enum Read {
 impl Read {
     pub(crate) fn answer(answer: Answer) -> Result<Self, ProtocolError> {
         Ok(match answer {
-            Answer::CallPaths(paths) => Self::CallPaths(saved_function_call_paths(paths)?),
-            Answer::UnknownToolCalls(calls) => Self::UnknownToolCalls(unknown_tool_calls(calls)),
-            Answer::References(found) => Self::References(
-                found
-                    .references
+            Answer::Analyzed(analyzed) => Self::Analyzed(
+                analyzed
+                    .sources
                     .into_iter()
-                    .map(saved_function_reference)
+                    .map(source_references)
                     .collect(),
             ),
+            Answer::AnalysisFailure(wire::AnalysisFailure { index, failure }) => {
+                Self::AnalysisFailure(AnalysisError {
+                    index: usize::try_from(index).map_err(|_overflow| ProtocolError)?,
+                    error: compile_error(failure.ok_or(ProtocolError)?)?,
+                })
+            }
             Answer::Package(package) => Self::Package(compiled_program(package)?),
             Answer::Prepared(prepared) => Self::Prepared(saved_function_compilation(prepared)?),
             Answer::Failure(failure) => Self::Failure(compile_error(failure)?),
         })
     }
 
-    pub(crate) const fn answers(&self, takes: Takes) -> bool {
-        matches!(
-            (self, takes),
-            (Self::Failure(_), _)
-                | (Self::CallPaths(_), Takes::CallPaths)
-                | (Self::UnknownToolCalls(_), Takes::UnknownToolCalls)
-                | (Self::References(_), Takes::References)
-                | (Self::Package(_), Takes::Package)
-                | (Self::Prepared(_), Takes::Prepared)
-        )
+    /// Whether this answers a call that `takes` it: analysis answers with one
+    /// result per source, or names one of them as the one it stopped at.
+    pub(crate) fn answers(&self, takes: Takes) -> bool {
+        match (self, takes) {
+            (Self::Analyzed(found), Takes::Analyzed(sources)) => found.len() == sources,
+            (Self::AnalysisFailure(stopped), Takes::Analyzed(sources)) => stopped.index < sources,
+            (Self::Package(_), Takes::Package)
+            | (Self::Prepared(_), Takes::Prepared)
+            | (Self::Failure(_), Takes::Package | Takes::Prepared) => true,
+            _ => false,
+        }
     }
 }
 
@@ -521,6 +528,7 @@ mod tests {
             call: Some(Call::Compile(wire::ProgramSource {
                 source: "return 42;".to_owned(),
                 saved_functions: Vec::new(),
+                callable: None,
             })),
         };
         let now = Instant::now();
