@@ -59,8 +59,12 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks: lint-migrations
+rust-checks: lint-migrations license-check
 	scripts/check-migrations.sh
+	scripts/check-ee-boundary.sh
+	# A plain build at the root builds only the Apache-2.0 crates; prove they
+	# stand alone without ee/ (ADR 0033).
+	cargo check --locked
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	$(RUST_WORKSPACE_TESTS)

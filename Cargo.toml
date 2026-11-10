@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/coral", "crates/coral-*", "xtask"]
+members = ["crates/coral", "crates/coral-*", "xtask", "ee/crates/*"]
+# A plain `cargo build` or `cargo test` builds only the Apache-2.0 crates.
+# `--workspace` or `-p coral-ee` brings in ee/. See ADR 0033.
+default-members = ["crates/coral", "crates/coral-*", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -120,12 +123,14 @@ v8 = "=152.2.0"
 wiremock = "0.6"
 zeroize = "1.9"
 
+coral = { path = "crates/coral" }
 coral-administration = { path = "crates/coral-administration" }
 coral-app = { path = "crates/coral-app" }
 coral-auth = { path = "crates/coral-auth" }
 coral-catalog = { path = "crates/coral-catalog" }
 coral-credentials = { path = "crates/coral-credentials" }
 coral-db = { path = "crates/coral-db" }
+coral-edition = { path = "crates/coral-edition" }
 coral-functions = { path = "crates/coral-functions" }
 coral-grpc = { path = "crates/coral-grpc" }
 coral-identifier = { path = "crates/coral-identifier" }
