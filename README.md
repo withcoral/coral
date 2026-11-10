@@ -11,6 +11,14 @@ sandbox, adds the credentials, and checks every call against your policy.
 [![Docs](https://img.shields.io/badge/docs-withcoral.com-171717)](https://withcoral.com/docs)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
 
+In this example, an agent posts unreviewed PRs to Slack for the first time. The
+agent searches for tools and runs a program. It isn't allowed to post to Slack
+without approval, so the user approves it before it posts. Coral saves the
+workflow as a function. The next day, the agent runs the same task by calling
+the saved function.
+
+![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, runs a program, and waits for approval before posting. The Coral app then shows the run, who approved it, and the program saved as a function. The next day, the same request runs by calling the saved function, with 25% fewer tokens and in 24% less time.](./apps/docs/images/demo.gif)
+
 ## Why Coral
 
 Connecting an agent to many services usually means many MCP servers, a token
