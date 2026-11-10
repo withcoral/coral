@@ -12,7 +12,8 @@ and [`docs/workflow.md`](./docs/workflow.md) for how we work.
 
 The [`ee/`](./ee) directory holds Enterprise Edition code. It is public, but
 [`ee/LICENSE`](./ee/LICENSE) covers it, not the Apache License 2.0 that covers
-the rest of the repository.
+most of the repository. [`NOTICE`](./NOTICE) says which licence covers which
+files.
 
 Most contributions belong outside `ee/`. Code outside `ee/` never depends on
 code inside it. If an enterprise feature needs something new from the rest of
