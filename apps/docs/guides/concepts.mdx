@@ -140,6 +140,12 @@ await coral.functions.triage.staleIssues({ days: 30 });
 
 A [program](#programs) calls one the same way it calls a [tool](#tools). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
 
+### Why save a function?
+
+A saved function gives your agent a named, discoverable way to reuse a workflow instead of reconstructing it for each task. For example, you can encapsulate a multi-tool lookup, pagination, or result filtering behind a clear input and output. Later programs can combine the function with other tools and functions.
+
+Reuse can also improve speed and token efficiency: your agent need not repeatedly discover the same tools and generate the same orchestration code, and the function can return a concise result instead of passing intermediate data into the agent's context. The savings depend on the workflow; saving a function does not by itself make its code correct or faster. Prefer functions with a useful purpose and test their behavior before relying on them.
+
 A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.workspace.saveFunction`. Coral saves the function with the top-level declarations it uses. A program deletes a saved function with `coral.workspace.deleteFunction`. Both act only on the principal's own saved functions.
 
 ```ts
