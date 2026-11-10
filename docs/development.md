@@ -14,6 +14,7 @@ On the machine that runs the checkout:
 - Git and Rust via rustup; Cargo uses `rust-toolchain.toml`. Install the native
   build tools required by your platform. Linux uses clang and mold as specified
   in `.cargo/config.toml`.
+- `jq`, which `make rust-checks` uses to check the `ee/` boundary.
 - Tailscale installed, running, and signed into your tailnet. Your browser's
   machine must also have access to this tailnet device unless you explicitly enable
   Funnel for the surfaces it needs.

@@ -62,6 +62,7 @@ docker-test: docker-build reef-docker-build
 rust-checks: lint-migrations license-check
 	scripts/check-migrations.sh
 	scripts/check-ee-boundary.sh
+	scripts/check-ee-boundary.test.sh
 	# A plain build at the root builds only the Apache-2.0 crates; prove they
 	# stand alone without ee/ (ADR 0033).
 	cargo check --locked
