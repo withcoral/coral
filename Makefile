@@ -30,15 +30,19 @@ endef
 
 # Installs the released binary, built from ee/crates/coral-ee, as `coral`.
 # Cargo reports where it wrote the binary, wherever CARGO_TARGET_DIR or a
-# build target put it.
+# build target put it. Like `cargo install`, it installs under
+# CARGO_INSTALL_ROOT, then CARGO_HOME, then ~/.cargo; Cargo's `install.root`
+# setting is not read.
 install:
 	set -eu; \
 	built="$$(cargo build --locked --release -p coral-ee --bin coral-ee \
 	  --message-format=json-render-diagnostics | \
-	  jq -r 'select(.reason == "compiler-artifact" and .target.name == "coral-ee") | .executable')"; \
+	  grep '"reason":"compiler-artifact"' | grep '"name":"coral-ee"' | \
+	  sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)"; \
 	test -n "$$built"; \
-	install -d "$${CARGO_HOME:-$$HOME/.cargo}/bin"; \
-	install -m 0755 "$$built" "$${CARGO_HOME:-$$HOME/.cargo}/bin/coral"
+	root="$${CARGO_INSTALL_ROOT:-$${CARGO_HOME:-$$HOME/.cargo}}"; \
+	install -d "$$root/bin"; \
+	install -m 0755 "$$built" "$$root/bin/coral"
 
 # ----------------------------------------------------------------------------
 # Images
