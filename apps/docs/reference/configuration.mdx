@@ -96,18 +96,18 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 
 | Key                        | Description                                                                                                                                  | Required | Default              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
-| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. At least 8MiB.                                                                           | No       | 128MiB               |
-| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job. At least 8MiB.                                                           | No       | 512MiB               |
-| `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. At least 1. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
-| `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. At least 1.                                 | No       | `32`                 |
-| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. At least 2MiB.                                                  | No       | 8MiB                 |
+| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. Must be greater than 8MiB.                                                                           | No       | 128MiB               |
+| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job. Must be greater than 8MiB.                                                           | No       | 512MiB               |
+| `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. Must be greater than 0. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
+| `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. Must be greater than 0.                                 | No       | `32`                 |
+| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. Must be greater than 2MiB.                                                  | No       | 8MiB                 |
 | `shutdown_drain_seconds`   | Seconds a stopping Coral process lets its running Runs finish before it interrupts them. `0` interrupts at once.                             | No       | `30`                 |
 
 ### `[search]`
 
 | Key                          | Description                                                                                         | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------- | -------- | ------- |
-| `reconcile_interval_seconds` | Interval on which provider tool and saved function search indexing is executed. Greater than 0. | No       | `300`   |
+| `reconcile_interval_seconds` | Interval on which provider tool and saved function search indexing is executed. Must be greater than 0. | No       | `300`   |
 
 ### `[updates]`
 
