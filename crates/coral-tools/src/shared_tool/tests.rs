@@ -214,7 +214,7 @@ impl SharedToolFixture {
     ) -> (Vec<String>, Option<(crate::AuthoredToolId, u64, String)>) {
         let mut transaction = self.database.begin_read_snapshot().await.expect("begin");
         let mut listed = Vec::new();
-        for kind in [AuthoredToolKind::Private, AuthoredToolKind::Shared] {
+        for kind in AuthoredToolKind::ALL {
             for material in crate::authored_tool_search_material_in_transaction(
                 &mut transaction,
                 &self.workspace,

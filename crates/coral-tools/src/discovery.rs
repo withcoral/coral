@@ -19,10 +19,6 @@ use crate::types::{
 };
 use crate::{Error, discovery_repository};
 
-/// Both kinds of Authored Tool, in the order the index facets read them.
-const AUTHORED_TOOL_KINDS: [AuthoredToolKind; 2] =
-    [AuthoredToolKind::Private, AuthoredToolKind::Shared];
-
 /// Minimal owner evidence for comparing an Authored Tool's search
 /// projection; contains no source, declaration, description, or caller
 /// visibility decision.
@@ -349,7 +345,7 @@ pub async fn authored_tool_entries_in_transaction(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<AuthoredToolEntry>, Error> {
     let mut entries = Vec::new();
-    for kind in AUTHORED_TOOL_KINDS {
+    for kind in AuthoredToolKind::ALL {
         entries.extend(discovery_repository::entries(transaction, kind).await?);
     }
     Ok(entries)
@@ -384,7 +380,7 @@ pub async fn authored_tool_index_revisions_in_transaction(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<AuthoredToolIndexRevision>, Error> {
     let mut revisions = Vec::new();
-    for kind in AUTHORED_TOOL_KINDS {
+    for kind in AuthoredToolKind::ALL {
         revisions.extend(discovery_repository::index_revisions(transaction, kind).await?);
     }
     Ok(revisions)

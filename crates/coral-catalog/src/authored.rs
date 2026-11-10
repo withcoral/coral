@@ -23,6 +23,9 @@ pub enum AuthoredToolKind {
 }
 
 impl AuthoredToolKind {
+    /// Both kinds, Private first: the order a read of both kinds follows.
+    pub const ALL: [Self; 2] = [Self::Private, Self::Shared];
+
     /// The Call Root of the kind's Provider, which every Call Path of the
     /// kind starts with. Its Provider's Generations pin it as their input.
     #[must_use]
@@ -70,14 +73,14 @@ impl AuthoredToolKind {
     /// The kind whose Call Root owns `call_path`, if either does.
     #[must_use]
     pub fn of_call_path(call_path: &str) -> Option<Self> {
-        [Self::Private, Self::Shared]
+        Self::ALL
             .into_iter()
             .find(|kind| kind.relative_path(call_path).is_some())
     }
 
     /// The kind whose Provider's Generations store `input_kind`.
     pub(crate) fn from_input_kind(input_kind: &str) -> Option<Self> {
-        [Self::Private, Self::Shared]
+        Self::ALL
             .into_iter()
             .find(|kind| kind.input_kind() == input_kind)
     }

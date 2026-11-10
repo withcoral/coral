@@ -130,10 +130,9 @@ const fn authored_tool(kind: AuthoredToolKind) -> &'static str {
 }
 
 /// The `kind` value of every Authored Tool's rows.
-const AUTHORED_TOOL_KINDS: [&str; 2] = [
-    authored_tool(AuthoredToolKind::Private),
-    authored_tool(AuthoredToolKind::Shared),
-];
+fn authored_tools() -> [&'static str; 2] {
+    AuthoredToolKind::ALL.map(authored_tool)
+}
 const COMPLETE: &str = "complete";
 const FAILED: &str = "failed";
 
@@ -1262,7 +1261,7 @@ pub(super) async fn recorded_authored_tools(
                     SearchEntities::Fingerprint,
                 ])
                 .from(SearchEntities::Table)
-                .and_where(Expr::col(SearchEntities::Kind).is_in(AUTHORED_TOOL_KINDS))
+                .and_where(Expr::col(SearchEntities::Kind).is_in(authored_tools()))
                 .to_owned(),
         )
         .await?;
@@ -1327,7 +1326,7 @@ pub(super) async fn failed_authored_tools(
                     SearchIndexStates::FailedAuthoredToolRevision,
                 ]))
                 .from(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).is_in(AUTHORED_TOOL_KINDS))
+                .and_where(Expr::col(SearchIndexStates::Kind).is_in(authored_tools()))
                 .to_owned(),
         )
         .await?;
@@ -1489,7 +1488,7 @@ fn workspace_authored_tool(
     workspace_id: &str,
     id: &str,
 ) -> Result<WorkspaceAuthoredTool, IndexError> {
-    let kind = [AuthoredToolKind::Private, AuthoredToolKind::Shared]
+    let kind = AuthoredToolKind::ALL
         .into_iter()
         .find(|authored| authored_tool(*authored) == kind)
         .ok_or(IndexError::Corrupt(
