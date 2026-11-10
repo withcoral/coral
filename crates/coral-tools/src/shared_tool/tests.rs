@@ -660,7 +660,7 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
         )
         .await;
     assert!(
-        matches!(altered, Err(Error::InvalidInput(_))),
+        matches!(altered, Err(Error::SharedToolRestoreDiffers)),
         "{altered:?}"
     );
 
@@ -801,9 +801,29 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
     );
 }
 
+/// Whether the text of a refusal says each of `phrases` exactly once.
+fn says_once(error: &Error, phrases: &[&str]) -> bool {
+    error.safe_rejection().is_some_and(|(_code, message)| {
+        phrases
+            .iter()
+            .all(|phrase| message.matches(phrase).count() == 1)
+    })
+}
+
+/// Whether an error refuses the source published at `mail.other`, and its
+/// text names the Shared Tool and the failure once each.
+fn authoring_refused(error: &Error) -> bool {
+    matches!(error, Error::Admission(AuthoredToolKind::Shared, _))
+        && says_once(
+            error,
+            &["Shared Tool", "coral.shared.mail.other", "authoring failed"],
+        )
+}
+
 // Catches: a source the compiler rejects, a call that is not data, a call
 // to a Shared Tool that does not exist, or a path inside another Shared
-// Tool's namespace becoming a revision.
+// Tool's namespace becoming a revision; and a refusal whose text repeats
+// the Shared Tool or the failure.
 #[tokio::test]
 async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
     let fixture = SharedToolFixture::new().await;
@@ -814,18 +834,27 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
         .await
         .expect("publish a Shared Tool");
     let before = fixture.everything().await;
-    let cases: [(&str, &str, &str, Refusal); 5] = [
+    let cases: [(&str, &str, &str, Refusal); 6] = [
         (
             "a syntax error",
             "mail.other",
             "export default async function (",
-            |error| matches!(error, Error::Admission(AuthoredToolKind::Shared, _)),
+            authoring_refused,
+        ),
+        (
+            "no default export",
+            "mail.other",
+            "export const remind = 'later';",
+            authoring_refused,
         ),
         (
             "a callback argument",
             "mail.other",
             "export default async function each(visit: () => void): Promise<void> { visit(); }",
-            |error| matches!(error, Error::NotData(AuthoredToolKind::Shared, _)),
+            |error| {
+                matches!(error, Error::NotData(AuthoredToolKind::Shared, _))
+                    && says_once(error, &["Shared Tool", "coral.shared.mail.other"])
+            },
         ),
         (
             "a missing Shared Tool",
@@ -834,6 +863,7 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
             |error| {
                 matches!(error, Error::Admission(AuthoredToolKind::Shared, message)
                     if message.contains("coral.shared.mail.absent"))
+                    && authoring_refused(error)
             },
         ),
         (
@@ -851,7 +881,7 @@ async fn a_publish_that_cannot_become_a_tool_is_refused_and_changes_nothing() {
             .publish(&fixture.owner, path, source, 0)
             .await
             .expect_err(case);
-        assert!(refused(&error), "{case}: {error:?}");
+        assert!(refused(&error), "{case}: {error:?} says {error}");
         assert_eq!(fixture.everything().await, before, "{case}");
     }
 }

@@ -66,9 +66,18 @@ async fn send(
         .map(tonic::Response::into_inner)
 }
 
+/// The status of a publish whose source cannot become a Tool.
+const REJECTED: (tonic::Code, &str) = (tonic::Code::InvalidArgument, "SHARED_TOOL_SOURCE_REJECTED");
+
 // Catches: a publish refusal that reaches Reef with the wrong status or
-// without the reason that names what to fix.
+// without the reason that names what to fix; a refusal over the publish's
+// content that does not say what to correct, or another refusal that
+// carries a message; and a refused read with the wrong status.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table holds every refusal of a publish, before the reads that show nothing changed"
+)]
 async fn a_refused_publish_maps_to_its_status_and_reason() {
     let f = Fixture::new().await;
     save_draft(&f, &f.owner).await;
@@ -85,50 +94,10 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
         })),
         ..publish(&f, "mail.other", 0)
     };
-    let cases = [
-        (
-            "a Member publishes",
-            &f.member,
-            publish(&f, "mail.other", 0),
-            (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
-        ),
-        (
-            "the source cannot be read",
-            &f.owner,
-            missing_origin,
-            (
-                tonic::Code::FailedPrecondition,
-                "SHARED_TOOL_SOURCE_UNREADABLE",
-            ),
-        ),
-        (
-            "the path is taken",
-            &f.owner,
-            publish(&f, "mail", 0),
-            (tonic::Code::FailedPrecondition, "SHARED_TOOL_PATH_TAKEN"),
-        ),
-        (
-            "the revision moved",
-            &f.owner,
-            publish(&f, "mail.remind", 0),
-            (tonic::Code::Aborted, "ABORTED"),
-        ),
-        (
-            "the caller is outside the Workspace",
-            &outsider,
-            publish(&f, "mail.other", 0),
-            (tonic::Code::NotFound, "NOT_FOUND"),
-        ),
-    ];
-    for (case, user, publish, expected) in cases {
-        let status = send(&f, user, publish).await.expect_err(case);
-        assert_eq!(
-            (status.code(), error_reason(&status).as_str()),
-            expected,
-            "{case}"
-        );
-    }
-
+    let source = |source: &str| management::PublishSharedToolRequest {
+        source: source.into(),
+        ..publish(&f, "mail.other", 0)
+    };
     let read = async |user: &AuthenticatedUser, path: &str| {
         f.shared_tools()
             .get_shared_tool(request(
@@ -141,8 +110,113 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
             ))
             .await
     };
+    // (case, who publishes, the publish, status and reason, whether the
+    // status says what to correct)
+    let cases = [
+        (
+            "a Member publishes",
+            &f.member,
+            publish(&f, "mail.other", 0),
+            (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
+            false,
+        ),
+        (
+            "the source cannot be read",
+            &f.owner,
+            missing_origin,
+            (
+                tonic::Code::FailedPrecondition,
+                "SHARED_TOOL_SOURCE_UNREADABLE",
+            ),
+            false,
+        ),
+        (
+            "the path is taken",
+            &f.owner,
+            publish(&f, "mail", 0),
+            (tonic::Code::FailedPrecondition, "SHARED_TOOL_PATH_TAKEN"),
+            false,
+        ),
+        (
+            "the revision moved",
+            &f.owner,
+            publish(&f, "mail.remind", 0),
+            (tonic::Code::Aborted, "ABORTED"),
+            false,
+        ),
+        (
+            "the caller is outside the Workspace",
+            &outsider,
+            publish(&f, "mail.other", 0),
+            (tonic::Code::NotFound, "NOT_FOUND"),
+            false,
+        ),
+        (
+            "the source has no default export",
+            &f.owner,
+            source("export const remind = 'later';"),
+            REJECTED,
+            true,
+        ),
+        (
+            "the source takes a value that is not data",
+            &f.owner,
+            source("export default async function each(visit: () => void) { visit(); }"),
+            REJECTED,
+            true,
+        ),
+        (
+            "a validation of a source that cannot become a Tool",
+            &f.owner,
+            management::PublishSharedToolRequest {
+                validate_only: true,
+                ..source("export default async function (")
+            },
+            REJECTED,
+            true,
+        ),
+        (
+            "a restore differs from its revision",
+            &f.owner,
+            management::PublishSharedToolRequest {
+                origin: Some(Origin::RestoreRevision(1)),
+                description: "Remind someone else".into(),
+                ..publish(&f, "mail.remind", 1)
+            },
+            (tonic::Code::InvalidArgument, "SHARED_TOOL_RESTORE_DIFFERS"),
+            true,
+        ),
+    ];
+    let before = read(&f.owner, "mail.remind").await.expect("read");
+    for (case, user, publish, expected, says_why) in cases {
+        let status = send(&f, user, publish).await.expect_err(case);
+        assert_eq!(
+            (status.code(), error_reason(&status).as_str()),
+            expected,
+            "{case}"
+        );
+        // Only a refusal over the publish's content says what to correct.
+        assert_eq!(
+            error_info(&status)
+                .metadata
+                .get("message")
+                .map(|message| !message.is_empty()),
+            says_why.then_some(true),
+            "{case}"
+        );
+    }
+
+    // No refusal published anything.
+    assert_eq!(
+        read(&f.owner, "mail.remind")
+            .await
+            .expect("read")
+            .into_inner(),
+        before.into_inner()
+    );
     for (case, user, path) in [
         ("an absent path", &f.member, "mail.absent"),
+        ("the path of the refused publishes", &f.owner, "mail.other"),
         ("a caller outside the Workspace", &outsider, "mail.remind"),
     ] {
         let status = read(user, path).await.expect_err(case);
@@ -152,6 +226,34 @@ async fn a_refused_publish_maps_to_its_status_and_reason() {
             "{case}"
         );
     }
+}
+
+// Catches: a failure that is Coral's own reaching Reef with its text.
+#[tokio::test]
+async fn a_publish_that_coral_cannot_complete_carries_no_message() {
+    let f = Fixture::new().await;
+    save_draft(&f, &f.owner).await;
+    send(&f, &f.owner, publish(&f, "mail.remind", 0))
+        .await
+        .expect("publish the first revision");
+    let rename = async |from: &str, to: &str| {
+        f.database
+            .execute_fixture_sql(&format!("ALTER TABLE {from} RENAME TO {to}"))
+            .await
+            .unwrap();
+    };
+
+    rename("shared_tool_revisions", "shared_tool_revisions_away").await;
+    let status = send(&f, &f.owner, publish(&f, "mail.remind", 1))
+        .await
+        .expect_err("a publish that cannot read the revisions");
+    rename("shared_tool_revisions_away", "shared_tool_revisions").await;
+
+    assert_eq!(
+        (status.code(), error_reason(&status).as_str()),
+        (tonic::Code::Unavailable, "UNAVAILABLE")
+    );
+    assert_eq!(error_info(&status).metadata.get("message"), None);
 }
 
 // Catches: a projection that drops or mislabels what Reef shows of a

@@ -1519,7 +1519,7 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
         matches!(
             &missing,
             Err(Error::Admission(AuthoredToolKind::Private, message))
-                if message == "Private Tool coral.private.reports.compose:2:10: \
+                if message == "coral.private.reports.compose:2:10: \
                     coral.private.missing.value names no Tool that you can call. \
                     Find one with coral.search."
         ),
@@ -1547,7 +1547,7 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
         assert!(matches!(
             rejected,
             Err(Error::Admission(AuthoredToolKind::Private, message))
-                if message.contains("Private Tool coral.private.reports.compose")
+                if message.starts_with("coral.private.reports.compose:")
                     && (message.contains(" at 1:") || message.contains(":1:"))
         ));
     }

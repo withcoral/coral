@@ -788,6 +788,8 @@ impl SharedToolModule {
     /// - [`Error::SharedToolSourceUnreadable`] when the origin is another
     ///   User's Private Tool, a Private Tool that is gone, or a revision that
     ///   never existed.
+    /// - [`Error::SharedToolRestoreDiffers`] when the origin is a revision
+    ///   and the source or the description is not that revision's.
     /// - [`Error::RevisionConflict`] when the current revision at
     ///   the path is not the expected one.
     /// - [`Error::PathConflict`] when the path overlaps another
@@ -1452,10 +1454,7 @@ async fn read_origin(
             // A restore publishes that revision's content again, so the
             // revision it names is the content the Owner reviewed.
             if restored.source != publish.source || restored.description != publish.description {
-                return Err(Error::InvalidInput(
-                    "a restore publishes the exact source and description of the revision it names"
-                        .to_string(),
-                ));
+                return Err(Error::SharedToolRestoreDiffers);
             }
             Ok(SharedToolRevisionOrigin::Revision(*revision))
         }

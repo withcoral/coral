@@ -26,7 +26,9 @@ pub enum Error {
         /// Shared Tool is there.
         current: u64,
     },
-    /// Source could not become one accepted Tool definition or revision.
+    /// Source could not become one accepted Tool definition or revision. The
+    /// reason starts with the Tool's Call Path, and holds the authored line
+    /// and column of each fault the compiler located.
     #[error("{} authoring failed: {}", .0.name(), .1)]
     Admission(AuthoredToolKind, String),
     /// The publish names a source the Owner cannot read: another User's
@@ -34,6 +36,10 @@ pub enum Error {
     /// existed.
     #[error("the source of this Shared Tool Publish cannot be read")]
     SharedToolSourceUnreadable,
+    /// The publish names a revision to restore, and its source or its
+    /// description is not that revision's.
+    #[error("a restore publishes the exact source and description of the revision it names")]
+    SharedToolRestoreDiffers,
     /// The removal names a Shared Tool that the current revision of another
     /// live Shared Tool calls. Removing it would break that one.
     #[error("coral.shared.{} calls this Shared Tool", .dependent.as_str())]
@@ -48,8 +54,9 @@ pub enum Error {
     #[error("{}", path_conflict(*.0))]
     PathConflict(AuthoredToolKind),
     /// The source's arguments or result cannot cross a Tool call as data:
-    /// the reason names where the declaration holds a function, a class
-    /// instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
+    /// the reason names the Tool's Call Path and where the declaration holds
+    /// a function, a class instance, a `Date`, `Map` or `Set`, a `bigint` or
+    /// a `symbol`.
     #[error("a {} takes and returns only data: {}", .0.name(), .1)]
     NotData(AuthoredToolKind, String),
     /// Compilation exceeded the fixed authoring deadline.
@@ -121,6 +128,7 @@ impl Error {
             Self::Admission(Private, _) => "private_tool_admission",
             Self::Admission(Shared, _) => "shared_tool_admission",
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
+            Self::SharedToolRestoreDiffers => "shared_tool_restore_differs",
             Self::SharedToolHasDependents { .. } => "shared_tool_has_dependents",
             Self::PathConflict(Private) => "private_tool_path_conflict",
             Self::PathConflict(Shared) => "shared_tool_path_conflict",
@@ -161,6 +169,7 @@ impl Error {
             Self::SharedToolSourceUnreadable => "shared_tool_source_unreadable",
             Self::NotFound(_)
             | Self::RevisionConflict { .. }
+            | Self::SharedToolRestoreDiffers
             | Self::SharedToolHasDependents { .. }
             | Self::PathConflict(Shared)
             | Self::NotData(..)

@@ -38,7 +38,10 @@ service SharedToolService {
   // path is inside another Shared Tool's namespace, or holds one.
   // ABORTED when the current revision is not expected_revision.
   // INVALID_ARGUMENT with reason SHARED_TOOL_SOURCE_REJECTED when the source
-  // cannot become a Tool.
+  // cannot become a Tool; with reason SHARED_TOOL_RESTORE_DIFFERS when the
+  // source or the description is not that of the revision to restore. For
+  // both, the error metadata "message" says what to correct. A validate_only
+  // request is refused as the publish would be.
   rpc PublishSharedTool(PublishSharedToolRequest) returns (PublishSharedToolResponse);
   // Removes the Shared Tool at a path. The path is free for another Shared
   // Tool, and the revisions and events stay under the returned name. Programs

@@ -125,7 +125,8 @@ pub(super) fn mask(
     Ok(paths)
 }
 
-// Standard google.rpc.Status / ErrorInfo wire layout. No domain error text is exported.
+// Standard google.rpc.Status / ErrorInfo wire layout. The one domain error
+// text exported is the bounded text of a definite refusal, as metadata.
 #[derive(Clone, PartialEq, prost::Message)]
 struct RpcStatus {
     #[prost(int32, tag = "1")]
@@ -221,7 +222,8 @@ pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
 }
 
 /// A status whose `ErrorInfo` also carries `metadata`: safe values that the
-/// client acts on, never an error's text.
+/// client acts on or shows. An error's text is not one, except the bounded
+/// text its domain returns for a definite refusal.
 pub(super) fn safe_status_with(
     code: tonic::Code,
     reason: &str,
@@ -248,6 +250,20 @@ pub(super) fn safe_status_with(
         }],
     };
     Status::with_details(code, reason, status.encode_to_vec().into())
+}
+
+/// The `ErrorInfo` metadata of a status this module built.
+#[cfg(test)]
+pub(super) fn metadata(status: &Status) -> std::collections::HashMap<String, String> {
+    let details = RpcStatus::decode(status.details())
+        .expect("a google.rpc.Status")
+        .details;
+    let [detail] = details.as_slice() else {
+        panic!("one ErrorInfo detail: {details:?}")
+    };
+    ErrorInfo::decode(detail.value.as_slice())
+        .expect("an ErrorInfo")
+        .metadata
 }
 
 /// Tokens are opaque continuation positions, never authority. Every page reloads

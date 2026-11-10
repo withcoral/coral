@@ -394,7 +394,8 @@ impl Authoring {
         declarations: Option<CoralDeclarations>,
     ) -> Result<PreparedAuthoredTool, Error> {
         let kind = path.kind();
-        let source_name = path.source_name();
+        // The error names the kind, so its reason names the path alone.
+        let call_path = path.call_path();
         let compile = {
             let compiler = self.compiler.clone();
             let source = source.to_string();
@@ -408,7 +409,7 @@ impl Authoring {
             .map_err(|_join_error| Error::CompilerWorkerStopped)?
             .map_err(|failure| match failure {
                 CompileFailure::Rejected(message) => {
-                    Error::Admission(kind, format!("{source_name}: {message}"))
+                    Error::Admission(kind, format!("{call_path}: {message}"))
                 }
                 CompileFailure::Busy => Error::CompilerBusy,
                 CompileFailure::TimedOut => Error::CompilationTimedOut(kind),
@@ -423,7 +424,7 @@ impl Authoring {
             })?;
         // Every call crosses to Coral and back, so only data can (ADR 0033).
         if let Some(reason) = prepared.not_data {
-            return Err(Error::NotData(kind, format!("{source_name}: {reason}")));
+            return Err(Error::NotData(kind, format!("{call_path}: {reason}")));
         }
         Ok(prepared)
     }
@@ -454,7 +455,7 @@ pub(crate) fn missing_linked_tool(
         source.kind(),
         format!(
             "{}:{}:{}: {}",
-            source.source_name(),
+            source.call_path(),
             reference.line(),
             reference.column(),
             coral_catalog::unknown_call_path_message(&reference.path().call_path(), &[])

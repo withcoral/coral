@@ -964,7 +964,8 @@ pub enum Error {
     #[error("Program source is not one async-function body")]
     InvalidProgramBody,
     /// Authored Tool source did not define one import-free default callable.
-    #[error("Tool authoring failed: {0}")]
+    /// The caller says which Tool's authoring failed.
+    #[error("{0}")]
     InvalidAuthoredTool(String),
     /// Source nesting overflowed the compiler's stack.
     #[error("TypeScript source is nested too deeply to compile")]
