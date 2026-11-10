@@ -3,7 +3,7 @@ import { data, redirect, type RouterContextProvider } from 'react-router'
 import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
 import {
-  toolBlockers,
+  blockerLabel,
   providerName,
   providerFailure,
   toolName,
@@ -252,7 +252,7 @@ async function currentBlockers(api: ManagementApi, workspace: string, providers:
         ...(await Promise.all(
           batch.map(async (id) => {
             const provider = await api.providers.getProvider({ name: providerName(workspace, id) })
-            return [id, toolBlockers(provider)] as const
+            return [id, provider.blockers.map(blockerLabel)] as const
           }),
         )),
       )

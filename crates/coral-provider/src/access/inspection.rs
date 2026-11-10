@@ -23,7 +23,8 @@ pub enum ProviderBlocker {
     SharedAccountRequired,
     /// The Provider requires credentials but its account setting supplies none.
     AccountSettingIncompatible,
-    /// Every Tool is structurally unavailable or policy-disabled.
+    /// Every Tool is structurally unavailable or policy-disabled. Never
+    /// reported for the Private or Shared Provider.
     NoToolsReady,
 }
 
@@ -39,9 +40,14 @@ pub struct ProviderReadiness {
 impl ProviderReadiness {
     /// Combines discovery's exact policy/Tool evidence with lifecycle blockers.
     /// Account blockers do not hide policy/structural blockers; readiness is never stored.
+    ///
+    /// The Private and Shared Providers are never blocked for want of a ready
+    /// Tool: their Generations hold none, and coral-tools decides which of
+    /// their Tools each Principal reaches.
     #[must_use]
     pub fn with_tool_readiness(mut self, has_ready_tool: bool) -> Self {
         if !has_ready_tool
+            && !self.provider.call_root().performs_code()
             && !self.blockers.iter().any(|blocker| {
                 matches!(
                     blocker,

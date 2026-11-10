@@ -440,6 +440,40 @@ async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state()
     assert!(!found().await, "a disabled Private Provider");
 }
 
+// Catches: the Private Provider reported as having no Tool ready because its
+// own Generation holds none, whatever Private Tools exist, or its lifecycle
+// blocker lost with it.
+#[tokio::test]
+async fn the_private_provider_is_not_blocked_for_tools_its_generation_never_holds() {
+    let fixture = TestModules::new().await;
+    let scope = TracerScope::new(&fixture).await;
+    let provider = private_provider(&fixture, &scope).await;
+    let blockers = || async {
+        fixture
+            .search
+            .inspect_provider_readiness_for(&scope.user, &scope.workspace_id, provider.id())
+            .await
+            .expect("inspect the Private Provider")
+            .blockers
+    };
+    assert_eq!(blockers().await, vec![]);
+    fixture
+        .providers
+        .disable_provider(
+            &change(scope.user.clone(), 50, 'd')
+                .with_etag(&provider.etag())
+                .unwrap(),
+            &scope.workspace_id,
+            provider.id(),
+        )
+        .await
+        .expect("disable the Private Provider");
+    assert_eq!(
+        blockers().await,
+        vec![coral_provider::access::ProviderBlocker::ProviderDisabled]
+    );
+}
+
 #[tokio::test]
 async fn describe_returns_exact_descriptions_and_only_owned_source() {
     let fixture = TestModules::new().await;

@@ -33,7 +33,6 @@ import { selectionKey, type SelectionKey } from '@/views/providers/selection'
 import type { ToolCalls } from './activity-summary'
 import { accountLabels } from '@/views/providers/account-labels'
 import { authorizationDiscoveryMessage } from './authorization-discovery'
-import { isPrivateCallRoot } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -219,18 +218,6 @@ export function blockerLabel(blocker: ProviderBlocker) {
   const label = blockerLabels[blocker]
   return label ?? 'Unavailable'
 }
-/**
- * What blocks a provider's tools, as the Tools page names it. Coral counts
- * ready tools in a provider's own catalog, so it always reports none ready
- * for the Private Provider, whatever private tools exist. That one blocker
- * says nothing there, so it is left out.
- */
-export function toolBlockers(provider: Pick<Provider, 'blockers' | 'callRoot'>) {
-  const blockers = isPrivateCallRoot(provider.callRoot)
-    ? provider.blockers.filter((blocker) => blocker !== ProviderBlocker.NO_TOOLS_READY)
-    : provider.blockers
-  return blockers.map(blockerLabel)
-}
 
 const personalAccountActions: Record<PersonalAccountState, string | null> = {
   connected: null,
@@ -391,7 +378,7 @@ export function groupView(
     namespace: provider.namespace,
     callRoot: provider.callRoot,
     account: accountLabel(provider.credentialRoute),
-    blockers: toolBlockers(provider),
+    blockers: provider.blockers.map(blockerLabel),
     searchIndex: searchIndexView(provider),
     readyCount: tools.filter((tool) => tool.available).length,
     totalCount: tools.length,

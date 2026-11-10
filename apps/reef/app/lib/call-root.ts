@@ -24,14 +24,6 @@ function currentCallPath(callPath: string) {
   return callPath
 }
 
-/**
- * Whether this is the Call Root of the Private Provider. Coral keeps its
- * tools apart from the provider's own catalog, which holds none.
- */
-export function isPrivateCallRoot(callRoot: string) {
-  return `${callRoot}.` === PRIVATE_ROOT
-}
-
 /** The complete Call Path of one tool of a provider. */
 export function toolCallPath(callRoot: string, relativePath: string) {
   return `${callRoot}.${relativePath}`

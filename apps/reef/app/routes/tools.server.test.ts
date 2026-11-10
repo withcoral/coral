@@ -91,10 +91,7 @@ function serve(role: WorkspaceRole, { disabled = false } = {}) {
           callRoot: 'coral.private',
           etag: 'private-etag',
           state: disabled ? ProviderState.DISABLED : ProviderState.ACTIVE,
-          // Its own catalog holds no tool, so Coral always reports none ready.
-          blockers: disabled
-            ? [ProviderBlocker.PROVIDER_DISABLED]
-            : [ProviderBlocker.NO_TOOLS_READY],
+          blockers: disabled ? [ProviderBlocker.PROVIDER_DISABLED] : [],
         }
       }),
     },
@@ -241,8 +238,8 @@ it.each([
   expect(called('listAgents')).toHaveLength(agentReads)
 })
 
-// Catches: the Private group marked "No tools ready" because its own catalog
-// holds none, or a disabled Private Provider that still reads as enabled.
+// Catches: a disabled Private Provider that still reads as enabled, or the
+// group losing the version an Owner's change must carry.
 it.each([
   { state: 'enabled', disabled: false, blockers: [] },
   { state: 'disabled', disabled: true, blockers: ['Provider disabled'] },
@@ -298,9 +295,8 @@ const post = (fields: Record<string, string | string[]>) => {
 }
 const selected = (key: string) => JSON.stringify({ provider: privateId, tool: key })
 
-// Catches: an Owner's rule sent to the wrong provider, one on an Agent's
-// private tool landing on the Owner's own at the same path, or a saved rule
-// that leaves the private group marked "No tools ready".
+// Catches: an Owner's rule sent to the wrong provider, or one on an Agent's
+// private tool landing on the Owner's own at the same path.
 it('lets an owner set rules on their own and on an agent’s private tools', async () => {
   serve(WorkspaceRole.OWNER)
   const response = await post({
@@ -308,9 +304,7 @@ it('lets an owner set rules on their own and on an agent’s private tools', asy
     access: 'approval_required',
     selectedTool: [selected(OWN_KEY), selected(AGENT_KEY)],
   })
-  // The page applies these blockers at once: a rule must not mark the
-  // private tools as having none ready.
-  expect(response).toMatchObject({ data: { error: null, blockers: { [privateId]: [] } } })
+  expect(response).toMatchObject({ data: { error: null } })
   expect(called('updateToolPolicies').map((call) => call.request)).toMatchObject([
     {
       parent: privateProvider,

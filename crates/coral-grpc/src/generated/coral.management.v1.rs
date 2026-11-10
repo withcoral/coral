@@ -1158,7 +1158,8 @@ pub enum ProviderBlocker {
     /// The inspected Agent needs its own Account before discovery; not a configuration
     /// failure. A User's own Account is never reported here.
     CallerAccountRequired = 4,
-    /// No Tool passes structural availability and current policy.
+    /// No Tool passes structural availability and current policy. Never
+    /// reported for the Private or Shared Provider, whose own catalog holds no Tool.
     NoToolsReady = 5,
     /// An Owner must connect the Provider's shared Account.
     SharedAccountRequired = 6,
