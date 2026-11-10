@@ -119,7 +119,7 @@ that started it.
 
 ```mermaid
 graph LR
-    Agent["Your agent"] -->|"search: find tools<br/>exec: run a program"| MCP["Coral MCP server"]
+    Agent["Your agent"] -->|"exec: run a program"| MCP["Coral MCP server"]
     You["You"] -->|"providers, policy, approvals"| UI["Coral UI"]
 
     subgraph Coral["Coral (your laptop or server)"]
@@ -134,8 +134,9 @@ graph LR
     Gate --> Own["Your OpenAPI or MCP service"]
 ```
 
-The agent calls `search` to find the tools it can use and read their
-TypeScript signatures. Then it calls `exec` to send Coral a short program.
+The agent sends Coral programs through the `exec` tool. A program calls
+`coral.workspace.search` to find the tools the agent can use and read their
+TypeScript signatures. Then the agent sends a program that does the work.
 This one finds open pull requests that have no reviewer and posts them to
 Slack:
 
