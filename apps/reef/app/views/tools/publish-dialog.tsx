@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useFetcher } from 'react-router'
 
 import { PolicyToggle, type PolicyState } from '@/components/policy-toggle'
+import { sharedToolCallPath, sharedToolPath } from '@/lib/call-root'
 import { Fields } from '@/views/management/forms'
 import { Section } from '@/views/management/layout'
 import type { ActionResult, FormContext } from '@/views/management/types'
@@ -126,6 +127,8 @@ function PublishDialogBody({
   const reviewed = shown?.review ?? null
   const enteredPath = pathInput.trim()
   const revision = (reviewed?.previous?.revision ?? 0) + 1
+  // The publish sends the review on screen, so it waits for one of the path in the field.
+  const cannotPublish = publishing || !reviewed || enteredPath !== reviewed.path
   return (
     <Dialog.Popup size="xxl" fullWidthOnMobile>
       <Dialog.Title>
@@ -133,7 +136,7 @@ function PublishDialogBody({
       </Dialog.Title>
       {origin.kind === 'restore' ? (
         <div className={styles.callPath}>
-          <CodeChip>{`coral.shared.${initialPath}`}</CodeChip>
+          <CodeChip>{sharedToolCallPath(initialPath)}</CodeChip>
         </div>
       ) : (
         <form
@@ -181,7 +184,7 @@ function PublishDialogBody({
         className={styles.stack}
         aria-busy={publishing}
         onSubmit={(event) => {
-          if (publishing || !reviewed || enteredPath !== reviewed.path) event.preventDefault()
+          if (cannotPublish) event.preventDefault()
         }}
       >
         <Fields form={submission} intent="publishSharedTool" />
@@ -218,7 +221,7 @@ function PublishDialogBody({
           <Button.TextButton
             type="submit"
             variant="primary"
-            disabled={publishing || !reviewed || enteredPath !== reviewed.path}
+            disabled={cannotPublish}
             busy={publishing}
           >
             {reviewed ? `Publish revision ${revision}` : 'Publish'}
@@ -266,16 +269,13 @@ function Review({ review }: { review: PublishReviewView }) {
   const { previous } = review
   const [sourceView, setSourceView] = useState<'changes' | 'full'>(previous ? 'changes' : 'full')
   const revisions = new Map(review.sharedTools.map((tool) => [tool.path, tool.revision]))
-  const sharedRevision = (callPath: string) =>
-    callPath.startsWith('coral.shared.')
-      ? revisions.get(callPath.slice('coral.shared.'.length))
-      : undefined
+  const sharedRevision = (callPath: string) => revisions.get(sharedToolPath(callPath) ?? '')
   return (
     <div className={styles.stack}>
       <Typography.Body as="p">
         {previous
-          ? `This publish replaces revision ${previous.revision} of coral.shared.${review.path}.`
-          : `This publish creates coral.shared.${review.path}.`}
+          ? `This publish replaces revision ${previous.revision} of ${sharedToolCallPath(review.path)}.`
+          : `This publish creates ${sharedToolCallPath(review.path)}.`}
       </Typography.Body>
       {review.origin.kind === 'private' && (
         <Banner variant="warning" title="Remove tokens and IDs that only you should see.">

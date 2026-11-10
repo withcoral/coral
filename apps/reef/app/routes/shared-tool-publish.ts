@@ -20,8 +20,8 @@ export function shouldRevalidate() {
  */
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace } = await authorizedWorkspace(context, params.workspace)
-    const review = await publishReview(api, workspace.name, new URL(request.url).searchParams)
+    const { api } = await authorizedWorkspace(context, params.workspace)
+    const review = await publishReview(api, params.workspace, new URL(request.url).searchParams)
     return data(review, { headers: privateHeaders })
   } catch (error) {
     managementFailure(error)

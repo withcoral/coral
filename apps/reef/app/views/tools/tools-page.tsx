@@ -64,6 +64,7 @@ import { countLabel } from '@/utils/count-label'
 import { catalogMatches } from '@/views/providers/provider-catalog'
 import {
   addressedTool,
+  holdsAuthoredTools,
   PRIVATE_TOOL_DELETED,
   providerAddress,
   SHARED_TOOL_PUBLISHED,
@@ -200,8 +201,7 @@ function ToolsContent({
       : undefined
   // Nothing to list: no provider the reader can use, and no shared or private tool.
   const empty = sortedProviders.every(
-    (provider) =>
-      (provider.kind === 'private' || provider.kind === 'shared') && provider.tools.length === 0,
+    (provider) => holdsAuthoredTools(provider) && provider.tools.length === 0,
   )
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
   // The field echoes each keystroke at once; the rail follows with the
@@ -723,6 +723,11 @@ function ToolsTableScreen({
         .length
     : selected.size
   const allVisibleSelected = visibleTools.length > 0 && visibleSelectedCount === visibleTools.length
+  // Only an owner publishes, from one of the private tools.
+  const emptySharedStatus =
+    workspace.effectiveRole === 'owner'
+      ? 'No shared tools yet. Publish one from a private tool.'
+      : 'No shared tools yet. Only an owner can publish one.'
   const { rows, sections, ranked } = useMemo(() => {
     if (usageOrder) {
       // One list across providers, busiest first. The sort is stable, so equal
@@ -767,7 +772,7 @@ function ToolsTableScreen({
           provider.kind === 'private'
             ? 'No private tools yet. Ask your agent to create one.'
             : provider.kind === 'shared'
-              ? 'No shared tools yet. Only an owner can publish one.'
+              ? emptySharedStatus
               : 'No tools yet. Settings remain available.'
         section.statusIndex = flat.length
         flat.push({
@@ -814,7 +819,14 @@ function ToolsTableScreen({
       }
     }
     return { rows: flat, sections: tree, ranked: null }
-  }, [collapsed, usageOrder, selectedTool, selectedProviderId, visibleByProvider])
+  }, [
+    collapsed,
+    emptySharedStatus,
+    usageOrder,
+    selectedTool,
+    selectedProviderId,
+    visibleByProvider,
+  ])
   const toolIndexes = useMemo(() => {
     const indexes = new Map<string, number>()
     rows.forEach((row, index) => {
@@ -2353,7 +2365,7 @@ function ToolDetailsDrawer({
         <Dialog.Popup
           ref={popup}
           // A private or a shared tool shows its source, which needs the room.
-          size={provider?.kind === 'private' || provider?.kind === 'shared' ? 'xl' : 'm'}
+          size={provider && holdsAuthoredTools(provider) ? 'xl' : 'm'}
           placement="right"
           onKeyDown={(event) => onKeyDown(event.nativeEvent)}
         >

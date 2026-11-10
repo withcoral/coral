@@ -25,6 +25,18 @@ export function publisherName(person: PersonView | null, currentUser: string) {
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
 /**
+ * The revision the owner saw when the dialog opened, which a removal expects.
+ * A refused removal reloads the page, maybe with another owner's revision. The
+ * dialog keeps the first one, as it keeps its etag, so Coral refuses again
+ * rather than remove a revision the owner never saw. The dialog mounts its
+ * fields only while open, so each opening reads the revision again.
+ */
+function SeenRevision({ revision }: { revision: number }) {
+  const [seen] = useState(revision)
+  return <input type="hidden" name="expectedRevision" value={seen} />
+}
+
+/**
  * One shared tool: its source, its revisions and its history. With
  * `canChange`, an owner restores a revision by publishing it again, or
  * removes the shared tool.
@@ -166,20 +178,20 @@ export function SharedToolDetail({
               description={`After you remove it, programs and tools that call ${callPath} fail. You cannot undo this.`}
             >
               <input type="hidden" name="path" value={detail.relativePath} />
-              <input type="hidden" name="expectedRevision" value={detail.revision} />
+              <SeenRevision revision={detail.revision} />
             </ActionDialog>
           }
         />
       )}
-      {canChange && (
+      {restoring !== null && (
         <PublishDialog
-          open={restoring !== null}
+          open
           onOpenChange={(open) => {
             if (!open) setRestoring(null)
           }}
           workspacePath={workspace.path}
           form={form}
-          origin={{ kind: 'restore', revision: restoring ?? 0 }}
+          origin={{ kind: 'restore', revision: restoring }}
           path={detail.relativePath}
           policy={policy}
         />

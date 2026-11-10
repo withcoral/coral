@@ -16,7 +16,8 @@ const spoken = { removed: 'Removed: ', added: 'Added: ' } as const
  * added one, with `context` unchanged lines around them and the rest folded.
  * A sign marks each changed line, so its colour is not the only cue. Lines do
  * not wrap; the diff scrolls sideways. With `maxLines` it grows to that many
- * lines, then scrolls inside itself. Two equal texts show `unchanged`.
+ * lines, then scrolls inside itself. Two equal texts show `unchanged`; two
+ * whose lines are equal but whose line breaks differ say so.
  */
 export function DiffView({
   before,
@@ -41,7 +42,7 @@ export function DiffView({
   if (!rows)
     return (
       <Typography.BodySmall as="p" variant="secondary">
-        {unchanged}
+        {before === after ? unchanged : 'Only the line breaks change.'}
       </Typography.BodySmall>
     )
   return (
@@ -60,7 +61,7 @@ export function DiffView({
               {countLabel(row.hidden, 'unchanged line')}
             </div>
           ) : (
-            <div key={index} className={styles.line[row.kind]} data-change={row.kind}>
+            <div key={index} className={styles.line[row.kind]}>
               <span className={styles.number} aria-hidden>
                 {row.before}
               </span>

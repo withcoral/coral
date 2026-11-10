@@ -33,6 +33,20 @@ export async function loader({ context, params }: Route.LoaderArgs) {
     const selectedProvider = params.provider ? uuidOr404(params.provider) : null
     const selectedTool = params.tool ?? null
     const selectedToolAgent = params.agent ?? null
+    // What the drawer shows of the selected tool, by the group its address names.
+    const detail = async () => {
+      if (!selectedTool) return null
+      if (group === SHARED_GROUP) return sharedToolDetail(api, workspace.name, selectedTool)
+      if (group === PRIVATE_GROUP)
+        return privateToolDetail(
+          api,
+          workspace.name,
+          selectedTool,
+          selectedToolAgent ? agentName(params.workspace, selectedToolAgent) : '',
+        )
+      if (!selectedProvider) return null
+      return toolDetail(api, providerName(workspace.name, selectedProvider), selectedTool)
+    }
     return data(
       {
         workspace,
@@ -40,24 +54,7 @@ export async function loader({ context, params }: Route.LoaderArgs) {
         selectedProvider,
         selectedTool,
         selectedToolAgent,
-        selectedToolDetail: !selectedTool
-          ? null
-          : group === SHARED_GROUP
-            ? await sharedToolDetail(api, workspace.name, selectedTool)
-            : group === PRIVATE_GROUP
-              ? await privateToolDetail(
-                  api,
-                  workspace.name,
-                  selectedTool,
-                  selectedToolAgent ? agentName(params.workspace, selectedToolAgent) : '',
-                )
-              : selectedProvider
-                ? await toolDetail(
-                    api,
-                    providerName(workspace.name, selectedProvider),
-                    selectedTool,
-                  )
-                : null,
+        selectedToolDetail: await detail(),
       },
       { headers: privateHeaders },
     )

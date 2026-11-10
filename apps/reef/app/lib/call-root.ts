@@ -63,6 +63,11 @@ export function privateToolPath(callPath: string) {
     : null
 }
 
+/** The complete Call Path of the Shared Tool at `path` under `coral.shared`. */
+export function sharedToolCallPath(path: string) {
+  return `${SHARED_ROOT}${path}`
+}
+
 /** The path under `coral.shared` of a Shared Tool's complete Call Path, or null. */
 export function sharedToolPath(callPath: string) {
   return callPath.startsWith(SHARED_ROOT) && callPath.length > SHARED_ROOT.length

@@ -456,7 +456,7 @@ impl SharedToolReview {
 }
 
 /// A publish's outcome: the review, and the Shared Tool as it now is unless
-/// the publish only validated.
+/// the request was a review.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedToolPublication {
     review: SharedToolReview,
@@ -471,7 +471,7 @@ impl SharedToolPublication {
     }
 
     /// Returns the Shared Tool with its new current revision; `None` for a
-    /// publish that only validated.
+    /// review.
     #[must_use]
     pub const fn published(&self) -> Option<&SharedTool> {
         self.published.as_ref()
@@ -773,7 +773,8 @@ impl SharedToolModule {
     /// The source is compiled outside the write transaction, and never
     /// executed. The declaration it emits depends on the Tools it names, so
     /// one of them may have changed it since the review: a publish stores
-    /// the declaration only when it is the one the Owner reviewed. It is typed as a Private Tool save types it: against the
+    /// the declaration only when it is the one the Owner reviewed. The
+    /// source is typed as a Private Tool save types it: against the
     /// current Shared Tools it names and, through `tools`, against the
     /// Provider and Built-in Tools it names that the publishing Owner can
     /// discover (ADR 0020). Without `tools`, those stay untyped.

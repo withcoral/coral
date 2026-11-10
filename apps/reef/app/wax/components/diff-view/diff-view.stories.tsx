@@ -35,9 +35,8 @@ export const Changes: Story = {
   play: async ({ canvasElement }) => {
     const diff = within(canvasElement).getByRole('group', { name: 'Source changes' })
     // A sign and a spoken word mark each change, so its colour is not the only cue.
-    await expect(diff.querySelectorAll('[data-change="removed"]')).toHaveLength(3)
-    await expect(diff.querySelectorAll('[data-change="added"]')).toHaveLength(3)
     await expect(within(diff).getAllByText('Removed:')).toHaveLength(3)
+    await expect(within(diff).getAllByText('Added:')).toHaveLength(3)
     await expect(within(diff).getAllByText(/unchanged lines?$/).length).toBeGreaterThan(0)
   },
 }
@@ -52,5 +51,14 @@ export const LongLine: Story = {
   args: {
     before: 'const a = 1',
     after: `const a = ${JSON.stringify('a very long string '.repeat(20))}`,
+  },
+}
+/** Two texts whose lines are the same but whose line breaks differ do not read as unchanged. */
+export const LineBreaksOnly: Story = {
+  args: { after: before.replaceAll('\n', '\r\n') },
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText('Only the line breaks change.'),
+    ).toBeInTheDocument()
   },
 }

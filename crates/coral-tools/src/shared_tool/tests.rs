@@ -695,11 +695,11 @@ async fn publishing_an_earlier_revision_again_restores_it_as_a_new_revision() {
     );
 }
 
-// Catches: a validation that writes, or a review that omits what the Owner
+// Catches: a review that writes, or one that omits what the Owner
 // approves: the diff's other side, the Tools the source calls, the Shared
 // Tools it calls with their revisions, and the paths it builds at runtime.
 #[tokio::test]
-async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
+async fn a_review_returns_what_the_owner_approves_and_writes_nothing() {
     let fixture = SharedToolFixture::new().await;
     let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
     fixture.save_private(&owner, "draft", DRAFT).await;
@@ -724,7 +724,7 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
         return coral.shared.mail.send();\n\
     }";
 
-    let validated = fixture
+    let shown = fixture
         .shared_tools
         .publish(
             &change(fixture.owner.clone(), 30, 'c'),
@@ -739,11 +739,11 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
             None,
         )
         .await
-        .expect("validate the publish");
+        .expect("review the publish");
 
-    assert!(validated.published().is_none());
+    assert!(shown.published().is_none());
     assert_eq!(fixture.everything().await, before);
-    let review = validated.review();
+    let review = shown.review();
     let previous = review.previous().expect("the current revision");
     assert_eq!(previous.revision(), 1);
     assert_eq!(previous.source().as_str(), DRAFT);
@@ -771,7 +771,7 @@ async fn a_validate_only_publish_returns_the_review_and_writes_nothing() {
         review.shared_tools()
     );
 
-    // A validation is refused as the publish would be.
+    // A review is refused as the publish would be.
     let stale = fixture
         .shared_tools
         .publish(

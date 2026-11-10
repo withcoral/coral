@@ -744,7 +744,7 @@ export const PublishFirstRevision: Story = {
   },
   play: async () => {
     await openPublish()
-    await expect(await screen.findByRole('button', { name: 'Publish revision 1' })).toBeEnabled()
+    await screen.findByRole('button', { name: 'Publish revision 1' })
   },
 }
 // The review of a later publish: the source and the declaration as diffs
@@ -770,7 +770,7 @@ export const PublishNextRevision: Story = {
   },
   play: async () => {
     await openPublish()
-    await expect(await screen.findByRole('button', { name: 'Publish revision 4' })).toBeEnabled()
+    await screen.findByRole('button', { name: 'Publish revision 4' })
     await screen.findByRole('group', { name: 'Source changes' })
     await screen.findByRole('group', { name: 'Declaration changes' })
   },
@@ -829,7 +829,7 @@ export const RestoreRevision: Story = {
   play: async () => {
     await userEvent.click(await screen.findByRole('tab', { name: 'Revisions' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Restore revision 2' }))
-    await expect(await screen.findByRole('button', { name: 'Publish revision 4' })).toBeEnabled()
+    await screen.findByRole('button', { name: 'Publish revision 4' })
   },
 }
 

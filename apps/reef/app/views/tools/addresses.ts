@@ -46,12 +46,21 @@ export function sharedToolPublishPath(workspacePath: string) {
 }
 
 /**
+ * Whether the group holds tools that a person or an agent wrote: the shared
+ * or the private group. Its page has a fixed address, and its tools show
+ * their source.
+ */
+export function holdsAuthoredTools(group: Pick<ProviderView, 'kind'>) {
+  return group.kind === 'private' || group.kind === 'shared'
+}
+
+/**
  * The address of a tool's drawer. A shared or a private tool sits directly
  * under its group, and an agent's private tool names the agent after it.
  */
 export function toolPath(group: Pick<ProviderView, 'kind' | 'path'>, tool: ToolView) {
   const name = encodeURIComponent(tool.relativePath)
-  if (group.kind !== 'private' && group.kind !== 'shared') return `${group.path}/tools/${name}`
+  if (!holdsAuthoredTools(group)) return `${group.path}/tools/${name}`
   return tool.agent
     ? `${group.path}/${name}/agents/${encodeURIComponent(tool.agent.id)}`
     : `${group.path}/${name}`

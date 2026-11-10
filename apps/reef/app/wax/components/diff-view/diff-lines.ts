@@ -56,6 +56,15 @@ export function diffLines(before: string, after: string): DiffLine[] {
   return lines
 }
 
+/**
+ * Whether the path that reaches diagonal `k` in round `d` comes down from
+ * `k + 1`, by adding a line, and not across from `k - 1`, by removing one.
+ * `reach` is the furthest line each diagonal reached before the round.
+ */
+function descends(reach: Int32Array, max: number, d: number, k: number) {
+  return k === -d || (k !== d && reach[k - 1 + max]! < reach[k + 1 + max]!)
+}
+
 /** The edits that turn `a` into `b`, fewest first; all of both when they are too far apart. */
 function shortestEdits(a: string[], b: string[]): Edit[] {
   const n = a.length
@@ -71,14 +80,10 @@ function shortestEdits(a: string[], b: string[]): Edit[] {
   const reach = new Int32Array(2 * max + 2)
   // The reach before each round, which the walk back reads.
   const rounds: Int32Array[] = []
-  // Whether the path that reaches diagonal `k` in round `d` comes down from
-  // `k + 1`, by adding a line, and not across from `k - 1`, by removing one.
-  const descends = (from: Int32Array, d: number, k: number) =>
-    k === -d || (k !== d && from[k - 1 + max]! < from[k + 1 + max]!)
   for (let d = 0; d <= max; d += 1) {
     rounds.push(reach.slice())
     for (let k = -d; k <= d; k += 2) {
-      let x = descends(reach, d, k) ? reach[k + 1 + max]! : reach[k - 1 + max]! + 1
+      let x = descends(reach, max, d, k) ? reach[k + 1 + max]! : reach[k - 1 + max]! + 1
       let y = x - k
       while (x < n && y < m && a[x] === b[y]) {
         x += 1
@@ -99,7 +104,7 @@ function walkBack(rounds: Int32Array[], max: number, n: number, m: number): Edit
   for (let d = rounds.length - 1; d > 0; d -= 1) {
     const from = rounds[d]!
     const k = x - y
-    const down = k === -d || (k !== d && from[k - 1 + max]! < from[k + 1 + max]!)
+    const down = descends(from, max, d, k)
     const previousX = from[(down ? k + 1 : k - 1) + max]!
     const previousY = previousX - (down ? k + 1 : k - 1)
     while (x > previousX && y > previousY) {

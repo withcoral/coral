@@ -20,6 +20,7 @@ import type {
   SharedToolDetailView,
   ToolSourceView,
 } from '@/views/tools/types'
+import { sharedToolCallPath } from './call-root'
 import { refusalMetadata } from './error-info.server'
 import {
   agentName,
@@ -159,11 +160,14 @@ async function ownersByUser(api: Pick<ManagementApi, 'memberships'>, parent: str
 
 const invalid = (reason: string) => new Response(reason, { status: 400, headers: privateHeaders })
 
-/** What a publish dialog asks to review, from its address. */
+// A revision number as an address or a form spells it: from 1, with no sign.
+const REVISION = /^[1-9][0-9]{0,15}$/
+
+/** What a publish dialog asks to review, from its address, in the workspace with this identifier. */
 function requestedOrigin(workspace: string, query: URLSearchParams): PublishOrigin {
   const restore = query.get('restore')
   if (restore !== null) {
-    if (!/^[1-9][0-9]{0,15}$/.test(restore)) throw invalid('Bad request')
+    if (!REVISION.test(restore)) throw invalid('Bad request')
     return { kind: 'restore', revision: Number(restore) }
   }
   const path = query.get('tool')
@@ -176,7 +180,7 @@ function requestedOrigin(workspace: string, query: URLSearchParams): PublishOrig
 
 /** The resource name of the agent with this identifier, or empty for the reader's own tools. */
 function agentResource(workspace: string, agent: string | null) {
-  return agent ? agentName(workspace.slice('workspaces/'.length), agent) : ''
+  return agent ? agentName(workspace, agent) : ''
 }
 
 /** A publish's origin as Coral reads it. */
@@ -210,24 +214,28 @@ async function sharedToolAt(api: Pick<ManagementApi, 'sharedTools'>, parent: str
  * tool path; a private tool's own path stands in for it.
  *
  * A refusal Coral gives comes back as text, not as a failed read, so the
- * dialog shows it and the owner corrects the path there.
+ * dialog shows it and the owner corrects the path there. `workspace` is the
+ * workspace's identifier, as for the publish and the removal.
  */
 export async function publishReview(
   api: Pick<ManagementApi, 'privateTools' | 'sharedTools'>,
   workspace: string,
   query: URLSearchParams,
 ): Promise<PublishReviewResult> {
+  const parent = workspaceName(workspace)
   const origin = requestedOrigin(workspace, query)
   const path = query.get('path') ?? (origin.kind === 'private' ? origin.path : '')
   try {
-    const current = await sharedToolAt(api, workspace, path)
+    const current = await sharedToolAt(api, parent, path)
     let content: { description: string; source: string }
-    let defaultPolicy = current?.currentRevision
+    // A new revision, a restore too, starts on the policy the shared tool has
+    // now: a rollback of the source does not also loosen its policy.
+    const defaultPolicy = current?.currentRevision
       ? policyState(current.currentRevision.defaultAccessState)
       : null
     if (origin.kind === 'private') {
       content = await api.privateTools.getPrivateTool({
-        parent: workspace,
+        parent,
         path: origin.path,
         agent: agentResource(workspace, origin.agent),
       })
@@ -238,11 +246,9 @@ export async function publishReview(
         revision: BigInt(origin.revision),
       })
       content = restored
-      // A restore brings back the policy the revision had, unless the owner changes it.
-      defaultPolicy = policyState(restored.defaultAccessState)
     }
     const { review } = await api.sharedTools.publishSharedTool({
-      parent: workspace,
+      parent,
       path,
       origin: wireOrigin(workspace, origin),
       description: content.description,
@@ -292,20 +298,28 @@ const publishRefusals = {
   declaration:
     'A tool that this source calls changed after your review. Review the declaration again.',
   taken: 'Another shared tool uses this path, or a part of it. Enter another path.',
-  unreadable:
-    'Coral cannot read the source of this publish. The private tool or the revision no longer exists.',
+  unreadable: 'The private tool or the revision no longer exists. Close this dialog.',
   denied: 'Only an owner can publish to shared tools.',
 }
 
 /**
- * Why Coral refused a publish or its review, as the dialog says it. For a
- * refusal of what the owner entered, Coral says what to correct, and the
- * dialog shows that text.
+ * Why Coral refused a publish or its review, as the dialog says it. A source
+ * that cannot become a tool keeps Coral's text after the instruction, because
+ * that text says where the source fails.
  */
 function publishFailure(error: unknown): [status: number, message: string] {
   if (error instanceof ConnectError) {
+    const corrections: Record<string, string> = {
+      SHARED_TOOL_PATH_INVALID:
+        'Enter a path of 1 to 16 names with a dot between each, such as mail.remind. Each name is a JavaScript identifier.',
+      SHARED_TOOL_RESTORE_DIFFERS:
+        'This content is not that of the revision you restore. Review the revision again.',
+    }
+    if (error.code === Code.InvalidArgument && corrections[error.rawMessage])
+      return [400, corrections[error.rawMessage]!]
     const { message } = refusalMetadata(error)
-    if (error.code === Code.InvalidArgument && message) return [400, message]
+    if (error.rawMessage === 'SHARED_TOOL_SOURCE_REJECTED' && message)
+      return [400, `Fix the source in the private tool, then publish again. ${message}`]
     if (error.code === Code.Aborted) return [409, publishRefusals.moved]
     if (error.code === Code.PermissionDenied) return [403, publishRefusals.denied]
     if (error.code === Code.NotFound) return [404, publishRefusals.unreadable]
@@ -367,6 +381,11 @@ function reviewedContent(form: FormData) {
  * Publishes what the owner reviewed: the form holds the exact description and
  * source of the review, the declaration it showed, and the revision it
  * replaces. Then opens the shared tool. A refusal stays in the dialog.
+ *
+ * An agent may save the private tool again after the review. The publish
+ * still stores the reviewed bytes, so it never takes the newer ones, and the
+ * dialog does not say that the private tool moved: Coral keeps no signal for
+ * it. The owner reviews again to publish the newer source.
  */
 export async function publishSharedTool(
   context: Readonly<RouterContextProvider>,
@@ -377,12 +396,13 @@ export async function publishSharedTool(
   const path = field(form, 'path')
   const defaultAccessState = accessStateOf(field(form, 'access'))
   const expected = field(form, 'expectedRevision')
-  if (defaultAccessState === undefined || !/^(0|[1-9][0-9]{0,15})$/.test(expected))
+  // Zero expects no shared tool at the path: the publish creates it.
+  if (defaultAccessState === undefined || !(expected === '0' || REVISION.test(expected)))
     throw invalid('Invalid form')
   const request = {
     parent,
     path,
-    origin: wireOrigin(parent, submittedOrigin(parent, form)),
+    origin: wireOrigin(workspace, submittedOrigin(workspace, form)),
     ...reviewedContent(form),
     defaultAccessState,
     expectedRevision: BigInt(expected),
@@ -414,7 +434,7 @@ export async function removeSharedTool(
   const parent = workspaceName(workspace)
   const path = field(form, 'path')
   const expected = field(form, 'expectedRevision')
-  if (!/^[1-9][0-9]{0,15}$/.test(expected)) throw invalid('Invalid form')
+  if (!REVISION.test(expected)) throw invalid('Invalid form')
   try {
     await management(context).sharedTools.removeSharedTool({
       parent,
@@ -436,12 +456,12 @@ function removalFailure(error: unknown): [status: number, message: string] {
     if (error.rawMessage === 'SHARED_TOOL_HAS_DEPENDENTS' && dependent)
       return [
         409,
-        `The shared tool coral.shared.${dependent} calls this one. Change or remove that shared tool first.`,
+        `The shared tool ${sharedToolCallPath(dependent)} calls this one. Change or remove that shared tool first.`,
       ]
     if (error.code === Code.Aborted)
       return [
         409,
-        'Another owner published this shared tool. Reload the page to see the new revision.',
+        'Another owner published this shared tool again. Close this dialog and check the new revision.',
       ]
     if (error.code === Code.PermissionDenied)
       return [403, 'Only an owner can remove a shared tool.']

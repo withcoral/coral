@@ -221,7 +221,7 @@ test('restores a revision at the path of its shared tool', async () => {
   })
   expect(await screen.findByRole('heading', { name: 'Restore revision 1' })).toBeVisible()
   expect(screen.queryByRole('textbox', { name: 'Shared tool path' })).toBeNull()
-  // The revision's own policy comes before the fallback.
+  // The policy the shared tool has now comes before the fallback.
   expect(
     within(await screen.findByRole('radiogroup', { name: 'Default policy' })).getByRole('radio', {
       name: 'Ask',

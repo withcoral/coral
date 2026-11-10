@@ -47,7 +47,7 @@ impl SharedToolWorkflow {
 
     /// Publishes the exact content the Owner reviewed as the next revision
     /// of a Shared Tool, typed from the Tools that Owner can discover; or,
-    /// for a publish that only validates, returns its review and writes
+    /// for a [`SharedToolPublish::review`], returns its review and writes
     /// nothing.
     ///
     /// # Errors

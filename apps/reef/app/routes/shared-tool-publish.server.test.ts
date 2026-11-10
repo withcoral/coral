@@ -204,8 +204,9 @@ it('reviews an agent’s private tool at the path of a shared tool', async () =>
 })
 
 // Catches: a restore that reviews the current bytes instead of the
-// revision's, or that does not name the revision it restores.
-it('reviews a restore with the bytes and the policy of the revision it restores', async () => {
+// revision's, that does not name the revision it restores, or that starts on
+// the older revision's policy, so a rollback loosens the policy unnoticed.
+it('reviews a restore with the bytes of its revision and the policy the tool has now', async () => {
   const result = await review('restore=1&path=mail.remind')
   expect(publishes).toMatchObject([
     {
@@ -222,7 +223,7 @@ it('reviews a restore with the bytes and the policy of the revision it restores'
     description: FIRST.description,
     source: FIRST.source,
     previous: { revision: 2 },
-    defaultPolicy: 'enabled',
+    defaultPolicy: 'disabled',
   })
 })
 
@@ -236,7 +237,8 @@ it.each([
       coralRefusal(Code.InvalidArgument, 'SHARED_TOOL_PATH_INVALID', {
         message: 'Shared Tool Path must contain 1 through 16 segments',
       }),
-    refusal: 'Shared Tool Path must contain 1 through 16 segments',
+    refusal:
+      'Enter a path of 1 to 16 names with a dot between each, such as mail.remind. Each name is a JavaScript identifier.',
   },
   {
     name: 'a path inside another shared tool',
@@ -254,8 +256,7 @@ it.each([
     name: 'a private tool that is gone',
     query: 'tool=people.gone',
     refuse: null,
-    refusal:
-      'Coral cannot read the source of this publish. The private tool or the revision no longer exists.',
+    refusal: 'The private tool or the revision no longer exists. Close this dialog.',
   },
   {
     name: 'a restore of a shared tool that is gone',
@@ -391,8 +392,7 @@ it.each([
     name: 'the private tool is gone',
     refuse: () => coralRefusal(Code.FailedPrecondition, 'SHARED_TOOL_SOURCE_UNREADABLE'),
     status: 409,
-    error:
-      'Coral cannot read the source of this publish. The private tool or the revision no longer exists.',
+    error: 'The private tool or the revision no longer exists. Close this dialog.',
   },
   {
     name: 'the source cannot become a tool',
@@ -401,7 +401,17 @@ it.each([
         message: 'Shared Tool coral.shared.mail.remind authoring failed: no default export',
       }),
     status: 400,
-    error: 'Shared Tool coral.shared.mail.remind authoring failed: no default export',
+    error:
+      'Fix the source in the private tool, then publish again. Shared Tool coral.shared.mail.remind authoring failed: no default export',
+  },
+  {
+    name: 'the restore is not of its revision',
+    refuse: () =>
+      coralRefusal(Code.InvalidArgument, 'SHARED_TOOL_RESTORE_DIFFERS', {
+        message: 'a restore publishes the exact source and description of the revision it names',
+      }),
+    status: 400,
+    error: 'This content is not that of the revision you restore. Review the revision again.',
   },
   {
     name: 'the caller is a member',

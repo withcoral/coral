@@ -147,7 +147,7 @@ impl Fixture {
 async fn a_publish_review_is_typed_from_the_tools_its_owner_can_discover() {
     let f = Fixture::new().await;
 
-    let validated = f
+    let shown = f
         .workflow
         .publish(
             &change(f.owner.clone(), 30, '3'),
@@ -159,10 +159,10 @@ async fn a_publish_review_is_typed_from_the_tools_its_owner_can_discover() {
             ),
         )
         .await
-        .expect("validate");
+        .expect("review");
 
-    assert!(validated.published().is_none());
-    let diagnostics = validated.review().diagnostics();
+    assert!(shown.published().is_none());
+    let diagnostics = shown.review().diagnostics();
     assert!(
         diagnostics
             .iter()
@@ -170,7 +170,7 @@ async fn a_publish_review_is_typed_from_the_tools_its_owner_can_discover() {
         "{diagnostics:?}"
     );
     f.index.settled().await;
-    assert_eq!(f.indexed_rows().await, 0, "a validation publishes nothing");
+    assert_eq!(f.indexed_rows().await, 0, "a review publishes nothing");
 }
 
 // Catches: a publish or a removal that commits without telling search, so

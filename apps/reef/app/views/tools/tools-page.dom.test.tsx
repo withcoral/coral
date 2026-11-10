@@ -109,7 +109,13 @@ function renderPage({
     element = page(null)
     await act(async () => router.navigate('/workspaces/demo/tools#reloaded'))
   }
-  return { show, router, rerenderProviders }
+  // The route re-renders the open tool with what a reload returned of it.
+  const reloadDetail = async (next: ToolDetailView) => {
+    selectedToolDetail = next
+    element = page(selectedTool)
+    await act(async () => router.navigate(`${router.state.location.pathname}#reloaded`))
+  }
+  return { show, router, rerenderProviders, reloadDetail }
 }
 
 const pathOf = (tool: ToolView, providers = [github, weather]) => {
@@ -769,7 +775,7 @@ const openShared = (options: Parameters<typeof renderPage>[0] = {}) => {
 
 // Catches: the shared and the private group out of their place under Coral's
 // tools, the shared group named as a provider, or an empty shared group that
-// reads as a provider with no tools.
+// reads as a provider with no tools, or tells an owner to ask an owner.
 test('lists the shared tools under Coral’s, and says when there are none', async () => {
   const coral = builtinProvider('00000000-0000-4000-8000-0000000000c0')
   const { rerenderProviders } = renderPage({ providers: [github, mine, shared, coral] })
@@ -780,6 +786,19 @@ test('lists the shared tools under Coral’s, and says when there are none', asy
     '/workspaces/demo/tools/shared/mail.remind',
   )
   await rerenderProviders([github, sharedProvider(shared.id)])
+  expect(
+    within(groupHeading('Shared tools')).getByText(
+      'No shared tools yet. Publish one from a private tool.',
+    ),
+  ).toBeInTheDocument()
+})
+
+// Catches: a member told to publish, which Coral refuses them.
+test('tells a member that only an owner publishes a shared tool', () => {
+  renderPage({
+    providers: [github, sharedProvider(shared.id)],
+    workspace: { ...workspaceView, effectiveRole: 'member' },
+  })
   expect(
     within(groupHeading('Shared tools')).getByText(
       'No shared tools yet. Only an owner can publish one.',
@@ -883,14 +902,15 @@ test('a member reads a shared tool and changes nothing', async () => {
   expect(within(drawer).queryByRole('button', { name: /^Restore/ })).toBeNull()
 })
 
-// Catches: a removal at a revision other than the one on screen, or a
-// refused removal that closes its dialog or does not say which shared tool
-// the owner must deal with first.
+// Catches: a removal at a revision other than the one on screen; a refused
+// removal that closes its dialog or does not say which shared tool the owner
+// must deal with first; or a dialog that takes the revision of the reload a
+// refusal brings, so a second click removes a revision the owner never saw.
 test('a refused removal of a shared tool stays in its dialog with the reason', async () => {
   const refusal =
     'The shared tool coral.shared.mail.digest calls this one. Change or remove that shared tool first.'
   const posted: FormData[] = []
-  const { drawer } = openShared({
+  const { drawer, reloadDetail } = openShared({
     action: async (request) => {
       posted.push(await request.formData())
       return { error: refusal, credential: null }
@@ -906,6 +926,12 @@ test('a refused removal of a shared tool stays in its dialog with the reason', a
     path: 'mail.remind',
     expectedRevision: '2',
   })
+
+  // Another owner published revision 3, and the page reloads with it.
+  await reloadDetail({ ...remind, revision: 3 })
+  await user.click(within(dialog).getByRole('button', { name: 'Remove shared tool' }))
+  await act(async () => {})
+  expect(posted.map((form) => form.get('expectedRevision'))).toEqual(['2', '2'])
 })
 
 // Catches: a member offered a policy change on their private tools that
