@@ -83,6 +83,7 @@ pub use coral_catalog::{
 };
 pub use error::Error;
 pub mod history_repository;
+pub mod usage_repository;
 
 pub use publication::{
     ActivatedGeneration, ProviderPublication, ProviderPublicationId, ProviderPublicationOutcome,

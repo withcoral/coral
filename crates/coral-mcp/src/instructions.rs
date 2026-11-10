@@ -1,9 +1,13 @@
 //! Server `instructions`: the agent workflow every Coral session needs first.
 //!
-//! Claude Code keeps only the first 2048 characters of server instructions,
-//! so the text stays within that budget. Agents learn discovery from
-//! `exec`'s example, the types and the errors; the rest of the text is
-//! kept as it was before discovery moved into Programs.
+//! Claude Code 2.1.292 kept only the first 2048 characters of server
+//! instructions, and 2.1.296 and later keep 4096. The text stays within 2048,
+//! so a client that cuts at either limit reads it whole. Codex copies it into
+//! each tool, and pi
+//! shows the model its first line or none of it, so what an agent needs on every
+//! call, such as its namespaces, goes in `exec`'s description instead. Agents
+//! learn discovery from `exec`'s example, the types and the errors; the rest
+//! of the text is kept as it was before discovery moved into Programs.
 
 /// Instructions sent in `InitializeResult` and `DiscoverResult`.
 pub(crate) const INSTRUCTIONS: &str = "\
@@ -34,5 +38,6 @@ A non-empty `required_actions` means the Run waits for a person.
 - Never ask for a token, password or account in the chat: a connection happens on that page.
 ";
 
-// Clients add instructions to every turn; Claude Code drops what follows 2048.
+// Clients add instructions to every turn; Claude Code before 2.1.296 drops
+// what follows 2048.
 const _: () = assert!(INSTRUCTIONS.len() <= 2048);

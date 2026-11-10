@@ -1,5 +1,6 @@
 use coral_workspace::{
     AuthenticatedPrincipal, OrganizationModule, PrincipalKind, WorkspaceId, WorkspaceModule,
+    local_organization_owner,
 };
 
 use crate::SessionTokenIssuer;
@@ -14,6 +15,10 @@ pub enum AuthenticationError {
     /// Current authentication evidence could not be loaded.
     #[error("authentication unavailable")]
     Unavailable,
+    /// No credential reached a request whose credential must fix the
+    /// Workspace, and no sign-in can pick one: auth-disabled local mode only.
+    #[error("workspace URL required")]
+    WorkspaceUrlRequired,
 }
 
 /// Transport-neutral credential verification into current canonical Principal evidence.
@@ -22,11 +27,22 @@ pub enum AuthenticationError {
 /// Agent credentials instead authenticate their Registration in the exact Workspace.
 /// Neither result bypasses domain authorization. Each call reloads current authority;
 /// no session, client metadata, or retained role can substitute for that lookup.
+///
+/// An auth-disabled deployment ([`Self::local`]) has no User sign-in: a missing
+/// credential is the implicit local Owner, and every presented credential must
+/// authenticate an Agent Registration. A credential never falls back to the Owner.
 #[derive(Clone)]
 pub struct PrincipalAuthentication {
-    sessions: SessionTokenVerifier,
-    organization: OrganizationModule,
+    mode: Mode,
     workspaces: WorkspaceModule,
+}
+
+#[derive(Clone)]
+enum Mode {
+    /// Users sign in; their tokens are verified and their authority reloaded.
+    SignedIn(SignIn),
+    /// Auth-disabled: a missing credential is the implicit local Owner.
+    Local,
 }
 
 impl PrincipalAuthentication {
@@ -39,22 +55,43 @@ impl PrincipalAuthentication {
         workspaces: WorkspaceModule,
     ) -> Self {
         Self {
-            sessions: issuer.verifier(),
-            organization,
+            mode: Mode::SignedIn(SignIn {
+                sessions: issuer.verifier(),
+                organization,
+            }),
             workspaces,
         }
+    }
+
+    /// Builds authentication for an auth-disabled deployment, where no User signs in.
+    ///
+    /// Composition must bind every listener that serves it to loopback only.
+    #[must_use]
+    pub const fn local(workspaces: WorkspaceModule) -> Self {
+        Self {
+            mode: Mode::Local,
+            workspaces,
+        }
+    }
+
+    /// Whether a User signs in: `false` for [`Self::local`].
+    #[must_use]
+    pub const fn signs_in(&self) -> bool {
+        matches!(self.mode, Mode::SignedIn(_))
     }
 
     /// Authenticates one request without provisioning a User or granting
     /// resource access, and returns the Workspace it acts in.
     ///
-    /// `expected_audience` is selected by the Adapter, never from unverified claims.
+    /// `expected_audience` is selected by the Adapter, never from unverified claims;
+    /// local mode verifies no User token, so it reads none.
     /// Workspace URL construction and private method reachability remain caller-owned.
-    /// Missing credentials do not select the implicit local Owner.
+    /// With sign-in, missing credentials do not select the implicit local Owner.
     ///
     /// # Errors
     /// Returns a bounded rejection or authority-store unavailability. Where the
-    /// credential must fix the Workspace, unscoped tokens are rejected too.
+    /// credential must fix the Workspace, unscoped tokens are rejected too, and a
+    /// missing credential in local mode is [`AuthenticationError::WorkspaceUrlRequired`].
     pub async fn authenticate(
         &self,
         fixed_by: WorkspaceFixedBy<'_>,
@@ -87,6 +124,8 @@ impl PrincipalAuthentication {
     }
 
     /// Authenticates an unscoped human management request (including Workspace creation).
+    /// It never returns an Agent. In local mode only a missing credential, the
+    /// implicit local Owner, is accepted.
     /// # Errors
     /// Rejects Agents, scoped MCP credentials, wrong audiences, and disabled Users.
     pub async fn authenticate_user(
@@ -94,23 +133,20 @@ impl PrincipalAuthentication {
         bearer: Option<&str>,
         audience: &str,
     ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        let session = self
-            .sessions
-            .validate_access_token(
-                bearer.ok_or(AuthenticationError::Unauthenticated)?,
-                &[audience],
-            )
-            .map_err(|_error| AuthenticationError::Unauthenticated)?;
-        if session.principal_kind != PrincipalKind::User || session.workspace_id.is_some() {
+        let Mode::SignedIn(sign_in) = &self.mode else {
+            return match bearer {
+                None => Ok(local_owner()),
+                Some(_) => Err(AuthenticationError::Unauthenticated),
+            };
+        };
+        let session = sign_in.session(
+            bearer.ok_or(AuthenticationError::Unauthenticated)?,
+            audience,
+        )?;
+        if session.workspace_id.is_some() {
             return Err(AuthenticationError::Unauthenticated);
         }
-        let user_id = crate::external_user_id(&session.user_id)
-            .map_err(|()| AuthenticationError::Unauthenticated)?;
-        self.organization
-            .resolve_user_authority(&user_id)
-            .await
-            .map(AuthenticatedPrincipal::user)
-            .map_err(AuthenticationError::from)
+        sign_in.user(&session).await
     }
 
     async fn authenticate_request(
@@ -120,27 +156,23 @@ impl PrincipalAuthentication {
         expected_audience: &str,
         require_scope: bool,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let credential = bearer.ok_or(AuthenticationError::Unauthenticated)?;
-        if credential.starts_with("coral_agent_") {
-            let now = now_unix_nanos()?;
-            return Ok(match fixed_by {
-                WorkspaceFixedBy::Url(workspace) => (
-                    self.workspaces
-                        .authenticate_agent(workspace, credential, now)
-                        .await?,
-                    workspace.clone(),
-                ),
-                WorkspaceFixedBy::Credential => {
-                    self.workspaces
-                        .authenticate_agent_credential(credential, now)
-                        .await?
+        let Some(credential) = bearer else {
+            return match (&self.mode, fixed_by) {
+                (Mode::SignedIn(_), _) => Err(AuthenticationError::Unauthenticated),
+                (Mode::Local, WorkspaceFixedBy::Url(workspace)) => {
+                    Ok((local_owner(), workspace.clone()))
                 }
-            });
-        }
-        let session = self
-            .sessions
-            .validate_access_token(credential, &[expected_audience])
-            .map_err(|_error| AuthenticationError::Unauthenticated)?;
+                (Mode::Local, WorkspaceFixedBy::Credential) => {
+                    Err(AuthenticationError::WorkspaceUrlRequired)
+                }
+            };
+        };
+        // Without sign-in, every credential names an Agent Registration.
+        let sign_in = match &self.mode {
+            Mode::SignedIn(sign_in) if !credential.starts_with("coral_agent_") => sign_in,
+            Mode::SignedIn(_) | Mode::Local => return self.agent(fixed_by, credential).await,
+        };
+        let session = sign_in.session(credential, expected_audience)?;
         let scope = session.workspace_id.as_deref();
         let workspace = match fixed_by {
             WorkspaceFixedBy::Url(workspace) => {
@@ -155,7 +187,48 @@ impl PrincipalAuthentication {
                 .and_then(|scope| WorkspaceId::parse(scope).ok())
                 .ok_or(AuthenticationError::Unauthenticated)?,
         };
-        Ok((self.user(&session).await?, workspace))
+        Ok((sign_in.user(&session).await?, workspace))
+    }
+
+    /// The Agent whose Registration `credential` authenticates, in the Workspace it fixes.
+    async fn agent(
+        &self,
+        fixed_by: WorkspaceFixedBy<'_>,
+        credential: &str,
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        let now = now_unix_nanos()?;
+        Ok(match fixed_by {
+            WorkspaceFixedBy::Url(workspace) => (
+                self.workspaces
+                    .authenticate_agent(workspace, credential, now)
+                    .await?,
+                workspace.clone(),
+            ),
+            WorkspaceFixedBy::Credential => {
+                self.workspaces
+                    .authenticate_agent_credential(credential, now)
+                    .await?
+            }
+        })
+    }
+}
+
+/// User sign-in: token verification and the current authority of the User it names.
+#[derive(Clone)]
+struct SignIn {
+    sessions: SessionTokenVerifier,
+    organization: OrganizationModule,
+}
+
+impl SignIn {
+    fn session(
+        &self,
+        credential: &str,
+        audience: &str,
+    ) -> Result<ValidatedSession, AuthenticationError> {
+        self.sessions
+            .validate_access_token(credential, &[audience])
+            .map_err(|_error| AuthenticationError::Unauthenticated)
     }
 
     /// The current authority of the User a validated User-kind token names.
@@ -174,6 +247,10 @@ impl PrincipalAuthentication {
             .map(AuthenticatedPrincipal::user)
             .map_err(AuthenticationError::from)
     }
+}
+
+fn local_owner() -> AuthenticatedPrincipal {
+    AuthenticatedPrincipal::user(local_organization_owner())
 }
 
 /// What fixes the Workspace a request acts in.

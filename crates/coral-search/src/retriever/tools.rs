@@ -27,8 +27,8 @@ use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
-    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
-    SearchEvidence, SearchHit, ToolAuthoringDescription,
+    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, ProviderFilter,
+    RetrieverCoverage, SearchEvidence, SearchHit, SearchableProvider, ToolAuthoringDescription,
 };
 
 /// Ranks, hydrates, and describes Tools.
@@ -49,7 +49,7 @@ impl EntityRetriever for ToolRetriever {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        provider_filter: Option<&ProviderCallRoot>,
+        provider_filter: &ProviderFilter,
     ) -> Result<Listing, Error> {
         let providers = filtered_providers(transaction, context, provider_filter).await?;
         let units = providers.len();
@@ -364,10 +364,11 @@ pub(crate) async fn describe_tools(
             continue;
         };
         if !providers.contains_key(&call_root) {
-            let provider = visible_providers(transaction, context, Some(&call_root))
-                .await?
-                .into_iter()
-                .next();
+            let provider =
+                visible_providers(transaction, context, &ProviderFilter::one(&call_root))
+                    .await?
+                    .into_iter()
+                    .next();
             providers.insert(call_root.clone(), provider);
         }
         let Some(Some(provider)) = providers.get(&call_root) else {
@@ -394,24 +395,52 @@ pub(crate) async fn searchable_call_roots(
     context: RequestContext<'_>,
 ) -> Result<Vec<ProviderCallRoot>, Error> {
     Ok(call_roots(
-        &visible_providers(transaction, context, None).await?,
+        &visible_providers(transaction, context, &ProviderFilter::default()).await?,
     ))
 }
 
+/// The Workspace's Active Providers that are ready for the caller, by
+/// namespace: what a Provider filter may name, and what each is called.
+pub(crate) async fn searchable_providers(
+    transaction: &mut Transaction<'_>,
+    context: RequestContext<'_>,
+) -> Result<Vec<SearchableProvider>, Error> {
+    let mut searchable = visible_providers(transaction, context, &ProviderFilter::default())
+        .await?
+        .into_iter()
+        .map(|active| {
+            SearchableProvider::new(
+                active.provider().call_root().clone(),
+                active.provider().display_name().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    searchable.sort_by(|left, right| left.namespace().cmp(right.namespace()));
+    searchable.dedup_by(|left, right| left.call_root() == right.call_root());
+    Ok(searchable)
+}
+
 /// The Providers a search's filter leaves, all visible ones without a filter.
-/// A filter reads only the Provider it names, so another Provider's state
-/// cannot fail the search. A filter that names no visible Provider is refused
-/// with the Call Roots the caller can search, so a wrong guess never reads as
-/// an empty catalog.
+/// A filter reads only the Providers it names, so another Provider's state
+/// cannot fail the search. A filter with a value that names no visible
+/// Provider is refused with the Call Roots the caller can search, so a wrong
+/// guess never reads as an empty catalog or a narrower one.
 async fn filtered_providers(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
-    provider_filter: Option<&ProviderCallRoot>,
+    provider_filter: &ProviderFilter,
 ) -> Result<Vec<ActiveProvider>, Error> {
     let filtered = visible_providers(transaction, context, provider_filter).await?;
-    if provider_filter.is_some() && filtered.is_empty() {
+    let unmatched = provider_filter.unmatched(
+        &filtered
+            .iter()
+            .map(|provider| provider.provider().call_root())
+            .collect::<Vec<_>>(),
+    );
+    if !unmatched.is_empty() {
         return Err(Error::UnknownProviderCallRoot {
             searchable: searchable_call_roots(transaction, context).await?,
+            unmatched,
         });
     }
     Ok(filtered)
@@ -433,13 +462,13 @@ fn call_roots(providers: &[ActiveProvider]) -> Vec<ProviderCallRoot> {
 async fn visible_providers(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
-    provider_filter: Option<&ProviderCallRoot>,
+    provider_filter: &ProviderFilter,
 ) -> Result<Vec<ActiveProvider>, Error> {
     let mut visible = Vec::new();
     for provider in
         coral_provider::active_providers_in_transaction(transaction, context.workspace_id).await?
     {
-        if provider_filter.is_some_and(|root| provider.provider().call_root() != root) {
+        if !provider_filter.admits(provider.provider().call_root()) {
             continue;
         }
         if coral_provider::account::discoverable_in_transaction(

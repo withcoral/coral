@@ -63,10 +63,14 @@ All provider calls not covered by an explicit policy in this section are treated
 
 ### `[runtime]`
 
-| Key                    | Description                                                        | Required | Default |
-| ---------------------- | ------------------------------------------------------------------ | -------- | ------- |
-| `execution_heap_bytes` | Maximum heap bytes allowed for a single V8 isolate                 | No       | 128MiB  |
-| `compiler_heap_bytes`  | Maximum heap bytes allowed for a single Typescript compilation job | No       | 512MiB  |
+| Key                        | Description                                                                                                       | Required | Default              |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
+| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate                                                                | No       | 128MiB               |
+| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job                                                | No       | 512MiB               |
+| `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. Not available on Windows. | No       | Unset (no CPU limit) |
+| `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. At least 1.      | No       | `32`                 |
+| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. At least 2MiB.                       | No       | 8MiB                 |
+| `shutdown_drain_seconds`   | Seconds a stopping Coral process lets its running Runs finish before it interrupts them. `0` interrupts at once.  | No       | `30`                 |
 
 ### `[search]`
 
@@ -220,7 +224,7 @@ Coral gives a refresh token with each access token to a client that lists `refre
 - **Lifetime.** Your users can refresh for `refresh_token_ttl_seconds` after they sign in. A refresh does not extend this time. When it ends, your users must sign in again.
 - **Single use.** Each refresh returns a new refresh token, and the old one stops working. If a client sends a used token again, refresh stops for that sign-in, also for the newest token. Your clients must not refresh with the same token twice at the same time. If a refresh response is lost, the user may have to sign in again.
 - **Current access.** Each refresh checks that the user is still an enabled member of the organization. For a workspace token, it also checks that the user is still a member of the workspace. A refresh does not contact your OIDC issuer. Changes you make at the issuer apply at the next sign-in. If you remove a membership, refresh stops for good, even if the user joins again.
-- **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire.
+- **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. A client registered with `client_secret_post` also sends its `client_secret`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire. To cut off a user at once, disable or remove their organization membership: Coral then refuses their access tokens on the next request.
 - **Storage.** Coral stores only a SHA-256 digest of each refresh token, in its database. Refresh tokens survive restarts. If you run more than one Coral process, give them the same database so that each process can refresh any token.
 
 #### Web sessions

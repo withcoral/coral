@@ -25,7 +25,7 @@ use coral_provider::{ActiveProvider, LoadedGenerations};
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceId};
 
 use crate::{
-    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
+    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderFilter, RetrieverCoverage,
     SearchHit,
 };
 
@@ -105,7 +105,7 @@ pub(crate) struct Listing {
 /// Provider Call Root filter, and the window size.
 pub(crate) struct QueryRequest<'a> {
     pub(crate) terms: &'a [String],
-    pub(crate) provider_filter: Option<&'a ProviderCallRoot>,
+    pub(crate) provider_filter: &'a ProviderFilter,
     pub(crate) window: usize,
 }
 
@@ -193,7 +193,7 @@ pub(crate) trait EntityRetriever: Send + Sync {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        provider_filter: Option<&ProviderCallRoot>,
+        provider_filter: &ProviderFilter,
     ) -> Result<Listing, Error>;
 
     /// Applies the owners' visibility rules, runs this kind's ranked

@@ -68,6 +68,12 @@ impl RunFailureCode {
     }
 }
 
+/// Decodes a failed Run's stored Program error.
+pub(super) fn decode_program_error(json: &str) -> Result<crate::ProgramError, Error> {
+    serde_json::from_str(json)
+        .map_err(|_error| Error::CorruptData("Run has invalid Program error".to_string()))
+}
+
 impl RunTerminationKind {
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
@@ -332,10 +338,7 @@ fn decode_terminal(
                 .ok_or_else(|| Error::CorruptData("failed Run has no message".to_string()))?;
             let mut failure = RunFailure::new(code, message);
             if let Some(json) = failure_error_json {
-                let error = serde_json::from_str(&json).map_err(|_error| {
-                    Error::CorruptData("Run has invalid Program error".to_string())
-                })?;
-                failure = failure.with_error(error);
+                failure = failure.with_error(decode_program_error(&json)?);
             }
             RunTerminalOutcome::Failed(failure)
         }

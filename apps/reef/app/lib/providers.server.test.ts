@@ -56,23 +56,47 @@ it.each([
 })
 
 // Catches: a reason that is missing from the map falling through to the
-// form-fields sentence, which sends the reader to correct a form that is right.
+// form-fields sentence, which sends the reader to correct a form that is right,
+// and a sign-in discovery failure hiding its cause behind one generic sentence.
 it.each([
   [
     'OUTBOUND_DESTINATION_REJECTED',
     "Coral's outbound settings do not allow this address. Check the deployment's outbound settings before you try again.",
   ],
   [
+    'AUTHORIZATION_DISCOVERY_PKCE_UNSUPPORTED',
+    'The authorization server does not support S256 PKCE. Sign-in needs it. Contact the server owner.',
+  ],
+  [
+    'AUTHORIZATION_DISCOVERY_OUTBOUND_DESTINATION_REJECTED',
+    "Coral's outbound settings do not allow this address. Check the deployment's outbound settings before you try again.",
+  ],
+  [
+    'AUTHORIZATION_DISCOVERY_SOMETHING_NEWER',
+    "Coral does not support this server's sign-in requirements.",
+  ],
+  [
     'UNMAPPED_PRECONDITION',
     'Coral could not read the document or server. Check the form fields. Correct any errors before you try again.',
   ],
-])('maps %s to its own sentence or to the form-fields fallback', (reason, message) => {
+])('maps %s to its own sentence or to a fallback', (reason, message) => {
   const result = providerFailure(
     new ConnectError(reason, Code.FailedPrecondition),
     'Coral could not read the document or server. ',
   )
   expect(result.init?.status).toBe(409)
   expect(result.data).toEqual({ error: message, credential: null })
+})
+
+// Catches: a lapsed sign-in during a provider change reading as an outage
+// (503, "Reload the page"). Only a 401 makes the protected layout sign you in again.
+it('fails a provider change for a lapsed sign-in with 401', () => {
+  const result = providerFailure(new ConnectError('expired', Code.Unauthenticated))
+  expect(result.init?.status).toBe(401)
+  expect(result.data).toEqual({
+    error: 'Coral could not apply this change. Sign in again to continue.',
+    credential: null,
+  })
 })
 
 // Catches: a provider that search indexed showing a notice, a pending

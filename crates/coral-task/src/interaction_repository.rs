@@ -192,11 +192,7 @@ pub(super) async fn complete(
                 .values([
                     (
                         TaskInteractions::Outcome,
-                        Expr::val(match evidence.outcome() {
-                            AttemptOutcome::Unknown => "unknown",
-                            AttemptOutcome::Succeeded => "succeeded",
-                            AttemptOutcome::Rejected => "rejected",
-                        }),
+                        Expr::val(encode_outcome(evidence.outcome())),
                     ),
                     (TaskInteractions::CompletedAtUnixNanos, Expr::val(now)),
                     (TaskInteractions::EvidenceJson, Expr::val(encoded)),
@@ -540,6 +536,53 @@ pub(crate) fn encode_kind(kind: AttemptKind) -> &'static str {
     }
 }
 
+const fn encode_outcome(outcome: AttemptOutcome) -> &'static str {
+    match outcome {
+        AttemptOutcome::Unknown => "unknown",
+        AttemptOutcome::Succeeded => "succeeded",
+        AttemptOutcome::Rejected => "rejected",
+    }
+}
+
+/// Counts the rejected Program submissions completed in `[start, end)` unix
+/// nanoseconds, across every Workspace, by their safe rejection code. The
+/// caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure, or corrupt data for evidence Coral did not
+/// write.
+pub async fn rejected_submissions(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<BTreeMap<String, u64>, Error> {
+    let rows: Vec<(Option<String>,)> = tx
+        .fetch_all(
+            Query::select()
+                .column(TaskInteractions::EvidenceJson)
+                .from(TaskInteractions::Table)
+                .and_where(Expr::col(TaskInteractions::Kind).eq(encode_kind(AttemptKind::Submit)))
+                .and_where(
+                    Expr::col(TaskInteractions::Outcome)
+                        .eq(encode_outcome(AttemptOutcome::Rejected)),
+                )
+                .and_where(Expr::col(TaskInteractions::CompletedAtUnixNanos).gte(start))
+                .and_where(Expr::col(TaskInteractions::CompletedAtUnixNanos).lt(end))
+                .to_owned(),
+        )
+        .await?;
+    let mut codes = BTreeMap::new();
+    for (evidence,) in rows {
+        if let Some(AttemptEvidence::Rejected(failure)) =
+            evidence.as_deref().map(decode).transpose()?
+        {
+            *codes.entry(failure.code).or_default() += 1;
+        }
+    }
+    Ok(codes)
+}
+
 fn decode_kind(kind: &str) -> Result<AttemptKind, Error> {
     match kind {
         "search" => Ok(AttemptKind::Search),
@@ -692,4 +735,76 @@ pub(crate) async fn inject_fault(
 
 fn json_error(_: serde_json::Error) -> Error {
     Error::CorruptData("invalid Task evidence encoding".into())
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use coral_test_support::{TestDatabase, provision_user};
+    use coral_workspace::OrganizationRole;
+
+    use super::{encode, encode_kind, encode_outcome, rejected_submissions};
+    use crate::{AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome};
+
+    /// One completed interaction at `at`, written with coral-task's own
+    /// encoders.
+    fn interaction(id: &str, kind: AttemptKind, evidence: &AttemptEvidence, at: i64) -> String {
+        format!(
+            "INSERT INTO task_interactions (id, workspace_id, task_id, principal_id, principal_kind, \
+                kind, intent, started_at_unix_nanos, completed_at_unix_nanos, outcome, evidence_json) \
+             VALUES ('{id}', 'ws1', 't1', 'tasker', 'user', '{kind}', 'go', {at}, {at}, '{outcome}', \
+                '{evidence}')",
+            kind = encode_kind(kind),
+            outcome = encode_outcome(evidence.outcome()),
+            evidence = encode(evidence).expect("evidence"),
+        )
+    }
+
+    fn rejected(code: &str) -> AttemptEvidence {
+        AttemptEvidence::Rejected(AttemptFailure {
+            code: code.into(),
+            message: "it was refused".into(),
+        })
+    }
+
+    /// Rejected Program submissions in the window count by their code. Other
+    /// kinds, other outcomes and other times do not count.
+    #[tokio::test]
+    async fn rejected_submissions_count_by_code_in_their_window() {
+        let db = TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("test database");
+        provision_user(db.database(), "tasker", OrganizationRole::Member).await;
+        let run = AttemptEvidence::Run(
+            coral_run::RunId::parse("height-word-database-library").expect("Run id"),
+        );
+        assert_eq!(run.outcome(), AttemptOutcome::Succeeded);
+        for statement in [
+            "INSERT INTO workspace_records (id, display_name, state, lifecycle_version, \
+                created_at_unix_nanos, updated_at_unix_nanos) VALUES ('ws1', 'One', 'active', 1, 1, 1)"
+                .to_owned(),
+            "INSERT INTO task_records (id, workspace_id, principal_id, principal_kind, intent, \
+                started_at_unix_nanos, last_activity_at_unix_nanos) \
+             VALUES ('t1', 'ws1', 'tasker', 'user', 'go', 1, 1)"
+                .to_owned(),
+            interaction("i1", AttemptKind::Submit, &rejected("code_a"), 10),
+            interaction("i2", AttemptKind::Submit, &rejected("code_a"), 11),
+            interaction("i3", AttemptKind::Submit, &rejected("code_b"), 12),
+            interaction("i4", AttemptKind::Save, &rejected("code_a"), 13),
+            interaction("i5", AttemptKind::Submit, &run, 14),
+            interaction("i6", AttemptKind::Submit, &rejected("code_a"), 20),
+        ] {
+            db.execute_fixture_sql(&statement).await.expect(&statement);
+        }
+
+        let database = db.database();
+        let mut tx = database.begin_read_snapshot().await.expect("snapshot");
+        let codes = rejected_submissions(&mut tx, 10, 20)
+            .await
+            .expect("rejected submissions");
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            codes.into_iter().collect::<Vec<_>>(),
+            [("code_a".to_owned(), 2), ("code_b".to_owned(), 1)]
+        );
+    }
 }

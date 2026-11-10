@@ -1,5 +1,6 @@
 import {
   Activity,
+  ChartNoAxesColumn,
   Circle,
   CircleArrowUp,
   CircleSlash,
@@ -38,6 +39,7 @@ import {
  */
 export const lucideIcons = {
   Activity,
+  ChartNoAxesColumn,
   Circle,
   CircleArrowUp,
   CircleSlash,

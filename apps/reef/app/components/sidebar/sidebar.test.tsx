@@ -231,7 +231,7 @@ test.each([false, true])(
     )
     expect(items.map((a) => [a.getAttribute('href'), a.getAttribute('target')])).toEqual([
       ['https://withcoral.com/docs', '_blank'],
-      ['https://slack.withcoral.com/connect', '_blank'],
+      ['https://withcoral.com/slack', '_blank'],
       ['https://github.com/withcoral/coral', '_blank'],
       ['https://github.com/withcoral/coral/issues/new', '_blank'],
     ])

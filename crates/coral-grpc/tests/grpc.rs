@@ -160,8 +160,11 @@ impl Fixture {
             .await
             .unwrap();
         let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
-        let authentication = enabled
-            .then(|| PrincipalAuthentication::new(&issuer, organization, workspaces.clone()));
+        let authentication = if enabled {
+            PrincipalAuthentication::new(&issuer, organization, workspaces.clone())
+        } else {
+            PrincipalAuthentication::local(workspaces.clone())
+        };
         let vault_dir = tempfile::tempdir().unwrap();
         let vault =
             coral_credentials::CredentialVault::open(&vault_dir.path().join("key")).unwrap();
@@ -234,6 +237,17 @@ impl Fixture {
                     workspaces.clone(),
                 ),
                 releases,
+                usage: Some(coral_usage::UsageData::new(
+                    database.clone(),
+                    coral_usage::Host {
+                        version: "1.5.0".into(),
+                        kind: coral_usage::HostKind::Server,
+                        auth: coral_usage::HostAuth::Required,
+                        database: database.system(),
+                    },
+                    coral_usage::Build::Source,
+                    &coral_usage::SendEnvironment::default(),
+                )),
             },
             coral_grpc::TransportContext {
                 authentication,
@@ -377,6 +391,10 @@ impl Fixture {
 
     fn policies(&self) -> management::tool_policy_service_client::ToolPolicyServiceClient<Channel> {
         management::tool_policy_service_client::ToolPolicyServiceClient::new(self.channel.clone())
+    }
+
+    fn usage_data(&self) -> management::usage_data_service_client::UsageDataServiceClient<Channel> {
+        management::usage_data_service_client::UsageDataServiceClient::new(self.channel.clone())
     }
 
     fn releases(&self) -> management::release_service_client::ReleaseServiceClient<Channel> {
@@ -1147,4 +1165,55 @@ async fn release_inspection_projects_the_newer_release() {
         .await
         .unwrap_err();
     assert_eq!(denied.code(), tonic::Code::Unauthenticated);
+}
+
+/// Any member reads usage data with its exact report JSON; only an Owner
+/// changes the setting, and a denial is `PERMISSION_DENIED`.
+#[tokio::test]
+async fn usage_data_projects_the_view_and_denies_members_the_switch() {
+    let fixture = Fixture::new().await;
+    let member = fixture.token(&fixture.member, "reef");
+    let owner = fixture.token(&fixture.owner, "reef");
+
+    let view = fixture
+        .usage_data()
+        .get_usage_data(request(management::GetUsageDataRequest {}, &member, "reef"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(view.sharing);
+    assert!(!view.can_change);
+    assert_eq!(view.block(), management::UsageSendBlock::SourceBuild);
+    assert_eq!(view.kind(), management::UsageHostKind::Server);
+    assert_eq!(view.last_sent, None);
+    let next: serde_json::Value = serde_json::from_str(&view.next_report_json).unwrap();
+    assert_eq!(
+        next.pointer("/coral/auth"),
+        Some(&serde_json::json!("required"))
+    );
+
+    let denied = fixture
+        .usage_data()
+        .set_usage_data_sharing(request(
+            management::SetUsageDataSharingRequest { sharing: false },
+            &member,
+            "reef",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    assert_eq!(error_reason(&denied), "PERMISSION_DENIED");
+
+    let changed = fixture
+        .usage_data()
+        .set_usage_data_sharing(request(
+            management::SetUsageDataSharingRequest { sharing: false },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!changed.sharing);
+    assert!(changed.can_change);
 }

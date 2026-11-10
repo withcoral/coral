@@ -55,6 +55,8 @@ pub(crate) enum UpstreamSendError {
     Incomplete,
     /// The peer answered the request with a JSON-RPC error.
     Rejected(McpRejection),
+    /// The peer refused the request's authentication (HTTP 401 or 403).
+    Unauthorized,
     Canceled,
     Fatal(coral_upstream::Error),
 }
@@ -110,6 +112,10 @@ impl UpstreamSender for ProductionUpstream {
                 coral_upstream::Error::ResultTooLarge => UpstreamSendError::TooLarge,
                 coral_upstream::Error::McpRejected(rejection) => {
                     UpstreamSendError::Rejected(rejection)
+                }
+                coral_upstream::Error::McpUnauthorized(_)
+                | coral_upstream::Error::McpAuthenticationUnsupported => {
+                    UpstreamSendError::Unauthorized
                 }
                 coral_upstream::Error::Send(_)
                 | coral_upstream::Error::Body(_)
@@ -628,6 +634,11 @@ impl ToolInvoker {
             Err(UpstreamSendError::Incomplete) => {
                 return Err(self
                     .finish_failure(admitted, progress, CoralFailure::UpstreamIncomplete)
+                    .await?);
+            }
+            Err(UpstreamSendError::Unauthorized) => {
+                return Err(self
+                    .finish_failure(admitted, progress, CoralFailure::UpstreamUnauthorized)
                     .await?);
             }
             Err(UpstreamSendError::Rejected(rejection)) => {

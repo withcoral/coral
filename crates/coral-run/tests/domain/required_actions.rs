@@ -805,18 +805,59 @@ async fn the_queue_counts_each_shared_request_once_across_waiters_runs_and_pages
         bounded.action_count, 3,
         "the shared connection counts once across Runs and pages"
     );
-    let counts = runs.required_action_counts(user, None).await.unwrap();
-    assert_eq!((counts.approvals, counts.connections), (2, 1));
+    for workspace in [None, Some(scope)] {
+        let counts = runs.required_action_counts(user, workspace).await.unwrap();
+        assert_eq!((counts.approvals, counts.connections), (2, 1));
+    }
     runs.cancel(user, scope, second.run_id(), &immediate(None, 1))
         .await
         .unwrap();
-    assert_eq!(
-        runs.required_action_counts(user, None)
-            .await
-            .unwrap()
-            .total(),
-        3,
-        "detaching one Run leaves the shared request actionable"
+    for workspace in [None, Some(scope)] {
+        assert_eq!(
+            runs.required_action_counts(user, workspace)
+                .await
+                .unwrap()
+                .total(),
+            3,
+            "detaching one Run leaves the shared request actionable"
+        );
+    }
+}
+
+/// A Workspace's count starts from its pending Invocations, not from every
+/// Invocation it ever ran, and leaves the state out of its binds. A bound state
+/// would make `SQLite` prepare the statement again on every execution.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_count_reads_only_pending_invocations_on_sqlite() {
+    let mixed = MixedActions::new().await;
+    if mixed.fixture.database.system() != coral_db::DatabaseSystem::Sqlite {
+        return;
+    }
+    let mut tx = mixed.fixture.database.begin_read_snapshot().await.unwrap();
+    let authority = mixed
+        .fixture
+        .workspaces
+        .action_history_authority_in_transaction(&mut tx, mixed.user(), Some(mixed.scope()))
+        .await
+        .unwrap();
+    let (sql, values) = crate::required_actions_repository::distinct_requests(&authority, 0)
+        .build(sea_query::SqliteQueryBuilder);
+    assert!(!sql.contains(r#""i"."state" = ?"#), "{sql}");
+    let plan: Vec<(i64, i64, i64, String)> = tx
+        .fetch_all_sql(&format!("EXPLAIN QUERY PLAN {sql}"), values)
+        .await
+        .unwrap();
+    let invocations: Vec<&str> = plan
+        .iter()
+        .map(|(.., detail)| detail.as_str())
+        .filter(|detail| detail.contains(" i "))
+        .collect();
+    assert_eq!(invocations.len(), 2, "one read per kind: {plan:?}");
+    assert!(
+        invocations
+            .iter()
+            .all(|detail| detail.contains("idx_tool_invocations_pending")),
+        "{plan:?}"
     );
 }
 
@@ -1051,13 +1092,15 @@ async fn human_actions_are_concealed_from_owners_and_agents() {
         0,
         "ownership never exposes another User's actions"
     );
-    assert_eq!(
-        runs.required_action_counts(&other_owner, None)
-            .await
-            .unwrap()
-            .total(),
-        0
-    );
+    for workspace in [None, Some(scope)] {
+        assert_eq!(
+            runs.required_action_counts(&other_owner, workspace)
+                .await
+                .unwrap()
+                .total(),
+            0
+        );
+    }
     let denied = runs.required_action_counts(&agent, None).await;
     assert!(
         matches!(

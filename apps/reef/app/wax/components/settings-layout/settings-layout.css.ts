@@ -40,6 +40,8 @@ export const columns = style({
   rowGap: 32,
   '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 480px)' } },
 })
+// Without an aside, the cards take the page's full width, which long content such as a JSON block needs.
+export const singleColumn = style({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)' })
 // A wide list beside the same aside: the main column takes the free width.
 export const wideColumns = style({
   alignItems: 'start',

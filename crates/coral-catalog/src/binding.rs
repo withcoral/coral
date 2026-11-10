@@ -20,9 +20,19 @@ impl ExecutionBinding {
         }
     }
 
-    pub(crate) fn from_storage_json(protocol: &str, value: &str) -> Result<Self, Error> {
+    /// Decodes a stored binding. An HTTP binding gets back the credential
+    /// contract that storage keeps once, on the Provider Generation.
+    pub(crate) fn from_storage_json(
+        protocol: &str,
+        value: &str,
+        credential_contract: &std::sync::Arc<crate::ProviderCredentialContract>,
+    ) -> Result<Self, Error> {
         match protocol {
-            "http" => HttpExecutionBinding::from_storage_json(value).map(Self::Http),
+            "http" => {
+                let mut binding = HttpExecutionBinding::from_storage_json(value)?;
+                binding.restore_credential_contract(credential_contract)?;
+                Ok(Self::Http(binding))
+            }
             "mcp" => McpExecutionBinding::from_storage_json(value).map(Self::Mcp),
             "builtin" => BuiltinExecutionBinding::from_storage_json(value).map(Self::Builtin),
             _ => Err(Error::CorruptData(format!(

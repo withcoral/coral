@@ -170,6 +170,7 @@ mod required_actions;
 mod required_actions_repository;
 pub mod retention;
 mod run_inbox;
+pub mod usage_repository;
 pub use run_inbox::RunInbox;
 mod run_repository;
 mod shutdown;

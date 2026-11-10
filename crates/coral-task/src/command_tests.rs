@@ -1558,7 +1558,15 @@ async fn search_request_validation_happens_after_durable_begin() {
         ),
         (
             coral_search::SearchInput {
-                provider: Some("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".into()),
+                provider: vec!["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".into()],
+                ..Default::default()
+            },
+            "invalid_input",
+        ),
+        // The retained record names one Provider.
+        (
+            coral_search::SearchInput {
+                provider: vec!["coral.workspace".into(), "coral.workspace".into()],
                 ..Default::default()
             },
             "invalid_input",
@@ -2015,7 +2023,7 @@ async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit()
             &fixture.call(&goal, "Find a missing callable"),
             coral_search::SearchInput {
                 query: Some("  Missing café  ".into()),
-                provider: Some(provider.into()),
+                provider: vec![provider.into()],
                 limit: Some(7),
                 offset: None,
             },

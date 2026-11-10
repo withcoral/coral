@@ -209,7 +209,7 @@ const oauthClient = z
   )
 
 const scopes = withUniqueItems(
-  z.array(literal.max(256).regex(/^[^ ]+$/, 'must not contain spaces')).max(100),
+  z.array(literal.max(256).regex(/^[^ ]+$/, 'must not contain spaces')),
   'must not repeat a scope',
 )
 

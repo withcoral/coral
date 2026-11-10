@@ -518,3 +518,200 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
     }
     transaction.rollback().await.unwrap();
 }
+
+/// An OpenAPI document whose operations each request their own scope of one
+/// authorization-code scheme.
+fn scoped_document(operations: usize) -> String {
+    use std::fmt::Write as _;
+    let mut paths = String::new();
+    let mut declared = Vec::new();
+    for index in 0..operations {
+        write!(
+            paths,
+            "  /items/{index}:\n    get:\n      operationId: item{index}\n      \
+             security: [{{ OAuth: [scope{index:02}] }}]\n      \
+             responses: {{ \"200\": {{ description: ok }} }}\n"
+        )
+        .unwrap();
+        declared.push(format!("scope{index:02}: scope{index:02}"));
+    }
+    let declared = declared.join(", ");
+    format!(
+        "openapi: 3.1.0\ninfo: {{ title: Scoped, version: \"1\" }}\n\
+         servers: [{{ url: https://api.example.test }}]\npaths:\n{paths}\
+         components:\n  securitySchemes:\n    OAuth: {{ type: oauth2, flows: {{ authorizationCode: \
+         {{ authorizationUrl: \"https://auth.example.test/authorize\", \
+         tokenUrl: \"https://auth.example.test/token\", scopes: {{ {declared} }} }} }} }}\n"
+    )
+}
+
+/// The execution bindings the Generation's HTTP Tools store.
+async fn stored_http_definitions(
+    transaction: &mut Transaction<'_>,
+    generation: &ProviderGenerationId,
+) -> Vec<String> {
+    let rows: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .column(MaterializedTools::DefinitionJson)
+                .from(MaterializedTools::Table)
+                .and_where(
+                    Expr::col(MaterializedTools::ProviderGenerationId).eq(generation.to_string()),
+                )
+                .and_where(Expr::col(MaterializedTools::Protocol).eq("http"))
+                .to_owned(),
+        )
+        .await
+        .unwrap();
+    rows.into_iter().map(|(definition,)| definition).collect()
+}
+
+// Catches: every Tool storing its own copy of the OAuth contract, which grows
+// as Tools × scopes once a provider may request any number of scopes; a Tool
+// loaded without its contract; and a binding stored with its own contract, as
+// Coral did before, no longer decoding or no longer matching the Generation
+// prepared today.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Generation is checked as stored now, as stored before, and without a contract"
+)]
+async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    let operations = 40;
+    let document = scoped_document(operations);
+    let input = ProviderSetupInput::from(OpenApiDocument::parse(&document).unwrap());
+    let MaterializationOutcome::Ready(prepared) =
+        crate::materialize(DestinationPolicy::default(), &input, &[])
+    else {
+        panic!("the scoped document materializes");
+    };
+    let contract = prepared.credential_contract();
+    assert_eq!(
+        contract
+            .authentication()
+            .oauth_scopes()
+            .map(|(scopes, _)| scopes.len()),
+        Some(operations)
+    );
+    let fingerprint = prepared.fingerprint();
+    let tools = prepared.tools().to_vec();
+    let mut transaction = database.begin().await.unwrap();
+    let generation = publish_generation(
+        &mut transaction,
+        GenerationInput::Setup(&input),
+        &ProviderSetupInputDigest::of_setup_input(&input),
+        prepared,
+        "persistence-fixture",
+        1,
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let stored = stored_http_definitions(&mut transaction, &generation).await;
+    assert_eq!(stored.len(), operations);
+    assert!(
+        stored
+            .iter()
+            .all(|definition| !definition.contains("scope00")),
+        "a stored Tool binding keeps no copy of the shared contract"
+    );
+    let loaded = load_catalog_tools(&mut transaction, &generation)
+        .await
+        .unwrap();
+    assert_eq!(loaded, tools);
+    assert_eq!(*shared_contract(&loaded), contract);
+    assert_eq!(
+        generation_fingerprint(&mut transaction, &generation)
+            .await
+            .unwrap(),
+        fingerprint
+    );
+    transaction.rollback().await.unwrap();
+
+    // What Coral stored before: every slot carried its own contract. A copy
+    // that disagrees with the Generation's loses to it.
+    let embedded = serde_json::to_string(&contract)
+        .unwrap()
+        .replace("\"scope00\"", "\"stale00\"");
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE materialized_tools SET definition_json = REPLACE(definition_json, \
+             '{{\"scheme_name\":\"OAuth\"}}', \
+             '{{\"scheme_name\":\"OAuth\",\"contract\":{embedded}}}') \
+             WHERE protocol = 'http'"
+        ))
+        .await
+        .unwrap();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    assert!(
+        stored_http_definitions(&mut transaction, &generation)
+            .await
+            .iter()
+            .all(|definition| definition.contains("stale00")),
+        "the fixture restores the earlier encoding"
+    );
+    let loaded = load_catalog_tools(&mut transaction, &generation)
+        .await
+        .unwrap();
+    assert_eq!(loaded, tools);
+    assert_eq!(*shared_contract(&loaded), contract);
+    assert_eq!(
+        generation_fingerprint(&mut transaction, &generation)
+            .await
+            .unwrap(),
+        fingerprint
+    );
+    transaction.rollback().await.unwrap();
+
+    // A Generation that names no contract cannot give its Tools one.
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_generations SET credential_contract = 'none' WHERE id = '{generation}'"
+        ))
+        .await
+        .unwrap();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let Err(Error::CorruptData(message)) = load_catalog_tools(&mut transaction, &generation).await
+    else {
+        panic!("a credential slot without a contract is corrupt data");
+    };
+    assert_eq!(message, "HTTP credential slot has no contract to restore");
+    assert_eq!(
+        stored_http_definitions(&mut transaction, &generation)
+            .await
+            .len(),
+        operations,
+        "the failed load changes nothing"
+    );
+    transaction.rollback().await.unwrap();
+}
+
+/// The one contract every loaded HTTP Tool shares, by identity, not by copy.
+fn shared_contract(
+    tools: &[MaterializedTool],
+) -> std::sync::Arc<crate::ProviderCredentialContract> {
+    let contracts = tools
+        .iter()
+        .map(|tool| {
+            let ExecutionBinding::Http(binding) = tool.execution_binding() else {
+                panic!("an OpenAPI Tool runs over HTTP");
+            };
+            let [slot] = binding.credential_slots() else {
+                panic!("each Tool has one credential slot");
+            };
+            slot.shared_contract()
+        })
+        .collect::<Vec<_>>();
+    let first = contracts.first().expect("the Generation has Tools");
+    assert!(
+        contracts
+            .iter()
+            .all(|contract| std::sync::Arc::ptr_eq(contract, first)),
+        "every Tool shares one contract"
+    );
+    std::sync::Arc::clone(first)
+}

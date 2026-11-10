@@ -55,10 +55,10 @@ pub use list_providers::{
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
 pub use save_function::{SaveFunctionArguments, SaveFunctionResult};
 pub use search::{
-    DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult,
-    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
-    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
-    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
+    DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, ProviderArgument,
+    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SEARCH_PROVIDERS_MAX, SavedDetail, SavedDiagnostic,
+    SavedDiagnosticCategory, SearchArguments, SearchHit, SearchOutput, SearchResult,
+    SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
 };
 pub use update_policy::{UpdatePolicyArguments, UpdatePolicyResult};
 pub use update_provider::{
