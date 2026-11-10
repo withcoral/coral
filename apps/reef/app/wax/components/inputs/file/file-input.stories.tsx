@@ -80,6 +80,39 @@ export const Disabled: Story = {
   },
 }
 
+// A button alone stands in for the picker, and the keyboard reaches only the button.
+export const ButtonOnly: Story = {
+  args: { buttonLabel: 'Upload document' },
+  play: async ({ args, canvas, canvasElement }) => {
+    const input = picker(canvasElement)
+    const button = canvas.getByRole('button', { name: 'Upload document' })
+    const clicked = fn((event: Event) => event.preventDefault())
+    input.addEventListener('click', clicked)
+    await userEvent.tab()
+    await expect(button).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    await userEvent.keyboard(' ')
+    input.removeEventListener('click', clicked)
+    await expect(clicked).toHaveBeenCalledTimes(2)
+    await userEvent.tab()
+    await expect(input).not.toHaveFocus()
+
+    const file = firstFile()
+    await selectFile(input, file)
+    await expectFormFile(input, file)
+    await expect(args.onChange).toHaveBeenLastCalledWith(file)
+  },
+}
+export const ButtonBusy: Story = {
+  args: { buttonLabel: 'Upload document', busy: true },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('button', { name: 'Upload document' })).toHaveAttribute(
+      'aria-busy',
+      'true',
+    )
+  },
+}
+
 export const DropArea: Story = { args: { dropLabel } }
 export const Dragging: Story = {
   args: { dropLabel },
