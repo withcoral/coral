@@ -6,8 +6,8 @@ description: "Connect Coral to the AWS MCP Server with an IAM identity"
 
 The [AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html) is a remote MCP server that AWS runs. Coral can connect to it in two ways:
 
-- **OAuth.** The **AWS** provider in Coral's catalog signs each member in with AWS. Use it when each member has an AWS sign-in.
-- **IAM.** Coral calls AWS with one IAM role or user. Use it when you want a fixed identity with its own IAM policies. This guide covers this option.
+- **OAuth.** The **AWS** provider in Coral's catalog signs each member in with AWS. Use it when each member has an AWS sign-in. AWS keeps a sign-in for [at most 12 hours](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html#oauth-token-lifecycle). After that, you reconnect the account in Coral.
+- **IAM.** Coral calls AWS with one IAM role or user. Use it when you want a fixed identity with its own IAM policies, or access that does not need a new sign-in every 12 hours. This guide covers this option.
 
 With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). Coral does not sign requests with SigV4. Run a small bridge next to Coral and add the bridge as a provider.
 
