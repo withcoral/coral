@@ -54,7 +54,11 @@ To switch an existing install to `key_env`, put the key from the config folder's
 
 ### `[outbound]`
 
-Controls the policy for outbound calls from Coral to providers.
+Controls how Coral calls providers.
+
+#### Network policies
+
+`loopback` and `private_networks` set the policy for provider calls to those addresses.
 Policies can have one of the following values:
 
 - `deny`: Denies all requests to the policy target
@@ -63,15 +67,20 @@ Policies can have one of the following values:
 
 All provider calls not covered by an explicit policy in this section are treated under the `https` policy.
 
-Without an `[auth]` section, and in Coral Desktop, `loopback` and `private_networks` default to `http-and-https`, so providers on your own machine and network work. With `[auth]`, both default to `deny`.
+| Key                | Description                                                   | Required | Default                                  |
+| ------------------ | ------------------------------------------------------------- | -------- | ---------------------------------------- |
+| `loopback`         | Policy for provider calls to loopback addresses.              | No       | `deny`, or `http-and-https` without auth |
+| `private_networks` | Policy for provider calls to addresses in non-public networks | No       | `deny`, or `http-and-https` without auth |
+
+Without an `[auth]` section, `loopback` and `private_networks` default to `http-and-https`, so providers on your own machine and network work. With `[auth]`, both default to `deny`.
 
 Coral ignores `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` for provider calls. It connects to each provider directly.
 
-| Key                          | Description                                                                                                       | Required | Default                                    |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------ |
-| `loopback`                   | Policy for provider calls to loopback addresses.                                                                  | No       | `deny`, or `http-and-https` without auth   |
-| `private_networks`           | Policy for provider calls to addresses in non-public networks                                                     | No       | `deny`, or `http-and-https` without auth   |
-| `mcp_oauth_client_bootstrap` | How Coral identifies itself to an MCP provider's authorization server when nobody enters a client ID. See below. | No       | `automatic`                                |
+#### MCP OAuth clients
+
+| Key                          | Description                                                                                           | Required | Default     |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- | -------- | ----------- |
+| `mcp_oauth_client_bootstrap` | How Coral identifies itself to an MCP provider's authorization server when nobody enters a client ID. | No       | `automatic` |
 
 An MCP provider's authorization server can identify Coral in two ways. It can fetch Coral's Client ID Metadata Document from a URL, or Coral can register with Dynamic Client Registration. `mcp_oauth_client_bootstrap` selects between them:
 
