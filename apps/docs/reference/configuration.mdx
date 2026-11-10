@@ -42,7 +42,7 @@ Coral does not start when `config.toml` holds an unknown key, or a value that a 
 
 | Key          | Description                                                                                                                                                                  | Required                                                                                              | Default |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------- |
-| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. Set `CORAL_WEB_PUBLIC_URL` on the UI to the same origin. | Yes. Without `[auth]`, a local launcher can set `CORAL_LOCAL_WEB_URL` instead. Do not set both. | N/A     |
+| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. Set `CORAL_WEB_PUBLIC_URL` on the UI to the same origin. | Yes. Without `[auth]`, you can set the `CORAL_LOCAL_WEB_URL` environment variable instead. Coral does not start when you set both. | N/A     |
 
 ### `[credentials]`
 
@@ -311,7 +311,7 @@ Coral reads these variables when it starts. Restart Coral after you change one.
 | Variable                    | Description                                                                                                                                                       |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CORAL_CONFIG_DIR`          | The config folder. See the top of this page for the default.                                                                                                     |
-| `CORAL_LOCAL_WEB_URL`       | The web UI's origin, for a local launcher that sets no `[listeners.web]`. Coral links your users to it. Coral does not start with it when `[auth]` is present. |
+| `CORAL_LOCAL_WEB_URL`       | The web UI's origin. Coral links your users to it. Use it instead of `listeners.web.public_url` when user auth is disabled. Coral does not start when you set it with `[auth]` or with `listeners.web.public_url`. |
 | `CORAL_STOP_ON_STDIN_CLOSE` | Set to `1` to stop Coral when its stdin closes. Use it when your launcher stops Coral by closing a pipe.                                                         |
 | `CORAL_TRACE_PARENT`        | A W3C `traceparent`. Coral starts its process span in that trace.                                                                                                 |
 | `DO_NOT_TRACK`, `CORAL_TELEMETRY`, `CI` | Stop the daily usage report, but only with some values. For example, `DO_NOT_TRACK=0` does not stop it. See [Usage data](/reference/usage-data#with-an-environment-variable) for the values. |
