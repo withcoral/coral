@@ -168,14 +168,3 @@ export function foldUnchanged(lines: DiffLine[], context = 3): (DiffLine | DiffF
   }
   return rows
 }
-
-/** How many lines a diff from `before` to `after` adds and removes. */
-export function diffCounts(before: string, after: string) {
-  let added = 0
-  let removed = 0
-  for (const line of diffLines(before, after)) {
-    if (line.kind === 'added') added += 1
-    else if (line.kind === 'removed') removed += 1
-  }
-  return { added, removed }
-}

@@ -1,6 +1,6 @@
 /** @vitest-environment happy-dom */
 
-import { act, screen, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { RouteObject } from 'react-router'
 import { expect, test, vi } from 'vitest'
@@ -897,7 +897,8 @@ test('an owner restores an earlier revision of a shared tool from its revisions'
   await user.click(within(drawer).getByRole('button', { name: 'Restore revision 1' }))
 
   expect(await screen.findByRole('heading', { name: 'Restore revision 1' })).toBeInTheDocument()
-  expect(await screen.findByRole('button', { name: 'Publish revision 3' })).toBeEnabled()
+  const publish = await screen.findByRole('button', { name: 'Publish' })
+  await waitFor(() => expect(publish).toBeEnabled())
   expect(reviewed).toEqual(['?path=mail.remind&restore=1'])
 })
 

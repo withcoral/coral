@@ -207,16 +207,26 @@ export const reviewFact = style({
 })
 // The icon keeps to the first line of text that wraps beside it.
 export const reviewFactIcon = style({ flexShrink: 0, marginBlockStart: 1 })
-// What the publish changes, at a glance, above the details.
-export const reviewSummary = style({
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
+// The publish dialog: what the owner decides on the left, the code they review on the
+// right. On a narrow screen the code follows the decisions.
+export const publishSplit = style({
   display: 'grid',
-  gap: 8,
-  listStyle: 'none',
-  margin: 0,
-  padding: 12,
+  gap: 24,
+  gridTemplateColumns: '300px minmax(0, 1fr)',
+  minWidth: 0,
+  '@media': { '(max-width: 760px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
 })
+export const publishSide = style({
+  alignContent: 'start',
+  borderInlineEnd: `1px solid ${theme.stroke.secondary}`,
+  display: 'grid',
+  gap: 20,
+  minWidth: 0,
+  paddingInlineEnd: 24,
+  '@media': { '(max-width: 760px)': { borderInlineEnd: 'none', paddingInlineEnd: 0 } },
+})
+// One labelled part of the left pane: its label, then what it holds.
+export const publishPart = style({ display: 'grid', gap: 8, justifyItems: 'start', minWidth: 0 })
 // The publish dialog's footer stays at the popup's bottom edge, so the policy
 // and the publish stay in view however far the owner scrolls. It reaches
 // through the popup's padding to its edges, which is 24px on each side.
@@ -231,15 +241,9 @@ export const publishFooter = style({
   position: 'sticky',
   zIndex: 1,
 })
-export const publishFooterRow = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 16,
-  justifyContent: 'space-between',
-})
-export const publishPolicy = style({ alignItems: 'center', display: 'flex', gap: 12 })
-globalStyle(`${publishFooterRow} > :last-child`, { marginBlockStart: 0 })
+// The footer holds the actions alone, at its end.
+export const publishFooterActions = style({ display: 'flex', justifyContent: 'flex-end' })
+globalStyle(`${publishFooterActions} > *`, { marginBlockStart: 0 })
 // The tools a reviewed source calls, one call path a line.
 export const calledTools = style({
   display: 'grid',

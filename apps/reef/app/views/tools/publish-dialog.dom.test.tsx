@@ -90,7 +90,13 @@ function open({
   return { reviewed, posted, onOpenChange }
 }
 
-const publishButton = (name: string | RegExp = /^Publish/) => screen.findByRole('button', { name })
+const publishButton = () => screen.findByRole('button', { name: 'Publish' })
+/** The publish button once a review of the path in the field allows it. */
+const publishable = async () => {
+  const button = await publishButton()
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
+}
 
 // Catches: a publish of anything but the reviewed bytes, a policy other than
 // the one the owner chose, a publish against a revision the owner did not
@@ -101,9 +107,9 @@ test('publishes the reviewed content with the chosen policy, then closes', async
     props: { path: 'mail.remind' },
   })
   // The review is of the private tool at the path the dialog opened on.
-  await publishButton('Publish revision 3')
+  await publishable()
   expect(Object.fromEntries(reviewed[0]!)).toEqual({ path: 'mail.remind', tool: 'people.remind' })
-  expect(screen.getByText('Remove tokens and IDs that only you should see.')).toBeVisible()
+  expect(screen.getByText(/Remove tokens and IDs that only you should see\./)).toBeVisible()
   // The shared tool it calls shows with the revision it has now.
   const called = within(screen.getByRole('list', { name: 'Tools it calls' })).getAllByRole(
     'listitem',
@@ -117,7 +123,7 @@ test('publishes the reviewed content with the chosen policy, then closes', async
   const policy = screen.getByRole('radiogroup', { name: 'Default policy' })
   expect(within(policy).getByRole('radio', { name: 'Allow' })).toBeChecked()
   await user.click(within(policy).getByRole('radio', { name: 'Block' }))
-  await user.click(await publishButton('Publish revision 3'))
+  await user.click(await publishable())
 
   await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   expect(posted).toHaveLength(1)
@@ -155,18 +161,17 @@ test('after a refused publish, says why and reviews again', async () => {
     reviews: [review(), review({ previous: published(1) })],
     publish: async () => data({ error: refusal, credential: null }, { status: 409 }),
   })
-  await user.click(await publishButton('Publish revision 1'))
+  await user.click(await publishable())
 
   expect(await screen.findByText(refusal)).toBeVisible()
   // The second review shows the other owner's revision as the one to replace.
-  await publishButton('Publish revision 2')
-  expect(screen.getByText(/replaces revision 1, published by Ada on/)).toBeVisible()
+  expect(await screen.findByText(/replaces revision 1, published by Ada on/)).toBeVisible()
   expect(reviewed).toHaveLength(2)
   expect(posted[0]!.get('expectedRevision')).toBe('0')
   expect(onOpenChange).not.toHaveBeenCalled()
 
   // The next publish expects the revision the second review showed.
-  await user.click(await publishButton('Publish revision 2'))
+  await user.click(await publishable())
   await waitFor(() => expect(posted).toHaveLength(2))
   expect(posted[1]!.get('expectedRevision')).toBe('1')
 })
@@ -185,8 +190,9 @@ test('reviews the path the owner enters before it publishes there', async () => 
   })
   const path = await screen.findByRole('textbox', { name: 'Shared tool path' })
   expect(path).toHaveValue('people.remind')
-  await publishButton('Publish revision 1')
-  expect(screen.getByText('This publish creates a new shared tool.')).toBeVisible()
+  await publishable()
+  // A new shared tool needs no word on what is at its path.
+  expect(screen.queryByText(/This publish/)).toBeNull()
 
   // Enter reviews the path at once. The field drops the root a pasted call path starts with.
   await user.clear(path)
@@ -200,8 +206,8 @@ test('reviews the path the owner enters before it publishes there', async () => 
 
   // A pause in typing reviews the path, once for all the keys typed before it.
   await user.type(path, '.remind')
-  await user.click(await publishButton('Publish revision 3'))
-  expect(screen.getByText(/replaces revision 2, published by Ada on/)).toBeVisible()
+  expect(await screen.findByText(/replaces revision 2, published by Ada on/)).toBeVisible()
+  await user.click(await publishable())
   await waitFor(() => expect(posted).toHaveLength(1))
   expect(reviewed.map((query) => query.get('path'))).toEqual([
     'people.remind',
@@ -235,7 +241,7 @@ test('restores a revision at the path of its shared tool', async () => {
       name: 'Ask',
     }),
   ).toBeChecked()
-  await user.click(await publishButton('Publish revision 3'))
+  await user.click(await publishable())
   await waitFor(() => expect(posted).toHaveLength(1))
   expect(Object.fromEntries(reviewed[0]!)).toEqual({ path: 'mail.remind', restore: '1' })
   expect({ restore: posted[0]!.get('restore'), tool: posted[0]!.get('tool') }).toEqual({

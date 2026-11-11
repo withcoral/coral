@@ -732,19 +732,38 @@ const firstReview: PublishReviewResult = {
 }
 const openPublish = async () => {
   await userEvent.click(await screen.findByRole('button', { name: 'Publish' }))
-  await screen.findByRole('heading', { name: 'Publish shared tool' })
+  return within(await screen.findByRole('dialog', { name: 'Publish shared tool' }))
+}
+/** The dialog's publish button, once the review allows it. */
+const publishIn = async (dialog: ReturnType<typeof within>) => {
+  const button = await dialog.findByRole('button', { name: 'Publish' })
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
 }
 // The review of a first publish: the path, the reminder, the full source,
 // what it calls, the diagnostics, and the policy to start with.
 export const PublishFirstRevision: Story = {
-  ...TreePrivateToolSelected,
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[coral, github, sharedTools, privateTools]}
+      selectedProvider="prov-private"
+      selectedTool="finance.monthlyTotals"
+      selectedToolDetail={monthlyTotals}
+    />
+  ),
   parameters: {
     initialEntry: '/workspaces/demo/tools/private/finance.monthlyTotals',
     review: firstReview,
   },
   play: async () => {
-    await openPublish()
-    await screen.findByRole('button', { name: 'Publish revision 1' })
+    const dialog = await openPublish()
+    await expect(await publishIn(dialog)).toBeEnabled()
+    // A tool the source calls shows as its provider's logo and its path there, as in
+    // activity. One whose provider the workspace does not have shows its call path.
+    const called = within(dialog.getByRole('list', { name: 'Tools it calls' }))
+    await expect(called.getByText('finance.currencies')).toBeInTheDocument()
+    await expect(called.getByText('coral.providers.stripe.invoices.list')).toBeInTheDocument()
   },
 }
 // The review of a later publish: the source and the declaration as diffs
@@ -771,10 +790,11 @@ export const PublishNextRevision: Story = {
     } satisfies PublishReviewResult,
   },
   play: async () => {
-    await openPublish()
-    await screen.findByRole('button', { name: 'Publish revision 4' })
-    await screen.findByRole('group', { name: 'Source changes' })
-    await screen.findByRole('group', { name: 'Declaration changes' })
+    const dialog = await openPublish()
+    await publishIn(dialog)
+    await dialog.findByRole('group', { name: 'Source changes' })
+    await userEvent.click(dialog.getByRole('tab', { name: 'Declaration' }))
+    await dialog.findByRole('group', { name: 'Declaration changes' })
   },
 }
 // Coral refuses the review of a path, and the owner enters another.
@@ -802,9 +822,9 @@ export const PublishRefused: Story = {
     dialogError: 'Another owner published this shared tool first. Review the changes again.',
   },
   play: async () => {
-    await openPublish()
-    await userEvent.click(await screen.findByRole('button', { name: 'Publish revision 1' }))
-    await screen.findByText(/published this shared tool first/)
+    const dialog = await openPublish()
+    await userEvent.click(await publishIn(dialog))
+    await dialog.findByText(/published this shared tool first/)
   },
 }
 // A restore reviews the earlier revision against the current one, at a fixed path.
@@ -833,7 +853,7 @@ export const RestoreRevision: Story = {
   play: async () => {
     await userEvent.click(await screen.findByRole('tab', { name: /^Revisions/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'Restore revision 2' }))
-    await screen.findByRole('button', { name: 'Publish revision 4' })
+    await publishIn(within(await screen.findByRole('dialog', { name: 'Restore revision 2' })))
   },
 }
 

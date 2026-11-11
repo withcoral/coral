@@ -60,6 +60,7 @@ import {
   type AddProviderEntryProps,
 } from '@/views/providers/add-provider'
 import { toolCallPath } from '@/lib/call-root'
+import { ProviderMarksContext } from '@/views/activity/call-tool'
 import { countLabel } from '@/utils/count-label'
 import { catalogMatches } from '@/views/providers/provider-catalog'
 import {
@@ -153,10 +154,23 @@ function HintLabels({ hints }: { hints: ToolHintsView }) {
 }
 
 export function ToolsPage(props: ToolsPageProps) {
+  // A call path the page shows, such as one a publish review lists, names its
+  // provider by logo, as the activity page does.
+  const marks = useMemo(
+    () =>
+      props.providers.map((provider) => ({
+        callRoot: provider.callRoot,
+        displayName: providerLabel(provider),
+        icons: provider.icons,
+      })),
+    [props.providers],
+  )
   return (
-    <PolicyMutations catalog={props.providers}>
-      <ToolsContent {...props} />
-    </PolicyMutations>
+    <ProviderMarksContext value={marks}>
+      <PolicyMutations catalog={props.providers}>
+        <ToolsContent {...props} />
+      </PolicyMutations>
+    </ProviderMarksContext>
   )
 }
 
