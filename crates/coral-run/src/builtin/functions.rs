@@ -230,13 +230,42 @@ fn failure(field: &str, error: coral_functions::Error) -> Error {
             CoralFailure::InputTooLarge,
             vec![problem(field, &error)],
         )),
-        E::SavedFunctionCompilationTimedOut | E::CompilerBusy => Error::InvocationRejected(
-            Rejection::naming(CoralFailure::ToolUnavailable, vec![problem(field, &error)]),
-        ),
+        // Nothing judged the source: the Program may call again.
+        E::SavedFunctionCompilationTimedOut | E::CompilerBusy | E::NoCompiler => {
+            Error::InvocationRejected(Rejection::naming(
+                CoralFailure::ToolUnavailable,
+                vec![problem(field, &error)],
+            ))
+        }
         E::PermissionDenied(_) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
         E::Workspace(error) if crate::enforcement::loses_authority(&error) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         other => other.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoralFailure, Error, failure};
+
+    // Catches: a save no compiler judged that ends the Run instead of
+    // failing the call as retryable.
+    #[test]
+    fn a_save_no_compiler_judged_is_a_retryable_tool_failure() {
+        use coral_functions::Error as E;
+        for error in [
+            E::SavedFunctionCompilationTimedOut,
+            E::CompilerBusy,
+            E::NoCompiler,
+        ] {
+            let code = error.code();
+            match failure("source", error) {
+                Error::InvocationRejected(rejection) => {
+                    assert_eq!(rejection.failure(), CoralFailure::ToolUnavailable, "{code}");
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
     }
 }
