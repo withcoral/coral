@@ -1,4 +1,4 @@
-//! The feature probes' statements.
+//! The boot statements: the feature probes and the vector table's.
 //!
 //! Every function joins the caller's transaction; the storage module owns
 //! when each transaction begins, commits, or rolls back.
@@ -69,13 +69,26 @@ pub(super) async fn create_extension(
         .await
 }
 
+/// What the first schema on the search path holds under the vector table's
+/// name.
+pub(super) enum VectorTable {
+    Absent,
+    /// The table this binary creates for the dimension asked about.
+    Current,
+    /// A table this binary would not create: one of another dimension or
+    /// shape, or one that does not record the statement that created it.
+    Other,
+}
+
 /// The statement that creates the vector table for vectors of `dimension`.
 ///
 /// The table is keyed like `search_entities` and carries the columns the
 /// vector query filters on, so that query reads this table alone. It has no
-/// foreign key: the reconcile pass removes vectors whose Search Entity or
-/// Workspace is gone.
-pub(super) fn vector_table_statement(dimension: usize) -> String {
+/// foreign key, not even to `workspace_records`: the reconcile pass removes
+/// vectors whose Search Entity or Workspace is gone. The ADR "Universal
+/// Search adds a vector list from a bundled CPU model" amends ADR 0017's
+/// rule that each search table keeps its Workspace key.
+fn vector_table_statement(dimension: usize) -> String {
     format!(
         "CREATE TABLE search_entity_embeddings (\
             workspace_id TEXT NOT NULL, \
@@ -102,12 +115,13 @@ pub(super) async fn lock_vector_table(transaction: &mut Transaction<'_>) -> Resu
         .await
 }
 
-/// The statement that created the vector table in the first schema on the
-/// search path, as its comment records it: `None` when that schema has no
-/// vector table, `Some(None)` when the table has no comment.
-pub(super) async fn vector_table_created_by(
+/// Reads the vector table in the first schema on the search path against the
+/// one this binary creates for `dimension`. The table's comment records the
+/// statement that created it.
+pub(super) async fn vector_table(
     transaction: &mut Transaction<'_>,
-) -> Result<Option<Option<String>>, Error> {
+    dimension: usize,
+) -> Result<VectorTable, Error> {
     let rows: Vec<(Option<String>,)> = transaction
         .fetch_all_sql(
             "SELECT obj_description(c.oid, 'pg_class') \
@@ -119,7 +133,13 @@ pub(super) async fn vector_table_created_by(
             sea_query::Values(Vec::new()),
         )
         .await?;
-    Ok(rows.into_iter().next().map(|(comment,)| comment))
+    Ok(match rows.into_iter().next() {
+        None => VectorTable::Absent,
+        Some((Some(created_by),)) if created_by == vector_table_statement(dimension) => {
+            VectorTable::Current
+        }
+        Some(_) => VectorTable::Other,
+    })
 }
 
 pub(super) async fn drop_vector_table(transaction: &mut Transaction<'_>) -> Result<(), Error> {
@@ -128,12 +148,14 @@ pub(super) async fn drop_vector_table(transaction: &mut Transaction<'_>) -> Resu
         .await
 }
 
-/// Runs `statement` and records it as the table's comment.
+/// Creates the vector table for `dimension` and records the statement as its
+/// comment.
 pub(super) async fn create_vector_table(
     transaction: &mut Transaction<'_>,
-    statement: &str,
+    dimension: usize,
 ) -> Result<(), Error> {
-    transaction.execute_script(statement).await?;
+    let statement = vector_table_statement(dimension);
+    transaction.execute_script(&statement).await?;
     transaction
         .execute_script(&format!(
             "COMMENT ON TABLE search_entity_embeddings IS '{}'",

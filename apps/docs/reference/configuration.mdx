@@ -108,7 +108,7 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 | Key                          | Description                                                                                                                 | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval on which provider tool, private tool, and shared tool search indexing is executed. Must be greater than 0. | No       | `300`   |
-| `semantic_search_enabled`    | Search matches by meaning as well as by words when `true`. Coral reads it at startup. On Postgres it needs pgvector 0.7 or later: Coral creates the `vector` extension when its database role may, and otherwise does not start. Set `false` to run on a Postgres without pgvector. | No       | `true`  |
+| `semantic_search_enabled`    | Turns on search by meaning. Coral reads it at startup. On Postgres, `true` needs pgvector 0.7 or later: Coral creates the `vector` extension when its database role may, and otherwise does not start. Set `false` to run on a Postgres without pgvector. | No       | `true`  |
 
 ### `[updates]`
 

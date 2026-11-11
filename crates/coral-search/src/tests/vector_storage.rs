@@ -1,7 +1,7 @@
 //! The vector table that boot keeps beside `search_entities` on Postgres,
 //! outside the migration chain.
 
-use coral_db::{Database, DatabaseOptions};
+use coral_db::Database;
 use coral_test_support::TestDatabase;
 use sea_query::{Alias, Expr, Query};
 
@@ -12,11 +12,28 @@ async fn a_reboot_keeps_the_vectors_and_another_dimension_recreates_the_table() 
     coral_test_support::database_only!(Postgres);
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
+    prepare_vector_table(&database, VectorStorage::Off)
+        .await
+        .expect("boot with the setting off");
+    assert_eq!(
+        vector_type(&database).await,
+        None,
+        "the setting off creates none"
+    );
     prepare_vector_table(&database, VectorStorage::On { dimension: 3 })
         .await
         .expect("create the vector table");
     assert_eq!(vector_type(&database).await.as_deref(), Some("halfvec(3)"));
     store_vector(&fixture, "[0.5,0.25,1]").await;
+
+    prepare_vector_table(&database, VectorStorage::Off)
+        .await
+        .expect("boot with the setting off again");
+    assert_eq!(
+        stored_vectors(&database).await,
+        ["[0.5,0.25,1]"],
+        "the setting off leaves the table alone"
+    );
 
     prepare_vector_table(&database, VectorStorage::On { dimension: 3 })
         .await
@@ -59,11 +76,15 @@ async fn coral_instances_that_boot_at_once_all_start() {
 #[tokio::test]
 async fn without_pgvector_on_the_search_path_only_the_setting_off_boots() {
     coral_test_support::database_only!(Postgres);
-    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    // The test database holds `vector` in `public`. Without `public` on its
-    // search path, this schema sees no pgvector, as on a Postgres where
-    // Coral's role may not create it.
-    let database = without_public_on_the_search_path(&fixture).await;
+    // The test database holds `vector` in `public`, off this schema's search
+    // path, so its role cannot use pgvector.
+    let database = Database::connect(
+        coral_test_support::empty_postgres_schema(coral_test_support::SearchPath::SchemaOnly)
+            .await
+            .expect("create an empty schema"),
+    )
+    .await
+    .expect("open the schema");
 
     let refused = prepare_storage(&database, VectorStorage::On { dimension: 3 }).await;
     let off = prepare_storage(&database, VectorStorage::Off).await;
@@ -81,19 +102,6 @@ async fn without_pgvector_on_the_search_path_only_the_setting_off_boots() {
         "{remedy}"
     );
     off.expect("the setting off checks nothing");
-}
-
-async fn without_public_on_the_search_path(fixture: &TestDatabase) -> Database {
-    let DatabaseOptions::Postgres { url } = fixture.options() else {
-        unreachable!("a Postgres fixture");
-    };
-    let own_schema_only = url.replace("%2Cpublic", "");
-    assert_ne!(&own_schema_only, url, "the fixture puts `public` second");
-    Database::connect(DatabaseOptions::Postgres {
-        url: own_schema_only,
-    })
-    .await
-    .expect("open the fixture schema without `public`")
 }
 
 async fn store_vector(fixture: &TestDatabase, vector: &str) {

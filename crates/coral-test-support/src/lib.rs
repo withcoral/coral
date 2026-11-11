@@ -235,24 +235,7 @@ impl TestDatabase {
     }
 
     async fn postgres(plan: &MigrationPlan, base_url: &str) -> Result<Self, TestDatabaseError> {
-        coral_db::validate_postgres_url(base_url)?;
-        let administration_pool = sqlx::PgPool::connect(base_url).await?;
-        let schema = format!("coral_test_{}", Uuid::new_v4().simple());
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
-            .execute(&administration_pool)
-            .await?;
-        install_shared_extensions(&administration_pool).await?;
-        administration_pool.close().await;
-
-        // Like a default deployment's `"$user", public`, the fixture schema
-        // comes first and `public` holds the database's extensions.
-        let mut scoped_url = url::Url::parse(base_url)?;
-        scoped_url
-            .query_pairs_mut()
-            .append_pair("options[search_path]", &format!("{schema},public"));
-        let options = DatabaseOptions::Postgres {
-            url: scoped_url.into(),
-        };
+        let options = postgres_schema(base_url, SearchPath::WithPublic).await?;
         let database = Arc::new(Database::connect(options.clone()).await?);
         database.migrate(plan).await?;
         Ok(Self {
@@ -298,6 +281,63 @@ async fn connect_virtual_tables(
     }
     transaction.rollback().await?;
     Ok(())
+}
+
+/// Whether a Postgres schema's search path reaches `public`, where the
+/// database's shared extensions live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchPath {
+    /// The schema, then `public`, like a default deployment's
+    /// `"$user", public`.
+    WithPublic,
+    /// The schema alone, so no extension is on the search path, as on a
+    /// Postgres where Coral's role may not create one.
+    SchemaOnly,
+}
+
+/// Creates an empty schema in the Postgres test database and returns the
+/// options that open it, for tests of what runs before the migration chain.
+/// The database's shared extensions are in `public`, as for every fixture.
+///
+/// # Errors
+///
+/// Returns an error when `CORAL_TEST_POSTGRES_URL` is missing or invalid, or
+/// when the schema or the extensions cannot be created.
+pub async fn empty_postgres_schema(
+    search_path: SearchPath,
+) -> Result<DatabaseOptions, TestDatabaseError> {
+    let base_url = optional_environment(POSTGRES_URL_ENV)?.ok_or_else(|| {
+        TestDatabaseError::Config(format!(
+            "{POSTGRES_URL_ENV} must be set for a Postgres schema"
+        ))
+    })?;
+    postgres_schema(&base_url, search_path).await
+}
+
+async fn postgres_schema(
+    base_url: &str,
+    search_path: SearchPath,
+) -> Result<DatabaseOptions, TestDatabaseError> {
+    coral_db::validate_postgres_url(base_url)?;
+    let administration_pool = sqlx::PgPool::connect(base_url).await?;
+    let schema = format!("coral_test_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&administration_pool)
+        .await?;
+    install_shared_extensions(&administration_pool).await?;
+    administration_pool.close().await;
+
+    let mut scoped_url = url::Url::parse(base_url)?;
+    scoped_url.query_pairs_mut().append_pair(
+        "options[search_path]",
+        &match search_path {
+            SearchPath::WithPublic => format!("{schema},public"),
+            SearchPath::SchemaOnly => schema,
+        },
+    );
+    Ok(DatabaseOptions::Postgres {
+        url: scoped_url.into(),
+    })
 }
 
 /// Installs the extensions Coral's boot checks require once per disposable
