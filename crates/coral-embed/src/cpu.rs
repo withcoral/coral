@@ -11,7 +11,7 @@ pub struct CpuTooOld {
     pub missing: Vec<&'static str>,
 }
 
-/// Checks that this CPU meets the floor of ADR 0033: x86-64-v3 on x86-64.
+/// Checks that this CPU meets the model's floor: x86-64-v3 on x86-64.
 /// Every arm64 CPU meets it.
 ///
 /// # Errors

@@ -1,5 +1,5 @@
-//! Turns text into a vector with the embedding model of ADR 0033
-//! ("Universal Search adds a vector list from a bundled CPU model").
+//! Turns text into a vector with the embedding model that the ADR
+//! "Universal Search adds a vector list from a bundled CPU model" picks.
 //!
 //! [`MANIFEST`] is the model and how Universal Search uses it, compiled into
 //! the binary. [`EmbedderRevision`] is the digest of the manifest fields that
