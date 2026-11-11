@@ -357,6 +357,22 @@ function settledAccount(
   return setup?.authorized && attempt.accountGrant ? attempt.account : null
 }
 
+/**
+ * Coral is still reading the tools after a sign-in. A setup awaits discovery
+ * from the sign-in's commit until the listing ends, and only a failed listing
+ * records why. A device sign-in ends in the background, so a page can see
+ * this in between.
+ */
+export function discovering(setup: SetupView) {
+  return setup.state === 'awaiting_discovery' && !setup.discoveryFailure
+}
+
+/** Whether a setup page refreshes itself: a sign-in or a listing is under way. */
+export function inProgress(setup: SetupView | null | undefined) {
+  const state = setup?.authorization?.state
+  return state === 'pending' || state === 'exchanging' || (setup != null && discovering(setup))
+}
+
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
 export function attemptProgress(
   attempt: PublicationAttempt,

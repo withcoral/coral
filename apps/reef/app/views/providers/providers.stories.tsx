@@ -765,6 +765,23 @@ export const StepDiscoverySignInScopeChallenge: Story = {
   ),
   parameters: workspaceEntry,
 }
+// The sign-in ended and Coral is still reading the tools.
+export const StepDiscoveryReading: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{
+        ...setupAwaiting,
+        state: 'awaiting_discovery',
+        authorized: true,
+        grantedScope: 'read write',
+        discoveryFailure: '',
+        authorization: succeeded('dcr-client', 'registration'),
+      }}
+    />
+  ),
+  parameters: workspaceEntry,
+}
 // Retry a failed listing with the provisional discovery grant.
 export const StepDiscoveryFailed: Story = {
   render: () => (
