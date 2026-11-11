@@ -237,15 +237,16 @@ struct Link {
     freed: Arc<Notify>,
 }
 
-/// One unit of room a held Run takes, freed when its stream's task ends,
-/// even by a panic.
-struct HeldUnit {
+/// One unit of room a held Run takes. It frees when dropped: by the Run's
+/// Program thread once its isolate is gone, or by the Run's stream task when
+/// no Program started, even by a panic.
+pub(crate) struct HeldUnit {
     held: Arc<AtomicU32>,
     freed: Arc<Notify>,
 }
 
 impl HeldUnit {
-    fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
+    pub(crate) fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
         held.fetch_add(1, Ordering::SeqCst);
         Self {
             held: held.clone(),
@@ -357,6 +358,9 @@ impl Link {
         loop {
             let welcomed = *self.linked.borrow();
             tokio::select! {
+                // A Run that freed before Hello leaves a permit here too, so
+                // a Room may repeat the room Hello reported. A free between
+                // Hello and Welcome reaches Coral only this way.
                 () = self.freed.notified(), if welcomed => {
                     let room = PullRequest {
                         message: Some(pull_request::Message::Room(Room {
@@ -402,11 +406,7 @@ impl Link {
                         // Each Run's stream rides this connection.
                         for taken in taken.runs {
                             let unit = HeldUnit::take(&self.held, &self.freed);
-                            let stream = run::hold(client.clone(), taken, self.run_limits);
-                            tokio::spawn(async move {
-                                let _unit = unit;
-                                stream.await;
-                            });
+                            tokio::spawn(run::hold(client.clone(), taken, self.run_limits, unit));
                         }
                     }
                     // Anything else breaks the protocol. A clean end before

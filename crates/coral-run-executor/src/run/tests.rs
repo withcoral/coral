@@ -1,10 +1,13 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::*;
-use crate::testing::{Answer, RunCall, ScriptedCoral, package, start_run_executor};
+use crate::link::HeldUnit;
+use crate::testing::{Answer, PullCall, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
     Committed, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult, Invoke,
     Loaded, Location, Log, LogLevel, Request, RunEnd, Started, Terminate, TerminateReason,
@@ -12,17 +15,17 @@ use crate::wire::v1::{
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
-/// A scripted Coral and a Run Executor that holds two Runs, linked. The Run
-/// Executor retires when the sender drops.
-async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, oneshot::Sender<()>) {
+/// A scripted Coral and a Run Executor that holds two Runs, linked, with
+/// its pull stream. The Run Executor retires when the sender drops.
+async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, PullCall, oneshot::Sender<()>) {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
     let limits = RunLimits {
         applied_cap_bytes,
         ..RunLimits::default()
     };
     let retire = start_run_executor(&coral, 2, limits, None);
-    coral.next_call().await;
-    (coral, retire)
+    let call = coral.next_call().await;
+    (coral, call, retire)
 }
 
 fn compiled(source: &str) -> RunPackage {
@@ -112,7 +115,7 @@ fn result(number: u64, bytes: u64, outcome: invocation_result::Outcome) -> run_r
 /// that settles the wrong Invoke, or a unit that `Ended` never frees.
 #[tokio::test]
 async fn a_program_invokes_emits_logs_and_returns_in_numbered_order() {
-    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let (mut coral, mut call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let source = r#"const [issue, missing] = await Promise.all([
   coral.providers.tracker.issues.get({ id: 7 }),
   coral.providers.tracker.issues.get({ id: 8 }).catch((error) => error.code),
@@ -183,11 +186,15 @@ return issue.id;"#;
         end: RunEnd::Succeeded.into(),
     };
     run.send(run_response::Message::Ended(ended)).await;
-    assert_eq!(coral.next_room().await, 2, "Ended frees the Run's unit");
+    assert_eq!(
+        call.rooms.recv().await,
+        Some(2),
+        "Ended frees the Run's unit"
+    );
 }
 
-/// Catches: an Upstream Outcome the Program cannot catch, or a host failure
-/// it can.
+/// Catches: an Upstream Outcome that does not reach the Program as a
+/// catchable `ToolError`, or a host failure that does.
 #[tokio::test]
 async fn an_invocation_result_settles_its_invoke_by_its_outcome() {
     let source = r"try { return await coral.providers.tracker.issues.get({ id: 7 }); }
@@ -212,7 +219,7 @@ catch (error) { return error.code; }";
             finish_end(FinishEnd::HostTerminated),
         ),
     ] {
-        let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+        let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
         let mut run = started(&mut coral, compiled(source), None).await;
         let (number, kind) = next_request(&mut run).await;
         assert!(
@@ -228,7 +235,7 @@ catch (error) { return error.code; }";
 /// or one the Program cannot catch.
 #[tokio::test]
 async fn a_value_over_its_limit_throws_at_the_call() {
-    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let source = r#"const caught: string[] = [];
 try { await coral.emit("x".repeat(100)); } catch (error) { caught.push((error as Error).name); }
 try { console.log("y".repeat(70_000)); } catch (error) { caught.push((error as Error).name); }
@@ -246,7 +253,7 @@ return caught;"#;
 /// or an end the Program can catch.
 #[tokio::test]
 async fn output_over_the_run_output_budget_ends_the_run() {
-    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let source = r#"await coral.providers.tracker.issues.list({});
 await coral.emit("12345");
 try { await coral.emit("1234567890"); } catch { return "caught"; }
@@ -276,7 +283,7 @@ async fn a_final_value_counts_against_the_run_output_budget() {
     let value = finish(finish::Completion::ValueJson(r#""1234567""#.to_owned()));
     // The Emission's 7 bytes and the Final Value's 9 fill 16 exactly.
     for (budget, expected) in [(16, value), (15, finish_end(FinishEnd::OutputBudget))] {
-        let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+        let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
         let mut package = program.clone();
         package.value_limits.as_mut().unwrap().run_output_bytes = budget;
         let mut run = started(&mut coral, package, None).await;
@@ -293,7 +300,7 @@ async fn a_final_value_counts_against_the_run_output_budget() {
 /// (its Finish included), or one that a Committed never releases.
 #[tokio::test]
 async fn the_applied_cap_holds_the_next_request_until_committed() {
-    let (mut coral, _retire) = linked(8).await;
+    let (mut coral, _call, _retire) = linked(8).await;
     let source = r#"await Promise.all([1, 2, 3].map((id) =>
   coral.providers.tracker.issues.get({ id, note: "longer than the cap" })));
 await coral.emit("123456789");
@@ -356,7 +363,7 @@ finally { await coral.emit("finally"); }"#,
 try { console.info("held"); } finally { await coral.emit("finally"); }"#,
         ),
     ] {
-        let (mut coral, _retire) = linked(8).await;
+        let (mut coral, _call, _retire) = linked(8).await;
         let mut run = started(&mut coral, compiled(source), None).await;
         assert_eq!(next_request(&mut run).await.0, 1, "{waits_on}");
         let terminate = Terminate {
@@ -372,7 +379,7 @@ try { console.info("held"); } finally { await coral.emit("finally"); }"#,
 /// runs without `Started`.
 #[tokio::test]
 async fn a_run_that_never_starts_finishes_as_request_one() {
-    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
 
     // A script the isolate cannot compile: Finish in place of Loaded.
     let mut broken = compiled("return 1;");
@@ -409,6 +416,34 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
     );
 }
 
+/// Catches: a Run stream task that panics and leaves its Program waiting
+/// forever, or a unit of room it never frees.
+#[tokio::test]
+async fn a_panicked_stream_task_stops_its_program() {
+    let held = Arc::new(AtomicU32::new(0));
+    let freed = Arc::new(Notify::new());
+    let unit = HeldUnit::take(&held, &freed);
+    let (outbound, mut requests) = mpsc::unbounded_channel();
+    let (host, exited) = load(compiled("return 1;"), outbound, RunLimits::default(), unit)
+        .expect("the package loads");
+    let loaded = requests.recv().await.and_then(|request| request.message);
+    assert_eq!(loaded, Some(run_request::Message::Loaded(Loaded {})));
+    // The Program waits for a Started that never comes.
+    let task = tokio::spawn(async move {
+        let _host = StopsOnDrop(host);
+        panic!("the Run stream task panics");
+    });
+    assert!(task.await.unwrap_err().is_panic());
+    // The thread drops its sender as it ends.
+    let _ended = tokio::time::timeout(Duration::from_secs(10), exited)
+        .await
+        .expect("the Program's thread ends");
+    tokio::time::timeout(Duration::from_secs(10), freed.notified())
+        .await
+        .expect("the unit frees");
+    assert_eq!(held.load(Ordering::SeqCst), 0);
+}
+
 /// How a case breaks a loadable package.
 type Breaks = fn(&mut RunPackage);
 
@@ -416,7 +451,7 @@ type Breaks = fn(&mut RunPackage);
 /// stream that keeps its unit.
 #[tokio::test]
 async fn a_package_that_breaks_the_protocol_closes_the_stream() {
-    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let (mut coral, mut call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let loadable = compiled("return 1;");
     let cases: [(&str, Breaks); 5] = [
         ("a digest that is not the package's", |package| {
@@ -442,7 +477,7 @@ async fn a_package_that_breaks_the_protocol_closes_the_stream() {
         let mut run = coral.next_run().await;
         run.send(run_response::Message::Package(package)).await;
         assert_eq!(run.next().await, None, "{case}: nothing loads");
-        assert_eq!(coral.next_room().await, 2, "{case}: the unit frees");
+        assert_eq!(call.rooms.recv().await, Some(2), "{case}: the unit frees");
     }
     // The package each case breaks loads as it is.
     loaded(&mut coral, "run-loadable", loadable).await;
@@ -452,7 +487,7 @@ async fn a_package_that_breaks_the_protocol_closes_the_stream() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_spent_cpu_budget_finishes_with_the_cpu_end() {
-    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let mut run = started(&mut coral, compiled("while (true) {}"), Some(100)).await;
     let end = finish_end(FinishEnd::CpuBudget);
     assert_eq!(next_request(&mut run).await, (1, end));

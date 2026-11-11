@@ -13,6 +13,7 @@ use coral_v8::{
 use tokio::sync::{mpsc, oneshot};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
+use crate::link::HeldUnit;
 use crate::wire::v1::{
     Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, Location, Log, LogLevel, Request,
     RunRequest, Started, finish, invocation_result, request, run_request,
@@ -78,11 +79,13 @@ impl RunHost {
 
     /// Runs `program` on a thread of its own, which loads it into a fresh
     /// isolate, runs it once `Started` arrives, and sends `Finish`. The
-    /// receiver completes once the thread has discarded the isolate.
+    /// thread frees `unit` and completes the receiver once it has discarded
+    /// the isolate.
     pub(super) fn spawn(
         self: &Arc<Self>,
         program: coral_v8::CompiledProgram,
         isolate: coral_v8::IsolateLimits,
+        unit: HeldUnit,
     ) -> std::io::Result<oneshot::Receiver<()>> {
         let host = self.clone();
         let (exiting, exited) = oneshot::channel();
@@ -91,8 +94,10 @@ impl RunHost {
         std::thread::Builder::new()
             .name("coral-run".to_owned())
             .spawn(move || {
-                let _dispatch = tracing::dispatcher::set_default(&dispatch);
+                // Dropped last, after the isolate.
+                let _unit = unit;
                 let _exiting = exiting;
+                let _dispatch = tracing::dispatcher::set_default(&dispatch);
                 let executor = coral_v8::ProgramExecutor::new(isolate);
                 let result =
                     executor.execute_with_host_control(&program, host.clone(), &host.control);

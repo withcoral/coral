@@ -11,16 +11,15 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
-use crate::testing::{Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, start_run_executor};
+use crate::testing::{
+    Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, run_executor_config, start_run_executor,
+};
 use crate::{AnalysisError, CompileError, PullStreamCompiler};
 
 fn config(coral: &ScriptedCoral, compiler_heap_bytes: usize) -> RunExecutorConfig {
     RunExecutorConfig {
-        coral_address: coral.address().parse().unwrap(),
-        token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).unwrap(),
-        max_runs_held: 8,
         compiler_heap_bytes,
-        run_limits: RunLimits::default(),
+        ..run_executor_config(coral, 8, RunLimits::default())
     }
 }
 

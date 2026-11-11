@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::PROTOCOL_LEVEL;
-use crate::link::{Client, compatible};
+use crate::link::{Client, HeldUnit, compatible};
 use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
@@ -67,7 +67,7 @@ fn value_limits(limits: &ValueLimits) -> Option<coral_value::ValueLimits> {
 }
 
 /// Holds one Run Coral took for this Run Executor until its stream ends.
-pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits) {
+pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits, unit: HeldUnit) {
     let (outbound, requests) = mpsc::unbounded_channel();
     let open = Open {
         run_id: taken.run_id,
@@ -89,7 +89,7 @@ pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits)
     else {
         return;
     };
-    let Some((host, exited)) = load(package, outbound, limits) else {
+    let Some((host, exited)) = load(package, outbound, limits, unit) else {
         return;
     };
     let host = StopsOnDrop(host);
@@ -136,12 +136,14 @@ impl Drop for StopsOnDrop {
     }
 }
 
-/// Checks `package` and starts its Program's thread, which loads it. `None`
-/// when the package breaks the protocol.
+/// Checks `package` and starts its Program's thread, which loads it and
+/// holds `unit` until its isolate is gone. `None` when the package breaks
+/// the protocol.
 fn load(
     package: RunPackage,
     outbound: mpsc::UnboundedSender<RunRequest>,
     limits: RunLimits,
+    unit: HeldUnit,
 ) -> Option<(Arc<RunHost>, oneshot::Receiver<()>)> {
     if !compatible(package.protocol_level) {
         tracing::warn!(
@@ -183,7 +185,7 @@ fn load(
         trace_id,
     ));
     let program = coral_v8::CompiledProgram::restore(package.script, package.source_map);
-    let Ok(exited) = host.spawn(program, limits.isolate) else {
+    let Ok(exited) = host.spawn(program, limits.isolate, unit) else {
         tracing::warn!("the Run's thread could not start; closing the Run stream");
         return None;
     };

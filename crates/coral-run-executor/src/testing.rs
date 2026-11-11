@@ -75,10 +75,10 @@ pub struct ScriptedCoral {
     calls: mpsc::UnboundedReceiver<PullCall>,
     release: watch::Sender<()>,
     takers: Takers,
-    rooms: mpsc::UnboundedReceiver<u32>,
     runs: mpsc::UnboundedReceiver<RunCall>,
     server: tokio::task::JoinHandle<()>,
 }
+
 /// One Run stream a Run Executor opened, which the test answers.
 pub struct RunCall {
     /// Its first message.
@@ -114,6 +114,26 @@ impl RunCall {
 /// The token [`start_run_executor`] dials with.
 pub const RUN_EXECUTOR_TOKEN: &str = "test-run-executor-token";
 
+/// The config of a Run Executor that dials `coral` with room for
+/// `max_runs_held` Runs within `run_limits`.
+#[must_use]
+pub fn run_executor_config(
+    coral: &ScriptedCoral,
+    max_runs_held: u32,
+    run_limits: RunLimits,
+) -> RunExecutorConfig {
+    RunExecutorConfig {
+        coral_address: coral
+            .address()
+            .parse()
+            .expect("the scripted Coral's address"),
+        token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
+        max_runs_held,
+        compiler_heap_bytes: coral_v8::IsolateLimits::defaults().compiler_heap_bytes(),
+        run_limits,
+    }
+}
+
 /// Starts a Run Executor that dials `coral` with room for `max_runs_held`
 /// Runs within `run_limits`, and serves health on `health`. It retires when
 /// the sender drops.
@@ -124,16 +144,7 @@ pub fn start_run_executor(
     run_limits: RunLimits,
     health: Option<TcpListener>,
 ) -> oneshot::Sender<()> {
-    let config = RunExecutorConfig {
-        coral_address: coral
-            .address()
-            .parse()
-            .expect("the scripted Coral's address"),
-        token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
-        max_runs_held,
-        compiler_heap_bytes: coral_v8::IsolateLimits::defaults().compiler_heap_bytes(),
-        run_limits,
-    };
+    let config = run_executor_config(coral, max_runs_held, run_limits);
     let (retire, retired) = oneshot::channel::<()>();
     tokio::spawn(crate::run(config, health, async {
         drop(retired.await);
@@ -165,14 +176,12 @@ impl ScriptedCoral {
         let (calls_tx, calls) = mpsc::unbounded_channel();
         let (release, released) = watch::channel(());
         let takers = Takers::default();
-        let (rooms_tx, rooms) = mpsc::unbounded_channel();
         let (runs_tx, runs) = mpsc::unbounded_channel();
         let script = Script {
             answers: Mutex::new(script.into_iter().collect()),
             calls: calls_tx,
             released,
             takers: Arc::clone(&takers),
-            rooms: rooms_tx,
             runs: runs_tx,
         };
         let server = tokio::spawn(async move {
@@ -190,11 +199,11 @@ impl ScriptedCoral {
             calls,
             release,
             takers,
-            rooms,
             runs,
             server,
         }
     }
+
     /// Takes one Run for the Run Executor on every pull stream it holds.
     pub fn take(&self, run_id: &str, claim_id: &str) {
         let run = TakenRun {
@@ -208,14 +217,6 @@ impl ScriptedCoral {
                 })
                 .is_ok()
         });
-    }
-
-    /// The next `Room` a held pull stream reports, within 10 s.
-    pub async fn next_room(&mut self) -> u32 {
-        tokio::time::timeout(Duration::from_secs(10), self.rooms.recv())
-            .await
-            .expect("a Room report arrives")
-            .expect("the scripted Coral serves")
     }
 
     /// The next Run stream a Run Executor opens, within 10 s.
@@ -265,7 +266,6 @@ struct Script {
     calls: mpsc::UnboundedSender<PullCall>,
     released: watch::Receiver<()>,
     takers: Takers,
-    rooms: mpsc::UnboundedSender<u32>,
     runs: mpsc::UnboundedSender<RunCall>,
 }
 
@@ -304,13 +304,8 @@ impl LinkService for Script {
         let mut released = self.released.clone();
         released.mark_unchanged();
         let (queue, mut taken) = mpsc::unbounded_channel();
-        {
-            let mut takers = self.takers.lock().expect("the takers");
-            // A stream that ended dropped its receiver; its queue goes here.
-            takers.retain(|taker| !taker.is_closed());
-            takers.push(queue);
-        }
-        let all_rooms = self.rooms.clone();
+        // `take` drops the queue of a stream that ended.
+        self.takers.lock().expect("the takers").push(queue);
         let peer = request.remote_addr();
         let authorization = request
             .metadata()
@@ -392,7 +387,6 @@ impl LinkService for Script {
                                 if let Some(pull_request::Message::Room(room)) = &request.message {
                                     // A test that reads no rooms drops their receiver.
                                     let _unread = rooms.send(room.free).is_err();
-                                    let _unread = all_rooms.send(room.free).is_err();
                                 }
                                 if let Err(violation) = streams.receive(held, request) {
                                     drop(outbound.send(Err(violation)).await);
