@@ -62,7 +62,7 @@ A **tool** is a single action exposed by a [provider](#providers). It has named 
 await coral.providers.github.actions.addRepoAccess({ repo, user });
 ```
 
-Tools of the [built-in provider](#built-in-provider) sit directly on `coral` instead, as in `coral.search`.
+Tools of the [built-in provider](#built-in-provider) sit directly on `coral` instead, as in `coral.search`. [Private tools](#private-tools) sit under `coral.private`, and the workspace's shared tools sit under `coral.shared`.
 
 ## Account setting
 
@@ -86,9 +86,9 @@ You can add the same provider multiple times, with different account settings. F
 - Ask, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
 - Block, the tool cannot be called, and is hidden from the agent altogether
 
-Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool` are Allow too, because they change only the caller's own private tools. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
+Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool` are Allow too, because they change only the caller's own private tools. A private tool uses the policy its author chose, which is Allow by default. A shared tool uses the policy the workspace owner chose when publishing it. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
 
-A program reads the policy rules with `coral.getPolicy`, keyed by each tool's call path, such as `coral.providers.github.repos.get`. It reads every provider's tools, the built-in tools, the shared tools and its own private tools. Pass `under`, such as `coral.providers.github`, to read only part of them. A workspace owner's program can change a rule with `coral.updatePolicy`, which needs approval until you set another policy for it:
+A program reads the policy rules that a workspace owner set with `coral.getPolicy`, keyed by each tool's call path, such as `coral.providers.github.repos.get`. It reads the rules for every provider's tools, the built-in tools, the shared tools and its own private tools. A tool without a rule is left out and uses its default. Pass `under`, such as `coral.providers.github`, to read only part of them. A workspace owner's program can change a rule with `coral.updatePolicy`, which needs approval until you set another policy for it:
 
 ```ts
 await coral.updatePolicy({

@@ -328,14 +328,15 @@ Private Tools the Owner can read: the Owner's own and every Agent's. _Avoid_: Fu
 
 **Shared Provider**: The one Provider in every Workspace whose Tools are its Shared Tools, under the Call Root
 `coral.shared`. Coral performs its Tools, with no upstream dispatch and no Provider Accounts, and only a Shared Tool
-Publish changes its catalog. _Avoid_: Code Provider, function provider
+Publish or a removal changes its catalog. _Avoid_: Code Provider, function provider
 
 **Provider Namespace**: The short JavaScript identifier an Owner chooses for a Provider, such as `github`, and the
 name Reef shows and accepts. It is one segment of the Provider's Call Root. _Avoid_: Call Root, display name
 
 **Provider Call Root**: The complete, immutable, Workspace-unique JavaScript path under which one Provider's Tools
-are called: `coral.providers.<provider-namespace>` for an Owner-created Provider and `coral` for the Built-in
-Provider. _Avoid_: namespace, prefix
+are called: `coral.providers.<provider-namespace>` for an Owner-created Provider, `coral` for the Built-in
+Provider, `coral.private` for the Private Provider and `coral.shared` for the Shared Provider. _Avoid_: namespace,
+prefix
 
 **Tool**: A named callable that a Program calls with data and that returns data: a Provider Tool, a Private Tool, or
 a Shared Tool. Every Tool call is asynchronous, takes one object of data and returns data, and is one Tool Invocation
@@ -343,8 +344,8 @@ with a Tool Access State. Data is what JSON holds: `null`, booleans, finite numb
 
 **Provider Tool**: A single callable action exposed by an Upstream Service, or by Coral for the Built-in Provider,
 through a Provider and made available by Coral.
-It has named inputs and returns one upstream-native result. "Tool" alone, and in the terms below such as Tool Key and
-Tool Invocation, means a Provider Tool. Coral's own MCP interface, such as `exec` and `wait`, consists of MCP tools,
+It has named inputs and returns one upstream-native result. "Tool" alone means any Tool, and a term that applies
+only to Provider Tools says so. Coral's own MCP interface, such as `exec` and `wait`, consists of MCP tools,
 not Provider Tools. _Avoid_: Operation, Capability, function, MCP tool (for a Provider Tool)
 _In Reef_: "tool"
 
@@ -711,7 +712,7 @@ combine pages. _Avoid_: Transparent pagination, automatic pagination
 
 **Execution Binding**: The upstream-specific invocation recipe attached to a Tool behind Coral's common Tool
 interface. A v1 binding describes HTTP, MCP, a Built-in Provider Tool, or code: a Private Tool's code binding names the
-definition Coral performs, and a Shared Tool's the Shared Tool Revision, with no upstream. None exposes routing or credential details to Programs. _Avoid_:
+definition Coral performs, and a Shared Tool's code binding names its Shared Tool Revision, with no upstream. None exposes routing or credential details to Programs. _Avoid_:
 Execution attachment, client transport, File Collection binding
 
 **Upstream Outcome**: A complete upstream result received for one Tool Invocation and represented according to its

@@ -18,7 +18,8 @@ arguments.
 **Less duplicated agent work.** Agents start every task from scratch. They
 re-read tool schemas, retry failed calls, and spend tokens rewriting code for
 steps they got right yesterday. With Coral, agents save the code that worked
-as custom tools, and the next agent calls them in one step.
+as custom tools they call again in one step, and workspace owners can share
+them with the whole team.
 
 Coral is used by thousands of developers at more than 450 companies for
 safer, more efficient agent work in customer support, SecOps, business
