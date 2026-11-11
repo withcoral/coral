@@ -2,7 +2,7 @@
 //! by a literal path, the current definition of each, and the hold that
 //! keeps every definition as selected through the acceptance commit.
 //!
-//! An [`AuthoredToolPath`] resolves by the root its source wrote (ADR 0033):
+//! An [`AuthoredToolPath`] resolves by the root its source wrote (ADR 0034):
 //! `coral.private` is always the invoking Principal's, also inside a Shared
 //! Tool, and `coral.shared` is always the Workspace's. These facets do not
 //! authorize callers or commit transactions.

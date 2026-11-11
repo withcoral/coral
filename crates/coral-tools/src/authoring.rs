@@ -1,5 +1,5 @@
 //! Authoring that Private and Shared Tools share: both are Tools that Coral
-//! performs from authored source (ADR 0033).
+//! performs from authored source (ADR 0034).
 //!
 //! [`Authoring`] prepares a source of either kind without executing it, by
 //! one deadline: it finds the Call Paths the source names, reads the
@@ -15,7 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use coral_db::Database;
 use coral_run_executor::{CompilerClient, time_left};
 use coral_telemetry::safe;
-use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, NamedCallPaths};
+use coral_v8::{
+    AnalyzedSource, CallableDeclaration, CompileFailure, CoralDeclarations, SourceReferences,
+};
 use coral_workspace::{Principal, WorkspaceId};
 use tokio::time::timeout_at;
 
@@ -90,7 +92,7 @@ pub(crate) trait AuthoredToolCompiler: Send + Sync {
     /// Finds the Call Paths to type by `deadline`. `None` leaves the source
     /// untyped, so `prepare` reports any failure of a source this cannot
     /// analyze.
-    fn call_paths(&self, deadline: Instant, source: &str) -> Option<NamedCallPaths>;
+    fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences>;
 
     /// Prepares `source`, typed by `declarations` when there are any.
     fn prepare(
@@ -110,16 +112,20 @@ struct V8AuthoredToolCompiler {
 }
 
 impl AuthoredToolCompiler for V8AuthoredToolCompiler {
-    fn call_paths(&self, deadline: Instant, source: &str) -> Option<NamedCallPaths> {
+    fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences> {
         self.compiler
-            .call_paths(time_left(deadline), source)
-            .inspect_err(|error| {
+            .analyze(
+                time_left(deadline),
+                &[AnalyzedSource::AuthoredTool(source.to_string())],
+            )
+            .inspect_err(|failure| {
                 tracing::debug!(
-                    error.type = safe::kind(error.code()),
+                    error.type = safe::kind(failure.error.code()),
                     "Call Path analysis failed; the source is checked untyped"
                 );
             })
-            .ok()
+            .ok()?
+            .pop()
     }
 
     fn prepare(
@@ -245,11 +251,10 @@ impl Authoring {
         let typed = async {
             let compiler = self.compiler.clone();
             let analyzed = source.to_string();
-            let Some(named) = tokio::task::spawn_blocking(move || {
-                compiler.call_paths(typing_deadline, &analyzed)
-            })
-            .await
-            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            let Some(named) =
+                tokio::task::spawn_blocking(move || compiler.analyze(typing_deadline, &analyzed))
+                    .await
+                    .map_err(|_join_error| Error::CompilerWorkerStopped)?
             else {
                 return Ok(None);
             };
@@ -295,7 +300,7 @@ impl Authoring {
             };
             let tools = match typing.tools {
                 Some(reader) => {
-                    tool_typing::tool_declarations(reader, named.tools().call_paths()).await
+                    tool_typing::tool_declarations(reader, named.tool_call_paths()).await
                 }
                 None => None,
             };
@@ -310,7 +315,7 @@ impl Authoring {
                 declarations = declarations.with_shared_tools(shared_tools);
             }
             if let Some(tools) = tools {
-                declarations = declarations.with_tools(named.tools(), tools);
+                declarations = declarations.with_tools(tools);
             }
             Ok(Some(declarations))
         };
@@ -421,7 +426,7 @@ impl Authoring {
                     Error::CompilerUnavailable(failure_kind.to_string())
                 }
             })?;
-        // Every call crosses to Coral and back, so only data can (ADR 0033).
+        // Every call crosses to Coral and back, so only data can (ADR 0034).
         if let Some(reason) = prepared.not_data {
             return Err(Error::NotData(kind, format!("{call_path}: {reason}")));
         }

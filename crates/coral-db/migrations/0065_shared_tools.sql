@@ -1,4 +1,4 @@
--- Shared Tools (ADR 0033). A Workspace Owner publishes one from a Private
+-- Shared Tools (ADR 0034). A Workspace Owner publishes one from a Private
 -- Tool or from an earlier revision, and the Workspace owns it. Each publish
 -- is one immutable revision; the record points at the current one. A
 -- removal tombstones the record and keeps its revisions, so a path is unique

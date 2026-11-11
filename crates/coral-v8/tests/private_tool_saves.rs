@@ -11,8 +11,8 @@ mod support;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use coral_v8::{
-    AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
-    IsolateLimits, LinkedToolSource, ProgramCompiler, ProgramExecutor, ProgramHost,
+    AnalyzedSource, AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel,
+    Error, IsolateLimits, LinkedToolSource, ProgramCompiler, ProgramExecutor, ProgramHost,
     ProgramOutputHostError,
 };
 use deno_core_icudata as _;
@@ -50,7 +50,7 @@ fn linked(path: &str, source: &str) -> LinkedToolSource {
 /// Admits `body` as Program Admission does: reference analysis, then the
 /// linked compile.
 fn admit(body: &str, modules: &[LinkedToolSource]) -> Result<CompiledProgram, Error> {
-    compiler().program_call_paths(deadline(), body)?;
+    compiler().analyze(deadline(), &AnalyzedSource::Program(body.to_owned()))?;
     if modules.is_empty() {
         compiler().compile(deadline(), body)
     } else {

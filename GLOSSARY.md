@@ -38,6 +38,20 @@ is on. It holds only dates, counts and values from fixed lists. A process that a
 build blocks never makes or sends one, and a day that only blocked processes saw gets none. _Avoid_: telemetry
 (Coral's traces and metrics), analytics event, ping
 
+**Edition**: Whether a Coral deployment runs as the Community Edition or the Enterprise Edition. A licence sets it,
+and it can change while Coral runs. Since a deployment holds one Organization, the Edition is also the Organization's.
+_Avoid_: tier, plan, licence (for the Edition itself)
+
+**Community Edition**: The Edition with no Enterprise Features enabled. Every build runs as Community until a licence
+says otherwise. _Avoid_: OSS edition, core, free edition
+
+**Enterprise Edition**: The Edition that enables the Enterprise Features a build contains. _Avoid_: EE (outside code
+paths), commercial edition, pro
+
+**Enterprise Feature**: A product feature that only the Enterprise Edition enables, such as reading credentials from a
+customer's own vault. A build that contains it enables it only while the Edition is Enterprise; a build that lacks
+it does not know it exists. _Avoid_: capability (a Program term), entitlement, add-on
+
 **OAuth Client**: Client software that a User signs in to Coral through, identified by a DCR client ID or a CIMD URL.
 A public client proves only that it holds the PKCE verifier for a code issued to its redirect. A confidential client
 also proves that it holds the secret issued when it registered. A client grants no authority, and its secret is never a Coral credential.

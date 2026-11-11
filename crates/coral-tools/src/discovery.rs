@@ -5,7 +5,7 @@
 //! A facet that answers a caller takes the Principal and the kind, or a path
 //! that names the kind. `coral.private` is always that Principal's own, and
 //! `coral.shared` is always the Workspace's, as linking resolves them (ADR
-//! 0033). A facet that feeds the index reads every Tool of both kinds and
+//! 0034). A facet that feeds the index reads every Tool of both kinds and
 //! leaves visibility to its caller. No facet authorizes a caller, reads a removed
 //! Shared Tool, or commits a transaction.
 

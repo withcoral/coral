@@ -1,5 +1,5 @@
 //! Shared Tools: the Workspace-owned Tools at `coral.shared` that a
-//! Workspace Owner publishes (ADR 0033).
+//! Workspace Owner publishes (ADR 0034).
 //!
 //! [`SharedToolModule`] owns publishing, removal and the reads of every
 //! Principal in the Workspace. A publish compiles the reviewed source outside

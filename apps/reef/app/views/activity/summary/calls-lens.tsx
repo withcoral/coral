@@ -14,12 +14,21 @@ const MAX_ROWS = 8
 const FILTER_ID = 'summary-tools-filter'
 
 // The three kinds of stop read as one part here.
-const parts = [
+export const OUTCOME_PARTS = [
   { key: 'answered', ...outcomes.answered },
   { key: 'stopped', label: 'Stopped', icon: 'Hand' },
   { key: 'failed', ...outcomes.failed },
   { key: 'canceled', ...outcomes.canceled },
 ] as const
+
+/** The tools table's columns, without Callers. */
+export const TOOL_COLUMNS: readonly Table.Column[] = [
+  { label: 'Tool', width: { fill: 3 } },
+  { label: 'Calls', width: { fill: 1.6 } },
+  { label: 'Share', width: 64, align: 'right' },
+  { label: 'Stopped', width: { fill: 1 }, align: 'right' },
+]
+const CALLERS_COLUMN: Table.Column = { label: 'Callers', width: { fill: 2 } }
 
 /** Every ended call by outcome, each with its share. */
 function Split({ summary }: { summary: ActivitySummaryData }) {
@@ -33,7 +42,7 @@ function Split({ summary }: { summary: ActivitySummaryData }) {
   const total = counts.answered + counts.stopped + counts.failed + counts.canceled
   return (
     <StatCards
-      stats={parts.map((part) => ({
+      stats={OUTCOME_PARTS.map((part) => ({
         icon: part.icon,
         label: part.label,
         value: number(counts[part.key]),
@@ -84,13 +93,11 @@ export function CallsLens({
         variant="card"
         layout="fixed"
         maxRows={MAX_ROWS}
-        columns={[
-          { label: 'Tool', width: { fill: 3 } },
-          { label: 'Calls', width: { fill: 1.6 } },
-          ...(showCallers ? [{ label: 'Callers', width: { fill: 2 } }] : []),
-          { label: 'Share', width: 64, align: 'right' },
-          { label: 'Stopped', width: { fill: 1 }, align: 'right' },
-        ]}
+        columns={
+          showCallers
+            ? [...TOOL_COLUMNS.slice(0, 2), CALLERS_COLUMN, ...TOOL_COLUMNS.slice(2)]
+            : TOOL_COLUMNS
+        }
       >
         <Table.Head>
           <Table.Row>

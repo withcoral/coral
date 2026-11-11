@@ -86,7 +86,7 @@
   };
 
   // Tool data is what JSON holds: null, booleans, finite numbers, strings,
-  // arrays and plain objects (ADR 0033). `encodeData` copies a value into
+  // arrays and plain objects (ADR 0034). `encodeData` copies a value into
   // fresh containers as it checks it, so each getter runs once and no
   // `toJSON` replaces what it encodes. Anything else is refused, never
   // converted: `notData` then holds where it is, as a path from `root`,

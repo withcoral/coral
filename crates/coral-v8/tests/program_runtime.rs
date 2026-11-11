@@ -9,9 +9,10 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use coral_v8::{
-    AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel, Error,
-    IsolateLimits, LinkedToolReference, LinkedToolSource, ProgramCompiler, ProgramExecutionControl,
-    ProgramExecutor, ProgramHost, ProgramOutputHostError, TYPESCRIPT_PROFILE, ToolHostError,
+    AnalyzedSource, AuthoredLocation, AuthoredSource, BuiltinTools, CompiledProgram, ConsoleLevel,
+    Error, IsolateLimits, LinkedToolReference, LinkedToolSource, ProgramCompiler,
+    ProgramExecutionControl, ProgramExecutor, ProgramHost, ProgramOutputHostError,
+    TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
 #[cfg(unix)]
@@ -44,7 +45,10 @@ fn program_private_tools(
     source: &str,
 ) -> Result<Vec<LinkedToolReference>, coral_v8::Error> {
     compiler
-        .program_call_paths(compilation_deadline(), source)
+        .analyze(
+            compilation_deadline(),
+            &AnalyzedSource::Program(source.to_owned()),
+        )
         .map(|named| named.private_tools().to_vec())
 }
 
@@ -54,7 +58,10 @@ fn module_private_tools(
     source: &str,
 ) -> Result<Vec<LinkedToolReference>, coral_v8::Error> {
     compiler
-        .authored_tool_call_paths(compilation_deadline(), source)
+        .analyze(
+            compilation_deadline(),
+            &AnalyzedSource::AuthoredTool(source.to_owned()),
+        )
         .map(|named| named.private_tools().to_vec())
 }
 
@@ -73,36 +80,38 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let named = compiler
-        .program_call_paths(
+        .analyze(
             compilation_deadline(),
-            "let key = 'x'; await coral.providers.demo[key](); await coral.providers[key].send(); return [await coral.shared.mail.remind(1), await coral.private.lookup.one(), await coral.providers.demo.get()];",
+            &AnalyzedSource::Program(
+                "let key = 'x'; await coral.providers.demo[key](); await coral.providers[key].send(); return [await coral.shared.mail.remind(1), await coral.private.lookup.one(), await coral.providers.demo.get()];"
+                    .to_owned(),
+            ),
         )
         .expect("analyze a Program that names both roots");
     assert_eq!(reference_paths(named.shared_tools()), ["mail.remind"]);
     assert_eq!(reference_paths(named.private_tools()), ["lookup.one"]);
-    assert_eq!(named.tools().called_paths(), ["coral.providers.demo.get"]);
-    assert_eq!(
-        named.tools().runtime_built_paths(),
-        ["coral.providers", "coral.providers.demo"]
-    );
     assert!(
         named
-            .tools()
-            .call_paths()
+            .tool_call_paths()
             .iter()
             .all(|path| !path.starts_with("coral.shared")),
         "{:?}",
-        named.tools().call_paths()
+        named.tool_call_paths()
     );
 
     let module = compiler
         .prepare_authored_tool(
             compilation_deadline(),
-            "export default async function remind(): Promise<number> { return coral.shared.mail.send(); }",
+            "export default async function remind(): Promise<unknown> { let key = 'x'; await coral.providers.demo[key](); await coral.providers[key].send(); await coral.providers.demo.get(); return coral.shared.mail.send(); }",
         )
         .expect("prepare a module that calls a Shared Tool");
     assert_eq!(reference_paths(module.shared_references()), ["mail.send"]);
     assert!(module.references().is_empty());
+    assert_eq!(module.tools().called_paths(), ["coral.providers.demo.get"]);
+    assert_eq!(
+        module.tools().runtime_built_paths(),
+        ["coral.providers", "coral.providers.demo"]
+    );
 
     for source in [
         "const key = 'remind'; return coral.shared.mail[key]();",
@@ -111,7 +120,10 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
         "const key = 'shared'; return coral[key].mail.remind();",
     ] {
         compiler
-            .program_call_paths(compilation_deadline(), source)
+            .analyze(
+                compilation_deadline(),
+                &AnalyzedSource::Program(source.to_owned()),
+            )
             .expect_err("computed or aliased Shared Tool reference must be rejected");
     }
 }

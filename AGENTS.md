@@ -36,6 +36,26 @@
   Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 
+### Enterprise code in `ee/`
+
+[ADR 0033](docs/adr/0033-enterprise-code-lives-in-ee-and-runs-only-in-the-enterprise-edition.md)
+has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
+
+- Code outside `ee/` never depends on, imports, feature-gates on, or names
+  code inside it, tests included. Build, release and dev tooling may select the
+  `coral-ee` package. When an Enterprise Feature needs something new from the
+  rest of Coral, add a general extension point outside `ee/` first; the same
+  PR is fine. `scripts/check-ee-boundary.sh` checks part of this.
+- Gate enterprise behavior on the Edition at runtime, never on a Cargo feature
+  or `cfg`.
+- `ee/` never adds a migration. Put the schema an Enterprise Feature needs in
+  the shared chain, named for the general concept.
+- A plain `cargo build` builds the Apache-2.0 `coral`. Build the released
+  binary with `-p coral-ee`, never from a `--workspace` build: Cargo builds a
+  dependency shared by several packages once, with every feature any of them
+  asks for.
+- `ee/` code, commit messages, PR titles and descriptions are all public.
+
 ### Persistence
 
 - Keep domain database queries, table identifiers, row mapping, and persistence
@@ -201,6 +221,10 @@
   static markup changes alone do not need Vitest coverage. Vitest coverage does
   not replace required product-journey or local/remote parity evidence.
 - Use vanilla-extract, not Tailwind.
+- Format Reef with `npm run format --prefix apps/reef` (oxfmt). Do not run
+  `prettier`: a dependency installs it, but it uses other settings, and oxfmt
+  keeps the objects it splits across lines, so `oxfmt` afterwards does not
+  undo it.
 - Reef has one build for every deployment. Do not add a Desktop build marker
   or branch Reef on its host. Desktop's window behavior belongs in the
   `apps/desktop` main process.

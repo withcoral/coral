@@ -1,4 +1,4 @@
--- Every callable is a Tool (ADR 0033). This step changes what a Provider, an
+-- Every callable is a Tool (ADR 0034). This step changes what a Provider, an
 -- Invocation and a Run Event keep.
 --
 -- Every Workspace has a Private Provider at `coral.private` and a Shared

@@ -1,6 +1,6 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
-.PHONY: license-check lint-migrations lint-proto reef-image-checks
+.PHONY: license-check lint-migrations lint-proto reef-image-checks ee-boundary
 
 # Images build and test with Docker or Podman.
 CONTAINER_ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -28,8 +28,21 @@ fi; \
 $(CONTAINER_ENGINE) build "$$@"
 endef
 
+# Installs the released binary, built from ee/crates/coral-ee, as `coral`.
+# Cargo reports where it wrote the binary, wherever CARGO_TARGET_DIR or a
+# build target put it. Like `cargo install`, it installs under
+# CARGO_INSTALL_ROOT, then CARGO_HOME, then ~/.cargo; Cargo's `install.root`
+# setting is not read.
 install:
-	cargo install --path crates/coral --locked
+	set -eu; \
+	built="$$(cargo build --locked --release -p coral-ee --bin coral-ee \
+	  --message-format=json-render-diagnostics | \
+	  grep '"reason":"compiler-artifact"' | grep '"name":"coral-ee"' | \
+	  sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)"; \
+	test -n "$$built"; \
+	root="$${CARGO_INSTALL_ROOT:-$${CARGO_HOME:-$$HOME/.cargo}}"; \
+	install -d "$$root/bin"; \
+	install -m 0755 "$$built" "$$root/bin/coral"
 
 # ----------------------------------------------------------------------------
 # Images
@@ -59,12 +72,28 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks: lint-migrations
+rust-checks: lint-migrations license-check ee-boundary
 	scripts/check-migrations.sh
+	# A plain build at the root builds only the Apache-2.0 crates; prove they
+	# stand alone without ee/ (ADR 0033).
+	cargo check --locked
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	$(RUST_WORKSPACE_TESTS)
 	# RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+# ----------------------------------------------------------------------------
+# ee/ boundary
+# ----------------------------------------------------------------------------
+# Checks that code outside ee/ does not reach into it (ADR 0033), then tries
+# each breach the check must catch. CI runs it on every change; rust-checks
+# runs it too.
+#
+#   make ee-boundary
+
+ee-boundary:
+	scripts/check-ee-boundary.sh
+	scripts/check-ee-boundary.test.sh
 
 # ----------------------------------------------------------------------------
 # Local Postgres-backed tests

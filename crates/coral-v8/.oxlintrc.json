@@ -12,9 +12,8 @@
       "error",
       {
         "allow": [
-          "__coralAnalyzeAuthoredToolCallPaths",
-          "__coralAnalyzeAuthoredToolDependencies",
-          "__coralAnalyzeProgramPaths",
+          "__coralAnalyzeAuthoredTool",
+          "__coralAnalyzeProgram",
           "__coralCompile",
           "__coralCompileLinkedProgram",
           "__coralConfigureCompiler",

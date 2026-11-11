@@ -5,6 +5,7 @@ use crate::tests::*;
 
 use crate::owner::ChunkWork;
 use coral_db::Transaction;
+use coral_tools::LinkedToolSelection;
 
 /// Waits for `go`, emits `values` in one burst recording each acknowledgement,
 /// then holds the Program until `release`, so the test can look at the ledger
@@ -52,7 +53,10 @@ impl ProgramEngine for BurstEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, CompileFailure> {
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
+        _callable: Option<&[String]>,
+    ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 

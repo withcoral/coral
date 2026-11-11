@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_catalog::AuthoredToolKind;
-use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
+use coral_run_executor::{AnalysisError, CompileError, CompilerClient, Diagnostics, time_left};
 use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 
@@ -40,81 +40,93 @@ use crate::{
     SOURCE_MAP_MAX_BYTES,
 };
 
-/// What one source names: the Private and Shared Tools admission links
-/// and, from an engine that finds them, the Tool chains admission checks.
-#[derive(Default)]
-pub(crate) struct ProgramReferences {
-    pub(crate) linked: Vec<LinkedToolReference>,
-    pub(crate) tools: Option<coral_v8::ToolReferences>,
+/// One source admission analyzes.
+#[derive(Clone, Debug)]
+pub(crate) enum AdmissionSource {
+    /// The submitted Program body.
+    Program(String),
+    /// One Private or Shared Tool module of the closure.
+    Linked {
+        path: AuthoredToolPath,
+        source: String,
+    },
 }
 
-impl ProgramReferences {
-    /// The references of an engine that finds no Tool chains: it names its
-    /// linked Tools alone, and admission checks no Call Path.
+impl AdmissionSource {
+    /// How a rejection names the source.
+    fn name(&self) -> String {
+        match self {
+            Self::Program(_) => "Program".to_string(),
+            Self::Linked { path, .. } => path.source_name(),
+        }
+    }
+}
+
+/// What one source names: the Private and Shared Tools admission links and
+/// the Tool Call Paths it checks.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AdmissionReferences {
+    pub(crate) linked: Vec<LinkedToolReference>,
+    pub(crate) tool_call_paths: Vec<String>,
+}
+
+impl AdmissionReferences {
+    /// The references of an engine that finds no Tool Call Paths: it names
+    /// its linked Tools alone, and admission checks no Call Path.
     #[cfg(test)]
     pub(crate) const fn linking(linked: Vec<LinkedToolReference>) -> Self {
         Self {
             linked,
-            tools: None,
+            tool_call_paths: Vec::new(),
         }
     }
 }
 
+/// Why an engine compiled no package.
+#[derive(Debug)]
+pub(crate) enum PackageFailure {
+    /// One source calls these Tools, which name nothing the caller can
+    /// call: the Program body, or the linked Tool at index `linked` of
+    /// those compiled with it.
+    UnknownTools {
+        linked: Option<usize>,
+        calls: Vec<coral_v8::UnknownToolCall>,
+    },
+    /// Any other failure.
+    Compile(CompileFailure),
+}
+
+impl From<CompileFailure> for PackageFailure {
+    fn from(failure: CompileFailure) -> Self {
+        Self::Compile(failure)
+    }
+}
+
 pub(crate) trait ProgramEngine: Send + Sync {
-    /// The Private and Shared Tools and the Tools one Program body names,
-    /// from one analysis. An engine that analyzes no source finds none.
-    fn program_references(
+    /// What each source names: one answer per source, in the order of
+    /// `sources`. The first source that fails stops the analysis, and its
+    /// failure names the source. An engine that finds nothing names nothing,
+    /// and admission links and checks nothing.
+    fn analyze(
         &self,
         _deadline: Instant,
-        _source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        Ok(ProgramReferences::default())
+        sources: &[AdmissionSource],
+    ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
+        Ok(vec![AdmissionReferences::default(); sources.len()])
     }
 
-    /// The Private and Shared Tools and the Tools the linked module at
-    /// `path` names, from one analysis. An engine that analyzes no source
-    /// finds none.
-    fn linked_tool_references(
-        &self,
-        _deadline: Instant,
-        _path: &AuthoredToolPath,
-        _source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        Ok(ProgramReferences::default())
-    }
-
-    /// The called chains of `tools` that name none of the `callable`
-    /// Call Paths.
-    fn unknown_tool_calls(
-        &self,
-        _deadline: Instant,
-        _tools: &coral_v8::ToolReferences,
-        _callable: &[String],
-    ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
-        Ok(Vec::new())
-    }
-
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
-
-    /// Compiles `source` with the Private and Shared Tools it links, in
+    /// `source` lowered with the Private and Shared Tools it links, in
     /// initialization order, and with `builtin_tools`, the Workspace's
-    /// Built-in Tools, on `coral`. An engine that compiles no linked source
-    /// refuses a Program that links any.
-    fn compile_linked(
+    /// Built-in Tools, on `coral`, checked first against the `callable`
+    /// Call Paths when there are any.
+    fn compile(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[LinkedToolSelection],
-        _builtin_tools: &BuiltinTools,
-    ) -> Result<ProgramPackage, CompileFailure> {
-        if linked.is_empty() {
-            self.compile(deadline, source)
-        } else {
-            Err(CompileFailure::Rejected(
-                "scripted Program compiler does not link Private or Shared Tools".to_string(),
-            ))
-        }
-    }
+        builtin_tools: &BuiltinTools,
+        callable: Option<&[String]>,
+    ) -> Result<ProgramPackage, PackageFailure>;
 
     fn execute(
         &self,
@@ -168,55 +180,45 @@ impl V8ProgramEngine {
 }
 
 impl ProgramEngine for V8ProgramEngine {
-    fn program_references(
+    fn analyze(
         &self,
         deadline: Instant,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        let source_name = "Program";
-        let named = self
+        sources: &[AdmissionSource],
+    ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
+        let analyzed = sources
+            .iter()
+            .map(|source| match source {
+                AdmissionSource::Program(body) => coral_v8::AnalyzedSource::Program(body.clone()),
+                AdmissionSource::Linked { source, .. } => {
+                    coral_v8::AnalyzedSource::AuthoredTool(source.clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        let references = self
             .compiler
-            .program_references(time_left(deadline), source)
-            .map_err(|error| compile_failure_for_source(error, source_name))?;
-        named_references(&named, source_name)
+            .analyze(time_left(deadline), &analyzed)
+            .map_err(|AnalysisError { index, error }| match sources.get(index) {
+                Some(source) => compile_failure_for_source(error, &source.name()),
+                None => CompileFailure::Failed("compiler_protocol"),
+            })?;
+        if references.len() != sources.len() {
+            return Err(CompileFailure::Failed("compiler_protocol"));
+        }
+        sources
+            .iter()
+            .zip(references)
+            .map(|(source, references)| admission_references(&references, &source.name()))
+            .collect()
     }
 
-    fn unknown_tool_calls(
-        &self,
-        deadline: Instant,
-        tools: &coral_v8::ToolReferences,
-        callable: &[String],
-    ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
-        Ok(self
-            .compiler
-            .unknown_tool_calls(time_left(deadline), tools, callable)?)
-    }
-
-    fn linked_tool_references(
-        &self,
-        deadline: Instant,
-        path: &AuthoredToolPath,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        let source_name = path.source_name();
-        let named = self
-            .compiler
-            .module_references(time_left(deadline), source)
-            .map_err(|error| compile_failure_for_source(error, &source_name))?;
-        named_references(&named, &source_name)
-    }
-
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        self.compile_linked(deadline, source, &[], &BuiltinTools::default())
-    }
-
-    fn compile_linked(
+    fn compile(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[LinkedToolSelection],
         builtin_tools: &BuiltinTools,
-    ) -> Result<ProgramPackage, CompileFailure> {
+        callable: Option<&[String]>,
+    ) -> Result<ProgramPackage, PackageFailure> {
         let sources = linked
             .iter()
             .map(|linked| {
@@ -230,10 +232,22 @@ impl ProgramEngine for V8ProgramEngine {
                 )
             })
             .collect::<Vec<_>>();
-        let compiled =
-            self.compiler
-                .compile(time_left(deadline), source, &sources, builtin_tools)?;
-        package_from_compiled(&compiled)
+        let compiled = self
+            .compiler
+            .compile(
+                time_left(deadline),
+                source,
+                &sources,
+                builtin_tools,
+                callable,
+            )
+            .map_err(|error| match error {
+                CompileError::Diagnostics(Diagnostics::UnknownTools { linked, calls }) => {
+                    PackageFailure::UnknownTools { linked, calls }
+                }
+                other => PackageFailure::Compile(other.into()),
+            })?;
+        Ok(package_from_compiled(&compiled)?)
     }
 
     fn execute(
@@ -300,10 +314,10 @@ impl ProgramEngine for V8ProgramEngine {
 }
 
 /// What the compiler found `source_name` to name, with each path parsed.
-fn named_references(
-    named: &coral_v8::NamedCallPaths,
+fn admission_references(
+    named: &coral_v8::SourceReferences,
     source_name: &str,
-) -> Result<ProgramReferences, CompileFailure> {
+) -> Result<AdmissionReferences, CompileFailure> {
     let linked = LinkedToolReference::from_compiler(named.private_tools(), named.shared_tools())
         .map_err(|invalid| {
             format!(
@@ -311,9 +325,9 @@ fn named_references(
                 invalid.line, invalid.column, invalid.error
             )
         })?;
-    Ok(ProgramReferences {
+    Ok(AdmissionReferences {
         linked,
-        tools: Some(named.tools().clone()),
+        tool_call_paths: named.tool_call_paths().to_vec(),
     })
 }
 

@@ -32,3 +32,9 @@ allow = [
     "Zlib",
     "bzip2-1.0.6",
 ]
+
+# Coral's own crates are not published, so their licences are not
+# dependencies' licences. The crates in ee/ carry LicenseRef-Coral-Enterprise
+# (ADR 0033), which the allow-list above would otherwise reject.
+[licenses.private]
+ignore = true

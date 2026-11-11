@@ -1,4 +1,4 @@
--- Every callable is a Tool (ADR 0033). The steps beside this one rename the
+-- Every callable is a Tool (ADR 0034). The steps beside this one rename the
 -- schema and the values its checks name; this step rewrites the other stored
 -- values that name the old roots and Saved Functions, so retained state reads
 -- the way new state does.

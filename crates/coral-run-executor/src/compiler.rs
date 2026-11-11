@@ -1,78 +1,81 @@
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram, CoralDeclarations,
-    LinkedToolSource, NamedCallPaths, ToolReferences, UnknownToolCall,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram,
+    CoralDeclarations, LinkedToolSource, SourceReferences, UnknownToolCall,
 };
 
+/// The compilation time the Tool check always leaves, so the check never
+/// makes a Program time out that would have compiled without it.
+const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
+
+/// The longest each part of the Tool check may take: reading which
+/// candidate Call Paths the caller can call, and checking the Program's
+/// calls against them in the compiler.
+const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
+
+/// The latest one part of the Tool check for a compile due by
+/// `compilation_deadline` may run, starting now, or `None` when no time is
+/// left for it. A part that runs past it leaves the calls to be checked when
+/// called.
+#[must_use]
+pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
+    let now = Instant::now();
+    compilation_deadline
+        .checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
+        .map(|latest| latest.min(now + TOOL_CHECK_BUDGET))
+        .filter(|deadline| *deadline > now)
+}
+
 /// The calls Program Admission and Private Tool save make of one warm
-/// Program Compiler, one for each compiler request.
+/// Program Compiler.
 ///
-/// Each call carries `time_left`, the time left until its caller's
+/// Admission analyzes the Program, then each level of the graph of Private
+/// and Shared Tools it links, then compiles. An Authored Tool save or publish
+/// analyzes the module, then prepares it. Each call carries `time_left`, the time left until its caller's
 /// compilation deadline. A call ends [`CompileError::TimedOut`] once that
-/// time runs out, while it waits or while it compiles. A call
-/// carries source and no authority.
+/// time runs out, while it waits or while it compiles. A call carries source
+/// and no authority.
 pub trait CompilerClient: Send + Sync {
-    /// The Private and Shared Tools and the Tools that a Program body names
-    /// directly.
+    /// The Private and Shared Tools and the Tool Call Paths each source names
+    /// directly, in the order of `sources`.
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased access and malformed wrapper escapes.
-    fn program_references(
+    /// The sources are analyzed in order, and the first that fails stops the
+    /// call. Its error rejects computed or aliased `coral.private` or
+    /// `coral.shared` access, a Program body with malformed wrapper escapes,
+    /// or an Authored Tool module with syntax errors, or it is a timeout or
+    /// an unavailable compiler.
+    fn analyze(
         &self,
         time_left: Duration,
-        source: &str,
-    ) -> Result<NamedCallPaths, CompileError>;
-
-    /// The called chains of `tools` that name none of the `callable` Call
-    /// Paths.
-    ///
-    /// # Errors
-    ///
-    /// Returns a timeout or an unavailable compiler.
-    fn unknown_tool_calls(
-        &self,
-        time_left: Duration,
-        tools: &ToolReferences,
-        callable: &[String],
-    ) -> Result<Vec<UnknownToolCall>, CompileError>;
-
-    /// The Private and Shared Tools and the Tools that one linked module
-    /// names directly, for Program Admission to link and check.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased access and malformed module source.
-    fn module_references(
-        &self,
-        time_left: Duration,
-        source: &str,
-    ) -> Result<NamedCallPaths, CompileError>;
+        sources: &[AnalyzedSource],
+    ) -> Result<Vec<SourceReferences>, AnalysisError>;
 
     /// A Program body lowered with the Private and Shared Tools it links, which
     /// initialize in the given order, and with `builtin_tools` on `coral`.
     ///
+    /// With `callable`, the complete Call Paths the caller can call, the
+    /// called literal Tool chains of the Program and then of each linked
+    /// Tool are checked first, by the rule of the unknown-Tool diagnostic.
+    /// A stored source is checked as the Program is, so an old root fails
+    /// at admission, not when called. The check fails open: when it fails,
+    /// or runs past [`tool_check_deadline`], the Program compiles unchecked.
+    ///
     /// # Errors
     ///
-    /// Returns blocking diagnostics, invalid linked source, the memory limit,
-    /// a timeout, or an unavailable compiler.
+    /// Returns the called chains that name no callable Tool, blocking
+    /// diagnostics, invalid linked source, the memory limit, a timeout, or
+    /// an unavailable compiler.
     fn compile(
         &self,
         time_left: Duration,
         source: &str,
-        private_tools: &[LinkedToolSource],
+        linked_tools: &[LinkedToolSource],
         builtin_tools: &BuiltinTools,
+        callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError>;
-
-    /// The Private and Shared Tools and the Tools that one Authored Tool
-    /// module names directly, for authoring to type and review it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased access and malformed module source.
-    fn call_paths(&self, time_left: Duration, source: &str)
-    -> Result<NamedCallPaths, CompileError>;
 
     /// One Authored Tool's declaration and advisory diagnostics, with
     /// `builtin_tools` on `coral` and typed by `declarations` when there are
@@ -89,6 +92,15 @@ pub trait CompilerClient: Send + Sync {
         builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<AuthoredToolCompilation, CompileError>;
+}
+
+/// Why [`CompilerClient::analyze`] stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisError {
+    /// The index in `sources` of the source it stopped at.
+    pub index: usize,
+    /// Why.
+    pub error: CompileError,
 }
 
 /// The time left until `deadline`, which a call carries.
@@ -123,6 +135,15 @@ pub enum Diagnostics {
         /// One-based authored source column.
         column: u64,
     },
+    /// Called literal Tool chains of one source that name no Tool the
+    /// caller can call, in source order.
+    UnknownTools {
+        /// The source: the index of the linked Tool among those compiled
+        /// with the Program, or `None` for the Program body.
+        linked: Option<usize>,
+        /// The calls.
+        calls: Vec<UnknownToolCall>,
+    },
     /// Any other rejection, as one bounded message.
     Message {
         /// The rejection's stable kind, for an event's `error.type`.
@@ -151,6 +172,7 @@ impl CompileError {
         match self {
             Self::TimedOut => "compilation_timed_out",
             Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_linked_tool_reference",
+            Self::Diagnostics(Diagnostics::UnknownTools { .. }) => "unknown_tool_calls",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
             Self::Unavailable(Unavailable::Stopped) => "compiler_unavailable",
@@ -179,6 +201,10 @@ impl From<CompileError> for CompileFailure {
                 column,
             }
             .into(),
+            // Program Admission writes this failure itself, naming each call.
+            CompileError::Diagnostics(Diagnostics::UnknownTools { .. }) => {
+                Self::Rejected("Program calls Tools that you cannot call".to_string())
+            }
             CompileError::MemoryLimit => coral_v8::Error::MemoryLimitExceeded.into(),
             CompileError::Unavailable(Unavailable::Busy) => Self::Busy,
             CompileError::Unavailable(Unavailable::Stopped) => Self::Stopped,
@@ -190,6 +216,27 @@ impl From<CompileError> for CompileFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches: a Tool check that outlives its budget, or eats into the
+    // compilation time it must leave.
+    #[test]
+    fn a_tool_check_keeps_its_budget_and_leaves_the_compilation_reserve() {
+        let started = Instant::now();
+        let far = started + Duration::from_secs(10);
+        let checked = tool_check_deadline(far).expect("time left to check");
+        assert!(checked > started && checked <= Instant::now() + TOOL_CHECK_BUDGET);
+
+        // Anchored just before the call: the reserve, not the budget, ends this
+        // check, unless the call starts 400 ms late.
+        let near = Instant::now() + TOOL_CHECK_COMPILATION_RESERVE + Duration::from_millis(400);
+        assert_eq!(
+            tool_check_deadline(near),
+            near.checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
+        );
+
+        let inside_reserve = Instant::now() + TOOL_CHECK_COMPILATION_RESERVE / 2;
+        assert_eq!(tool_check_deadline(inside_reserve), None);
+    }
 
     #[test]
     fn a_message_from_any_adapter_keeps_the_diagnostic_bound() {

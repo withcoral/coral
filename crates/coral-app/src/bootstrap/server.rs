@@ -206,6 +206,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Supplies what the launching binary adds to Coral. Without it, Coral
+    /// runs as the Community Edition.
+    #[must_use]
+    pub fn with_extensions(mut self, extensions: super::runtime::Extensions) -> Self {
+        self.launcher.extensions = extensions;
+        self
+    }
+
     /// Marks a Desktop launch: local auth support then defaults to Desktop's
     /// fixed Provider OAuth callback port. An explicit `listeners.auth.bind` wins.
     #[must_use]
@@ -421,7 +429,10 @@ impl PreparedServerBuilder {
             &instance.to_string(),
             builder.launcher.service_version,
         )?;
-        tracing::info!("Coral Instance starting");
+        tracing::info!(
+            coral.edition = safe::kind(builder.launcher.extensions.edition.current().as_str()),
+            "Coral Instance starting"
+        );
         let mut server = start_server(
             Arc::clone(&coral_db),
             mode,

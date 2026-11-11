@@ -63,7 +63,7 @@ pub struct ListedTool {
 }
 
 /// Who owns a Private Tool, which decides whether an Owner's exact rule on
-/// it applies (ADR 0033). An Owner sets rules on the Private Tools they can
+/// it applies (ADR 0034). An Owner sets rules on the Private Tools they can
 /// read: their own and every Agent's. No Owner can read a Member's, so a
 /// Member's Private Tool takes its declared default, even under a rule its
 /// author set while an Owner.

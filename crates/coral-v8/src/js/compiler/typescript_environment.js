@@ -155,12 +155,15 @@ function unknownTools(tools, { namespaceCalls = false } = {}) {
   return unknown;
 }
 
-// The called chains that name no Tool among `callPaths`, the complete
+// The called chains of one source, a Program body or an Authored Tool
+// module as `kind` says, that name no Tool among `callPaths`, the complete
 // Call Paths the caller can call: the rule of the unknown-Tool diagnostic,
 // which Program Admission applies before a Run is created. A call to a
 // namespace of a Tool fails with `tool_not_found` when it runs, so it is
-// unknown too.
-function unknownToolCalls(chains, callPaths) {
+// unknown too. A body that is not one async-function body names none.
+// Admission analyzed the source already, so only its chains are found again.
+function unknownToolCalls(kind, source, callPaths, fileName, targetName) {
+  const chains = sourceToolChains(kind, source, fileName, targetName);
   const declarations = callPaths.map((callPath) => ({
     pathSegments: callPath.split('.').slice(1),
   }));

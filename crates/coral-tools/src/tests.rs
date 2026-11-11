@@ -1719,6 +1719,66 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
     }
 }
 
+// Catches: a save that asks the compiler to analyze or prepare it more than
+// once, so the Run Executor link carries a message for each. Which
+// declarations type it is tested by
+// `a_stalled_declaration_read_saves_untyped_in_time`.
+#[tokio::test]
+async fn a_typed_save_analyzes_once_and_prepares_once() {
+    use coral_run_executor::testing::{CompilerCalls, CountingCompiler};
+    let compiler = Arc::new(CountingCompiler::new(Arc::new(
+        coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start Private Tool compiler"),
+    )));
+    let fixture =
+        PrivateToolTestModules::compiling_through(coral_db::migration_plan(), compiler.clone())
+            .await;
+    let (workspace_id, principal) = fixture.user_workspace("user:counted-save").await;
+    fixture
+        .private_tools
+        .save(
+            &private_tool_change(principal.clone(), 20, 'a'),
+            &workspace_id,
+            PrivateToolSave::new(
+                PrivateToolPath::parse("typing.dependency").expect("path"),
+                AuthoredToolDescription::parse("Dependency").expect("description"),
+                AuthoredToolSource::parse(
+                    "export default function dependency(): number { return 1; }",
+                )
+                .expect("source"),
+            ),
+        )
+        .await
+        .expect("save dependency");
+    compiler.take();
+
+    fixture
+        .private_tools
+        .prepare_save(
+            &private_tool_change(principal.clone(), 21, 'b'),
+            &workspace_id,
+            PrivateToolSave::new(
+                PrivateToolPath::parse("typing.counted").expect("path"),
+                AuthoredToolDescription::parse("Typed").expect("description"),
+                AuthoredToolSource::parse(
+                    "export default async function f() { return [await coral.providers.github.repos.get({ owner: \"a\", nope: 1 }), await coral.private.typing.dependency({})]; }",
+                )
+                .expect("source"),
+            ),
+            Some(&DeclaresReposGet),
+        )
+        .await
+        .expect("prepare typed save");
+    assert_eq!(
+        compiler.take(),
+        CompilerCalls {
+            analyze: vec![1],
+            compile: 0,
+            prepare: 1,
+        }
+    );
+}
+
 #[tokio::test]
 async fn one_users_private_tools_at_the_same_path_stay_scoped_to_each_workspace() {
     let fixture = PrivateToolTestModules::new().await;
@@ -1838,11 +1898,11 @@ impl GatedAuthoredToolCompiler {
 }
 
 impl AuthoredToolCompiler for GatedAuthoredToolCompiler {
-    fn call_paths(
+    fn analyze(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Option<coral_v8::NamedCallPaths> {
+    ) -> Option<coral_v8::SourceReferences> {
         None
     }
 
@@ -1885,18 +1945,26 @@ impl PrivateToolTestModules {
     }
 
     async fn on_plan(plan: &coral_db::MigrationPlan) -> Self {
+        let compiler = coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start Private Tool compiler");
+        Self::compiling_through(plan, Arc::new(compiler)).await
+    }
+
+    async fn compiling_through(
+        plan: &coral_db::MigrationPlan,
+        compiler: Arc<dyn coral_run_executor::CompilerClient>,
+    ) -> Self {
         let fixture = TestDatabase::new(plan)
             .await
             .expect("create Private Tool test database");
         let database = fixture.database();
         let workspaces = WorkspaceModule::new(database.clone());
-        let private_tools = PrivateToolModule::new(
+        let private_tools = PrivateToolModule::with_compiler_client(
             database.clone(),
             workspaces.clone(),
-            crate::IsolateLimits::default(),
+            compiler,
             coral_test_support::TEST_COMPILATION_TIMEOUT,
-        )
-        .expect("start Private Tool compiler");
+        );
         Self {
             fixture,
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),

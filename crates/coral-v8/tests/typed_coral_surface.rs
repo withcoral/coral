@@ -4,7 +4,7 @@
 use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    AuthoredToolCompilation, BuiltinTools, CallableDeclaration, CompilerDiagnostic,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CallableDeclaration, CompilerDiagnostic,
     CoralDeclarations, IsolateLimits, ProgramCompiler,
 };
 use coral_value as _;
@@ -81,22 +81,28 @@ fn compiler() -> ProgramCompiler {
         ]))
 }
 
-/// Prepares `source` as Private Tool save does: typed by `tools` and
-/// `weather.forecast` along the Call Paths the source names.
+/// Prepares `source` typed by `tools` and `weather.forecast`. Private Tool
+/// save sends the declarations of the Call Paths the source names; the
+/// compiler finds the chains in the source again.
 fn prepare(
     compiler: &ProgramCompiler,
     source: &str,
     tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
 ) -> Result<AuthoredToolCompilation, coral_v8::Error> {
-    let named = compiler.authored_tool_call_paths(deadline(), source)?;
     compiler.prepare_typed_authored_tool(
         deadline(),
         source,
         &CoralDeclarations::new(declaration_max_bytes)
-            .with_tools(named.tools(), tools)
+            .with_tools(tools)
             .with_private_tools(vec![tool("weather.forecast", FORECAST)]),
     )
+}
+
+fn analyze(compiler: &ProgramCompiler, source: &AnalyzedSource) -> coral_v8::SourceReferences {
+    compiler
+        .analyze(deadline(), source)
+        .expect("analyze the source")
 }
 
 /// `(code, line, column)` of one diagnostic.
@@ -241,11 +247,9 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
         await coral.providers.github.repos({});\n\
         return [page, repo];";
-    let named = compiler
-        .program_call_paths(deadline(), source)
-        .expect("analyze the Program body");
+    let named = analyze(&compiler, &AnalyzedSource::Program(source.to_owned()));
     assert_eq!(
-        named.tools().call_paths(),
+        named.tool_call_paths(),
         [
             "coral.deleteEverything",
             "coral.providers.github.repos",
@@ -256,7 +260,11 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
     );
     let callable = ["coral.providers.github.repos.get".to_owned()];
     let unknown = compiler
-        .unknown_tool_calls(deadline(), named.tools(), &callable)
+        .unknown_tool_calls(
+            deadline(),
+            &AnalyzedSource::Program(source.to_owned()),
+            &callable,
+        )
         .expect("check the called chains");
     assert_eq!(
         unknown
@@ -275,7 +283,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         compiler
             .unknown_tool_calls(
                 deadline(),
-                named.tools(),
+                &AnalyzedSource::Program(source.to_owned()),
                 &[
                     "coral.providers.github.repos.get".to_owned(),
                     "coral.providers.notion.retrievePage".to_owned(),
@@ -288,6 +296,22 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
             .collect::<Vec<_>>(),
         ["coral.providers.github.repos"]
     );
+    // A linked module's called chains are checked by the same rule, at
+    // their place in the module.
+    let module = "export default async function f() {\n  await coral.providers.github.repos.get({});\n  return coral.providers.notion.retrievePage({});\n}";
+    assert_eq!(
+        compiler
+            .unknown_tool_calls(
+                deadline(),
+                &AnalyzedSource::AuthoredTool(module.to_owned()),
+                &callable,
+            )
+            .expect("check the module's called chains")
+            .iter()
+            .map(|call| (call.call_path(), call.line(), call.column()))
+            .collect::<Vec<_>>(),
+        [("coral.providers.notion.retrievePage", 3, 10)]
+    );
 }
 
 // Catches: Program Admission refusing a literal call that runs, because a
@@ -298,21 +322,18 @@ fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
     let compiler = compiler();
     let source = "await coral.providers.github.users.getAuthenticated();\n\
         return await coral.providers.github[\"repos.get\"]({ owner: \"a\", repo: \"b\" });";
-    let named = compiler
-        .program_call_paths(deadline(), source)
-        .expect("analyze the Program body");
+    let named = analyze(&compiler, &AnalyzedSource::Program(source.to_owned()));
     assert!(
         named
-            .tools()
-            .call_paths()
+            .tool_call_paths()
             .contains(&"coral.providers.github.repos.get".to_owned()),
         "{:?}",
-        named.tools().call_paths()
+        named.tool_call_paths()
     );
     let unknown = compiler
         .unknown_tool_calls(
             deadline(),
-            named.tools(),
+            &AnalyzedSource::Program(source.to_owned()),
             &[
                 "coral.providers.github.repos.get".to_owned(),
                 "coral.providers.github.users.getAuthenticated".to_owned(),
@@ -396,14 +417,15 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 #[test]
 fn call_path_analysis_names_every_candidate_tool_call_path() {
     let compiler = compiler();
-    let named = compiler
-        .authored_tool_call_paths(
-            deadline(),
-            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.listProviders();\n  const e = await coral.search({});\n  return [a, b, c, d, e, coral.providers, coral.private.weather.forecast];\n}",
-        )
-        .expect("analyze Private Tool");
+    let named = analyze(
+        &compiler,
+        &AnalyzedSource::AuthoredTool(
+            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.listProviders();\n  const e = await coral.search({});\n  return [a, b, c, d, e, coral.providers, coral.private.weather.forecast];\n}"
+                .to_owned(),
+        ),
+    );
     assert_eq!(
-        named.tools().call_paths(),
+        named.tool_call_paths(),
         [
             "coral.listProviders",
             "coral.providers.github.repos",

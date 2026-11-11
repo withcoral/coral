@@ -46,6 +46,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 coral-administration = { workspace = true, features = ["test-fixtures"] }
 tempfile.workspace = true
 coral-test-support.workspace = true
+coral-run-executor = { workspace = true, features = ["test-support"] }
 coral-telemetry = { workspace = true, features = ["test-support"] }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true

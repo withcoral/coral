@@ -642,6 +642,7 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
+ "coral-edition",
  "coral-grpc",
  "coral-mcp",
  "coral-outbound",
@@ -768,6 +769,18 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "coral-edition"
+version = "1.6.0"
+
+[[package]]
+name = "coral-ee"
+version = "1.6.0"
+dependencies = [
+ "coral",
+ "coral-app",
 ]
 
 [[package]]

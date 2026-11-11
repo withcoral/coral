@@ -1,8 +1,8 @@
 //! Program admission: bounded source-closure resolution, compilation outside
 //! write transactions, and atomic acceptance of one complete package.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::Instant;
 
 use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
@@ -13,7 +13,9 @@ use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
 use uuid::Uuid;
 
-use crate::engine::{ProgramEngine, ProgramPackage, ProgramReferences};
+use coral_run_executor::tool_check_deadline;
+
+use crate::engine::{AdmissionReferences, AdmissionSource, PackageFailure, ProgramPackage};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
@@ -24,13 +26,6 @@ use crate::{
 /// The most candidate Call Paths admission checks, as Private Tool typing
 /// bounds them. A Program that names more has its paths checked when called.
 const TOOL_CHECK_MAX_PATHS: usize = 128;
-
-/// The longest admission's Call Path check may take.
-const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
-
-/// The compilation time the Call Path check always leaves, so the check never
-/// makes a Program time out that would have compiled without it.
-const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
 /// The source that names a linked Tool: the submitted Program, or a
 /// linked Private or Shared Tool.
@@ -50,11 +45,17 @@ impl ReferenceSource {
 }
 
 /// The Private and Shared Tools a Program links, in initialization order,
-/// and the literal Tool chains each one's source names.
-type LinkedClosure = (
-    Vec<LinkedToolSelection>,
-    Vec<(AuthoredToolPath, coral_v8::ToolReferences)>,
-);
+/// and the candidate Tool Call Paths their sources name.
+type LinkedClosure = (Vec<LinkedToolSelection>, Vec<String>);
+
+/// What stopped one level of the closure read before it read every source.
+enum ClosureStop {
+    /// A source names a Private Tool the caller does not have or a Shared
+    /// Tool the Workspace does not have.
+    Missing(PendingReference),
+    /// Any other refusal or failure.
+    Failed(Error),
+}
 
 /// One literal reference to a linked Tool, and where its source names it.
 struct PendingReference {
@@ -67,7 +68,7 @@ struct PendingReference {
 /// The linked Tools `named` names, as references from `source`.
 fn pending_references(
     source: &ReferenceSource,
-    named: &ProgramReferences,
+    named: &AdmissionReferences,
 ) -> impl Iterator<Item = PendingReference> {
     named
         .linked
@@ -350,46 +351,65 @@ impl RunModule {
         let named = self
             .analyze_program(source.clone(), compilation_deadline)
             .await?;
-        if let Some(tools) = &named.tools {
-            self.check_tool_calls(actor, workspace_id, "Program", tools, compilation_deadline)
-                .await?;
-        }
         let roots = pending_references(&ReferenceSource::SubmittedProgram, &named).collect();
-        let (linked, linked_tools) = self
+        let (linked, mut candidates) = self
             .read_source_closure(actor, workspace_id, roots, compilation_deadline)
             .await?;
-        // A stored source is checked as the Program is, at every admission
-        // that links it: an old root fails here, not when called.
-        for (path, tools) in &linked_tools {
-            self.check_tool_calls(
-                actor,
-                workspace_id,
-                &path.source_name(),
-                tools,
-                compilation_deadline,
-            )
-            .await?;
-        }
-
         validate_source_closure(
             &source,
             linked.iter().map(|linked| linked.source().as_str()),
         )?;
+        // A stored source is checked as the Program is, at every admission
+        // that links it: an old root fails at compile, not when called.
+        candidates.extend(named.tool_call_paths);
+        candidates.sort();
+        candidates.dedup();
+        let callable = self
+            .callable_tool_paths(actor, workspace_id, &candidates, compilation_deadline)
+            .await;
         let builtin_tools = self.builtin_tools(workspace_id).await?;
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
-            engine.compile_linked(
+            engine.compile(
                 compilation_deadline,
                 &source,
                 &compile_linked,
                 &builtin_tools,
+                callable.as_deref(),
             )
         });
         let package = match timeout_at(compilation_deadline.into(), compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(failure))) => return Err(domain_error(failure)),
+            Ok(Ok(Err(PackageFailure::UnknownTools {
+                linked: unknown_in,
+                calls,
+            }))) => {
+                let source_name = match unknown_in {
+                    None => "Program".to_string(),
+                    Some(index) => linked
+                        .get(index)
+                        .ok_or_else(|| {
+                            Error::CorruptData(
+                                "compiler named a linked Tool the Program does not link"
+                                    .to_string(),
+                            )
+                        })?
+                        .path()
+                        .source_name(),
+                };
+                return Err(self
+                    .unknown_tools(
+                        actor,
+                        workspace_id,
+                        &source_name,
+                        &calls,
+                        compilation_deadline,
+                    )
+                    .await);
+            }
+            Ok(Ok(Err(PackageFailure::Compile(failure)))) => return Err(domain_error(failure)),
             Ok(Ok(Ok(package))) => package,
         };
         package.validate()?;
@@ -399,7 +419,9 @@ impl RunModule {
     /// Reads the closure of Tools the Program links: each Private Tool is
     /// the caller's own current definition, wherever it is named, including
     /// inside a Shared Tool, and each Shared Tool is the Workspace's current
-    /// revision (ADR 0033).
+    /// revision (ADR 0034). It reads in one read snapshot, one level of the
+    /// graph at a time, with one analysis per level, and reports what
+    /// reading one source at a time in the same order would find first.
     async fn read_source_closure(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -416,66 +438,94 @@ impl RunModule {
             .map(|reference| reference.path.clone())
             .collect::<Vec<_>>();
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let mut pending = roots.into_iter().collect::<VecDeque<_>>();
+        let mut level = roots;
         let mut snapshots = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
-        let mut tools = Vec::new();
-        while let Some(pending_reference) = pending.pop_front() {
-            let path = &pending_reference.path;
-            if snapshots.contains_key(path) {
-                continue;
-            }
-            if snapshots.len() == LINKED_TOOL_MAX_COUNT {
-                return Err(Error::ProgramAdmission(format!(
-                    "Program may link at most {LINKED_TOOL_MAX_COUNT} Private and Shared Tools"
-                )));
-            }
-            let snapshot = coral_tools::select_linked_tool_in_transaction(
-                &mut transaction,
-                workspace_id,
-                actor.principal(),
-                path,
-            )
-            .await?;
-            let Some(snapshot) = snapshot else {
-                // The lookup for suggestions reads in its own snapshot.
-                transaction.rollback().await?;
-                return Err(self
-                    .missing_linked_tool(
-                        actor,
-                        workspace_id,
-                        &pending_reference,
-                        compilation_deadline,
-                    )
-                    .await);
-            };
-            let named = self
-                .analyze_linked_tool(
-                    snapshot.source().as_str().to_string(),
-                    path.clone(),
-                    compilation_deadline,
+        let mut tool_call_paths = Vec::new();
+        while !level.is_empty() {
+            let mut paths = Vec::new();
+            let mut sources = Vec::new();
+            let mut stopped = None;
+            for pending_reference in level {
+                let path = &pending_reference.path;
+                if snapshots.contains_key(path) {
+                    continue;
+                }
+                if snapshots.len() == LINKED_TOOL_MAX_COUNT {
+                    stopped = Some(ClosureStop::Failed(Error::ProgramAdmission(format!(
+                        "Program may link at most {LINKED_TOOL_MAX_COUNT} Private and Shared Tools"
+                    ))));
+                    break;
+                }
+                let snapshot = match coral_tools::select_linked_tool_in_transaction(
+                    &mut transaction,
+                    workspace_id,
+                    actor.principal(),
+                    path,
                 )
-                .await?;
-            let referenced = pending_references(&ReferenceSource::Linked(path.clone()), &named)
-                .collect::<Vec<_>>();
-            if let Some(named_tools) = named.tools {
-                tools.push((path.clone(), named_tools));
+                .await
+                {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => {
+                        stopped = Some(ClosureStop::Missing(pending_reference));
+                        break;
+                    }
+                    Err(error) => {
+                        stopped = Some(ClosureStop::Failed(error.into()));
+                        break;
+                    }
+                };
+                sources.push(AdmissionSource::Linked {
+                    path: path.clone(),
+                    source: snapshot.source().as_str().to_string(),
+                });
+                paths.push(path.clone());
+                snapshots.insert(path.clone(), snapshot);
             }
-            dependencies.insert(
-                path.clone(),
-                referenced
-                    .iter()
-                    .map(|reference| reference.path.clone())
-                    .collect(),
-            );
-            pending.extend(referenced);
-            snapshots.insert(path.clone(), snapshot);
+            // The sources read before the one that stopped the level come
+            // first, so their rejection wins.
+            let analyzed = if sources.is_empty() {
+                Vec::new()
+            } else {
+                self.analyze(sources, compilation_deadline).await?
+            };
+            match stopped {
+                None => {}
+                Some(ClosureStop::Failed(error)) => return Err(error),
+                Some(ClosureStop::Missing(pending_reference)) => {
+                    // The lookup for suggestions reads in its own snapshot.
+                    transaction.rollback().await?;
+                    return Err(self
+                        .missing_linked_tool(
+                            actor,
+                            workspace_id,
+                            &pending_reference,
+                            compilation_deadline,
+                        )
+                        .await);
+                }
+            }
+            let mut next = Vec::new();
+            for (path, named) in paths.into_iter().zip(analyzed) {
+                let referenced = pending_references(&ReferenceSource::Linked(path.clone()), &named)
+                    .collect::<Vec<_>>();
+                dependencies.insert(
+                    path,
+                    referenced
+                        .iter()
+                        .map(|reference| reference.path.clone())
+                        .collect(),
+                );
+                next.extend(referenced);
+                tool_call_paths.extend(named.tool_call_paths);
+            }
+            level = next;
         }
         transaction.commit().await?;
 
         Ok((
             order_linked_closure(&root_paths, &dependencies, &snapshots)?,
-            tools,
+            tool_call_paths,
         ))
     }
 
@@ -483,87 +533,81 @@ impl RunModule {
         &self,
         source: String,
         compilation_deadline: Instant,
-    ) -> Result<ProgramReferences, Error> {
-        self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.program_references(deadline, &source)
-        })
-        .await
+    ) -> Result<AdmissionReferences, Error> {
+        let mut analyzed = self
+            .analyze(vec![AdmissionSource::Program(source)], compilation_deadline)
+            .await?;
+        Ok(analyzed.pop().unwrap_or_default())
     }
 
-    /// Refuses a Program whose literal `coral.providers` or
-    /// Built-in Tool call, in its body or in `source_name`, a Private Tool
-    /// it links, names no Tool the caller can call, naming
-    /// each such path and the nearest ones it can discover. A computed path
-    /// is checked only when called.
+    /// The candidate Call Paths that the caller can call, which compile
+    /// checks the literal Tool calls of the Program and of each Tool it
+    /// links against. A computed path is checked only when called.
     ///
     /// A path names a Tool when Invocation admission would resolve it now,
     /// so the check refuses exactly the calls that would fail with
     /// `tool_not_found`, and a call to a disabled Tool still runs to be
     /// recorded and refused. The unknown-Tool diagnostic's rule decides
     /// which chains those paths leave unknown. Neither reads the search
-    /// index. The check is bounded like Private Tool typing: a Program
-    /// that names more candidate paths, or a check that fails or runs out of
-    /// its time, leaves the paths to be checked when called.
-    async fn check_tool_calls(
+    /// index. The check is bounded like Private Tool typing: `None`, for
+    /// a Program whose sources name more candidate paths or a read that
+    /// fails or runs out of its time, leaves the paths to be checked when
+    /// called.
+    async fn callable_tool_paths(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        source_name: &str,
-        tools: &coral_v8::ToolReferences,
+        candidates: &[String],
         compilation_deadline: Instant,
-    ) -> Result<(), Error> {
-        let candidates = tools.call_paths();
+    ) -> Option<Vec<String>> {
         if candidates.is_empty() || candidates.len() > TOOL_CHECK_MAX_PATHS {
-            return Ok(());
+            return None;
         }
-        let now = Instant::now();
-        let Some(deadline) = compilation_deadline
-            .checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
-            .map(|latest| latest.min(now + TOOL_CHECK_BUDGET))
-            .filter(|deadline| *deadline > now)
-        else {
+        let Some(deadline) = tool_check_deadline(compilation_deadline) else {
             tracing::warn!("No time is left to check the Program's Call Paths before it runs");
-            return Ok(());
+            return None;
         };
-        let search = coral_search::UniversalSearchModule::new(
-            self.database.clone(),
-            self.workspaces.clone(),
-        );
-        let check = async {
-            let callable = self
-                .callable_tools(actor, workspace_id, candidates)
-                .await
-                .map_err(|_error| "catalog_unavailable")?;
-            let engine = self.engine.clone();
-            let tools = tools.clone();
-            tokio::task::spawn_blocking(move || {
-                engine.unknown_tool_calls(deadline, &tools, &callable)
-            })
-            .await
-            .map_err(|_join_error| "compiler_stopped")?
-            .map_err(|_failure| "compiler_failed")
-        };
-        let unknown = match timeout_at(deadline.into(), check).await {
-            Ok(Ok(unknown)) => unknown,
-            Ok(Err(kind)) => {
+        match timeout_at(
+            deadline.into(),
+            self.callable_tools(actor, workspace_id, candidates),
+        )
+        .await
+        {
+            Ok(Ok(callable)) => Some(callable),
+            Ok(Err(_error)) => {
                 tracing::warn!(
-                    error.type = safe::kind(kind),
+                    error.type = safe::kind("catalog_unavailable"),
                     "The Program's Call Paths are checked only when called"
                 );
-                return Ok(());
+                None
             }
             Err(_elapsed) => {
                 tracing::warn!(
                     "Checking the Program's Call Paths took too long; they are checked only when called"
                 );
-                return Ok(());
+                None
             }
-        };
-        if unknown.is_empty() {
-            return Ok(());
         }
+    }
+
+    /// Refuses a Program whose literal calls, in its body or in
+    /// `source_name`, a Tool it links, name no Tool the caller can call,
+    /// naming each such path once, where it is, and the nearest ones the
+    /// caller can discover.
+    async fn unknown_tools(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        source_name: &str,
+        unknown: &[coral_v8::UnknownToolCall],
+        compilation_deadline: Instant,
+    ) -> Error {
+        let search = coral_search::UniversalSearchModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+        );
         let mut named = Vec::<&coral_v8::UnknownToolCall>::new();
-        for call in &unknown {
+        for call in unknown {
             if !named
                 .iter()
                 .any(|known| known.call_path() == call.call_path())
@@ -599,9 +643,7 @@ impl RunModule {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        Err(Error::ProgramAdmission(
-            coral_v8::bounded_diagnostic_message(&message),
-        ))
+        Error::ProgramAdmission(coral_v8::bounded_diagnostic_message(&message))
     }
 
     /// Refuses a Program that calls, in its body or in a Tool it links, a
@@ -685,27 +727,16 @@ impl RunModule {
         Ok(callable)
     }
 
-    async fn analyze_linked_tool(
+    /// Analyzes `sources` on a blocking worker within the admission
+    /// deadline: one result per source, in order.
+    async fn analyze(
         &self,
-        source: String,
-        path: AuthoredToolPath,
+        sources: Vec<AdmissionSource>,
         compilation_deadline: Instant,
-    ) -> Result<ProgramReferences, Error> {
-        self.analyze(compilation_deadline, move |engine, deadline| {
-            engine.linked_tool_references(deadline, &path, &source)
-        })
-        .await
-    }
-
-    /// Runs one analysis on a blocking worker within the admission deadline.
-    async fn analyze<T: Send + 'static>(
-        &self,
-        compilation_deadline: Instant,
-        analysis: impl FnOnce(&dyn ProgramEngine, Instant) -> Result<T, CompileFailure> + Send + 'static,
-    ) -> Result<T, Error> {
+    ) -> Result<Vec<AdmissionReferences>, Error> {
         let engine = self.engine.clone();
         let analyze =
-            tokio::task::spawn_blocking(move || analysis(engine.as_ref(), compilation_deadline));
+            tokio::task::spawn_blocking(move || engine.analyze(compilation_deadline, &sources));
         match timeout_at(compilation_deadline.into(), analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),

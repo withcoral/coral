@@ -321,6 +321,112 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
 
+// Catches: admission that asks the compiler once per linked Tool, so the
+// Run Executor link carries a message for each; one that refuses an unknown
+// Tool before its one compile; or one that reports an unknown Tool before a
+// missing Private Tool.
+#[tokio::test]
+async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles_once() {
+    use coral_run_executor::testing::{CompilerCalls, CountingCompiler};
+    coral_test_support::database_only!(Sqlite);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let private_tools = PrivateToolModule::new(
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+        crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
+    )
+    .expect("start Private Tool compiler");
+    let compiler = Arc::new(CountingCompiler::new(Arc::new(
+        coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
+            .expect("start the Program compiler"),
+    )));
+    let runs = fixture.live_runs_compiling_through(compiler.clone());
+    let (workspace_id, principal) = fixture
+        .user_scope("user:counted-admission", "Count compiler calls")
+        .await;
+    // Two levels below the Program: `increment` is reached twice.
+    for (path, source) in [
+        (
+            "math.increment",
+            "export default function increment({ value }: { value: number }): number { return value + 1; }",
+        ),
+        (
+            "math.double",
+            "export default function double({ value }: { value: number }): number { return value * 2; }",
+        ),
+        (
+            "math.incrementTwice",
+            "export default async function incrementTwice({ value }: { value: number }): Promise<number> { return coral.private.math.increment({ value: await coral.private.math.increment({ value }) }); }",
+        ),
+        (
+            "math.sum",
+            "export default async function sum({ value }: { value: number }): Promise<number> { return (await coral.private.math.increment({ value })) + (await coral.private.math.double({ value })); }",
+        ),
+    ] {
+        private_tools
+            .save(
+                &private_tool_change(principal.clone(), 30, '1'),
+                &workspace_id,
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("path"),
+                    AuthoredToolDescription::parse("Counted").expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
+                ),
+            )
+            .await
+            .expect("save closure member");
+    }
+
+    let links = "return [await coral.private.math.incrementTwice({ value: 1 }), await coral.private.math.sum({ value: 1 })];";
+    // The fixture has no such Provider, so the call checked at compile is
+    // refused there.
+    let unknown = "await coral.providers.nope.get({});";
+    let unknown_tool = format!("{unknown}\n{links}");
+    let missing_too = format!("{unknown}\nreturn coral.private.math.missing({{}});");
+    let cases: [(&str, &[usize], usize, Option<&str>); 4] = [
+        ("return 42;", &[1], 1, None),
+        (links, &[1, 2, 2], 1, None),
+        (
+            &unknown_tool,
+            &[1, 2, 2],
+            1,
+            Some("coral.providers.nope.get names no Tool"),
+        ),
+        (
+            &missing_too,
+            &[1],
+            0,
+            Some("coral.private.math.missing names no Tool"),
+        ),
+    ];
+    for (source, analyzed, compiled, refused) in cases {
+        let prepared = runs
+            .prepare(&principal, &workspace_id, submission(source))
+            .await;
+        match refused {
+            None => {
+                prepared.unwrap_or_else(|error| panic!("{source}: {error:?}"));
+            }
+            // Which refusal wins, not its wording, which `call_paths.rs` owns.
+            Some(refusal) => assert!(
+                matches!(&prepared, Err(Error::ProgramAdmission(message)) if message.contains(refusal)),
+                "{source}: {:?}",
+                prepared.map(drop)
+            ),
+        }
+        assert_eq!(
+            compiler.take(),
+            CompilerCalls {
+                analyze: analyzed.to_vec(),
+                compile: compiled,
+                prepare: 0,
+            },
+            "{source}"
+        );
+    }
+}
+
 /// Scanning references, rather than compiling 64 functions with V8, keeps the
 /// two-second compilation deadline out of this count rule under load.
 #[tokio::test]

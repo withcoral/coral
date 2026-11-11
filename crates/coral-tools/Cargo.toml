@@ -36,3 +36,4 @@ uuid.workspace = true
 [dev-dependencies]
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
+coral-run-executor = { workspace = true, features = ["test-support"] }

@@ -144,7 +144,7 @@ pub enum ToolBodyOutcome {
     /// `undefined` returns `null`.
     Returned(String),
     /// It returned a value that is not data, such as a `bigint`, a `Date`,
-    /// `NaN`, a cycle, or a function (ADR 0033).
+    /// `NaN`, a cycle, or a function (ADR 0034).
     NotData {
         /// Where the value is, as a path from `result`.
         field: String,
@@ -642,18 +642,33 @@ impl LinkedToolSource {
             source,
         }
     }
+
+    /// The module source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 }
 
-/// The Call Paths one Authored Tool module or Program body names
-/// directly, as typed preparation and Program Admission need them.
+/// One source for [`ProgramCompiler::analyze`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NamedCallPaths {
+pub enum AnalyzedSource {
+    /// A Program body.
+    Program(String),
+    /// An Authored Tool module: a Private or a Shared Tool.
+    AuthoredTool(String),
+}
+
+/// What one Program body or Authored Tool module names directly: the
+/// Private and Shared Tools that link or type it, and the Tools it may call.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceReferences {
     private_tools: Vec<LinkedToolReference>,
     shared_tools: Vec<LinkedToolReference>,
-    tools: ToolReferences,
+    tool_call_paths: Vec<String>,
 }
 
-impl NamedCallPaths {
+impl SourceReferences {
     /// Returns the directly named `coral.private` paths.
     #[must_use]
     pub fn private_tools(&self) -> &[LinkedToolReference] {
@@ -666,31 +681,24 @@ impl NamedCallPaths {
         &self.shared_tools
     }
 
-    /// Returns the literal Tool chains under `coral`.
+    /// Returns every prefix of a literal Tool chain under `coral` that could
+    /// be a Tool Call Path, such as `coral.providers.github.repos.get`, so
+    /// `get.call(...)` still names `get`. Aliased roots are not followed.
     #[must_use]
-    pub const fn tools(&self) -> &ToolReferences {
-        &self.tools
+    pub fn tool_call_paths(&self) -> &[String] {
+        &self.tool_call_paths
     }
 }
 
-/// The literal Tool chains under `coral` one source
-/// names. Aliased roots are not followed.
+/// The literal Tool chains under `coral` that one Authored Tool module names,
+/// as its preparation found them. Aliased roots are not followed.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolReferences {
-    call_paths: Vec<String>,
     chains: Vec<ToolChain>,
 }
 
 impl ToolReferences {
-    /// Returns every chain prefix that could be a Tool Call Path, such
-    /// as `coral.providers.github.repos.get`, so `get.call(...)` still names
-    /// `get`.
-    #[must_use]
-    pub fn call_paths(&self) -> &[String] {
-        &self.call_paths
-    }
-
     /// Returns each Call Path a literal chain calls, such as
     /// `coral.providers.github.repos.get`, once each, in path order.
     #[must_use]
@@ -722,26 +730,16 @@ impl ToolReferences {
         built.dedup();
         built
     }
-
-    fn chains_json(&self) -> Result<String, Error> {
-        serde_json::to_string(&self.chains)
-            .map_err(|error| Error::CompilerProtocol(error.to_string()))
-    }
 }
 
-/// One literal chain, relative to `coral`, where it starts in the source, and
-/// whether it is called.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// One literal chain, relative to `coral`, whether it is called, and whether
+/// it was cut before a computed segment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct ToolChain {
     segments: Vec<String>,
-    start: u64,
     called: bool,
-    /// Whether the chain was cut before a computed segment.
     #[serde(default)]
     computed: bool,
-    /// The one-based authored line and column where it starts.
-    line: u64,
-    column: u64,
 }
 
 /// A called literal Tool chain under `coral` that names
@@ -829,15 +827,9 @@ impl BuiltinTools {
 #[serde(rename_all = "camelCase")]
 pub struct CoralDeclarations {
     declaration_max_bytes: usize,
-    tools: Option<TypedTools>,
+    tools: Option<Vec<CallableDeclaration>>,
     private_tools: Option<Vec<CallableDeclaration>>,
     shared_tools: Option<Vec<CallableDeclaration>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct TypedTools {
-    chains: Vec<ToolChain>,
-    declarations: Vec<CallableDeclaration>,
 }
 
 impl CoralDeclarations {
@@ -853,20 +845,12 @@ impl CoralDeclarations {
         }
     }
 
-    /// Types `coral.providers` and the Built-in Tools on `coral` from the Tools the
-    /// caller can call. `references` are what
-    /// [`ProgramCompiler::authored_tool_call_paths`] found in the same
-    /// source.
+    /// Types `coral.providers` and the Built-in Tools on `coral` from the
+    /// Tools the caller can call, such as those of the
+    /// [`SourceReferences::tool_call_paths`] that the source names.
     #[must_use]
-    pub fn with_tools(
-        mut self,
-        references: &ToolReferences,
-        declarations: Vec<CallableDeclaration>,
-    ) -> Self {
-        self.tools = Some(TypedTools {
-            chains: references.chains.clone(),
-            declarations,
-        });
+    pub fn with_tools(mut self, tools: Vec<CallableDeclaration>) -> Self {
+        self.tools = Some(tools);
         self
     }
 

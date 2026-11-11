@@ -3206,6 +3206,39 @@ async fn anonymous_catalog_discovery_still_inspects_available_oauth_metadata() {
 }
 
 #[tokio::test]
+async fn anonymous_catalog_discovery_reports_refused_oauth_metadata() {
+    // The server asked for no credential, so a refused well-known lookup is a
+    // fault to report and not a sign that the server has no OAuth.
+    let upstream = public_oauth_catalog().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401))
+        .with_priority(1)
+        .mount(&upstream.server)
+        .await;
+    let harness = harness(None).await;
+    let (owner, workspace) = workspace_owner(&harness, "user:public-refused-metadata").await;
+    let setup = harness
+        .providers
+        .prepare_setup(
+            &change_context(owner.clone(), 10, '1'),
+            workspace.id(),
+            crate::tests::mcp_url(upstream.mcp_url()),
+            None,
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        review.diagnostic.as_deref(),
+        Some("resource_metadata_unavailable")
+    );
+}
+
+#[tokio::test]
 async fn public_mcp_catalog_with_oauth_accepts_exactly_the_offered_authentication_methods() {
     let upstream = public_oauth_catalog().await;
     let harness = harness(None).await;

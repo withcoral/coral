@@ -279,7 +279,7 @@ impl Rejection {
 
     /// What the body of a Tool that Coral performs threw, `message`: text
     /// the Program wrote, which reaches its caller again unchanged but
-    /// bounded (ADR 0033). A Tool Error that a call in the body gave it
+    /// bounded (ADR 0034). A Tool Error that a call in the body gave it
     /// keeps that call's code when it is a Coral Failure, so the record says
     /// what the caller saw. Anything else is `tool_failed`, an upstream
     /// rejection's code included, since no Coral Failure decodes it.

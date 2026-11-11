@@ -480,17 +480,25 @@ export const requiredMark = style({
   color: theme.content.error,
   '::after': { content: '"*" / ""' },
 })
-// The current logo beside the controls that change it.
+
+// The current logo beside the controls that change it, centered on one line
+// that wraps on a narrow screen. A size error takes a line of its own last, so
+// it never moves the controls.
+const iconGap = 12
+// The logo's width and the gap after it, so the error starts under the buttons.
+const iconIndent = 40 + iconGap
 export const iconRow = style({
-  alignItems: 'flex-start',
+  alignItems: 'center',
+  columnGap: iconGap,
   display: 'flex',
   flexWrap: 'wrap',
-  gap: 16,
+  rowGap: 8,
 })
-export const iconUpload = style({
-  display: 'flex',
-  flex: '1 1 240px',
-  flexDirection: 'column',
-  gap: 8,
+// The upload form lends its button and error to the row.
+export const iconUpload = style({ display: 'contents' })
+export const iconError = style({
+  flexBasis: `calc(100% - ${iconIndent}px)`,
+  marginInlineStart: iconIndent,
   minWidth: 0,
+  order: 1,
 })

@@ -250,7 +250,7 @@ impl ToolPolicyModule {
     /// Path: the Tools of every Provider, the Built-in Provider's
     /// included, the Workspace's live Shared Tools, and `actor`'s own
     /// Private Tools while a rule applies to them, an Owner's or an Agent's
-    /// and never a Member's (ADR 0033). `under`, a Call Path prefix that
+    /// and never a Member's (ADR 0034). `under`, a Call Path prefix that
     /// ends at a segment, such as `coral.providers.github`, keeps only the
     /// Tools under it. A Tool without a rule takes its default and is left
     /// out, and so is a rule whose Tool left its current catalog. Every
@@ -867,7 +867,7 @@ struct RuledTools {
 /// a Tool of the Provider's current catalog, a live Shared Tool in the
 /// Workspace's Shared Provider or, in its Private Provider, a Private Tool
 /// `actor` can read. That is its own and, for an Owner, every Agent's,
-/// never another User's (ADR 0033). A Private or Shared Tool's facts are
+/// never another User's (ADR 0034). A Private or Shared Tool's facts are
 /// the default its current revision declares. A rule applies to a Private
 /// Tool only while `actor` is an Owner: no rule applies to a Member's. Keys
 /// that name no such Tool are left out.
@@ -960,7 +960,7 @@ impl RuledSource {
     }
 }
 
-/// What a reader reads of the Private Provider (ADR 0033).
+/// What a reader reads of the Private Provider (ADR 0034).
 struct PrivateToolReach {
     /// The Private Tools whose policy it reads.
     scope: coral_tools::PrivateToolScope,
@@ -1152,7 +1152,7 @@ pub fn reads_only(facts: ToolPolicyFacts) -> bool {
 /// A Tool takes the state its catalog or author declares: Coral's own
 /// catalog declares `enabled` for the Tools that change only the caller's
 /// own state (ADR 0031), and a Private Tool's author declares any state
-/// (ADR 0033). Otherwise a Tool that only reads runs without approval, and
+/// (ADR 0034). Otherwise a Tool that only reads runs without approval, and
 /// any other Tool takes the cautious default.
 pub(crate) fn default_access_state(facts: ToolPolicyFacts) -> ToolAccessState {
     match facts.declared_default() {

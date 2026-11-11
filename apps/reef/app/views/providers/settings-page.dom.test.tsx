@@ -2,7 +2,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { createMemoryRouter, RouterProvider } from 'react-router'
+import { createMemoryRouter, RouterProvider, useLoaderData } from 'react-router'
 import { afterEach, expect, test } from 'vitest'
 
 import { ProviderSettingsPage } from './settings-page'
@@ -75,13 +75,15 @@ async function render(
           targets.push(url.pathname + url.search)
           return action(data)
         },
+        // Like the real loader, revalidation after an action reads the provider again.
+        loader: () => ({ ...provider, ...overrides }),
         Component: () => (
           <ProviderSettingsPage
             workspace={workspace}
             source={source}
             form={{ csrf: 'csrf', requestId: 'request' }}
             {...props}
-            provider={{ ...provider, ...overrides }}
+            provider={useLoaderData<ProviderSettingsView>()}
           />
         ),
       },
@@ -461,4 +463,93 @@ test('connects your own account in a dialog on this page', async () => {
   const dialog = document.querySelector('[role="dialog"]')!
   expect(dialog.textContent).toContain('Connect GitLab.com')
   expect(dialog.textContent).toContain('Stopped here.')
+})
+
+const iconFile = () => byLabel('Icon file') as HTMLInputElement
+const tooLargeIcon = () =>
+  new File([new Uint8Array(100 * 1024 + 1)], 'big.png', { type: 'image/png' })
+
+async function chooseIcon(file: File) {
+  const input = iconFile()
+  const transfer = new DataTransfer()
+  transfer.items.add(file)
+  input.files = transfer.files
+  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+  await settle()
+}
+
+// Catches: a chosen icon waiting for a second upload action, an upload that
+// loses the provider's etag, or a too-large file sent to Coral.
+test('choosing an icon uploads it at once, unless it is too large', async () => {
+  const { submissions } = await render({}, () => ({ error: 'This image cannot be read.' }))
+  const logo = new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' })
+  await chooseIcon(logo)
+  expect(submissions).toHaveLength(1)
+  expect(Object.fromEntries(submissions[0]!)).toMatchObject({
+    intent: 'setProviderIcon',
+    provider: provider.id,
+    etag: 'etag-1',
+  })
+  expect((submissions[0]!.get('icon') as File).name).toBe('logo.svg')
+  expect(text()).toContain('This image cannot be read.')
+
+  // After a refusal, choosing the same file again sends it again.
+  expect(iconFile().value).toBe('')
+  await chooseIcon(logo)
+  expect(submissions).toHaveLength(2)
+
+  await chooseIcon(tooLargeIcon())
+  expect(submissions).toHaveLength(2)
+  expect(iconFile()).toHaveAttribute('aria-invalid', 'true')
+})
+
+// Catches: a too-large refusal that outlives the icon change after it.
+test('a new provider etag clears a too-large refusal', async () => {
+  const overrides = { uploadedIcon: true, etag: 'etag-1' }
+  await render({ provider: overrides }, () => {
+    overrides.etag = 'etag-2'
+    return { error: null, message: 'Icon removed.' }
+  })
+  await chooseIcon(tooLargeIcon())
+  expect(iconFile()).toHaveAttribute('aria-invalid', 'true')
+
+  await click(named('button', 'Remove icon'))
+  await settle()
+  expect(iconFile()).not.toHaveAttribute('aria-invalid')
+})
+
+// Catches: a second selection, through assistive technology, superseding an
+// upload still in flight.
+test('the icon picker takes no selection while an upload runs', async () => {
+  let finish: (() => void) | undefined
+  const upload = new Promise<void>((resolve) => {
+    finish = resolve
+  })
+  await render({}, async () => {
+    await upload
+    return { error: null, message: 'Icon saved.' }
+  })
+  await chooseIcon(new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' }))
+  expect(iconFile()).toBeDisabled()
+
+  await act(async () => finish?.())
+  await settle()
+  expect(iconFile()).toBeEnabled()
+})
+
+// Catches: a too-large refusal that a screen reader never hears, because only
+// the hidden picker is marked and the focusable button has no description.
+test('the upload button is described by an announced size error', async () => {
+  await render()
+  const upload = named('button', 'Upload icon')!
+  expect(upload).not.toHaveAttribute('aria-describedby')
+
+  await chooseIcon(tooLargeIcon())
+  const error = byLabel('Icon')!.querySelector('[role="alert"]')!
+  expect(error.textContent).not.toBe('')
+  expect(upload).toHaveAccessibleDescription(error.textContent!)
+
+  await chooseIcon(new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' }))
+  expect(upload).not.toHaveAttribute('aria-describedby')
+  expect(byLabel('Icon')!.querySelector('[role="alert"]')).toBeNull()
 })

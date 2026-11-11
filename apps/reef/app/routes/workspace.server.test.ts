@@ -1,3 +1,4 @@
+import { Code, ConnectError } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
@@ -12,7 +13,11 @@ vi.mock('@/lib/coral-request.server', () => ({
 const workspace = '00000000-0000-4000-8000-000000000001'
 const parent = `workspaces/${workspace}`
 
-function fakeCoral(summaries: number[] = []) {
+/** A summary that never answers, unless a test gives one. */
+function fakeCoral(
+  summaries: number[] = [],
+  summarize: () => Promise<object> = () => new Promise(() => {}),
+) {
   coral.transport = fakeManagementTransport({
     workspaces: {
       getWorkspace: ({ name }) => ({
@@ -50,7 +55,7 @@ function fakeCoral(summaries: number[] = []) {
       browseRequiredActions: () => ({ actions: [] }),
       summarizeActivity: ({ days }) => {
         summaries.push(days)
-        return {}
+        return summarize()
       },
     },
   })
@@ -71,18 +76,28 @@ it('leaves the Built-in Provider out of the providers card, but not out of the s
   ])
 })
 
-// Catches: a reload showing another period than the URL names.
+// Catches: an overview that waits for a slow summary, or a reload showing another period
+// than the URL names.
 it.each([
   ['the default period', '', 7],
   ['a period the URL names', '?days=30', 30],
   ['the last 24 hours', '?days=1', 1],
-])('summarizes %s', async (_, search, days) => {
+])('renders %s while the summary has not answered', async (_, search, days) => {
   const summaries: number[] = []
   fakeCoral(summaries)
   const result = await overview(search)
   if (result instanceof Response) throw new Error('The workspace page renders')
   expect(result.data.activity.days).toBe(days)
   expect(summaries).toEqual([days])
+})
+
+// Catches: an outage streamed as zeros. activity-summary.server.test.ts owns which codes
+// read as unavailable.
+it('streams a summary Coral cannot give now as unavailable', async () => {
+  fakeCoral([], () => Promise.reject(new ConnectError('down', Code.Unavailable)))
+  const result = await overview()
+  if (result instanceof Response) throw new Error('The workspace page renders')
+  await expect(result.data.activity.summary).resolves.toBeNull()
 })
 
 // Catches: a URL that names one period while the page shows another.

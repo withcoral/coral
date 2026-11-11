@@ -15,7 +15,7 @@ const TOOL_SCHEMA_NAMES: i64 = 45;
 /// The step that rewrote the stored values that named Operations.
 const TOOL_NAMES: i64 = 46;
 
-/// The first of the steps that make every callable a Tool (ADR 0033).
+/// The first of the steps that make every callable a Tool (ADR 0034).
 /// Together they rename Saved Functions to Private Tools, in the schema and
 /// in the stored values that named them.
 const EVERY_CALLABLE_IS_A_TOOL: i64 = 63;

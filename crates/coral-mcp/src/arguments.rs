@@ -23,7 +23,7 @@ const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or 
 /// [`exec_description`] adds the caller's namespaces after it.
 pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find provider, shared and private tools with `coral.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`. When the user names a service, pass all its namespaces in `provider`, as one string or an array; otherwise leave it out. `coral` holds Coral's own tools. A wrong namespace is refused with the full list.
+Find provider, shared and private tools with `coral.search`. It finds tools by what they do, never records: query with the action, such as `search messages`, and keep people, titles, IDs and dates for the tool call. No hit never means that the record is missing: search again with other words for the action. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`. When the user names a service, pass all its namespaces in `provider`, as one string or an array; otherwise leave it out. `coral` holds Coral's own tools. A wrong namespace is refused with the full list.
 ```ts
 const { data } = await coral.search({ query: "list pull requests", provider: "acme_code", limit: 5 });
 const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);
@@ -41,10 +41,12 @@ return (await coral.providers.acme_code.pulls.list({ owner: "acme", repo: "api" 
 A non-empty `required_actions` means the Run waits for a person: for an `invoking_user` entry, write its `url` as reply text, then keep calling `wait`, whose description has the steps."#;
 
 // Claude Code 2.1.296 and later keep the first 4096 characters of a tool's
-// description, and 2.1.292 kept 2048. The fixed text stays within 2048, so a
-// client with the smaller limit still reads the example whole; the namespace
-// list after it fills the rest, up to EXEC_DESCRIPTION_MAX_BYTES.
-const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2048);
+// description, and 2.1.292 kept 2048. The fixed text stays within 2304. A
+// client with the smaller limit reads the search rules and the search example
+// whole. It loses the end of the call example and the `required_actions`
+// sentence, which the server instructions repeat, and the namespace list. The
+// list fills the rest, up to EXEC_DESCRIPTION_MAX_BYTES.
+const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2304);
 
 /// The most UTF-8 bytes `exec`'s description takes with its namespace list.
 /// A client counts characters or UTF-16 units, and neither ever exceeds the

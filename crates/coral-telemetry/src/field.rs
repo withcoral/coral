@@ -91,6 +91,8 @@ const CORAL: &[&str] = &[
     "coral.search.reconcile.workspaces_checked",
     "coral.search.reconcile.workspaces_recounted",
     "coral.search.reconcile.rows_written",
+    // The Edition a Coral Instance started as.
+    "coral.edition",
 ];
 
 /// The standard keys Coral allows. `exception.message` and

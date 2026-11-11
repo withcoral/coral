@@ -157,7 +157,7 @@ function parameterDeclaration(parameter) {
 }
 
 // Why a Tool's default export does not take one object, as `{ node, reason }`
-// with the parameter to change, or undefined when it does (ADR 0033). A Tool
+// with the parameter to change, or undefined when it does (ADR 0034). A Tool
 // takes one argument, an object, as a Provider Tool does.
 function toolInputShapeError(checker, signatures) {
   const takeOne = 'take one object instead, such as `({ name }: { name: string })`';
@@ -504,9 +504,18 @@ function privateToolDeclarationResult(
   };
 }
 
+// `declarations` with the Tool chains `source` names, which the unknown-Tool
+// diagnostic reads. The caller sends the Tool declarations alone.
+function withToolChains(declarations, source, fileName, targetName) {
+  if (declarations?.tools == null) return declarations;
+  const chains = authoredToolChains(source, fileName, targetName);
+  return { ...declarations, tools: { chains, declarations: declarations.tools } };
+}
+
 // Prepares one Authored Tool, typed by `declarations` when they are given.
 // `builtinTools` are the keys of the Built-in Tools it can call on `coral`.
-function prepareAuthoredTool(source, builtinTools, declarations, fileName, targetName) {
+function prepareAuthoredTool(source, builtinTools, sentDeclarations, fileName, targetName) {
+  const declarations = withToolChains(sentDeclarations, source, fileName, targetName);
   const compilerOptions = {
     ...PROGRAM_COMPILER_OPTIONS,
     target: resolveTypeScriptTarget(targetName),

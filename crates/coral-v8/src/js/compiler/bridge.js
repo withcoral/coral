@@ -40,22 +40,26 @@ globalThis.__coralPrepareAuthoredTool = function prepareVirtualAuthoredTool(
     ),
   );
 };
-globalThis.__coralAnalyzeAuthoredToolCallPaths = function analyzeVirtualAuthoredToolCallPaths(
+globalThis.__coralAnalyzeProgram = function analyzeVirtualProgram(body, fileName, targetName) {
+  return compilerResultJson(analysisResult(analyzeProgram(body, fileName, targetName)));
+};
+globalThis.__coralAnalyzeAuthoredTool = function analyzeVirtualAuthoredTool(
   source,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(analyzeAuthoredToolCallPaths(source, fileName, targetName));
+  return compilerResultJson(analysisResult(analyzeAuthoredTool(source, fileName, targetName)));
 };
-globalThis.__coralAnalyzeProgramPaths = function analyzeVirtualProgramPaths(
+globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(
+  kind,
   source,
+  callPathsJson,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(analyzeProgramPaths(source, fileName, targetName));
-};
-globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(chainsJson, callPathsJson) {
-  return compilerResultJson(unknownToolCalls(JSON.parse(chainsJson), JSON.parse(callPathsJson)));
+  return compilerResultJson(
+    unknownToolCalls(kind, source, JSON.parse(callPathsJson), fileName, targetName),
+  );
 };
 globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   body,

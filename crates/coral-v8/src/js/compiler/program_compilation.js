@@ -84,7 +84,7 @@ function compileProgram(body, builtinTools, fileName, targetName) {
 }
 
 // Why a stored source the Program links cannot be called, or undefined:
-// one saved before every Tool took one object (ADR 0033). Coral never
+// one saved before every Tool took one object (ADR 0034). Coral never
 // rewrites a stored source, so its author saves or publishes it again.
 function linkedToolInputRefusal({ program, sourceFile, pathSegments, root }) {
   if (hasSyntaxErrors(sourceFile) || !Array.isArray(pathSegments)) return undefined;

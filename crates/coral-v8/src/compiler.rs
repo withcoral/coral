@@ -12,10 +12,10 @@ use crate::profile::TYPESCRIPT_PROFILE;
 use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map};
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
-    AuthoredToolCompilation, AuthoredToolDeclarationField, BuiltinTools, CompiledProgram,
-    CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error, IsolateLimits,
-    LinkedToolReference, LinkedToolSource, NamedCallPaths, ProgramExecutionControl, ToolReferences,
-    UnknownToolCall,
+    AnalyzedSource, AuthoredToolCompilation, AuthoredToolDeclarationField, BuiltinTools,
+    CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
+    IsolateLimits, LinkedToolReference, LinkedToolSource, ProgramExecutionControl,
+    SourceReferences, ToolReferences, UnknownToolCall,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -255,48 +255,42 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds the Private Tools, Shared Tools and Tools one Authored Tool
-    /// module names directly, to type it.
+    /// Finds the Private Tools, Shared Tools and Tools one source names
+    /// directly: what Program Admission links and checks, and what typed
+    /// Authored Tool preparation types.
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.private` access and malformed
-    /// module source.
-    pub fn authored_tool_call_paths(
+    /// Rejects computed or aliased `coral.private` or `coral.shared` access,
+    /// a Program body with malformed wrapper escapes, and an Authored Tool
+    /// module with syntax errors.
+    pub fn analyze(
         &self,
         deadline: Instant,
-        source: &str,
-    ) -> Result<NamedCallPaths, Error> {
-        let source = source.to_string();
+        source: &AnalyzedSource,
+    ) -> Result<SourceReferences, Error> {
+        let (function, file_name, source) = match source {
+            AnalyzedSource::Program(body) => ("__coralAnalyzeProgram", PROGRAM_FILE_NAME, body),
+            AnalyzedSource::AuthoredTool(module) => (
+                "__coralAnalyzeAuthoredTool",
+                AUTHORED_TOOL_FILE_NAME,
+                module,
+            ),
+        };
+        let source = source.clone();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.authored_tool_call_paths(&source)
+            compiler.analyze(function, file_name, &source)
         })
     }
 
-    /// Finds the Private Tools, Shared Tools and Tools one Program body names
-    /// directly, to link and check it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects computed or aliased `coral.private` access and malformed
-    /// wrapper escapes.
-    pub fn program_call_paths(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<NamedCallPaths, Error> {
-        let source = source.to_string();
-        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            compiler.call_paths("__coralAnalyzeProgramPaths", PROGRAM_FILE_NAME, &source)
-        })
-    }
-
-    /// The called chains of `tools` that name no Tool among `callable`, the
-    /// complete Call Paths the caller can call, by the rule the
-    /// unknown-Tool diagnostic of typed Authored Tool preparation applies:
-    /// a chain is known once a prefix of it is callable, and a prefix that
-    /// is only a namespace of a callable path reads on. A called chain that
-    /// ends at such a namespace is unknown too: calling it names no Tool.
+    /// The called literal Tool chains of one source that name no Tool among
+    /// `callable`, the complete Call Paths the caller can call, by the rule
+    /// the unknown-Tool diagnostic of typed Authored Tool preparation
+    /// applies: a chain is known once a prefix of it is callable, and a
+    /// prefix that is only a namespace of a callable path reads on. A called
+    /// chain that ends at such a namespace is unknown too: calling it names
+    /// no Tool. A Program body that is not one async-function body names
+    /// none.
     ///
     /// # Errors
     ///
@@ -304,14 +298,28 @@ impl ProgramCompiler {
     pub fn unknown_tool_calls(
         &self,
         deadline: Instant,
-        tools: &ToolReferences,
+        source: &AnalyzedSource,
         callable: &[String],
     ) -> Result<Vec<UnknownToolCall>, Error> {
-        let chains = tools.chains_json()?;
         let callable = serde_json::to_string(callable)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        let (kind, file_name, source) = match source {
+            AnalyzedSource::Program(body) => ("program", PROGRAM_FILE_NAME, body.clone()),
+            AnalyzedSource::AuthoredTool(module) => {
+                ("authoredTool", AUTHORED_TOOL_FILE_NAME, module.clone())
+            }
+        };
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
-            let json = compiler.call("__coralUnknownToolCalls", &[&chains, &callable])?;
+            let json = compiler.call(
+                "__coralUnknownToolCalls",
+                &[
+                    kind,
+                    &source,
+                    &callable,
+                    file_name,
+                    TYPESCRIPT_PROFILE.javascript_target(),
+                ],
+            )?;
             serde_json::from_str(&json).map_err(|error| Error::CompilerProtocol(error.to_string()))
         })
     }
@@ -526,12 +534,12 @@ struct AuthoredToolOutput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NamedCallPathsOutput {
+struct AnalysisOutput {
     references: Vec<LinkedToolReference>,
     #[serde(default)]
     shared_references: Vec<LinkedToolReference>,
     validation_error: Option<LinkedToolReferenceError>,
-    tools: Option<ToolReferences>,
+    tool_call_paths: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -665,32 +673,24 @@ impl CompilerIsolate {
         ))
     }
 
-    fn authored_tool_call_paths(&mut self, source: &str) -> Result<NamedCallPaths, Error> {
-        self.call_paths(
-            "__coralAnalyzeAuthoredToolCallPaths",
-            AUTHORED_TOOL_FILE_NAME,
-            source,
-        )
-    }
-
-    fn call_paths(
+    fn analyze(
         &mut self,
         function: &str,
         file_name: &str,
         source: &str,
-    ) -> Result<NamedCallPaths, Error> {
+    ) -> Result<SourceReferences, Error> {
         let json = self.call(
             function,
             &[source, file_name, TYPESCRIPT_PROFILE.javascript_target()],
         )?;
-        let output: NamedCallPathsOutput = serde_json::from_str(&json)
+        let output: AnalysisOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
-        match (output.validation_error, output.tools) {
+        match (output.validation_error, output.tool_call_paths) {
             (Some(error), _) => Err(invalid_linked_tool_reference(error)),
-            (None, Some(tools)) => Ok(NamedCallPaths {
+            (None, Some(tool_call_paths)) => Ok(SourceReferences {
                 private_tools: output.references,
                 shared_tools: output.shared_references,
-                tools,
+                tool_call_paths,
             }),
             (None, None) => Err(Error::CompilerProtocol(
                 "compiler returned no Tool references".to_string(),
@@ -1264,7 +1264,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    compiler.program_call_paths(deadline(), &source),
+                    compiler.analyze(deadline(), &AnalyzedSource::Program(source.clone())),
                     Err(Error::SourceTooDeeplyNested)
                 ),
                 "analysis"

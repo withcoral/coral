@@ -517,12 +517,25 @@ function referenceAnalysisProgram(source, fileName, targetName) {
   return { program, sourceFile };
 }
 
-// The Private Tools, Shared Tools and Tools one Program body names, from one analysis:
-// what Program Admission links and checks.
-function analyzeProgramPaths(body, fileName, targetName) {
+// One Program body's reference analysis, or undefined when it is not one
+// async-function body.
+function programReferenceAnalysis(body, fileName, targetName) {
   const wrapped = wrapProgramBody(body);
   const { program, sourceFile } = referenceAnalysisProgram(wrapped.source, fileName, targetName);
-  if (!hasExpectedProgramShape(sourceFile)) {
+  return hasExpectedProgramShape(sourceFile) ? { wrapped, program, sourceFile } : undefined;
+}
+
+// The called Tool chains of one Program body, as the running Program calls
+// them.
+function programToolChains({ wrapped, program, sourceFile }) {
+  return calledPathChains(toolReferenceChains(sourceFile, program, wrapped.authoredMappings));
+}
+
+// The Private Tools, Shared Tools and Tools one Program body names, from one
+// analysis: what Program Admission links and checks.
+function analyzeProgram(body, fileName, targetName) {
+  const analysis = programReferenceAnalysis(body, fileName, targetName);
+  if (analysis === undefined) {
     return {
       references: [],
       validationError: {
@@ -532,16 +545,10 @@ function analyzeProgramPaths(body, fileName, targetName) {
       },
     };
   }
-
-  const analysis = linkedToolPathAnalysis(sourceFile, program, wrapped.authoredMappings);
-  if (analysis.validationError !== undefined) return analysis;
-  const chains = calledPathChains(
-    toolReferenceChains(sourceFile, program, wrapped.authoredMappings),
-  );
-  return {
-    ...analysis,
-    tools: { callPaths: candidateToolPaths(chains), chains },
-  };
+  const { wrapped, program, sourceFile } = analysis;
+  const linked = linkedToolPathAnalysis(sourceFile, program, wrapped.authoredMappings);
+  if (linked.validationError !== undefined) return linked;
+  return { ...linked, chains: programToolChains(analysis) };
 }
 
 // The chains as the running Program calls them: it joins segments with
@@ -649,15 +656,35 @@ function candidateToolPaths(chains) {
   return [...paths].toSorted();
 }
 
-// The Private Tools, Shared Tools and Tools one Authored Tool module names, from
-// one analysis: what its typed preparation needs.
-function analyzeAuthoredToolCallPaths(source, fileName, targetName) {
+// The Tool chains one Authored Tool module names.
+function authoredToolChains(source, fileName, targetName) {
+  const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
+  return toolReferenceChains(sourceFile, program);
+}
+
+// The Tool chains one source calls: a Program body's as the running Program
+// calls them, or an Authored Tool module's. A Program body that is not one
+// async-function body names none.
+function sourceToolChains(kind, source, fileName, targetName) {
+  if (kind === 'authoredTool') return authoredToolChains(source, fileName, targetName);
+  const analysis = programReferenceAnalysis(source, fileName, targetName);
+  return analysis === undefined ? [] : programToolChains(analysis);
+}
+
+// The Private Tools, Shared Tools and Tools one Authored Tool module names,
+// from one analysis: what Program Admission links and checks, and what its
+// typed preparation needs.
+function analyzeAuthoredTool(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
   const dependencies = linkedToolDependencyAnalysis(sourceFile, program);
   if (dependencies.validationError !== undefined) return dependencies;
-  const chains = toolReferenceChains(sourceFile, program);
-  return {
-    ...dependencies,
-    tools: { callPaths: candidateToolPaths(chains), chains },
-  };
+  return { ...dependencies, chains: toolReferenceChains(sourceFile, program) };
+}
+
+// One analysis as the bridge returns it: the chains stay in the compiler,
+// and only the Call Paths they could name leave it.
+function analysisResult({ chains, ...analysis }) {
+  return chains === undefined
+    ? analysis
+    : { ...analysis, toolCallPaths: candidateToolPaths(chains) };
 }

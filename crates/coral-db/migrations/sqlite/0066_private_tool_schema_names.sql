@@ -1,4 +1,4 @@
--- Saved Functions are Private Tools (ADR 0033). This step renames the tables,
+-- Saved Functions are Private Tools (ADR 0034). This step renames the tables,
 -- columns, constraints and indexes named after Saved Functions, and the stored
 -- values that a check constraint names: the lifecycle actions
 -- `saved_function.*`, the declaration fields format, and the Search Entity

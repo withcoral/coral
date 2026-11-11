@@ -3,7 +3,7 @@
 //! schemas, and the results it writes against the output schemas. They
 //! create, replace and remove one of the caller's own Private Tools;
 //! coral-tools checks each path, description and source (ADR 0031,
-//! ADR 0033).
+//! ADR 0034).
 
 use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
