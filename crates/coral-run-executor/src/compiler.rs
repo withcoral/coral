@@ -145,8 +145,8 @@ pub enum Diagnostics {
 /// Why no compiler answered a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unavailable {
-    /// The compiler had no room for the call: a [`crate::PullStreamCompiler`]
-    /// whose stream's room is spent.
+    /// The compiler had no room for the call: its queue is full, or a
+    /// [`crate::PullStreamCompiler`]'s stream has spent its room.
     Busy,
     /// The compiler stopped before it answered.
     Stopped,

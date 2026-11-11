@@ -441,8 +441,8 @@ pub mod compile_failure {
         /// Compiling passed the compiler's heap limit.
         #[prost(bool, tag = "4")]
         MemoryLimit(bool),
-        /// The compiler had no room for the call. No compiler sends it now that
-        /// the room bounds its queue.
+        /// The compiler had no room for the call: its queue of waiting calls was
+        /// full.
         #[prost(bool, tag = "5")]
         Busy(bool),
         /// The compiler stopped before it answered.

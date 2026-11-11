@@ -785,8 +785,7 @@ pub enum Error {
     /// The compiler worker stopped before returning a result.
     #[error("TypeScript compiler is unavailable")]
     CompilerUnavailable,
-    /// The compiler queue cannot accept more work. No compiler returns it
-    /// now that the queue has no bound.
+    /// The bounded compiler queue cannot accept more work.
     #[error("TypeScript compiler is busy")]
     CompilerBusy,
     /// The compiler deadline expired; active compilation is terminated.
@@ -929,9 +928,8 @@ impl Error {
 pub enum CompileFailure {
     /// The source was rejected, with a safe bounded diagnostic for its author.
     Rejected(String),
-    /// The compiler had no room for the request. This crate's compiler
-    /// never returns it; a Run Executor's pull stream whose room is spent
-    /// does.
+    /// The compiler had no room for the request: its bounded queue is
+    /// full, or a Run Executor's pull stream has spent its room.
     Busy,
     /// The compile deadline expired.
     TimedOut,
