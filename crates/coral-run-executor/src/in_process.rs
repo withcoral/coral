@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn errors_keep_the_failure_and_kind_each_caller_reported_before() {
         type Case = (fn() -> coral_v8::Error, &'static str);
-        let errors: [Case; 14] = [
+        let errors: [Case; 15] = [
             (|| coral_v8::Error::CompilerBusy, "compiler_busy"),
             (
                 || coral_v8::Error::CompilationTimedOut,
@@ -232,6 +232,10 @@ mod tests {
                     column: 7,
                 },
                 "invalid_linked_tool_reference",
+            ),
+            (
+                || coral_v8::Error::InvalidPrivateToolSave("names no function".into()),
+                "invalid_private_tool_save",
             ),
             (
                 || coral_v8::Error::MemoryLimitExceeded,

@@ -19,6 +19,7 @@ coral-db.workspace = true
 coral-telemetry.workspace = true
 coral-v8.workspace = true
 prost.workspace = true
+ring.workspace = true
 sea-query.workspace = true
 sha2.workspace = true
 tokio.workspace = true
@@ -30,7 +31,13 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
+tracing-subscriber.workspace = true

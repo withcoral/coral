@@ -67,6 +67,11 @@ const CORAL: &[&str] = &[
     // them.
     "coral.run_executor.protocol_level",
     "coral.run_executor.peer_protocol_level",
+    // A local Run Executor: its id, the exit code Coral reaped, and the
+    // limit on local children that holds work back.
+    "coral.run_executor.id",
+    "coral.run_executor.exit_code",
+    "coral.run_executor.local_limit",
     // A search index write: the Provider Generation it covers, what started
     // it, why it was skipped, how long it waited for the writer and took, in
     // milliseconds, how many rows a statistics refresh wrote, and the code of

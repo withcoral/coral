@@ -5,6 +5,7 @@ use coral_test_support::TestDatabase;
 use hyper_util::rt::TokioIo;
 use sea_query::ExprTrait as _;
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Code;
@@ -13,7 +14,11 @@ use tonic::codegen::http::uri::PathAndQuery;
 use tonic::transport::{Channel, Endpoint};
 
 use super::*;
-use crate::wire::v1::{Hello, Room};
+use crate::CompileError;
+use crate::compile_wire::{analyze_call, compile_call, failure, package_sha256};
+use crate::wire::v1::compiled::Answer;
+use crate::wire::v1::{self as wire, Hello, Room};
+use coral_v8::AnalyzedSource;
 
 const TOKEN: &str = "an-operator-token-of-at-least-32-characters";
 const ROTATED: &str = "the-next-operator-token-during-a-rotation";
@@ -22,6 +27,75 @@ const INSTANCE: &str = "coral-instance";
 
 use pull_request::Message as Up;
 use pull_response::Message as Down;
+
+const TIME_LEFT_MS: u32 = 2_000;
+
+/// The call each compile here sends.
+fn call() -> Call {
+    Call::Compile(wire::ProgramSource {
+        source: "return 42;".to_owned(),
+        linked_tools: Vec::new(),
+        callable: None,
+        builtin_tools: Vec::new(),
+    })
+}
+
+/// An analysis of two sources.
+fn analyze() -> Call {
+    analyze_call(
+        &["return 1;", "return 2;"].map(|source| AnalyzedSource::Program(source.to_owned())),
+    )
+}
+
+/// An analysis answer with `found` results.
+fn analyzed(number: u64, found: usize) -> Compiled {
+    let sources = vec![wire::SourceReferences::default(); found];
+    Compiled {
+        number,
+        answer: Some(Answer::Analyzed(wire::Analyzed { sources })),
+    }
+}
+
+/// The `Compile` that carries [`call`] as `number`.
+fn compile(number: u64, time_left_ms: u32) -> Compile {
+    Compile {
+        number,
+        time_left_ms,
+        call: Some(call()),
+    }
+}
+
+fn package(script: &str, digest: [u8; 32]) -> Answer {
+    Answer::Package(wire::Package {
+        script: script.to_owned(),
+        source_map: "{}".to_owned(),
+        sha256: digest.to_vec(),
+        diagnostics: Vec::new(),
+    })
+}
+
+/// A sound answer to [`call`] sent as `number`.
+pub(crate) fn compiled(number: u64) -> Compiled {
+    Compiled {
+        number,
+        answer: Some(package("42", package_sha256("42", "{}"))),
+    }
+}
+
+pub(crate) fn up(compiled: Compiled) -> PullRequest {
+    PullRequest {
+        message: Some(Up::Compiled(compiled)),
+    }
+}
+
+/// What `answer` receives within 5 s, or why nothing came.
+async fn answer_within(
+    answer: sync_mpsc::Receiver<Read>,
+) -> Result<Read, sync_mpsc::RecvTimeoutError> {
+    tokio::task::spawn_blocking(move || answer.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+}
 
 struct Link {
     address: SocketAddr,
@@ -310,15 +384,8 @@ async fn sends_spend_the_room_and_a_report_replaces_it() {
         runs: vec![run(1), run(2)],
     };
     assert_eq!(pull.next().await.unwrap(), Some(Down::Taken(taken)));
-    let compile = Compile {
-        number: 0,
-        time_left_ms: 2_000,
-    };
-    let answer = link.streams.compile(stream, compile).unwrap();
-    let first = Compile {
-        number: 1,
-        time_left_ms: 2_000,
-    };
+    let answer = link.streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+    let first = compile(1, TIME_LEFT_MS);
     assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(first)));
     // Three units sent: nothing more goes.
     assert_eq!(link.held(&id, |_| true).await.free, 0);
@@ -327,23 +394,45 @@ async fn sends_spend_the_room_and_a_report_replaces_it() {
         Err(Refused::NoRoom)
     );
     assert_eq!(
-        link.streams.compile(stream, compile).err(),
+        link.streams.compile(stream, TIME_LEFT_MS, call()).err(),
         Some(Refused::NoRoom)
     );
 
     pull.send(Up::Room(Room { free: 2 })).await;
     link.held(&id, |held| held.free == 2).await;
-    pull.send(Up::Compiled(Compiled { number: 1 })).await;
-    let answered = timeout(Duration::from_secs(5), answer).await.unwrap();
-    assert_eq!(answered.unwrap(), Compiled { number: 1 });
+    pull.send(Up::Compiled(compiled(1))).await;
+    assert!(matches!(answer_within(answer).await, Ok(Read::Package(_))));
     // An answer frees nothing; the next report does.
-    link.streams.compile(stream, compile).unwrap();
+    link.streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
     assert_eq!(link.held(&id, |_| true).await.free, 1);
-    let second = Compile {
-        number: 2,
-        time_left_ms: 2_000,
-    };
+    let second = compile(2, TIME_LEFT_MS);
     assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(second)));
+}
+
+#[test]
+fn a_compile_past_the_link_bound_is_refused_alone() {
+    let streams = PullStreams::default();
+    let (outbound, mut sent) = mpsc::unbounded_channel();
+    let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
+    let too_large = compile_call(
+        &"x".repeat(MESSAGE_MAX_BYTES),
+        &[],
+        &coral_v8::BuiltinTools::default(),
+        None,
+    );
+
+    let refused = streams.compile(stream, TIME_LEFT_MS, too_large);
+    assert_eq!(refused.err(), Some(Refused::TooLarge));
+    // Nothing went, no room was spent, and no number was used.
+    assert_eq!(
+        sent.try_recv().err(),
+        Some(mpsc::error::TryRecvError::Empty)
+    );
+    assert!(!streams.compiles_in_flight(stream));
+    assert_eq!(streams.held().first().map(|held| held.free), Some(1));
+    streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+    let next = sent.try_recv().unwrap().unwrap();
+    assert_eq!(next.message, Some(Down::Compile(compile(1, TIME_LEFT_MS))));
 }
 
 #[tokio::test]
@@ -403,7 +492,7 @@ async fn a_protocol_violation_ends_its_stream_and_not_the_connection() {
     for violation in [
         Some(Up::Hello(hello(PROTOCOL_LEVEL, 1))),
         None,
-        Some(Up::Compiled(Compiled { number: 7 })),
+        Some(Up::Compiled(compiled(7))),
     ] {
         let label = format!("{violation:?}");
         let mut pull = link.welcomed(&channel, hello(PROTOCOL_LEVEL, 1)).await;
@@ -469,12 +558,9 @@ async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_an
         let id = hello.run_executor_id.clone();
         let mut pull = link.welcomed(&channel, hello).await;
         let stream = link.held(&id, |_| true).await.stream;
-        let compile = Compile {
-            number: 0,
-            time_left_ms: if answered { 10_000 } else { 600 },
-        };
-        let due = Instant::now() + Duration::from_millis(compile.time_left_ms.into());
-        let answer = link.streams.compile(stream, compile).unwrap();
+        let time_left_ms = if answered { 10_000 } else { 600 };
+        let due = Instant::now() + Duration::from_millis(time_left_ms.into());
+        let answer = link.streams.compile(stream, time_left_ms, call()).unwrap();
         let Some(Down::Compile(Compile { number, .. })) = pull.next().await.unwrap() else {
             panic!("a Compile");
         };
@@ -491,14 +577,17 @@ async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_an
         let refused = link.streams.take(stream, vec![run(1)]);
         assert_eq!(refused, Err(Refused::Closed), "{label}");
         if answered {
-            pull.send(Up::Compiled(Compiled { number })).await;
+            pull.send(Up::Compiled(compiled(number))).await;
         }
-        let reply = timeout(Duration::from_secs(5), answer).await.unwrap();
+        let reply = answer_within(answer).await;
         if answered {
-            assert_eq!(reply.unwrap(), Compiled { number }, "{label}");
+            assert!(matches!(reply, Ok(Read::Package(_))), "{label}");
         } else {
             // The compile held the stream until its deadline, unanswered.
-            assert!(reply.is_err(), "{label}");
+            assert!(
+                matches!(reply, Err(sync_mpsc::RecvTimeoutError::Disconnected)),
+                "{label}"
+            );
             assert!(Instant::now() >= due, "{label}");
         }
         assert_eq!(
@@ -514,4 +603,131 @@ async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_an
             assert_eq!(link.dials.load(Ordering::SeqCst), 2);
         }
     }
+}
+
+#[test]
+fn an_answer_that_breaks_the_protocol_changes_nothing() {
+    // A call, its sound answer, and whether a read is the one it takes.
+    type Fixture = (fn() -> Call, fn(u64) -> Compiled, fn(&Read) -> bool);
+    const COMPILE: Fixture = (call, compiled, |read| matches!(read, Read::Package(_)));
+    const ANALYSIS: Fixture = (
+        analyze,
+        |number| analyzed(number, 2),
+        |read| matches!(read, Read::Analyzed(found) if found.len() == 2),
+    );
+    // A case: its name, the call, and the answer that breaks it.
+    type Break = (&'static str, Fixture, fn(u64) -> Compiled);
+    let breaks: [Break; 11] = [
+        ("a number never sent", COMPILE, |number| {
+            compiled(number + 1)
+        }),
+        ("an empty answer", COMPILE, |number| Compiled {
+            number,
+            answer: None,
+        }),
+        ("a digest that does not match", COMPILE, |number| Compiled {
+            number,
+            answer: Some(package("42", package_sha256("4", "2{}"))),
+        }),
+        ("a failure with no kind", COMPILE, |number| Compiled {
+            number,
+            answer: Some(Answer::Failure(wire::CompileFailure::default())),
+        }),
+        ("an analysis for a compile", COMPILE, |number| {
+            analyzed(number, 1)
+        }),
+        ("an analysis failure for a compile", COMPILE, |number| {
+            Compiled {
+                number,
+                answer: Some(Answer::AnalysisFailure(wire::AnalysisFailure {
+                    index: 0,
+                    failure: Some(failure(CompileError::TimedOut)),
+                })),
+            }
+        }),
+        ("a package for an analysis", ANALYSIS, |number| {
+            compiled(number)
+        }),
+        ("an analysis that misses a source", ANALYSIS, |number| {
+            analyzed(number, 1)
+        }),
+        ("an analysis with an extra result", ANALYSIS, |number| {
+            analyzed(number, 3)
+        }),
+        (
+            "an analysis that stops past its sources",
+            ANALYSIS,
+            |number| Compiled {
+                number,
+                answer: Some(Answer::AnalysisFailure(wire::AnalysisFailure {
+                    index: 2,
+                    failure: Some(failure(CompileError::TimedOut)),
+                })),
+            },
+        ),
+        ("a compile failure for an analysis", ANALYSIS, |number| {
+            Compiled {
+                number,
+                answer: Some(Answer::Failure(failure(CompileError::TimedOut))),
+            }
+        }),
+    ];
+    for (name, (call, sound, takes), broken) in breaks {
+        let streams = PullStreams::default();
+        let (outbound, _sent) = mpsc::unbounded_channel();
+        let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
+        let answer = streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+        let refused = streams.receive(stream, up(broken(1)));
+        assert_eq!(
+            refused.map_err(|status| status.code()),
+            Err(Code::InvalidArgument),
+            "{name}"
+        );
+        // The compile still waits, and takes its answer.
+        assert!(streams.compiles_in_flight(stream), "{name}");
+        assert!(answer.try_recv().is_err(), "{name}");
+        streams.receive(stream, up(sound(1))).unwrap();
+        let read = answer.try_recv().unwrap();
+        assert!(takes(&read), "{name}: {read:?}");
+        // A second answer answers no compile in flight.
+        let again = streams.receive(stream, up(sound(1)));
+        assert_eq!(
+            again.map_err(|status| status.code()),
+            Err(Code::InvalidArgument),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_message_up_to_the_link_bound_reaches_coral() {
+    let link = start(Timing::default()).await;
+    let channel = link.connect().await;
+    let hello = hello(PROTOCOL_LEVEL, 1);
+    let id = hello.run_executor_id.clone();
+    let mut pull = link.welcomed(&channel, hello).await;
+    let stream = link.held(&id, |_| true).await.stream;
+    let answer = link.streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+    let Some(Down::Compile(Compile { number, .. })) = pull.next().await.unwrap() else {
+        panic!("a Compile");
+    };
+
+    // Twice tonic's default bound of 4 MiB.
+    let rejection = wire::Rejection {
+        kind: "compilation".to_owned(),
+        message: "x".repeat(8 * 1024 * 1024),
+    };
+    let failure = wire::CompileFailure {
+        failure: Some(wire::compile_failure::Failure::Rejected(rejection)),
+    };
+    let compiled = Compiled {
+        number,
+        answer: Some(Answer::Failure(failure)),
+    };
+    pull.send(Up::Compiled(compiled)).await;
+    let reply = answer_within(answer).await;
+    assert!(
+        matches!(reply, Ok(Read::Failure(CompileError::Diagnostics(_)))),
+        "{reply:?}"
+    );
 }

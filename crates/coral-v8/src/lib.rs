@@ -419,7 +419,9 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
-    pub(crate) fn new(
+    /// A package with its non-blocking diagnostics, as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         javascript: String,
         source_map: String,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -463,6 +465,12 @@ impl CompiledProgram {
     pub const fn profile(&self) -> TypeScriptProfile {
         TYPESCRIPT_PROFILE
     }
+
+    /// The JavaScript, source map and diagnostics, without a copy.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, Vec<CompilerDiagnostic>) {
+        (self.javascript, self.source_map, self.diagnostics)
+    }
 }
 
 /// One callable-rooted field projected from an emitted Private Tool declaration.
@@ -474,6 +482,12 @@ pub struct AuthoredToolDeclarationField {
 }
 
 impl AuthoredToolDeclarationField {
+    /// The field at `path` with its `text`.
+    #[must_use]
+    pub const fn new(path: String, text: String) -> Self {
+        Self { path, text }
+    }
+
     /// Returns the readable JavaScript path rooted at `input` or `result`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -500,7 +514,9 @@ pub struct AuthoredToolCompilation {
 }
 
 impl AuthoredToolCompilation {
-    pub(crate) const fn new(
+    /// The authoring output as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         declaration: String,
         declaration_field_projection: Result<Vec<AuthoredToolDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -582,6 +598,12 @@ pub struct LinkedToolReference {
 }
 
 impl LinkedToolReference {
+    /// The reference to `path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(path: String, line: u64, column: u64) -> Self {
+        Self { path, line, column }
+    }
+
     /// Returns the dotted path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -643,6 +665,18 @@ impl LinkedToolSource {
         }
     }
 
+    /// The member of `coral` that holds it.
+    #[must_use]
+    pub const fn root(&self) -> LinkedToolRoot {
+        self.root
+    }
+
+    /// The path under its root.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
     /// The module source.
     #[must_use]
     pub fn source(&self) -> &str {
@@ -669,6 +703,21 @@ pub struct SourceReferences {
 }
 
 impl SourceReferences {
+    /// The `private_tools`, `shared_tools` and `tool_call_paths` one source
+    /// names.
+    #[must_use]
+    pub const fn new(
+        private_tools: Vec<LinkedToolReference>,
+        shared_tools: Vec<LinkedToolReference>,
+        tool_call_paths: Vec<String>,
+    ) -> Self {
+        Self {
+            private_tools,
+            shared_tools,
+            tool_call_paths,
+        }
+    }
+
     /// Returns the directly named `coral.private` paths.
     #[must_use]
     pub fn private_tools(&self) -> &[LinkedToolReference] {
@@ -699,6 +748,18 @@ pub struct ToolReferences {
 }
 
 impl ToolReferences {
+    /// The references `chains` make.
+    #[must_use]
+    pub const fn new(chains: Vec<ToolChain>) -> Self {
+        Self { chains }
+    }
+
+    /// Returns each literal chain, as preparation found it.
+    #[must_use]
+    pub fn chains(&self) -> &[ToolChain] {
+        &self.chains
+    }
+
     /// Returns each Call Path a literal chain calls, such as
     /// `coral.providers.github.repos.get`, once each, in path order.
     #[must_use]
@@ -735,11 +796,42 @@ impl ToolReferences {
 /// One literal chain, relative to `coral`, whether it is called, and whether
 /// it was cut before a computed segment.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ToolChain {
+pub struct ToolChain {
     segments: Vec<String>,
     called: bool,
     #[serde(default)]
     computed: bool,
+}
+
+impl ToolChain {
+    /// The chain of `segments` under `coral`, whether it is `called`, and
+    /// whether it was cut before a `computed` segment.
+    #[must_use]
+    pub const fn new(segments: Vec<String>, called: bool, computed: bool) -> Self {
+        Self {
+            segments,
+            called,
+            computed,
+        }
+    }
+
+    /// Returns the segments relative to `coral`.
+    #[must_use]
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
+
+    /// Returns whether the source calls the chain.
+    #[must_use]
+    pub const fn called(&self) -> bool {
+        self.called
+    }
+
+    /// Returns whether the chain was cut before a computed segment.
+    #[must_use]
+    pub const fn computed(&self) -> bool {
+        self.computed
+    }
 }
 
 /// A called literal Tool chain under `coral` that names
@@ -753,6 +845,16 @@ pub struct UnknownToolCall {
 }
 
 impl UnknownToolCall {
+    /// The unknown `call_path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(call_path: String, line: u64, column: u64) -> Self {
+        Self {
+            call_path,
+            line,
+            column,
+        }
+    }
+
     /// The complete chain as written, such as
     /// `coral.providers.notion.retrievePage`.
     #[must_use]
@@ -796,6 +898,18 @@ impl CallableDeclaration {
             declaration,
         }
     }
+
+    /// Returns the path segments.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// Returns the declaration.
+    #[must_use]
+    pub fn declaration(&self) -> &str {
+        &self.declaration
+    }
 }
 
 /// The Built-in Tools a Program calls directly on `coral`, by Tool Key, such
@@ -810,6 +924,12 @@ impl BuiltinTools {
     #[must_use]
     pub fn new(keys: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// Returns the Tool Keys.
+    #[must_use]
+    pub fn keys(&self) -> &[String] {
+        &self.0
     }
 
     /// The keys as the compiler reads them.
@@ -868,6 +988,30 @@ impl CoralDeclarations {
         self.shared_tools = Some(shared_tools);
         self
     }
+
+    /// Returns the size above which a typed declaration is saved untyped.
+    #[must_use]
+    pub const fn declaration_max_bytes(&self) -> usize {
+        self.declaration_max_bytes
+    }
+
+    /// Returns the declarations that type the Tools, if any do.
+    #[must_use]
+    pub fn tools(&self) -> Option<&[CallableDeclaration]> {
+        self.tools.as_deref()
+    }
+
+    /// Returns the declarations that type `coral.private`, if any do.
+    #[must_use]
+    pub fn private_tools(&self) -> Option<&[CallableDeclaration]> {
+        self.private_tools.as_deref()
+    }
+
+    /// Returns the declarations that type `coral.shared`, if any do.
+    #[must_use]
+    pub fn shared_tools(&self) -> Option<&[CallableDeclaration]> {
+        self.shared_tools.as_deref()
+    }
 }
 
 /// TypeScript compiler diagnostic category.
@@ -895,6 +1039,24 @@ pub struct CompilerDiagnostic {
 }
 
 impl CompilerDiagnostic {
+    /// The diagnostic as the compiler reported it.
+    #[must_use]
+    pub const fn new(
+        category: DiagnosticCategory,
+        code: u64,
+        message: String,
+        line: Option<u64>,
+        column: Option<u64>,
+    ) -> Self {
+        Self {
+            category,
+            code,
+            message,
+            line,
+            column,
+        }
+    }
+
     /// Returns the diagnostic category.
     #[must_use]
     pub const fn category(&self) -> DiagnosticCategory {
@@ -1017,6 +1179,30 @@ pub enum Error {
 }
 
 impl Error {
+    /// The [`Self::code`] of each error the source's author caused, which
+    /// [`CompileFailure`] reports as [`CompileFailure::Rejected`]. This list
+    /// decides that, so a peer that reads a rejection's code back checks it
+    /// against the same set.
+    pub const REJECTION_CODES: [&'static str; 8] = [
+        "compilation",
+        "invalid_program_body",
+        "invalid_authored_tool",
+        "source_too_deeply_nested",
+        "forbidden_capability",
+        "invalid_linked_tool_reference",
+        "invalid_private_tool_save",
+        "memory_limit_exceeded",
+    ];
+    /// The [`Self::code`] of each error a compile fails with for a reason
+    /// the source did not cause. The other errors that
+    /// [`CompileFailure::Failed`] carries come from running a Program.
+    pub const COMPILER_FAILURE_CODES: [&'static str; 4] = [
+        "initialization",
+        "compiler_protocol",
+        "invalid_source_map",
+        "engine",
+    ];
+
     /// The error's stable kind, for an event's `error.type`: a bounded
     /// code that never carries the error's text.
     #[must_use]
@@ -1058,7 +1244,8 @@ impl Error {
 pub enum CompileFailure {
     /// The source was rejected, with a safe bounded diagnostic for its author.
     Rejected(String),
-    /// The bounded compiler queue had no room for the request.
+    /// The compiler had no room for the request: its bounded queue is
+    /// full, or a Run Executor's pull stream has spent its room.
     Busy,
     /// The compile deadline expired.
     TimedOut,
@@ -1075,14 +1262,9 @@ impl From<Error> for CompileFailure {
             Error::CompilerBusy => Self::Busy,
             Error::CompilationTimedOut => Self::TimedOut,
             Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
-            authored @ (Error::Compilation { .. }
-            | Error::InvalidProgramBody
-            | Error::InvalidAuthoredTool(_)
-            | Error::SourceTooDeeplyNested
-            | Error::ForbiddenCapability(_)
-            | Error::InvalidLinkedToolReference { .. }
-            | Error::InvalidPrivateToolSave(_)
-            | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
+            authored if Error::REJECTION_CODES.contains(&authored.code()) => {
+                Self::Rejected(format_compiler_error(authored))
+            }
             other => Self::Failed(other.code()),
         }
     }
