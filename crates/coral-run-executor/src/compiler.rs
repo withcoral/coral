@@ -43,8 +43,9 @@ pub trait CompilerClient: Send + Sync {
     /// wait for a compiler takes none of the compile's time.
     ///
     /// `Some` is a client that holds one unit of room for this caller: its
-    /// first call spends it, so no other caller takes it meanwhile. The
-    /// caller makes its calls through it. `None`: this client is ready as
+    /// first call spends it, so no other caller takes it meanwhile, and
+    /// dropped before any call, it frees the unit. The caller makes its
+    /// calls through it. `None`: this client is ready as
     /// it is, as a compiler in this process always is.
     ///
     /// # Errors
