@@ -234,7 +234,7 @@ export default async function threadLinkedWork(input: { channel: string; ts: str
   for (const m of all.matchAll(/https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)/g)) {
     if (seen.has(m[0]) || linked.length >= 15) continue; seen.add(m[0]);
     const g: any = m[3] === "pull" ? await coral.providers.github.pulls._get({ owner: m[1], repo: m[2], pull_number: Number(m[4]) }) : await coral.providers.github.issues._get({ owner: m[1], repo: m[2], issue_number: Number(m[4]) });
-    linked.push(g?.metadata?.status < 300 ? { source: "github", ref: `{m[2]}#${m[4]}`, title: g.data.title, state: g.data.merged_at ? "merged" : g.data.state, owner: g.data.user?.login, url: m[0] } : { source: "github", ref: m[0], error: `status ${g?.metadata?.status}` });
+    linked.push(g?.metadata?.status < 300 ? { source: "github", ref: `${m[2]}#${m[4]}`, title: g.data.title, state: g.data.merged_at ? "merged" : g.data.state, owner: g.data.user?.login, url: m[0] } : { source: "github", ref: m[0], error: `status ${g?.metadata?.status}` });
   }
   const parse = (x: any) => { try { return JSON.parse((x?.data?.content ?? []).map((c: any) => c?.text ?? "").join("") || "{}"); } catch { return {}; } };
   for (const m of all.matchAll(/\b([A-Z][A-Z0-9]{1,9}-\d+)\b/g)) {
