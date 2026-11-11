@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use sha2::{Digest as _, Sha256};
 
-/// The model Universal Search embeds with, as ADR 0033 picks it:
+/// The model Universal Search embeds with:
 /// `BAAI/bge-small-en-v1.5`, the author's fp32 ONNX file at source revision
 /// `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`, MIT.
 ///
