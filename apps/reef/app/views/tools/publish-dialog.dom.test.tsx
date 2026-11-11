@@ -155,6 +155,35 @@ test('publishes the reviewed content with the chosen policy, then closes', async
 // Catches: a refused publish that closes the dialog or hides the reason, or
 // a dialog that still offers the stale review, so the next publish would be
 // refused again or would replace a revision the owner never saw.
+// Catches: a review that does not warn when the source calls private tools,
+// which each caller must have at those paths, or that warns about a review
+// that calls none.
+test('warns that each caller needs the private tools the source calls', async () => {
+  open({
+    reviews: [
+      review({
+        calledTools: [
+          'coral.private.contacts.find',
+          'coral.private.contacts.list',
+          'coral.providers.mailer.send',
+        ],
+      }),
+    ],
+  })
+  await publishable()
+  expect(
+    screen.getByText(
+      'Each caller runs their own coral.private.contacts.find, coral.private.contacts.list. A program that calls this shared tool fails for a caller who has none.',
+    ),
+  ).toBeVisible()
+})
+
+test('says nothing of private tools when the source calls none', async () => {
+  open({ reviews: [review()] })
+  await publishable()
+  expect(screen.queryByText(/Each caller runs their own/)).toBeNull()
+})
+
 test('after a refused publish, says why and reviews again', async () => {
   const refusal = 'Another owner published this shared tool first. Review the changes again.'
   const { reviewed, posted, onOpenChange } = open({

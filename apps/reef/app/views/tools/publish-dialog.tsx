@@ -3,7 +3,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'rea
 import { useFetcher } from 'react-router'
 
 import { PolicyToggle, type PolicyState } from '@/components/policy-toggle'
-import { sharedToolCallPath, sharedToolPath } from '@/lib/call-root'
+import { privateToolPath, sharedToolCallPath, sharedToolPath } from '@/lib/call-root'
 import { countLabel } from '@/utils/count-label'
 import { CallTool } from '@/views/activity/call-tool'
 import { Fields } from '@/views/management/forms'
@@ -399,6 +399,9 @@ function Decisions({ review }: { review: PublishReviewView }) {
     [review.sharedTools],
   )
   const errors = review.diagnostics.some((d) => d.category === 'error')
+  // Each caller links their own private tool at these paths, so a program
+  // fails at its start for a caller who has none.
+  const privateTools = review.calledTools.filter((callPath) => privateToolPath(callPath) !== null)
   return (
     <>
       <div className={styles.publishPart}>
@@ -428,6 +431,11 @@ function Decisions({ review }: { review: PublishReviewView }) {
           {review.runtimeBuiltPaths.length > 0 && (
             <Fact icon="TriangleAlert" color="warning">
               {`This list can be incomplete. The source also builds tool paths when it runs, from ${review.runtimeBuiltPaths.join(', ')}.`}
+            </Fact>
+          )}
+          {privateTools.length > 0 && (
+            <Fact icon="TriangleAlert" color="warning">
+              {`Each caller runs their own ${privateTools.join(', ')}. A program that calls this shared tool fails for a caller who has none.`}
             </Fact>
           )}
         </div>
