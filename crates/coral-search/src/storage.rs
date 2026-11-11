@@ -88,6 +88,14 @@ impl Extension {
         }
     }
 
+    /// Why an extension this role just created is still not usable.
+    const fn unusable_once_created(self) -> &'static str {
+        match self {
+            Self::PgTrgm => "the created extension is not in the database",
+            Self::Vector => "the created extension has no `halfvec` type",
+        }
+    }
+
     const fn remedy(self) -> &'static str {
         match self {
             Self::PgTrgm => {
@@ -134,7 +142,8 @@ async fn probe_postgres(
 /// A role that may not create it, an extension in a schema off the search
 /// path, or a second process creating it at the same time fails the create.
 /// A second read then decides; the failure only explains an extension that
-/// is still not usable.
+/// is still not usable. A create that succeeds is read again before it
+/// commits.
 async fn probe_extension(
     database: &Database,
     extension: Extension,
@@ -148,6 +157,14 @@ async fn probe_extension(
 
     let mut transaction = database.begin().await?;
     match repository::create_extension(&mut transaction, extension).await {
+        // pgvector before 0.7 creates `vector` without `halfvec`. The
+        // creation is rolled back, so a refused boot changes nothing.
+        Ok(()) if !repository::extension_usable(&mut transaction, extension).await? => {
+            transaction.rollback().await?;
+            Ok(FeatureProbe::Missing {
+                cause: extension.unusable_once_created().to_string(),
+            })
+        }
         Ok(()) => {
             transaction.commit().await?;
             Ok(FeatureProbe::Present)
@@ -199,16 +216,14 @@ pub enum VectorStorage {
 }
 
 /// Creates the vector table on Postgres, or drops and creates it again when
-/// this binary would create it with another statement, such as one for
-/// another dimension. A table this binary would create is kept with its
-/// vectors.
+/// the manifest's dimension changes. A table of the manifest's dimension is
+/// kept with its vectors.
 ///
 /// The table lives outside the migration chain: a migration that names a
 /// vector type fails on a Postgres without pgvector, where Coral with the
-/// setting off must start. Its comment records the statement that created
-/// it. Process bootstrap calls this once, right after the chain: a table in
-/// a schema that has no state marker yet reads as pre-v1 state at the next
-/// boot.
+/// setting off must start. Process bootstrap calls this once, right after
+/// the chain: a table in a schema that has no state marker yet reads as
+/// pre-v1 state at the next boot.
 ///
 /// # Errors
 ///
@@ -229,13 +244,13 @@ pub async fn prepare_vector_table(
     // first committed.
     repository::lock_vector_table(&mut transaction).await?;
     match repository::vector_table(&mut transaction, dimension).await? {
-        VectorTable::Current => {
+        VectorTable::SameDimension => {
             transaction.rollback().await?;
             return Ok(());
         }
-        VectorTable::Other => {
+        VectorTable::OtherDimension => {
             tracing::info!(
-                "dropping the search vector table that this Coral would not create; every Search Entity embeds again"
+                "dropping the search vector table of another dimension; every Search Entity embeds again"
             );
             repository::drop_vector_table(&mut transaction).await?;
         }

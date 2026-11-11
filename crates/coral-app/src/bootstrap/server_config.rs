@@ -112,9 +112,9 @@ impl LoadedServerConfig {
         self.parse()?.search.reconcile_interval()
     }
 
-    /// Universal Search's vector side: off when `[search]
-    /// semantic_search_enabled` is false, otherwise vectors of the model
-    /// manifest's dimension.
+    /// Universal Search's vector side: vectors of the model manifest's
+    /// dimension when `[search] semantic_search_enabled` is true, otherwise
+    /// off.
     pub(crate) fn vector_storage(&self) -> Result<coral_search::VectorStorage, AppError> {
         Ok(if self.parse()?.search.semantic_search_enabled {
             coral_search::VectorStorage::On {
@@ -588,8 +588,9 @@ struct SearchSettings {
     /// Seconds between the end of one reconcile pass and the start of the
     /// next.
     reconcile_interval_seconds: u64,
-    /// Whether search also matches by meaning. Off, Coral keeps no vectors
-    /// and needs no pgvector.
+    /// Whether Coral prepares search by meaning. Off, Coral keeps no
+    /// vectors and needs no pgvector. Off by default until search by
+    /// meaning ships.
     semantic_search_enabled: bool,
 }
 
@@ -597,7 +598,7 @@ impl Default for SearchSettings {
     fn default() -> Self {
         Self {
             reconcile_interval_seconds: 5 * 60,
-            semantic_search_enabled: true,
+            semantic_search_enabled: false,
         }
     }
 }
@@ -1392,18 +1393,16 @@ client_secret = 'test-secret'
     }
 
     #[test]
-    fn the_vector_side_is_on_at_the_manifest_dimension_unless_the_operator_turns_it_off() {
+    fn the_vector_side_is_off_unless_the_operator_turns_it_on() {
         let on = coral_search::VectorStorage::On {
             dimension: coral_embed::MANIFEST.dimension,
         };
+        let off = coral_search::VectorStorage::Off;
         for (raw, expected) in [
-            ("", on),
-            ("[search]", on),
+            ("", off),
+            ("[search]", off),
+            ("[search]\nsemantic_search_enabled = false", off),
             ("[search]\nsemantic_search_enabled = true", on),
-            (
-                "[search]\nsemantic_search_enabled = false",
-                coral_search::VectorStorage::Off,
-            ),
         ] {
             assert_eq!(
                 load(raw).1.vector_storage().expect(raw),

@@ -352,8 +352,8 @@ async fn install_shared_extensions(pool: &sqlx::PgPool) -> Result<(), sqlx::Erro
     const DUPLICATE_OBJECT: &str = "42710";
     for statement in [
         "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public",
-        // Universal Search's vector side, on by default. The test Postgres
-        // image ships pgvector.
+        // Universal Search's vector side, for tests that turn it on. The
+        // test Postgres image ships pgvector.
         "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public",
     ] {
         match sqlx::query(statement).execute(pool).await {
