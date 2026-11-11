@@ -145,6 +145,8 @@ attribute! {
         Mcp => "mcp",
         /// A Tool Coral serves itself.
         Builtin => "builtin",
+        /// A Private or Shared Tool Coral performs by running its body in the Run.
+        Code => "code",
     }
 }
 
@@ -264,7 +266,7 @@ attribute! {
     /// The bounded kind of work sent to the TypeScript compiler.
     CompilerOperation {
         Program => "program",
-        SavedFunction => "saved_function",
+        AuthoredTool => "authored_tool",
         Analysis => "analysis",
     }
 }

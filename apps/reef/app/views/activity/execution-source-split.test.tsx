@@ -27,7 +27,8 @@ function context(overrides: Partial<RunDetail> = {}): RunDetail {
     kind: 'run',
     run,
     source: 'export default async function program() {\n  return 1\n}',
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
   }
@@ -86,6 +87,7 @@ const invocationRow: Extract<ActivityRow, { kind: 'invocation' }> = {
   requiresAction: false,
   dispatchedAt: run.startedAt,
   waitingNanos: '0',
+  toolKind: 'provider',
 }
 
 function markup(props: Partial<React.ComponentProps<typeof ExecutionSourceSplit>> = {}) {
@@ -208,12 +210,13 @@ it('never attributes the parent Run’s failure location to a tool selection', (
 })
 
 it('highlights the line Coral stored for the selected record, in the snapshot it names', () => {
-  const savedFunction = 'workspaces/finance/savedFunctions/notify'
+  const privateTool = 'workspaces/finance/privateTools/notify'
   markup({
     context: matchableContext({
-      linkedFunctions: [
+      linkedSharedTools: [],
+      linkedPrivateTools: [
         {
-          savedFunction,
+          privateTool,
           path: 'billing.notify',
           source: 'export default async () => {\n  console.log("sent")\n}',
         },
@@ -229,10 +232,10 @@ it('highlights the line Coral stored for the selected record, in the snapshot it
       startedAt: run.startedAt,
       eventKind: 'program.logged',
       agent: '',
-      sourceLocation: { document: { kind: 'saved_function', savedFunction }, line: 2, column: 11 },
+      sourceLocation: { document: { kind: 'private_tool', privateTool }, line: 2, column: 11 },
     },
   })
-  expect(screen.getByText('Saved-function snapshot: billing.notify')).toBeInTheDocument()
+  expect(screen.getByText('Private tool snapshot: billing.notify')).toBeInTheDocument()
   expect(document.querySelector('[data-line="2"]')).toHaveAttribute('data-highlighted', 'true')
   // Catches: the highlight told only by color, with no text a screen reader announces.
   expect(screen.getByRole('status')).toHaveTextContent('Line 2')

@@ -1,5 +1,6 @@
 //! Minimal Provider authority snapshots for retained Invocation evidence.
 //! Publication creates one Provider; these projections have no independent lifecycle.
+use coral_catalog::AuthoredToolKind;
 use coral_workspace::WorkspaceId;
 
 use coral_db::Transaction;
@@ -16,7 +17,9 @@ pub(crate) use repository::{exact_in_transaction, provider_id_in_transaction};
 mod tests;
 
 /// Immutable, Workspace-unique JavaScript path under which one Provider's
-/// Tools are called. No Call Root is a prefix of another, so at most one
+/// Tools are called. The Built-in Call Root `coral` holds every other one,
+/// but it owns only a single segment that no other member of `coral` takes
+/// (see [`coral_catalog::NON_TOOL_ROOT_MEMBERS`]), so at most one Call Root
 /// owns a Call Path.
 ///
 /// Each kind of Provider is one variant. A rule that depends on the kind
@@ -25,8 +28,15 @@ mod tests;
 pub enum ProviderCallRoot {
     /// `coral.providers.<namespace>`: a Provider an Owner adds.
     Owner(ProviderNamespace),
-    /// `coral.workspace`: the Workspace's Built-in Provider, which Coral defines.
+    /// `coral`: the Workspace's Built-in Provider, which Coral defines. Its
+    /// Tools sit directly on `coral`, beside `emit` and `ToolError`.
     Builtin,
+    /// `coral.private`: the Workspace's Private Provider, whose Tools are
+    /// each Principal's own Private Tools.
+    Private,
+    /// `coral.shared`: the Workspace's Shared Provider, whose Tools are
+    /// the Shared Tools its Owners published.
+    Shared,
 }
 
 /// The short name an Owner gives a Provider: a non-reserved safe ASCII
@@ -37,10 +47,14 @@ pub struct ProviderNamespace {
     call_root: String,
 }
 
+/// The Call Root of every Workspace's Built-in Provider.
+const BUILTIN_ROOT: &str = "coral";
+/// The Call Root of every Workspace's Private Provider.
+const PRIVATE_ROOT: &str = AuthoredToolKind::Private.call_root();
+/// The Call Root of every Workspace's Shared Provider.
+const SHARED_ROOT: &str = AuthoredToolKind::Shared.call_root();
 /// The prefix of every Owner-added Provider's Call Root.
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
-/// The Call Root of every Workspace's Built-in Provider.
-const BUILTIN_ROOT: &str = "coral.workspace";
 
 impl ProviderNamespace {
     /// Validates one Provider Namespace.
@@ -70,14 +84,18 @@ impl ProviderNamespace {
 }
 
 impl ProviderCallRoot {
-    /// Validates one Call Root: `coral.providers.<namespace>` or `coral.workspace`.
+    /// Validates one Call Root: `coral.providers.<namespace>`, `coral`,
+    /// `coral.private` or `coral.shared`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] for any other value.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        if value == BUILTIN_ROOT {
-            return Ok(Self::Builtin);
+        match value {
+            BUILTIN_ROOT => return Ok(Self::Builtin),
+            PRIVATE_ROOT => return Ok(Self::Private),
+            SHARED_ROOT => return Ok(Self::Shared),
+            _ => {}
         }
         value
             .strip_prefix(OWNER_ROOT_PREFIX)
@@ -85,7 +103,7 @@ impl ProviderCallRoot {
             .map(Self::Owner)
             .ok_or_else(|| {
                 Error::InvalidInput(
-                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral.workspace"
+                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, coral, coral.private, or coral.shared"
                         .to_string(),
                 )
             })
@@ -93,16 +111,27 @@ impl ProviderCallRoot {
 
     /// Splits `call_path` into the Call Root that owns it and the
     /// Tool-relative path under that root, if a valid root owns it.
+    ///
+    /// Any kind of root can own one. A caller that reads only the Tools a
+    /// Provider's Generation holds matches on the root, and leaves the
+    /// Private and Shared roots to coral-tools, which keeps their Tools.
     #[must_use]
     pub fn split_call_path(call_path: &str) -> Option<(Self, &str)> {
-        call_path
-            .match_indices('.')
-            .take(3)
-            .filter_map(|(end, _)| call_path.get(..end).and_then(|root| Self::parse(root).ok()))
-            .find_map(|root| {
-                root.relative_path(call_path)
-                    .map(|relative| (root, relative))
-            })
+        if let Some(kind) = AuthoredToolKind::of_call_path(call_path) {
+            let relative = kind.relative_path(call_path)?;
+            return relative_path_is_valid(relative)
+                .then_some((Self::of_authored_tools(kind), relative));
+        }
+        let members = call_path.strip_prefix(BUILTIN_ROOT)?.strip_prefix('.')?;
+        if let Some(owned) = members.strip_prefix("providers.") {
+            let (namespace, relative) = owned.split_once('.')?;
+            let namespace = ProviderNamespace::parse(namespace).ok()?;
+            return relative_path_is_valid(relative).then_some((Self::Owner(namespace), relative));
+        }
+        let builtin = relative_path_is_valid(members)
+            && !members.contains('.')
+            && !coral_catalog::NON_TOOL_ROOT_MEMBERS.contains(&members);
+        builtin.then_some((Self::Builtin, members))
     }
 
     /// Returns the complete Call Root.
@@ -111,35 +140,65 @@ impl ProviderCallRoot {
         match self {
             Self::Owner(namespace) => &namespace.call_root,
             Self::Builtin => BUILTIN_ROOT,
+            Self::Private => PRIVATE_ROOT,
+            Self::Shared => SHARED_ROOT,
         }
     }
 
-    /// Returns the namespace an Owner gave the Provider; `None` for the
-    /// Built-in Provider, which has none.
+    /// Returns the namespace an Owner gave the Provider; `None` for a
+    /// Provider Coral defines, which has none.
     #[must_use]
     pub const fn namespace(&self) -> Option<&ProviderNamespace> {
         match self {
             Self::Owner(namespace) => Some(namespace),
-            Self::Builtin => None,
+            Self::Builtin | Self::Private | Self::Shared => None,
         }
     }
 
-    /// Returns the Call Root's last segment, such as `github` or `workspace`, for
+    /// The Call Root of the Workspace's Provider for Tools of `kind`.
+    #[must_use]
+    pub const fn of_authored_tools(kind: coral_catalog::AuthoredToolKind) -> Self {
+        match kind {
+            coral_catalog::AuthoredToolKind::Private => Self::Private,
+            coral_catalog::AuthoredToolKind::Shared => Self::Shared,
+        }
+    }
+
+    /// The kind of Tool the Provider at this Call Root holds, when Coral
+    /// performs its Tools from authored source that coral-tools keeps: the
+    /// Private and the Shared Provider. `None` for a Provider whose
+    /// Generation holds its Tools.
+    #[must_use]
+    pub const fn authored_tool_kind(&self) -> Option<coral_catalog::AuthoredToolKind> {
+        match self {
+            Self::Private => Some(coral_catalog::AuthoredToolKind::Private),
+            Self::Shared => Some(coral_catalog::AuthoredToolKind::Shared),
+            Self::Owner(_) | Self::Builtin => None,
+        }
+    }
+
+    /// Whether Coral performs the Provider's Tools from authored source
+    /// that coral-tools keeps: the Private and the Shared Provider. Such a
+    /// Provider's Generation holds no Tool, and it has no Accounts.
+    #[must_use]
+    pub const fn performs_code(&self) -> bool {
+        self.authored_tool_kind().is_some()
+    }
+
+    /// Returns the Call Root's last segment, such as `github` or `coral`, for
     /// search text and labels. No rule reads it.
     #[must_use]
     pub fn name(&self) -> &str {
         let root = self.as_str();
         root.rsplit('.').next().unwrap_or(root)
     }
+}
 
-    /// Returns the Tool-relative path of a Call Path under this root, or
-    /// `None` when the path belongs elsewhere or has an empty or control segment.
-    fn relative_path<'a>(&self, call_path: &'a str) -> Option<&'a str> {
-        let relative = call_path.strip_prefix(self.as_str())?.strip_prefix('.')?;
-        let valid = !relative.chars().any(char::is_control)
-            && relative.split('.').all(|segment| !segment.is_empty());
-        valid.then_some(relative)
-    }
+/// Whether `relative` can be a Tool-relative path: no empty or control
+/// segment.
+fn relative_path_is_valid(relative: &str) -> bool {
+    !relative.chars().any(char::is_control)
+        && relative.split('.').all(|segment| !segment.is_empty())
 }
 
 /// Credential selection configured for one Provider.

@@ -124,7 +124,7 @@ export const CollapsedManyWorkspaces: Story = {
       state: 'active',
     })),
   },
-  parameters: { initialEntry: '/workspaces/demo/providers' },
+  parameters: { initialEntry: '/workspaces/demo/tools' },
 }
 // The list scrolls under the fixed Workspaces label; the footer stays put.
 export const ManyWorkspaces: Story = {
@@ -138,7 +138,7 @@ export const ManyWorkspaces: Story = {
       state: 'active',
     })),
   },
-  parameters: { initialEntry: '/workspaces/demo/providers' },
+  parameters: { initialEntry: '/workspaces/demo/tools' },
 }
 export const LocalUser: Story = {
   args: { auth: { mode: 'disabled' }, userName: undefined },
@@ -182,8 +182,9 @@ export const NoWorkspace: Story = {
   parameters: { initialEntry: '/' },
 }
 export const Agents: Story = { parameters: { initialEntry: '/workspaces/demo/agents' } }
-export const Functions: Story = {
-  parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
+// A provider's own pages keep its resource path, and still mark Tools.
+export const ToolsOnProviderPage: Story = {
+  parameters: { initialEntry: '/workspaces/demo/providers/github/settings' },
 }
 export const ArchiveConfirmation: Story = {
   play: async ({ canvasElement }) => {

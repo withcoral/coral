@@ -1,4 +1,5 @@
 use super::*;
+use coral_catalog::AuthoredToolKind;
 use coral_workspace::{AgentDisplayName, AgentRegistrationId, AgentState, WorkspaceId};
 
 #[tokio::test]
@@ -7,22 +8,22 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
     let fixture = TestModules::new(Arc::new(engine.clone())).await;
     let (workspace, owner) = fixture.user_scope("user:deletion-owner", "Deletion").await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace).await;
-    let saved = SavedFunctionModule::new(
+    let saved = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    let path = SavedFunctionPath::parse("snapshots.value").unwrap();
+    let path = PrivateToolPath::parse("snapshots.value").unwrap();
     saved
         .save(
-            &saved_function_change(agent.clone(), 20, '1'),
+            &private_tool_change(agent.clone(), 20, '1'),
             &workspace,
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Answer").unwrap(),
-                SavedFunctionSource::parse("export default () => 42;").unwrap(),
+                AuthoredToolDescription::parse("Answer").unwrap(),
+                AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await
@@ -32,7 +33,7 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         .start(
             &agent,
             &workspace,
-            submission("return coral.functions.snapshots.value();"),
+            submission("return coral.private.snapshots.value();"),
         )
         .await
         .unwrap();
@@ -74,10 +75,13 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         Err(coral_workspace::Error::AgentNotFound)
     ));
     assert!(matches!(
-        saved
-            .get_agent(&owner, &workspace, agent.principal().id(), &path)
-            .await,
-        Err(FunctionsError::SavedFunctionNotFound)
+        coral_tools::PrivateToolInspection::new(
+            fixture.database.clone(),
+            fixture.workspaces.clone()
+        )
+        .get_agent(&owner, &workspace, agent.principal().id(), &path)
+        .await,
+        Err(ToolsError::NotFound(AuthoredToolKind::Private))
     ));
     release.send(()).unwrap();
     let terminal = wait_for_terminal(&fixture.runs, &owner, &workspace, run.run_id()).await;

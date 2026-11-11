@@ -1,6 +1,7 @@
 //! App-owned environment accessors for local runtime setup.
 
 use std::env::VarError;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use super::consts::{
@@ -57,6 +58,35 @@ impl AppEnvironment {
                 ))
             })
     }
+}
+
+/// The whole environment of a local Run Executor: this process's `TZ`,
+/// `LANG` and `LC_*`, and on Windows `SystemRoot`, without which no socket
+/// opens.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+pub(crate) fn run_executor_environment() -> Vec<(OsString, OsString)> {
+    std::env::vars_os()
+        .filter(|(name, _)| {
+            name.to_str()
+                .is_some_and(|name| reaches_run_executor(name, cfg!(windows)))
+        })
+        .collect()
+}
+
+/// Whether a local Run Executor gets the variable `name`. Windows ignores
+/// the case of a variable's name.
+fn reaches_run_executor(name: &str, windows: bool) -> bool {
+    let name = if windows {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_owned()
+    };
+    matches!(name.as_str(), "TZ" | "LANG")
+        || name.starts_with("LC_")
+        || (windows && name == "SYSTEMROOT")
 }
 
 /// Trims the environment variable name a deployment setting holds. A blank
@@ -157,7 +187,29 @@ fn flag(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::env_var_name;
+    use super::{env_var_name, reaches_run_executor};
+
+    #[test]
+    fn a_local_run_executor_gets_only_the_time_zone_the_locale_and_the_windows_root() {
+        for (name, unix, windows) in [
+            ("TZ", true, true),
+            ("LANG", true, true),
+            ("LC_ALL", true, true),
+            ("Lang", false, true),
+            ("lc_ctype", false, true),
+            ("SystemRoot", false, true),
+            ("PATH", false, false),
+            ("LANGUAGE", false, false),
+            ("CORAL_RUN_EXECUTOR_TOKEN", false, false),
+        ] {
+            assert_eq!(reaches_run_executor(name, false), unix, "{name} on Unix");
+            assert_eq!(
+                reaches_run_executor(name, true),
+                windows,
+                "{name} on Windows"
+            );
+        }
+    }
 
     #[test]
     fn env_var_names_are_trimmed_and_fail_closed() {

@@ -61,7 +61,8 @@ function pageFor({ search: query }: Location, { roots, children }: Lists): Activ
               run: selectedRow,
               request: approvalRequest,
               source: 'return null;',
-              linkedFunctions: [],
+              linkedSharedTools: [],
+              linkedPrivateTools: [],
               terminal: { kind: 'unavailable' },
             }
           : null

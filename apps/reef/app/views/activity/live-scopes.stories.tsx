@@ -352,7 +352,8 @@ function pageFor(url: URL): ActivityPage {
     run: runView(model),
     request: null,
     source: 'export default async () => {}',
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: model.failed
       ? { kind: 'failed', code: 'program_execution_failed', message: 'Failed', error: null }
       : model.ended

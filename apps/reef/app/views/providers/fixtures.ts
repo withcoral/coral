@@ -1,7 +1,7 @@
 // Provider data for unit tests: providers and their tools in the Demo
 // workspace, which the test user owns.
 
-import { CORAL_ICONS } from './coral-icons'
+import { CORAL_ICONS, PRIVATE_ICONS, SHARED_ICONS } from './coral-icons'
 import type { ToolView, ProviderView, WorkspaceView } from './types'
 
 export const workspaceView: WorkspaceView = {
@@ -46,7 +46,7 @@ export function provider(
     displayName,
     namespace,
     callRoot: `coral.providers.${namespace}`,
-    builtin: false,
+    kind: 'added',
     account: 'No account',
     blockers: [],
     personalAccountAction: null,
@@ -63,13 +63,65 @@ export function provider(
   return view
 }
 
-/** Coral's Built-in Provider, with its tools under `coral.workspace`. */
+/**
+ * The private group as `agents` own some of its tools. Each tool is a path of
+ * your own, or a path and the agent that owns it.
+ */
+export function privateProvider(
+  id: string,
+  tools: Array<string | [relativePath: string, agent: string]> = [],
+): ProviderView {
+  const view: ProviderView = {
+    ...provider(id, 'Private', ''),
+    kind: 'private',
+    callRoot: 'coral.private',
+    path: '/workspaces/demo/tools/private',
+    icons: PRIVATE_ICONS,
+  }
+  view.tools = tools.map((entry) => {
+    const [relativePath, agent] = typeof entry === 'string' ? [entry] : entry
+    const group = relativePath.includes('.')
+      ? relativePath.slice(0, relativePath.lastIndexOf('.'))
+      : ''
+    return {
+      ...tool(view, relativePath, group),
+      // Its namespace heads the group, so the row shows the name inside it.
+      ...(group && { nameInGroup: relativePath.slice(group.length + 1) }),
+      policy: 'enabled' as const,
+      // An agent's tool at your own tool's path is another tool, with its own key.
+      ...(agent && {
+        key: `${agent}/${relativePath}`,
+        agent: {
+          id: agent.toLowerCase(),
+          label: agent,
+          path: `/workspaces/demo/agents/${agent.toLowerCase()}`,
+        },
+      }),
+    }
+  })
+  view.readyCount = view.totalCount = view.tools.length
+  return view
+}
+
+/** The shared group, with a shared tool at each path. */
+export function sharedProvider(id: string, tools: string[] = []): ProviderView {
+  return {
+    ...privateProvider(id, tools),
+    displayName: 'Shared',
+    kind: 'shared',
+    callRoot: 'coral.shared',
+    path: '/workspaces/demo/tools/shared',
+    icons: SHARED_ICONS,
+  }
+}
+
+/** Coral's Built-in Provider, with its tools directly on `coral`. */
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = {
     ...provider(id, 'Coral', ''),
-    builtin: true,
+    kind: 'coral',
     icons: CORAL_ICONS,
-    callRoot: 'coral.workspace',
+    callRoot: 'coral',
   }
   view.tools = [
     tool(view, 'addProvider'),

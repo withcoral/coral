@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_v8::{
-    AnalyzedSource, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
-    SavedFunctionCompilation, SourceReferences,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CompiledProgram, CoralDeclarations,
+    LinkedToolSource, SourceReferences,
 };
 
 use crate::{AnalysisError, CompileError, CompilerClient};
@@ -61,21 +61,24 @@ impl CompilerClient for CountingCompiler {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        linked_tools: &[LinkedToolSource],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         self.record(|calls| calls.compile += 1);
         self.inner
-            .compile(time_left, source, saved_functions, callable)
+            .compile(time_left, source, linked_tools, builtin_tools, callable)
     }
 
     fn prepare(
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError> {
+    ) -> Result<AuthoredToolCompilation, CompileError> {
         self.record(|calls| calls.prepare += 1);
-        self.inner.prepare(time_left, source, declarations)
+        self.inner
+            .prepare(time_left, source, builtin_tools, declarations)
     }
 }

@@ -20,7 +20,7 @@ import { ToolAccessState, type ToolAccess } from '@/generated/coral/management/v
 import type {
   AccountChoice,
   AccountLabel,
-  ToolDetailView,
+  ProviderToolDetailView,
   ToolHintsView,
   ToolUsage,
   ToolView,
@@ -247,7 +247,17 @@ export function toolHints(hints: ToolHints | undefined): ToolHintsView {
   return view
 }
 
-function accessState(value: ToolAccessState): ToolView['policy'] {
+/** The Tool Access State a form names by its policy, or undefined for any other value. */
+export function accessStateOf(policy: string): ToolAccessState | undefined {
+  const states: Record<string, ToolAccessState> = {
+    enabled: ToolAccessState.ENABLED,
+    approval_required: ToolAccessState.APPROVAL_REQUIRED,
+    disabled: ToolAccessState.DISABLED,
+  }
+  return Object.hasOwn(states, policy) ? states[policy] : undefined
+}
+
+export function policyState(value: ToolAccessState): ToolView['policy'] {
   switch (value) {
     case ToolAccessState.ENABLED:
       return 'enabled'
@@ -275,7 +285,7 @@ export function toolView(o: ToolAccess): ToolView {
     key: toolKey(o.tool),
     relativePath: o.relativePath,
     hints: toolHints(o.hints),
-    policy: accessState(o.accessState),
+    policy: policyState(o.accessState),
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
     group: toolGroup(o),
@@ -287,13 +297,29 @@ export async function toolDetail(
   api: Pick<ManagementApi, 'providers'>,
   provider: string,
   relativePath: string,
-): Promise<ToolDetailView> {
+): Promise<ProviderToolDetailView> {
   const { summary, description } = await api.providers.getTool({ parent: provider, relativePath })
-  return { relativePath, summary, description }
+  return { kind: 'provider', relativePath, summary, description }
 }
 
 // Coral bounds a page of tools with their decisions to this many.
 const TOOL_ACCESS_PAGE_SIZE = 1000
+
+/** Every tool of a provider with its decision. The page groups and filters them all. */
+export async function listAllToolAccess(api: Pick<ManagementApi, 'policies'>, parent: string) {
+  const tools: ToolAccess[] = []
+  let pageToken = ''
+  do {
+    const page = await api.policies.listToolAccess({
+      parent,
+      pageSize: TOOL_ACCESS_PAGE_SIZE,
+      pageToken,
+    })
+    tools.push(...page.tools)
+    pageToken = page.nextPageToken
+  } while (pageToken)
+  return tools
+}
 
 function enabled(state: ProviderState) {
   switch (state) {
@@ -339,36 +365,36 @@ export async function providerView(
   /** Your own account's state for each separate-account provider, by provider name. */
   personalAccounts: ReadonlyMap<string, PersonalAccountState>,
 ): Promise<ProviderView> {
-  const path = providerPath(workspacePath, provider.name)
-  const toolViews: ToolView[] = []
-  let pageToken = ''
-  do {
-    const page = await api.policies.listToolAccess({
-      parent: provider.name,
-      pageSize: TOOL_ACCESS_PAGE_SIZE,
-      pageToken,
-    })
-    for (const tool of page.tools) toolViews.push(toolView(tool))
-    pageToken = page.nextPageToken
-  } while (pageToken)
-  const id = provider.name.split('/').at(-1)!
-  const isEnabled = enabled(provider.state)
   return {
-    id,
+    ...groupView(provider, (await listAllToolAccess(api, provider.name)).map(toolView)),
+    kind: provider.builtin ? 'coral' : 'added',
+    path: providerPath(workspacePath, provider.name),
+    personalAccountAction: personalAccountAction(provider, personalAccounts),
+  }
+}
+
+/**
+ * What every group of the Tools page reads from its Provider and its tools.
+ * The caller says which kind of group it is, where its page is, and what the
+ * reader must do with their own account.
+ */
+export function groupView(
+  provider: Provider,
+  tools: ToolView[],
+): Omit<ProviderView, 'kind' | 'path' | 'personalAccountAction'> {
+  return {
+    id: provider.name.split('/').at(-1)!,
     displayName: provider.displayName,
     namespace: provider.namespace,
     callRoot: provider.callRoot,
-    builtin: provider.builtin,
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),
-    personalAccountAction: personalAccountAction(provider, personalAccounts),
     searchIndex: searchIndexView(provider),
-    readyCount: toolViews.filter((tool) => tool.available).length,
-    totalCount: toolViews.length,
+    readyCount: tools.filter((tool) => tool.available).length,
+    totalCount: tools.length,
     etag: provider.etag,
-    path,
-    enabled: isEnabled,
-    tools: toolViews,
+    enabled: enabled(provider.state),
+    tools,
     icons: providerIcons(provider),
   }
 }

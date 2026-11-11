@@ -1,6 +1,6 @@
 use crate::schema::{
     Direction, ProjectionOptions, SharedTypes, TypeScriptNames, TypeScriptProjection,
-    TypeScriptProjector, render_callable_declaration,
+    TypeScriptProjector, input_parameter, render_callable_declaration, takes_input,
 };
 use crate::{CatalogDiagnostic, HttpExecutionBinding, HttpResponseStatus, SchemaGraph, SchemaId};
 
@@ -113,12 +113,8 @@ pub(super) fn project_typescript(
         outputs.push(format!("{HTTP_RESULT}<unknown, number, string | null>"));
     }
     let output = outputs.join(" | ");
-    let input_declared = !matches!(input.as_str(), "{}" | "Record<string, never>");
-    let input_parameter = if input_declared {
-        format!("input: {input}")
-    } else {
-        String::new()
-    };
+    let input_declared = takes_input(&input);
+    let input_parameter = input_parameter(&input);
     let type_references = projector.share_named_declarations(shared)?;
     let mut declarations = Vec::new();
     if projector.uses_named_scalar("BinaryValue") {

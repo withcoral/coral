@@ -271,6 +271,35 @@ message ActivityInvocation {
   string agent = 16;
   // Where the Run's accepted source made the call. Absent if not recorded.
   ActivitySourceLocation source_location = 18;
+  // The kind of Tool the call called.
+  ActivityToolKind tool_kind = 19;
+  // The Shared Tool Revision the call ran, from 1. Zero for every other kind.
+  uint64 shared_tool_revision = 20;
+  // The Private or Shared Tool call whose body made this call. Absent for
+  // the Program's own calls and for calls a module's top-level code made.
+  ActivityInvocationParent parent = 21;
+}
+// The kind of Tool a call called.
+enum ActivityToolKind {
+  // A kind unknown to this client.
+  ACTIVITY_TOOL_KIND_UNSPECIFIED = 0;
+  // A Provider Tool, including a Built-in Tool, such as coral.search.
+  ACTIVITY_TOOL_KIND_PROVIDER = 1;
+  // A Private Tool at coral.private.
+  ACTIVITY_TOOL_KIND_PRIVATE = 2;
+  // A Shared Tool at coral.shared.
+  ACTIVITY_TOOL_KIND_SHARED = 3;
+}
+// The Tool call whose body made another call, in the same Run.
+message ActivityInvocationParent {
+  // workspaces/{workspace}/invocations/{invocation}.
+  string invocation = 1;
+  // Path the caller called it by, such as coral.private.weather.today.
+  string call_path = 2;
+  // The kind of Tool it called.
+  ActivityToolKind tool_kind = 3;
+  // The Shared Tool Revision it ran, from 1. Zero for every other kind.
+  uint64 shared_tool_revision = 4;
 }
 // Selects one Run. List filters do not apply.
 message InspectRunRequest {
@@ -288,15 +317,28 @@ message InspectRunRequest {
   // substituted.
   string account_connection = 5;
 }
-// Source of a Saved Function as it was when the Run was accepted.
+// Source of a Private Tool as it was when the Run was accepted.
 message ActivitySourceSnapshot {
-  // workspaces/{workspace}/savedFunctions/{saved_function} at the time. Unique among
-  // the Run's snapshots. The Saved Function may have changed or been deleted since.
-  string saved_function = 1;
+  // workspaces/{workspace}/privateTools/{private_tool} at the time. Unique among
+  // the Run's snapshots. The Private Tool may have changed or been deleted since.
+  string private_tool = 1;
   // Path the Program called it by.
   string path = 2;
   // TypeScript source as accepted.
   string source = 3;
+}
+// The Shared Tool Revision a Run linked, with its source as accepted. The
+// Shared Tool may have a newer revision or have been removed since.
+message ActivitySharedToolSnapshot {
+  // Path the Program called it by, relative to coral.shared.
+  string path = 1;
+  // The Shared Tool Revision the Run linked, from 1.
+  uint64 revision = 2;
+  // TypeScript source as accepted.
+  string source = 3;
+  // workspaces/{workspace}/sharedTools/{shared_tool} at the time. Unique among
+  // the Run's snapshots.
+  string shared_tool = 4;
 }
 // Where the Run's accepted source made one record: a Tool call, an
 // emitted value or a log message. Absent when Coral did not record one,
@@ -307,9 +349,12 @@ message ActivitySourceLocation {
   oneof document {
     // The Run's submitted Program source.
     ActivityEmpty program = 1;
-    // workspaces/{workspace}/savedFunctions/{saved_function}: the saved_function of
-    // exactly one of the Run's linked_functions snapshots.
-    string saved_function = 2;
+    // workspaces/{workspace}/privateTools/{private_tool}: the private_tool of
+    // exactly one of the Run's linked_private_tools snapshots.
+    string private_tool = 2;
+    // workspaces/{workspace}/sharedTools/{shared_tool}: the shared_tool of
+    // exactly one of the Run's linked_shared_tools snapshots.
+    string shared_tool = 5;
   }
   // Line number, starting at 1. Lines end at every ECMAScript line terminator:
   // CRLF, CR, LF, U+2028 and U+2029, also inside strings and comments.
@@ -321,8 +366,9 @@ message ActivitySourceLocation {
 }
 // One stack frame in code the author wrote.
 message ActivityErrorFrame {
-  // "Program" or "Saved Function coral.functions.{path}". Unlike
-  // ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
+  // "Program", "Private Tool coral.private.{path}" or
+  // "Shared Tool coral.shared.{path}". Unlike ActivitySourceLocation, it names
+  // a Private Tool by path, not by snapshot.
   string source = 1;
   // Line number, starting at 1.
   uint32 line = 2;
@@ -526,8 +572,8 @@ message InspectRunResponse {
   ActivityRun run = 1;
   // TypeScript the caller submitted, as accepted.
   string submitted_source = 2;
-  // Source of each Saved Function the Run used, as accepted.
-  repeated ActivitySourceSnapshot linked_functions = 3;
+  // Source of each Private Tool the Run used, as accepted.
+  repeated ActivitySourceSnapshot linked_private_tools = 3;
   // A page of Events in order: output, logs, cancellation requests and so on.
   repeated ActivityRunEvent events = 4;
   // Pass as event_after for the next page. Equals the request's event_after if the page is empty.
@@ -557,6 +603,8 @@ message InspectRunResponse {
   string trace_id = 14;
   // The parts of run.context_impact_bytes. Absent when that total is absent.
   ActivityRunContextImpact context_impact = 15;
+  // The Shared Tool Revision of each Shared Tool the Run used, as accepted.
+  repeated ActivitySharedToolSnapshot linked_shared_tools = 16;
 }
 // The retained payload bytes that net to a Run's context impact:
 // final_value_bytes + output_bytes - tool_result_bytes.
@@ -969,8 +1017,8 @@ message InspectTaskInteractionResponse {
     ActivityDiscovery discovery = 2;
     // workspaces/{workspace}/runs/{run} the call started.
     string run = 3;
-    // Saved Function the call saved or deleted. It may have changed or been deleted since.
-    string saved_function = 5;
+    // Private Tool the call saved or deleted. It may have changed or been deleted since.
+    string private_tool = 5;
     // Why the call was rejected.
     ActivityRejection rejection = 6;
   }
@@ -1031,6 +1079,16 @@ message BrowseRunEntriesRequest {
   string anchor = 5;
   // Return the rows around a scroll position. Cannot be combined with after or anchor.
   ActivityViewport viewport = 6;
+  // Which children to list. Unset lists every child: each Event and every Tool call,
+  // whichever call made it. total, offset and positions count the listed children only.
+  oneof level {
+    // The Run's Events and the Tool calls no tool's body made: the Program's own, and
+    // those its modules' top-level code made.
+    ActivityEmpty top_level = 7;
+    // workspaces/{workspace}/invocations/{invocation}: only the Tool calls this call's
+    // body made. A call of another Run is not found.
+    string parent = 8;
+  }
 }
 // Summary of one Run Event. Contains no output or log text.
 message ActivityEventSummary {

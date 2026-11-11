@@ -1,6 +1,6 @@
 //! Durable Program admission and Run execution for Coral.
 //!
-//! [`RunModule`] consumes current source selections from `coral-functions` and
+//! [`RunModule`] consumes current source selections from `coral-tools` and
 //! owns accepted source snapshots and execution. It validates exact
 //! Principal and Workspace attribution, compiles outside database write
 //! transactions, atomically accepts one complete Program package with
@@ -65,7 +65,7 @@
 //!
 //! Admission resolves one consistent, bounded transitive
 //! source closure, initializes each linked module once before the submitted body,
-//! and creates no separate Saved Function execution record. Admission failure creates
+//! and creates no separate Private Tool execution record. Admission failure creates
 //! no Run and starts no execution. The deadline begins at the execution-start mark.
 //! Exact submitted and linked source, emitted JavaScript, source map, compiler
 //! provenance, limits, Run, and `run.started` evidence commit together.
@@ -129,7 +129,7 @@
 mod activity;
 mod activity_observation;
 mod admission;
-pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
+pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryLevel, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
@@ -140,14 +140,14 @@ pub use approval_history::{
 };
 mod approval_repository;
 mod builtin;
-pub use builtin::SavedFunctions;
+pub use builtin::PrivateTools;
 mod enforcement;
 mod engine;
 mod error;
 mod execution;
 mod history;
 mod human_interface;
-pub use history::{InvocationStatus, InvocationSummary, RunSummary};
+pub use history::{InvocationParent, InvocationStatus, InvocationSummary, RunSummary, ToolKind};
 pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
 mod instance;
 pub use instance::CoralInstanceId;
@@ -156,7 +156,7 @@ mod inspection;
 mod inspection_repository;
 pub use inspection::{
     InvocationDetail, InvocationOutcome, RunContextImpact, RunDetail, RunEventDetail,
-    RunInspection, SourceSnapshot,
+    RunInspection, SharedSourceSnapshot, SourceSnapshot,
 };
 mod invocation;
 mod invocation_lifecycle;
@@ -215,7 +215,7 @@ pub use summary::{
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,
     COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FanOutLimit, FinalValue, InvocationId,
-    InvocationResultKind, LINKED_SAVED_FUNCTION_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
+    InvocationResultKind, LINKED_TOOL_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCpuBudget, RunCursor, RunEvent, RunEventKind, RunFailure,
     RunFailureCode, RunId, RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout,
@@ -245,7 +245,7 @@ pub struct RunModule {
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
-    saved_functions: Option<SavedFunctions>,
+    private_tools: Option<PrivateTools>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -330,7 +330,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
-            saved_functions: None,
+            private_tools: None,
             human_interface: None,
             database,
             workspaces,
@@ -372,7 +372,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
-            saved_functions: None,
+            private_tools: None,
             human_interface: None,
             database,
             workspaces,
@@ -405,7 +405,7 @@ impl RunModule {
         self
     }
 
-    /// Lets `coral.workspace.updateProvider` rename a Provider, through the
+    /// Lets `coral.updateProvider` rename a Provider, through the
     /// workflow Reef renames with. Without it, such a call fails with
     /// `tool_unavailable`.
     #[must_use]
@@ -423,12 +423,12 @@ impl RunModule {
         &self.instance
     }
 
-    /// Lets `coral.workspace.saveFunction` and `deleteFunction` author the
-    /// invoking Principal's Saved Functions. Without it, such a call fails
+    /// Lets `coral.addCustomTool`, `updateCustomTool` and `removeCustomTool` author the
+    /// invoking Principal's Private Tools. Without it, such a call fails
     /// with `tool_unavailable`.
     #[must_use]
-    pub fn with_saved_functions(mut self, functions: SavedFunctions) -> Self {
-        self.saved_functions = Some(functions);
+    pub fn with_private_tools(mut self, private_tools: PrivateTools) -> Self {
+        self.private_tools = Some(private_tools);
         self
     }
 

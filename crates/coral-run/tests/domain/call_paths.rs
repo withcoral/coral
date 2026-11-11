@@ -157,17 +157,17 @@ async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
     let message = refused(
         &scope,
         &scope.owner,
-        "await coral.workspace.launchRockets();\n\
+        "await coral.launchRockets();\n\
          await coral.providers.absent.get();\n\
-         await coral.workspace.launchRockets();",
+         await coral.launchRockets();",
     )
     .await;
     assert_eq!(
         message,
-        "Program:1:7: coral.workspace.launchRockets names no Tool that you can call. \
-         Find one with coral.workspace.search.\n\
+        "Program:1:7: coral.launchRockets names no Tool that you can call. \
+         Find one with coral.search.\n\
          Program:2:7: coral.providers.absent.get names no Tool that you can call. \
-         Find one with coral.workspace.search."
+         Find one with coral.search."
     );
 
     // A Member reaches no Owner-only Built-in Tool, and is not told of one.
@@ -189,17 +189,11 @@ async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
         .await
         .unwrap();
     let member = AuthenticatedPrincipal::user(member);
-    let message = refused(
-        &scope,
-        &member,
-        "return await coral.workspace.updatePolicies({});",
-    )
-    .await;
+    let message = refused(&scope, &member, "return await coral.updatePolicies({});").await;
     assert!(
-        message.starts_with(
-            "Program:1:14: coral.workspace.updatePolicies names no Tool that you can call."
-        ) && !message.contains("coral.workspace.updatePolicy,")
-            && !message.contains("coral.workspace.updatePolicy."),
+        message.starts_with("Program:1:14: coral.updatePolicies names no Tool that you can call.")
+            && !message.contains("coral.updatePolicy,")
+            && !message.contains("coral.updatePolicy."),
         "{message}"
     );
 }

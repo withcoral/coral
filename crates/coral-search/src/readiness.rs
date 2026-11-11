@@ -9,8 +9,8 @@ use coral_workspace::{
 use std::collections::BTreeSet;
 
 impl UniversalSearchModule {
-    /// Inspects the User's Providers in one consistent snapshot, without Saved
-    /// Functions or search candidates. Account selection is for this exact User.
+    /// Inspects the User's Providers in one consistent snapshot, without Private
+    /// Tools or search candidates. Account selection is for this exact User.
     /// # Errors
     /// Requires Workspace inspection authority; archived Workspaces remain inspectable.
     pub async fn inspect_provider_readiness(
@@ -40,7 +40,7 @@ impl UniversalSearchModule {
     /// Returns everything Agent detail needs about Providers: exact-Agent Account
     /// status, permitted actions, and readiness. Resolves Owner/Agent authority
     /// once and composes Account, structural, and policy decisions in one snapshot.
-    /// The Owner's personal Account and all Saved Functions remain unread.
+    /// The Owner's personal Account and all Private Tools remain unread.
     /// Agent/Registration execution authority remains separate from Provider readiness.
     /// # Errors
     /// Conceals absent/cross-Workspace Agents and requires Workspace Owner authority.

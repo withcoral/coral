@@ -49,7 +49,7 @@ export function ProviderSettingsPage({
       variant="wide"
       breadcrumbs={trail(
         [
-          { label: 'Providers', to: `${w.path}/providers` },
+          { label: 'Tools', to: `${w.path}/tools` },
           { label: provider.displayName, to: provider.path },
         ],
         'Settings',

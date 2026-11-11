@@ -1,10 +1,10 @@
-//! `coral.workspace.addProvider` prepares and configures a Provider Setup. The
+//! `coral.addProvider` prepares and configures a Provider Setup. The
 //! call returns the Reef page where a person previews and publishes it, and
 //! never waits for that person.
-//! `coral.workspace.listProviders` lists the Providers a Program can check first.
-//! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
-//! `coral.workspace.getPolicy` reads one Provider's exact Tool rules.
-//! `coral.workspace.updatePolicy` sets them.
+//! `coral.listProviders` lists the Providers a Program can check first.
+//! `coral.getProvider` reads one Provider's Provider Configuration.
+//! `coral.getPolicy` reads the exact Tool rules by complete Call Path.
+//! `coral.updatePolicy` sets them.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -19,7 +19,7 @@ fn add_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.addProvider(ARGUMENTS);
+            return await coral.addProvider(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.ToolError)) throw error;
             return CAUGHT;
@@ -90,10 +90,11 @@ impl AdminScope {
         let mut transaction = fixture.database.begin().await.unwrap();
         fixture
             .providers
-            .install_builtin_in_transaction(
+            .install_coral_defined_in_transaction(
                 &mut transaction,
                 &change(owner.authenticated_user().unwrap().clone(), 11, '2'),
                 &workspace_id,
+                coral_provider::CoralDefinedProvider::Builtin,
             )
             .await
             .expect("install the Built-in Provider")
@@ -113,8 +114,7 @@ impl AdminScope {
     }
 
     async fn set_access(&self, state: ToolAccessState) {
-        self.set_access_to("coral.workspace.addProvider", state)
-            .await;
+        self.set_access_to("coral.addProvider", state).await;
     }
 
     /// Sets the Tool Access State of the Tool at `call_path`.
@@ -236,6 +236,7 @@ impl AdminScope {
                 &self.workspace_id,
                 run,
                 &crate::RunEntryWindow::Start,
+                &crate::RunEntryLevel::Every,
                 100,
                 None,
             )
@@ -426,7 +427,7 @@ impl AdminScope {
             .await
             .unwrap()
             .into_iter()
-            .find(|provider| provider.call_root().as_str() == "coral.workspace")
+            .find(|provider| provider.call_root().as_str() == "coral")
             .expect("the Workspace has its Built-in Provider");
         self.fixture
             .providers
@@ -682,7 +683,7 @@ async fn a_namespace_in_use_is_a_conflict() {
 }
 
 /// Ends the Run just after a Built-in call prepares its work: addProvider's
-/// Setup, or saveFunction's compile.
+/// Setup, or addCustomTool's compile.
 pub(super) struct RunEndsAfterPreparation {
     pub(super) clock: Arc<TestClock>,
 }
@@ -818,7 +819,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
             submission(
                 "
                 try {
-                    return await coral.workspace.listThings({});
+                    return await coral.listThings({});
                 } catch (error) {
                     if (!(error instanceof coral.ToolError)) throw error;
                     return error.code;
@@ -1380,8 +1381,8 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_too
                 serde_json::json!({
                     "code": "tool_not_found",
                     "message": format!(
-                        "coral.workspace.{tool} names no Tool that you can call. Find one with \
-                         coral.workspace.search."
+                        "coral.{tool} names no Tool that you can call. Find one with \
+                         coral.search."
                     ),
                 }),
                 "{tool}"
@@ -1402,7 +1403,7 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_too
         assert_eq!(
             call_roots,
             [
-                Some(serde_json::json!("coral.workspace")),
+                Some(serde_json::json!("coral")),
                 Some(serde_json::json!("coral.providers.weather"))
             ],
             "{principal:?}"
@@ -1416,13 +1417,13 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_too
         let run = scope
             .start(
                 &principal,
-                workspace_call("getPolicy", r#"{ "namespace": "weather" }"#),
+                workspace_call("getPolicy", r#"{ "under": "coral.providers.weather" }"#),
             )
             .await;
         let read = final_value(&scope.terminal(&principal, &run).await);
         assert_eq!(
-            read.pointer("/data/namespace"),
-            Some(&serde_json::json!("weather")),
+            read.pointer("/data/rules"),
+            Some(&serde_json::json!({})),
             "{principal:?} reads the policy: {read}"
         );
     }
@@ -1487,14 +1488,14 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
 /// JavaScript argument list, and returns its Tool Result or the failure
 /// it catches.
 pub(super) fn workspace_call(tool: &str, arguments: &str) -> RunSubmission {
-    calling(&format!("coral.workspace.{tool}"), arguments)
+    calling(&format!("coral.{tool}"), arguments)
 }
 
 /// [`workspace_call`] through a path the Program builds as it runs, which
 /// admission cannot check.
 fn computed_workspace_call(tool: &str, arguments: &str) -> RunSubmission {
     calling(
-        &format!("coral.workspace[[\"{tool}\"].join(\"\")]"),
+        &format!("globalThis[[\"co\", \"ral\"].join(\"\")][[\"{tool}\"].join(\"\")]"),
         arguments,
     )
 }
@@ -1542,7 +1543,7 @@ async fn list_providers_lists_every_provider_without_approval() {
         "data": {
             "providers": [
                 {
-                    "callRoot": "coral.workspace",
+                    "callRoot": "coral",
                     "namespace": null,
                     "displayName": "Coral",
                     "state": "active",
@@ -1732,21 +1733,18 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
 // Catches: a namespace that no Provider holds read as something other than
 // not found.
 #[tokio::test]
-async fn get_provider_and_get_policy_name_an_absent_provider() {
+async fn get_provider_names_an_absent_provider() {
     let scope = AdminScope::new("user:get-provider-absent").await;
-    for tool in ["getProvider", "getPolicy"] {
-        let run = scope
-            .start(
-                &scope.owner,
-                workspace_call(tool, r#"{ "namespace": "forecasts" }"#),
-            )
-            .await;
-        assert_eq!(
-            final_value(&scope.terminal(&scope.owner, &run).await),
-            serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
-            "{tool}"
-        );
-    }
+    let run = scope
+        .start(
+            &scope.owner,
+            workspace_call("getProvider", r#"{ "namespace": "forecasts" }"#),
+        )
+        .await;
+    assert_eq!(
+        final_value(&scope.terminal(&scope.owner, &run).await),
+        serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
+    );
 }
 
 // Catches: an updatePolicy call that runs before an Owner approves it, or a
@@ -1757,7 +1755,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
     scope.publish_weather().await;
     let before = scope.policy_events().await;
     assert_eq!(
-        scope.access("coral.workspace.updatePolicy").await,
+        scope.access("coral.updatePolicy").await,
         (ToolAccessState::ApprovalRequired, false),
         "updatePolicy waits for approval by default"
     );
@@ -1766,7 +1764,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
             &scope.owner,
             workspace_call(
                 "updatePolicy",
-                r#"{ namespace: "weather", tools: { getForecast: "disabled" } }"#,
+                r#"{ tools: { "coral.providers.weather.getForecast": "disabled" } }"#,
             ),
         )
         .await;
@@ -1787,7 +1785,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
     assert_eq!(
         final_value(&scope.terminal(&scope.owner, &run).await),
         serde_json::json!({
-            "data": { "namespace": "weather", "tools": { "getForecast": "disabled" } },
+            "data": { "tools": { "coral.providers.weather.getForecast": "disabled" } },
             "metadata": { "kind": "builtin" },
         })
     );
@@ -1817,14 +1815,14 @@ async fn update_policy_rejects_an_argument_problem_before_admission() {
     let run = scope
         .start(
             &scope.owner,
-            workspace_call("updatePolicy", r#"{ namespace: "weather", tools: {} }"#),
+            workspace_call("updatePolicy", r"{ tools: {} }"),
         )
         .await;
     assert_eq!(
         final_value(&scope.terminal(&scope.owner, &run).await),
         serde_json::json!({
             "code": "invalid_input",
-            "message": "Tool arguments are invalid at `tools`: name 1 to 100 Tools",
+            "message": "Tool arguments are invalid at `tools`: name 1 to 100 tools",
         }),
     );
     assert!(!scope.recorded_an_invocation(&run).await);
@@ -1832,34 +1830,59 @@ async fn update_policy_rejects_an_argument_problem_before_admission() {
 }
 
 // Catches: a valid path applied beside one that names no Tool, a failure
-// that does not name the path, or a namespace that reaches a Built-in
-// Tool, updatePolicy's own included.
+// that does not name the path, or a path that reaches a Built-in Tool,
+// updatePolicy's own included.
 #[tokio::test]
 async fn update_policy_changes_nothing_when_a_target_is_missing() {
     let scope = AdminScope::new("user:update-policy-missing").await;
     scope.publish_weather().await;
     scope
-        .set_access_to("coral.workspace.updatePolicy", ToolAccessState::Enabled)
+        .set_access_to("coral.updatePolicy", ToolAccessState::Enabled)
         .await;
     let before = scope.policy_events().await;
     for (arguments, expected) in [
         (
             serde_json::json!({
-                "namespace": "weather",
-                "tools": { "getForecast": "disabled", "getAlerts": "disabled" },
+                "tools": {
+                    "coral.providers.weather.getForecast": "disabled",
+                    "coral.providers.weather.getAlerts": "disabled",
+                },
             }),
             serde_json::json!({
                 "code": "tool_not_found",
-                "message": "Tool Call Path was not found at `tools.getAlerts`: no \
-                            Tool of weather has this path",
+                "message": "Tool Call Path was not found at \
+                            `tools.coral.providers.weather.getAlerts`: no Tool you can set has \
+                            this Call Path",
             }),
         ),
         (
             serde_json::json!({
-                "namespace": "workspace",
-                "tools": { "updatePolicy": "disabled" },
+                "tools": {
+                    "coral.providers.weather.getForecast": "disabled",
+                    "coral.updatePolicy": "disabled",
+                },
             }),
-            serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
+            serde_json::json!({
+                "code": "invalid_input",
+                "message": "Tool arguments are invalid at `tools.coral.updatePolicy`: set a \
+                            Built-in Tool's policy in the Coral UI",
+            }),
+        ),
+        // Every refused path is named, each with its own reason.
+        (
+            serde_json::json!({
+                "tools": {
+                    "coral.providers.weather.getAlerts": "disabled",
+                    "coral.updatePolicy": "disabled",
+                },
+            }),
+            serde_json::json!({
+                "code": "tool_not_found",
+                "message": "Tool Call Path was not found: \
+                            `tools.coral.providers.weather.getAlerts`: no Tool you can set has \
+                            this Call Path; `tools.coral.updatePolicy`: set a Built-in Tool's \
+                            policy in the Coral UI",
+            }),
         ),
     ] {
         let run = scope
@@ -1876,7 +1899,7 @@ async fn update_policy_changes_nothing_when_a_target_is_missing() {
     }
     assert_eq!(scope.policy_events().await, before);
     assert_eq!(
-        scope.access("coral.workspace.updatePolicy").await,
+        scope.access("coral.updatePolicy").await,
         (ToolAccessState::Enabled, true)
     );
 }

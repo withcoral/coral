@@ -29,6 +29,7 @@ import { Bytes, ContextImpact } from './context-impact'
 import { Instant } from './instant'
 import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
+import { ParentInvocationName } from './called-from'
 import { Panel } from './panel'
 import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
@@ -134,6 +135,7 @@ function ExecutionDetail({
       <RunActions
         context={detail}
         callStartedAt={tool?.invocation.startedAt}
+        calledFrom={tool?.invocation.parent}
         connectionContext={runContext}
         page={detail.run.actionPage}
         request={request}
@@ -255,6 +257,11 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
         {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
+        {call.parent && (
+          <DescriptionList.Row label="Called from">
+            <ParentInvocationName parent={call.parent} />
+          </DescriptionList.Row>
+        )}
         <DescriptionList.Row label="Dispatch">
           {detail.invocation.dispatchedAt ? (
             <Instant value={detail.invocation.dispatchedAt} />
@@ -377,14 +384,15 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       : null
   // An exec submission states its times and intent, then any error; its badge states its outcome.
   const exec = detail.kind === 'tool' && detail.interaction.tool === 'exec' ? detail : null
-  // A save or a delete states its intent, the function a delete removed, then its times; a
+  // A save or a delete states its intent, the private tool a delete removed, then its times; a
   // rejection shows its error below.
   const save =
     detail.kind === 'tool' &&
-    (detail.interaction.tool === 'save_function' || detail.interaction.tool === 'delete_function')
+    (detail.interaction.tool === 'save_private_tool' ||
+      detail.interaction.tool === 'delete_private_tool')
       ? detail
       : null
-  const deleted = save?.interaction.tool === 'delete_function'
+  const deleted = save?.interaction.tool === 'delete_private_tool'
   // A tool call's intent, unless the title already states it.
   const intent = detail.kind === 'tool' &&
     detail.interaction.intent &&
@@ -477,11 +485,11 @@ function RecordDetail({ page }: { page: ActivityPage }) {
           ) : save ? (
             <DescriptionList.List>
               {intent}
-              {/* The call retains only the function's ID. No route opens a function by ID, so
+              {/* The call retains only the private tool's ID. No route opens a private tool by ID, so
                   a delete shows the ID without a link, and a save states no target. */}
-              {deleted && save.evidence.kind === 'function' && (
+              {deleted && save.evidence.kind === 'private_tool' && (
                 <DescriptionList.Row label="Deleted">
-                  <CodeChip>{savedFunctionId(save.evidence.reference)}</CodeChip>
+                  <CodeChip>{privateToolId(save.evidence.reference)}</CodeChip>
                 </DescriptionList.Row>
               )}
               {times}
@@ -531,8 +539,8 @@ const toolKinds: Record<string, string> = {
   search: 'search',
   describe: 'describe',
   exec: 'exec submission',
-  save_function: 'save function',
-  delete_function: 'delete function',
+  save_private_tool: 'save private tool',
+  delete_private_tool: 'delete private tool',
 }
 /** The most specific retained name for a tool call: a search's intent, then its query; what a
  * describe call described; otherwise its intent, then the Run it started. The tool only when
@@ -546,10 +554,10 @@ function toolTitle(interaction: InteractionRow, evidence: InteractionEvidence) {
         ? context.callPath || interaction.intent
         : interaction.intent || (evidence.kind === 'run' ? evidence.reference : '')
   const kind = toolKinds[interaction.tool] ?? 'tool interaction'
-  // A save or a delete retains only a function ID that no page opens, so its tool titles it.
-  const functionTool =
-    interaction.tool === 'save_function' || interaction.tool === 'delete_function'
-  return name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
+  // A save or a delete retains only a private tool ID that no page opens, so its tool titles it.
+  const privateTool =
+    interaction.tool === 'save_private_tool' || interaction.tool === 'delete_private_tool'
+  return name || (privateTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
 }
 /** A retained event's identity. A log message or an emitted value is the program's own
  * content, so it stays in the body and never becomes the title. */
@@ -666,7 +674,7 @@ function Evidence({
 /** What an exec submission, a save or a delete retained. A rejection shows its exact error in the card
  * a search result uses. An accepted submission shows nothing more: its Run is a row of its
  * own, and the submission's outcome says nothing about how the Run ends. A delete states the
- * function it removed in its list; a save states no target. */
+ * private tool it removed in its list; a save states no target. */
 function CallEvidence({
   evidence,
   outcome,
@@ -685,7 +693,7 @@ function CallEvidence({
   switch (evidence.kind) {
     case 'run':
       return null
-    case 'function':
+    case 'private_tool':
       return null
     case 'rejection':
       return evidence.message.trim() ? (
@@ -733,9 +741,9 @@ function ErrorCard({
     </List.Container>
   )
 }
-/** The ID in `workspaces/{workspace}/savedFunctions/{id}`, else the name as stored. */
-const savedFunctionId = (name: string) =>
-  /^workspaces\/[^/]+\/savedFunctions\/([^/]+)$/.exec(name)?.[1] ?? name
+/** The ID in `workspaces/{workspace}/privateTools/{id}`, else the name as stored. */
+const privateToolId = (name: string) =>
+  /^workspaces\/[^/]+\/privateTools\/([^/]+)$/.exec(name)?.[1] ?? name
 function EventEvidence({
   event,
   recordHref,

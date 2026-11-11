@@ -23,7 +23,8 @@ pub enum ProviderBlocker {
     SharedAccountRequired,
     /// The Provider requires credentials but its account setting supplies none.
     AccountSettingIncompatible,
-    /// Every Tool is structurally unavailable or policy-disabled.
+    /// Every Tool is structurally unavailable or policy-disabled. Never
+    /// reported for the Private or Shared Provider.
     NoToolsReady,
 }
 
@@ -39,9 +40,14 @@ pub struct ProviderReadiness {
 impl ProviderReadiness {
     /// Combines discovery's exact policy/Tool evidence with lifecycle blockers.
     /// Account blockers do not hide policy/structural blockers; readiness is never stored.
+    ///
+    /// The Private and Shared Providers are never blocked for want of a ready
+    /// Tool: their Generations hold none, and coral-tools decides which of
+    /// their Tools each Principal reaches.
     #[must_use]
     pub fn with_tool_readiness(mut self, has_ready_tool: bool) -> Self {
         if !has_ready_tool
+            && !self.provider.call_root().performs_code()
             && !self.blockers.iter().any(|blocker| {
                 matches!(
                     blocker,
@@ -88,9 +94,7 @@ pub async fn inspect_provider_readiness_in_transaction(
 ) -> Result<Vec<ProviderReadiness>, Error> {
     let principal = AuthenticatedPrincipal::user(actor.clone());
     let mut result = Vec::new();
-    for stored in
-        crate::repository::management_providers(tx, evidence.workspace().id(), provider_filter)
-            .await?
+    for stored in crate::inspected_providers(tx, evidence.workspace().id(), provider_filter).await?
     {
         if !crate::inspects(tx, evidence, &stored).await? {
             continue;
@@ -125,9 +129,7 @@ pub async fn inspect_agent_providers_in_transaction(
         return Err(coral_workspace::Error::AgentNotFound.into());
     }
     let mut result = Vec::new();
-    for stored in
-        crate::repository::management_providers(tx, evidence.workspace().id(), None).await?
-    {
+    for stored in crate::listed_providers(tx, evidence.workspace().id(), None).await? {
         let contract =
             coral_catalog::credential_contract_in_transaction(tx, &stored.generation_id).await?;
         let presented =

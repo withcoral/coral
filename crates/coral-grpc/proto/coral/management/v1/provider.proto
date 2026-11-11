@@ -101,7 +101,8 @@ enum ProviderBlocker {
   // The inspected Agent needs its own Account before discovery; not a configuration
   // failure. A User's own Account is never reported here.
   PROVIDER_BLOCKER_CALLER_ACCOUNT_REQUIRED = 4;
-  // No Tool passes structural availability and current policy.
+  // No Tool passes structural availability and current policy. Never
+  // reported for the Private or Shared Provider, whose own catalog holds no Tool.
   PROVIDER_BLOCKER_NO_TOOLS_READY = 5;
   // An Owner must connect the Provider's shared Account.
   PROVIDER_BLOCKER_SHARED_ACCOUNT_REQUIRED = 6;
@@ -167,7 +168,7 @@ message Provider {
   // Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
   string call_root = 12;
   // Whether this is the Workspace's Built-in Provider, which Coral defines
-  // and manages under coral.workspace.
+  // and manages under coral.
   bool builtin = 13;
   // Digest of the uploaded icon's content, which changes with the icon.
   // Empty when the Provider has no uploaded icon.

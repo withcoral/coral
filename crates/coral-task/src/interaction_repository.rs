@@ -78,7 +78,7 @@ enum TaskInteractions {
     EvidenceJson,
     ResponseBytes,
     RunId,
-    FunctionId,
+    PrivateToolId,
 }
 
 #[derive(FromRow)]
@@ -172,9 +172,9 @@ pub(super) async fn complete(
     evidence: &AttemptEvidence,
     now: i64,
 ) -> Result<bool, Error> {
-    let (run_id, function_id) = match evidence {
+    let (run_id, private_tool_id) = match evidence {
         AttemptEvidence::Run(id) => (Some(id.to_string()), None),
-        AttemptEvidence::SavedFunction(id) => (None, Some(id.to_string())),
+        AttemptEvidence::PrivateTool(id) => (None, Some(id.to_string())),
         _ => (None, None),
     };
     let encoded = encode(evidence)?;
@@ -198,7 +198,7 @@ pub(super) async fn complete(
                     (TaskInteractions::EvidenceJson, Expr::val(encoded)),
                     (TaskInteractions::ResponseBytes, Expr::val(response_bytes)),
                     (TaskInteractions::RunId, Expr::val(run_id)),
-                    (TaskInteractions::FunctionId, Expr::val(function_id)),
+                    (TaskInteractions::PrivateToolId, Expr::val(private_tool_id)),
                 ])
                 .cond_where(scope(&call.workspace_id, &call.task_id))
                 .and_where(Expr::col(TaskInteractions::Id).eq(id.to_string()))
@@ -610,7 +610,7 @@ enum StoredEvidence {
     Run {
         id: String,
     },
-    SavedFunction {
+    PrivateTool {
         id: String,
     },
     Rejected {
@@ -683,7 +683,7 @@ fn encode(evidence: &AttemptEvidence) -> Result<String, Error> {
             response: response.clone(),
         },
         AttemptEvidence::Run(id) => StoredEvidence::Run { id: id.to_string() },
-        AttemptEvidence::SavedFunction(id) => StoredEvidence::SavedFunction { id: id.to_string() },
+        AttemptEvidence::PrivateTool(id) => StoredEvidence::PrivateTool { id: id.to_string() },
         AttemptEvidence::Rejected(failure) => StoredEvidence::Rejected {
             failure: StoredFailure {
                 code: failure.code.clone(),
@@ -706,8 +706,8 @@ fn decode(encoded: &str) -> Result<AttemptEvidence, Error> {
             response,
         },
         StoredEvidence::Run { id } => AttemptEvidence::Run(coral_run::RunId::parse(&id)?),
-        StoredEvidence::SavedFunction { id } => {
-            AttemptEvidence::SavedFunction(coral_functions::SavedFunctionId::parse(&id)?)
+        StoredEvidence::PrivateTool { id } => {
+            AttemptEvidence::PrivateTool(coral_tools::PrivateToolId::parse(&id)?)
         }
         StoredEvidence::Rejected { failure } => AttemptEvidence::Rejected(AttemptFailure {
             code: failure.code,

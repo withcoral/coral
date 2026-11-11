@@ -696,6 +696,7 @@ impl MixedActions {
                         self.scope(),
                         &self.run,
                         &crate::RunEntryWindow::Start,
+                        &crate::RunEntryLevel::Every,
                         100,
                         None,
                     )
@@ -1188,6 +1189,7 @@ async fn cancellation_clears_actions_but_keeps_each_invocations_requests() {
             scope,
             &mixed.run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )

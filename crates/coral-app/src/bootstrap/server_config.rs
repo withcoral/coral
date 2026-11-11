@@ -127,6 +127,9 @@ impl LoadedServerConfig {
     /// so the configuration alone cannot prove the key has one source.
     pub(crate) fn validate(&self) -> Result<(), AppError> {
         let config = self.parse()?;
+        config
+            .runtime
+            .local_run_executors(config.listeners.run_executor.token_env.is_some())?;
         config.runtime.resolve()?;
         config.search.reconcile_interval()?;
         config.credentials.key_env()?;
@@ -147,6 +150,16 @@ impl LoadedServerConfig {
             .listeners
             .run_executor
             .resolve(authenticated, env)
+    }
+
+    /// Resolves the local Run Executors of `[runtime]`: none when
+    /// `local_run_executors` is false, which `[listeners.run_executor]`
+    /// must then make up for with a `token_env`.
+    pub(crate) fn local_run_executors(&self) -> Result<Option<LocalRunExecutorSettings>, AppError> {
+        let config = self.parse()?;
+        config
+            .runtime
+            .local_run_executors(config.listeners.run_executor.token_env.is_some())
     }
 
     /// Resolves the `[runtime]` section: the Program runtime limits.
@@ -415,6 +428,22 @@ struct RuntimeSettings {
     /// budget is the lower of it and the Run's time limit. Unset by default;
     /// refused on Windows.
     execution_cpu_seconds: Option<u64>,
+    /// Whether Coral starts Run Executors as its own child processes. True
+    /// by default.
+    local_run_executors: bool,
+    /// The most local Run Executors at once; past it work waits. At least
+    /// 1; 4 by default.
+    local_run_executor_limit: usize,
+    /// The most Runs one local Run Executor holds at once. At least 1; 128
+    /// by default.
+    run_executor_max_runs_held: u32,
+}
+
+/// The resolved local Run Executors: how many, and how many Runs each holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LocalRunExecutorSettings {
+    pub(crate) limit: usize,
+    pub(crate) max_runs_held: u32,
 }
 
 impl Default for RuntimeSettings {
@@ -427,11 +456,41 @@ impl Default for RuntimeSettings {
             fan_out_limit: coral_run::FanOutLimit::DEFAULT_INVOCATIONS,
             shutdown_drain_seconds: coral_run::ShutdownDrain::DEFAULT_DURATION.as_secs(),
             execution_cpu_seconds: None,
+            local_run_executors: true,
+            local_run_executor_limit: 4,
+            run_executor_max_runs_held: 128,
         }
     }
 }
 
 impl RuntimeSettings {
+    /// The local Run Executors, or none when they are off. Off, and with no
+    /// operator token (`dialed` false) to admit another, nothing could run
+    /// a Program: that refuses to boot.
+    fn local_run_executors(
+        &self,
+        dialed: bool,
+    ) -> Result<Option<LocalRunExecutorSettings>, AppError> {
+        let refuse = |message: &str| Err(AppError::FailedPrecondition(message.to_owned()));
+        if self.local_run_executor_limit == 0 {
+            return refuse("runtime.local_run_executor_limit must be at least 1");
+        }
+        if self.run_executor_max_runs_held == 0 {
+            return refuse("runtime.run_executor_max_runs_held must be at least 1");
+        }
+        match (self.local_run_executors, dialed) {
+            (true, _) => Ok(Some(LocalRunExecutorSettings {
+                limit: self.local_run_executor_limit,
+                max_runs_held: self.run_executor_max_runs_held,
+            })),
+            (false, true) => Ok(None),
+            (false, false) => refuse(
+                "runtime.local_run_executors = false requires listeners.run_executor.token_env: \
+                 with neither, no Run Executor could run a Program",
+            ),
+        }
+    }
+
     fn resolve(self) -> Result<coral_run::RuntimeLimits, AppError> {
         let isolate_limits =
             coral_run::IsolateLimits::new(self.execution_heap_bytes, self.compiler_heap_bytes)
@@ -1293,6 +1352,57 @@ client_secret = 'test-secret'
             matches!(&error, AppError::FailedPrecondition(message) if message.contains("unknown field `feed`")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn local_run_executors_are_on_by_default_and_off_only_beside_an_operator_token() {
+        let off = "[runtime]\nlocal_run_executors = false\n";
+        let token = "[listeners.run_executor]\ntoken_env = 'TOKEN'\n";
+        let local = |limit, max_runs_held| super::LocalRunExecutorSettings {
+            limit,
+            max_runs_held,
+        };
+        for (raw, expected) in [
+            (String::new(), Ok(Some(local(4, 128)))),
+            (token.to_owned(), Ok(Some(local(4, 128)))),
+            (
+                "[runtime]\nlocal_run_executor_limit = 2\nrun_executor_max_runs_held = 16\n"
+                    .to_owned(),
+                Ok(Some(local(2, 16))),
+            ),
+            (format!("{off}{token}"), Ok(None)),
+            (
+                off.to_owned(),
+                Err(
+                    "runtime.local_run_executors = false requires listeners.run_executor.token_env",
+                ),
+            ),
+            (
+                "[runtime]\nlocal_run_executor_limit = 0\n".to_owned(),
+                Err("runtime.local_run_executor_limit must be at least 1"),
+            ),
+            (
+                "[runtime]\nrun_executor_max_runs_held = 0\n".to_owned(),
+                Err("runtime.run_executor_max_runs_held must be at least 1"),
+            ),
+        ] {
+            let config = load(&raw).1;
+            let resolved = config.local_run_executors();
+            match (&resolved, expected) {
+                (Ok(resolved), Ok(expected)) => assert_eq!(*resolved, expected, "{raw}"),
+                (Err(AppError::FailedPrecondition(message)), Err(expected)) => {
+                    assert!(message.contains(expected), "{raw}: {message}");
+                    // Boot validation refuses it the same way.
+                    match config.validate() {
+                        Err(AppError::FailedPrecondition(message)) => {
+                            assert!(message.contains(expected), "{raw}: {message}");
+                        }
+                        other => panic!("{raw}: {other:?}"),
+                    }
+                }
+                _ => panic!("{raw}: {resolved:?}"),
+            }
+        }
     }
 
     #[test]

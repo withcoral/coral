@@ -1,35 +1,45 @@
 //! The Run Executor link, from both of its sides.
 //!
 //! On Coral's side it holds the compiler client that Program Admission and
-//! Saved Function save share. [`CompilerClient`] is the one interface.
-//! [`InProcessCompiler`] is its first adapter: one warm Program Compiler on
-//! its own thread in this process. Bootstrap builds one and gives it to both
-//! callers.
+//! Private Tool save share. [`CompilerClient`] is the one interface.
+//! [`InProcessCompiler`] runs one warm Program Compiler on its own thread in
+//! this process. [`PullStreamCompiler`] sends each call down one held pull
+//! stream to a Run Executor.
 //!
-//! On the Run Executor's side, [`run`] dials Coral and holds the pull stream
-//! that the [`wire`] contract defines. On Coral's side, [`LinkServer`]
-//! listens for Run Executors, admits them by [`Credentials`], and keeps the
-//! pull streams it holds in [`PullStreams`].
+//! On the Run Executor's side, [`run`] warms its compiler, dials Coral, holds
+//! the pull stream that the [`wire`] contract defines, and serves the
+//! compiles that ride it. On Coral's side, [`LinkServer`] listens for Run
+//! Executors, admits them by [`Credentials`], and keeps the pull streams it
+//! holds in [`PullStreams`]. [`LocalRunExecutors`] starts the Run Executors
+//! that run as Coral's own child processes.
 
+mod compile_wire;
 mod compiler;
 mod in_process;
 mod lease_repository;
 mod link;
+mod local;
 mod pull;
+mod pull_compiler;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+pub use compile_wire::ProtocolError;
 pub use compiler::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left,
     tool_check_deadline,
 };
+pub use coral_v8::BuiltinTools;
 pub use in_process::InProcessCompiler;
 pub use link::{
-    AddressError, CoralAddress, PROTOCOL_LEVEL, RunExecutorConfig, Token, TokenError, run,
+    AddressError, CoralAddress, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, RunError, RunExecutorConfig,
+    Token, TokenError, run,
 };
+pub use local::{ChildCommand, LocalChild, LocalRunExecutors, ProcessStarter};
 pub use pull::{
     Credentials, HeldStream, Kind, LinkServer, LocalCredential, PullStreams, Refused, StreamId,
 };
+pub use pull_compiler::PullStreamCompiler;
 
 /// The link's wire contract, generated from `proto/`.
 #[allow(

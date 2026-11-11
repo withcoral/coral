@@ -3,6 +3,7 @@ import { data, redirect, type RouterContextProvider } from 'react-router'
 import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
 import {
+  accessStateOf,
   blockerLabel,
   providerName,
   providerFailure,
@@ -10,7 +11,7 @@ import {
   uuidOr404,
 } from './providers.server'
 import { authorizedWorkspace } from './workspace-route.server'
-import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
+import type { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
 import { countLabel } from '@/utils/count-label'
 import type { ToolOutcome } from '@/views/providers/types'
@@ -30,7 +31,6 @@ export async function applyProviderChange(
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace, {
       ownerOnly: true,
     })
-    const providersPath = `${w.path}/providers`
     switch (intent) {
       case 'renameProvider': {
         await api.providers.updateProvider({
@@ -99,18 +99,13 @@ export async function applyProviderChange(
           name: `${w.name}/providers/${uuidOr404(field(form, 'provider'))}`,
           etag: field(form, 'etag'),
         })
-        return redirect(providersPath, { headers: privateHeaders })
+        return redirect(`${w.path}/tools`, { headers: privateHeaders })
       }
       case 'policy': {
-        const access = field(form, 'access')
-        const states: Record<string, ToolAccessState> = {
-          enabled: ToolAccessState.ENABLED,
-          approval_required: ToolAccessState.APPROVAL_REQUIRED,
-          disabled: ToolAccessState.DISABLED,
-        }
+        const accessState = accessStateOf(field(form, 'access'))
         const selected = decodeSelectedTools(form)
         if (
-          !Object.hasOwn(states, access) ||
+          accessState === undefined ||
           !selected ||
           selected.length === 0 ||
           selected.some((target) => target.tool.length > 4096) ||
@@ -130,7 +125,7 @@ export async function applyProviderChange(
           [...byProvider].flatMap(([provider, tools]) =>
             chunk(tools, POLICY_BATCH_SIZE).map((batch) => ({ provider, tools: batch })),
           ),
-          { api, workspace: w.name, accessState: states[access]! },
+          { api, workspace: w.name, accessState },
         )
         const failed = outcomes.filter((outcome) => outcome.status === 'failed')
         const blockers = await currentBlockers(api, w.name, [...byProvider.keys()])

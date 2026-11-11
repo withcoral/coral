@@ -27,10 +27,10 @@ use crate::{
 };
 
 mod add_provider;
-mod functions;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod private_tools;
 mod search;
 mod setup_tool;
 mod update_policy;
@@ -46,11 +46,11 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
-    SaveFunction(Box<functions::SaveFunction>),
-    DeleteFunction(functions::DeleteFunction),
+    SaveTool(Box<private_tools::SaveTool>),
+    RemoveCustomTool(private_tools::RemoveCustomTool),
 }
 
-pub use functions::SavedFunctions;
+pub use private_tools::PrivateTools;
 
 impl BuiltinCall {
     /// The Built-in Tool an admitted target names, with its input checked
@@ -79,11 +79,11 @@ impl BuiltinCall {
                         get_provider::GetProvider::new(&arguments).map(Self::GetProvider)
                     }
                     BuiltinArguments::GetPolicy(arguments) => {
-                        get_policy::GetPolicy::new(&arguments).map(Self::GetPolicy)
+                        Ok(Self::GetPolicy(get_policy::GetPolicy::new(&arguments)))
                     }
-                    BuiltinArguments::UpdatePolicy(arguments) => {
-                        update_policy::UpdatePolicy::new(&arguments).map(Self::UpdatePolicy)
-                    }
+                    BuiltinArguments::UpdatePolicy(arguments) => Ok(Self::UpdatePolicy(
+                        update_policy::UpdatePolicy::new(&arguments),
+                    )),
                     BuiltinArguments::UpdateProvider(arguments) => {
                         update_provider::UpdateProvider::new(*arguments)
                             .map(|call| Self::UpdateProvider(Box::new(call)))
@@ -91,12 +91,16 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
-                    BuiltinArguments::SaveFunction(arguments) => {
-                        functions::SaveFunction::new(&arguments)
-                            .map(|call| Self::SaveFunction(Box::new(call)))
+                    BuiltinArguments::AddCustomTool(arguments) => {
+                        private_tools::SaveTool::add(&arguments)
+                            .map(|call| Self::SaveTool(Box::new(call)))
                     }
-                    BuiltinArguments::DeleteFunction(arguments) => {
-                        functions::DeleteFunction::new(&arguments).map(Self::DeleteFunction)
+                    BuiltinArguments::UpdateCustomTool(arguments) => {
+                        private_tools::SaveTool::update(&arguments)
+                            .map(|call| Self::SaveTool(Box::new(call)))
+                    }
+                    BuiltinArguments::RemoveCustomTool(arguments) => {
+                        private_tools::RemoveCustomTool::new(&arguments).map(Self::RemoveCustomTool)
                     }
                 }),
         )
@@ -112,8 +116,8 @@ impl BuiltinCall {
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
-            Self::SaveFunction(call) => call.perform(host).await,
-            Self::DeleteFunction(call) => call.perform(host).await,
+            Self::SaveTool(call) => call.perform(host).await,
+            Self::RemoveCustomTool(call) => call.perform(host).await,
         }
     }
 }
@@ -144,7 +148,7 @@ pub(crate) async fn recover(
         Some(BuiltinTool::UpdateProvider) => update_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
-        // A read leaves nothing behind, a policy change and a Saved Function
+        // A read leaves nothing behind, a policy change and a Private Tool
         // change record no call to read, and this version cannot read a Tool
         // it does not perform.
         Some(
@@ -153,8 +157,9 @@ pub(crate) async fn recover(
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
             | BuiltinTool::Search
-            | BuiltinTool::SaveFunction
-            | BuiltinTool::DeleteFunction,
+            | BuiltinTool::AddCustomTool
+            | BuiltinTool::UpdateCustomTool
+            | BuiltinTool::RemoveCustomTool,
         )
         | None => Ok(None),
     }
@@ -173,7 +178,7 @@ pub(crate) trait InvokingRun: Send + Sync {
     fn now(&self) -> Result<i64, Error>;
 
     /// Lets a test end the Run once the call prepared its work and before
-    /// it checks the Run: addProvider's Setup, or saveFunction's compile.
+    /// it checks the Run: addProvider's Setup, or addCustomTool's compile.
     #[cfg(test)]
     fn prepared(&self) {}
 }
@@ -190,9 +195,9 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) renamer: Option<&'a dyn ProviderRenamer>,
     /// Where `search` discovers, as the invoking Principal.
     pub(crate) search: &'a coral_search::UniversalSearchModule,
-    /// Where `saveFunction` and `deleteFunction` author; without it, they
+    /// Where the authoring Tools author; without it, they
     /// fail as `tool_unavailable`.
-    pub(crate) functions: Option<&'a SavedFunctions>,
+    pub(crate) private_tools: Option<&'a PrivateTools>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.

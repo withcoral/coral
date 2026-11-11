@@ -512,7 +512,7 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
     clippy::too_many_lines,
     reason = "one retained discovery journey verifies typed metadata, exact native response, summary isolation, and private audience"
 )]
-async fn discovery_wire_projects_typed_context_and_exact_deleted_function_response_only_on_exact_read()
+async fn discovery_wire_projects_typed_context_and_exact_deleted_private_tool_response_only_on_exact_read()
  {
     let f = Fixture::new().await;
     let actor = AuthenticatedPrincipal::user(f.member.clone());
@@ -528,10 +528,10 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         goal.id().clone(),
         coral_task::TaskIntent::parse("Retain exact description").unwrap(),
     );
-    let functions = coral_functions::SavedFunctionModule::new(
+    let functions = coral_tools::PrivateToolModule::new(
         f.database.database(),
         f.workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
@@ -548,7 +548,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         .await
         .unwrap();
     let description = commands
-        .describe(&call, "coral.functions.answer", &["Answer".to_string()])
+        .describe(&call, "coral.private.answer", &["Answer".to_string()])
         .await
         .unwrap();
     commands
@@ -633,7 +633,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
                 discovery.context,
                 Some(wire::activity_discovery::Context::Describe(
                     wire::ActivityDescribeContext {
-                        call_path: "coral.functions.answer".into(),
+                        call_path: "coral.private.answer".into(),
                         types: vec!["Answer".into()],
                     }
                 ))
@@ -1582,19 +1582,19 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .await;
     let provider = publish_http(&f, &server.uri()).await;
     policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
-    f.saved_functions
+    f.private_tools
         .save(
-            &coral_functions::SavedFunctionChangeContext::new(
+            &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(f.member.clone()),
                 1_700_000_000_000_000_007,
                 coral_workspace::TraceId::current_or_new(),
             ),
             f.workspace.id(),
-            coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse("report.forecast").unwrap(),
-                coral_functions::SavedFunctionDescription::parse("Forecast one city").unwrap(),
-                coral_functions::SavedFunctionSource::parse(
-                    "export default async function forecast(city: string) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
+            coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
+                coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
+                coral_tools::AuthoredToolSource::parse(
+                    "export default async function forecast({ city }: { city: string }) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
                 )
                 .unwrap(),
             ),
@@ -1603,17 +1603,17 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .unwrap();
     let run = start(
         &f,
-        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.functions.report.forecast(\"Oslo\");\nawait coral.providers.evidence.read({ body: {} });",
+        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast({ city: \"Oslo\" });\nawait coral.providers.evidence.read({ body: {} });",
     )
     .await;
     let detail = terminal(&f, &run).await;
-    let [snapshot] = detail.linked_functions.as_slice() else {
+    let [snapshot] = detail.linked_private_tools.as_slice() else {
         panic!("one linked snapshot")
     };
     let program = |line, column| located(Document::Program(wire::ActivityEmpty {}), line, column);
     let in_snapshot = |line, column| {
         located(
-            Document::SavedFunction(snapshot.saved_function.clone()),
+            Document::PrivateTool(snapshot.private_tool.clone()),
             line,
             column,
         )
@@ -1701,9 +1701,154 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
             None => panic!("unknown entry"),
         }
     }
+    // The Private Tool call is an Invocation at its call site, admitted
+    // before its body runs.
     let mut expected_rows = outputs;
+    expected_rows.insert(2, program(3, 28));
     expected_rows.extend([in_snapshot(3, 37), program(4, 32)]);
     assert_eq!(row_locations, expected_rows);
+}
+
+/// A Run whose program calls the Private Tool `report.forecast`, whose body
+/// calls a Provider Tool, and its two calls as `BrowseRunEntries` lists them.
+async fn nested_call_run(f: &Fixture) -> (coral_run::RunId, Vec<wire::ActivityInvocation>) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let provider = publish_http(f, &server.uri()).await;
+    policy(f, &provider, coral_policy::ToolAccessState::Enabled).await;
+    f.private_tools
+        .save(
+            &coral_tools::PrivateToolChangeContext::new(
+                AuthenticatedPrincipal::user(f.member.clone()),
+                1_700_000_000_000_000_007,
+                coral_workspace::TraceId::current_or_new(),
+            ),
+            f.workspace.id(),
+            coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
+                coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
+                coral_tools::AuthoredToolSource::parse(
+                    "export default async () => (await coral.providers.evidence.read({ body: {} })).data;",
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let run = start(f, "return await coral.private.report.forecast();").await;
+    terminal(f, &run).await;
+    let calls = run_calls(f, &run, None).await.unwrap();
+    (run, calls)
+}
+
+/// The Tool calls `BrowseRunEntries` lists for `run` at `level`.
+async fn run_calls(
+    f: &Fixture,
+    run: &coral_run::RunId,
+    level: Option<wire::browse_run_entries_request::Level>,
+) -> Result<Vec<wire::ActivityInvocation>, tonic::Status> {
+    let response = f
+        .activity()
+        .browse_run_entries(request(
+            wire::BrowseRunEntriesRequest {
+                name: format!("workspaces/{}/runs/{run}", f.workspace.id()),
+                page_size: 100,
+                level,
+                ..Default::default()
+            },
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await?;
+    Ok(response
+        .into_inner()
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry.record {
+            Some(wire::activity_run_entry::Record::Invocation(row)) => Some(row),
+            _ => None,
+        })
+        .collect())
+}
+
+#[tokio::test]
+async fn a_tool_call_names_its_tool_kind_and_the_call_whose_body_made_it() {
+    // coral-run owns which call is whose child. This asserts the wire
+    // projection: the kind, and the parent's name, path and kind.
+    let f = Fixture::new().await;
+    let (_run, rows) = nested_call_run(&f).await;
+    let [outer, inner] = rows.as_slice() else {
+        panic!("two calls: {rows:?}")
+    };
+    assert_eq!(
+        (outer.call_path.as_str(), outer.tool_kind(), &outer.parent),
+        (
+            "coral.private.report.forecast",
+            wire::ActivityToolKind::Private,
+            &None
+        )
+    );
+    assert_eq!(
+        (inner.tool_kind(), &inner.parent),
+        (
+            wire::ActivityToolKind::Provider,
+            &Some(wire::ActivityInvocationParent {
+                invocation: outer.name.clone(),
+                call_path: outer.call_path.clone(),
+                tool_kind: wire::ActivityToolKind::Private.into(),
+                shared_tool_revision: 0,
+            })
+        )
+    );
+    assert_eq!(
+        (outer.shared_tool_revision, inner.shared_tool_revision),
+        (0, 0)
+    );
+
+    // InspectInvocation projects the same parent.
+    let exact = f
+        .activity()
+        .inspect_invocation(request(
+            wire::InspectInvocationRequest {
+                name: inner.name.clone(),
+            },
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .invocation
+        .unwrap();
+    assert_eq!(exact.parent, inner.parent);
+}
+
+#[tokio::test]
+async fn each_level_of_a_run_lists_only_its_own_calls() {
+    // coral-run owns which call is at which level. This asserts the wire
+    // mapping of each level, and the refusal of another Workspace's call.
+    use wire::browse_run_entries_request::Level;
+    let f = Fixture::new().await;
+    let (run, rows) = nested_call_run(&f).await;
+    let [outer, inner] = rows.as_slice() else {
+        panic!("two calls: {rows:?}")
+    };
+    let names = |rows: Vec<wire::ActivityInvocation>| {
+        rows.into_iter().map(|row| row.name).collect::<Vec<_>>()
+    };
+    let top = run_calls(&f, &run, Some(Level::TopLevel(wire::ActivityEmpty {})));
+    assert_eq!(names(top.await.unwrap()), [outer.name.as_str()]);
+    let inside = run_calls(&f, &run, Some(Level::Parent(outer.name.clone())));
+    assert_eq!(names(inside.await.unwrap()), [inner.name.as_str()]);
+    let foreign = outer.name.replace(
+        &f.workspace.id().to_string(),
+        "00000000-0000-4000-8000-000000000000",
+    );
+    let refused = run_calls(&f, &run, Some(Level::Parent(foreign))).await;
+    assert_eq!(refused.unwrap_err().code(), tonic::Code::InvalidArgument);
 }
 
 /// A summary needs one Workspace, reports a rejected window as an invalid argument, hides

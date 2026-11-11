@@ -513,7 +513,7 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         }
         coral_task::Error::Workspace(error) => workspace_tool_failure(error),
         coral_task::Error::Search(error) => return search_failure(error),
-        coral_task::Error::Functions(error) => return functions_failure(error),
+        coral_task::Error::Tools(error) => return tools_failure(error),
         coral_task::Error::Run(error) => return run_failure(error),
         // With no start_task, the refusal is the agent's only hint that new
         // work starts a new Task.
@@ -565,14 +565,14 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
             ToolFailure::stable("permission_denied", "Permission was denied")
         }
         coral_search::Error::Workspace(error) => workspace_tool_failure(error),
-        coral_search::Error::Functions(error) => return functions_failure(error),
+        coral_search::Error::Tools(error) => return tools_failure(error),
         _ => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }
 
-fn functions_failure(error: coral_functions::Error) -> DispatchError {
-    use coral_functions::Error;
+fn tools_failure(error: coral_tools::Error) -> DispatchError {
+    use coral_tools::Error;
     if let Some((code, message)) = error.safe_rejection() {
         return DispatchError::Tool(ToolFailure::safe(code, message));
     }
@@ -599,7 +599,7 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
             "run_request_not_yet_recorded",
             "Program Run request is not yet recorded; retry",
         ),
-        coral_run::Error::Functions(error) => return functions_failure(error),
+        coral_run::Error::Tools(error) => return tools_failure(error),
         coral_run::Error::ProgramValueTooLarge => ToolFailure::stable(
             "program_value_too_large",
             "Program Final Value is too large",

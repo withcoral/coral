@@ -39,6 +39,16 @@ export const railList = style({
   gap: 4,
   minWidth: 0,
 })
+// A named run of entries. Its label sits above them, spaced from the section before.
+export const railSection = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minWidth: 0,
+  selectors: { '* + &': { marginBlockStart: 12 } },
+})
+export const railSectionLabel = style({ paddingBlock: 4, paddingInline: 8 })
+
 // The empty rail's message, centered below the entries, with any action
 // below it at the rail's width, so every action button has one size.
 export const railEmpty = style({

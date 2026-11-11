@@ -161,9 +161,12 @@ pub(crate) enum Message {
         reply: Reply,
     },
     /// One Invocation's upstream result, decided against the Run Output Budget.
+    /// Applied, it frees the slot the Invocation held under the Fan-out Limit
+    /// when `frees_slot`: an Invocation Coral performs in the Program held none.
     InvocationResult {
         bytes: usize,
         work: Box<dyn ChunkWork>,
+        frees_slot: bool,
         reply: Reply,
     },
     /// Row work whose outcome is known only once its chunk is recorded.
@@ -258,10 +261,16 @@ impl fmt::Debug for Message {
             Self::Admit { work, .. } => {
                 formatter.debug_struct("Admit").field("work", work).finish()
             }
-            Self::InvocationResult { bytes, work, .. } => formatter
+            Self::InvocationResult {
+                bytes,
+                work,
+                frees_slot,
+                ..
+            } => formatter
                 .debug_struct("InvocationResult")
                 .field("bytes", bytes)
                 .field("work", work)
+                .field("frees_slot", frees_slot)
                 .finish(),
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
             Self::Enforce(request) => formatter.debug_tuple("Enforce").field(request).finish(),
@@ -498,9 +507,15 @@ impl OwnerHandle {
         &self,
         bytes: usize,
         work: Box<dyn ChunkWork>,
+        frees_slot: bool,
     ) -> Result<(), Error> {
-        self.ask(|reply| Message::InvocationResult { bytes, work, reply })
-            .await
+        self.ask(|reply| Message::InvocationResult {
+            bytes,
+            work,
+            frees_slot,
+            reply,
+        })
+        .await
     }
 
     /// Queues row work; its own outcome arrives through the work.

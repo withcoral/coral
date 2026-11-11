@@ -16,7 +16,7 @@ use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::trace::RunEnd;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
-    invocation_repository, run_repository,
+    run_repository,
 };
 
 /// How much longer than its shutdown grace a cancellation, or the end of the
@@ -119,8 +119,10 @@ impl RunModule {
     }
 
     /// One settle attempt of a recorded termination: every nonterminal
-    /// Invocation and `run.ended` in one terminal chunk, once no dispatch is
-    /// in flight or `grace_expired` (judged by the caller on its own clock).
+    /// Invocation and `run.ended` in one terminal chunk, once no dispatch
+    /// that may still record its result is in flight (a Tool whose body runs
+    /// in the Program never does) or `grace_expired` (judged by the caller on
+    /// its own clock).
     /// `Ok(true)` once the Run is terminal, by this write or another's;
     /// `Ok(false)` while a dispatch is still in flight within the grace. The
     /// Run row is read without a hold: the owner runs its writes one at a
@@ -142,7 +144,7 @@ impl RunModule {
         };
         if run.state == RunState::Running && run.termination.is_some() {
             if !grace_expired
-                && invocation_repository::has_dispatching_for_run(
+                && invocation_lifecycle::has_dispatch_in_flight(
                     &mut transaction,
                     workspace_id,
                     run_id,
@@ -343,7 +345,8 @@ impl RunModule {
 /// writer applied, with its `cancellation.requested`, else timed out at
 /// `now_unix_nanos` past its deadline (as every deadline path records), else
 /// interrupted then. Every nonterminal Invocation ends (`run_terminated`
-/// before its dispatch, `indeterminate` once dispatching) with its Approval
+/// before its dispatch, `indeterminate` once dispatching, `run_terminated`
+/// for a Tool whose body ran in the Program) with its Approval
 /// Request closed (a timeout expires it and fails the Invocation
 /// `approval_expired`), then `run.ended`, never before the termination. The
 /// worker claim is released and, for a started Run, the execution claim

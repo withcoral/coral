@@ -11,7 +11,9 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         coral_policy::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_policy::Error::Provider(inner) => super::providers::error(inner),
         coral_policy::Error::InvalidBatch => invalid("invalid policy batch"),
-        coral_policy::Error::ToolNotFound | coral_policy::Error::ToolPathsNotFound(_) => {
+        // Only a Program sets policy by Tool Call Path, so the service never
+        // meets a refused path; it reads as a Tool not found.
+        coral_policy::Error::ToolNotFound | coral_policy::Error::RefusedToolPaths { .. } => {
             super::workspaces::safe_status(tonic::Code::NotFound, "NOT_FOUND")
         }
         coral_policy::Error::CorruptData(_)
@@ -21,7 +23,7 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         }
     }
 }
-fn access(state: i32) -> Result<ToolAccessState, Status> {
+pub(super) fn access(state: i32) -> Result<ToolAccessState, Status> {
     match wire::ToolAccessState::try_from(state) {
         Ok(wire::ToolAccessState::Enabled) => Ok(ToolAccessState::Enabled),
         Ok(wire::ToolAccessState::ApprovalRequired) => Ok(ToolAccessState::ApprovalRequired),
@@ -29,7 +31,7 @@ fn access(state: i32) -> Result<ToolAccessState, Status> {
         _ => Err(invalid("invalid access state")),
     }
 }
-fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
+pub(super) fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
     match state {
         ToolAccessState::Enabled => wire::ToolAccessState::Enabled,
         ToolAccessState::ApprovalRequired => wire::ToolAccessState::ApprovalRequired,
@@ -43,11 +45,9 @@ fn view(tool: String, decision: &coral_policy::ToolPolicyDecision) -> wire::Tool
         explicit: decision.is_explicit(),
     }
 }
-fn tool_access(
-    parent: &str,
-    tool: &coral_catalog::ToolListing,
-    decision: &coral_policy::ToolPolicyDecision,
-) -> wire::ToolAccess {
+fn tool_access(parent: &str, listed: &coral_policy::ListedTool) -> wire::ToolAccess {
+    let (tool, decision) = (&listed.listing, &listed.decision);
+    let workspace = parent.split("/providers/").next().unwrap_or_default();
     wire::ToolAccess {
         tool: super::providers::tool_name(parent, &tool.key),
         relative_path: tool.relative_path.clone(),
@@ -57,6 +57,11 @@ fn tool_access(
         hints: Some(super::providers::tool_hints(tool.policy.hints())),
         access_state: access_state(decision.access_state()).into(),
         explicit: decision.is_explicit(),
+        agent: listed
+            .agent
+            .as_ref()
+            .map(|agent| format!("{workspace}/agents/{agent}"))
+            .unwrap_or_default(),
     }
 }
 impl GrpcServices {
@@ -143,12 +148,12 @@ impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
             page_size,
             after.as_ref().map_or("", coral_catalog::ToolKey::as_str),
             &scope,
-            |(tool, _decision)| tool.key.as_str().to_owned(),
+            |listed| listed.listing.key.as_str().to_owned(),
         )?;
         Ok(Response::new(wire::ListToolAccessResponse {
             tools: tools
                 .iter()
-                .map(|(tool, decision)| tool_access(&req.parent, tool, decision))
+                .map(|listed| tool_access(&req.parent, listed))
                 .collect(),
             next_page_token,
         }))
@@ -201,7 +206,10 @@ mod tests {
             (E::InvalidBatch, Code::InvalidArgument, "INVALID_ARGUMENT"),
             (E::ToolNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::ToolPathsNotFound(vec!["repos.nope".to_owned()]),
+                E::RefusedToolPaths {
+                    missing: vec!["coral.providers.repos.nope".to_owned()],
+                    builtin: Vec::new(),
+                },
                 Code::NotFound,
                 "NOT_FOUND",
             ),

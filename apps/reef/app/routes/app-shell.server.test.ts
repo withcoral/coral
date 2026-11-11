@@ -81,6 +81,21 @@ it.each([
   ['closing a review', '/workspaces/one/approvals?request=a', '/workspaces/one/approvals', false],
   ['refreshing the open review', '/workspaces/one/approvals?request=a', '', true],
   ['leaving for another page', '/workspaces/one/approvals', '/workspaces/one/activity', true],
+  // A tool's drawer opens over its group, a provider or the private tools.
+  ['opening a tool', '/workspaces/one/providers/p', '/workspaces/one/providers/p/tools/t', false],
+  [
+    'opening a private tool',
+    '/workspaces/one/tools/private',
+    '/workspaces/one/tools/private/t',
+    false,
+  ],
+  [
+    'opening provider settings',
+    '/workspaces/one/providers/p',
+    '/workspaces/one/providers/p/settings',
+    true,
+  ],
+  ['changing group', '/workspaces/one/tools/private', '/workspaces/one/providers/p', true],
   [
     'changing the query of another page',
     '/workspaces/one/activity',

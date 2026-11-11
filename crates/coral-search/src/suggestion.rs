@@ -1,7 +1,9 @@
 //! The nearest Discoverable Call Paths to a path that names nothing the
 //! caller can call, so a Program can correct a guessed path without a
 //! separate search. Only Tools of the path's own Call Root are suggested,
-//! and only ones the caller can already discover.
+//! and only ones the caller can already discover: under `coral.private`,
+//! the caller's own Private Tools, and under `coral.shared`, the Workspace's
+//! Shared Tools.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -47,10 +49,15 @@ pub(crate) async fn suggestions(
     let Some((call_root, relative_path)) = ProviderCallRoot::split_call_path(written) else {
         return Ok(Vec::new());
     };
-    let Some(tools) = retrievers
-        .iter()
-        .find(|retriever| retriever.kind() == EntityKind::ProviderTool)
-    else {
+    let kind = match call_root {
+        ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin => EntityKind::ProviderTool,
+        // The caller's own Private Tools are the Entities under its Private
+        // root.
+        ProviderCallRoot::Private => EntityKind::PrivateTool,
+        // Every Principal of the Workspace discovers its Shared Tools.
+        ProviderCallRoot::Shared => EntityKind::SharedTool,
+    };
+    let Some(tools) = retrievers.iter().find(|retriever| retriever.kind() == kind) else {
         return Ok(Vec::new());
     };
     let listing = match tools

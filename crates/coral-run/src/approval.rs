@@ -454,27 +454,45 @@ async fn decision_required(
     target: &invocation_repository::ApprovalTarget,
     now: i64,
 ) -> Result<bool, Error> {
-    if let Err(error) = workspaces
+    let role = match workspaces
         .check_invoking_principal_in_snapshot(tx, &run.workspace_id, &run.principal, now)
         .await
     {
-        // A lost authority makes the request moot; any other failure is the
-        // caller's to see.
-        crate::enforcement::authority_failure(error)?;
-        return Ok(false);
-    }
-    let tool = coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
-        .await
-        .map_err(coral_provider::Error::from)?
-        .ok_or(Error::ApprovalNotFound)?;
+        Ok(role) => role,
+        Err(error) => {
+            // A lost authority makes the request moot; any other failure is
+            // the caller's to see.
+            crate::enforcement::authority_failure(error)?;
+            return Ok(false);
+        }
+    };
     let policy_target = coral_policy::ToolPolicyTarget::new(
         run.workspace_id.clone(),
         target.provider_id.clone(),
         target.tool.clone(),
     );
-    let policy =
-        coral_policy::discovery_decision_in_transaction(tx, &policy_target, tool.policy_facts())
-            .await?;
+    // No catalog stores a Private or Shared Tool: its Invocation retains the
+    // kind, in its Call Path, and the default of the revision the Run
+    // linked. Any other Tool's facts are its retained Generation's.
+    let retained = match coral_catalog::AuthoredToolKind::of_call_path(&target.call_path) {
+        Some(kind) => crate::enforcement::RetainedPolicy::authored(kind, target.declared_default)?,
+        None => crate::enforcement::RetainedPolicy::Catalog(
+            coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
+                .await
+                .map_err(coral_provider::Error::from)?
+                .ok_or(Error::ApprovalNotFound)?
+                .policy_facts(),
+        ),
+    };
+    // The decision the enforcement point makes, read without a hold.
+    let policy = crate::enforcement::tool_decision_in_transaction(
+        tx,
+        &policy_target,
+        retained,
+        coral_policy::PrivateToolOwner::of(run.principal.kind(), role),
+        coral_db::RowLock::None,
+    )
+    .await?;
     Ok(policy.access_state() == coral_policy::ToolAccessState::ApprovalRequired)
 }
 

@@ -639,7 +639,7 @@ it('keeps the original selection when you cancel instead of completing', async (
 it('places a provider account under its provider', async () => {
   const view = await load('scope=shared')
   expect(view.parents).toEqual([
-    { label: 'Providers', to: `${base}/providers` },
+    { label: 'Tools', to: `${base}/tools` },
     { label: 'GitHub', to: `${base}/providers/${providerId}` },
   ])
   expect(view.title).toBe('Account')

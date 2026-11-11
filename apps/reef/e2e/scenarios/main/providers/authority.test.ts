@@ -155,7 +155,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
         expect(await page.getByRole('button', { name: /^Disable|^Enable/ }).count()).toBe(0)
       })
       await step('A forged action is refused without a change', async () => {
-        const response = await page.request.post(`/workspaces/${ws}/providers`, {
+        const response = await page.request.post(`/workspaces/${ws}/tools`, {
           form: {
             intent: 'removeProvider',
             provider: providerId!,
@@ -172,7 +172,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
         await page.goto(`/workspaces/${ws}/providers/${providerId}`)
         const csrf = await page.locator('input[name="csrf"]').first().inputValue()
         const before = await api.providers.getProvider({ name: publication.provider })
-        const response = await page.request.post(`/workspaces/${ws}/providers`, {
+        const response = await page.request.post(`/workspaces/${ws}/tools`, {
           headers: { Origin: new URL(page.url()).origin },
           form: { intent: 'removeProvider', provider: providerId!, etag: before.etag, csrf },
         })

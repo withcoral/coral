@@ -39,7 +39,7 @@ impl TaskCommands {
 
     /// Retains exactly one requested search page before returning it.
     ///
-    /// No MCP tool calls this: agents discover with `coral.workspace.search`
+    /// No MCP tool calls this: agents discover with `coral.search`
     /// inside a Run. It still writes the `search` record that Task history
     /// keeps from before, so tests of retained history make one as Coral did.
     /// # Errors
@@ -281,7 +281,7 @@ impl TaskCommands {
 
     async fn reject(&self, call: &AttributedCommand, id: &InteractionId, error: Error) -> Error {
         let failure = match &error {
-            Error::Functions(error) => error.safe_rejection(),
+            Error::Tools(error) => error.safe_rejection(),
             Error::Run(error) => error.safe_rejection(),
             Error::Search(error) => error.safe_rejection(),
             _ => None,
@@ -419,13 +419,13 @@ pub(super) fn now() -> Result<i64, Error> {
 }
 
 /// One retained authoring Attempt: a `save` or `delete` that Task history
-/// keeps from before agents saved Saved Functions from Programs (ADR 0031).
+/// keeps from before agents saved Private Tools from Programs (ADR 0031).
 #[cfg(any(test, feature = "test-fixtures"))]
 #[derive(Debug, Clone, Copy)]
 pub enum RetainedChange<'a> {
     /// Saves an untyped function.
     Save {
-        /// The path relative to `coral.functions`.
+        /// The path relative to `coral.private`.
         path: &'a str,
         /// The description search shows.
         description: &'a str,
@@ -434,7 +434,7 @@ pub enum RetainedChange<'a> {
     },
     /// Deletes the function at `path`.
     Delete {
-        /// The path relative to `coral.functions`.
+        /// The path relative to `coral.private`.
         path: &'a str,
     },
 }
@@ -456,10 +456,10 @@ impl TaskCommands {
     /// persistence failure.
     pub async fn record_retained(
         &self,
-        functions: &coral_functions::SavedFunctionModule,
+        functions: &coral_tools::PrivateToolModule,
         call: &AttributedCommand,
         change: RetainedChange<'_>,
-    ) -> Result<coral_functions::SavedFunctionId, Error> {
+    ) -> Result<coral_tools::PrivateToolId, Error> {
         let kind = match change {
             RetainedChange::Save { .. } => AttemptKind::Save,
             RetainedChange::Delete { .. } => AttemptKind::Delete,
@@ -474,10 +474,10 @@ impl TaskCommands {
                     description,
                     source,
                 } => {
-                    let save = coral_functions::SavedFunctionSave::new(
-                        coral_functions::SavedFunctionPath::parse(path)?,
-                        coral_functions::SavedFunctionDescription::parse(description)?,
-                        coral_functions::SavedFunctionSource::parse(source)?,
+                    let save = coral_tools::PrivateToolSave::new(
+                        coral_tools::PrivateToolPath::parse(path)?,
+                        coral_tools::AuthoredToolDescription::parse(description)?,
+                        coral_tools::AuthoredToolSource::parse(source)?,
                     );
                     RetainedReady::Save(Box::new(
                         functions
@@ -486,7 +486,7 @@ impl TaskCommands {
                     ))
                 }
                 RetainedChange::Delete { path } => {
-                    RetainedReady::Delete(coral_functions::SavedFunctionPath::parse(path)?)
+                    RetainedReady::Delete(coral_tools::PrivateToolPath::parse(path)?)
                 }
             };
             let mut transaction = self.tasks.database.begin().await?;
@@ -508,7 +508,7 @@ impl TaskCommands {
                         .await?
                 }
             };
-            let evidence = AttemptEvidence::SavedFunction(function.clone());
+            let evidence = AttemptEvidence::PrivateTool(function.clone());
             self.complete(&mut transaction, call, &id, &evidence)
                 .await?;
             transaction.commit().await?;
@@ -525,15 +525,15 @@ impl TaskCommands {
 /// A [`RetainedChange`] ready to write: a save compiled, or a delete's path.
 #[cfg(any(test, feature = "test-fixtures"))]
 enum RetainedReady {
-    Save(Box<coral_functions::PreparedSave>),
-    Delete(coral_functions::SavedFunctionPath),
+    Save(Box<coral_tools::PreparedSave>),
+    Delete(coral_tools::PrivateToolPath),
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]
 fn retained_context(
     call: &AttributedCommand,
-) -> Result<coral_functions::SavedFunctionChangeContext, Error> {
-    Ok(coral_functions::SavedFunctionChangeContext::new(
+) -> Result<coral_tools::PrivateToolChangeContext, Error> {
+    Ok(coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
         now()?,
         coral_workspace::TraceId::current_or_new(),

@@ -147,7 +147,12 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
     let builtin_context = change(owner.clone(), 45, '6');
     let mut transaction = policies.database.begin().await.expect("begin");
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &builtin_context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &builtin_context,
+            workspace.id(),
+            coral_provider::CoralDefinedProvider::Builtin,
+        )
         .await
         .expect("install the Built-in Provider")
         .skip_search()
@@ -166,8 +171,9 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
     // read-only evidence.
     let defaults = [
         (&builtin, "listProviders", ToolAccessState::Enabled),
-        (&builtin, "saveFunction", ToolAccessState::Enabled),
-        (&builtin, "deleteFunction", ToolAccessState::Enabled),
+        (&builtin, "addCustomTool", ToolAccessState::Enabled),
+        (&builtin, "updateCustomTool", ToolAccessState::Enabled),
+        (&builtin, "removeCustomTool", ToolAccessState::Enabled),
         (&builtin, "addProvider", ToolAccessState::ApprovalRequired),
         (&builtin, "updatePolicy", ToolAccessState::ApprovalRequired),
         (
@@ -192,8 +198,8 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
             .decision(&owner, &target(provider, tool))
             .await
             .expect("decision");
-        assert_eq!(decision.access_state(), expected, "{tool}");
-        assert!(!decision.is_explicit(), "{tool}");
+        assert_eq!(decision.access_state(), expected, "{tool:?}");
+        assert!(!decision.is_explicit(), "{tool:?}");
     }
 
     // Pending-approval queries select with the SQL mirror; it agrees with
@@ -213,7 +219,7 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
         .set_access_states(
             &change(owner.clone(), 55, '7'),
             vec![(
-                target(&builtin, "deleteFunction"),
+                target(&builtin, "removeCustomTool"),
                 ToolAccessState::ApprovalRequired,
             )],
         )
@@ -235,11 +241,11 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
         by_sql,
         [
             "addProvider",
-            "deleteFunction",
             "deleteValue",
             "getValue",
             "patchValue",
             "putValue",
+            "removeCustomTool",
             "retry_value",
             "updatePolicy",
             "updateProvider",
@@ -629,11 +635,11 @@ paths:
         .unwrap();
     let decisions = listed
         .iter()
-        .map(|(tool, decision)| {
+        .map(|listed| {
             (
-                tool.key.as_str(),
-                decision.access_state(),
-                decision.is_explicit(),
+                listed.listing.key.as_str(),
+                listed.decision.access_state(),
+                listed.decision.is_explicit(),
             )
         })
         .collect::<Vec<_>>();
@@ -647,7 +653,7 @@ paths:
     assert_eq!(
         listed
             .iter()
-            .map(|(_tool, decision)| decision.clone())
+            .map(|listed| listed.decision.clone())
             .collect::<Vec<_>>(),
         [
             policies.decision(&owner, &read).await.unwrap(),
@@ -661,17 +667,23 @@ paths:
         .listed_decisions(&owner, workspace.id(), &provider, None, 1)
         .await
         .unwrap();
-    let [(page, _decision), _lookahead] = first.as_slice() else {
+    let [page, _lookahead] = first.as_slice() else {
         panic!("a page of one and its lookahead row");
     };
     let last = policies
-        .listed_decisions(&owner, workspace.id(), &provider, Some(&page.key), 1)
+        .listed_decisions(
+            &owner,
+            workspace.id(),
+            &provider,
+            Some(&page.listing.key),
+            1,
+        )
         .await
         .unwrap();
-    let [(only, _decision)] = last.as_slice() else {
+    let [only] = last.as_slice() else {
         panic!("one Tool follows the first");
     };
-    assert_eq!(only.key.as_str(), "writeOne");
+    assert_eq!(only.listing.key.as_str(), "writeOne");
 
     assert!(matches!(
         policies
@@ -1007,7 +1019,8 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         "only this Workspace's disabled rule"
     );
     let read_only = ToolHints::new(Some(true), None, None, None);
-    let enabled_by_default = ToolPolicyFacts::default().declaring_enabled_by_default(true);
+    let enabled_by_default =
+        ToolPolicyFacts::default().declaring_default(Some(ToolAccessState::Enabled));
     for (target, facts, expected) in [
         (
             &forecast,
@@ -1073,7 +1086,7 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         // A default the catalog declares holds whatever the hints say.
         (
             ToolPolicyFacts::new(ToolHints::new(Some(false), Some(true), None, None), None)
-                .declaring_enabled_by_default(true),
+                .declaring_default(Some(ToolAccessState::Enabled)),
             ToolAccessState::Enabled,
         ),
     ] {
@@ -1485,16 +1498,16 @@ enum ThenProvider {
     Disabled,
 }
 
-// Catches: a rule read by Tool Key rather than Call Path, a rule whose
-// Tool left the catalog, a default read as a rule, a disabled Provider
-// hidden, a Principal other than an Owner refused, or an absent Provider,
-// the Built-in one included, read as one without rules.
+// Catches: a rule read by Tool Key rather than complete Call Path, a rule
+// whose Tool left the catalog, a default read as a rule, a disabled
+// Provider hidden, a Principal other than an Owner refused, or an absent
+// Provider read as anything but one without rules.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one table covers every rule a Provider can hold and each Principal that reads it"
 )]
-async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
+async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
     use ToolAccessState::{ApprovalRequired, Disabled, Enabled};
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
@@ -1650,7 +1663,7 @@ async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
 
         let expected = expected
             .iter()
-            .map(|(path, state)| ((*path).to_owned(), *state))
+            .map(|(path, state)| (format!("coral.providers.{namespace}.{path}"), *state))
             .collect::<BTreeMap<_, _>>();
         for principal in [
             AuthenticatedPrincipal::user(owner.clone()),
@@ -1659,10 +1672,10 @@ async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
         ] {
             assert_eq!(
                 policies
-                    .provider_rules(
+                    .rules(
                         &principal,
                         workspace.id(),
-                        &ProviderNamespace::parse(namespace).expect("namespace"),
+                        Some(&format!("coral.providers.{namespace}")),
                         at + 5,
                     )
                     .await
@@ -1672,27 +1685,19 @@ async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
             );
         }
     }
-    // The Built-in Provider's Call Root is `coral.workspace`, which no
-    // namespace names.
-    for absent in ["absent", "workspace"] {
-        let read = policies
-            .provider_rules(
+    // A root that no Provider holds has no rules.
+    assert_eq!(
+        policies
+            .rules(
                 &AuthenticatedPrincipal::user(owner.clone()),
                 workspace.id(),
-                &ProviderNamespace::parse(absent).expect("namespace"),
+                Some("coral.providers.absent"),
                 350,
             )
-            .await;
-        assert!(
-            matches!(
-                read,
-                Err(crate::Error::Provider(
-                    coral_provider::Error::ProviderNotFound
-                ))
-            ),
-            "{absent}: {read:?}"
-        );
-    }
+            .await
+            .expect("read an absent root"),
+        BTreeMap::new()
+    );
 }
 
 // Catches: a sent path that takes another state or another Tool's rule,
@@ -1704,7 +1709,7 @@ async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
     clippy::too_many_lines,
     reason = "one table covers each state a path can take"
 )]
-async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
+async fn access_states_by_call_path_set_each_sent_path_and_keep_the_rest() {
     use ToolAccessState::{ApprovalRequired, Disabled, Enabled};
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
@@ -1771,17 +1776,16 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
             .await
             .expect("list policy Events");
         let sent = BTreeMap::from([
-            ("repos.get".to_owned(), get),
-            ("repos.create".to_owned(), create),
+            (format!("coral.providers.{namespace}.repos.get"), get),
+            (format!("coral.providers.{namespace}.repos.create"), create),
         ]);
         // The second call repeats each state.
         for repeat in 1..=2 {
             assert_eq!(
                 policies
-                    .set_provider_access_states(
+                    .set_access_states_by_call_path(
                         &change(owner.clone(), at + repeat, '3'),
                         workspace.id(),
-                        &ProviderNamespace::parse(namespace).expect("namespace"),
                         &sent,
                     )
                     .await
@@ -1847,8 +1851,8 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
 #[derive(Debug, PartialEq, Eq)]
 enum Rejected {
     InvalidBatch,
-    Paths(Vec<String>),
-    ProviderNotFound,
+    /// The paths that name no Tool, then the Built-in ones.
+    Refused(Vec<String>, Vec<String>),
     NotAnOwner,
 }
 
@@ -1856,9 +1860,8 @@ impl Rejected {
     fn of(error: &crate::Error) -> Option<Self> {
         match error {
             crate::Error::InvalidBatch => Some(Self::InvalidBatch),
-            crate::Error::ToolPathsNotFound(paths) => Some(Self::Paths(paths.clone())),
-            crate::Error::Provider(coral_provider::Error::ProviderNotFound) => {
-                Some(Self::ProviderNotFound)
+            crate::Error::RefusedToolPaths { missing, builtin } => {
+                Some(Self::Refused(missing.clone(), builtin.clone()))
             }
             crate::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
                 Some(Self::NotAnOwner)
@@ -1868,55 +1871,31 @@ impl Rejected {
     }
 }
 
-// Catches: an empty or oversized change applied, a known path applied beside
-// an unknown one, an unknown path left unnamed, an absent Provider read as one
-// without Tools, or a Member who changes policy.
+// Catches: an empty or oversized change applied; a known path applied beside
+// a refused one; a refused path left unnamed, whether it names no Tool of a
+// Provider, a gone Shared Tool, another Principal's or a missing Private
+// Tool, or a Built-in Tool; a typo under `coral` refused as a Built-in Tool
+// rather than as one that names no Tool; or a Member who changes policy.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table covers each way a change is rejected"
-)]
-async fn provider_access_states_change_nothing_when_rejected() {
+async fn access_states_by_call_path_change_nothing_when_rejected() {
     use ToolAccessState::{Disabled, Enabled};
-    let (fixture, workspaces, providers, policies) = test_modules().await;
-    let owner = organization_user(
-        policies.database.clone(),
-        "user:reject-paths-owner",
-        OrganizationRole::Member,
-    )
-    .await;
-    let member = organization_user(
-        policies.database.clone(),
-        "user:reject-paths-member",
-        OrganizationRole::Member,
-    )
-    .await;
-    let workspace = workspaces
-        .create(
-            &change(owner.clone(), 500, '1'),
-            WorkspaceDisplayName::parse("Reject paths").expect("display name"),
-        )
-        .await
-        .expect("create Workspace");
-    workspaces
-        .set_membership(
-            &change(owner.clone(), 501, '1'),
-            workspace.id(),
-            &member,
-            coral_workspace::WorkspaceRole::Member,
-        )
-        .await
-        .expect("add Workspace Member");
-    providers
+    const GET: &str = "coral.providers.repos.repos.get";
+    let tools = SharedTools::new().await;
+    let base = &tools.base;
+    let (owner, member) = (&base.owner, &base.member);
+    base.providers
         .publish_openapi_fixture(
             &change(owner.clone(), 502, '2'),
-            workspace.id(),
+            &base.workspace,
             OpenApiDocument::parse(REPOSITORY_OPENAPI).expect("OpenAPI input"),
             "repos",
             CredentialRoute::None,
         )
         .await
         .expect("publish Provider");
+    tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
 
     let paths = |entries: &[(&str, ToolAccessState)]| -> BTreeMap<_, _> {
         entries
@@ -1924,66 +1903,76 @@ async fn provider_access_states_change_nothing_when_rejected() {
             .map(|(path, state)| ((*path).to_owned(), *state))
             .collect()
     };
-    let oversized = std::iter::once(("repos.get".to_owned(), Disabled))
-        .chain((0..100).map(|n| (format!("repos.op{n}"), Disabled)))
+    let named = |names: &[&str]| {
+        names
+            .iter()
+            .map(|&name| name.to_owned())
+            .collect::<Vec<_>>()
+    };
+    let oversized = std::iter::once((GET.to_owned(), Disabled))
+        .chain((0..100).map(|n| (format!("coral.providers.repos.repos.op{n}"), Disabled)))
         .collect();
-    for (at, (actor, namespace, sent, expected)) in (510..).zip([
-        (&owner, "repos", BTreeMap::new(), Rejected::InvalidBatch),
-        (&owner, "repos", oversized, Rejected::InvalidBatch),
+    for (at, (actor, case, sent, expected)) in (510..).zip([
+        (owner, "empty", BTreeMap::new(), Rejected::InvalidBatch),
+        (owner, "oversized", oversized, Rejected::InvalidBatch),
         (
-            &owner,
-            "repos",
+            owner,
+            "unknown",
             paths(&[
-                ("repos.get", Disabled),
-                ("repos.nope", Disabled),
+                (GET, Disabled),
+                ("coral.shared.mail.remind", Disabled),
+                ("coral.providers.repos.repos.nope", Disabled),
+                ("coral.providers.absent.repos.get", Disabled),
+                ("coral.shared.mail.gone", Disabled),
+                ("coral.private.people.gone", Disabled),
                 ("nope", Enabled),
             ]),
-            Rejected::Paths(vec!["nope".to_owned(), "repos.nope".to_owned()]),
+            Rejected::Refused(
+                named(&[
+                    "coral.private.people.gone",
+                    "coral.providers.absent.repos.get",
+                    "coral.providers.repos.repos.nope",
+                    "coral.shared.mail.gone",
+                    "nope",
+                ]),
+                Vec::new(),
+            ),
         ),
         (
-            &owner,
-            "absent",
-            paths(&[("repos.get", Disabled)]),
-            Rejected::ProviderNotFound,
+            owner,
+            "built-in and a typo",
+            paths(&[
+                (GET, Disabled),
+                ("coral.private.people.greet", Enabled),
+                ("coral.updatePolicy", Enabled),
+                ("coral.serch", Disabled),
+            ]),
+            Rejected::Refused(named(&["coral.serch"]), named(&["coral.updatePolicy"])),
         ),
         (
-            &member,
-            "repos",
-            paths(&[("repos.get", Disabled)]),
+            member,
+            "member",
+            paths(&[(GET, Disabled)]),
             Rejected::NotAnOwner,
         ),
     ]) {
-        let rules = exact_rules(&fixture, workspace.id()).await;
-        let events = policies
-            .list_lifecycle_events(&owner, workspace.id())
-            .await
-            .expect("list policy Events");
-        let result = policies
-            .set_provider_access_states(
-                &change(actor.clone(), at, '3'),
-                workspace.id(),
-                &ProviderNamespace::parse(namespace).expect("namespace"),
-                &sent,
-            )
+        let rules = exact_rules(&base.fixture, &base.workspace).await;
+        let events = base.events().await;
+        let result = base
+            .policies
+            .set_access_states_by_call_path(&change(actor.clone(), at, '3'), &base.workspace, &sent)
             .await;
         assert_eq!(
             result.as_ref().err().and_then(Rejected::of),
             Some(expected),
-            "{namespace}: {result:?}"
+            "{case}: {result:?}"
         );
         assert_eq!(
-            exact_rules(&fixture, workspace.id()).await,
+            exact_rules(&base.fixture, &base.workspace).await,
             rules,
-            "{namespace}"
+            "{case}"
         );
-        assert_eq!(
-            policies
-                .list_lifecycle_events(&owner, workspace.id())
-                .await
-                .expect("list policy Events"),
-            events,
-            "{namespace}"
-        );
+        assert_eq!(base.events().await, events, "{case}");
     }
 }
 
@@ -2065,3 +2054,963 @@ async fn test_modules() -> (
 }
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
+
+/// A Workspace with its Built-in, Private and Shared Providers, an Owner, a
+/// Member and an Agent, each with one Private Tool at `people.greet`. The
+/// Owner's tool declares `approval_required`.
+struct PrivateTools {
+    policies: ToolPolicyModule,
+    workspace: coral_workspace::WorkspaceId,
+    provider: coral_provider::ProviderId,
+    shared_provider: coral_provider::ProviderId,
+    builtin_provider: coral_provider::ProviderId,
+    owner: AuthenticatedUser,
+    member: AuthenticatedUser,
+    agent: AuthenticatedPrincipal,
+    owners_tool: ToolKey,
+    members_tool: ToolKey,
+    agents_tool: ToolKey,
+    providers: ProviderModule,
+    fixture: TestDatabase,
+}
+
+impl PrivateTools {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one Workspace gets each kind of Principal and its Private Tool"
+    )]
+    async fn new() -> Self {
+        let (fixture, workspaces, providers, policies) = test_modules().await;
+        let database = policies.database.clone();
+        let owner = organization_user(
+            database.clone(),
+            "user:private-owner",
+            OrganizationRole::Member,
+        )
+        .await;
+        let member = organization_user(
+            database.clone(),
+            "user:private-member",
+            OrganizationRole::Member,
+        )
+        .await;
+        let workspace = workspaces
+            .create(
+                &change(owner.clone(), 10, '1'),
+                WorkspaceDisplayName::parse("Private Tool policy").expect("display name"),
+            )
+            .await
+            .expect("create Workspace");
+        let workspace = workspace.id().clone();
+        workspaces
+            .set_membership(
+                &change(owner.clone(), 11, '2'),
+                &workspace,
+                &member,
+                coral_workspace::WorkspaceRole::Member,
+            )
+            .await
+            .expect("add the Member");
+        let mut transaction = database.begin().await.expect("begin install");
+        let mut installed = Vec::new();
+        for defined in [
+            coral_provider::CoralDefinedProvider::Private,
+            coral_provider::CoralDefinedProvider::Shared,
+            coral_provider::CoralDefinedProvider::Builtin,
+        ] {
+            installed.push(
+                providers
+                    .install_coral_defined_in_transaction(
+                        &mut transaction,
+                        &change(owner.clone(), 12, '3'),
+                        &workspace,
+                        defined,
+                    )
+                    .await
+                    .expect("install the Provider")
+                    .skip_search()
+                    .id()
+                    .clone(),
+            );
+        }
+        let [provider, shared_provider, builtin_provider] =
+            installed.try_into().expect("three Providers");
+        transaction.commit().await.expect("commit install");
+        let issued = workspaces
+            .create_agent(
+                &change(owner.clone(), 13, '4'),
+                &workspace,
+                coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
+                None,
+            )
+            .await
+            .expect("create Agent");
+        let agent = workspaces
+            .authenticate_agent(&workspace, issued.credential.expose(), 14)
+            .await
+            .expect("authenticate Agent");
+        let functions = coral_tools::PrivateToolModule::new(
+            database,
+            workspaces,
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .expect("the Private Tool module");
+        let mut keys = Vec::new();
+        for (principal, declared) in [
+            (
+                AuthenticatedPrincipal::user(owner.clone()),
+                Some(ToolAccessState::ApprovalRequired),
+            ),
+            (AuthenticatedPrincipal::user(member.clone()), None),
+            (agent.clone(), None),
+        ] {
+            let save = coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("people.greet").expect("path"),
+                coral_tools::AuthoredToolDescription::parse("Greet").expect("description"),
+                coral_tools::AuthoredToolSource::parse("export default async () => 1;")
+                    .expect("source"),
+            )
+            .declaring_default(declared);
+            let saved = functions
+                .save(
+                    &coral_tools::PrivateToolChangeContext::new(
+                        principal,
+                        20,
+                        coral_workspace::TraceId::parse(&"5".repeat(32)).expect("trace"),
+                    ),
+                    &workspace,
+                    save,
+                )
+                .await
+                .expect("save the Private Tool");
+            keys.push(saved.id().tool_key());
+        }
+        let [owners_tool, members_tool, agents_tool] = keys.try_into().expect("three tools");
+        Self {
+            policies,
+            workspace,
+            provider,
+            shared_provider,
+            builtin_provider,
+            owner,
+            member,
+            agent,
+            owners_tool,
+            members_tool,
+            agents_tool,
+            providers,
+            fixture,
+        }
+    }
+
+    fn target(&self, tool: &ToolKey) -> ToolPolicyTarget {
+        ToolPolicyTarget::new(self.workspace.clone(), self.provider.clone(), tool.clone())
+    }
+
+    async fn events(&self) -> usize {
+        self.policies
+            .list_lifecycle_events(&self.owner, &self.workspace)
+            .await
+            .expect("list policy Events")
+            .len()
+    }
+}
+
+// Catches: an Owner who cannot read or set a rule on their own or an
+// Agent's Private Tool, a Private Tool whose declared default does not
+// decide without a rule, or an Owner who reads or sets a rule on a
+// Member's, or whose refused batch changes anything.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario covers each reader, a refused batch and an accepted one"
+)]
+async fn an_owner_sets_rules_on_their_own_and_agents_private_tools_and_never_a_members() {
+    let tools = PrivateTools::new().await;
+    let decision = |actor: AuthenticatedUser, tool: ToolKey| {
+        let (policies, target) = (tools.policies.clone(), tools.target(&tool));
+        async move {
+            policies
+                .decision(&actor, &target)
+                .await
+                .map(|decision| (decision.access_state(), decision.is_explicit()))
+        }
+    };
+    // Reads: each Principal's own, and the Owner's of an Agent's. The
+    // declared default decides while no rule matches.
+    for (actor, tool, read) in [
+        (
+            &tools.owner,
+            &tools.owners_tool,
+            Some((ToolAccessState::ApprovalRequired, false)),
+        ),
+        (
+            &tools.owner,
+            &tools.agents_tool,
+            Some((ToolAccessState::Enabled, false)),
+        ),
+        (&tools.owner, &tools.members_tool, None),
+        (
+            &tools.member,
+            &tools.members_tool,
+            Some((ToolAccessState::Enabled, false)),
+        ),
+        (&tools.member, &tools.agents_tool, None),
+        (&tools.member, &tools.owners_tool, None),
+    ] {
+        let found = decision(actor.clone(), tool.clone()).await;
+        match read {
+            Some(read) => assert_eq!(found.expect("a readable tool"), read, "{tool:?}"),
+            None => assert!(
+                matches!(found, Err(crate::Error::ToolNotFound)),
+                "{tool:?}: {found:?}"
+            ),
+        }
+    }
+
+    // A batch that names a Member's Private Tool is refused whole.
+    let before = tools.events().await;
+    for refused in [
+        vec![(tools.target(&tools.members_tool), ToolAccessState::Disabled)],
+        vec![
+            (tools.target(&tools.owners_tool), ToolAccessState::Enabled),
+            (tools.target(&tools.members_tool), ToolAccessState::Disabled),
+        ],
+    ] {
+        assert!(matches!(
+            tools
+                .policies
+                .set_access_states(&change(tools.owner.clone(), 30, '6'), refused)
+                .await,
+            Err(crate::Error::ToolNotFound)
+        ));
+    }
+    assert_eq!(
+        tools.events().await,
+        before,
+        "a refused batch records nothing"
+    );
+    assert_eq!(
+        decision(tools.owner.clone(), tools.owners_tool.clone())
+            .await
+            .expect("unchanged"),
+        (ToolAccessState::ApprovalRequired, false)
+    );
+
+    // The Owner's rules override each declared default, one Event each.
+    let before = tools.events().await;
+    tools
+        .policies
+        .set_access_states(
+            &change(tools.owner.clone(), 40, '7'),
+            vec![
+                (tools.target(&tools.owners_tool), ToolAccessState::Enabled),
+                (tools.target(&tools.agents_tool), ToolAccessState::Disabled),
+            ],
+        )
+        .await
+        .expect("set the Owner's rules");
+    assert_eq!(tools.events().await, before + 2);
+    let before = tools.events().await;
+    for (tool, state) in [
+        (&tools.owners_tool, ToolAccessState::Enabled),
+        (&tools.agents_tool, ToolAccessState::Disabled),
+    ] {
+        assert_eq!(
+            decision(tools.owner.clone(), tool.clone())
+                .await
+                .expect("a rule"),
+            (state, true),
+            "{tool:?}"
+        );
+    }
+    // A Member sets no rule, even on their own Private Tool.
+    assert!(matches!(
+        tools
+            .policies
+            .set_access_state(
+                &change(tools.member.clone(), 50, '8'),
+                tools.target(&tools.members_tool),
+                ToolAccessState::Disabled,
+            )
+            .await,
+        Err(crate::Error::Workspace(
+            coral_workspace::Error::PermissionDenied(_)
+        ))
+    ));
+    assert_eq!(tools.events().await, before);
+}
+
+// Catches: an Owner's rule that still decides their Private Tool after they
+// become a Member, when no Owner can read or change it.
+#[tokio::test]
+async fn a_rule_on_an_owners_private_tool_stops_applying_once_they_are_a_member() {
+    let tools = PrivateTools::new().await;
+    tools
+        .policies
+        .set_access_state(
+            &change(tools.owner.clone(), 30, '6'),
+            tools.target(&tools.owners_tool),
+            ToolAccessState::Disabled,
+        )
+        .await
+        .expect("set the Owner's rule");
+    let workspaces = WorkspaceModule::new(tools.policies.database.clone());
+    for (actor, user, role, at) in [
+        (
+            &tools.owner,
+            &tools.member,
+            coral_workspace::WorkspaceRole::Owner,
+            31,
+        ),
+        (
+            &tools.member,
+            &tools.owner,
+            coral_workspace::WorkspaceRole::Member,
+            32,
+        ),
+    ] {
+        workspaces
+            .set_membership(
+                &change(actor.clone(), at, '7'),
+                &tools.workspace,
+                user,
+                role,
+            )
+            .await
+            .expect("change the role");
+    }
+    let decision = tools
+        .policies
+        .decision(&tools.owner, &tools.target(&tools.owners_tool))
+        .await
+        .expect("a Member reads their own Private Tool");
+    assert_eq!(
+        (decision.access_state(), decision.is_explicit()),
+        (ToolAccessState::ApprovalRequired, false),
+        "the declared default decides"
+    );
+}
+
+// Catches: a Private Provider listing that shows a Member's Private Tool to
+// an Owner, hides an Agent's from them or does not name its Agent, or shows
+// a Member an Owner's rule on their own Private Tool.
+#[tokio::test]
+async fn the_private_provider_lists_the_private_tools_whose_rules_each_reader_may_read() {
+    let tools = PrivateTools::new().await;
+    tools
+        .policies
+        .set_access_states(
+            &change(tools.owner.clone(), 30, '6'),
+            vec![
+                (tools.target(&tools.owners_tool), ToolAccessState::Disabled),
+                (
+                    tools.target(&tools.agents_tool),
+                    ToolAccessState::ApprovalRequired,
+                ),
+            ],
+        )
+        .await
+        .expect("set the Owner's rules");
+    let listed = |reader: AuthenticatedUser| {
+        let (policies, workspace, provider) = (
+            tools.policies.clone(),
+            tools.workspace.clone(),
+            tools.provider.clone(),
+        );
+        async move {
+            let mut rows = policies
+                .listed_decisions(&reader, &workspace, &provider, None, 1000)
+                .await
+                .expect("list the Private Provider")
+                .into_iter()
+                .map(|listed| {
+                    (
+                        listed.listing.key,
+                        listed.listing.relative_path,
+                        listed.agent.is_some(),
+                        listed.decision.access_state(),
+                        listed.decision.is_explicit(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+            rows
+        }
+    };
+    let row = |key: &ToolKey, agent, state, explicit| {
+        (
+            key.clone(),
+            "people.greet".to_owned(),
+            agent,
+            state,
+            explicit,
+        )
+    };
+    let mut owner = vec![
+        row(&tools.owners_tool, false, ToolAccessState::Disabled, true),
+        row(
+            &tools.agents_tool,
+            true,
+            ToolAccessState::ApprovalRequired,
+            true,
+        ),
+    ];
+    owner.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    assert_eq!(listed(tools.owner.clone()).await, owner);
+    assert_eq!(
+        listed(tools.member.clone()).await,
+        [row(
+            &tools.members_tool,
+            false,
+            ToolAccessState::Enabled,
+            false
+        )]
+    );
+}
+
+/// The Workspace of [`PrivateTools`], whose Owner publishes Shared Tools to
+/// its Shared Provider from their own Private Tool.
+struct SharedTools {
+    base: PrivateTools,
+    shared: coral_tools::SharedToolModule,
+}
+
+impl SharedTools {
+    async fn new() -> Self {
+        let base = PrivateTools::new().await;
+        let database = base.policies.database.clone();
+        let shared = coral_tools::SharedToolModule::new(
+            database.clone(),
+            WorkspaceModule::new(database),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .expect("the Shared Tool module");
+        Self { base, shared }
+    }
+
+    /// Publishes the revision after `expected_revision` at `path`, with
+    /// `default` as its default, and returns the Shared Tool's Tool Key.
+    async fn publish(
+        &self,
+        path: &str,
+        default: ToolAccessState,
+        expected_revision: u64,
+    ) -> ToolKey {
+        let publish = coral_tools::SharedToolPublish::review(
+            coral_tools::SharedToolPath::parse(path).expect("path"),
+            coral_tools::SharedToolOrigin::PrivateTool {
+                owner: AuthenticatedPrincipal::user(self.base.owner.clone())
+                    .principal()
+                    .clone(),
+                path: coral_tools::PrivateToolPath::parse("people.greet").expect("path"),
+            },
+            coral_tools::AuthoredToolDescription::parse("Greet").expect("description"),
+            coral_tools::AuthoredToolSource::parse("export default async () => 1;")
+                .expect("source"),
+            default,
+            expected_revision,
+        );
+        Box::pin(self.shared.publish_as_reviewed(
+            &change(self.base.owner.clone(), 60, '9'),
+            &self.base.workspace,
+            publish,
+            None,
+        ))
+        .await
+        .expect("publish the Shared Tool")
+        .published()
+        .expect("a published Shared Tool")
+        .id()
+        .tool_key()
+    }
+
+    /// Removes the Shared Tool at `path`, whose current revision is the
+    /// first.
+    async fn remove(&self, path: &str) {
+        self.shared
+            .remove(
+                &change(self.base.owner.clone(), 61, 'a'),
+                &self.base.workspace,
+                &coral_tools::SharedToolPath::parse(path).expect("path"),
+                1,
+            )
+            .await
+            .expect("remove the Shared Tool");
+    }
+
+    fn target(&self, tool: &ToolKey) -> ToolPolicyTarget {
+        ToolPolicyTarget::new(
+            self.base.workspace.clone(),
+            self.base.shared_provider.clone(),
+            tool.clone(),
+        )
+    }
+
+    /// The target and the action of the newest policy Event.
+    async fn last_event(&self) -> (ToolPolicyTarget, LifecycleAction) {
+        let events = self
+            .base
+            .policies
+            .list_lifecycle_events(&self.base.owner, &self.base.workspace)
+            .await
+            .expect("list policy Events");
+        let event = events.last().expect("a policy Event");
+        (event.target().clone(), event.action())
+    }
+
+    /// The Shared Provider's listing as `reader` reads it, in page order:
+    /// each Tool's key, path, state and whether a rule decides it.
+    async fn listed(
+        &self,
+        reader: &AuthenticatedUser,
+        after: Option<&ToolKey>,
+        page_size: u32,
+    ) -> Vec<(ToolKey, String, ToolAccessState, bool)> {
+        self.base
+            .policies
+            .listed_decisions(
+                reader,
+                &self.base.workspace,
+                &self.base.shared_provider,
+                after,
+                page_size,
+            )
+            .await
+            .expect("list the Shared Provider")
+            .into_iter()
+            .map(|listed| {
+                assert_eq!(listed.agent, None, "a Shared Tool is no Agent's");
+                (
+                    listed.listing.key,
+                    listed.listing.relative_path,
+                    listed.decision.access_state(),
+                    listed.decision.is_explicit(),
+                )
+            })
+            .collect()
+    }
+}
+
+// Catches: a Shared Provider listing that misses a live Shared Tool, shows
+// a removed one, reads a default other than the current revision's, pages
+// out of Tool Key order, or differs between an Owner and a Member.
+#[tokio::test]
+async fn the_shared_provider_lists_the_live_shared_tools_with_their_defaults_to_every_member() {
+    let tools = SharedTools::new().await;
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let send = tools
+        .publish("mail.send", ToolAccessState::Enabled, 0)
+        .await;
+    tools.publish("old.gone", ToolAccessState::Enabled, 0).await;
+    tools.remove("old.gone").await;
+
+    let mut expected = vec![
+        (
+            remind.clone(),
+            "mail.remind".to_owned(),
+            ToolAccessState::ApprovalRequired,
+            false,
+        ),
+        (
+            send.clone(),
+            "mail.send".to_owned(),
+            ToolAccessState::Enabled,
+            false,
+        ),
+    ];
+    expected.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    for reader in [&tools.base.owner, &tools.base.member] {
+        assert_eq!(tools.listed(reader, None, 1000).await, expected);
+    }
+    // A full page carries one lookahead row, and the next starts after it.
+    assert_eq!(tools.listed(&tools.base.member, None, 1).await, expected);
+    let [first, rest @ ..] = expected.as_slice() else {
+        panic!("two Shared Tools");
+    };
+    assert_eq!(
+        tools.listed(&tools.base.member, Some(&first.0), 1).await,
+        rest
+    );
+
+    // A new revision's default replaces the one before it.
+    tools
+        .publish("mail.remind", ToolAccessState::Disabled, 1)
+        .await;
+    let republished = tools.listed(&tools.base.member, None, 1000).await;
+    assert_eq!(
+        republished
+            .iter()
+            .find(|row| row.0 == remind)
+            .map(|row| (row.2, row.3)),
+        Some((ToolAccessState::Disabled, false))
+    );
+}
+
+// Catches: an Owner who cannot set a rule on a Shared Tool, a rule a Member
+// does not read or a new revision drops, a Member who writes one, a rule
+// accepted for a key that names no live Shared Tool, or a refused update
+// that changes anything.
+#[tokio::test]
+async fn an_owner_sets_a_rule_on_a_shared_tool_and_a_member_only_reads_it() {
+    let tools = SharedTools::new().await;
+    let (owner, member) = (&tools.base.owner, &tools.base.member);
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let gone = tools.publish("old.gone", ToolAccessState::Enabled, 0).await;
+    tools.remove("old.gone").await;
+    let read = |reader: &AuthenticatedUser| {
+        let (policies, reader, target) = (
+            tools.base.policies.clone(),
+            reader.clone(),
+            tools.target(&remind),
+        );
+        async move {
+            let decision = policies
+                .decision(&reader, &target)
+                .await
+                .expect("read the Shared Tool's decision");
+            (decision.access_state(), decision.is_explicit())
+        }
+    };
+
+    // The Owner's rule overrides the published default for every reader,
+    // and still does after a new revision with another default.
+    let before = tools.base.events().await;
+    tools
+        .base
+        .policies
+        .set_access_state(
+            &change(owner.clone(), 70, 'b'),
+            tools.target(&remind),
+            ToolAccessState::Disabled,
+        )
+        .await
+        .expect("set the Owner's rule");
+    assert_eq!(tools.base.events().await, before + 1);
+    assert_eq!(
+        tools.last_event().await,
+        (tools.target(&remind), LifecycleAction::AccessStateUpdated),
+        "the Event any Provider's rule change records"
+    );
+    tools
+        .publish("mail.remind", ToolAccessState::Enabled, 1)
+        .await;
+    for reader in [owner, member] {
+        assert_eq!(read(reader).await, (ToolAccessState::Disabled, true));
+        assert_eq!(
+            tools.listed(reader, None, 1000).await,
+            [(
+                remind.clone(),
+                "mail.remind".to_owned(),
+                ToolAccessState::Disabled,
+                true
+            )]
+        );
+    }
+
+    // A Member writes no rule. A key that names a removed Shared Tool, a
+    // Shared Tool that never was, or a Private Tool, names no Tool of the
+    // Shared Provider. Each refusal leaves the whole update unwritten.
+    let before = tools.base.events().await;
+    let permission_denied: fn(&crate::Error) -> bool = |error| {
+        matches!(
+            error,
+            crate::Error::Workspace(coral_workspace::Error::PermissionDenied(_))
+        )
+    };
+    let tool_not_found: fn(&crate::Error) -> bool =
+        |error| matches!(error, crate::Error::ToolNotFound);
+    let never = ToolKey::parse("00000000-0000-4000-8000-000000000000").expect("Tool Key");
+    let enable = |tool: &ToolKey| (tools.target(tool), ToolAccessState::Enabled);
+    for (actor, update, is_the_refusal) in [
+        (member, vec![enable(&remind)], permission_denied),
+        (owner, vec![enable(&gone)], tool_not_found),
+        (owner, vec![enable(&never)], tool_not_found),
+        (owner, vec![enable(&tools.base.owners_tool)], tool_not_found),
+        (owner, vec![enable(&remind), enable(&gone)], tool_not_found),
+    ] {
+        let refused = tools
+            .base
+            .policies
+            .set_access_states(&change(actor.clone(), 80, 'c'), update.clone())
+            .await;
+        assert!(
+            refused.as_ref().is_err_and(is_the_refusal),
+            "{update:?}: {refused:?}"
+        );
+        assert_eq!(tools.base.events().await, before, "{update:?}");
+        assert_eq!(
+            read(owner).await,
+            (ToolAccessState::Disabled, true),
+            "{update:?}"
+        );
+    }
+    assert!(
+        matches!(
+            tools
+                .base
+                .policies
+                .decision(owner, &tools.target(&gone))
+                .await,
+            Err(crate::Error::ToolNotFound)
+        ),
+        "a removed Shared Tool has no decision to read"
+    );
+}
+
+// Catches: a removed Private or Shared Tool whose exact rule stays among
+// the Workspace's rules, or a removal that takes another Tool's rule.
+#[tokio::test]
+async fn removing_authored_tool_rules_takes_only_the_rules_that_name_those_tools() {
+    let tools = SharedTools::new().await;
+    let base = &tools.base;
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let send = tools
+        .publish("mail.send", ToolAccessState::Enabled, 0)
+        .await;
+    base.policies
+        .set_access_states(
+            &change(base.owner.clone(), 70, 'b'),
+            vec![
+                (base.target(&base.owners_tool), ToolAccessState::Disabled),
+                (base.target(&base.agents_tool), ToolAccessState::Disabled),
+                (tools.target(&remind), ToolAccessState::Disabled),
+                (tools.target(&send), ToolAccessState::Disabled),
+            ],
+        )
+        .await
+        .expect("set the Owner's rules");
+    let events = base.events().await;
+
+    let mut transaction = base.policies.database.begin().await.expect("begin");
+    for (kind, removed) in [
+        (
+            coral_catalog::AuthoredToolKind::Private,
+            // A Tool without a rule has none to remove.
+            vec![base.owners_tool.clone(), base.members_tool.clone()],
+        ),
+        (
+            coral_catalog::AuthoredToolKind::Shared,
+            vec![remind.clone()],
+        ),
+        // A Shared Tool's key names no Tool of the Private Provider.
+        (coral_catalog::AuthoredToolKind::Private, vec![send.clone()]),
+        (coral_catalog::AuthoredToolKind::Shared, Vec::new()),
+    ] {
+        crate::remove_authored_tool_rules_in_transaction(
+            &mut transaction,
+            &base.workspace,
+            kind,
+            &removed,
+        )
+        .await
+        .expect("remove the rules");
+    }
+    transaction.commit().await.expect("commit");
+
+    let mut transaction = base
+        .policies
+        .database
+        .begin_read_snapshot()
+        .await
+        .expect("begin read");
+    let rules = crate::exact_tool_rules_in_transaction(&mut transaction, &base.workspace)
+        .await
+        .expect("read the Workspace's rules");
+    transaction.rollback().await.expect("end read");
+    assert_eq!(
+        rules,
+        crate::ExactToolRules::new(BTreeMap::from([
+            (
+                base.provider.clone(),
+                BTreeMap::from([(base.agents_tool.clone(), ToolAccessState::Disabled)]),
+            ),
+            (
+                base.shared_provider.clone(),
+                BTreeMap::from([(send, ToolAccessState::Disabled)]),
+            ),
+        ])),
+        "each Provider keeps only its other Tool's rule"
+    );
+    assert_eq!(
+        base.events().await,
+        events,
+        "the Tool's own removal Event is the record"
+    );
+}
+
+// Catches: a rule read under any key but its Tool's complete Call Path; a
+// Private Tool rule read by anyone but the Principal whose tool it is, or
+// by a Member, whose Private Tools take no rule; a Built-in or Shared
+// Tool's rule left out; or a rule outside `under`, or one cut off inside a
+// segment, that is read.
+#[tokio::test]
+async fn rules_read_every_root_by_call_path_and_only_the_readers_own_private_tools() {
+    use ToolAccessState::{ApprovalRequired, Disabled};
+    let tools = SharedTools::new().await;
+    let base = &tools.base;
+    let remind = tools.publish("mail.remind", ApprovalRequired, 0).await;
+    base.policies
+        .set_access_states(
+            &change(base.owner.clone(), 70, 'b'),
+            vec![
+                (base.target(&base.owners_tool), Disabled),
+                (base.target(&base.agents_tool), ApprovalRequired),
+                (
+                    ToolPolicyTarget::new(
+                        base.workspace.clone(),
+                        base.shared_provider.clone(),
+                        remind,
+                    ),
+                    Disabled,
+                ),
+                (
+                    ToolPolicyTarget::new(
+                        base.workspace.clone(),
+                        base.builtin_provider.clone(),
+                        ToolKey::parse(coral_catalog::BuiltinTool::Search.key()).expect("Tool Key"),
+                    ),
+                    Disabled,
+                ),
+            ],
+        )
+        .await
+        .expect("set a rule in each root");
+    let read = |reader: AuthenticatedPrincipal, under: Option<&'static str>| {
+        let (policies, workspace) = (base.policies.clone(), base.workspace.clone());
+        async move {
+            policies
+                .rules(&reader, &workspace, under, 80)
+                .await
+                .expect("read the rules")
+                .into_iter()
+                .collect::<Vec<_>>()
+        }
+    };
+    let rule = |path: &str, state| (path.to_owned(), state);
+    let owner = AuthenticatedPrincipal::user(base.owner.clone());
+    let member = AuthenticatedPrincipal::user(base.member.clone());
+    for (reader, under, expected) in [
+        (
+            owner.clone(),
+            None,
+            vec![
+                rule("coral.private.people.greet", Disabled),
+                rule("coral.search", Disabled),
+                rule("coral.shared.mail.remind", Disabled),
+            ],
+        ),
+        (
+            base.agent.clone(),
+            None,
+            vec![
+                rule("coral.private.people.greet", ApprovalRequired),
+                rule("coral.search", Disabled),
+                rule("coral.shared.mail.remind", Disabled),
+            ],
+        ),
+        (
+            member.clone(),
+            None,
+            vec![
+                rule("coral.search", Disabled),
+                rule("coral.shared.mail.remind", Disabled),
+            ],
+        ),
+        (
+            owner.clone(),
+            Some("coral.shared"),
+            vec![rule("coral.shared.mail.remind", Disabled)],
+        ),
+        (
+            owner.clone(),
+            Some("coral.private.people.greet"),
+            vec![rule("coral.private.people.greet", Disabled)],
+        ),
+        (owner.clone(), Some("coral.sh"), Vec::new()),
+        (member, Some("coral.private"), Vec::new()),
+    ] {
+        assert_eq!(
+            read(reader.clone(), under).await,
+            expected,
+            "{reader:?} under {under:?}"
+        );
+    }
+}
+
+// Catches: a path in one root that sets a Tool in another, or a Private
+// Tool path that reaches any Private Tool but the Owner's own. The table
+// in `access_states_by_call_path_change_nothing_when_rejected` covers each
+// refusal.
+#[tokio::test]
+async fn an_owner_sets_policy_by_call_path_across_roots_in_one_batch() {
+    use ToolAccessState::{Disabled, Enabled};
+    let tools = SharedTools::new().await;
+    let base = &tools.base;
+    let remind = tools
+        .publish("mail.remind", ToolAccessState::ApprovalRequired, 0)
+        .await;
+    let shared =
+        ToolPolicyTarget::new(base.workspace.clone(), base.shared_provider.clone(), remind);
+    let states = || {
+        let (policies, owner) = (base.policies.clone(), base.owner.clone());
+        let targets = [
+            base.target(&base.owners_tool),
+            base.target(&base.agents_tool),
+            shared.clone(),
+        ];
+        async move {
+            policies
+                .decisions(&owner, &targets[..2])
+                .await
+                .expect("read the Private Tools")
+                .into_iter()
+                .chain(
+                    policies
+                        .decisions(&owner, &targets[2..])
+                        .await
+                        .expect("read the Shared Tool"),
+                )
+                .map(|decision| (decision.access_state(), decision.is_explicit()))
+                .collect::<Vec<_>>()
+        }
+    };
+    let sent = |entries: &[(&str, ToolAccessState)]| -> BTreeMap<_, _> {
+        entries
+            .iter()
+            .map(|(path, state)| ((*path).to_owned(), *state))
+            .collect()
+    };
+
+    let events = base.events().await;
+    // Accepted: the Owner's own Private Tool and the Shared Tool, and not
+    // the Agent's Private Tool at the same path.
+    let changed = sent(&[
+        ("coral.private.people.greet", Enabled),
+        ("coral.shared.mail.remind", Disabled),
+    ]);
+    assert_eq!(
+        base.policies
+            .set_access_states_by_call_path(
+                &change(base.owner.clone(), 71, 'c'),
+                &base.workspace,
+                &changed,
+            )
+            .await
+            .expect("set the rules"),
+        changed
+    );
+    assert_eq!(
+        states().await,
+        [(Enabled, true), (Enabled, false), (Disabled, true)]
+    );
+    assert_eq!(base.events().await, events + 2);
+}

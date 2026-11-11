@@ -2,9 +2,9 @@
 //!
 //! This private Adapter crate gives `coral-run` narrow compiler and execution
 //! Interfaces. [`ProgramCompiler::compile`] lowers one TypeScript async-function
-//! body; [`ProgramCompiler::prepare_saved_function`] emits one self-contained
-//! callable declaration; linked compilation packages one exact current Saved
-//! Function source closure. [`ProgramExecutor::execute`] runs emitted JavaScript in a
+//! body; [`ProgramCompiler::prepare_authored_tool`] emits one self-contained
+//! callable declaration; linked compilation packages one exact current Private
+//! Tool source closure. [`ProgramExecutor::execute`] runs emitted JavaScript in a
 //! fresh V8 isolate. Run execution installs one narrow [`ProgramHost`] through
 //! [`ProgramExecutor::execute_with_host`]. Compiler and execution
 //! isolates never share mutable state.
@@ -130,6 +130,76 @@ impl ProgramExecutionControl {
 pub type ToolFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ToolHostError>> + Send>>;
 
+/// One call to a Tool that Coral performs by running its body in the
+/// Program, settled once the call is permitted: with what completes it, or
+/// with a rejection, after which the body never runs.
+pub type PermitFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Box<dyn ToolCompletion>, ToolHostError>> + Send>,
+>;
+
+/// How the body of a permitted Tool call ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolBodyOutcome {
+    /// It returned a value, here as native JSON. A body that returns
+    /// `undefined` returns `null`.
+    Returned(String),
+    /// It returned a value that is not data, such as a `bigint`, a `Date`,
+    /// `NaN`, a cycle, or a function (ADR 0034).
+    NotData {
+        /// Where the value is, as a path from `result`.
+        field: String,
+        /// Why it is not data, bounded text the bootstrap wrote; empty when
+        /// it gave none.
+        reason: String,
+    },
+    /// It threw. `message` is the thrown Error's message, or the thrown
+    /// value as text. `tool_error` holds the code of a Tool Error that a Tool
+    /// call gave the body, which reaches the caller unchanged.
+    Threw {
+        /// Bounded text the Program wrote.
+        message: String,
+        /// The thrown Tool Error's code, when the body threw one.
+        tool_error: Option<String>,
+    },
+}
+
+/// Completes one permitted Tool call that Coral performs in the Program.
+pub trait ToolCompletion: Send {
+    /// The Tool calls this call's body makes, bound to this call. Each call
+    /// the body starts reaches them, across every `await` and helper, and
+    /// never through a stack frame; so does a call the body started work
+    /// for that runs after the body ended. The Program's own calls and its
+    /// modules' top-level calls reach the [`ProgramHost`] instead.
+    fn body_calls(&self) -> Arc<dyn ToolCalls>;
+
+    /// Records how the call's body ended and settles once that is durable:
+    /// with the native-JSON value its caller receives, or a rejection. A
+    /// body that threw a Tool Error rejects its caller with that error
+    /// whatever rejection this settles with.
+    fn complete(self: Box<Self>, outcome: ToolBodyOutcome) -> ToolFuture;
+}
+
+/// The Tool calls that the body of one permitted call makes, as
+/// [`ProgramHost::invoke`] and [`ProgramHost::perform`] are the Program's.
+pub trait ToolCalls: Send + Sync {
+    /// Invokes one Tool for the body, as [`ProgramHost::invoke`] does.
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> ToolFuture;
+
+    /// Starts one performed call for the body, as [`ProgramHost::perform`]
+    /// does.
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> PermitFuture;
+}
+
 /// Host seam used by one fresh execution isolate.
 ///
 /// Tools start without blocking JavaScript and their Promises settle only
@@ -171,6 +241,35 @@ pub trait ProgramHost: Send + Sync {
         location: Option<AuthoredLocation>,
     ) -> ToolFuture;
 
+    /// Starts one call to a Tool that Coral performs by running its body in
+    /// this Program, by complete Call Path and native-JSON arguments: the
+    /// array of the values it was called with. It settles once the call is
+    /// permitted, and only then does the body run; its outcome completes the
+    /// call through the [`ToolCompletion`] this returns.
+    ///
+    /// A host that performs no such Tool refuses every call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catchable rejection only after any required terminal evidence
+    /// is durable. A fatal host failure terminates Program execution without
+    /// settling the Tool Promise.
+    fn perform(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> PermitFuture {
+        Box::pin(async {
+            Err(ToolHostError::Rejected {
+                code: "tool_unavailable",
+                message: "Tool is unavailable".into(),
+                trace_id: None,
+                suggestions: Vec::new(),
+            })
+        })
+    }
+
     /// Durably appends one native-JSON Program Emission made at `location`.
     ///
     /// # Errors
@@ -203,10 +302,16 @@ pub trait ProgramHost: Send + Sync {
 pub enum AuthoredSource {
     /// The submitted Program body.
     Program,
-    /// One Saved Function linked into the package, by its path relative to
-    /// `coral.functions`.
-    SavedFunction {
+    /// One Private Tool linked into the package, by its path relative to
+    /// `coral.private`.
+    PrivateTool {
         /// Dotted path, such as `debug.fetch`.
+        path: String,
+    },
+    /// One Shared Tool linked into the package, by its path relative to
+    /// `coral.shared`.
+    SharedTool {
+        /// Dotted path, such as `mail.remind`.
         path: String,
     },
 }
@@ -218,7 +323,7 @@ pub enum AuthoredSource {
 /// called member name of a property call such as `console.log(...)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredLocation {
-    /// Program or linked Saved Function source.
+    /// Program or linked Authored Tool source.
     pub source: AuthoredSource,
     /// One-based authored line.
     pub line: u32,
@@ -314,7 +419,9 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
-    pub(crate) fn new(
+    /// A package with its non-blocking diagnostics, as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         javascript: String,
         source_map: String,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -358,17 +465,29 @@ impl CompiledProgram {
     pub const fn profile(&self) -> TypeScriptProfile {
         TYPESCRIPT_PROFILE
     }
+
+    /// The JavaScript, source map and diagnostics, without a copy.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, Vec<CompilerDiagnostic>) {
+        (self.javascript, self.source_map, self.diagnostics)
+    }
 }
 
-/// One callable-rooted field projected from an emitted Saved Function declaration.
+/// One callable-rooted field projected from an emitted Private Tool declaration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SavedFunctionDeclarationField {
+pub struct AuthoredToolDeclarationField {
     path: String,
     text: String,
 }
 
-impl SavedFunctionDeclarationField {
+impl AuthoredToolDeclarationField {
+    /// The field at `path` with its `text`.
+    #[must_use]
+    pub const fn new(path: String, text: String) -> Self {
+        Self { path, text }
+    }
+
     /// Returns the readable JavaScript path rooted at `input` or `result`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -382,28 +501,54 @@ impl SavedFunctionDeclarationField {
     }
 }
 
-/// Authoring output retained for one accepted Saved Function source.
+/// Authoring output retained for one accepted Authored Tool source.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SavedFunctionCompilation {
+pub struct AuthoredToolCompilation {
     declaration: String,
-    declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
+    declaration_field_projection: Result<Vec<AuthoredToolDeclarationField>, String>,
     diagnostics: Vec<CompilerDiagnostic>,
-    references: Vec<SavedFunctionReference>,
+    references: Vec<LinkedToolReference>,
+    shared_references: Vec<LinkedToolReference>,
+    tools: ToolReferences,
+    not_data: Option<String>,
 }
 
-impl SavedFunctionCompilation {
-    pub(crate) const fn new(
+impl AuthoredToolCompilation {
+    /// The authoring output as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         declaration: String,
-        declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
+        declaration_field_projection: Result<Vec<AuthoredToolDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
-        references: Vec<SavedFunctionReference>,
+        references: Vec<LinkedToolReference>,
+        shared_references: Vec<LinkedToolReference>,
+        tools: ToolReferences,
+        not_data: Option<String>,
     ) -> Self {
         Self {
             declaration,
             declaration_field_projection,
             diagnostics,
             references,
+            shared_references,
+            tools,
+            not_data,
         }
+    }
+
+    /// Returns the literal Tool chains under `coral` that the prepared
+    /// source names, from the same compile as its declaration.
+    #[must_use]
+    pub const fn tools(&self) -> &ToolReferences {
+        &self.tools
+    }
+
+    /// Where the declaration's arguments or result hold something other
+    /// than data, such as "`input.callback` is a function"; `None` when
+    /// they are all data. `any` and `unknown` say nothing, so they pass.
+    #[must_use]
+    pub fn not_data(&self) -> Option<&str> {
+        self.not_data.as_deref()
     }
 
     /// Returns the exact self-contained emitted declaration.
@@ -417,7 +562,7 @@ impl SavedFunctionCompilation {
     /// # Errors
     ///
     /// Returns a stable private reason when traversal could not prepare fields.
-    pub fn declaration_fields(&self) -> Result<&[SavedFunctionDeclarationField], &str> {
+    pub fn declaration_fields(&self) -> Result<&[AuthoredToolDeclarationField], &str> {
         self.declaration_field_projection
             .as_deref()
             .map_err(String::as_str)
@@ -429,24 +574,37 @@ impl SavedFunctionCompilation {
         &self.diagnostics
     }
 
-    /// Returns directly named runtime Saved Function references in path order.
+    /// Returns directly named runtime Private Tool references in path order.
     #[must_use]
-    pub fn references(&self) -> &[SavedFunctionReference] {
+    pub fn references(&self) -> &[LinkedToolReference] {
         &self.references
+    }
+
+    /// Returns directly named runtime Shared Tool references, relative to
+    /// `coral.shared`, in path order.
+    #[must_use]
+    pub fn shared_references(&self) -> &[LinkedToolReference] {
+        &self.shared_references
     }
 }
 
-/// One statically named runtime Saved Function reference.
+/// One statically named runtime Private Tool reference.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SavedFunctionReference {
+pub struct LinkedToolReference {
     path: String,
     line: u64,
     column: u64,
 }
 
-impl SavedFunctionReference {
-    /// Returns the dotted path relative to `coral.functions`.
+impl LinkedToolReference {
+    /// The reference to `path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(path: String, line: u64, column: u64) -> Self {
+        Self { path, line, column }
+    }
+
+    /// Returns the dotted path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
@@ -465,22 +623,64 @@ impl SavedFunctionReference {
     }
 }
 
-/// One exact Saved Function source supplied for linked compilation.
+/// The member of `coral` that holds one linked Tool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkedToolRoot {
+    /// `coral.private`: the caller's own Private Tools.
+    Private,
+    /// `coral.shared`: the Workspace's Shared Tools.
+    Shared,
+}
+
+/// One exact Private or Shared Tool source supplied for linked compilation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LinkedSavedFunctionSource {
+pub struct LinkedToolSource {
+    root: LinkedToolRoot,
     path_segments: Vec<String>,
     source: String,
 }
 
-impl LinkedSavedFunctionSource {
-    /// Builds one validated-domain source input for the compiler Adapter.
+impl LinkedToolSource {
+    /// Builds one validated-domain Private Tool source input for the
+    /// compiler Adapter, at `path_segments` under `coral.private`.
     #[must_use]
-    pub const fn new(path_segments: Vec<String>, source: String) -> Self {
+    pub const fn private(path_segments: Vec<String>, source: String) -> Self {
         Self {
+            root: LinkedToolRoot::Private,
             path_segments,
             source,
         }
+    }
+
+    /// Builds one validated-domain Shared Tool source input for the
+    /// compiler Adapter, at `path_segments` under `coral.shared`.
+    #[must_use]
+    pub const fn shared(path_segments: Vec<String>, source: String) -> Self {
+        Self {
+            root: LinkedToolRoot::Shared,
+            path_segments,
+            source,
+        }
+    }
+
+    /// The member of `coral` that holds it.
+    #[must_use]
+    pub const fn root(&self) -> LinkedToolRoot {
+        self.root
+    }
+
+    /// The path under its root.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// The module source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
     }
 }
 
@@ -489,36 +689,152 @@ impl LinkedSavedFunctionSource {
 pub enum AnalyzedSource {
     /// A Program body.
     Program(String),
-    /// A Saved Function module.
-    SavedFunction(String),
+    /// An Authored Tool module: a Private or a Shared Tool.
+    AuthoredTool(String),
 }
 
-/// What one Program body or Saved Function module names directly: the
-/// Saved Functions that link or type it, and the Tools it may call.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// What one Program body or Authored Tool module names directly: the
+/// Private and Shared Tools that link or type it, and the Tools it may call.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SourceReferences {
-    functions: Vec<SavedFunctionReference>,
+    private_tools: Vec<LinkedToolReference>,
+    shared_tools: Vec<LinkedToolReference>,
     tool_call_paths: Vec<String>,
 }
 
 impl SourceReferences {
-    /// Returns the directly named `coral.functions` paths, in path order.
+    /// The `private_tools`, `shared_tools` and `tool_call_paths` one source
+    /// names.
     #[must_use]
-    pub fn functions(&self) -> &[SavedFunctionReference] {
-        &self.functions
+    pub const fn new(
+        private_tools: Vec<LinkedToolReference>,
+        shared_tools: Vec<LinkedToolReference>,
+        tool_call_paths: Vec<String>,
+    ) -> Self {
+        Self {
+            private_tools,
+            shared_tools,
+            tool_call_paths,
+        }
     }
 
-    /// Returns every prefix of a literal `coral.providers` or
-    /// `coral.workspace` chain that could be a Tool Call Path, such as
-    /// `coral.providers.github.repos.get`, so `get.call(...)` still names
-    /// `get`. Aliased roots are not followed.
+    /// Returns the directly named `coral.private` paths.
+    #[must_use]
+    pub fn private_tools(&self) -> &[LinkedToolReference] {
+        &self.private_tools
+    }
+
+    /// Returns the directly named `coral.shared` paths.
+    #[must_use]
+    pub fn shared_tools(&self) -> &[LinkedToolReference] {
+        &self.shared_tools
+    }
+
+    /// Returns every prefix of a literal Tool chain under `coral` that could
+    /// be a Tool Call Path, such as `coral.providers.github.repos.get`, so
+    /// `get.call(...)` still names `get`. Aliased roots are not followed.
     #[must_use]
     pub fn tool_call_paths(&self) -> &[String] {
         &self.tool_call_paths
     }
 }
 
-/// A called literal `coral.providers` or `coral.workspace` chain that names
+/// The literal Tool chains under `coral` that one Authored Tool module names,
+/// as its preparation found them. Aliased roots are not followed.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolReferences {
+    chains: Vec<ToolChain>,
+}
+
+impl ToolReferences {
+    /// The references `chains` make.
+    #[must_use]
+    pub const fn new(chains: Vec<ToolChain>) -> Self {
+        Self { chains }
+    }
+
+    /// Returns each literal chain, as preparation found it.
+    #[must_use]
+    pub fn chains(&self) -> &[ToolChain] {
+        &self.chains
+    }
+
+    /// Returns each Call Path a literal chain calls, such as
+    /// `coral.providers.github.repos.get`, once each, in path order.
+    #[must_use]
+    pub fn called_paths(&self) -> Vec<String> {
+        let mut called = self
+            .chains
+            .iter()
+            .filter(|chain| chain.called)
+            .map(|chain| format!("coral.{}", chain.segments.join(".")))
+            .collect::<Vec<_>>();
+        called.sort();
+        called.dedup();
+        called
+    }
+
+    /// Returns the literal start of each chain whose Tool path a computed
+    /// segment builds at runtime, such as `coral.providers.github` for
+    /// `coral.providers.github[name]()`, once each, in path order. The
+    /// Tools such a chain calls are known only when it runs.
+    #[must_use]
+    pub fn runtime_built_paths(&self) -> Vec<String> {
+        let mut built = self
+            .chains
+            .iter()
+            .filter(|chain| chain.computed)
+            .map(|chain| format!("coral.{}", chain.segments.join(".")))
+            .collect::<Vec<_>>();
+        built.sort();
+        built.dedup();
+        built
+    }
+}
+
+/// One literal chain, relative to `coral`, whether it is called, and whether
+/// it was cut before a computed segment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct ToolChain {
+    segments: Vec<String>,
+    called: bool,
+    #[serde(default)]
+    computed: bool,
+}
+
+impl ToolChain {
+    /// The chain of `segments` under `coral`, whether it is `called`, and
+    /// whether it was cut before a `computed` segment.
+    #[must_use]
+    pub const fn new(segments: Vec<String>, called: bool, computed: bool) -> Self {
+        Self {
+            segments,
+            called,
+            computed,
+        }
+    }
+
+    /// Returns the segments relative to `coral`.
+    #[must_use]
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
+
+    /// Returns whether the source calls the chain.
+    #[must_use]
+    pub const fn called(&self) -> bool {
+        self.called
+    }
+
+    /// Returns whether the chain was cut before a computed segment.
+    #[must_use]
+    pub const fn computed(&self) -> bool {
+        self.computed
+    }
+}
+
+/// A called literal Tool chain under `coral` that names
 /// no Tool the caller can call, and where the source names it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -529,6 +845,16 @@ pub struct UnknownToolCall {
 }
 
 impl UnknownToolCall {
+    /// The unknown `call_path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(call_path: String, line: u64, column: u64) -> Self {
+        Self {
+            call_path,
+            line,
+            column,
+        }
+    }
+
     /// The complete chain as written, such as
     /// `coral.providers.notion.retrievePage`.
     #[must_use]
@@ -549,8 +875,8 @@ impl UnknownToolCall {
     }
 }
 
-/// One declaration that types a Call Path under `coral.providers`,
-/// `coral.workspace` or `coral.functions`.
+/// One declaration that types a Call Path under `coral`: a Tool, a Private
+/// Tool at `coral.private` or a Shared Tool at `coral.shared`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallableDeclaration {
@@ -560,11 +886,11 @@ pub struct CallableDeclaration {
 
 impl CallableDeclaration {
     /// Builds one declaration for its path segments: relative to `coral` for
-    /// a Tool, such as `providers.github.repos.get`, and to
-    /// `coral.functions` for a Saved Function.
+    /// a Tool, such as `providers.github.repos.get`, to `coral.private` for
+    /// a Private Tool and to `coral.shared` for a Shared Tool.
     ///
     /// The declaration is self-contained TypeScript with one
-    /// `export default` callable, as describe and Saved Function save emit it.
+    /// `export default` callable, as describe and an Authored Tool save emit it.
     #[must_use]
     pub const fn new(path_segments: Vec<String>, declaration: String) -> Self {
         Self {
@@ -572,9 +898,47 @@ impl CallableDeclaration {
             declaration,
         }
     }
+
+    /// Returns the path segments.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// Returns the declaration.
+    #[must_use]
+    pub fn declaration(&self) -> &str {
+        &self.declaration
+    }
 }
 
-/// The declarations that type the `coral` namespace for one Saved Function
+/// The Built-in Tools a Program calls directly on `coral`, by Tool Key, such
+/// as `search` for `coral.search`. A Program is compiled with them, so it
+/// calls exactly the ones it was admitted with, and an Authored Tool is typed
+/// with them.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct BuiltinTools(Vec<String>);
+
+impl BuiltinTools {
+    /// The Built-in Tools with these keys.
+    #[must_use]
+    pub fn new(keys: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// Returns the Tool Keys.
+    #[must_use]
+    pub fn keys(&self) -> &[String] {
+        &self.0
+    }
+
+    /// The keys as the compiler reads them.
+    pub(crate) fn json(&self) -> std::sync::Arc<str> {
+        serde_json::Value::from(self.0.clone()).to_string().into()
+    }
+}
+
+/// The declarations that type the `coral` namespace for one Authored Tool
 /// save.
 ///
 /// A root without declarations stays `any`. A typed root holds only the
@@ -584,23 +948,25 @@ impl CallableDeclaration {
 pub struct CoralDeclarations {
     declaration_max_bytes: usize,
     tools: Option<Vec<CallableDeclaration>>,
-    functions: Option<Vec<CallableDeclaration>>,
+    private_tools: Option<Vec<CallableDeclaration>>,
+    shared_tools: Option<Vec<CallableDeclaration>>,
 }
 
 impl CoralDeclarations {
-    /// Types nothing yet. A typed Saved Function declaration above
+    /// Types nothing yet. A typed Private Tool declaration above
     /// `declaration_max_bytes` is saved untyped.
     #[must_use]
     pub const fn new(declaration_max_bytes: usize) -> Self {
         Self {
             declaration_max_bytes,
             tools: None,
-            functions: None,
+            private_tools: None,
+            shared_tools: None,
         }
     }
 
-    /// Types `coral.providers` and `coral.workspace` from the Tools the
-    /// caller can call, such as those of the
+    /// Types `coral.providers` and the Built-in Tools on `coral` from the
+    /// Tools the caller can call, such as those of the
     /// [`SourceReferences::tool_call_paths`] that the source names.
     #[must_use]
     pub fn with_tools(mut self, tools: Vec<CallableDeclaration>) -> Self {
@@ -608,11 +974,43 @@ impl CoralDeclarations {
         self
     }
 
-    /// Types `coral.functions` from stored Saved Function declarations.
+    /// Types `coral.private` from stored Private Tool declarations.
     #[must_use]
-    pub fn with_functions(mut self, functions: Vec<CallableDeclaration>) -> Self {
-        self.functions = Some(functions);
+    pub fn with_private_tools(mut self, private_tools: Vec<CallableDeclaration>) -> Self {
+        self.private_tools = Some(private_tools);
         self
+    }
+
+    /// Types `coral.shared` from the current Shared Tool declarations,
+    /// each by its path relative to `coral.shared`.
+    #[must_use]
+    pub fn with_shared_tools(mut self, shared_tools: Vec<CallableDeclaration>) -> Self {
+        self.shared_tools = Some(shared_tools);
+        self
+    }
+
+    /// Returns the size above which a typed declaration is saved untyped.
+    #[must_use]
+    pub const fn declaration_max_bytes(&self) -> usize {
+        self.declaration_max_bytes
+    }
+
+    /// Returns the declarations that type the Tools, if any do.
+    #[must_use]
+    pub fn tools(&self) -> Option<&[CallableDeclaration]> {
+        self.tools.as_deref()
+    }
+
+    /// Returns the declarations that type `coral.private`, if any do.
+    #[must_use]
+    pub fn private_tools(&self) -> Option<&[CallableDeclaration]> {
+        self.private_tools.as_deref()
+    }
+
+    /// Returns the declarations that type `coral.shared`, if any do.
+    #[must_use]
+    pub fn shared_tools(&self) -> Option<&[CallableDeclaration]> {
+        self.shared_tools.as_deref()
     }
 }
 
@@ -641,6 +1039,24 @@ pub struct CompilerDiagnostic {
 }
 
 impl CompilerDiagnostic {
+    /// The diagnostic as the compiler reported it.
+    #[must_use]
+    pub const fn new(
+        category: DiagnosticCategory,
+        code: u64,
+        message: String,
+        line: Option<u64>,
+        column: Option<u64>,
+    ) -> Self {
+        Self {
+            category,
+            code,
+            message,
+            line,
+            column,
+        }
+    }
+
     /// Returns the diagnostic category.
     #[must_use]
     pub const fn category(&self) -> DiagnosticCategory {
@@ -699,18 +1115,19 @@ pub enum Error {
     /// Source changed the shape of Coral's private async entry wrapper.
     #[error("Program source is not one async-function body")]
     InvalidProgramBody,
-    /// Saved Function source did not define one import-free default callable.
-    #[error("Saved Function authoring failed: {0}")]
-    InvalidSavedFunction(String),
+    /// Authored Tool source did not define one import-free default callable.
+    /// The caller says which Tool's authoring failed.
+    #[error("{0}")]
+    InvalidAuthoredTool(String),
     /// Source nesting overflowed the compiler's stack.
     #[error("TypeScript source is nested too deeply to compile")]
     SourceTooDeeplyNested,
-    /// Program or Saved Function source requested a forbidden authoring capability.
+    /// Program or Authored Tool source requested a forbidden authoring capability.
     #[error("TypeScript source uses a forbidden capability: {0}")]
     ForbiddenCapability(String),
-    /// Program source did not directly name supported Saved Function paths.
-    #[error("Saved Function reference analysis failed at {line}:{column}: {message}")]
-    InvalidSavedFunctionReference {
+    /// Source did not directly name supported Private or Shared Tool paths.
+    #[error("Tool reference analysis failed at {line}:{column}: {message}")]
+    InvalidLinkedToolReference {
         /// Clear safe reason.
         message: String,
         /// One-based authored source line.
@@ -718,11 +1135,11 @@ pub enum Error {
         /// One-based authored source column.
         column: u64,
     },
-    /// A literal `coral.workspace.saveFunction` call did not name a function
-    /// its source declares at the top level. The message starts with the
+    /// A literal `coral.addCustomTool` or `coral.updateCustomTool` call did not name a
+    /// function its source declares at the top level. The message starts with the
     /// authored source and location.
     #[error("{0}")]
-    InvalidFunctionSave(String),
+    InvalidPrivateToolSave(String),
     /// The private compiler bridge returned an invalid payload.
     #[error("TypeScript compiler protocol failed: {0}")]
     CompilerProtocol(String),
@@ -762,6 +1179,30 @@ pub enum Error {
 }
 
 impl Error {
+    /// The [`Self::code`] of each error the source's author caused, which
+    /// [`CompileFailure`] reports as [`CompileFailure::Rejected`]. This list
+    /// decides that, so a peer that reads a rejection's code back checks it
+    /// against the same set.
+    pub const REJECTION_CODES: [&'static str; 8] = [
+        "compilation",
+        "invalid_program_body",
+        "invalid_authored_tool",
+        "source_too_deeply_nested",
+        "forbidden_capability",
+        "invalid_linked_tool_reference",
+        "invalid_private_tool_save",
+        "memory_limit_exceeded",
+    ];
+    /// The [`Self::code`] of each error a compile fails with for a reason
+    /// the source did not cause. The other errors that
+    /// [`CompileFailure::Failed`] carries come from running a Program.
+    pub const COMPILER_FAILURE_CODES: [&'static str; 4] = [
+        "initialization",
+        "compiler_protocol",
+        "invalid_source_map",
+        "engine",
+    ];
+
     /// The error's stable kind, for an event's `error.type`: a bounded
     /// code that never carries the error's text.
     #[must_use]
@@ -774,11 +1215,11 @@ impl Error {
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
             Self::Compilation { .. } => "compilation",
             Self::InvalidProgramBody { .. } => "invalid_program_body",
-            Self::InvalidSavedFunction { .. } => "invalid_saved_function",
+            Self::InvalidAuthoredTool { .. } => "invalid_authored_tool",
             Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
-            Self::InvalidSavedFunctionReference { .. } => "invalid_saved_function_reference",
-            Self::InvalidFunctionSave { .. } => "invalid_function_save",
+            Self::InvalidLinkedToolReference { .. } => "invalid_linked_tool_reference",
+            Self::InvalidPrivateToolSave { .. } => "invalid_private_tool_save",
             Self::CompilerProtocol { .. } => "compiler_protocol",
             Self::InvalidSourceMap { .. } => "invalid_source_map",
             Self::Engine { .. } => "engine",
@@ -803,7 +1244,8 @@ impl Error {
 pub enum CompileFailure {
     /// The source was rejected, with a safe bounded diagnostic for its author.
     Rejected(String),
-    /// The bounded compiler queue had no room for the request.
+    /// The compiler had no room for the request: its bounded queue is
+    /// full, or a Run Executor's pull stream has spent its room.
     Busy,
     /// The compile deadline expired.
     TimedOut,
@@ -820,14 +1262,9 @@ impl From<Error> for CompileFailure {
             Error::CompilerBusy => Self::Busy,
             Error::CompilationTimedOut => Self::TimedOut,
             Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
-            authored @ (Error::Compilation { .. }
-            | Error::InvalidProgramBody
-            | Error::InvalidSavedFunction(_)
-            | Error::SourceTooDeeplyNested
-            | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. }
-            | Error::InvalidFunctionSave(_)
-            | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
+            authored if Error::REJECTION_CODES.contains(&authored.code()) => {
+                Self::Rejected(format_compiler_error(authored))
+            }
             other => Self::Failed(other.code()),
         }
     }

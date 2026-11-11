@@ -83,6 +83,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
   creators.
+- Program acceptance holds each Shared Tool row it links with
+  `RowLock::Shared`, so one popular Shared Tool does not serialize acceptance
+  across Members; the publish that moves its current revision and the removal
+  that tombstones it hold the row exclusively. A Private Tool row keeps the
+  exclusive hold: only its owner links it.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
@@ -146,6 +151,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   no foreign key to a source but the Workspace. Notify `SearchIndex` after the
   commit with ids alone; its reconcile pass repairs what a notification missed
   ([ADR 0017](docs/adr/0017-universal-search-never-gates-the-catalog.md)).
+- The transaction that removes a Private or a Shared Tool also removes its
+  exact rules: the caller that owns the transaction joins
+  `coral_policy::remove_authored_tool_rules_in_transaction` with the removed
+  Tools' keys.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
@@ -212,6 +221,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   static markup changes alone do not need Vitest coverage. Vitest coverage does
   not replace required product-journey or local/remote parity evidence.
 - Use vanilla-extract, not Tailwind.
+- Format Reef with `npm run format --prefix apps/reef` (oxfmt). Do not run
+  `prettier`: a dependency installs it, but it uses other settings, and oxfmt
+  keeps the objects it splits across lines, so `oxfmt` afterwards does not
+  undo it.
 - Reef has one build for every deployment. Do not add a Desktop build marker
   or branch Reef on its host. Desktop's window behavior belongs in the
   `apps/desktop` main process.

@@ -58,12 +58,12 @@ pub(crate) async fn registered_agent(
         .expect("authenticate Agent")
 }
 
-pub(crate) fn saved_function_change(
+pub(crate) fn private_tool_change(
     actor: AuthenticatedPrincipal,
     occurred_at_unix_nanos: i64,
     digit: char,
-) -> SavedFunctionChangeContext {
-    SavedFunctionChangeContext::new(
+) -> PrivateToolChangeContext {
+    PrivateToolChangeContext::new(
         actor,
         occurred_at_unix_nanos,
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
@@ -373,6 +373,8 @@ impl TestModules {
             Option<String>,
             Option<String>,
             Option<i64>,
+            Option<String>,
+            Option<String>,
         );
         let rows: Vec<Row> = self
             .database
@@ -386,6 +388,8 @@ impl TestModules {
                         Alias::new("failure_code"),
                         Alias::new("result_kind"),
                         Alias::new("ended_at_unix_nanos"),
+                        Alias::new("parent_invocation_id"),
+                        Alias::new("source_private_tool_id"),
                     ])
                     .from(Alias::new("tool_invocations"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
@@ -406,6 +410,8 @@ impl TestModules {
                     failure_code,
                     result_kind,
                     ended_at_unix_nanos,
+                    parent_id,
+                    source_private_tool_id,
                 )| {
                     InvocationRow {
                         id: crate::InvocationId::parse(&id).expect("Invocation id"),
@@ -418,6 +424,10 @@ impl TestModules {
                                 .expect("a stored result kind")
                         }),
                         ended_at_unix_nanos,
+                        parent_id: parent_id.map(|id| {
+                            crate::InvocationId::parse(&id).expect("parent Invocation id")
+                        }),
+                        source_private_tool_id,
                     }
                 },
             )
@@ -511,6 +521,29 @@ impl TestModules {
             )
             .await
             .expect("create Workspace");
+        // Every Workspace Coral serves has its Private and Shared Providers.
+        let mut transaction = self.database.begin().await.expect("begin");
+        self.providers
+            .install_coral_defined_in_transaction(
+                &mut transaction,
+                &change(user.clone(), 10, '1'),
+                workspace.id(),
+                coral_provider::CoralDefinedProvider::Private,
+            )
+            .await
+            .expect("install the Private Provider")
+            .skip_search();
+        self.providers
+            .install_coral_defined_in_transaction(
+                &mut transaction,
+                &change(user.clone(), 10, '1'),
+                workspace.id(),
+                coral_provider::CoralDefinedProvider::Shared,
+            )
+            .await
+            .expect("install the Shared Provider")
+            .skip_search();
+        transaction.commit().await.expect("commit");
         let principal = AuthenticatedPrincipal::user(user);
         (workspace.id().clone(), principal)
     }
@@ -1225,6 +1258,10 @@ pub(crate) struct InvocationRow {
     pub(crate) failure_code: Option<String>,
     pub(crate) result_kind: Option<crate::InvocationResultKind>,
     pub(crate) ended_at_unix_nanos: Option<i64>,
+    /// The Invocation of the performed call whose body made this one.
+    pub(crate) parent_id: Option<crate::InvocationId>,
+    /// The Private Tool whose source made the call, if one did.
+    pub(crate) source_private_tool_id: Option<String>,
 }
 
 pub(crate) struct ToolFixture {
@@ -1311,6 +1348,7 @@ pub(crate) async fn assert_run_not_found(
             workspace,
             run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             10,
             None,
         )
@@ -1386,6 +1424,7 @@ pub(crate) async fn run_history_text(
             workspace,
             run,
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )
@@ -1501,14 +1540,57 @@ pub(crate) async fn admitted_invocation(
     .expect("resolve the fixture Tool")
     .expect("the fixture Tool resolves");
     transaction.rollback().await.expect("end resolution");
+    admitted(tool, run_id, target, tool.call_path.clone(), now)
+}
+
+/// An admitted call to the Private Tool at `coral.private.<relative_path>`
+/// of `tool`'s Workspace, which Coral performs in the Program, for tests
+/// that drive the owner's pieces directly.
+pub(crate) async fn admitted_private_invocation(
+    fixture: &TestModules,
+    tool: &ToolFixture,
+    run_id: &crate::RunId,
+    relative_path: &str,
+) -> Arc<crate::invocation::AdmittedInvocation> {
+    let now = fixture.clock.now_unix_nanos().expect("clock");
+    let mut transaction = fixture.database.begin().await.expect("begin resolution");
+    let target = coral_provider::resolve_authored_tool_in_transaction(
+        &mut transaction,
+        &tool.workspace_id,
+        coral_catalog::AuthoredToolKind::Private,
+        relative_path,
+        coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
+        coral_catalog::ToolAccessState::Enabled,
+    )
+    .await
+    .expect("resolve the Private Tool")
+    .expect("the Private Provider is active");
+    transaction.rollback().await.expect("end resolution");
+    admitted(
+        tool,
+        run_id,
+        target,
+        format!("coral.private.{relative_path}"),
+        now,
+    )
+}
+
+fn admitted(
+    tool: &ToolFixture,
+    run_id: &crate::RunId,
+    target: coral_provider::ResolvedInvocationTool,
+    call_path: String,
+    now: i64,
+) -> Arc<crate::invocation::AdmittedInvocation> {
     Arc::new(crate::invocation::AdmittedInvocation {
         id: crate::InvocationId::generate(),
         workspace_id: tool.workspace_id.clone(),
         run_id: run_id.clone(),
         target,
-        call_path: tool.call_path.clone(),
+        call_path,
         arguments_json: "{}".to_string(),
         source_location: None,
+        parent_invocation_id: None,
         admitted_at_unix_nanos: now,
         span: tracing::Span::none(),
     })

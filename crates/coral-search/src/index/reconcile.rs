@@ -3,6 +3,7 @@
 
 use std::future::Future;
 
+use coral_catalog::AuthoredToolKind;
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
@@ -12,8 +13,10 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use super::{SearchIndex, WriteTrigger, function_span, generation_span, in_write_span, skipped};
-use crate::indexer::functions::SavedFunctionIndexer;
+use super::{
+    SearchIndex, WriteTrigger, authored_tool_span, generation_span, in_write_span, skipped,
+};
+use crate::indexer::authored_tools::AuthoredToolIndexer;
 use crate::indexer::tools::ToolIndexer;
 use crate::indexer::{self, EntityIndexer, IndexError, Recount};
 
@@ -126,14 +129,14 @@ impl SearchIndex {
     /// 1. Indexes every Provider whose active Generation has no `complete`
     ///    state row, one under another Provider display name, or a `failed`
     ///    one whose retry is due, from the stored Generation.
-    /// 2. Indexes every Saved Function whose `failed` state row's retry is
-    ///    due, and every one with no `failed` state row whose row is missing
-    ///    or whose fingerprint differs from its definition revision. A
-    ///    failure of the current revision not yet due waits, whatever the
-    ///    row holds.
+    /// 2. Indexes every Private Tool and every live Shared Tool whose
+    ///    `failed` state row's retry is due, and every one with no `failed`
+    ///    state row whose row is missing or whose fingerprint differs from
+    ///    its revision. A failure of the current revision not yet due waits,
+    ///    whatever the row holds.
     /// 3. Removes the rows and state rows of every Generation that is no
-    ///    Provider's active Generation, and of every Saved Function that no
-    ///    longer exists. Best effort. A source's delete never touches these
+    ///    Provider's active Generation, and of every Private Tool that no
+    ///    longer exists and every Shared Tool that was removed. Best effort. A source's delete never touches these
     ///    tables, so this step is what guarantees the rows go.
     /// 4. On Postgres, recounts the statistics of every Workspace whose rows
     ///    changed after its last count, not only those this pass wrote: a
@@ -145,23 +148,23 @@ impl SearchIndex {
     /// snapshot, so a pass that finds no change never takes the writer, which
     /// every other write in the process would wait behind.
     ///
-    /// Each removal, Generation, function and recount is written in a
+    /// Each removal, Generation, Authored Tool and recount is written in a
     /// transaction of its own. Each but a recount runs under the in-process
     /// mutex, which the pass holds for that one item; a recount holds its
     /// Workspace's statistics lock alone, which no write takes. A pass under load waits for the writer once
     /// per item, and holding the mutex across those waits would hold back
     /// every notified write. A notified write or a change that lands between
     /// two items may index, replace or delete what the pass read as stale, so
-    /// the pass reads each Generation and function again under the mutex and
-    /// skips what changed; a function goes through
-    /// [`SearchIndex::sync_function`]'s one rule. A failed removal is logged and the pass goes on
+    /// the pass reads each Generation and Authored Tool again under the mutex and
+    /// skips what changed; an Authored Tool goes through
+    /// [`SearchIndex::sync_authored_tool`]'s one rule. A failed removal is logged and the pass goes on
     /// without further removals; a failed write is logged and
     /// recorded like a notified write's, and the pass goes on. Passes in two
     /// processes write the same idempotent rows.
     ///
     /// The retry module's rule decides when a failure is due. A failure that
     /// repeats until something changes waits for a newer Coral version, or,
-    /// for a Saved Function, for another revision, so a pass does not spend
+    /// for an Authored Tool, for another revision, so a pass does not spend
     /// its turn at the writer on it pass after pass.
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
@@ -169,8 +172,9 @@ impl SearchIndex {
     /// to do, so the default trace filter exports none of them. Each write
     /// the pass makes runs in an info root span of its own, which the
     /// default filter exports, linked to its step's span when that is traced:
-    /// `coral.search.index_generation` and `coral.search.sync_function`, as
-    /// a notified write's, and `coral.search.refresh_statistics`.
+    /// `coral.search.index_generation`, `coral.search.sync_private_tool` and
+    /// `coral.search.sync_shared_tool`, as a notified write's, and
+    /// `coral.search.refresh_statistics`.
     /// A failed write or step marks its span and the pass's span as failed.
     /// The pass's span records what it indexed and what failed, and the
     /// statistics step's span the Workspaces it checked and recounted and
@@ -182,8 +186,10 @@ impl SearchIndex {
             "coral.search.reconcile",
             coral.search.reconcile.generations_indexed = Empty,
             coral.search.reconcile.generations_failed = Empty,
-            coral.search.reconcile.functions_indexed = Empty,
-            coral.search.reconcile.functions_failed = Empty,
+            coral.search.reconcile.private_tools_indexed = Empty,
+            coral.search.reconcile.private_tools_failed = Empty,
+            coral.search.reconcile.shared_tools_indexed = Empty,
+            coral.search.reconcile.shared_tools_failed = Empty,
             coral.search.reconcile.workspaces_checked = Empty,
             coral.search.reconcile.workspaces_recounted = Empty,
             coral.search.reconcile.rows_written = Empty,
@@ -207,12 +213,20 @@ impl SearchIndex {
             safe::number(work.generations.failed),
         );
         pass.record(
-            "coral.search.reconcile.functions_indexed",
-            safe::number(work.functions.indexed),
+            "coral.search.reconcile.private_tools_indexed",
+            safe::number(work.private_tools.indexed),
         );
         pass.record(
-            "coral.search.reconcile.functions_failed",
-            safe::number(work.functions.failed),
+            "coral.search.reconcile.private_tools_failed",
+            safe::number(work.private_tools.failed),
+        );
+        pass.record(
+            "coral.search.reconcile.shared_tools_indexed",
+            safe::number(work.shared_tools.indexed),
+        );
+        pass.record(
+            "coral.search.reconcile.shared_tools_failed",
+            safe::number(work.shared_tools.failed),
         );
         if work.failed() {
             coral_telemetry::record_failure(&pass, "reconcile_failed");
@@ -241,7 +255,7 @@ impl SearchIndex {
         .is_err();
         work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_orphaned"),
-            self.remove_orphaned_functions(),
+            self.remove_orphaned_authored_tools(),
         )
         .await
         .is_err();
@@ -255,12 +269,15 @@ impl SearchIndex {
             Err(()) => work.step_failed = true,
         }
         match step(
-            step_span!("coral.search.reconcile.functions"),
-            self.reconcile_functions(now),
+            step_span!("coral.search.reconcile.authored_tools"),
+            self.reconcile_authored_tools(now),
         )
         .await
         {
-            Ok(functions) => work.functions = functions,
+            Ok((private_tools, shared_tools)) => {
+                work.private_tools = private_tools;
+                work.shared_tools = shared_tools;
+            }
             Err(()) => work.step_failed = true,
         }
         let span = step_span!(
@@ -309,24 +326,24 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// Step 3 of a pass, run first: syncs every Saved Function the index
+    /// Step 3 of a pass, run first: syncs every Authored Tool the index
     /// holds that no longer exists, in one transaction each. Best effort.
-    async fn remove_orphaned_functions(&self) -> Result<(), ()> {
+    async fn remove_orphaned_authored_tools(&self) -> Result<(), ()> {
         let removed = async {
             let orphaned = self
                 .read_snapshot(async |transaction| {
                     let current =
-                        coral_functions::saved_function_index_revisions_in_transaction(transaction)
+                        coral_tools::authored_tool_index_revisions_in_transaction(transaction)
                             .await?;
-                    SavedFunctionIndexer.orphaned(transaction, &current).await
+                    AuthoredToolIndexer.orphaned(transaction, &current).await
                 })
                 .await?;
             for orphan in &orphaned {
                 let _write = self.writes.lock().await;
                 in_write_span(
-                    function_span(&orphan.workspace_id, &orphan.function_id),
+                    authored_tool_span(&orphan.workspace_id, &orphan.id),
                     WriteTrigger::Reconcile,
-                    self.sync_function_held(&orphan.workspace_id, &orphan.function_id),
+                    self.sync_authored_tool_held(&orphan.workspace_id, &orphan.id),
                 )
                 .await?;
             }
@@ -337,7 +354,7 @@ impl SearchIndex {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
                 error.type = safe::kind(error.code()),
-                "failed to remove orphaned Saved Functions from the search index"
+                "failed to remove orphaned Authored Tools from the search index"
             );
             return Err(());
         }
@@ -445,16 +462,20 @@ impl SearchIndex {
         .await
     }
 
-    /// Step 2 of a pass: indexes each current Saved Function whose failure
+    /// Step 2 of a pass: indexes each current Authored Tool whose failure
     /// has a retry due at `now_unix_nanos` or another revision, and each
     /// without a failure that the index lacks or holds at another revision.
-    /// A failure of the current revision not yet due waits.
-    async fn reconcile_functions(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
+    /// A failure of the current revision not yet due waits. Answers the
+    /// work on Private Tools, then on Shared Tools.
+    async fn reconcile_authored_tools(
+        &self,
+        now_unix_nanos: i64,
+    ) -> Result<(ItemWork, ItemWork), ()> {
         let stale = self
             .read_snapshot(async |transaction| {
                 let expected =
-                    coral_functions::all_saved_function_entries_in_transaction(transaction).await?;
-                let stale = SavedFunctionIndexer
+                    coral_tools::authored_tool_entries_in_transaction(transaction).await?;
+                let stale = AuthoredToolIndexer
                     .reconcile(transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()
@@ -465,24 +486,28 @@ impl SearchIndex {
             .await;
         match stale {
             Ok(stale) => {
-                let mut work = ItemWork::default();
+                let mut private_tools = ItemWork::default();
+                let mut shared_tools = ItemWork::default();
                 for entry in &stale {
                     let _write = self.writes.lock().await;
                     let indexed = in_write_span(
-                        function_span(entry.workspace_id(), entry.id()),
+                        authored_tool_span(entry.workspace_id(), entry.id()),
                         WriteTrigger::Reconcile,
-                        self.sync_function_held(entry.workspace_id(), entry.id()),
+                        self.sync_authored_tool_held(entry.workspace_id(), entry.id()),
                     )
                     .await;
-                    work.count(&indexed);
+                    match entry.id().kind() {
+                        AuthoredToolKind::Private => private_tools.count(&indexed),
+                        AuthoredToolKind::Shared => shared_tools.count(&indexed),
+                    }
                 }
-                Ok(work)
+                Ok((private_tools, shared_tools))
             }
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
                     error.type = safe::kind(error.code()),
-                    "failed to reconcile the indexed Saved Functions"
+                    "failed to reconcile the indexed Authored Tools"
                 );
                 Err(())
             }
@@ -563,8 +588,8 @@ impl StatisticsWork {
     }
 }
 
-/// The items one step of a pass tried to index: Generations or Saved
-/// Functions it found unindexed or due for a retry.
+/// The items one step of a pass tried to index: Generations or Private
+/// Tools it found unindexed or due for a retry.
 #[derive(Debug, Default, Clone, Copy)]
 struct ItemWork {
     /// The items it indexed.
@@ -588,7 +613,8 @@ impl ItemWork {
 #[derive(Debug, Default, Clone, Copy)]
 struct PassWork {
     generations: ItemWork,
-    functions: ItemWork,
+    private_tools: ItemWork,
+    shared_tools: ItemWork,
     /// The statistics step's work, when it could read the watermarks.
     statistics: Option<StatisticsWork>,
     /// Whether a step failed before it reached its items.
@@ -600,7 +626,8 @@ impl PassWork {
     fn failed(&self) -> bool {
         self.step_failed
             || self.generations.failed > 0
-            || self.functions.failed > 0
+            || self.private_tools.failed > 0
+            || self.shared_tools.failed > 0
             || self.statistics.is_some_and(|statistics| statistics.failed)
     }
 }

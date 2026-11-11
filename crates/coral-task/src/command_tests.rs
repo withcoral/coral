@@ -27,7 +27,7 @@ struct Fixture {
     /// The index the fixture's saves and deletes notify.
     index: coral_search::SearchIndex,
     runs: coral_run::RunModule,
-    functions: coral_functions::SavedFunctionModule,
+    functions: coral_tools::PrivateToolModule,
     user: coral_workspace::AuthenticatedUser,
     actor: AuthenticatedPrincipal,
     workspace: coral_workspace::WorkspaceId,
@@ -58,19 +58,19 @@ impl Fixture {
     }
 
     /// Saves a function as `call`'s Principal the way a Program's
-    /// `coral.workspace.saveFunction` does: typed from the Tools it can
+    /// `coral.addCustomTool` or `coral.updateCustomTool` does: typed from the Tools it can
     /// discover, then the index is told. No Task Attempt records it.
-    async fn save_function(
+    async fn save_private_tool(
         &self,
         call: &AttributedCommand,
         path: &str,
         description: &str,
         source: &str,
-    ) -> Result<coral_functions::SavedFunction, Error> {
-        let save = coral_functions::SavedFunctionSave::new(
-            coral_functions::SavedFunctionPath::parse(path)?,
-            coral_functions::SavedFunctionDescription::parse(description)?,
-            coral_functions::SavedFunctionSource::parse(source)?,
+    ) -> Result<coral_tools::PrivateTool, Error> {
+        let save = coral_tools::PrivateToolSave::new(
+            coral_tools::PrivateToolPath::parse(path)?,
+            coral_tools::AuthoredToolDescription::parse(description)?,
+            coral_tools::AuthoredToolSource::parse(source)?,
         );
         let search = coral_search::UniversalSearchModule::new(
             self.tasks.database.clone(),
@@ -81,7 +81,7 @@ impl Fixture {
         let prepared = self
             .functions
             .prepare_save(
-                &function_context(call),
+                &private_tool_context(call),
                 &call.workspace_id,
                 save,
                 Some(&declarations),
@@ -94,27 +94,27 @@ impl Fixture {
             .await?;
         transaction.commit().await?;
         self.index
-            .sync_function(call.workspace_id.clone(), function.id().clone());
+            .sync_authored_tool(call.workspace_id.clone(), function.id().clone());
         Ok(function)
     }
 
     /// Deletes `call`'s Principal's function at `path` the way a Program's
-    /// `coral.workspace.deleteFunction` does, then tells the index.
-    async fn delete_function(
+    /// `coral.removeCustomTool` does, then tells the index.
+    async fn delete_private_tool(
         &self,
         call: &AttributedCommand,
         path: &str,
-    ) -> Result<coral_functions::SavedFunctionId, Error> {
+    ) -> Result<coral_tools::PrivateToolId, Error> {
         let deleted = self
             .functions
             .delete(
-                &function_context(call),
+                &private_tool_context(call),
                 &call.workspace_id,
-                &coral_functions::SavedFunctionPath::parse(path)?,
+                &coral_tools::PrivateToolPath::parse(path)?,
             )
             .await?;
         self.index
-            .sync_function(call.workspace_id.clone(), deleted.clone());
+            .sync_authored_tool(call.workspace_id.clone(), deleted.clone());
         Ok(deleted)
     }
 
@@ -140,12 +140,13 @@ impl Fixture {
             )
             .await
             .unwrap();
+        install_private_provider(&database, &workspaces, &user, workspace.id()).await;
         let actor = AuthenticatedPrincipal::user(user.clone());
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
-        let functions = coral_functions::SavedFunctionModule::new(
+        let functions = coral_tools::PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
@@ -245,16 +246,23 @@ impl Fixture {
 
     /// Creates another Workspace that the fixture's User owns.
     async fn owned_workspace(&self, name: &str) -> coral_workspace::WorkspaceId {
-        self.tasks
+        let workspace = self
+            .tasks
             .workspaces
             .create(
                 &ChangeContext::new(self.user.clone(), 1, coral_test_support::trace('1')),
                 WorkspaceDisplayName::parse(name).unwrap(),
             )
             .await
-            .unwrap()
-            .id()
-            .clone()
+            .unwrap();
+        install_private_provider(
+            &self.tasks.database,
+            &self.tasks.workspaces,
+            &self.user,
+            workspace.id(),
+        )
+        .await;
+        workspace.id().clone()
     }
 
     async fn goal(&self) -> Task {
@@ -313,7 +321,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Describe my retained function");
     fixture
-        .save_function(&call, "answer", "Answer", "export default () => 42;")
+        .save_private_tool(&call, "answer", "Answer", "export default () => 42;")
         .await
         .unwrap();
     let change = ChangeContext::new(
@@ -331,7 +339,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     assert!(matches!(
         fixture
             .commands
-            .describe(&call, "coral.functions.answer", &[])
+            .describe(&call, "coral.private.answer", &[])
             .await,
         Err(Error::Search(coral_search::Error::Workspace(
             coral_workspace::Error::WorkspaceArchived
@@ -365,7 +373,7 @@ async fn describe_bounds_call_paths_by_utf8_bytes() {
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Check the Call Path bound");
     // 18 ASCII bytes of prefix, then two bytes per character: 521 characters.
-    // A Provider path, because a Saved Function path stops at 256 bytes of its own.
+    // A Provider path, because a Private Tool path stops at 256 bytes of its own.
     let at_bound = format!("coral.providers.x.{}", "é".repeat(503));
     let over_bound = format!("{at_bound}a");
     assert_eq!((at_bound.len(), over_bound.len()), (1024, 1025));
@@ -440,16 +448,16 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
     fixture
         .functions
         .save(
-            &coral_functions::SavedFunctionChangeContext::new(
+            &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(member),
                 wall_time(),
                 coral_test_support::trace('1'),
             ),
             &fixture.workspace,
-            coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse("privateAnswer").unwrap(),
-                coral_functions::SavedFunctionDescription::parse("Private answer").unwrap(),
-                coral_functions::SavedFunctionSource::parse("export default () => 42;").unwrap(),
+            coral_tools::PrivateToolSave::new(
+                coral_tools::PrivateToolPath::parse("privateAnswer").unwrap(),
+                coral_tools::AuthoredToolDescription::parse("Private answer").unwrap(),
+                coral_tools::AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await
@@ -463,7 +471,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
         .await
         .unwrap();
 
-    for path in ["coral.functions.absent", "coral.functions.privateAnswer"] {
+    for path in ["coral.private.absent", "coral.private.privateAnswer"] {
         assert!(matches!(
             fixture.commands.describe(&call, path, &[]).await,
             Err(Error::Search(
@@ -482,24 +490,24 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
 }
 
 #[tokio::test]
-async fn saved_function_descriptions_survive_replacement_and_deletion() {
+async fn private_tool_descriptions_survive_replacement_and_deletion() {
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Keep this exact description");
     fixture
-        .save_function(&call, "answer", "Answer", "export default () => 41;")
+        .save_private_tool(&call, "answer", "Answer", "export default () => 41;")
         .await
         .unwrap();
     fixture
         .commands
-        .describe(&call, "coral.functions.answer", &[])
+        .describe(&call, "coral.private.answer", &[])
         .await
         .unwrap();
     fixture
-        .save_function(&call, "answer", "Changed", "export default () => 42;")
+        .save_private_tool(&call, "answer", "Changed", "export default () => 42;")
         .await
         .unwrap();
-    fixture.delete_function(&call, "answer").await.unwrap();
+    fixture.delete_private_tool(&call, "answer").await.unwrap();
     let history = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -520,12 +528,12 @@ async fn saved_function_descriptions_survive_replacement_and_deletion() {
     assert_eq!(
         context,
         DiscoveryContext::Describe {
-            call_path: "coral.functions.answer".into(),
+            call_path: "coral.private.answer".into(),
             types: Vec::new(),
         }
     );
     let field = |name: &str| response.get(name).and_then(serde_json::Value::as_str);
-    assert_eq!(field("call_path"), Some("coral.functions.answer"));
+    assert_eq!(field("call_path"), Some("coral.private.answer"));
     assert_eq!(field("description"), Some("Answer"));
     assert_eq!(field("source"), Some("export default () => 41;"));
     assert_eq!(
@@ -1133,7 +1141,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
     clippy::too_many_lines,
     reason = "one retention matrix covers unknown attempts, completion feedback, and independent authoring evidence"
 )]
-async fn unknown_attempts_and_completion_feedback_expire_without_deleting_current_functions() {
+async fn unknown_attempts_and_completion_feedback_expire_without_deleting_current_private_tools() {
     let fixture = Fixture::new().await;
     let abandoned = fixture.goal().await;
     let call = fixture.call(&abandoned, "Interrupted preparation");
@@ -1172,7 +1180,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
     let call = fixture.call(&goal, "Retain the whole goal");
     // A function saved while the goal is open outlives the goal's expiry.
     fixture
-        .save_function(&call, "current", "Keep current", "export default () => 42;")
+        .save_private_tool(&call, "current", "Keep current", "export default () => 42;")
         .await
         .unwrap();
     let ended_at = wall_time() + 1_000_000_000;
@@ -1231,7 +1239,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
         .get(
             &fixture.actor,
             &fixture.workspace,
-            &coral_functions::SavedFunctionPath::parse("current").unwrap(),
+            &coral_tools::PrivateToolPath::parse("current").unwrap(),
         )
         .await
         .unwrap();
@@ -1566,7 +1574,7 @@ async fn search_request_validation_happens_after_durable_begin() {
         // The retained record names one Provider.
         (
             coral_search::SearchInput {
-                provider: vec!["coral.workspace".into(), "coral.workspace".into()],
+                provider: vec!["coral".into(), "coral".into()],
                 ..Default::default()
             },
             "invalid_input",
@@ -1899,7 +1907,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
     // Equal names in length, so equal matches tie and follow Call Path order.
     for path in ["alpha", "bravo", "gamma"] {
         fixture
-            .save_function(&call, path, "Find an answer", "export default () => 42;")
+            .save_private_tool(&call, path, "Find an answer", "export default () => 42;")
             .await
             .unwrap();
     }
@@ -1931,14 +1939,14 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         .unwrap();
     assert_eq!(
         first.hits().first().unwrap().call_path().as_str(),
-        "coral.functions.alpha"
+        "coral.private.alpha"
     );
     assert_eq!(
         second.hits().first().unwrap().call_path().as_str(),
-        "coral.functions.bravo"
+        "coral.private.bravo"
     );
     fixture
-        .save_function(
+        .save_private_tool(
             &call,
             "alpha",
             "Changed",
@@ -1946,7 +1954,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         )
         .await
         .unwrap();
-    fixture.delete_function(&call, "bravo").await.unwrap();
+    fixture.delete_private_tool(&call, "bravo").await.unwrap();
     let entries = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -1957,10 +1965,10 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         .filter(|entry| entry.kind == AttemptKind::Search)
         .collect::<Vec<_>>();
     assert_eq!(pages.len(), 2, "the unrequested third page is not captured");
-    for (entry, (expected_path, offset, next_offset)) in pages.into_iter().zip([
-        ("coral.functions.alpha", 0, 1),
-        ("coral.functions.bravo", 1, 2),
-    ]) {
+    for (entry, (expected_path, offset, next_offset)) in pages
+        .into_iter()
+        .zip([("coral.private.alpha", 0, 1), ("coral.private.bravo", 1, 2)])
+    {
         let detail = fixture
             .tasks
             .interaction(&fixture.actor, &fixture.workspace, goal.id(), &entry.id)
@@ -2236,11 +2244,37 @@ impl Fixture {
     }
 }
 
-/// `call`'s Principal at the wall clock, as a Saved Function change names it.
-fn function_context(call: &AttributedCommand) -> coral_functions::SavedFunctionChangeContext {
-    coral_functions::SavedFunctionChangeContext::new(
+/// `call`'s Principal at the wall clock, as a Private Tool change names it.
+fn private_tool_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
+    coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
         wall_time(),
         coral_test_support::trace('f'),
     )
+}
+
+/// Gives `workspace` its Private Provider, as creating one in production does.
+async fn install_private_provider(
+    database: &std::sync::Arc<coral_db::Database>,
+    workspaces: &WorkspaceModule,
+    owner: &coral_workspace::AuthenticatedUser,
+    workspace: &coral_workspace::WorkspaceId,
+) {
+    let providers = coral_provider::ProviderModule::with_running_catalog(
+        coral_outbound::DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+    );
+    let mut transaction = database.begin().await.unwrap();
+    providers
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &ChangeContext::new(owner.clone(), 10, coral_test_support::trace('1')),
+            workspace,
+            coral_provider::CoralDefinedProvider::Private,
+        )
+        .await
+        .unwrap()
+        .skip_search();
+    transaction.commit().await.unwrap();
 }

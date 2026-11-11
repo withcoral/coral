@@ -94,7 +94,7 @@ test('Secret entry with one shared account, then each person’s own account', a
         .getByRole('dialog')
         .getByRole('button', { name: 'Remove provider', exact: true })
         .click()
-      await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
+      await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/tools`)
       const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
       await expect.poll(() => rail.getByRole('link', { name: / settings$/ }).count()).toBe(1)
       // The provider left is the one where each caller uses their own account.

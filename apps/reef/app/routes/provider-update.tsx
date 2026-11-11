@@ -10,7 +10,7 @@ import {
 } from '@/lib/management.server'
 import { accountChoice, listAllTools, providerName, providerPath } from '@/lib/providers.server'
 import { callbackRedirectUri } from '@/lib/provider-publication-attempt/setup.server'
-import { attemptPath } from '@/lib/provider-publication-attempt/model'
+import { attemptPath, inProgress } from '@/lib/provider-publication-attempt/model'
 import {
   loadAttempt,
   attemptAction,
@@ -82,7 +82,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         basePath,
         cancelPath,
         settingsPath,
-        providersPath: `${workspace.path}/providers`,
+        toolsPath: `${workspace.path}/tools`,
         setup,
         callbackUrl: callbackRedirectUri(request, context),
         attempt,
@@ -136,10 +136,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 }
 
 export default function ProviderUpdateRoute({ loaderData, actionData }: Route.ComponentProps) {
-  const authorization = loaderData.setup?.authorization
   useAuthorizationProgress(
-    !(actionData && 'configurationErrors' in actionData) &&
-      (authorization?.state === 'pending' || authorization?.state === 'exchanging'),
+    !(actionData && 'configurationErrors' in actionData) && inProgress(loaderData.setup),
   )
   const pending = useNavigation().state !== 'idle'
   const key = attemptPath(loaderData.basePath, loaderData.attempt)

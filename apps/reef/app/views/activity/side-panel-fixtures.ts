@@ -5,7 +5,8 @@
 
 import type { ConnectionState } from '../accounts/types'
 import { stored } from './discovery/fixtures'
-import { discoveryView, functionTarget } from './discovery/response'
+import { discoveryView } from './discovery/response'
+import { privateToolPath } from '@/lib/call-root'
 import type {
   ActivityPage,
   ActivityRow,
@@ -155,7 +156,8 @@ export function runDetail(row: RunRow, overrides: Partial<RunDetail> = {}): RunD
     run: row,
     submission: row.submission,
     source,
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
   }
@@ -177,6 +179,7 @@ export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRo
     callPath,
     state: 'pending',
     outcome: 'unknown',
+    toolKind: 'provider',
     startedAt: at,
     endedAt: null,
     durationNanos: '221000000000',
@@ -488,10 +491,10 @@ export function discovery(
     // The loader names an untitled tool by its path inside its provider.
     if (tool && target.title === target.callPath) target.title = tool.relativePath
     if (options.gone) continue
-    const path = functionTarget(target.callPath)
+    const path = privateToolPath(target.callPath)
     target.currentHref = tool
       ? `/${workspace}/providers/${tool.namespace}/tools/${tool.relativePath}`
-      : `/${workspace}/functions/${path}`
+      : `/${workspace}/tools/private/${path}`
   }
   return { kind: 'discovery', context, response, view }
 }
@@ -510,16 +513,16 @@ export const searched: Extract<DiscoveryContext, { kind: 'search' }> = {
 }
 
 /**
- * A retained untrimmed page, searched within one provider, so Coral skips Saved
- * Functions. Trimmed pages state only partial or failed coverage.
+ * A retained untrimmed page, searched within one provider, so Coral skips Private
+ * Tools. Trimmed pages state only partial or failed coverage.
  */
 export const providerFilteredSearch = JSON.stringify({
   ...JSON.parse(stored.untrimmed),
   retriever_statuses: JSON.parse(stored.untrimmed).retriever_statuses.map(
     (status: { retriever: string }) =>
-      status.retriever === 'saved_function'
+      status.retriever === 'private_tool'
         ? {
-            retriever: 'saved_function',
+            retriever: 'private_tool',
             state: 'skipped',
             coverage: {
               eligible_units: 0,

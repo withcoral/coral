@@ -61,7 +61,8 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
         approverLabel: 'You',
       },
       source: 'return null;',
-      linkedFunctions: [],
+      linkedSharedTools: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -83,7 +84,8 @@ function runDetail(actions: typeof run.actionPage, request: typeof approvalReque
       run: { ...run, actionPage: actions },
       request,
       source: 'return null;',
-      linkedFunctions: [],
+      linkedSharedTools: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -124,7 +126,8 @@ it('shows purpose and caller once, with nothing but the call to decide on', () =
       run: selected,
       request: approvalRequest,
       source: 'exact-program-source',
-      linkedFunctions: [],
+      linkedSharedTools: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -155,6 +158,7 @@ it.each([true, false])(
       outcome: 'unknown',
       dispatchedAt: null,
       waitingNanos: '0',
+      toolKind: 'provider',
       provider: 'workspaces/finance/providers/mail',
       tool: 'send',
       callPath: 'coral.providers.mail.send',
@@ -169,7 +173,8 @@ it.each([true, false])(
           kind: 'run',
           run,
           source: 'return null;',
-          linkedFunctions: [],
+          linkedSharedTools: [],
+          linkedPrivateTools: [],
           terminal: { kind: 'unavailable' },
         },
         invocation: call,
@@ -212,6 +217,7 @@ it.each([true, false])(
       durationNanos: '2000000000',
       dispatchedAt: '2026-09-22T09:00:06Z',
       waitingNanos: '1000000',
+      toolKind: 'provider',
       provider: `${workspace}/providers/mail`,
       tool: 'send',
       callPath: 'coral.providers.mail.send',
@@ -234,7 +240,8 @@ it.each([true, false])(
               kind: 'run',
               run,
               source: 'exact-source',
-              linkedFunctions: [],
+              linkedSharedTools: [],
+              linkedPrivateTools: [],
               terminal: { kind: 'unavailable' },
             }
           : undefined,
@@ -680,7 +687,8 @@ const runPanel = (overrides: Partial<typeof run>, submission?: InteractionRow): 
   submission,
   request: null,
   source: 'return null;',
-  linkedFunctions: [],
+  linkedSharedTools: [],
+  linkedPrivateTools: [],
   terminal: { kind: 'unavailable' },
 })
 const invocationPanel = (overrides: Partial<InvocationRow>): InvocationDetail => ({
@@ -693,6 +701,7 @@ const invocationPanel = (overrides: Partial<InvocationRow>): InvocationDetail =>
     outcome: 'upstream_outcome',
     dispatchedAt: run.startedAt,
     waitingNanos: '0',
+    toolKind: 'provider',
     provider: `${workspace}/providers/mail`,
     tool: 'send',
     callPath: 'coral.providers.mail.send',
@@ -711,7 +720,7 @@ const event = (value: RunEvent): Extract<Detail, { kind: 'output' }> => ({
 })
 const at = { sequence: '4', occurredAt: run.startedAt }
 const KIND_LABEL =
-  /^(task|program run|tool|search|describe|exec submission|save function|delete function|tool interaction|program log|program output|run event|approval request|account connection request)$/
+  /^(task|program run|tool|search|describe|exec submission|save private tool|delete private tool|tool interaction|program log|program output|run event|approval request|account connection request)$/
 
 it.each<[string, Detail, string]>([
   [
@@ -751,24 +760,24 @@ it.each<[string, Detail, string]>([
   ],
   [
     // A save states no target: its reference is an ID that no page opens.
-    'a saved function without an intent by its tool, not its ID',
+    'a private tool without an intent by its tool, not its ID',
     tool(
-      { tool: 'save_function', intent: '' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
+      { tool: 'save_private_tool', intent: '' },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
-    'Save function',
+    'Save private tool',
   ],
   [
-    'a deleted function without an intent by its tool, not its ID',
+    'a deleted private tool without an intent by its tool, not its ID',
     tool(
-      { tool: 'delete_function', intent: '' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
+      { tool: 'delete_private_tool', intent: '' },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/reminders` },
     ),
-    'Delete function',
+    'Delete private tool',
   ],
   [
-    'a deleted function by its intent',
-    tool({ tool: 'delete_function', intent: 'Remove the old batch' }, { kind: 'unknown' }),
+    'a deleted private tool by its intent',
+    tool({ tool: 'delete_private_tool', intent: 'Remove the old batch' }, { kind: 'unknown' }),
     'Remove the old batch',
   ],
   [
@@ -900,8 +909,9 @@ it.each<[string, RunDetail, string | null]>([
         name: `${workspace}/tasks/one/interactions/exec`,
       },
       source: 'exact-accepted-source',
-      linkedFunctions: [
-        { savedFunction: 'snapshot-id', path: 'billing.remind', source: 'exact-snapshot' },
+      linkedSharedTools: [],
+      linkedPrivateTools: [
+        { privateTool: 'snapshot-id', path: 'billing.remind', source: 'exact-snapshot' },
       ],
     }
     const container = document.createElement('div')
@@ -928,7 +938,7 @@ it.each<[string, RunDetail, string | null]>([
       'Inspect original exec submission',
       'Accepted program source',
       'exact-accepted-source',
-      'Saved-function snapshot',
+      'Private tool snapshot',
       'exact-snapshot',
       detail.run.name,
     ])
@@ -1128,7 +1138,7 @@ it("links a result to today's catalog with a labelled icon beside its call path,
 
 it.each([
   ['tools', stored.complete],
-  ['tools and saved functions', stored.mixed],
+  ['tools and private tools', stored.mixed],
 ])('shows each %s result as one compact row in its retained order', (_, response) => {
   const view = discoveryView(searchContext, response)
   if (view.kind !== 'search') throw new Error('expected a search page')
@@ -1141,10 +1151,10 @@ it.each([
   rows.forEach((row, index) => {
     const hit = hits[index]
     expect(row).toHaveTextContent(hit.title)
-    expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'saved function')
+    expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'private tool')
     if (hit.matched.fields.length + hit.matched.tags.length > 0)
       expect(row).toHaveTextContent('Matched in')
-    // Approval shows as the Providers page's Ask hand, named, never as a text badge.
+    // Approval shows as the Tools page's Ask hand, named, never as a text badge.
     const approval = row.querySelector('[role="img"][aria-label^="Ask"]')
     expect(Boolean(approval)).toBe(Boolean(hit.tool?.approvalRequired))
     if (approval) expect(approval.querySelector('svg')).not.toBeNull()
@@ -1156,8 +1166,10 @@ it.each([
       ['idempotent', 'idempotent'],
       ['openWorld', 'open world'],
     ] as const) {
+      // Only a hint declared true shows; a false one has no "not" label.
       const declared = hit.tool?.hints[hint]
-      if (declared !== undefined) expect(row).toHaveTextContent(declared ? label : `not ${label}`)
+      if (declared) expect(row).toHaveTextContent(label)
+      expect(row.textContent).not.toContain(`not ${label}`)
     }
     // Matched paths show as a count chip; the paths themselves stay with the data.
     const paths = hit.matched.paths.length
@@ -1237,9 +1249,9 @@ const describedTool: Described = {
   callPath: 'coral.providers.github.issues.create',
   types: [],
 }
-const describedFunction: Described = {
+const describedPrivateTool: Described = {
   kind: 'describe',
-  callPath: 'coral.functions.github.openIssuesByLabel',
+  callPath: 'coral.private.github.openIssuesByLabel',
   types: ['Issue', 'Label'],
 }
 /** A retained `describe` call, selected, with `evidence` as Coral stored it. */
@@ -1271,12 +1283,12 @@ it.each([
     folded: ['namespace issues', 'Any user with pull access', 'API method documentation'],
   },
   {
-    case: 'a saved function with diagnostics',
-    context: describedFunction,
-    response: stored.describeFunction,
+    case: 'a private tool with diagnostics',
+    context: describedPrivateTool,
+    response: stored.describePrivateTool,
     asked: ['Call path', 'Types', 'Intent'],
-    title: 'coral.functions.github.openIssuesByLabel',
-    kind: 'saved function',
+    title: 'coral.private.github.openIssuesByLabel',
+    kind: 'private tool',
     summary: ['1 error'],
     folded: [
       'function openIssuesByLabel',
@@ -1501,7 +1513,7 @@ it.each<{
   expect(container.textContent).not.toMatch(/Run (succeeded|completed|accepted)/)
 })
 
-/** A retained `save_function` or `delete_function` call, selected, with `evidence` as stored. */
+/** A retained `save_private_tool` or `delete_private_tool` call, selected, with `evidence` as stored. */
 const functionPanel = (overrides: Partial<InteractionRow>, evidence: InteractionEvidence) => {
   const name = `${workspace}/tasks/one/interactions/${overrides.tool}`
   const container = document.createElement('div')
@@ -1513,27 +1525,27 @@ const functionPanel = (overrides: Partial<InteractionRow>, evidence: Interaction
   })
   return { container, name }
 }
-const savedFunctionId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
-const savedFunction = `${workspace}/savedFunctions/${savedFunctionId}`
+const privateToolId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
+const privateTool = `${workspace}/privateTools/${privateToolId}`
 const functionCalls = [
   {
-    tool: 'save_function',
+    tool: 'save_private_tool',
     intent: 'Save the reminder batch',
     // A save states no target: it retained only an ID that no page opens.
     done: null,
     noun: 'save',
     notices: false,
-    code: 'saved_function_admission_failed',
+    code: 'private_tool_admission_failed',
     message: 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^',
   },
   {
-    tool: 'delete_function',
+    tool: 'delete_private_tool',
     intent: 'Remove the old reminder batch',
     done: 'Deleted',
     noun: 'delete',
     notices: true,
     code: 'not_found',
-    message: "Saved function 'billing.oldReminders' does not exist.\n  path: billing.oldReminders",
+    message: "Private tool 'billing.oldReminders' does not exist.\n  path: billing.oldReminders",
   },
 ]
 const functionCases = functionCalls.flatMap((call) =>
@@ -1542,7 +1554,7 @@ const functionCases = functionCalls.flatMap((call) =>
       {
         case: `a ${call.noun} that succeeded`,
         overrides: { outcome: 'succeeded' },
-        evidence: { kind: 'function', reference: savedFunction },
+        evidence: { kind: 'private_tool', reference: privateTool },
       },
       {
         case: `a rejected ${call.noun}`,
@@ -1579,7 +1591,7 @@ const functionCases = functionCalls.flatMap((call) =>
 )
 
 // Catches: a save or delete that buries what it changed or why it failed under generic
-// headings, repeats its outcome, shows its record path or workspace, or shows a function's
+// headings, repeats its outcome, shows its record path or workspace, or shows a private tool's
 // documentation that the call did not retain.
 it.each(functionCases)('shows $case with its intent, target, then times', (row) => {
   const { call } = row
@@ -1589,13 +1601,13 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
   )
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(call.intent)
-  // One list without a heading: the intent, the function it changed, then the times at the
+  // One list without a heading: the intent, the private tool it changed, then the times at the
   // end. The badge states the outcome once.
   const lists = container.querySelectorAll('dl')
   expect(lists).toHaveLength(1)
   expect(lists[0].closest('section')!.querySelector('h4')).toBeNull()
   const completed = row.overrides.completedAt !== null
-  const changed = row.evidence.kind === 'function' && call.done !== null
+  const changed = row.evidence.kind === 'private_tool' && call.done !== null
   // The title is the intent, so no Intent row repeats it.
   expect(terms(lists[0])).toEqual([
     ...(changed ? [call.done!] : []),
@@ -1615,18 +1627,18 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
     'Rejected:',
     'Completion is unknown',
     name,
-    savedFunction,
+    privateTool,
     'workspaces/',
   ])
     expect(container.textContent).not.toContain(gone)
   // The call kept no source, declaration or diagnostics, so nothing folds into Details.
   expect(container.querySelector('details')).toBeNull()
-  // It retained only the function's ID. No route opens a function by ID, so it has no link.
+  // It retained only the private tool's ID. No route opens a private tool by ID, so it has no link.
   expect(container.querySelector('a')).toBeNull()
-  if (changed) expect(factIn(lists[0], call.done!)!.textContent).toBe(savedFunctionId)
+  if (changed) expect(factIn(lists[0], call.done!)!.textContent).toBe(privateToolId)
   else {
     expect(within(container).queryByText('Saved', { selector: 'dt' })).toBeNull()
-    expect(container.textContent).not.toContain(savedFunctionId)
+    expect(container.textContent).not.toContain(privateToolId)
   }
   const { list, item } = resultCard()
   const error = container.querySelector('section[aria-label="Error"]')
@@ -1928,7 +1940,8 @@ it('lists what the Run waits on as cards, each opening its exact review', () => 
             run: waiting,
             request: null,
             source: 'return null;',
-            linkedFunctions: [],
+            linkedSharedTools: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           },
         }}
@@ -1998,7 +2011,8 @@ it('says how many actions loaded when a page of them failed, and offers to try a
             run: waiting,
             request: null,
             source: 'return null;',
-            linkedFunctions: [],
+            linkedSharedTools: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           },
         }}
@@ -2044,7 +2058,8 @@ function showActions(
             run: waiting,
             request,
             source: 'return null;',
-            linkedFunctions: [],
+            linkedSharedTools: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           },
         }}
@@ -2245,7 +2260,8 @@ describe('an account connection the Run waits on', () => {
                 run: selected,
                 request,
                 source: 'return null;',
-                linkedFunctions: [],
+                linkedSharedTools: [],
+                linkedPrivateTools: [],
                 terminal: ended ?? { kind: 'unavailable' },
               },
             }}
@@ -2345,7 +2361,8 @@ describe('an account connection the Run waits on', () => {
               run: waiting,
               request: null,
               source: 'return null;',
-              linkedFunctions: [],
+              linkedSharedTools: [],
+              linkedPrivateTools: [],
               terminal: { kind: 'unavailable' },
             },
           }}
@@ -2393,6 +2410,7 @@ describe('an account connection the Run waits on', () => {
       outcome: 'unknown',
       dispatchedAt: null,
       waitingNanos: '0',
+      toolKind: 'provider',
       provider: connection.provider,
       tool: 'list',
       callPath: 'coral.providers.linear.list',
@@ -2421,7 +2439,8 @@ describe('an account connection the Run waits on', () => {
                 kind: 'run',
                 run: waiting,
                 source: 'return null;',
-                linkedFunctions: [],
+                linkedSharedTools: [],
+                linkedPrivateTools: [],
                 terminal: { kind: 'unavailable' },
               },
             },
@@ -2471,6 +2490,7 @@ describe('an account connection the Run waits on', () => {
       outcome: 'unknown',
       dispatchedAt: null,
       waitingNanos: '0',
+      toolKind: 'provider',
       provider: connection.provider,
       tool: 'list',
       callPath: 'coral.providers.linear.list',
@@ -2623,7 +2643,8 @@ it('says the run is canceling until the live read shows it ended', async () => {
       run: current,
       request: null,
       source: 'return null;',
-      linkedFunctions: [],
+      linkedSharedTools: [],
+      linkedPrivateTools: [],
       terminal,
     },
   })
@@ -3017,13 +3038,13 @@ describe('each record states only what helps, once', () => {
     ],
     [
       'a save',
-      { tool: 'save_function' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/id` },
+      { tool: 'save_private_tool' },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/id` },
     ],
     [
       'a delete',
-      { tool: 'delete_function' },
-      { kind: 'function', reference: `${workspace}/savedFunctions/id` },
+      { tool: 'delete_private_tool' },
+      { kind: 'private_tool', reference: `${workspace}/privateTools/id` },
     ],
     ['another tool', { tool: 'inspect' }, { kind: 'unknown' }],
   ])('does not repeat the title of %s as its Intent', (_, overrides, evidence) => {

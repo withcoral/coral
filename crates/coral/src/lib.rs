@@ -67,7 +67,7 @@ struct RunExecutorArgs {
     max_runs_held: u32,
     /// The Program Compiler's heap limit, in bytes.
     #[arg(long, env = "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES", default_value_t = 512 << 20)]
-    compiler_heap_bytes: u64,
+    compiler_heap_bytes: usize,
     /// Serve the gRPC health service on this `host:port`.
     #[arg(long, env = "CORAL_RUN_EXECUTOR_HEALTH_LISTEN")]
     health_listen: Option<String>,
@@ -195,8 +195,7 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
         coral_address,
         token_stdin,
         max_runs_held,
-        // The Run Executor's compiler arrives with the Compile message.
-        compiler_heap_bytes: _,
+        compiler_heap_bytes,
         health_listen,
     } = args;
     // The Run Executor's own warnings, such as a refused protocol level.
@@ -226,6 +225,7 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
         coral_address,
         token: coral_run_executor::Token::new(token)?,
         max_runs_held,
+        compiler_heap_bytes,
     };
     let mut retire_failure = None;
     let retire = async {

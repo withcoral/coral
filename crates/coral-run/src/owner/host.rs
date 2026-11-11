@@ -499,7 +499,7 @@ fn start_program(
         module.providers.clone(),
         module.policies.clone(),
         module.provider_renamer.clone(),
-        module.saved_functions.clone(),
+        module.private_tools.clone(),
         module.human_interface.clone(),
         module.database.clone(),
         module.workspaces.clone(),

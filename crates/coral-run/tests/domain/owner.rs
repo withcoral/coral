@@ -346,10 +346,30 @@ fn emit(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer)
 type Answer = tokio::sync::oneshot::Receiver<Result<(), Error>>;
 
 fn result(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer, Settled) {
+    result_freeing(state, bytes, true, now)
+}
+
+/// [`result`] of an Invocation that frees a slot as it is applied when
+/// `frees_slot`.
+fn result_freeing(
+    state: &mut OwnerState,
+    bytes: usize,
+    frees_slot: bool,
+    now: i64,
+) -> (Vec<Effect>, Answer, Settled) {
     let (reply, receiver) = reply();
     let (work, settled) = probe_work();
     (
-        apply_without_tick(state, Message::InvocationResult { bytes, work, reply }, now),
+        apply_without_tick(
+            state,
+            Message::InvocationResult {
+                bytes,
+                work,
+                frees_slot,
+                reply,
+            },
+            now,
+        ),
         receiver,
         settled,
     )
@@ -1212,6 +1232,9 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     for _ in 0..4 {
         invocations.push(admitted_invocation(&fixture, &tool, run.run_id()).await);
     }
+    // A call to a Private Tool, which Coral performs in the Program.
+    let performed =
+        admitted_private_invocation(&fixture, &tool, run.run_id(), "weather.spin").await;
     let ids: [crate::InvocationId; 4] = invocations
         .iter()
         .map(|admitted| admitted.id.clone())
@@ -1531,6 +1554,39 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 0);
         assert_eq!(state.pending_chunks(), 1, "the row's end freed the slot");
+    }
+
+    // A call Coral performs in the Program holds no slot, so the calls its
+    // body makes never wait for its own: at the limit it batches at once,
+    // ahead of a request that waits for a slot, and its result frees none.
+    {
+        let mut state = started(LIMITED);
+        let mut answers = enforce_each(&mut state, 50..53);
+        deliver(apply_without_tick(&mut state, Message::Drained, 53));
+        deliver(apply_without_tick(&mut state, Message::Committed, 54));
+        let (sender, _answer) = tokio::sync::oneshot::channel();
+        let request =
+            EnforcementRequest::for_apply_test(invoker.clone(), performed.clone(), sender);
+        assert!(
+            deliver(apply_without_tick(
+                &mut state,
+                Message::Enforce(Box::new(request)),
+                55
+            ))
+            .is_empty()
+        );
+        assert_eq!(state.slots_held(), 2);
+        assert_eq!(state.waiting_for_a_slot(), 1);
+        let effects = apply_without_tick(&mut state, Message::Drained, 56);
+        assert_eq!(batched(&effects), std::slice::from_ref(&performed.id));
+        deliver(apply_without_tick(&mut state, Message::Committed, 57));
+
+        let (effects, mut applied, _work) = result_freeing(&mut state, 10, false, 58);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(applied.try_recv(), Ok(Ok(()))));
+        assert_eq!(state.slots_held(), 2, "its result frees no slot");
+        assert_eq!(state.waiting_for_a_slot(), 1);
+        assert!(answered(answers.last_mut().expect("the waiting request")).is_none());
     }
 
     // Once the Run takes no more Program requests, the request waiting for

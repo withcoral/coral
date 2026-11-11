@@ -6,9 +6,10 @@
 //! search after the commit. A notification never fails the workflow; the
 //! reconcile task converges what a lost or failed notification missed.
 use coral_provider::{
-    Committed, Error, Provider, ProviderDisplayName, ProviderId, ProviderModule,
-    ProviderPublication, ProviderRegenerationPublication, ProviderRegenerationRequest,
-    ProviderRenamer, SearchChange, WorkspaceProviderPublicationRequest,
+    Committed, CoralDefinedProvider, Error, Provider, ProviderDisplayName, ProviderId,
+    ProviderModule, ProviderPublication, ProviderRegenerationPublication,
+    ProviderRegenerationRequest, ProviderRenamer, SearchChange,
+    WorkspaceProviderPublicationRequest,
 };
 use coral_search::SearchIndex;
 use coral_telemetry::safe;
@@ -100,30 +101,32 @@ impl ProviderWorkflow {
         Ok(self.notify(committed))
     }
 
-    /// Installs the Built-in Provider, with the catalog this process serves,
-    /// in every Workspace that has none, each in its own transaction, then
-    /// tells Universal Search. Bootstrap runs it before the process takes
-    /// requests. A Workspace whose install fails waits for the next boot, and
-    /// the others still install.
+    /// Installs each Provider Coral defines in every Workspace that has
+    /// none, each in its own transaction, then tells Universal Search: the
+    /// Built-in Provider, with the catalog this process serves, the Private
+    /// Provider and the Shared Provider. Bootstrap runs it before the process
+    /// takes requests. A Workspace whose install fails waits for the next
+    /// boot, and the others still install.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`ProviderModule::workspaces_without_builtin`].
-    pub async fn install_missing_builtins(&self, occurred_at_unix_nanos: i64) -> Result<(), Error> {
-        for workspace_id in self.providers.workspaces_without_builtin().await? {
-            match self
-                .providers
-                .install_missing_builtin(&workspace_id, occurred_at_unix_nanos)
-                .await
-            {
+    /// Returns the errors of [`ProviderModule::install_missing_coral_defined`].
+    pub async fn install_missing_coral_providers(
+        &self,
+        occurred_at_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        for missing in self
+            .providers
+            .install_missing_coral_defined(occurred_at_unix_nanos)
+            .await?
+        {
+            let workspace_id = missing.workspace_id().clone();
+            let provider = missing.provider();
+            match missing.into_installed() {
                 Ok(committed) => {
                     self.notify(committed);
                 }
-                Err(error) => tracing::warn!(
-                    coral.workspace.id = safe::id(&workspace_id),
-                    error.type = safe::kind(error.code()),
-                    "failed to install a Built-in Provider"
-                ),
+                Err(error) => warn_install_failed(provider, &workspace_id, &error),
             }
         }
         Ok(())
@@ -161,6 +164,28 @@ impl ProviderWorkflow {
 
     fn notify<T>(&self, committed: Committed<T>) -> T {
         notify(&self.search, committed)
+    }
+}
+
+/// Records that a boot could not install `provider` in the Workspace, which
+/// waits for the next boot.
+fn warn_install_failed(provider: CoralDefinedProvider, workspace_id: &WorkspaceId, error: &Error) {
+    match provider {
+        CoralDefinedProvider::Builtin => tracing::warn!(
+            coral.workspace.id = safe::id(workspace_id),
+            error.type = safe::kind(error.code()),
+            "failed to install a Built-in Provider"
+        ),
+        CoralDefinedProvider::Private => tracing::warn!(
+            coral.workspace.id = safe::id(workspace_id),
+            error.type = safe::kind(error.code()),
+            "failed to install a Private Provider"
+        ),
+        CoralDefinedProvider::Shared => tracing::warn!(
+            coral.workspace.id = safe::id(workspace_id),
+            error.type = safe::kind(error.code()),
+            "failed to install a Shared Provider"
+        ),
     }
 }
 

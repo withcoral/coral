@@ -18,9 +18,9 @@ use coral_workspace::{
 };
 use tempfile::TempDir;
 
-const SAVED_FUNCTION: &str =
-    "export default function forecast(city: string) {\n    console.info(city);\n}";
-const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\ncoral.functions.report.forecast(\"Oslo\");";
+const PRIVATE_TOOL: &str =
+    "export default function forecast({ city }: { city: string }) {\n    console.info(city);\n}";
+const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast({ city: \"Oslo\" });";
 
 /// Accepts one Run in the server's database and waits for it to succeed.
 async fn record_run(
@@ -35,7 +35,7 @@ async fn record_run(
         .unwrap();
     let workspace = workspace.id().clone();
     let principal = AuthenticatedPrincipal::user(owner);
-    coral_functions::SavedFunctionModule::new(
+    coral_tools::PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
         coral_run::IsolateLimits::default(),
@@ -43,16 +43,16 @@ async fn record_run(
     )
     .unwrap()
     .save(
-        &coral_functions::SavedFunctionChangeContext::new(
+        &coral_tools::PrivateToolChangeContext::new(
             principal.clone(),
             1,
             TraceId::current_or_new(),
         ),
         &workspace,
-        coral_functions::SavedFunctionSave::new(
-            coral_functions::SavedFunctionPath::parse("report.forecast").unwrap(),
-            coral_functions::SavedFunctionDescription::parse("Forecast one city").unwrap(),
-            coral_functions::SavedFunctionSource::parse(SAVED_FUNCTION).unwrap(),
+        coral_tools::PrivateToolSave::new(
+            coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
+            coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
+            coral_tools::AuthoredToolSource::parse(PRIVATE_TOOL).unwrap(),
         ),
     )
     .await
@@ -63,6 +63,19 @@ async fn record_run(
         workspaces.clone(),
         coral_catalog::BuiltinCatalog::running().unwrap(),
     );
+    // Every Workspace Coral serves has its Private Provider.
+    let mut transaction = database.begin().await.unwrap();
+    providers
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            &workspace,
+            coral_provider::CoralDefinedProvider::Private,
+        )
+        .await
+        .unwrap()
+        .skip_search();
+    transaction.commit().await.unwrap();
     let runs = coral_run::RunModule::new(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
@@ -143,7 +156,7 @@ async fn recorded_locations_survive_a_restart_on_the_private_listener() {
         .await
         .unwrap()
         .into_inner();
-    let [snapshot] = detail.linked_functions.as_slice() else {
+    let [snapshot] = detail.linked_private_tools.as_slice() else {
         panic!("one linked snapshot")
     };
     let at = |document: Document, line, column| {
@@ -156,7 +169,7 @@ async fn recorded_locations_survive_a_restart_on_the_private_listener() {
     let program = |line, column| at(Document::Program(wire::ActivityEmpty {}), line, column);
     let in_snapshot = |line, column| {
         at(
-            Document::SavedFunction(snapshot.saved_function.clone()),
+            Document::PrivateTool(snapshot.private_tool.clone()),
             line,
             column,
         )

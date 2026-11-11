@@ -44,7 +44,7 @@ async function pauseForApproval(
   const runner = programRunner(page, target, id, { taskIntent: 'Add the weather provider' })
   const paused = await pausedForApproval(
     runner,
-    `try { return await coral.workspace.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
+    `try { return await coral.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
   )
   return { workspace, id, call, runner, paused }
 }
@@ -72,7 +72,7 @@ export async function approvedProgramProvider(context: TestContext) {
     let link = ''
     await step('Approve the call, and the Program gets a link where you sign in', async () => {
       const review = page.getByRole('region', {
-        name: 'Review coral.workspace.addProvider',
+        name: 'Review coral.addProvider',
         exact: true,
       })
       await review.getByRole('button', { name: 'Approve', exact: true }).click()

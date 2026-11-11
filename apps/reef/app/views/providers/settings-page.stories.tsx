@@ -3,7 +3,7 @@ import { createRoutesStub } from 'react-router'
 import { expect, fireEvent, userEvent, within } from 'storybook/test'
 
 import gitlabIcon from '../../../recipes/gitlab/logo.svg'
-import { workspace } from './providers.stories'
+import { workspace } from './story-fixtures'
 import { ProviderSettingsPage } from './settings-page'
 import type { ProviderSettingsPageProps, ProviderSettingsView } from './types'
 
@@ -213,7 +213,7 @@ export const BuiltinProvider: Story = {
       ...provider,
       displayName: 'Coral',
       namespace: '',
-      callRoot: 'coral.workspace',
+      callRoot: 'coral',
       builtin: true,
       account: 'none',
     },

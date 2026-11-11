@@ -754,9 +754,26 @@ impl ProjectionOptions {
 }
 
 /// Declares a Tool's callable as an anonymous default export, as a
-/// Saved Function's compiler-emitted declaration does. The Call Path travels
+/// Private Tool's compiler-emitted declaration does. The Call Path travels
 /// beside the declaration, so a segment such as `delete`, which TypeScript
 /// rejects as a function or namespace name, never has to parse here.
+/// Whether a callable whose projected input is `input` declares a
+/// parameter: not when the input has no member, so a call may pass no
+/// argument.
+pub(super) fn takes_input(input: &str) -> bool {
+    !matches!(input, "{}" | "Record<string, never>")
+}
+
+/// The parameter a callable whose projected input is `input` declares, if
+/// [any](takes_input).
+pub(super) fn input_parameter(input: &str) -> String {
+    if takes_input(input) {
+        format!("input: {input}")
+    } else {
+        String::new()
+    }
+}
+
 pub(super) fn render_callable_declaration(input_parameter: &str, return_type: &str) -> String {
     format!("export default function ({input_parameter}): {return_type};")
 }

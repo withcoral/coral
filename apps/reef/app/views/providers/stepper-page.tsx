@@ -153,7 +153,7 @@ function StepperAttemptPage({
     <PageLayout
       variant="wide"
       breadcrumbs={[
-        { id: 'providers', type: 'link', text: 'Providers', to: cancelPath },
+        { id: 'tools', type: 'link', text: 'Tools', to: cancelPath },
         { id: 'add', type: 'text', text: `Add ${providerName || 'provider'}` },
       ]}
     >
