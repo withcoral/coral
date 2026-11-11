@@ -2,6 +2,7 @@
 //! write transactions, and atomic acceptance of one complete package.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Instant;
 
 use coral_catalog::SEARCH_PATHS_MAX;
@@ -16,7 +17,8 @@ use uuid::Uuid;
 use coral_run_executor::tool_check_deadline;
 
 use crate::engine::{
-    AdmissionReferences, AdmissionSource, PackageFailure, ProgramPackage, SavedFunctionReference,
+    AdmissionReferences, AdmissionSource, PackageFailure, ProgramEngine, ProgramPackage,
+    SavedFunctionReference,
 };
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
@@ -290,8 +292,9 @@ impl RunModule {
         let compilation_started = Instant::now();
         let compiled = match self.ready().await {
             // The wait for a compiler takes none of the compile's time.
-            Ok(()) => {
+            Ok(engine) => {
                 self.compile_package(
+                    &engine,
                     actor,
                     workspace_id,
                     submitted_source,
@@ -320,6 +323,7 @@ impl RunModule {
 
     async fn compile_package(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
@@ -327,7 +331,7 @@ impl RunModule {
     ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
         let source = submitted_source.as_str().to_string();
         let named = self
-            .analyze_program(source.clone(), compilation_deadline)
+            .analyze_program(engine, source.clone(), compilation_deadline)
             .await?;
         let callable = self
             .callable_tool_paths(
@@ -338,14 +342,20 @@ impl RunModule {
             )
             .await;
         let linked = self
-            .read_source_closure(actor, workspace_id, named.functions, compilation_deadline)
+            .read_source_closure(
+                engine,
+                actor,
+                workspace_id,
+                named.functions,
+                compilation_deadline,
+            )
             .await?;
 
         validate_source_closure(
             &source,
             linked.iter().map(|snapshot| snapshot.source().as_str()),
         )?;
-        let engine = self.engine.clone();
+        let engine = engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
             engine.compile(
@@ -376,6 +386,7 @@ impl RunModule {
     /// first.
     async fn read_source_closure(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         roots: Vec<SavedFunctionReference>,
@@ -444,7 +455,7 @@ impl RunModule {
             let analyzed = if sources.is_empty() {
                 Vec::new()
             } else {
-                self.analyze(sources, compilation_deadline).await?
+                self.analyze(engine, sources, compilation_deadline).await?
             };
             if let Some(error) = stopped {
                 return Err(error);
@@ -475,11 +486,16 @@ impl RunModule {
 
     async fn analyze_program(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         source: String,
         compilation_deadline: Instant,
     ) -> Result<AdmissionReferences, Error> {
         let mut analyzed = self
-            .analyze(vec![AdmissionSource::Program(source)], compilation_deadline)
+            .analyze(
+                engine,
+                vec![AdmissionSource::Program(source)],
+                compilation_deadline,
+            )
             .await?;
         Ok(analyzed.pop().unwrap_or_default())
     }
@@ -609,12 +625,14 @@ impl RunModule {
         Ok(callable)
     }
 
-    /// Waits on a blocking worker until a compiler can take a call.
-    async fn ready(&self) -> Result<(), Error> {
+    /// Waits on a blocking worker until a compiler can take a call: the
+    /// engine that this admission compiles through.
+    async fn ready(&self) -> Result<Arc<dyn ProgramEngine>, Error> {
         let engine = self.engine.clone();
         match tokio::task::spawn_blocking(move || engine.ready()).await {
             Err(_join_error) => Err(Error::ProgramWorkerStopped),
-            Ok(ready) => ready.map_err(domain_error),
+            Ok(Ok(held)) => Ok(held.unwrap_or_else(|| self.engine.clone())),
+            Ok(Err(failure)) => Err(domain_error(failure)),
         }
     }
 
@@ -622,10 +640,11 @@ impl RunModule {
     /// deadline: one result per source, in order.
     async fn analyze(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         sources: Vec<AdmissionSource>,
         compilation_deadline: Instant,
     ) -> Result<Vec<AdmissionReferences>, Error> {
-        let engine = self.engine.clone();
+        let engine = engine.clone();
         let analyze =
             tokio::task::spawn_blocking(move || engine.analyze(compilation_deadline, &sources));
         match timeout_at(compilation_deadline.into(), analyze).await {

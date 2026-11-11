@@ -49,8 +49,10 @@ pub(crate) struct PreparedSavedFunction {
 pub(crate) trait SavedFunctionCompiler: Send + Sync {
     /// Blocks until a compiler can take a call, for at most the compiler
     /// client's own bound. The compilation deadline starts after it.
-    fn ready(&self) -> Result<(), CompileFailure> {
-        Ok(())
+    /// `Some` is a compiler that holds room for this save's first call,
+    /// which goes through it; `None`: this compiler as it is.
+    fn ready(&self) -> Result<Option<Arc<dyn SavedFunctionCompiler>>, CompileFailure> {
+        Ok(None)
     }
 
     /// Finds the Call Paths to type by `deadline`. `None` leaves the source
@@ -72,8 +74,9 @@ struct V8SavedFunctionCompiler {
 }
 
 impl SavedFunctionCompiler for V8SavedFunctionCompiler {
-    fn ready(&self) -> Result<(), CompileFailure> {
-        self.compiler.ready().map_err(CompileFailure::from)
+    fn ready(&self) -> Result<Option<Arc<dyn SavedFunctionCompiler>>, CompileFailure> {
+        let held = self.compiler.ready().map_err(CompileFailure::from)?;
+        Ok(held.map(|compiler| Arc::new(Self { compiler }) as Arc<dyn SavedFunctionCompiler>))
     }
 
     fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences> {
@@ -631,17 +634,18 @@ impl SavedFunctionModule {
     ) -> Result<PreparedSavedFunction, Error> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
         let compiler = self.compiler.clone();
-        tokio::task::spawn_blocking(move || compiler.ready())
+        let compiler = tokio::task::spawn_blocking(move || compiler.ready())
             .await
             .map_err(|_join_error| Error::CompilerWorkerStopped)?
-            .map_err(|_none| Error::NoCompiler)?;
+            .map_err(|_none| Error::NoCompiler)?
+            .unwrap_or_else(|| self.compiler.clone());
         // The wait for a compiler takes none of the compile's time.
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
-                .declarations(actor, workspace_id, source, tools, deadline)
+                .declarations(&compiler, actor, workspace_id, source, tools, deadline)
                 .await?;
-            let compiler = self.compiler.clone();
+            let compiler = compiler.clone();
             let source = source.to_string();
             tokio::task::spawn_blocking(move || {
                 compiler.prepare(deadline, &source, declarations.as_ref())
@@ -678,6 +682,7 @@ impl SavedFunctionModule {
     /// always keeps its reserve. What typing cannot finish stays untyped.
     async fn declarations(
         &self,
+        compiler: &Arc<dyn SavedFunctionCompiler>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         source: &str,
@@ -689,7 +694,7 @@ impl SavedFunctionModule {
             return Ok(None);
         };
         let typing = async {
-            let compiler = self.compiler.clone();
+            let compiler = compiler.clone();
             let analyzed = source.to_string();
             let Some(named) =
                 tokio::task::spawn_blocking(move || compiler.analyze(typing_deadline, &analyzed))

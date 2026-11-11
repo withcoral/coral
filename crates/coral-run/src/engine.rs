@@ -102,8 +102,10 @@ impl From<CompileFailure> for PackageFailure {
 pub(crate) trait ProgramEngine: Send + Sync {
     /// Blocks until a compiler can take a call, for at most the compiler
     /// client's own bound. The compilation deadline starts after it.
-    fn ready(&self) -> Result<(), CompileFailure> {
-        Ok(())
+    /// `Some` is an engine that holds room for this admission's first call,
+    /// which compiles through it; `None`: this engine as it is.
+    fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
+        Ok(None)
     }
 
     /// What each source names: one answer per source, in the order of
@@ -180,8 +182,14 @@ impl V8ProgramEngine {
 }
 
 impl ProgramEngine for V8ProgramEngine {
-    fn ready(&self) -> Result<(), CompileFailure> {
-        self.compiler.ready().map_err(CompileFailure::from)
+    fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
+        let held = self.compiler.ready().map_err(CompileFailure::from)?;
+        Ok(held.map(|compiler| {
+            Arc::new(Self {
+                compiler,
+                executor: self.executor,
+            }) as Arc<dyn ProgramEngine>
+        }))
     }
 
     fn analyze(

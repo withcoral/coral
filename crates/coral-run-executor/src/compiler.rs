@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use coral_v8::{
@@ -39,15 +40,19 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
 pub trait CompilerClient: Send + Sync {
     /// Blocks until a compiler can take a call, for at most the client's
     /// own bound. A caller starts its compilation deadline after it, so the
-    /// wait for a compiler takes none of the compile's time. A compiler in
-    /// this process is always ready.
+    /// wait for a compiler takes none of the compile's time.
+    ///
+    /// `Some` is a client that holds one unit of room for this caller: its
+    /// first call spends it, so no other caller takes it meanwhile. The
+    /// caller makes its calls through it. `None`: this client is ready as
+    /// it is, as a compiler in this process always is.
     ///
     /// # Errors
     ///
     /// Returns [`Unavailable::NoCompiler`] when none can take a call by the
     /// bound.
-    fn ready(&self) -> Result<(), CompileError> {
-        Ok(())
+    fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
+        Ok(None)
     }
 
     /// The Saved Functions and Tool Call Paths each source names directly,

@@ -1,5 +1,6 @@
 use std::fmt;
 use std::sync::mpsc as sync_mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use coral_v8::{
@@ -38,6 +39,32 @@ const TOO_LARGE: &str = "The source and the declarations of the Saved Functions 
 pub struct PullStreamCompiler {
     streams: PullStreams,
     target: Target,
+    /// The unit [`CompilerClient::ready`] held for this caller's first call.
+    held: Option<Arc<HeldUnit>>,
+}
+
+/// One unit of a stream's room held for one caller until its first call
+/// spends it. Dropped unspent, it frees the unit.
+struct HeldUnit {
+    streams: PullStreams,
+    stream: Mutex<Option<StreamId>>,
+}
+
+impl HeldUnit {
+    fn take(&self) -> Option<StreamId> {
+        self.stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
+impl Drop for HeldUnit {
+    fn drop(&mut self) {
+        if let Some(stream) = self.take() {
+            self.streams.let_go(stream);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -86,6 +113,7 @@ impl PullStreamCompiler {
         Self {
             streams,
             target: Target::MostRoom { children, wait },
+            held: None,
         }
     }
 
@@ -95,6 +123,7 @@ impl PullStreamCompiler {
         Self {
             streams,
             target: Target::Stream(stream),
+            held: None,
         }
     }
 
@@ -141,25 +170,46 @@ impl PullStreamCompiler {
             }));
         }
         let left = || time_left.saturating_sub(called.elapsed());
-        let answer = loop {
-            let stream = self
-                .room(called + time_left)
-                .ok_or(CompileError::TimedOut)?;
-            if left().is_zero() {
-                return Err(CompileError::TimedOut);
-            }
-            let time_left_ms = u32::try_from(left().as_millis()).unwrap_or(u32::MAX);
-            match self.streams.compile(stream, time_left_ms, call.clone()) {
-                Ok(answer) => break answer,
-                // Another call took the room first: look again.
-                Err(Refused::NoRoom | Refused::Closed)
-                    if matches!(self.target, Target::MostRoom { .. }) => {}
-                Err(Refused::NoRoom) => return Err(CompileError::Unavailable(Unavailable::Busy)),
-                Err(Refused::Closed) => {
-                    return Err(CompileError::Unavailable(Unavailable::Stopped));
+        let time_left_ms = || u32::try_from(left().as_millis()).unwrap_or(u32::MAX);
+        // The first call spends the unit `ready` held for it, unless its
+        // stream is ending: then it looks for room as any call does.
+        let on_held = self
+            .held
+            .as_ref()
+            .and_then(|held| held.take())
+            .and_then(|stream| {
+                let sent = self
+                    .streams
+                    .compile_held(stream, time_left_ms(), call.clone());
+                if sent.is_err() {
+                    self.streams.let_go(stream);
                 }
-                // Checked above.
-                Err(Refused::TooLarge) => return Err(ProtocolError.into()),
+                sent.ok()
+            });
+        let answer = if let Some(answer) = on_held {
+            answer
+        } else {
+            loop {
+                let stream = self
+                    .room(called + time_left)
+                    .ok_or(CompileError::TimedOut)?;
+                if left().is_zero() {
+                    return Err(CompileError::TimedOut);
+                }
+                match self.streams.compile(stream, time_left_ms(), call.clone()) {
+                    Ok(answer) => break answer,
+                    // Another call took the room first: look again.
+                    Err(Refused::NoRoom | Refused::Closed)
+                        if matches!(self.target, Target::MostRoom { .. }) => {}
+                    Err(Refused::NoRoom) => {
+                        return Err(CompileError::Unavailable(Unavailable::Busy));
+                    }
+                    Err(Refused::Closed) => {
+                        return Err(CompileError::Unavailable(Unavailable::Stopped));
+                    }
+                    // Checked above.
+                    Err(Refused::TooLarge) => return Err(ProtocolError.into()),
+                }
             }
         };
         match answer.recv_timeout(left()) {
@@ -174,14 +224,29 @@ impl PullStreamCompiler {
 }
 
 impl CompilerClient for PullStreamCompiler {
-    fn ready(&self) -> Result<(), CompileError> {
+    fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
         let wait = match &self.target {
-            Target::Stream(_) => return Ok(()),
-            Target::MostRoom { wait, .. } => *wait,
+            Target::MostRoom { wait, .. } if self.held.is_none() => *wait,
+            _ => return Ok(None),
         };
-        self.room(Instant::now() + wait)
-            .map(drop)
-            .ok_or(CompileError::Unavailable(Unavailable::NoCompiler))
+        let until = Instant::now() + wait;
+        loop {
+            let stream = self
+                .room(until)
+                .ok_or(CompileError::Unavailable(Unavailable::NoCompiler))?;
+            // Another caller took the room first: look again.
+            if self.streams.hold(stream).is_ok() {
+                let held = HeldUnit {
+                    streams: self.streams.clone(),
+                    stream: Mutex::new(Some(stream)),
+                };
+                return Ok(Some(Arc::new(Self {
+                    streams: self.streams.clone(),
+                    target: self.target.clone(),
+                    held: Some(Arc::new(held)),
+                })));
+            }
+        }
     }
 
     fn analyze(

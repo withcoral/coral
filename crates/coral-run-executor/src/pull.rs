@@ -217,6 +217,9 @@ struct Held {
     closing: bool,
     outbound: mpsc::UnboundedSender<Result<PullResponse, Status>>,
     compiles_sent: u64,
+    /// Units held for callers that wait for room, until each sends its
+    /// first compile or lets the unit go. `free` leaves them out.
+    kept_for_callers: u32,
     /// Each compile in flight, by number.
     compiles: HashMap<u64, InFlight>,
 }
@@ -317,6 +320,47 @@ impl PullStreams {
         time_left_ms: u32,
         call: Call,
     ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+        self.send_compile(stream, time_left_ms, call, false)
+    }
+
+    /// Holds one unit of `stream`'s room for a caller: no other send takes
+    /// it until [`Self::compile_held`] spends it or [`Self::let_go`] frees it.
+    pub(crate) fn hold(&self, stream: StreamId) -> Result<(), Refused> {
+        let mut held = lock(&self.held);
+        let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
+        held.spend(1)?;
+        held.kept_for_callers += 1;
+        Ok(())
+    }
+
+    /// Frees a unit [`Self::hold`] held and no compile spent.
+    pub(crate) fn let_go(&self, stream: StreamId) {
+        if let Some(held) = lock(&self.held).get_mut(&stream)
+            && held.kept_for_callers > 0
+        {
+            held.kept_for_callers -= 1;
+            held.view.free += 1;
+            self.roomed.notify_all();
+        }
+    }
+
+    /// [`Self::compile`] on a unit [`Self::hold`] held, which it spends.
+    pub(crate) fn compile_held(
+        &self,
+        stream: StreamId,
+        time_left_ms: u32,
+        call: Call,
+    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+        self.send_compile(stream, time_left_ms, call, true)
+    }
+
+    fn send_compile(
+        &self,
+        stream: StreamId,
+        time_left_ms: u32,
+        call: Call,
+        on_held_unit: bool,
+    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
         if too_large(&call) {
             return Err(Refused::TooLarge);
         }
@@ -328,7 +372,15 @@ impl PullStreams {
         });
         let mut held = lock(&self.held);
         let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
-        held.spend(1)?;
+        if on_held_unit {
+            if held.closing || held.kept_for_callers == 0 {
+                return Err(Refused::Closed);
+            }
+            held.kept_for_callers -= 1;
+            held.view.last_work = Some(Instant::now());
+        } else {
+            held.spend(1)?;
+        }
         held.compiles_sent += 1;
         let number = held.compiles_sent;
         if let pull_response::Message::Compile(compile) = &mut message {
@@ -366,6 +418,7 @@ impl PullStreams {
             closing: false,
             outbound,
             compiles_sent: 0,
+            kept_for_callers: 0,
             compiles: HashMap::new(),
         };
         lock(&self.held).insert(stream, held);
@@ -380,7 +433,7 @@ impl PullStreams {
         match request.message {
             Some(pull_request::Message::Room(room)) => {
                 if let Some(held) = lock(&self.held).get_mut(&stream) {
-                    held.view.free = room.free;
+                    held.view.free = room.free.saturating_sub(held.kept_for_callers);
                     held.view.last_work = Some(Instant::now());
                 }
                 // Only room wakes the calls that wait for it.
