@@ -207,6 +207,15 @@ async fn a_child_idle_for_five_minutes_retires_and_its_verifier_is_forgotten() {
     assert_eq!(harness.starts(), [0], "an idle retire starts nothing");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stop_wins_over_a_request_for_room_that_waits_beside_it() {
+    let harness = Harness::start();
+    harness.supervisor.request_room();
+    harness.supervisor.stop();
+    sleep(3 * SECOND).await;
+    assert_eq!(harness.starts(), [0_u64; 0]);
+}
+
 /// Counts the warnings that the limit holds work back.
 struct LimitWarnings(Arc<AtomicUsize>);
 

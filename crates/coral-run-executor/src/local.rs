@@ -220,8 +220,9 @@ impl<S: ProcessStarter> Supervisor<S> {
                     self.start_failed(now);
                 }
             } else if now.duration_since(child.last_work) >= IDLE {
-                // A child whose pull stream stays away that long holds
-                // nothing Coral can reach, so it retires too.
+                // A child whose pull stream stays away that long retires
+                // too. Retiring ends no Run: the child exits when it holds
+                // none.
                 child.process.close_stdin();
                 child.retiring = true;
             }
