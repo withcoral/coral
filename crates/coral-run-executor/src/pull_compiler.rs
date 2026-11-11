@@ -14,10 +14,10 @@ use crate::{
     Unavailable,
 };
 
-/// Why a call too large to send is rejected. Only a typed save's Tool
-/// declarations can grow a call that large.
-const TOO_LARGE: &str =
-    "The source and the Tool declarations that type it are too large to compile; call fewer Tools";
+/// Why a call too large to send is rejected. Only a typed save grows that
+/// large: its Tool declarations total at most 1 MiB, but it carries one
+/// declaration of up to 256 KiB for each Saved Function it calls.
+const TOO_LARGE: &str = "The source and the declarations of the Saved Functions it calls are too large to compile; call fewer Saved Functions";
 
 /// Coral's side of the compiles one held pull stream carries: a
 /// [`CompilerClient`] that sends each call down the stream as `Compile` and

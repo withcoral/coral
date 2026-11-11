@@ -134,9 +134,9 @@ pub mod compile {
     /// result.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
-        /// Find the Saved Functions and Tools that each source calls by name, so
-        /// Coral can load and check them before it compiles. Answered with
-        /// Analyzed.
+        /// Find the Saved Functions each source calls and the Tool Call Paths it
+        /// names, so Coral can load and check them before it compiles. Answered
+        /// with Analyzed.
         #[prost(message, tag = "3")]
         Analyze(super::Analyze),
         /// Compile a Program body, with the Saved Functions it calls, into the
@@ -215,7 +215,8 @@ pub struct Analyzed {
     #[prost(message, repeated, tag = "1")]
     pub sources: ::prost::alloc::vec::Vec<SourceReferences>,
 }
-/// The Saved Functions and Tools that one source calls by name.
+/// The Saved Functions one source calls, and the Tool Call Paths it names.
+/// Analysis resolves no Tool.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SourceReferences {
     /// The coral.functions references, in path order.
