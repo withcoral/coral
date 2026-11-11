@@ -8,42 +8,43 @@ Coral gives your agents execution rails for work with sensitive enterprise
 systems. It's self-hosted, open source, and you can use it with any agent and
 any system with an API.
 
-**More precise permissions control.** As your agents do work across more
-systems, mapping identities to MCP tools is no longer sufficient to control
-risk. Permissions are all or nothing per tool so if an agent can call
-`update_record`, it can update any record in any way the tool allows. With
-Coral it's easy to define with code what specific actions an agent can take.
+**Control each call, not just each tool.** Most agent setups decide only which
+MCP tools an agent can see. That is all or nothing: if an agent can call
+`update_record`, it can update any record in any way the tool allows. Coral
+checks every call against your policy before it reaches the system. You allow
+it, block it, or require a person to approve that exact call and its
+arguments.
 
 **Less duplicated agent work.** Agents start every task from scratch. They
 re-read tool schemas, retry failed calls, and spend tokens rewriting code for
-steps they got right yesterday. With Coral, your agents build and reuse a
-shared library of proven tool-calling code.
+steps they got right yesterday. With Coral, agents save the code that worked
+as custom tools, and the next agent calls them in one step.
 
-Coral is now used by thousands of developers at more than 450 companies for
+Coral is used by thousands of developers at more than 450 companies for
 safer, more efficient agent work in customer support, SecOps, business
-intelligence, SRE and more.
+intelligence, SRE, and more.
 
 [![CI](https://github.com/withcoral/coral/actions/workflows/ci.yml/badge.svg)](https://github.com/withcoral/coral/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/withcoral/coral)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-withcoral.com-171717)](https://withcoral.com/docs)
-[![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
+[![Slack](https://img.shields.io/badge/chat-Slack-4A154B?logo=slack&logoColor=white)](https://withcoral.com/slack)
 
 [Quickstart](https://withcoral.com/docs/getting-started/quickstart) ·
-[Download](https://github.com/withcoral/coral-releases/releases)
+[Download](https://withcoral.com/download)
 
 In this example, an agent posts unreviewed PRs to Slack for the first time. The
-agent searches for tools and runs a program. It isn't allowed to post to Slack
-without approval, so the user approves it before it posts. Coral saves the
-workflow as a private tool. The next day, the agent runs the same task by
-calling that private tool.
+agent searches for the GitHub and Slack tools and writes code that calls them.
+It isn't allowed to post to Slack without approval, so the user approves the
+post. The agent then saves its code as a custom tool. The next day, the agent
+runs the same task by calling that custom tool.
 
-![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, runs a program, and waits for approval before posting. The Coral app then shows the run, who approved it, and the program saved as a private tool. The next day, the same request runs by calling that private tool. A final card compares the two days: 35% fewer tokens and 31% faster, in line with our benchmarks.](./apps/docs/images/demo.gif)
+![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, writes code that calls them, and waits for approval before posting. The Coral UI then shows the run, who approved it, and the custom tool the agent saved. The next day, the same request runs by calling that custom tool. A final card compares the two days: 35% fewer tokens and 31% faster, in line with our benchmarks.](./apps/docs/images/demo.gif)
 
 ## Get started
 
 1. **Install Coral.**
     - **For yourself:** download the desktop app for macOS, Linux, or Windows
-      from the [releases page](https://github.com/withcoral/coral-releases/releases).
+      from the [download page](https://withcoral.com/download).
     - **For your team:** [run a shared server](https://withcoral.com/docs/getting-started/self-host)
       with Docker Compose or Kubernetes.
 2. **Add a provider.** A provider is one service your agents can use, such as
@@ -64,42 +65,42 @@ calling that private tool.
 
 4. **Ask a question.** Ask your agent something that uses that provider, such
    as "What are my open pull requests?" Once a task works, your agent saves it
-   as a private tool it can run in one step next time.
+   as a custom tool it can call in one step next time.
 
 ## Why Coral
 
 MCP tool scopes are often broader than an agent use case requires, and agents
 waste time and tokens repeatedly figuring out how to do work that's been done
-before. Coral addresses these problems by saving proven tool-call programs in
-libraries of reusable tools. Private and shared tools improve how your agents
-access your data and execute work:
+before. Coral addresses both problems with custom tools. An agent saves code
+that worked as a private tool for itself. A workspace owner publishes the best
+ones as shared tools that everyone in the workspace can call.
 
-- **Precise control.** You can limit agents to approved tools only, not
-  everything an MCP tool permits. Security approves "look up an order's refund
-  status," not the whole payments API.
-- **Cheaper models, same accuracy.** With saved tools, a smaller model
+- **Precise control.** Set Allow, Ask, or Block for each provider tool and each
+  custom tool. An approval shows the exact call and its arguments, so Security
+  approves one refund lookup, not the whole payments API.
+- **Cheaper models, same accuracy.** With custom tools, a smaller model
   performs like a bigger one. For many tasks, this means Opus 5.5 accuracy at
   Haiku 5.5 cost.
-- **Faster, leaner agents.** With saved tools, agents finished work 30%
-  faster and at 32% lower token cost on average.
+- **Faster, leaner agents.** Across 34 benchmark tasks, custom tools cut
+  tokens by 37%, cost by 31%, and time by 29%.
 - **Training data you own.** Each run leaves a structured trace of the goal,
-  the tool used and the outcome that works well for post-training your own
+  the tools used, and the outcome that works well for post-training your own
   model.
 
 From one developer's laptop to an enterprise cloud, Coral fits your stack:
 
 - **Runs on your infrastructure.** Coral runs anywhere from a laptop to your
   own cloud, with zero data egress.
-- **Open source.** Coral is Apache 2.0. Coral Enterprise adds
-  organization-wide governance and support.
+- **Open source.** Coral is licensed under the Apache License 2.0. Coral
+  Enterprise adds organization-wide governance and support.
 - **Any agent, any system.** It works with any AI app or agent that supports
-  MCP. You can connect anything with an MCP server or OpenAPI spec, including
-  more than 5,000 databases and SaaS tools.
+  MCP. You can connect anything with an MCP server or OpenAPI document,
+  including more than 5,000 databases and SaaS tools.
 
 ## How Coral works
 
 **Agents write programs.** To use tools, an agent writes a short TypeScript
-program. One program can call several tools, filter the results and return
+program. One program can call several tools, filter the results, and return
 only what the task needs. Less raw data passes through the model's context.
 
 **Coral runs them on rails.** Each program runs in a sandbox, system
@@ -107,10 +108,11 @@ credentials never appear in the agent's context or code, and every call is
 checked against your policy before it reaches the system behind it. Policies
 can also require a person to approve it.
 
-**What works becomes a tool.** When a program succeeds, the agent saves it as
-a private tool. Your library of proven tool-calling code grows with each
-task. Agents search that library and reuse and edit those tools, and an owner
-publishes them as shared tools for your team instead of starting over.
+**What works becomes a custom tool.** When a program succeeds, the agent saves
+it as a private tool under `coral.private`. Agents find custom tools in the
+same search as provider tools, and reuse or edit them instead of starting
+over. A workspace owner can publish a private tool as a shared tool under
+`coral.shared`, so everyone in the workspace can call it.
 
 **Agents never hold credentials.** Coral stores your tokens and adds them to
 each call. Programs run in an isolated sandbox with no secrets, no network
@@ -124,7 +126,7 @@ graph LR
 
     subgraph Coral["Coral (your laptop or server)"]
         MCP --> Run["Program runs in a sandbox"]
-        Run <--> FN["Private and shared tools"]
+        Run <--> FN["Custom tools (private and shared)"]
         UI --> Gate["Policy check and credentials"]
         Run --> Gate
     end
@@ -163,9 +165,9 @@ Only the pull request numbers go back to the agent, not the full GitHub
 response. The run happens on the Coral server, not in your agent, so it
 carries on even if the agent disconnects.
 
-Once this works, the agent saves the program as a private tool. Next time, it
-calls it in one step as `coral.private.<name>()`, instead of finding the tools
-and writing the program again.
+Once this works, the agent saves the code as a custom tool. Next time, it
+calls it in one step as `coral.private.<name>({ ... })`, instead of finding
+the tools and writing the code again.
 
 To learn about providers, accounts, policy, and workspaces, read
 [Concepts](https://withcoral.com/docs/guides/concepts).
@@ -175,9 +177,9 @@ To learn about providers, accounts, policy, and workspaces, read
 Coral is open source under the Apache License 2.0. Running it for a team? See
 [Run a shared server](https://withcoral.com/docs/getting-started/self-host).
 
-Coral Enterprise adds organization-wide governance and support, including SSO,
-advanced access controls, an immutable audit log, and support SLAs. See
-[Enterprise](https://withcoral.com/pricing) or
+Coral Enterprise adds organization-wide governance and support: SSO with SAML,
+SCIM provisioning, advanced RBAC, an immutable audit log, and support SLAs. See
+[Coral Enterprise](https://withcoral.com/pricing) or
 [book a demo](https://withcoral.com).
 
 ## Development
@@ -188,7 +190,7 @@ To run Coral from a checkout, follow the
 ## Community
 
 Ask questions, share ideas, and show what you built in our
-[Discord](https://withcoral.com/discord) or on
+[Slack community](https://withcoral.com/slack) or on
 [GitHub issues](https://github.com/withcoral/coral/issues).
 
 ## Security
@@ -197,18 +199,18 @@ Do not report security issues in public issues or pull requests. See
 [`SECURITY.md`](./SECURITY.md).
 
 Coral is ISO/IEC 27001:2022 certified. Provider API calls run in an isolated
-sandbox, approvals are logged, and the
-[Enterprise plan](https://withcoral.com/pricing) adds SAML and SCIM
-provisioning, advanced RBAC and an immutable audit log.
+sandbox, approvals are logged, and
+[Coral Enterprise](https://withcoral.com/pricing) adds SSO with SAML, SCIM
+provisioning, advanced RBAC, and an immutable audit log.
 
 ## License
 
 Coral is licensed under the Apache License 2.0. See [`LICENSE`](./LICENSE).
 
-The [`ee/`](./ee) directory holds Enterprise Edition code under its own licence,
+The [`ee/`](./ee) directory holds Enterprise Edition code under its own license,
 [`ee/LICENSE`](./ee/LICENSE). A plain `cargo build` at the repository root
-builds only Apache-2.0 code. [`NOTICE`](./NOTICE) sets out which licence
-covers which files.
+builds only code under the Apache License 2.0. [`NOTICE`](./NOTICE) sets out
+which license covers which files.
 
 ## Upgrade from Coral 0.x
 
