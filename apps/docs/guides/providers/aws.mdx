@@ -95,7 +95,7 @@ flowchart LR
 
         Set `AWS_MCP_API_KEY` to the key from the previous step, in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file.
 
-        To give the role to the bridge, [attach the role to the EC2 instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html) that runs the compose project. Set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
+        To give the role to the bridge, [attach the role to the EC2 instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html) that runs the compose project. Set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service. Every container on the instance can then use the role.
 
         The bridge's MCP server URL is `http://aws-mcp:8000/mcp`.
       </Tab>
