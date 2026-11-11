@@ -24,7 +24,9 @@ coral-mcp.workspace = true
 coral-run-executor.workspace = true
 
 [dev-dependencies]
+coral-db.workspace = true
 coral-run-executor = { workspace = true, features = ["test-support"] }
+coral-test-support.workspace = true
 reqwest.workspace = true
 assert_cmd.workspace = true
 tempfile.workspace = true

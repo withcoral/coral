@@ -5,10 +5,15 @@
 )]
 
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use coral_run_executor::PROTOCOL_LEVEL;
 use coral_run_executor::testing::{Answer, ScriptedCoral};
+use coral_run_executor::{
+    ChildCommand, Credentials, Kind, LinkServer, LocalChild, LocalRunExecutors, PROTOCOL_LEVEL,
+    ProcessStarter, Token,
+};
+use coral_test_support::TestDatabase;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::{Child, Command};
 
@@ -79,4 +84,110 @@ async fn a_dialing_run_executor_takes_its_token_from_the_environment() {
 
     let call = coral.next_call().await;
     assert_eq!(call.authorization.as_deref(), Some("Bearer dialing-token"));
+}
+
+/// Starts real children and keeps each one where the test reaches it.
+struct SharedStarter {
+    command: ChildCommand,
+    children: Arc<Mutex<Vec<SharedChild>>>,
+}
+
+#[derive(Clone)]
+struct SharedChild(Arc<Mutex<Box<dyn LocalChild>>>);
+
+impl ProcessStarter for SharedStarter {
+    fn start(&mut self, token: &Token) -> std::io::Result<Box<dyn LocalChild>> {
+        let child = SharedChild(Arc::new(Mutex::new(self.command.start(token)?)));
+        self.children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(child.clone());
+        Ok(Box::new(child))
+    }
+}
+
+impl LocalChild for SharedChild {
+    fn close_stdin(&mut self) {
+        self.0.lock().expect("the child").close_stdin();
+    }
+
+    fn kill(&mut self) {
+        self.0.lock().expect("the child").kill();
+    }
+
+    fn exited(&mut self) -> Option<Option<i32>> {
+        self.0.lock().expect("the child").exited()
+    }
+}
+
+/// A local child's whole environment: nothing, except what Windows needs
+/// to open a socket.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test passes on what bootstrap would"
+)]
+fn child_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    std::env::var_os("SystemRoot")
+        .filter(|_| cfg!(windows))
+        .map(|root| ("SystemRoot".into(), root))
+        .into_iter()
+        .collect()
+}
+
+#[tokio::test]
+async fn coral_starts_a_local_child_that_opens_its_pull_stream_and_exits_when_its_stdin_closes() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let credentials = Credentials::default();
+    let link = LinkServer::new(
+        credentials.clone(),
+        database.database(),
+        "coral-instance".to_owned(),
+    );
+    let streams = link.streams();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(link.serve(listener, std::future::pending()));
+    let children = Arc::new(Mutex::new(Vec::new()));
+    let starter = SharedStarter {
+        command: ChildCommand {
+            program: env!("CARGO_BIN_EXE_coral").into(),
+            coral_address: format!("http://{address}"),
+            max_runs_held: 3,
+            compiler_heap_bytes: 512 << 20,
+            environment: child_environment(),
+        },
+        children: children.clone(),
+    };
+    let supervisor = LocalRunExecutors::start(starter, 1, credentials, streams.clone());
+
+    supervisor.request_room();
+    let opened = async {
+        loop {
+            if let [stream] = streams.held().as_slice() {
+                return stream.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let stream = tokio::time::timeout(Duration::from_secs(30), opened)
+        .await
+        .expect("the child opens its pull stream");
+    assert_eq!((stream.kind, stream.free), (Kind::Local, 3));
+    let child = children.lock().expect("the children").first().cloned();
+    let mut child = child.expect("the supervisor started the child");
+    assert_eq!(child.exited(), None, "the child runs while stdin is open");
+
+    child.close_stdin();
+    let exited = async {
+        loop {
+            if let Some(code) = child.exited() {
+                return code;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let code = tokio::time::timeout(Duration::from_secs(30), exited)
+        .await
+        .expect("the child exits when its stdin closes");
+    assert_eq!(code, Some(0));
 }

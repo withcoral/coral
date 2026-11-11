@@ -1,6 +1,7 @@
 //! App-owned environment accessors for local runtime setup.
 
 use std::env::VarError;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use super::consts::{
@@ -57,6 +58,25 @@ impl AppEnvironment {
                 ))
             })
     }
+}
+
+/// The whole environment of a local Run Executor: this process's `TZ`,
+/// `LANG` and `LC_*`, and on Windows `SystemRoot`, without which no socket
+/// opens.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+pub(crate) fn run_executor_environment() -> Vec<(OsString, OsString)> {
+    std::env::vars_os()
+        .filter(|(name, _)| {
+            name.to_str().is_some_and(|name| {
+                matches!(name, "TZ" | "LANG")
+                    || name.starts_with("LC_")
+                    || (cfg!(windows) && name.eq_ignore_ascii_case("SystemRoot"))
+            })
+        })
+        .collect()
 }
 
 /// Trims the environment variable name a deployment setting holds. A blank

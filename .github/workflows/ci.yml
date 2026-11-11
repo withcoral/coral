@@ -151,7 +151,7 @@ jobs:
         with:
           cache-key: ci-rust-windows
       # Report every failing test binary, not only the first.
-      - run: cargo test --locked --no-fail-fast -p coral-app -p coral -p coral-credentials -p coral-db
+      - run: cargo test --locked --no-fail-fast -p coral-app -p coral -p coral-credentials -p coral-db -p coral-run-executor
 
   reef:
     name: Reef / Checks

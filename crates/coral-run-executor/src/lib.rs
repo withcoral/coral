@@ -9,12 +9,14 @@
 //! On the Run Executor's side, [`run`] dials Coral and holds the pull stream
 //! that the [`wire`] contract defines. On Coral's side, [`LinkServer`]
 //! listens for Run Executors, admits them by [`Credentials`], and keeps the
-//! pull streams it holds in [`PullStreams`].
+//! pull streams it holds in [`PullStreams`]. [`LocalRunExecutors`] starts the
+//! Run Executors that run as Coral's own child processes.
 
 mod compiler;
 mod in_process;
 mod lease_repository;
 mod link;
+mod local;
 mod pull;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -24,6 +26,7 @@ pub use in_process::InProcessCompiler;
 pub use link::{
     AddressError, CoralAddress, PROTOCOL_LEVEL, RunExecutorConfig, Token, TokenError, run,
 };
+pub use local::{ChildCommand, LocalChild, LocalRunExecutors, ProcessStarter};
 pub use pull::{
     Credentials, HeldStream, Kind, LinkServer, LocalCredential, PullStreams, Refused, StreamId,
 };
