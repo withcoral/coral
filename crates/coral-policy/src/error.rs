@@ -7,9 +7,16 @@ pub enum Error {
     /// The Provider or current Tool is absent from the exact Workspace target.
     #[error("Tool was not found")]
     ToolNotFound,
-    /// No Tool of the Provider's current catalog has these Call Paths.
-    #[error("no current Tool has the Call Paths {}", .0.join(", "))]
-    ToolPathsNotFound(Vec<String>),
+    /// Tool Call Paths a change refused: each that names no current Tool
+    /// the actor can set, and each that names a Built-in Tool, whose policy
+    /// a Program cannot change.
+    #[error("Tool Call Paths refused: {}", refused_paths(.missing, .builtin))]
+    RefusedToolPaths {
+        /// Each path that names no Tool the actor can set.
+        missing: Vec<String>,
+        /// Each path that names a Built-in Tool.
+        builtin: Vec<String>,
+    },
     /// A persisted row does not decode to the closed domain model.
     #[error("database contains corrupt Tool policy data: {0}")]
     CorruptData(String),
@@ -25,4 +32,15 @@ pub enum Error {
     /// Encoding or decoding safe lifecycle-event field paths failed.
     #[error("database contains invalid Tool-policy lifecycle-event fields: {0}")]
     EventFields(#[from] serde_json::Error),
+}
+
+/// Names each kind of refused path that has any, such as
+/// `not found coral.providers.github.x; Built-in coral.search`.
+fn refused_paths(missing: &[String], builtin: &[String]) -> String {
+    [("not found", missing), ("Built-in", builtin)]
+        .into_iter()
+        .filter(|(_kind, paths)| !paths.is_empty())
+        .map(|(kind, paths)| format!("{kind} {}", paths.join(", ")))
+        .collect::<Vec<_>>()
+        .join("; ")
 }

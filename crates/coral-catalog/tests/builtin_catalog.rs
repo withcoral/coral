@@ -69,7 +69,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Read-only, so the default Tool Access State is enabled.
             ToolHints::new(Some(true), None, Some(true), None),
             &[
-                "export default function (input: Record<string, never>)",
+                // It takes no input, so a call passes no argument.
+                "export default function ():",
                 r#"{ "providers": Array<Provider>; "setups": Array<ProviderSetup> }"#,
                 // What a person does next on a Setup a Program asked for.
                 r#""state": "awaiting_configuration" | "awaiting_sign_in" | "awaiting_discovery" | "ready""#,
@@ -111,7 +112,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Read-only, so the default Tool Access State is enabled.
             ToolHints::new(Some(true), None, Some(true), None),
             &[
-                r#"export default function (input: { "namespace": string })"#,
+                r#"export default function (input: { "under"?: string })"#,
                 r#""rules": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
@@ -121,7 +122,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Not read-only, so the default Tool Access State is approval_required.
             ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
             &[
-                r#""namespace": string"#,
+                r#"export default function (input: { "tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">) })"#,
                 r#""tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
@@ -141,26 +142,34 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#""missing": Array<MissingPath>"#,
                 r#""suggestions": Array<string>"#,
                 r#""kind": "provider_tool""#,
-                r#""kind": "saved_function""#,
+                r#""kind": "private_tool""#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
         (
-            BuiltinTool::SaveFunction,
-            // Not read-only; its catalog declares the enabled default below.
-            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
+            BuiltinTool::AddCustomTool,
+            // A second add at the path fails, and it replaces nothing.
+            ToolHints::new(Some(false), Some(false), Some(false), Some(false)),
             &[
-                r#"export default function (input: { "description": string; "path": string; "source": (...args: never[]) => unknown })"#,
-                r#""call_path": string"#,
+                r#"export default function (input: { "description": string; "path": string; "policy"?: "enabled" | "approval_required" | "disabled"; "source": (...args: never[]) => unknown })"#,
+                r#""revision": number"#,
                 r#""declaration": string"#,
-                r#""diagnostics": Array<Diagnostic>"#,
-                r#""diagnostics_truncated": boolean"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
         (
-            BuiltinTool::DeleteFunction,
-            // Deleting again fails, so it is not idempotent.
+            BuiltinTool::UpdateCustomTool,
+            // A replace discards the previous source and adds a revision.
+            ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
+            &[
+                r#"export default function (input: { "description": string; "expectedRevision"?: number; "path": string; "policy"?: "enabled" | "approval_required" | "disabled"; "source": (...args: never[]) => unknown })"#,
+                r#""revision": number"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::RemoveCustomTool,
+            // Removing again fails, so it is not idempotent.
             ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
             &[
                 r#"export default function (input: { "path": string })"#,
@@ -201,24 +210,25 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     assert_eq!(
         target_keys,
         [
+            "addCustomTool",
             "addProvider",
-            "deleteFunction",
             "getPolicy",
             "getProvider",
             "listProviders",
-            "saveFunction",
+            "removeCustomTool",
             "search",
+            "updateCustomTool",
             "updatePolicy",
             "updateProvider"
         ]
     );
     // The retained Generation keeps the enabled default the catalog declares
-    // for the Tools that change only the caller's own Saved Functions, and
+    // for the Tools that change only the caller's own Private Tools, and
     // for no other Tool, so policy reads it from storage.
     let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
         assert_eq!(
             facts.declares_enabled_by_default(),
-            ["saveFunction", "deleteFunction"].contains(&key),
+            ["addCustomTool", "updateCustomTool", "removeCustomTool"].contains(&key),
             "{key}"
         );
     };

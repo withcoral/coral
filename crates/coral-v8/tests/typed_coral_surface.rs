@@ -1,11 +1,11 @@
-//! Typing `coral.providers`, `coral.workspace` and `coral.functions` from
+//! Typing `coral.providers`, the Built-in Tools on `coral` and `coral.private` from
 //! supplied declarations.
 
 use coral_telemetry as _;
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    AnalyzedSource, CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits,
-    ProgramCompiler, SavedFunctionCompilation,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CallableDeclaration, CompilerDiagnostic,
+    CoralDeclarations, IsolateLimits, ProgramCompiler,
 };
 use coral_value as _;
 use deno_core_icudata as _;
@@ -39,7 +39,7 @@ const REPOS_DELETE: &str =
 // A result whose shape the Provider does not declare.
 const NOTION_SEARCH: &str = "export default function (): Promise<{ status: 200; data: unknown }>;";
 
-// A result type the declaration exports, so an emitted Saved Function
+// A result type the declaration exports, so an emitted Private Tool
 // declaration could name it only by its Call Path module, which it cannot
 // resolve.
 const EXPORTED_GET: &str = "export type Item = { \"name\": string };\nexport default function (): Promise<{ status: 200; data: Item }>;";
@@ -66,11 +66,22 @@ fn tools() -> Vec<CallableDeclaration> {
         tool("providers.tree.get", TREE_GET),
         tool("providers.notion.search", NOTION_SEARCH),
         tool("providers.exported.get", EXPORTED_GET),
-        tool("workspace.listProviders", LIST_PROVIDERS),
+        tool("listProviders", LIST_PROVIDERS),
     ]
 }
 
-/// Prepares `source` typed by `tools` and `weather.forecast`. Saved Function
+/// A compiler whose Programs call the Built-in Tools these tests name.
+fn compiler() -> ProgramCompiler {
+    ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .with_builtin_tools(&BuiltinTools::new([
+            "addProvider",
+            "listProviders",
+            "search",
+        ]))
+}
+
+/// Prepares `source` typed by `tools` and `weather.forecast`. Private Tool
 /// save sends the declarations of the Call Paths the source names; the
 /// compiler finds the chains in the source again.
 fn prepare(
@@ -78,13 +89,13 @@ fn prepare(
     source: &str,
     tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
-) -> Result<SavedFunctionCompilation, coral_v8::Error> {
-    compiler.prepare_typed_saved_function(
+) -> Result<AuthoredToolCompilation, coral_v8::Error> {
+    compiler.prepare_typed_authored_tool(
         deadline(),
         source,
         &CoralDeclarations::new(declaration_max_bytes)
             .with_tools(tools)
-            .with_functions(vec![tool("weather.forecast", FORECAST)]),
+            .with_private_tools(vec![tool("weather.forecast", FORECAST)]),
     )
 }
 
@@ -105,9 +116,8 @@ fn errors(diagnostics: &[CompilerDiagnostic]) -> Vec<Located> {
 }
 
 #[test]
-fn saved_function_diagnostics_check_calls_against_declarations() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+fn private_tool_diagnostics_check_calls_against_declarations() {
+    let compiler = compiler();
     let cases: &[(&str, &str, &[Located])] = &[
         (
             "a wrong input field",
@@ -120,9 +130,14 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
             &[(2551, Some(3), Some(17))],
         ),
         (
-            "a wrong Saved Function argument",
-            "export default function hot() {\n  return coral.functions.weather.forecast(42).temperatureC > 30;\n}",
-            &[(2345, Some(2), Some(43))],
+            "a wrong Private Tool argument",
+            "export default async function hot() {\n  return (await coral.private.weather.forecast(42)).temperatureC > 30;\n}",
+            &[(2345, Some(2), Some(48))],
+        ),
+        (
+            "a Private Tool result read before its call settles",
+            "export default function hot() {\n  return coral.private.weather.forecast(\"Oslo\").temperatureC > 30;\n}",
+            &[(2339, Some(2), Some(49))],
         ),
         (
             "a reserved-word Tool segment",
@@ -141,13 +156,13 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
         ),
         (
             "a wrong Built-in Tool input",
-            "export default async function namespaces() {\n  const r = await coral.workspace.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.callRoot);\n}",
-            &[(2322, Some(2), Some(51))],
+            "export default async function namespaces() {\n  const r = await coral.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.callRoot);\n}",
+            &[(2322, Some(2), Some(41))],
         ),
         (
-            "a Built-in Tool that does not exist",
-            "export default async function wipe() {\n  return coral.workspace.deleteEverything();\n}",
-            &[(UNKNOWN_TOOL, Some(2), Some(10))],
+            "a member of coral that is no Built-in Tool",
+            "export default async function wipe() {\n  return coral.deleteEverything();\n}",
+            &[(2339, Some(2), Some(16))],
         ),
         (
             "an alias to a namespace that holds nothing the caller can call",
@@ -186,16 +201,13 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
 /// Tool under the same root resolved.
 #[test]
 fn unknown_tool_diagnostic_names_the_call_path_only() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let compiler = compiler();
     for (name, tools) in [
         ("beside a resolved sibling", tools()),
         ("alone in its root", Vec::new()),
     ] {
-        for call_path in [
-            "coral.providers.github.repos.gett",
-            "coral.workspace.listProviderz",
-        ] {
+        // The caller cannot call `addProvider`, so no declaration types it.
+        for call_path in ["coral.providers.github.repos.gett", "coral.addProvider"] {
             let compilation = prepare(
                 &compiler,
                 &format!("export default async function f() {{\n  return {call_path}();\n}}"),
@@ -223,8 +235,7 @@ fn unknown_tool_diagnostic_names_the_call_path_only() {
 // call it cannot judge, or naming the wrong place in the authored body.
 #[test]
 fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let compiler = compiler();
     let source = "const page = await coral.providers.notion.retrievePage({ page_id: \"p\" });\n\
         const repo = await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" });\n\
         await coral.providers.github.repos.get.call(null, {});\n\
@@ -232,7 +243,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         await coral.providers.github.repos[name]({});\n\
         const repos = coral.providers.github.repos;\n\
         await repos.gett({});\n\
-        await coral.workspace.deleteEverything();\n\
+        await coral.deleteEverything();\n\
         await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
         await coral.providers.github.repos({});\n\
         return [page, repo];";
@@ -240,16 +251,20 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
     assert_eq!(
         named.tool_call_paths(),
         [
+            "coral.deleteEverything",
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",
             "coral.providers.github.repos.get.call",
             "coral.providers.notion.retrievePage",
-            "coral.workspace.deleteEverything",
         ]
     );
     let callable = ["coral.providers.github.repos.get".to_owned()];
     let unknown = compiler
-        .unknown_tool_calls(deadline(), source, &callable)
+        .unknown_tool_calls(
+            deadline(),
+            &AnalyzedSource::Program(source.to_owned()),
+            &callable,
+        )
         .expect("check the called chains");
     assert_eq!(
         unknown
@@ -258,7 +273,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
             .collect::<Vec<_>>(),
         [
             ("coral.providers.notion.retrievePage", 1, 20),
-            ("coral.workspace.deleteEverything", 8, 7),
+            ("coral.deleteEverything", 8, 7),
             ("coral.providers.notion.retrievePage", 9, 7),
             ("coral.providers.github.repos", 10, 7),
         ]
@@ -268,11 +283,11 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         compiler
             .unknown_tool_calls(
                 deadline(),
-                source,
+                &AnalyzedSource::Program(source.to_owned()),
                 &[
                     "coral.providers.github.repos.get".to_owned(),
                     "coral.providers.notion.retrievePage".to_owned(),
-                    "coral.workspace.deleteEverything".to_owned(),
+                    "coral.deleteEverything".to_owned(),
                 ],
             )
             .expect("check the called chains")
@@ -281,6 +296,22 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
             .collect::<Vec<_>>(),
         ["coral.providers.github.repos"]
     );
+    // A linked module's called chains are checked by the same rule, at
+    // their place in the module.
+    let module = "export default async function f() {\n  await coral.providers.github.repos.get({});\n  return coral.providers.notion.retrievePage({});\n}";
+    assert_eq!(
+        compiler
+            .unknown_tool_calls(
+                deadline(),
+                &AnalyzedSource::AuthoredTool(module.to_owned()),
+                &callable,
+            )
+            .expect("check the module's called chains")
+            .iter()
+            .map(|call| (call.call_path(), call.line(), call.column()))
+            .collect::<Vec<_>>(),
+        [("coral.providers.notion.retrievePage", 3, 10)]
+    );
 }
 
 // Catches: Program Admission refusing a literal call that runs, because a
@@ -288,8 +319,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
 // running Program calls.
 #[test]
 fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let compiler = compiler();
     let source = "await coral.providers.github.users.getAuthenticated();\n\
         return await coral.providers.github[\"repos.get\"]({ owner: \"a\", repo: \"b\" });";
     let named = analyze(&compiler, &AnalyzedSource::Program(source.to_owned()));
@@ -303,7 +333,7 @@ fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
     let unknown = compiler
         .unknown_tool_calls(
             deadline(),
-            source,
+            &AnalyzedSource::Program(source.to_owned()),
             &[
                 "coral.providers.github.repos.get".to_owned(),
                 "coral.providers.github.users.getAuthenticated".to_owned(),
@@ -314,9 +344,8 @@ fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
 }
 
 #[test]
-fn saved_function_declaration_inlines_a_tool_result_type() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+fn private_tool_declaration_inlines_a_tool_result_type() {
+    let compiler = compiler();
     let compilation = prepare(
         &compiler,
         "export default async function repo(owner: string) {\n  const r = await coral.providers.github.repos.get({ owner, repo: \"coral\" });\n  return r.data.owner;\n}",
@@ -338,8 +367,7 @@ fn saved_function_declaration_inlines_a_tool_result_type() {
 /// Each diagnostic names the Tool by its Call Path.
 #[test]
 fn an_uninlinable_result_type_saves_the_untyped_declaration() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let compiler = compiler();
     for (name, declaration_max_bytes, source, expected_codes, named) in [
         (
             "a recursive result type",
@@ -388,30 +416,30 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 
 #[test]
 fn call_path_analysis_names_every_candidate_tool_call_path() {
-    let compiler =
-        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let compiler = compiler();
     let named = analyze(
         &compiler,
-        &AnalyzedSource::SavedFunction(
-            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.workspace.listProviders();\n  return [a, b, c, d, coral.providers, coral.workspace, coral.functions.weather.forecast];\n}"
+        &AnalyzedSource::AuthoredTool(
+            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.listProviders();\n  const e = await coral.search({});\n  return [a, b, c, d, e, coral.providers, coral.private.weather.forecast];\n}"
                 .to_owned(),
         ),
     );
     assert_eq!(
         named.tool_call_paths(),
         [
+            "coral.listProviders",
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",
             "coral.providers.github.repos.get.call",
             "coral.providers.tree.get",
-            "coral.workspace.listProviders",
+            "coral.search",
         ]
     );
     assert_eq!(
         named
-            .functions()
+            .private_tools()
             .iter()
-            .map(coral_v8::SavedFunctionReference::path)
+            .map(coral_v8::LinkedToolReference::path)
             .collect::<Vec<_>>(),
         ["weather.forecast"]
     );

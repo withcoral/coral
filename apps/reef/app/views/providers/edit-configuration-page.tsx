@@ -43,7 +43,7 @@ export function EditConfigurationPage({
   basePath,
   cancelPath,
   settingsPath = `${cancelPath}/settings`,
-  providersPath,
+  toolsPath,
   currentTools,
   source,
   etag,
@@ -403,7 +403,7 @@ export function EditConfigurationPage({
       variant="wide"
       breadcrumbs={trail(
         [
-          { label: 'Providers', to: providersPath },
+          { label: 'Tools', to: toolsPath },
           { label: displayName, to: cancelPath },
           { label: 'Settings', to: settingsPath },
         ],

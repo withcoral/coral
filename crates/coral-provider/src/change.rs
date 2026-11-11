@@ -5,10 +5,11 @@
 //! [`ProviderModule::hold_for_change`] runs the steps every such change shares:
 //! Owner configuration authority, the exclusive hold, the Call Root's
 //! allow-list and, for a rename, an icon, a state change or a removal, the etag. An
-//! Owner-added Provider permits every change. The
-//! Built-in Provider, which Coral manages, permits only disabling and
-//! restoring it, so a new kind of change is denied for it until someone allows
-//! it below. Its Tools' policy belongs to `coral-policy` and stays open.
+//! Owner-added Provider permits every change. A
+//! Provider Coral defines (the Built-in, the Private and the Shared Provider)
+//! permits only disabling and restoring it, so a new kind of change is denied
+//! for it until someone allows it below. Its Tools' policy belongs to
+//! `coral-policy` and stays open.
 //!
 //! A change that commits its own transaction and alters what search indexes
 //! returns [`Committed`]: its result beside the [`SearchChange`] the caller
@@ -57,7 +58,11 @@ impl ProviderChange {
     pub(crate) fn permit(self, call_root: &ProviderCallRoot) -> Result<(), Error> {
         let permitted = match call_root {
             ProviderCallRoot::Owner(_) => true,
-            ProviderCallRoot::Builtin => matches!(self, Self::SetState),
+            // Disabling the Private Provider stops every Private Tool, and
+            // disabling the Shared Provider every Shared Tool.
+            ProviderCallRoot::Builtin | ProviderCallRoot::Private | ProviderCallRoot::Shared => {
+                matches!(self, Self::SetState)
+            }
         };
         if permitted {
             Ok(())

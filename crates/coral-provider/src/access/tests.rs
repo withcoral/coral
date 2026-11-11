@@ -182,10 +182,12 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
 }
 
 #[test]
-fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() {
+fn call_root_parsing_accepts_owner_namespaces_and_only_the_roots_coral_defines() {
     enum Parsed<'a> {
         Owner(&'a str),
         Builtin,
+        Private,
+        Shared,
         Rejected,
     }
     let segment = "a".repeat(128);
@@ -195,17 +197,18 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
         ("coral.providers.$_g1", Parsed::Owner("$_g1")),
         ("coral.providers.workspace", Parsed::Owner("workspace")),
         (long.as_str(), Parsed::Owner(segment.as_str())),
-        ("coral.workspace", Parsed::Builtin),
+        ("coral", Parsed::Builtin),
+        ("coral.private", Parsed::Private),
+        ("coral.shared", Parsed::Shared),
+        ("coral.workspace", Parsed::Rejected),
         // Coral defines no other root, so none parses.
         ("coral.billing", Parsed::Rejected),
-        ("coral.functions", Parsed::Rejected),
         ("coral.emit", Parsed::Rejected),
         ("coral.ToolError", Parsed::Rejected),
         (&format!("{long}a"), Parsed::Rejected),
         ("coral.workspace.", Parsed::Rejected),
-        ("coral.workspace.tools", Parsed::Rejected),
+        ("coral.tools", Parsed::Rejected),
         ("github", Parsed::Rejected),
-        ("coral", Parsed::Rejected),
         ("providers.github", Parsed::Rejected),
         ("coral.providers", Parsed::Rejected),
         ("coral.providers.", Parsed::Rejected),
@@ -218,7 +221,8 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
         ("coral.providers.constructor", Parsed::Rejected),
         ("coral.prototype.github", Parsed::Rejected),
         ("coral.providers.weather.v2", Parsed::Rejected),
-        ("coral.functions.github", Parsed::Rejected),
+        ("coral.private.github", Parsed::Rejected),
+        ("coral.shared.github", Parsed::Rejected),
     ] {
         let parsed = ProviderCallRoot::parse(value);
         match expected {
@@ -230,6 +234,14 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
             }
             Parsed::Builtin => assert!(
                 matches!(parsed, Ok(ProviderCallRoot::Builtin)),
+                "{value}: {parsed:?}"
+            ),
+            Parsed::Private => assert!(
+                matches!(parsed, Ok(ProviderCallRoot::Private)),
+                "{value}: {parsed:?}"
+            ),
+            Parsed::Shared => assert!(
+                matches!(parsed, Ok(ProviderCallRoot::Shared)),
                 "{value}: {parsed:?}"
             ),
             Parsed::Rejected => assert!(
@@ -441,24 +453,41 @@ fn only_one_call_root_owns_a_call_path_and_splits_it() {
             "coral.providers.github.repos.get",
             Some(("coral.providers.github", "repos.get")),
         ),
-        (
-            "coral.workspace.addProvider",
-            Some(("coral.workspace", "addProvider")),
-        ),
-        (
-            "coral.workspace.providers.create",
-            Some(("coral.workspace", "providers.create")),
-        ),
+        ("coral.addProvider", Some(("coral", "addProvider"))),
         (
             "coral.providers.workspace.create",
             Some(("coral.providers.workspace", "create")),
         ),
+        // The Private and Shared Call Roots own every path under them.
+        (
+            "coral.private.github.get",
+            Some(("coral.private", "github.get")),
+        ),
+        ("coral.private.lookup", Some(("coral.private", "lookup"))),
+        (
+            "coral.shared.github.get",
+            Some(("coral.shared", "github.get")),
+        ),
+        ("coral.private", None),
+        ("coral.shared", None),
+        ("coral.private.", None),
+        ("coral.shared..get", None),
+        ("coral.private.get\n", None),
+        // The Built-in Call Root owns one segment, and no member of `coral`
+        // that another root or the Program host takes.
+        ("coral.privateer", Some(("coral", "privateer"))),
+        ("coral.search.paths", None),
+        ("coral.providers", None),
+        ("coral.emit", None),
+        ("coral.ToolError", None),
+        ("coral.workspace.addProvider", None),
         ("coral.providers.github", None),
         ("coral.providers.github.", None),
         ("coral.providers.github..get", None),
         ("coral.providers.github.get\n", None),
-        ("coral.functions.github.get", None),
-        ("coral.workspace", None),
+        ("coral.search\n", None),
+        ("coral.", None),
+        ("coral", None),
         ("github.repos.get", None),
     ] {
         assert_eq!(

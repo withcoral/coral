@@ -20,7 +20,9 @@
 //!   argument, a result, a credential or a name.
 //! - A report is stored as the JSON that is sent, and read back byte for
 //!   byte. The collector rejects any field it does not know, so the types in
-//!   `report` match its contract exactly.
+//!   `report` match its contract exactly. A report stored before an upgrade
+//!   is sent as stored, in its own version: the collector accepts each
+//!   version a release sent.
 //! - A process with a [`SendBlock`] never makes or sends a report: an
 //!   environment variable bootstrap read, or a source build. A day gets a
 //!   report only when a process that may send checked on it, so a day that
@@ -91,11 +93,11 @@ impl From<coral_run::Error> for Error {
     }
 }
 
-impl From<coral_functions::Error> for Error {
-    fn from(error: coral_functions::Error) -> Self {
+impl From<coral_tools::Error> for Error {
+    fn from(error: coral_tools::Error) -> Self {
         match error {
-            coral_functions::Error::Database(error) => Self::Database(error),
-            _ => Self::CorruptData("a Saved Function is not what Coral writes"),
+            coral_tools::Error::Database(error) => Self::Database(error),
+            _ => Self::CorruptData("a Private Tool is not what Coral writes"),
         }
     }
 }

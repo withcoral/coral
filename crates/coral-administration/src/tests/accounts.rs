@@ -1,6 +1,7 @@
 mod updates;
 
 use super::*;
+use coral_catalog::AuthoredToolKind;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::account::{AccountModule, AccountScope, AuthorizationState};
 use coral_provider::{
@@ -490,15 +491,15 @@ async fn initial_connection_without_credentials_is_canceled_and_cannot_fill_a_re
 #[tokio::test(flavor = "multi_thread")]
 async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_connect() {
     let mut f = AccountFixture::new().await;
-    let functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         f.db.database(),
         f.workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
     let principal = AuthenticatedPrincipal::user(f.member.clone());
-    save_answer(&functions, &principal, f.workspace.id()).await;
+    save_answer(&private_tools, &principal, f.workspace.id()).await;
     let gate = Arc::new(RemovalGate::default());
     f.lifecycle.pause_after_prepare = Some(gate.clone());
     let removal = {
@@ -516,18 +517,18 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         .unwrap();
     let context = change(&f.member);
     let administrator = change(&f.owner);
-    let source = SavedFunctionSave::new(
-        SavedFunctionPath::parse("late").unwrap(),
-        SavedFunctionDescription::parse("Late save").unwrap(),
-        SavedFunctionSource::parse("export default () => 7;").unwrap(),
+    let source = PrivateToolSave::new(
+        PrivateToolPath::parse("late").unwrap(),
+        AuthoredToolDescription::parse("Late save").unwrap(),
+        AuthoredToolSource::parse("export default () => 7;").unwrap(),
     );
     let authoring =
-        SavedFunctionChangeContext::new(principal.clone(), 101, context.trace_id().clone());
+        PrivateToolChangeContext::new(principal.clone(), 101, context.trace_id().clone());
     // Poll every competing command while removal retains its preparation holds.
     // The release is the final branch, so no sleeps or scheduler guesses order it.
     let (save, grant, connect, ()) = tokio::join!(
         biased;
-        functions.save(&authoring, f.workspace.id(), source),
+        private_tools.save(&authoring, f.workspace.id(), source),
         f.workspaces.set_membership(&administrator, f.workspace.id(), &f.member, coral_workspace::WorkspaceRole::Member),
         f.accounts.start_user_authorization(&context, f.workspace.id(), &f.provider, request(), None),
         async { gate.proceed.notify_one(); },
@@ -548,14 +549,14 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         .unwrap();
     for path in ["answer", "late"] {
         assert!(matches!(
-            functions
+            private_tools
                 .get(
                     &principal,
                     f.workspace.id(),
-                    &SavedFunctionPath::parse(path).unwrap()
+                    &PrivateToolPath::parse(path).unwrap()
                 )
                 .await,
-            Err(coral_functions::Error::SavedFunctionNotFound)
+            Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
         ));
     }
     assert!(

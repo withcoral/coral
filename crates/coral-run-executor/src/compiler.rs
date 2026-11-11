@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    AnalyzedSource, CompileFailure, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
-    SavedFunctionCompilation, SourceReferences, UnknownToolCall,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram,
+    CoralDeclarations, LinkedToolSource, SourceReferences, UnknownToolCall,
 };
 
 /// The compilation time the Tool check always leaves, so the check never
@@ -28,12 +28,12 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
         .filter(|deadline| *deadline > now)
 }
 
-/// The calls Program Admission and Saved Function save make of one warm
+/// The calls Program Admission and Private Tool save make of one warm
 /// Program Compiler.
 ///
-/// Admission analyzes the Program, then each level of the Saved Function
-/// graph it links, then compiles. A save analyzes the module, then prepares
-/// it. Each call carries `time_left`, the time left until its caller's
+/// Admission analyzes the Program, then each level of the graph of Private
+/// and Shared Tools it links, then compiles. An Authored Tool save or publish
+/// analyzes the module, then prepares it. Each call carries `time_left`, the time left until its caller's
 /// compilation deadline. A call ends [`CompileError::TimedOut`] once that
 /// time runs out, while it waits or while it compiles. A call carries source
 /// and no authority.
@@ -56,28 +56,30 @@ pub trait CompilerClient: Send + Sync {
         Ok(None)
     }
 
-    /// The Saved Functions and Tool Call Paths each source names directly,
-    /// in the order of `sources`.
+    /// The Private and Shared Tools and the Tool Call Paths each source names
+    /// directly, in the order of `sources`.
     ///
     /// # Errors
     ///
     /// The sources are analyzed in order, and the first that fails stops the
-    /// call. Its error rejects computed or aliased `coral.functions` access,
-    /// a Program body with malformed wrapper escapes, or a Saved Function
-    /// module with syntax errors, or it is a timeout or an unavailable
-    /// compiler.
+    /// call. Its error rejects computed or aliased `coral.private` or
+    /// `coral.shared` access, a Program body with malformed wrapper escapes,
+    /// or an Authored Tool module with syntax errors, or it is a timeout or
+    /// an unavailable compiler.
     fn analyze(
         &self,
         time_left: Duration,
         sources: &[AnalyzedSource],
     ) -> Result<Vec<SourceReferences>, AnalysisError>;
 
-    /// A Program body lowered with the Saved Functions it links, which
-    /// initialize in the given order.
+    /// A Program body lowered with the Private and Shared Tools it links, which
+    /// initialize in the given order, and with `builtin_tools` on `coral`.
     ///
     /// With `callable`, the complete Call Paths the caller can call, the
-    /// Program's called literal Tool chains are checked first, by the rule
-    /// of the unknown-Tool diagnostic. The check fails open: when it fails,
+    /// called literal Tool chains of the Program and then of each linked
+    /// Tool are checked first, by the rule of the unknown-Tool diagnostic.
+    /// A stored source is checked as the Program is, so an old root fails
+    /// at admission, not when called. The check fails open: when it fails,
     /// or runs past [`tool_check_deadline`], the Program compiles unchecked.
     ///
     /// # Errors
@@ -89,12 +91,14 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        linked_tools: &[LinkedToolSource],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError>;
 
-    /// One Saved Function's declaration and advisory diagnostics, typed by
-    /// `declarations` when there are any.
+    /// One Authored Tool's declaration and advisory diagnostics, with
+    /// `builtin_tools` on `coral` and typed by `declarations` when there are
+    /// any.
     ///
     /// # Errors
     ///
@@ -104,8 +108,9 @@ pub trait CompilerClient: Send + Sync {
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError>;
+    ) -> Result<AuthoredToolCompilation, CompileError>;
 }
 
 /// Why [`CompilerClient::analyze`] stopped.
@@ -139,7 +144,7 @@ pub enum CompileError {
 /// Safe diagnostics for a rejected source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Diagnostics {
-    /// A `coral.functions` access that names no supported Saved Function
+    /// A `coral.private` access that names no supported Private Tool
     /// path, at its authored location.
     Reference {
         /// The safe reason.
@@ -149,9 +154,15 @@ pub enum Diagnostics {
         /// One-based authored source column.
         column: u64,
     },
-    /// Called literal Tool chains that name no Tool the caller can call,
-    /// in source order.
-    UnknownTools(Vec<UnknownToolCall>),
+    /// Called literal Tool chains of one source that name no Tool the
+    /// caller can call, in source order.
+    UnknownTools {
+        /// The source: the index of the linked Tool among those compiled
+        /// with the Program, or `None` for the Program body.
+        linked: Option<usize>,
+        /// The calls.
+        calls: Vec<UnknownToolCall>,
+    },
     /// Any other rejection, as one bounded message.
     Message {
         /// The rejection's stable kind, for an event's `error.type`.
@@ -182,8 +193,8 @@ impl CompileError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::TimedOut => "compilation_timed_out",
-            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_saved_function_reference",
-            Self::Diagnostics(Diagnostics::UnknownTools(_)) => "unknown_tool_calls",
+            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_linked_tool_reference",
+            Self::Diagnostics(Diagnostics::UnknownTools { .. }) => "unknown_tool_calls",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
             Self::Unavailable(Unavailable::Stopped | Unavailable::NoCompiler) => {
@@ -208,14 +219,14 @@ impl From<CompileError> for CompileFailure {
                 message,
                 line,
                 column,
-            }) => coral_v8::Error::InvalidSavedFunctionReference {
+            }) => coral_v8::Error::InvalidLinkedToolReference {
                 message,
                 line,
                 column,
             }
             .into(),
             // Program Admission writes this failure itself, naming each call.
-            CompileError::Diagnostics(Diagnostics::UnknownTools(_)) => {
+            CompileError::Diagnostics(Diagnostics::UnknownTools { .. }) => {
                 Self::Rejected("Program calls Tools that you cannot call".to_string())
             }
             CompileError::MemoryLimit => coral_v8::Error::MemoryLimitExceeded.into(),

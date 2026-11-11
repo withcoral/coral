@@ -106,7 +106,7 @@ export const Default: Story = {
 // The toolbar heads the page with its title.
 export const Titled: Story = {
   args: { rail: null, children: null },
-  render: () => <Catalog title="Functions" />,
+  render: () => <Catalog title="Tools" />,
 }
 
 // The main action ends the toolbar. A toolbar with an action lays itself out
@@ -115,17 +115,17 @@ export const WithAction: Story = {
   args: { rail: null, children: null },
   render: () => (
     <Catalog
-      title="Functions"
+      title="Tools"
       action={
         <Button.Container variant="primary">
           <Button.Icon name="Plus" />
-          <Button.Text className={toolbarActionLabel}>New function</Button.Text>
+          <Button.Text className={toolbarActionLabel}>New tool</Button.Text>
         </Button.Container>
       }
     />
   ),
   play: async ({ canvas }) => {
-    const action = canvas.getByRole('button', { name: 'New function' })
+    const action = canvas.getByRole('button', { name: 'New tool' })
     await expect(action).toBeVisible()
     let toolbar = action.parentElement
     while (toolbar && getComputedStyle(toolbar).containerType !== 'inline-size')

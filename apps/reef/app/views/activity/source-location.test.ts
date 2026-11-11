@@ -30,7 +30,8 @@ function context(overrides: Partial<RunDetail> = {}): RunDetail {
     kind: 'run',
     run,
     source: acceptedSource,
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
     ...overrides,
   }
@@ -65,12 +66,13 @@ function failed(frame: { source: string; line: number; column: number }, overrid
   })
 }
 
-it('lists the accepted program and every linked Saved Function as its own document', () => {
+it('lists the accepted program and every linked Private Tool as its own document', () => {
   const documents = sourceDocumentsFor(
     context({
-      linkedFunctions: [
+      linkedSharedTools: [],
+      linkedPrivateTools: [
         {
-          savedFunction: 'functions/abc',
+          privateTool: 'private-tools/abc',
           path: 'billing.calculate',
           source: 'export default () => 1',
         },
@@ -79,9 +81,9 @@ it('lists the accepted program and every linked Saved Function as its own docume
   )
   expect(documents.map((document) => document.id)).toEqual([
     ACCEPTED_PROGRAM_DOCUMENT_ID,
-    'saved-function:functions/abc',
+    'private-tool:private-tools/abc',
   ])
-  expect(documents[1]!.label).toBe('Saved-function snapshot: billing.calculate')
+  expect(documents[1]!.label).toBe('Private tool snapshot: billing.calculate')
 })
 
 it('has no location for a Run that has not failed', () => {
@@ -106,34 +108,71 @@ it('maps the topmost Program frame to the accepted program document', () => {
   })
 })
 
-it('maps a Saved Function frame to that linked function, by the path the Program called it with', () => {
-  const location = sourceLocationFor(
-    failed(
-      { source: 'Saved Function coral.functions.billing.calculate', line: 1, column: 8 },
+// Catches: a failure inside a Shared Tool shown with no highlighted line, or a
+// Shared Tool snapshot missing from the documents the source pane offers.
+it('maps a Shared Tool frame to the linked revision, and lists it as its own document', () => {
+  const linked = {
+    linkedSharedTools: [
       {
-        linkedFunctions: [
-          {
-            savedFunction: 'functions/abc',
-            path: 'billing.calculate',
-            source: 'export default () => 1',
-          },
-        ],
+        sharedTool: 'sharedTools/abc',
+        path: 'mail.remind',
+        revision: '3',
+        source: 'export default () => 1',
       },
+    ],
+  }
+  expect(
+    sourceLocationFor(
+      failed({ source: 'Shared Tool coral.shared.mail.remind', line: 1, column: 8 }, linked),
     ),
-  )
-  expect(location).toEqual({
-    documentId: 'saved-function:functions/abc',
+  ).toEqual({
+    documentId: 'shared-tool:sharedTools/abc',
     highlight: { startLine: 1, endLine: 1 },
   })
+  expect(sourceDocumentsFor(context(linked)).at(-1)).toMatchObject({
+    id: 'shared-tool:sharedTools/abc',
+    label: 'Shared tool snapshot: mail.remind, revision 3',
+  })
+  expect(
+    sourceLocationFor(
+      failed({ source: 'Shared Tool coral.shared.mail.other', line: 1, column: 8 }, linked),
+    ),
+  ).toBeNull()
 })
 
+// A retained Run keeps the frame sources it recorded under the old root.
+it.each(['coral.private', 'coral.functions'])(
+  'maps a Private Tool frame under %s to that linked private tool, by the path the Program called it with',
+  (root) => {
+    const location = sourceLocationFor(
+      failed(
+        { source: `Private Tool ${root}.billing.calculate`, line: 1, column: 8 },
+        {
+          linkedSharedTools: [],
+          linkedPrivateTools: [
+            {
+              privateTool: 'private-tools/abc',
+              path: 'billing.calculate',
+              source: 'export default () => 1',
+            },
+          ],
+        },
+      ),
+    )
+    expect(location).toEqual({
+      documentId: 'private-tool:private-tools/abc',
+      highlight: { startLine: 1, endLine: 1 },
+    })
+  },
+)
+
 it('never guesses a document for an unrecognized frame source', () => {
-  // Names a linked function's prefix, but no linked function has this path: Coral
+  // Names a linked private tool's prefix, but no linked private tool has this path: Coral
   // retained no matching source, so this must not fall back to the accepted program.
   const location = sourceLocationFor(
     failed(
-      { source: 'Saved Function coral.functions.billing.calculate', line: 1, column: 1 },
-      { linkedFunctions: [] },
+      { source: 'Private Tool coral.private.billing.calculate', line: 1, column: 1 },
+      { linkedPrivateTools: [] },
     ),
   )
   expect(location).toBeNull()
@@ -183,6 +222,7 @@ const invocationRow: Extract<ActivityRow, { kind: 'invocation' }> = {
   requiresAction: false,
   dispatchedAt: run.startedAt,
   waitingNanos: '0',
+  toolKind: 'provider',
 }
 const logRow: Extract<ActivityRow, { kind: 'output' }> = {
   kind: 'output',
@@ -194,18 +234,27 @@ const logRow: Extract<ActivityRow, { kind: 'output' }> = {
   eventKind: 'program.logged',
   agent: '',
 }
-const savedFunction = 'workspaces/finance/savedFunctions/notify-v2'
+const privateTool = 'workspaces/finance/privateTools/notify-v2'
 // Line 2 holds the only call; 'é' and the astral '😀' make UTF-16 length differ from characters.
 const program = [
   'for (const id of [1, 2]) {',
   '  await coral.providers.mail.send({ id }) // é😀',
   '}',
 ].join('\n')
+const sharedTool = 'workspaces/finance/sharedTools/remind'
 const retained = context({
   source: program,
-  linkedFunctions: [
+  linkedSharedTools: [
     {
-      savedFunction,
+      sharedTool,
+      path: 'mail.remind',
+      revision: '2',
+      source: 'export default async () => {\n  console.log("reminded")\n}',
+    },
+  ],
+  linkedPrivateTools: [
+    {
+      privateTool,
       path: 'billing.notify',
       source: 'export default async () => {\n  console.log("sent")\n}',
     },
@@ -225,9 +274,27 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     { documentId: ACCEPTED_PROGRAM_DOCUMENT_ID, highlight: { startLine: 2, endLine: 2 } },
   ],
   [
-    'a log located in the Saved Function snapshot it names',
-    { ...logRow, sourceLocation: at({ kind: 'saved_function', savedFunction }, 2, 11) },
-    { documentId: `saved-function:${savedFunction}`, highlight: { startLine: 2, endLine: 2 } },
+    'a log located in the Private Tool snapshot it names',
+    { ...logRow, sourceLocation: at({ kind: 'private_tool', privateTool }, 2, 11) },
+    { documentId: `private-tool:${privateTool}`, highlight: { startLine: 2, endLine: 2 } },
+  ],
+  // Catches: a call a Shared Tool's body made shown with no location, or in the caller's program.
+  [
+    'a log located in the Shared Tool snapshot it names',
+    { ...logRow, sourceLocation: at({ kind: 'shared_tool', sharedTool }, 2, 11) },
+    { documentId: `shared-tool:${sharedTool}`, highlight: { startLine: 2, endLine: 2 } },
+  ],
+  [
+    'a Shared Tool snapshot this Run did not link',
+    {
+      ...logRow,
+      sourceLocation: at(
+        { kind: 'shared_tool', sharedTool: 'workspaces/finance/sharedTools/other' },
+        2,
+        11,
+      ),
+    },
+    null,
   ],
   [
     'a column one past the end of its line, counted in UTF-16 units',
@@ -241,7 +308,7 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     {
       ...logRow,
       sourceLocation: at(
-        { kind: 'saved_function', savedFunction: 'workspaces/finance/savedFunctions/notify-v1' },
+        { kind: 'private_tool', privateTool: 'workspaces/finance/privateTools/notify-v1' },
         2,
         11,
       ),
@@ -262,6 +329,33 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     'a Run event that is not a log or an emission',
     { ...logRow, eventKind: 'run.ended', sourceLocation: at({ kind: 'program' }, 2, 31) },
     null,
+  ],
+  // Catches: a call a tool's body made shown as a line of the program that called the tool.
+  [
+    'a call a tool made, at a place in the program',
+    {
+      ...invocationRow,
+      parent: {
+        invocation: 'workspaces/finance/invocations/notify',
+        callPath: 'coral.private.billing.notify',
+        toolKind: 'private',
+      },
+      sourceLocation: at({ kind: 'program' }, 2, 31),
+    },
+    null,
+  ],
+  [
+    'a call a tool made, in that tool’s snapshot',
+    {
+      ...invocationRow,
+      parent: {
+        invocation: 'workspaces/finance/invocations/notify',
+        callPath: 'coral.private.billing.notify',
+        toolKind: 'private',
+      },
+      sourceLocation: at({ kind: 'private_tool', privateTool }, 2, 11),
+    },
+    { documentId: `private-tool:${privateTool}`, highlight: { startLine: 2, endLine: 2 } },
   ],
   ['a zero line', { ...invocationRow, sourceLocation: at({ kind: 'program' }, 0, 1) }, null],
   [

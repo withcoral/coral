@@ -6,14 +6,15 @@
 //! abridged, or the types of it that the caller names.
 //! It owns its index end to end: the committing workflows notify it, it
 //! writes a search-owned table, and it ranks inside the database. It composes
-//! Provider readiness, exact Tool policy, Principal-owned Saved
-//! Functions, and Workspace authority, and stores none of them. It has no
+//! Provider readiness, exact Tool policy, Principal-owned Private
+//! Tools, the Workspace's Shared Tools, and Workspace authority, and stores
+//! none of them. It has no
 //! upstream sender, Program Run data input, or observed-value input.
 //!
 //! # Interface
 //!
 //! - [`UniversalSearchModule::discover`] is the one discovery operation, which
-//!   the Built-in Tool `coral.workspace.search` reaches, each request in one
+//!   the Built-in Tool `coral.search` reaches, each request in one
 //!   read snapshot. A query runs one ranked statement per Search Entity kind,
 //!   one retriever each, and fuses their windows by position, strong matches
 //!   first, into bounded pages of Search Hits with one status per retriever.
@@ -26,14 +27,14 @@
 //!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
 //!   are its query mode and its one-path mode.
 //! - [`projection`] turns what discovery found into the result types
-//!   coral-catalog declares for `coral.workspace.search`, the shape the
+//!   coral-catalog declares for `coral.search`, the shape the
 //!   `search` and `describe` records in Task history retain.
 //! - [`UniversalSearchModule::searchable_providers`] lists the namespaces a
 //!   search's filter accepts from the caller, each with its display name. A
 //!   filter that names another is refused with those namespaces.
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
-//!   from the Tool eligibility rule discovery uses, without reading Saved
-//!   Functions or the index.
+//!   from the Tool eligibility rule discovery uses, without reading Private
+//!   Tools, Shared Tools or the index.
 //! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
 //!   the index holds each Provider's active Generation, apart from readiness.
 //! - [`prepare_storage`] runs at boot before `Database::migrate` applies
@@ -78,7 +79,7 @@ use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
 use page::{Ranked, hydrate_page_in_transaction};
-use retriever::functions::SavedFunctionRetriever;
+use retriever::authored_tools::AuthoredToolRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
     Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
@@ -92,14 +93,14 @@ pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
-    ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
-    ExactSavedFunctionDetail, ProviderCallRoot, ProviderFilter, ProviderId, RetrieverCoverage,
-    RetrieverState, RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
-    SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
-    SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
-    SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit,
-    SearchPage, SearchQuery, SearchRequest, SearchableProvider, ToolAuthoringDescription, ToolHit,
-    provider_filter_value,
+    ApprovalRequirement, AuthoredToolAuthoringDescription, AuthoringDescription, CallPath,
+    EntityKind, ExactAuthoredToolDetail, ExactAuthoringDescription, ProviderCallRoot,
+    ProviderFilter, ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus,
+    SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
+    SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
+    SEARCH_RESULT_LIMIT_MAX, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState,
+    SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest, SearchableProvider,
+    ToolAuthoringDescription, ToolHit, provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
@@ -112,9 +113,9 @@ pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     /// One retriever per Search Entity kind. At equal mark and position, an
-    /// earlier retriever's Entity comes first: Tools, then Saved Functions.
-    /// A strong Saved Function therefore leads every Tool below its
-    /// position, but not the strong Tool at its own.
+    /// earlier retriever's Entity comes first: Tools, then Private Tools,
+    /// then Shared Tools. A strong Private or Shared Tool therefore leads
+    /// every Tool below its position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -130,8 +131,8 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            SavedFunctionRetriever::default(),
             ToolRetriever::default(),
+            AuthoredToolRetriever::new,
         )
     }
 
@@ -146,11 +147,12 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            SavedFunctionRetriever {
-                fail_ranking: kinds.contains(&EntityKind::SavedFunction),
-            },
             ToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::ProviderTool),
+            },
+            |kind| AuthoredToolRetriever {
+                fail_ranking: kinds.contains(&EntityKind::authored(kind)),
+                ..AuthoredToolRetriever::new(kind)
             },
         )
     }
@@ -158,15 +160,16 @@ impl UniversalSearchModule {
     fn with_retrievers(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        functions: SavedFunctionRetriever,
         tools: ToolRetriever,
+        authored_tools: impl Fn(coral_catalog::AuthoredToolKind) -> AuthoredToolRetriever,
     ) -> Self {
         Self {
             database,
             workspaces,
             retrievers: Arc::new([
                 Arc::new(tools) as Arc<dyn EntityRetriever>,
-                Arc::new(functions),
+                Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Private)),
+                Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Shared)),
             ]),
         }
     }
@@ -403,8 +406,9 @@ impl UniversalSearchModule {
     ///
     /// The declaration is abridged. With `types`, it holds those types of the
     /// declaration instead, with their own nested types abridged the same
-    /// way. Exact description of the User's own Saved Function additionally
-    /// carries current source and saved diagnostics, except with `types`. An
+    /// way. Exact description of the caller's own Private Tool, or of a
+    /// Shared Tool of the Workspace, additionally carries its current source
+    /// and stored diagnostics, except with `types`. An
     /// absent or invisible path is concealed as missing; authoritative
     /// corruption remains operational.
     ///

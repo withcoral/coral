@@ -240,7 +240,8 @@ function pageFor(url: URL): ActivityPage {
     run: row,
     request: row === run ? world.request : null,
     source,
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal:
       row === run && world.ended
         ? { kind: 'succeeded' as const, finalValue: '"done"' }

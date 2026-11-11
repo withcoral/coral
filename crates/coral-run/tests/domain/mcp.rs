@@ -137,6 +137,7 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
             &workspace,
             accepted.run_id(),
             &crate::RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             100,
             None,
         )

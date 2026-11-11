@@ -151,7 +151,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
         await breadcrumb(page, 'Members').waitFor()
         await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
         expect(await page.getByRole('link', { name: 'Overview', exact: true }).count()).toBe(0)
-        expect(await page.getByRole('link', { name: 'Providers', exact: true }).count()).toBe(0)
+        expect(await page.getByRole('link', { name: 'Tools', exact: true }).count()).toBe(0)
         const choice = nav
           .getByRole('group', { name: 'Workspaces', exact: true })
           .getByRole('button', { expanded: false })

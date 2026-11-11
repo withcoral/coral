@@ -363,6 +363,12 @@ pub(crate) async fn describe_tools(
         else {
             continue;
         };
+        match call_root {
+            ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin => {}
+            // No Generation holds a Private or Shared Tool: coral-tools
+            // keeps them, and their own retriever describes them.
+            ProviderCallRoot::Private | ProviderCallRoot::Shared => continue,
+        }
         if !providers.contains_key(&call_root) {
             let provider =
                 visible_providers(transaction, context, &ProviderFilter::one(&call_root))

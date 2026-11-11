@@ -1,11 +1,11 @@
-//! The one read of activity that spans modules: reuse of a Saved Function
-//! in a later Task joins Runs, Task interactions and Saved Function
+//! The one read of activity that spans modules: reuse of a Private Tool
+//! in a later Task joins Runs, Task interactions and Private Tool
 //! lifecycle Events, so no one module owns it. Every read of one module's
 //! data comes from that module's `usage_repository` instead.
 //!
 //! The read returns a count and a date. It runs in the caller's read
 //! snapshot, so one report sees one state. It matches one fixed value,
-//! `saved_function.created`, which a CHECK constraint pins, so a rename
+//! `private_tool.created`, which a CHECK constraint pins, so a rename
 //! fails the fixture inserts in this crate's tests.
 
 use coral_db::{DatabaseSystem, Transaction};
@@ -26,22 +26,23 @@ pub(crate) struct ReuseRow {
     pub first_at: Option<i64>,
 }
 
-/// Tasks whose Runs, accepted in the window, used a Saved Function that
-/// another, earlier Task saved, and when the first such Run was accepted.
+/// Tasks whose Runs, accepted in the window, used a Private Tool that
+/// another, earlier Task created, and when the first such Run was accepted.
 ///
-/// The Task that saved a function is the one with a Run of the saving
-/// Principal open when the function was created; saving happens only inside
-/// a Run. A Task with such a Run never counts as reusing that function.
+/// The Task that created a Private Tool is the one with a Run of the
+/// creating Principal open when it was created; creating happens only
+/// inside a Run. A Task with such a Run never counts as reusing that
+/// Private Tool.
 pub(crate) async fn reuse(tx: &mut Transaction<'_>, window: Window) -> Result<ReuseRow, Error> {
     let sql = numbered(
         "SELECT COUNT(DISTINCT t.task_id) AS tasks, MIN(r.accepted_at_unix_nanos) AS first_at \
-         FROM program_run_saved_function_snapshots s \
+         FROM program_run_private_tool_snapshots s \
          JOIN program_run_records r ON r.workspace_id = s.workspace_id AND r.id = s.run_id \
          JOIN task_interactions t ON t.workspace_id = r.workspace_id AND t.run_id = r.id \
-         JOIN saved_function_lifecycle_events e \
+         JOIN private_tool_lifecycle_events e \
             ON e.workspace_id = s.workspace_id \
-            AND e.target_saved_function_id = s.saved_function_id \
-            AND e.action = 'saved_function.created' \
+            AND e.target_private_tool_id = s.private_tool_id \
+            AND e.action = 'private_tool.created' \
          WHERE r.accepted_at_unix_nanos >= ? AND r.accepted_at_unix_nanos < ? \
             AND r.accepted_at_unix_nanos > e.occurred_at_unix_nanos \
             AND NOT EXISTS ( \

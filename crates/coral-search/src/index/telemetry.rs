@@ -90,10 +90,10 @@ impl SearchIndex {
             let sampled = Instant::now();
             let observed_at = crate::unix_now_nanos().ok_or(crate::indexer::IndexError::Clock)?;
             let generations = coral_provider::active_generations_in_transaction(&mut tx).await?;
-            let functions =
-                coral_functions::saved_function_index_revisions_in_transaction(&mut tx).await?;
+            let authored_tools =
+                coral_tools::authored_tool_index_revisions_in_transaction(&mut tx).await?;
             let backlog =
-                crate::indexer::projection_backlog(&mut tx, &generations, &functions).await?;
+                crate::indexer::projection_backlog(&mut tx, &generations, &authored_tools).await?;
             let first_visibility = if let Some(missing) = &backlog.first_visibility {
                 let publications =
                     coral_catalog::generation_publication_times_in_transaction(&mut tx, missing)
@@ -120,7 +120,8 @@ impl SearchIndex {
             Ok::<_, crate::indexer::IndexError>(Snapshot {
                 backlog: metric::SearchBacklog {
                     generations: backlog.catalogs,
-                    functions: backlog.functions,
+                    private_tools: backlog.private_tools,
+                    shared_tools: backlog.shared_tools,
                     first_visibility,
                     sample_age: Duration::ZERO,
                 },

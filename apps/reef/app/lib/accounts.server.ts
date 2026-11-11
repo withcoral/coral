@@ -233,7 +233,7 @@ async function accountParents(
   const workspace = resourcePath(target.provider.split('/').slice(0, 2).join('/'))
   const list = target.agent
     ? { label: 'Agents', to: `${workspace}/agents` }
-    : { label: 'Providers', to: `${workspace}/providers` }
+    : { label: 'Tools', to: `${workspace}/tools` }
   try {
     // Agent accounts are connected from the agent's own page.
     if (target.agent)

@@ -111,6 +111,7 @@ const accountCall = {
   outcome: 'unknown' as const,
   dispatchedAt: null,
   waitingNanos: '1',
+  toolKind: 'provider' as const,
   sourceLocation: programAt('coral.providers.linear.listIssues', linearProgram),
 }
 const page: ActivityPage = {
@@ -182,7 +183,8 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
             run: selectedRun,
             request: exact,
             source: selectedRun.name === accountRun.name ? linearProgram : remindersProgram,
-            linkedFunctions: [],
+            linkedSharedTools: [],
+            linkedPrivateTools: [],
             terminal: { kind: 'unavailable' },
           }
         : null),
@@ -212,7 +214,8 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
         kind: 'run',
         run: accountRun,
         source: linearProgram,
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
       },
     }
@@ -231,6 +234,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
       outcome: 'unknown' as const,
       dispatchedAt: null,
       waitingNanos: '1',
+      toolKind: 'provider' as const,
       // The approved call, where the Run's program makes it.
       sourceLocation: programAt(approval.callPath, context.source),
     }
@@ -360,7 +364,8 @@ export const SingleAction: Story = {
           }),
         },
         source: 'return await coral.providers.linear.listIssues({ assignee: "me" });',
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
       },
     },
@@ -376,7 +381,8 @@ export const LargeArguments: Story = {
         kind: 'run',
         run,
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: {
           ...request,
@@ -401,7 +407,8 @@ export const NonObjectArguments: Story = {
         kind: 'run',
         run,
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: { ...request, arguments: '["owner@example.com","INV-4171"]' },
       },
@@ -418,7 +425,8 @@ export const ResolvedSelection: Story = {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: {
           ...request,
@@ -448,7 +456,8 @@ const reviewHeaderOverArguments: Story = {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
         source: remindersProgram,
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
         request: {
           ...request,

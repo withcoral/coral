@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{
-    AUTHENTICATION_KINDS, AddProviderResult, BuiltinAccessState, BuiltinArguments,
-    BuiltinCredentialRoute, BuiltinTool, ConfigurationOutput, GetPolicyResult, GetProviderResult,
-    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
-    ProviderFacts, ProviderSourceOutput, UpdatePolicyResult, UpdateProviderResult, definition,
+    AUTHENTICATION_KINDS, AddProviderResult, BuiltinArguments, BuiltinCredentialRoute, BuiltinTool,
+    ConfigurationOutput, GetPolicyResult, GetProviderResult, ListProvidersResult, ListedProvider,
+    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceOutput,
+    UpdatePolicyResult, UpdateProviderResult, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
@@ -24,8 +24,9 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
         BuiltinTool::Search => super::search::tests::valid_arguments(),
-        BuiltinTool::SaveFunction => super::save_function::valid_arguments(),
-        BuiltinTool::DeleteFunction => super::delete_function::valid_arguments(),
+        BuiltinTool::AddCustomTool => super::private_tools::valid_add_arguments(),
+        BuiltinTool::UpdateCustomTool => super::private_tools::valid_update_arguments(),
+        BuiltinTool::RemoveCustomTool => super::private_tools::valid_remove_arguments(),
     }
 }
 
@@ -287,56 +288,63 @@ fn setup_tool_results() -> Vec<(BuiltinTool, serde_json::Value)> {
 /// rule of each state, and what `updatePolicy` returns when it sets them.
 fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
     let states = BTreeMap::from([
-        ("repos.get".to_owned(), BuiltinAccessState::Disabled),
-        ("issues.create".to_owned(), BuiltinAccessState::Enabled),
         (
-            "issues.close".to_owned(),
-            BuiltinAccessState::ApprovalRequired,
+            "coral.providers.github.repos.get".to_owned(),
+            crate::ToolAccessState::Disabled,
+        ),
+        (
+            "coral.shared.mail.remind".to_owned(),
+            crate::ToolAccessState::Enabled,
+        ),
+        (
+            "coral.addProvider".to_owned(),
+            crate::ToolAccessState::ApprovalRequired,
         ),
     ]);
     [BTreeMap::new(), states.clone()]
         .into_iter()
         .map(|rules| {
-            let read = GetPolicyResult {
-                namespace: "github".to_owned(),
-                rules,
-            };
+            let read = GetPolicyResult { rules };
             (BuiltinTool::GetPolicy, read.into_tool_result())
         })
         .chain([(
             BuiltinTool::UpdatePolicy,
-            UpdatePolicyResult {
-                namespace: "github".to_owned(),
-                tools: states,
-            }
-            .into_tool_result(),
+            UpdatePolicyResult { tools: states }.into_tool_result(),
         )])
 }
 
-/// What `saveFunction` and `deleteFunction` return.
-fn function_results() -> [(BuiltinTool, Value); 2] {
+/// What the Private Tool authoring Tools return.
+fn private_tool_results() -> [(BuiltinTool, Value); 3] {
+    let saved = super::SavedToolResult {
+        call_path: "coral.private.github.pulls.listStale".to_owned(),
+        description: "List stale pull requests.".to_owned(),
+        declaration: "export default function (): Promise<string[]>;".to_owned(),
+        diagnostics: vec![crate::SavedDiagnostic {
+            category: crate::SavedDiagnosticCategory::Warning,
+            code: 6_133,
+            message: "'unused' is declared but its value is never read.".to_owned(),
+            line: None,
+            column: Some(3),
+        }],
+        diagnostics_truncated: true,
+        revision: 2,
+    };
     [
         (
-            BuiltinTool::SaveFunction,
-            super::SaveFunctionResult {
-                call_path: "coral.functions.github.pulls.listStale".to_owned(),
-                description: "List stale pull requests.".to_owned(),
-                declaration: "export default function (): Promise<string[]>;".to_owned(),
-                diagnostics: vec![crate::SavedDiagnostic {
-                    category: crate::SavedDiagnosticCategory::Error,
-                    code: 2_322,
-                    message: "Type 'number' is not assignable to type 'string'.".to_owned(),
-                    line: Some(1),
-                    column: None,
-                }],
+            BuiltinTool::AddCustomTool,
+            super::SavedToolResult {
+                revision: 1,
+                diagnostics: Vec::new(),
                 diagnostics_truncated: false,
+                ..saved.clone()
             }
             .into_tool_result(),
         ),
+        (BuiltinTool::UpdateCustomTool, saved.into_tool_result()),
         (
-            BuiltinTool::DeleteFunction,
-            super::DeleteFunctionResult {
-                call_path: "coral.functions.github.pulls.listStale".to_owned(),
+            BuiltinTool::RemoveCustomTool,
+            super::RemovedToolResult {
+                call_path: "coral.private.github.pulls.listStale".to_owned(),
             }
             .into_tool_result(),
         ),
@@ -357,7 +365,7 @@ fn each_result_meets_its_output_schema() {
                     let namespace = (index != 0).then(|| format!("provider{index}"));
                     ListedProvider {
                         call_root: namespace.as_ref().map_or_else(
-                            || "coral.workspace".to_owned(),
+                            || "coral".to_owned(),
                             |namespace| format!("coral.providers.{namespace}"),
                         ),
                         namespace,
@@ -413,7 +421,7 @@ fn each_result_meets_its_output_schema() {
             .into_iter()
             .map(|result| (BuiltinTool::Search, result)),
     );
-    results.extend(function_results());
+    results.extend(private_tool_results());
     for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),
@@ -454,28 +462,135 @@ fn a_missing_path_carries_at_most_three_suggestions() {
 
 // Catches: a save that reaches the Tool without the module admission
 // extracts, as one through a computed path does, being read as anything
-// but a missing source.
+// but a missing source, or a refusal that names another Tool.
 #[test]
 fn a_save_without_an_extracted_source_is_refused_naming_source() {
-    for arguments in [
-        json!({ "path": "a.b", "description": "d" }),
-        json!(["a.b", "d", "export default () => 1"]),
-        json!("export default () => 1"),
+    type Parse = fn(&Value) -> Result<(), Vec<super::ArgumentProblem>>;
+    let parsers: [(&str, Parse); 2] = [
+        ("addCustomTool", |arguments| {
+            super::ToolSaveArguments::parse_add(arguments).map(drop)
+        }),
+        ("updateCustomTool", |arguments| {
+            super::ToolSaveArguments::parse_update(arguments).map(drop)
+        }),
+    ];
+    for (tool, parse) in parsers {
+        for arguments in [
+            json!({ "path": "a.b", "description": "d" }),
+            json!(["a.b", "d", "export default () => 1"]),
+            json!("export default () => 1"),
+        ] {
+            let problems = parse(&arguments).expect_err("no source");
+            assert_eq!(
+                problems
+                    .iter()
+                    .map(|problem| (problem.field(), problem.reason()))
+                    .collect::<Vec<_>>(),
+                [(
+                    "source",
+                    format!(
+                        "pass a function declared at the top level, through a literal \
+                         coral.{tool} call"
+                    )
+                    .as_str()
+                )],
+                "{tool}: {arguments}"
+            );
+        }
+    }
+}
+
+// Catches: an updateCustomTool that accepts a revision no tool can be at, or
+// that accepts `null` for an argument to omit.
+#[test]
+fn update_tool_refuses_a_revision_below_one_naming_expected_revision() {
+    let save = json!({ "path": "a.b", "description": "d", "source": "export default 1" });
+    for (revision, reason) in [
+        (json!(0), "pass a revision of 1 or more"),
+        (json!(null), "expected u64"),
     ] {
-        let problems = super::SaveFunctionArguments::parse(&arguments)
-            .map(|_arguments| ())
-            .expect_err("no source");
+        let mut arguments = save.clone();
+        if let Some(fields) = arguments.as_object_mut() {
+            fields.insert("expectedRevision".to_owned(), revision.clone());
+        }
+        let problems = super::ToolSaveArguments::parse_update(&arguments)
+            .map(drop)
+            .expect_err("a refused revision");
         assert_eq!(
             problems
                 .iter()
                 .map(|problem| (problem.field(), problem.reason()))
                 .collect::<Vec<_>>(),
-            [(
-                "source",
-                "pass a function declared at the top level, through a literal \
-                 coral.workspace.saveFunction call"
-            )],
-            "{arguments}"
+            [("expectedRevision", reason)],
+            "{revision}"
+        );
+    }
+}
+
+// Catches: a save that loses the default its author declared, reads an
+// omitted policy as a state, or accepts a word that is no Tool Access
+// State, or `null`, without naming `policy`.
+#[test]
+fn a_save_reads_its_declared_policy_and_refuses_any_other_word_naming_policy() {
+    type Parse = fn(&Value) -> Result<super::ToolSaveArguments, Vec<super::ArgumentProblem>>;
+    let parsers: [(&str, Parse); 2] = [
+        ("addCustomTool", super::ToolSaveArguments::parse_add),
+        ("updateCustomTool", super::ToolSaveArguments::parse_update),
+    ];
+    let save = json!({ "path": "a.b", "description": "d", "source": "export default 1" });
+    for (tool, parse) in parsers {
+        for (policy, declared) in [
+            (None, Ok(None)),
+            (
+                Some(json!("enabled")),
+                Ok(Some(crate::ToolAccessState::Enabled)),
+            ),
+            (
+                Some(json!("approval_required")),
+                Ok(Some(crate::ToolAccessState::ApprovalRequired)),
+            ),
+            (
+                Some(json!("disabled")),
+                Ok(Some(crate::ToolAccessState::Disabled)),
+            ),
+            (Some(json!("ask")), Err("policy")),
+            (Some(json!(null)), Err("policy")),
+        ] {
+            let mut arguments = save.clone();
+            if let (Some(fields), Some(policy)) = (arguments.as_object_mut(), policy.clone()) {
+                fields.insert("policy".to_owned(), policy);
+            }
+            let parsed = parse(&arguments)
+                .map(|parsed| parsed.policy())
+                .map_err(|problems| {
+                    problems
+                        .iter()
+                        .map(|problem| problem.field().to_owned())
+                        .collect::<Vec<_>>()
+                });
+            assert_eq!(
+                parsed,
+                declared.map_err(|field| vec![field.to_owned()]),
+                "{tool}: {policy:?}"
+            );
+        }
+    }
+}
+
+// Catches: a Built-in Tool that a Program cannot call as `coral.<key>`,
+// because its key has more than one segment or names another member of
+// `coral`.
+#[test]
+fn each_tool_key_is_one_segment_on_coral_that_no_other_member_takes() {
+    for tool in BuiltinTool::ALL {
+        let key = tool.key();
+        assert!(
+            crate::provider_namespace_is_valid(key),
+            "{key} is not one safe identifier"
+        );
+        assert!(
+            !super::NON_TOOL_ROOT_MEMBERS.contains(&key),
+            "{key} is another member of coral"
         );
     }
 }

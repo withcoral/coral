@@ -5,9 +5,10 @@
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    AnalyzedSource, CallableDeclaration, CompiledProgram, CompilerDiagnostic, CoralDeclarations,
-    DiagnosticCategory, LinkedSavedFunctionSource, SavedFunctionCompilation,
-    SavedFunctionDeclarationField, SavedFunctionReference, SourceReferences, UnknownToolCall,
+    AnalyzedSource, AuthoredToolCompilation, AuthoredToolDeclarationField, BuiltinTools,
+    CallableDeclaration, CompiledProgram, CompilerDiagnostic, CoralDeclarations,
+    DiagnosticCategory, LinkedToolReference, LinkedToolRoot, LinkedToolSource, SourceReferences,
+    ToolChain, ToolReferences, UnknownToolCall,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -74,26 +75,36 @@ pub(crate) fn serve(
         }
         Call::Compile(wire::ProgramSource {
             source,
-            saved_functions,
+            linked_tools,
             callable,
+            builtin_tools,
         }) => {
-            let linked: Vec<_> = saved_functions
+            let linked = linked_tools
                 .into_iter()
-                .map(|linked| LinkedSavedFunctionSource::new(linked.path_segments, linked.source))
-                .collect();
+                .map(linked_tool)
+                .collect::<Result<Vec<_>, _>>()?;
             let callable = callable.map(|callable| callable.call_paths);
+            let builtin_tools = BuiltinTools::new(builtin_tools);
             answer(
-                compiler.compile(time_left, &source, &linked, callable.as_deref()),
+                compiler.compile(
+                    time_left,
+                    &source,
+                    &linked,
+                    &builtin_tools,
+                    callable.as_deref(),
+                ),
                 |program| Answer::Package(package(program)),
             )
         }
-        Call::Prepare(wire::SavedFunctionSource {
+        Call::Prepare(wire::AuthoredToolSource {
             source,
             declarations,
+            builtin_tools,
         }) => {
             let declarations = declarations.map(coral_declarations).transpose()?;
+            let builtin_tools = BuiltinTools::new(builtin_tools);
             answer(
-                compiler.prepare(time_left, &source, declarations.as_ref()),
+                compiler.prepare(time_left, &source, &builtin_tools, declarations.as_ref()),
                 |prepared| Answer::Prepared(prepared_answer(&prepared)),
             )
         }
@@ -111,27 +122,35 @@ pub(crate) fn analyze_call(sources: &[AnalyzedSource]) -> Call {
     })
 }
 
-/// The call that compiles `source` with `saved_functions`, checked against
-/// `callable` when it is set.
+/// The call that compiles `source` with `linked_tools` and `builtin_tools`,
+/// checked against `callable` when it is set.
 pub(crate) fn compile_call(
     source: &str,
-    saved_functions: &[LinkedSavedFunctionSource],
+    linked_tools: &[LinkedToolSource],
+    builtin_tools: &BuiltinTools,
     callable: Option<&[String]>,
 ) -> Call {
     Call::Compile(wire::ProgramSource {
         source: source.to_owned(),
-        saved_functions: saved_functions.iter().map(linked_wire).collect(),
+        linked_tools: linked_tools.iter().map(linked_wire).collect(),
         callable: callable.map(|call_paths| wire::Callable {
             call_paths: call_paths.to_vec(),
         }),
+        builtin_tools: builtin_tools.keys().to_vec(),
     })
 }
 
-/// The call that prepares `source`, typed by `declarations` when it is set.
-pub(crate) fn prepare_call(source: &str, declarations: Option<&CoralDeclarations>) -> Call {
-    Call::Prepare(wire::SavedFunctionSource {
+/// The call that prepares `source` with `builtin_tools`, typed by
+/// `declarations` when it is set.
+pub(crate) fn prepare_call(
+    source: &str,
+    builtin_tools: &BuiltinTools,
+    declarations: Option<&CoralDeclarations>,
+) -> Call {
+    Call::Prepare(wire::AuthoredToolSource {
         source: source.to_owned(),
         declarations: declarations.map(declarations_wire),
+        builtin_tools: builtin_tools.keys().to_vec(),
     })
 }
 
@@ -160,9 +179,10 @@ pub(crate) fn failure(error: CompileError) -> wire::CompileFailure {
             line,
             column,
         }),
-        CompileError::Diagnostics(Diagnostics::UnknownTools(calls)) => {
+        CompileError::Diagnostics(Diagnostics::UnknownTools { linked, calls }) => {
             Failure::UnknownTools(wire::UnknownToolCalls {
                 calls: calls.iter().map(unknown_tool_call).collect(),
+                linked: linked.map(|index| u64::try_from(index).unwrap_or(u64::MAX)),
             })
         }
         CompileError::MemoryLimit => Failure::MemoryLimit(true),
@@ -207,7 +227,14 @@ pub(crate) fn compile_error(failure: wire::CompileFailure) -> Result<CompileErro
             column,
         }),
         Failure::UnknownTools(calls) => {
-            CompileError::Diagnostics(Diagnostics::UnknownTools(unknown_tool_calls(calls)))
+            let linked = calls
+                .linked
+                .map(|index| usize::try_from(index).map_err(|_overflow| ProtocolError))
+                .transpose()?;
+            CompileError::Diagnostics(Diagnostics::UnknownTools {
+                linked,
+                calls: unknown_tool_calls(calls),
+            })
         }
         Failure::MemoryLimit(_) => CompileError::MemoryLimit,
         Failure::Busy(_) => CompileError::Unavailable(Unavailable::Busy),
@@ -224,7 +251,7 @@ fn analyzed_source_wire(source: &AnalyzedSource) -> wire::AnalyzedSource {
     use wire::analyzed_source::Source;
     let source = match source {
         AnalyzedSource::Program(source) => Source::Program(source.clone()),
-        AnalyzedSource::SavedFunction(source) => Source::SavedFunction(source.clone()),
+        AnalyzedSource::AuthoredTool(source) => Source::AuthoredTool(source.clone()),
     };
     wire::AnalyzedSource {
         source: Some(source),
@@ -235,26 +262,29 @@ fn analyzed_source(source: wire::AnalyzedSource) -> Result<AnalyzedSource, Proto
     use wire::analyzed_source::Source;
     Ok(match source.source.ok_or(ProtocolError)? {
         Source::Program(source) => AnalyzedSource::Program(source),
-        Source::SavedFunction(source) => AnalyzedSource::SavedFunction(source),
+        Source::AuthoredTool(source) => AnalyzedSource::AuthoredTool(source),
     })
 }
 
 fn source_references_wire(references: &SourceReferences) -> wire::SourceReferences {
     wire::SourceReferences {
-        functions: references.functions().iter().map(reference).collect(),
+        private_tools: references.private_tools().iter().map(reference).collect(),
         tool_call_paths: references.tool_call_paths().to_vec(),
+        shared_tools: references.shared_tools().iter().map(reference).collect(),
     }
 }
 
 fn source_references(references: wire::SourceReferences) -> SourceReferences {
-    let functions = references
-        .functions
-        .into_iter()
-        .map(saved_function_reference);
-    SourceReferences::new(functions.collect(), references.tool_call_paths)
+    let private_tools = references.private_tools.into_iter();
+    let shared_tools = references.shared_tools.into_iter();
+    SourceReferences::new(
+        private_tools.map(linked_tool_reference).collect(),
+        shared_tools.map(linked_tool_reference).collect(),
+        references.tool_call_paths,
+    )
 }
 
-fn reference(reference: &SavedFunctionReference) -> wire::Reference {
+fn reference(reference: &LinkedToolReference) -> wire::Reference {
     wire::Reference {
         path: reference.path().to_owned(),
         line: reference.line(),
@@ -262,8 +292,8 @@ fn reference(reference: &SavedFunctionReference) -> wire::Reference {
     }
 }
 
-fn saved_function_reference(reference: wire::Reference) -> SavedFunctionReference {
-    SavedFunctionReference::new(reference.path, reference.line, reference.column)
+fn linked_tool_reference(reference: wire::Reference) -> LinkedToolReference {
+    LinkedToolReference::new(reference.path, reference.line, reference.column)
 }
 
 fn unknown_tool_call(call: &UnknownToolCall) -> wire::UnknownToolCall {
@@ -281,11 +311,28 @@ fn unknown_tool_calls(calls: wire::UnknownToolCalls) -> Vec<UnknownToolCall> {
         .collect()
 }
 
-fn linked_wire(linked: &LinkedSavedFunctionSource) -> wire::LinkedSavedFunction {
-    wire::LinkedSavedFunction {
+fn linked_wire(linked: &LinkedToolSource) -> wire::LinkedTool {
+    let root = match linked.root() {
+        LinkedToolRoot::Private => wire::LinkedToolRoot::Private,
+        LinkedToolRoot::Shared => wire::LinkedToolRoot::Shared,
+    };
+    wire::LinkedTool {
         path_segments: linked.path_segments().to_vec(),
         source: linked.source().to_owned(),
+        root: root.into(),
     }
+}
+
+fn linked_tool(linked: wire::LinkedTool) -> Result<LinkedToolSource, ProtocolError> {
+    Ok(match linked.root() {
+        wire::LinkedToolRoot::Private => {
+            LinkedToolSource::private(linked.path_segments, linked.source)
+        }
+        wire::LinkedToolRoot::Shared => {
+            LinkedToolSource::shared(linked.path_segments, linked.source)
+        }
+        wire::LinkedToolRoot::Unspecified => return Err(ProtocolError),
+    })
 }
 
 fn declarations_wire(declarations: &CoralDeclarations) -> wire::Declarations {
@@ -302,7 +349,8 @@ fn declarations_wire(declarations: &CoralDeclarations) -> wire::Declarations {
         declaration_max_bytes: u64::try_from(declarations.declaration_max_bytes())
             .unwrap_or(u64::MAX),
         tools: declarations.tools().map(callables),
-        functions: declarations.functions().map(callables),
+        private_tools: declarations.private_tools().map(callables),
+        shared_tools: declarations.shared_tools().map(callables),
     }
 }
 
@@ -321,8 +369,11 @@ fn coral_declarations(
     if let Some(tools) = declarations.tools {
         typed = typed.with_tools(callables(tools));
     }
-    if let Some(functions) = declarations.functions {
-        typed = typed.with_functions(callables(functions));
+    if let Some(private_tools) = declarations.private_tools {
+        typed = typed.with_private_tools(callables(private_tools));
+    }
+    if let Some(shared_tools) = declarations.shared_tools {
+        typed = typed.with_shared_tools(callables(shared_tools));
     }
     Ok(typed)
 }
@@ -350,7 +401,7 @@ fn compiled_program(package: wire::Package) -> Result<CompiledProgram, ProtocolE
     ))
 }
 
-fn prepared_answer(prepared: &SavedFunctionCompilation) -> wire::Prepared {
+fn prepared_answer(prepared: &AuthoredToolCompilation) -> wire::Prepared {
     use wire::prepared::Projection;
     let projection = match prepared.declaration_fields() {
         Ok(fields) => Projection::Fields(wire::DeclarationFields {
@@ -369,31 +420,46 @@ fn prepared_answer(prepared: &SavedFunctionCompilation) -> wire::Prepared {
         projection: Some(projection),
         diagnostics: prepared.diagnostics().iter().map(diagnostic).collect(),
         references: prepared.references().iter().map(reference).collect(),
+        shared_references: prepared.shared_references().iter().map(reference).collect(),
+        tool_chains: prepared
+            .tools()
+            .chains()
+            .iter()
+            .map(|chain| wire::ToolChain {
+                segments: chain.segments().to_vec(),
+                called: chain.called(),
+                computed: chain.computed(),
+            })
+            .collect(),
+        not_data: prepared.not_data().map(ToOwned::to_owned),
     }
 }
 
-fn saved_function_compilation(
+fn authored_tool_compilation(
     prepared: wire::Prepared,
-) -> Result<SavedFunctionCompilation, ProtocolError> {
+) -> Result<AuthoredToolCompilation, ProtocolError> {
     use wire::prepared::Projection;
     let projection = match prepared.projection.ok_or(ProtocolError)? {
         Projection::Fields(fields) => Ok(fields
             .fields
             .into_iter()
-            .map(|field| SavedFunctionDeclarationField::new(field.path, field.text))
+            .map(|field| AuthoredToolDeclarationField::new(field.path, field.text))
             .collect()),
         Projection::Fault(fault) => Err(fault),
     };
     let diagnostics = prepared.diagnostics.into_iter().map(compiler_diagnostic);
-    let references = prepared
-        .references
-        .into_iter()
-        .map(saved_function_reference);
-    Ok(SavedFunctionCompilation::new(
+    let references = prepared.references.into_iter();
+    let shared_references = prepared.shared_references.into_iter();
+    let chains = prepared.tool_chains.into_iter();
+    let chains = chains.map(|chain| ToolChain::new(chain.segments, chain.called, chain.computed));
+    Ok(AuthoredToolCompilation::new(
         prepared.declaration,
         projection,
         diagnostics.collect::<Result<_, _>>()?,
-        references.collect(),
+        references.map(linked_tool_reference).collect(),
+        shared_references.map(linked_tool_reference).collect(),
+        ToolReferences::new(chains.collect()),
+        prepared.not_data,
     ))
 }
 
@@ -457,7 +523,7 @@ pub(crate) enum Read {
     Analyzed(Vec<SourceReferences>),
     AnalysisFailure(AnalysisError),
     Package(CompiledProgram),
-    Prepared(SavedFunctionCompilation),
+    Prepared(AuthoredToolCompilation),
     Failure(CompileError),
 }
 
@@ -478,7 +544,7 @@ impl Read {
                 })
             }
             Answer::Package(package) => Self::Package(compiled_program(package)?),
-            Answer::Prepared(prepared) => Self::Prepared(saved_function_compilation(prepared)?),
+            Answer::Prepared(prepared) => Self::Prepared(authored_tool_compilation(prepared)?),
             Answer::Failure(failure) => Self::Failure(compile_error(failure)?),
         })
     }
@@ -519,11 +585,22 @@ mod tests {
                 line: 2,
                 column: 7,
             }),
-            CompileError::Diagnostics(Diagnostics::UnknownTools(vec![UnknownToolCall::new(
-                "github.repos.get".to_owned(),
-                3,
-                9,
-            )])),
+            CompileError::Diagnostics(Diagnostics::UnknownTools {
+                linked: None,
+                calls: vec![UnknownToolCall::new(
+                    "coral.providers.github.repos.get".to_owned(),
+                    3,
+                    9,
+                )],
+            }),
+            CompileError::Diagnostics(Diagnostics::UnknownTools {
+                linked: Some(1),
+                calls: vec![UnknownToolCall::new(
+                    "coral.providers.notion.retrievePage".to_owned(),
+                    2,
+                    5,
+                )],
+            }),
         ];
         let rejections = coral_v8::Error::REJECTION_CODES.map(|kind| {
             CompileError::Diagnostics(Diagnostics::Message {
@@ -547,8 +624,9 @@ mod tests {
             time_left_ms,
             call: Some(Call::Compile(wire::ProgramSource {
                 source: "return 42;".to_owned(),
-                saved_functions: Vec::new(),
+                linked_tools: Vec::new(),
                 callable: None,
+                builtin_tools: Vec::new(),
             })),
         };
         let now = Instant::now();

@@ -94,13 +94,20 @@ fn entry_anchor(
             |_invalid| Status::invalid_argument("invalid Event identity"),
         )?));
     }
-    let (owner, id) = resource(anchor, "invocations")?;
+    Ok(coral_run::RunEntryAnchor::Invocation(invocation_in(
+        anchor, workspace,
+    )?))
+}
+/// The Invocation that `name` names in `workspace`.
+fn invocation_in(
+    name: &str,
+    workspace: &coral_workspace::WorkspaceId,
+) -> Result<coral_run::InvocationId, Status> {
+    let (owner, id) = resource(name, "invocations")?;
     if &owner != workspace {
         return Err(Status::invalid_argument("Invocation Workspace mismatch"));
     }
-    Ok(coral_run::RunEntryAnchor::Invocation(
-        coral_run::InvocationId::parse(id).map_err(execution::run_error)?,
-    ))
+    coral_run::InvocationId::parse(id).map_err(execution::run_error)
 }
 pub(super) async fn entries(
     services: &GrpcServices,
@@ -136,6 +143,13 @@ pub(super) async fn entries(
         }
         coral_run::RunEntryWindow::from(&entry_anchor(&input.name, &workspace, &input.anchor)?)
     };
+    let level = match &input.level {
+        None => coral_run::RunEntryLevel::Every,
+        Some(wire::browse_run_entries_request::Level::TopLevel(_)) => coral_run::RunEntryLevel::Top,
+        Some(wire::browse_run_entries_request::Level::Parent(name)) => {
+            coral_run::RunEntryLevel::Within(invocation_in(name, &workspace)?)
+        }
+    };
     let history = services
         .tasks
         .activity_run_entries(
@@ -144,6 +158,7 @@ pub(super) async fn entries(
             &workspace,
             &id,
             &window,
+            &level,
             limit(input.page_size)?,
             selection.as_ref(),
         )

@@ -239,6 +239,7 @@ async fn child_anchors_seek_later_history_without_loading_preceding_pages() {
             &fixture.workspace,
             accepted.run_id(),
             &coral_run::RunEntryWindow::Start,
+            &coral_run::RunEntryLevel::Every,
             1,
             None,
         )
@@ -283,6 +284,7 @@ async fn child_anchors_seek_later_history_without_loading_preceding_pages() {
             &fixture.workspace,
             accepted.run_id(),
             &coral_run::RunEntryWindow::Event(31),
+            &coral_run::RunEntryLevel::Every,
             1,
             None,
         )
@@ -299,6 +301,7 @@ async fn child_anchors_seek_later_history_without_loading_preceding_pages() {
             &fixture.workspace,
             accepted.run_id(),
             &coral_run::RunEntryWindow::After(31),
+            &coral_run::RunEntryLevel::Every,
             1,
             None,
         )
@@ -434,6 +437,7 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
             &fixture.workspace,
             attributed.run_id(),
             &coral_run::RunEntryWindow::Start,
+            &coral_run::RunEntryLevel::Every,
             25,
             Some(&scope),
         )
@@ -452,6 +456,7 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
             &fixture.workspace,
             standalone.run_id(),
             &coral_run::RunEntryWindow::Start,
+            &coral_run::RunEntryLevel::Every,
             1,
             None,
         )
@@ -551,6 +556,7 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
                 &fixture.workspace,
                 attributed.run_id(),
                 &coral_run::RunEntryWindow::Start,
+                &coral_run::RunEntryLevel::Every,
                 1,
                 None,
             )

@@ -11,30 +11,30 @@
 
 /// Instructions sent in `InitializeResult` and `DiscoverResult`.
 pub(crate) const INSTRUCTIONS: &str = "\
-Coral runs TypeScript Programs that call the user's connected providers.
+Coral runs TypeScript programs that call the user's connected providers.
 
 ## Workflow
 1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
-2. Find provider tools and Saved Functions with `coral.workspace.search` in a Program; `exec` shows how.
-3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new Run and can repeat external effects.
-4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the Final Value or failure.
-5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.workspace.saveFunction` in that Run. Skip one call, one-off writes and exploration. Tell the user its path.
+2. Find provider and custom tools with `coral.search` in a program; `exec` shows how.
+3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new run and can repeat external effects.
+4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the final value or failure.
+5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.addCustomTool` in that run (`coral.updateCustomTool` replaces one). Skip one call, one-off writes and exploration. Tell the user its path.
 6. When the work is done or cannot continue, call `end_task` once with the outcome.
 
 ## Program rules
-- Write each call as the complete literal Call Path that search returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
+- Write each call as the complete literal call path that search returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
 - Only provider tools reach the network; `fetch`, `setTimeout` and other ambient APIs are absent.
-- Keep credentials and account choice out of Program source; Coral supplies both.
-- Publish interim output with `await coral.emit(value)`. The Program's return value is the Final Value.
+- Keep credentials and account choice out of program source; Coral supplies both.
+- Publish interim output with `await coral.emit(value)`. The program's return value is the final value.
 - Error responses throw `coral.ToolError` with their `data`. Coral never pages or retries: follow continuation data.
 
 ## Results
 - `isError: true` means Coral rejected the call. Fix what `code` and `message` name, then call again.
-- Report a failed, canceled, timed-out or interrupted Run to the user as its outcome.
+- Report a failed, canceled, timed-out or interrupted run to the user as its outcome.
 
 ## Human handoff
-A non-empty `required_actions` means the Run waits for a person.
-- For `invoking_user`, write the full `url` as reply text, then keep calling `wait`: it can report the link as progress while it holds, and the decision resumes the Run.
+A non-empty `required_actions` means the run waits for a person.
+- For `invoking_user`, write the full `url` as reply text, then keep calling `wait`: it can report the link as progress while it holds, and the decision resumes the run.
 - Never ask for a token, password or account in the chat: a connection happens on that page.
 ";
 

@@ -195,7 +195,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
             .getByRole('dialog')
             .getByRole('button', { name: 'Remove provider', exact: true })
             .click()
-          await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
+          await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/tools`)
           expect((await page.request.get(providerPath)).status()).toBe(404)
           const retained = (await run.wait(firstRun)).structuredContent
           expect(retained.run_id).toBe(firstRun.run_id)

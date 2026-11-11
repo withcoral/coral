@@ -1201,7 +1201,7 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
         }
         // Retrying can succeed. Name every variant so a new one needs a wire decision.
         coral_search::Error::ServiceUnavailable
-        | coral_search::Error::Functions(_)
+        | coral_search::Error::Tools(_)
         | coral_search::Error::Database(_) => safe_status(tonic::Code::Unavailable, "UNAVAILABLE"),
     }
 }

@@ -51,7 +51,13 @@ fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent, free: u32) {
 }
 
 fn compile(caller: &dyn CompilerClient) -> Result<String, CompileError> {
-    let program = caller.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None)?;
+    let program = caller.compile(
+        TEST_COMPILATION_TIMEOUT,
+        "return 42;",
+        &[],
+        &coral_v8::BuiltinTools::default(),
+        None,
+    )?;
     Ok(program.javascript().to_owned())
 }
 

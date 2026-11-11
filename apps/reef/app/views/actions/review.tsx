@@ -16,7 +16,13 @@ import { Deadline } from '@/wax/components/deadline'
 import * as DescriptionList from '@/wax/components/description-list'
 import type { IconName, IconPlateTone } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
-import type { ApprovalContext, ApprovalDetail, RequestDetail } from '../activity/types'
+import type {
+  ApprovalContext,
+  ApprovalDetail,
+  ParentInvocation,
+  RequestDetail,
+} from '../activity/types'
+import { ParentInvocationName } from '../activity/called-from'
 import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
 import { settledApproval } from './approval-state'
 import { PanelFooter, PanelHeader, usePanelLabel } from '../activity/panel'
@@ -193,6 +199,7 @@ export function ApprovalReview({
   detail,
   context,
   callStartedAt,
+  calledFrom,
   variant = 'activity',
 }: {
   detail: ApprovalDetail
@@ -200,6 +207,9 @@ export function ApprovalReview({
   /** When the call this approval decides started, if that call is loaded. An approval records
    * no start of its own; the Run's start and the deadline are not this call's. */
   callStartedAt?: string
+  /** The tool call whose body made the call this approval decides. Absent for the program's
+   * own calls. */
+  calledFrom?: ParentInvocation
   /** On the Approvals page, every review is an approval of one call and a pending one waits on
    * you, so the review leaves that unsaid and always shows the provider by its logo. */
   variant?: 'activity' | 'approvals'
@@ -285,6 +295,11 @@ export function ApprovalReview({
         )}
         {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
         <DescriptionList.Row label="Requested by">{requestedBy(run)}</DescriptionList.Row>
+        {calledFrom && (
+          <DescriptionList.Row label="Called from">
+            <ParentInvocationName parent={calledFrom} />
+          </DescriptionList.Row>
+        )}
         {callStartedAt && (
           <DescriptionList.Row label="Call started">
             <Instant value={callStartedAt} />

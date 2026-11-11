@@ -41,14 +41,25 @@ export interface PolicyToggleProps {
   onChange?: (value: PolicyState) => void
   disabled?: boolean
   size?: SegmentedControlProps<PolicyState>['size']
+  /** Shows each state's name beside its icon, for a choice made once rather than in a table. */
+  withLabels?: boolean
 }
 
+const labelledOptions = policyOptions.map((option) => ({ ...option, withLabel: true }))
+
 /** One policy, chosen from three icon segments. */
-export function PolicyToggle({ label, value, onChange, disabled, size }: PolicyToggleProps) {
+export function PolicyToggle({
+  label,
+  value,
+  onChange,
+  disabled,
+  size,
+  withLabels = false,
+}: PolicyToggleProps) {
   return (
     <SegmentedControl
       label={label}
-      options={policyOptions}
+      options={withLabels ? labelledOptions : policyOptions}
       value={value}
       onChange={(next) => onChange?.(next)}
       disabled={disabled}

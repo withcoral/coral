@@ -37,12 +37,12 @@ impl ExactPaths {
     pub fn new(paths: Vec<String>, types: Vec<String>) -> Result<Self, Error> {
         if paths.is_empty() || paths.len() > SEARCH_PATHS_MAX {
             return Err(Error::InvalidInput(format!(
-                "pass 1 to {SEARCH_PATHS_MAX} Call Paths"
+                "pass 1 to {SEARCH_PATHS_MAX} call paths"
             )));
         }
         if paths.iter().any(|path| path.len() > SEARCH_PATH_MAX_BYTES) {
             return Err(Error::InvalidInput(format!(
-                "a Call Path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"
+                "a call path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"
             )));
         }
         if !types.is_empty() && paths.len() != 1 {

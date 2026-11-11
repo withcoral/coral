@@ -15,17 +15,12 @@ import type {
   WorkspaceOwner,
 } from '@/generated/coral/management/v1/membership_pb'
 import {
-  SavedFunctionDiagnosticCategory,
-  type SavedFunction,
-  type SavedFunctionDiagnostic,
-  type SavedFunctionSummary,
-} from '@/generated/coral/management/v1/saved_function_pb'
+  AuthoredToolDiagnosticCategory,
+  type AuthoredToolDiagnostic,
+} from '@/generated/coral/management/v1/authored_tool_pb'
+import type { PrivateTool } from '@/generated/coral/management/v1/private_tool_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
-import type {
-  SavedFunctionDiagnosticView,
-  SavedFunctionSummaryView,
-  SavedFunctionView,
-} from '@/views/functions/types'
+import type { PrivateToolDetailView, ToolDiagnosticView } from '@/views/tools/types'
 import { resourcePath } from './management.server'
 
 export function workspaceView(w: Workspace) {
@@ -134,40 +129,34 @@ export function registrationView(r: AgentRegistration) {
   }
 }
 
-/** The browser path of one of the current User's functions in a Workspace. */
-export function savedFunctionHref(workspacePath: string, path: string) {
-  return `${workspacePath}/functions/${encodeURIComponent(path)}`
-}
-export function savedFunctionSummaryView(
-  workspacePath: string,
-  f: SavedFunctionSummary,
-): SavedFunctionSummaryView {
+/**
+ * One Private Tool with its source and saved diagnostics: the current User's
+ * own, or that of `agent`, an Agent's identifier.
+ */
+export function privateToolView(
+  saved: PrivateTool,
+  agent: string | null = null,
+): PrivateToolDetailView {
   return {
-    path: f.path,
-    description: f.description,
-    savedAt: isoTime(f.updateTime),
-    href: savedFunctionHref(workspacePath, f.path),
+    kind: 'private',
+    agent,
+    relativePath: saved.path,
+    description: saved.description,
+    declaration: saved.declaration,
+    source: saved.source,
+    diagnostics: saved.diagnostics.map(diagnosticView),
+    diagnosticsTruncated: saved.diagnosticsTruncated,
+    savedAt: isoTime(saved.updateTime),
   }
 }
-export function savedFunctionView(f: SavedFunction): SavedFunctionView {
-  return {
-    path: f.path,
-    description: f.description,
-    declaration: f.declaration,
-    source: f.source,
-    diagnostics: f.diagnostics.map(diagnosticView),
-    diagnosticsTruncated: f.diagnosticsTruncated,
-    savedAt: isoTime(f.updateTime),
-  }
-}
-function diagnosticView(d: SavedFunctionDiagnostic): SavedFunctionDiagnosticView {
+export function diagnosticView(d: AuthoredToolDiagnostic): ToolDiagnosticView {
   return {
     category: enumLabel(d.category, {
-      [SavedFunctionDiagnosticCategory.ERROR]: 'error',
-      [SavedFunctionDiagnosticCategory.WARNING]: 'warning',
-      [SavedFunctionDiagnosticCategory.SUGGESTION]: 'suggestion',
-      [SavedFunctionDiagnosticCategory.MESSAGE]: 'message',
-    }) as SavedFunctionDiagnosticView['category'],
+      [AuthoredToolDiagnosticCategory.ERROR]: 'error',
+      [AuthoredToolDiagnosticCategory.WARNING]: 'warning',
+      [AuthoredToolDiagnosticCategory.SUGGESTION]: 'suggestion',
+      [AuthoredToolDiagnosticCategory.MESSAGE]: 'message',
+    }) as ToolDiagnosticView['category'],
     code: Number(d.code),
     message: d.message,
     line: d.line === undefined ? null : Number(d.line),

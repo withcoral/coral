@@ -31,6 +31,8 @@ import {
 import {
   activityStops,
   childWindow,
+  expandable,
+  type ExpandableRow,
   liveRun,
   liveStep,
   liveTarget,
@@ -89,8 +91,8 @@ const toolIcons = new Map<string, IconName>([
   ['search', 'Search'],
   ['describe', 'BookOpen'],
   ['exec', 'Play'],
-  ['save_function', 'Save'],
-  ['delete_function', 'Trash'],
+  ['save_private_tool', 'Save'],
+  ['delete_private_tool', 'Trash'],
 ])
 /** A record's kind icon. A call whose provider the workspace still has shows that provider's
  * logo in its name instead. */
@@ -184,10 +186,14 @@ function rowDuration(row: ActivityRow) {
   const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
 }
-function emptyBranchMessage(row: Extract<ActivityRow, { kind: 'task' | 'run' }>) {
+function emptyBranchMessage(row: ExpandableRow) {
+  // Reef cannot tell whether a call or a Run in an unknown state has ended.
+  if (row.kind === 'invocation') {
+    if (row.state === 'unknown') return 'This tool has no recorded calls.'
+    return row.state === 'ended' ? 'This tool made no calls.' : 'This tool has not made a call yet.'
+  }
   if (row.kind === 'task')
     return row.endedAt ? 'This task made no calls.' : 'This task has not made a call yet.'
-  // Reef cannot tell whether a Run in an unknown state has ended.
   if (row.state === 'unknown') return 'This execution has no recorded tools.'
   return row.state === 'running'
     ? 'This execution has not called a tool yet.'
@@ -329,7 +335,7 @@ const RecordRow = memo(function RecordRow({
 }) {
   const actions = useContext(RowActionsContext)
   const providers = useContext(ProviderMarksContext)
-  const expandable = !scope.glimpse && (row.kind === 'task' || row.kind === 'run')
+  const opens = !scope.glimpse && expandable(row)
   const branch = scope.glimpse ? undefined : branches?.[row.name]
   const expanded = scope.expanded.has(row.name)
   const recordRowProps = {
@@ -357,7 +363,7 @@ const RecordRow = memo(function RecordRow({
           icon={recordIcon(row, providers)}
           expanded={expanded}
           disabled={!expanded && scope.full}
-          onToggle={expandable ? () => actions.toggle(row.name) : undefined}
+          onToggle={opens ? () => actions.toggle(row.name) : undefined}
           marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
         >
           <Link
@@ -382,9 +388,8 @@ const RecordRow = memo(function RecordRow({
       </Table.Cell>
     </>
   )
-  // Only a Task or Run expands; anything else stays a plain row.
-  if (!branch || (row.kind !== 'task' && row.kind !== 'run'))
-    return <Table.Row {...recordRowProps}>{cells}</Table.Row>
+  // Only a record that holds others expands; anything else stays a plain row.
+  if (!branch || !expandable(row)) return <Table.Row {...recordRowProps}>{cells}</Table.Row>
   const children = childWindow(branch)
   // The expanded record heads its children and pins while they scroll.
   return (
@@ -428,7 +433,7 @@ function shownRecords(page: ActivityPage, roots: ActivityRow[], glimpse: boolean
     for (const row of rows) {
       shown.add(row.name)
       const branch = page.branches[row.name]
-      if (!glimpse && branch && (row.kind === 'task' || row.kind === 'run')) visit(branch.rows)
+      if (!glimpse && branch && expandable(row)) visit(branch.rows)
     }
   }
   visit(roots)
@@ -855,19 +860,19 @@ export function Activity({
         state: tokens.next(),
       })
     }
-    /** Space: whether it toggled a Task or Run. */
+    /** Space: whether it toggled an expandable record. */
     const toggle = (owner: 'table' | 'rail') => {
       const current = latest.current
       const row = owner === 'rail' ? current.selectedRow : current.activeStop?.row
-      // The rail toggles only a Task or Run it shows itself, never a final value.
+      // The rail toggles only an expandable record it shows itself, never a final value.
       if (!row || (owner === 'rail' && (!current.open || row.name !== current.selected)))
         return false
-      if (row.kind === 'task' || row.kind === 'run') {
+      if (expandable(row)) {
         if (!current.expanded.includes(row.name) && current.full) return false
         actions.toggle(row.name, true)
         return true
       }
-      // In the table, any other record collapses the closest Task or Run around it.
+      // In the table, any other record collapses the closest expandable record around it.
       const parent = owner === 'table' && current.activeStop?.parents[0]
       if (!parent) return false
       actions.toggle(parent, true)

@@ -1,9 +1,9 @@
 use crate::{AccessLifecycleModule, Error};
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
-    SavedFunctionSave, SavedFunctionSource,
-};
 use coral_test_support::{TestDatabase, provision_user};
+use coral_tools::{
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
+};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole,
     WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
@@ -101,26 +101,22 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         .await
         .unwrap();
     let author = AuthenticatedPrincipal::user(returned);
-    let functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         database,
         workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    let path = SavedFunctionPath::parse("fresh").unwrap();
-    let saved = functions
+    let path = PrivateToolPath::parse("fresh").unwrap();
+    let saved = private_tools
         .save(
-            &SavedFunctionChangeContext::new(
-                author.clone(),
-                100,
-                change(&owner).trace_id().clone(),
-            ),
+            &PrivateToolChangeContext::new(author.clone(), 100, change(&owner).trace_id().clone()),
             workspace.id(),
-            SavedFunctionSave::new(
+            PrivateToolSave::new(
                 path.clone(),
-                SavedFunctionDescription::parse("Fresh work after rejoining").unwrap(),
-                SavedFunctionSource::parse("export default () => 42;").unwrap(),
+                AuthoredToolDescription::parse("Fresh work after rejoining").unwrap(),
+                AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await
@@ -180,7 +176,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         rejoined
     );
     assert_eq!(
-        functions
+        private_tools
             .get(&author, workspace.id(), &path)
             .await
             .unwrap()
@@ -188,7 +184,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         saved.id()
     );
     assert_eq!(
-        functions
+        private_tools
             .list_lifecycle_events(&author, workspace.id())
             .await
             .unwrap()
@@ -204,7 +200,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         events_before
     );
     assert!(
-        functions
+        private_tools
             .list_lifecycle_events(&AuthenticatedPrincipal::user(owner), workspace.id())
             .await
             .unwrap()
@@ -213,7 +209,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
 }
 
 #[tokio::test]
-async fn old_removal_cannot_delete_rejoined_membership_or_fresh_functions() {
+async fn old_removal_cannot_delete_rejoined_membership_or_fresh_private_tools() {
     stale_command_preserves_rejoined_membership_and_work(StaleCommand::Remove).await;
 }
 

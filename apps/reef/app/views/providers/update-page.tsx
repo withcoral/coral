@@ -22,7 +22,7 @@ export function UpdatePage({
   basePath,
   cancelPath,
   settingsPath = `${cancelPath}/settings`,
-  providersPath,
+  toolsPath,
   attempt,
   form,
   result,
@@ -40,7 +40,7 @@ export function UpdatePage({
       variant="wide"
       breadcrumbs={trail(
         [
-          { label: 'Providers', to: providersPath },
+          { label: 'Tools', to: toolsPath },
           { label: displayName, to: cancelPath },
           { label: 'Settings', to: settingsPath },
         ],

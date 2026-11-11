@@ -191,13 +191,14 @@ impl TaskModule {
         workspace: &WorkspaceId,
         id: &RunId,
         window: &RunEntryWindow,
+        level: &coral_run::RunEntryLevel,
         limit: u16,
         selection: Option<&HistoryScope>,
     ) -> Result<ActivityRunEntries, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let execution = runs
             .activity_entries_in_transaction(
-                &mut tx, actor, workspace, id, window, limit, selection,
+                &mut tx, actor, workspace, id, window, level, limit, selection,
             )
             .await?;
         let submission = self

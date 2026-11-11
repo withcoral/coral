@@ -280,7 +280,8 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     let search = observe_search_backlog(|| {
         Some(SearchBacklog {
             generations: 2,
-            functions: 1,
+            private_tools: 1,
+            shared_tools: 3,
             first_visibility: Some(FirstVisibilityBacklog {
                 waiting: 1,
                 oldest_age: Some(Duration::from_secs(5)),
@@ -413,7 +414,8 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
     let known = observe_search_backlog(|| {
         Some(SearchBacklog {
             generations: 0,
-            functions: 0,
+            private_tools: 0,
+            shared_tools: 0,
             first_visibility: Some(FirstVisibilityBacklog {
                 waiting: 0,
                 oldest_age: None,
@@ -421,7 +423,11 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
             sample_age: Duration::ZERO,
         })
     });
-    assert_eq!(capture.values("coral.search.index.backlog"), [0.0, 0.0]);
+    assert_eq!(
+        capture.values("coral.search.index.backlog"),
+        [0.0, 0.0, 0.0],
+        "one point for each kind of projection"
+    );
     assert_eq!(
         capture.values("coral.search.index.first_visibility.age"),
         [0.0]
@@ -434,7 +440,11 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
             .is_empty()
     );
     drop(unknown);
-    assert_eq!(capture.values("coral.search.index.backlog"), [0.0, 0.0]);
+    assert_eq!(
+        capture.values("coral.search.index.backlog"),
+        [0.0, 0.0, 0.0],
+        "one point for each kind of projection"
+    );
     assert_eq!(
         capture.values("coral.search.index.first_visibility.age"),
         [0.0]

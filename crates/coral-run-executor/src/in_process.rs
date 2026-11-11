@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use coral_telemetry::metric::CompilerRole;
 use coral_telemetry::safe;
 use coral_v8::{
-    AnalyzedSource, CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramCompiler, SavedFunctionCompilation, SourceReferences,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CompileFailure, CompiledProgram,
+    CoralDeclarations, IsolateLimits, LinkedToolSource, ProgramCompiler, SourceReferences,
     UnknownToolCall,
 };
 
@@ -18,7 +18,7 @@ use crate::{
 pub struct InProcessCompiler {
     /// Program Admission's handle.
     run: ProgramCompiler,
-    /// Saved Function save's handle on the same thread and queue.
+    /// Private Tool save's handle on the same thread and queue.
     authoring: ProgramCompiler,
 }
 
@@ -40,7 +40,7 @@ impl InProcessCompiler {
     fn unknown_tool_calls(
         &self,
         deadline: Instant,
-        source: &str,
+        source: &AnalyzedSource,
         callable: &[String],
     ) -> Vec<UnknownToolCall> {
         let Some(check_deadline) = tool_check_deadline(deadline) else {
@@ -92,23 +92,36 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        linked_tools: &[LinkedToolSource],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let deadline = deadline(time_left);
         if let Some(callable) = callable {
-            let unknown = self.unknown_tool_calls(deadline, source, callable);
-            if !unknown.is_empty() {
-                return Err(CompileError::Diagnostics(Diagnostics::UnknownTools(
-                    unknown,
-                )));
+            let program = AnalyzedSource::Program(source.to_string());
+            let sources = std::iter::once((None, program)).chain(
+                linked_tools.iter().enumerate().map(|(index, linked)| {
+                    (
+                        Some(index),
+                        AnalyzedSource::AuthoredTool(linked.source().to_string()),
+                    )
+                }),
+            );
+            for (linked, analyzed) in sources {
+                let calls = self.unknown_tool_calls(deadline, &analyzed, callable);
+                if !calls.is_empty() {
+                    return Err(CompileError::Diagnostics(Diagnostics::UnknownTools {
+                        linked,
+                        calls,
+                    }));
+                }
             }
         }
-        if saved_functions.is_empty() {
-            self.run.compile(deadline, source)
+        let run = self.run.with_builtin_tools(builtin_tools);
+        if linked_tools.is_empty() {
+            run.compile(deadline, source)
         } else {
-            self.run
-                .compile_with_saved_functions(deadline, source, saved_functions)
+            run.compile_linked(deadline, source, linked_tools)
         }
         .map_err(compile_error)
     }
@@ -117,15 +130,16 @@ impl CompilerClient for InProcessCompiler {
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError> {
+    ) -> Result<AuthoredToolCompilation, CompileError> {
         let deadline = deadline(time_left);
+        let authoring = self.authoring.with_builtin_tools(builtin_tools);
         match declarations {
             Some(declarations) => {
-                self.authoring
-                    .prepare_typed_saved_function(deadline, source, declarations)
+                authoring.prepare_typed_authored_tool(deadline, source, declarations)
             }
-            None => self.authoring.prepare_saved_function(deadline, source),
+            None => authoring.prepare_authored_tool(deadline, source),
         }
         .map_err(compile_error)
     }
@@ -138,7 +152,7 @@ fn deadline(time_left: Duration) -> Instant {
 fn compile_error(error: coral_v8::Error) -> CompileError {
     match error {
         coral_v8::Error::MemoryLimitExceeded => CompileError::MemoryLimit,
-        coral_v8::Error::InvalidSavedFunctionReference {
+        coral_v8::Error::InvalidLinkedToolReference {
             message,
             line,
             column,
@@ -201,8 +215,8 @@ mod tests {
                 "invalid_program_body",
             ),
             (
-                || coral_v8::Error::InvalidSavedFunction("no default export".into()),
-                "invalid_saved_function",
+                || coral_v8::Error::InvalidAuthoredTool("no default export".into()),
+                "invalid_authored_tool",
             ),
             (
                 || coral_v8::Error::SourceTooDeeplyNested,
@@ -213,16 +227,16 @@ mod tests {
                 "forbidden_capability",
             ),
             (
-                || coral_v8::Error::InvalidSavedFunctionReference {
+                || coral_v8::Error::InvalidLinkedToolReference {
                     message: "computed access".into(),
                     line: 2,
                     column: 7,
                 },
-                "invalid_saved_function_reference",
+                "invalid_linked_tool_reference",
             ),
             (
-                || coral_v8::Error::InvalidFunctionSave("names no function".into()),
-                "invalid_function_save",
+                || coral_v8::Error::InvalidPrivateToolSave("names no function".into()),
+                "invalid_private_tool_save",
             ),
             (
                 || coral_v8::Error::MemoryLimitExceeded,
@@ -256,14 +270,14 @@ mod tests {
     fn analysis_answers_each_source_in_order_and_names_the_first_that_fails() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         let program = AnalyzedSource::Program(
-            "await coral.providers.github.repos.get({});\nreturn coral.functions.math.add();"
+            "await coral.providers.github.repos.get({});\nreturn coral.private.math.add({});"
                 .to_owned(),
         );
-        let module = AnalyzedSource::SavedFunction(
-            "export default () => coral.functions.math.double();".to_owned(),
+        let module = AnalyzedSource::AuthoredTool(
+            "export default () => coral.shared.math.double({});".to_owned(),
         );
-        let computed = AnalyzedSource::SavedFunction(
-            "const key = 'double'; export default () => coral.functions.math[key]();".to_owned(),
+        let computed = AnalyzedSource::AuthoredTool(
+            "const key = 'double'; export default () => coral.private.math[key]({});".to_owned(),
         );
         let analyzed = compiler
             .analyze(TEST_COMPILATION_TIMEOUT, &[program.clone(), module.clone()])
@@ -273,9 +287,10 @@ mod tests {
                 .iter()
                 .map(|references| (
                     references
-                        .functions()
+                        .private_tools()
                         .iter()
-                        .map(coral_v8::SavedFunctionReference::path)
+                        .chain(references.shared_tools())
+                        .map(coral_v8::LinkedToolReference::path)
                         .collect::<Vec<_>>(),
                     references.tool_call_paths().to_vec(),
                 ))
@@ -304,36 +319,48 @@ mod tests {
         );
     }
 
-    // Catches: a Tool check that runs without a callable list, or blocks a
-    // Program whose every call names a Tool. The unknown-Tool rule itself is
-    // tested in coral-v8.
+    // Catches: a Tool check that runs without a callable list, blocks a
+    // Program whose every call names a Tool, skips a linked Tool's calls, or
+    // names the wrong source. The unknown-Tool rule itself is tested in
+    // coral-v8.
     #[test]
-    fn compile_checks_the_called_tools_only_against_a_callable_list() {
+    fn compile_checks_the_called_tools_of_each_source_only_against_a_callable_list() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         let source = "await coral.providers.github.repos.get({});\n\
-            return await coral.providers.notion.retrievePage({});";
+            return await coral.private.reports.page({});";
+        let linked = [LinkedToolSource::private(
+            vec!["reports".to_owned(), "page".to_owned()],
+            "export default async () => coral.providers.notion.retrievePage({});".to_owned(),
+        )];
         let get = "coral.providers.github.repos.get".to_owned();
         let page = "coral.providers.notion.retrievePage".to_owned();
         let cases = [
-            (None, false),
-            (Some(vec![get.clone(), page]), false),
-            (Some(vec![get]), true),
+            (None, None),
+            (Some(vec![get.clone(), page.clone()]), None),
+            (Some(vec![get]), Some(Some(0))),
+            (Some(vec![page]), Some(None)),
         ];
         for (callable, refused) in cases {
-            let outcome =
-                compiler.compile(TEST_COMPILATION_TIMEOUT, source, &[], callable.as_deref());
-            if refused {
-                assert!(
+            let outcome = compiler.compile(
+                TEST_COMPILATION_TIMEOUT,
+                source,
+                &linked,
+                &BuiltinTools::default(),
+                callable.as_deref(),
+            );
+            match refused {
+                Some(source) => assert!(
                     matches!(
                         &outcome,
-                        Err(CompileError::Diagnostics(Diagnostics::UnknownTools(calls)))
-                            if !calls.is_empty()
+                        Err(CompileError::Diagnostics(Diagnostics::UnknownTools { linked, calls }))
+                            if *linked == source && !calls.is_empty()
                     ),
                     "{callable:?}: {:?}",
                     outcome.map(drop)
-                );
-            } else {
-                outcome.unwrap_or_else(|error| panic!("{callable:?}: {error:?}"));
+                ),
+                None => {
+                    outcome.unwrap_or_else(|error| panic!("{callable:?}: {error:?}"));
+                }
             }
         }
     }
@@ -343,12 +370,24 @@ mod tests {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         assert_eq!(
             compiler
-                .compile(Duration::ZERO, "return 42;", &[], None)
+                .compile(
+                    Duration::ZERO,
+                    "return 42;",
+                    &[],
+                    &BuiltinTools::default(),
+                    None,
+                )
                 .map(drop),
             Err(CompileError::TimedOut)
         );
         compiler
-            .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None)
+            .compile(
+                TEST_COMPILATION_TIMEOUT,
+                "return 42;",
+                &[],
+                &BuiltinTools::default(),
+                None,
+            )
             .expect("a call with time left compiles");
     }
 }

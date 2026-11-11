@@ -1,4 +1,4 @@
-//! `coral.workspace.updateProvider`: the schemas a Program is typed from, the
+//! `coral.updateProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. A call sends the namespace and only the fields
 //! it changes. A sent value replaces its saved value. A sent map changes only
@@ -37,17 +37,17 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::UpdateProvider.key(),
-        summary: "Change a Provider's configuration or source",
+        summary: "Change a provider's configuration or source",
         presentation: ToolPresentation::new(
             Some("Update provider".to_string()),
-            "Change the configuration or the source of one Provider in this Workspace. It \
+            "Change the configuration or the source of one provider in this workspace. It \
              returns a Coral UI link where a person reviews and publishes the change. A \
              change to displayName alone applies at once."
                 .to_string(),
             false,
-            vec!["providers".to_string()],
+            vec!["Providers".to_string()],
             Some(
-                "Read the saved values with coral.workspace.getProvider first. Send namespace \
+                "Read the saved values with coral.getProvider first. Send namespace \
                  and only the fields to change. An omitted field keeps its saved value. A sent \
                  value replaces its saved value. A sent map changes only the keys it names: \
                  to drop a request header, send requestHeaders with that header set to null. \
@@ -55,17 +55,17 @@ pub(super) fn definition() -> Definition {
                  authentication.resource and authentication.client.registration from \
                  getProvider's result before you send authentication. An OAuth method you send \
                  without client keeps the saved application. Send source to read the \
-                 Provider from a new source, or refresh: true to read the saved source URL \
+                 provider from a new source, or refresh: true to read the saved source URL \
                  again, never both. Without either, Coral keeps the saved document. For an \
                  MCP source, Coral takes the server and the OAuth endpoints from the MCP \
                  server unless you send them. Never pass a secret or a literal credential \
-                 value. A namespace that no Provider holds fails with provider_not_found. \
+                 value. A namespace that no provider holds fails with provider_not_found. \
                  When Coral cannot fetch the source, the call fails with \
-                 upstream_incomplete. When status is published, the Provider has its new \
+                 upstream_incomplete. When status is published, the provider has its new \
                  displayName. When status is needs_person, show the person the returned \
                  url. Calls keep the saved configuration until the person publishes the \
                  change. To check later whether the person published it, call \
-                 coral.workspace.getProvider."
+                 coral.getProvider."
                     .to_string(),
             ),
         ),
@@ -88,7 +88,7 @@ pub(super) fn definition() -> Definition {
 #[schemars(description = "", transform = require_a_change)]
 struct Arguments {
     #[schemars(
-        description = "The Provider Namespace, such as github. It names the Provider to change, \
+        description = "The provider namespace, such as github. It names the provider to change, \
                        and it cannot change."
     )]
     namespace: String,
@@ -107,11 +107,11 @@ struct Arguments {
     #[serde(default, deserialize_with = "present")]
     #[schemars(
         with = "BuiltinCredentialRoute",
-        description = "Whose account Invocations use."
+        description = "Whose account invocations use."
     )]
     credential_route: Option<BuiltinCredentialRoute>,
     #[serde(default, deserialize_with = "present")]
-    #[schemars(with = "String", description = "The Provider's name.")]
+    #[schemars(with = "String", description = "The provider's name.")]
     display_name: Option<String>,
     #[serde(default, deserialize_with = "present")]
     #[schemars(
@@ -420,10 +420,10 @@ fn with_mcp_server_settings(
 #[schemars(deny_unknown_fields, description = "")]
 pub enum UpdateProviderResult {
     /// Coral renamed the Provider, and the Program can call it now.
-    #[schemars(description = "Coral renamed the Provider. Calls use the new name now.")]
+    #[schemars(description = "Coral renamed the provider. Calls use the new name now.")]
     Published {
         /// The Provider Namespace.
-        #[schemars(description = "The Provider Namespace.")]
+        #[schemars(description = "The provider namespace.")]
         namespace: String,
         /// What the Program needs to call it.
         #[serde(flatten)]
@@ -438,7 +438,7 @@ pub enum UpdateProviderResult {
         )]
         url: String,
         /// The Provider Namespace.
-        #[schemars(description = "The Provider Namespace.")]
+        #[schemars(description = "The provider namespace.")]
         namespace: String,
     },
 }

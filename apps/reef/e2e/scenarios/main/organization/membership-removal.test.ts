@@ -44,7 +44,7 @@ test('Organization owner removes current work across workspaces through Members 
         })
         expect(
           (
-            await runner.saveFunction(
+            await runner.addCustomTool(
               'answer',
               'Private answer',
               'const answer = () => 42;',
@@ -52,7 +52,7 @@ test('Organization owner removes current work across workspaces through Members 
             )
           ).isError,
         ).not.toBe(true)
-        const run = (await runner.exec('return coral.functions.answer();')).structuredContent
+        const run = (await runner.exec('return coral.private.answer();')).structuredContent
         expect(run.state).toBe('succeeded')
         expect(run.final_value).toEqual({ kind: 'value', value: 42 })
         const task = `${workspace.name}/tasks/${runner.taskId()}`
@@ -112,7 +112,7 @@ test('Organization owner removes current work across workspaces through Members 
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
-      await step('Rejoin without restoring credentials or current functions', async () => {
+      await step('Rejoin without restoring credentials or current private tools', async () => {
         for (const workspace of workspaces) {
           await api.memberships.createWorkspaceMembership({
             parent: workspace.name,
@@ -127,7 +127,7 @@ test('Organization owner removes current work across workspaces through Members 
           const runner = programRunner(page, target, workspace.name.split('/')[1], {
             accessToken: await mcpToken(page, workspace.name.split('/')[1]),
           })
-          expect((await runner.describe('coral.functions.answer')).isError).toBe(true)
+          expect((await runner.describe('coral.private.answer')).isError).toBe(true)
           const retained = (await runner.wait({ ...previous.run, next_cursor: '' }))
             .structuredContent
           expect(retained.run_id).toBe(previous.run.run_id)

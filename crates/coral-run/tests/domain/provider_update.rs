@@ -1,4 +1,4 @@
-//! `coral.workspace.updateProvider` changes an Owner-created Provider through
+//! `coral.updateProvider` changes an Owner-created Provider through
 //! an Update Setup, as Reef's update page does. The call returns Reef's update
 //! page, where a person reviews and publishes the change. A rename alone keeps
 //! the Generation, as Reef's settings page does.
@@ -102,7 +102,7 @@ async fn unattended(user: &str) -> AdminScope {
     let scope = AdminScope::new(user).await;
     for tool in ["addProvider", "updateProvider"] {
         scope
-            .set_access_to(&format!("coral.workspace.{tool}"), ToolAccessState::Enabled)
+            .set_access_to(&format!("coral.{tool}"), ToolAccessState::Enabled)
             .await;
     }
     scope

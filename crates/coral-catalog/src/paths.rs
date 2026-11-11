@@ -208,7 +208,7 @@ fn diagnostic(code: &'static str, message: &'static str) -> CatalogDiagnostic {
 /// Whether `value` is a Call Path segment that the Program Runtime Surface's
 /// Call Path proxy cannot route. The proxy answers `then` with `undefined`, so
 /// awaiting a path does not treat it as a thenable; the rest are object-model
-/// names. Tool paths, Provider namespaces and Saved Function paths all
+/// names. Tool paths, Provider namespaces and Private Tool paths all
 /// reserve these. Language keywords such as `delete` stay usable: property
 /// access accepts them, and a Tool's declaration does not spell its
 /// path.
@@ -228,6 +228,38 @@ pub fn provider_namespace_is_valid(value: &str) -> bool {
         .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'));
     let valid_rest = bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'));
     valid_first && valid_rest && value.len() <= MAX_BYTES && !call_path_segment_is_reserved(value)
+}
+
+/// What a Program reads when `call_path` names no Tool it can call, from
+/// any step that finds it so: the path, cut to the longest a lookup
+/// accepts, and the `suggestions` to call instead, or else where to find
+/// one.
+///
+/// A Program can compute the path, or write a literal segment that holds
+/// any string, so each control character and line separator in it is
+/// escaped and the message stays one line.
+#[must_use]
+pub fn unknown_call_path_message(call_path: &str, suggestions: &[String]) -> String {
+    let mut end = call_path.len().min(crate::SEARCH_PATH_MAX_BYTES);
+    while !call_path.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut written = String::with_capacity(end);
+    for character in call_path.get(..end).unwrap_or_default().chars() {
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            written.extend(character.escape_default());
+        } else {
+            written.push(character);
+        }
+    }
+    if suggestions.is_empty() {
+        format!("{written} names no Tool that you can call. Find one with coral.search.")
+    } else {
+        format!(
+            "{written} names no Tool that you can call. Nearest: {}.",
+            suggestions.join(", ")
+        )
+    }
 }
 
 #[cfg(test)]
@@ -306,5 +338,26 @@ mod tests {
         assert_eq!(paths.len(), 3);
         assert!(paths.iter().all(|path| path.starts_with("getUser")));
         assert!(paths.iter().all(|path| valid_relative_path(path)));
+    }
+
+    // Catches: a Call Path a Program computed, or wrote as a literal
+    // segment, putting a line break or another control character into the
+    // durable ToolError message or an admission refusal, or a message that
+    // names no next step.
+    #[test]
+    fn an_unknown_call_path_names_its_control_characters_escaped_and_what_to_call() {
+        assert_eq!(
+            super::unknown_call_path_message(
+                "coral.providers.notion.retrieve\nPage\u{1b}[31m\u{2028}",
+                &["coral.providers.notion.retrieveAPage".to_owned()],
+            ),
+            "coral.providers.notion.retrieve\\nPage\\u{1b}[31m\\u{2028} names no Tool \
+             that you can call. Nearest: coral.providers.notion.retrieveAPage."
+        );
+        assert_eq!(
+            super::unknown_call_path_message("coral.providers.a\tb", &[]),
+            "coral.providers.a\\tb names no Tool that you can call. Find one with \
+             coral.search."
+        );
     }
 }

@@ -395,6 +395,8 @@ impl LifecycleAction {
             Self::SetupExpired => "provider_setup.expired",
             Self::PublicationCompleted => "provider_publication.completed",
             Self::BuiltinProviderInstalled => "provider.builtin_installed",
+            Self::PrivateProviderInstalled => "provider.private_installed",
+            Self::SharedProviderInstalled => "provider.shared_installed",
             Self::ProviderDisabled => "provider.disabled",
             Self::ProviderUpdated => "provider.updated",
             Self::ProviderRestored => "provider.restored",
@@ -424,6 +426,8 @@ impl LifecycleAction {
             "provider_setup.expired" => Ok(Self::SetupExpired),
             "provider_publication.completed" => Ok(Self::PublicationCompleted),
             "provider.builtin_installed" => Ok(Self::BuiltinProviderInstalled),
+            "provider.private_installed" => Ok(Self::PrivateProviderInstalled),
+            "provider.shared_installed" => Ok(Self::SharedProviderInstalled),
             "provider.disabled" => Ok(Self::ProviderDisabled),
             "provider.updated" => Ok(Self::ProviderUpdated),
             "provider.restored" => Ok(Self::ProviderRestored),
@@ -962,11 +966,17 @@ pub(super) async fn active_added_provider_names(
         .collect()
 }
 
-/// Reads every Provider's active Generation across Workspaces, in any state.
-pub(super) async fn active_generations(
+/// Reads every Provider's active Generation across Workspaces, in any state,
+/// except the Private and Shared Providers', whose Generations hold no Tool.
+pub(super) async fn catalog_active_generations(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<crate::ActiveGeneration>, Error> {
-    fetch_active_generations(transaction, active_generation_query()).await
+    let mut query = active_generation_query();
+    query.and_where(Expr::col(ProviderRecords::Namespace).is_not_in([
+        crate::ProviderCallRoot::Private.as_str(),
+        crate::ProviderCallRoot::Shared.as_str(),
+    ]));
+    fetch_active_generations(transaction, query).await
 }
 
 /// Reads every Workspace's Built-in Provider's active Generation, in any
@@ -974,10 +984,17 @@ pub(super) async fn active_generations(
 pub(super) async fn builtin_active_generations(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<crate::ActiveGeneration>, Error> {
+    root_active_generations(transaction, &crate::ProviderCallRoot::Builtin).await
+}
+
+/// The active Generation of every Workspace's Provider at `call_root`, across
+/// Workspaces and in any state.
+pub(super) async fn root_active_generations(
+    transaction: &mut Transaction<'_>,
+    call_root: &crate::ProviderCallRoot,
+) -> Result<Vec<crate::ActiveGeneration>, Error> {
     let mut query = active_generation_query();
-    query.and_where(
-        Expr::col(ProviderRecords::Namespace).eq(crate::ProviderCallRoot::Builtin.as_str()),
-    );
+    query.and_where(Expr::col(ProviderRecords::Namespace).eq(call_root.as_str()));
     fetch_active_generations(transaction, query).await
 }
 

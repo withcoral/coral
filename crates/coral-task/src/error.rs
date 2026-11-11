@@ -19,9 +19,9 @@ pub enum Error {
     /// Search selected a discovery failure.
     #[error(transparent)]
     Search(#[from] coral_search::Error),
-    /// Functions selected an authoring failure.
+    /// Tools selected an authoring failure.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Tools(#[from] coral_tools::Error),
     /// Run selected an admission or observation failure.
     #[error(transparent)]
     Run(#[from] coral_run::Error),

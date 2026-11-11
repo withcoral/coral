@@ -1,4 +1,4 @@
-//! The batch describe that types `coral.providers` and `coral.workspace`
+//! The batch describe that types `coral.providers` and the Built-in Tools on `coral`
 //! keeps `describe`'s visibility.
 
 use coral_policy::ToolAccessState;
@@ -17,7 +17,8 @@ fn paths(paths: &[&str]) -> Vec<CallPath> {
 }
 
 /// Only a discoverable Tool is described. A missing Tool and an
-/// Tool the caller cannot discover are absent alike.
+/// Tool the caller cannot discover are absent alike, and so is the caller's
+/// own Private Tool: the batch describes Provider Tools only.
 #[tokio::test]
 async fn a_batch_describes_only_what_the_caller_can_describe() {
     let fixture = TestModules::new().await;
@@ -29,6 +30,7 @@ async fn a_batch_describes_only_what_the_caller_can_describe() {
         TracerScope::TOOL,
         "coral.providers.weather.missing",
         "coral.providers.hidden.getForecast",
+        TracerScope::FUNCTION,
     ]);
 
     let visible = fixture

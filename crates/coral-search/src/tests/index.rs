@@ -1,4 +1,4 @@
-//! Indexing Provider Generations and Saved Functions through `SearchIndex`.
+//! Indexing Provider Generations and Private Tools through `SearchIndex`.
 //!
 //! Every test publishes through the real Provider Module, then either notifies
 //! `SearchIndex` with the Generation's ids, as publication does after its
@@ -210,11 +210,14 @@ async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_
     // test starts at 0048, and the steps after it there wait too. Every later
     // step applies first, because today's code publishes the tracer Provider
     // and may read any of them. A later step needs no change to this range
-    // unless it depends on one of the held-back steps.
+    // unless it depends on one of the held-back steps: 0066 rebuilds the
+    // search tables on SQLite, and renames the Saved Function table that
+    // they reference until 0049, so it waits too. The publish reads none of
+    // what it changes.
     let modules = TestModules::with_plan(&coral_test_support::edited_migration_plan(|steps| {
         steps
             .into_iter()
-            .filter(|step| !(48..55).contains(&step.version))
+            .filter(|step| !(48..55).contains(&step.version) && step.version != 66)
             .collect()
     }))
     .await;
@@ -639,7 +642,7 @@ async fn a_notice_for_an_indexed_generation_writes_nothing() {
 /// items, so a notified write of a newer revision can land first. Writing the
 /// pass's older copy after it would put the old text back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revision() {
+async fn a_pass_leaves_a_private_tool_that_a_notified_write_indexed_at_a_newer_revision() {
     let upstream = MockServer::start().await;
     let mut world = World::publish_tracer(&upstream).await;
     world.index.reconcile().await;
@@ -650,7 +653,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
     ] {
         world
             .modules
-            .save_function(&principal, &world.workspace, path, description, at)
+            .save_private_tool(&principal, &world.workspace, path, description, at)
             .await;
     }
     let hold = world.index.hold_row_building();
@@ -662,7 +665,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
 
     let newer = world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.second",
@@ -672,7 +675,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
         .await;
     world
         .index
-        .sync_function(newer.workspace_id().clone(), newer.id().clone());
+        .sync_authored_tool(newer.workspace_id().clone(), newer.id().clone());
     // The notified write queues for the mutex ahead of the pass's next item.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(hold);
@@ -1182,14 +1185,14 @@ async fn two_concurrent_passes_converge_on_the_rows_one_pass_leaves() {
 }
 
 #[tokio::test]
-async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
+async fn a_pass_corrects_the_statistics_a_private_tool_delete_leaves() {
     coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.summarizeTides",
@@ -1204,7 +1207,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
     // The delete leaves the function's row and notifies nothing.
     world
         .modules
-        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .delete_private_tool(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
     assert!(world.has_term("tides").await, "nothing recounted yet");
     world.index.reconcile().await;
@@ -1214,13 +1217,13 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
 }
 
 #[tokio::test]
-async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
+async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.summarizeTides",
@@ -1247,17 +1250,17 @@ async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
 
     world
         .modules
-        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .delete_private_tool(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
 
     assert_eq!(
-        world.function_rows().await,
+        world.private_tool_rows().await,
         1,
         "the row outlives the function"
     );
     assert_eq!(hits().await, 0);
     world.index.reconcile().await;
-    assert_eq!(world.function_rows().await, 0);
+    assert_eq!(world.private_tool_rows().await, 0);
 }
 
 #[tokio::test]
@@ -1267,7 +1270,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .save_function(
+        .save_private_tool(
             &principal,
             &world.workspace,
             "internal.summarizeTides",
@@ -1284,7 +1287,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
             "coral.search.reconcile.remove_superseded",
             "coral.search.reconcile.remove_orphaned",
             "coral.search.reconcile.generations",
-            "coral.search.reconcile.functions",
+            "coral.search.reconcile.authored_tools",
             "coral.search.reconcile.statistics",
         ]
     );
@@ -1315,7 +1318,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
         write_names(&writes),
         [
             "coral.search.index_generation",
-            "coral.search.sync_function"
+            "coral.search.sync_private_tool"
         ]
         .into_iter()
         .chain(recount)
@@ -1323,7 +1326,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
         "the first pass indexes the Provider and the function, then counts them"
     );
     assert_eq!(item_work(&pass, "generations"), (1, 0));
-    assert_eq!(item_work(&pass, "functions"), (1, 0));
+    assert_eq!(item_work(&pass, "private_tools"), (1, 0));
     assert_eq!(statistics_work(&pass), (checked, checked, checked > 0));
     let (pass, writes) = split_pass(world.traced_pass().await);
     assert!(writes.is_empty(), "a pass that changed nothing: {writes:?}");
@@ -1331,7 +1334,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
 
     world
         .modules
-        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .delete_private_tool(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
     let (pass, writes) = split_pass(world.traced_pass().await);
     assert_eq!(
@@ -1369,7 +1372,7 @@ async fn a_failed_step_marks_its_span_and_the_pass() {
     for name in [
         "coral.search.reconcile",
         "coral.search.reconcile.generations",
-        "coral.search.reconcile.functions",
+        "coral.search.reconcile.authored_tools",
     ] {
         let span = pass
             .iter()
@@ -2919,8 +2922,8 @@ impl World {
             .expect("read the statistics")
     }
 
-    /// How many Saved Function rows the index holds in the Workspace.
-    async fn function_rows(&self) -> usize {
+    /// How many Private Tool rows the index holds in the Workspace.
+    async fn private_tool_rows(&self) -> usize {
         let rows: Vec<(String,)> = self
             .modules
             .search
@@ -2930,7 +2933,7 @@ impl World {
                     .column(Alias::new("doc_id"))
                     .from(Alias::new("search_entities"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("private_tool"))
                     .to_owned(),
             )
             .await

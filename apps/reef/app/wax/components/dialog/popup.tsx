@@ -5,7 +5,7 @@ import { useContext } from 'react'
 import { useComposedRefs } from '@/utils/compose-refs'
 
 import * as styles from './dialog.css'
-import { ForceBackdropContext, RailContext } from './rail'
+import { ForceBackdropContext, RailContext, RailModeContext } from './rail'
 
 export interface PopupProps extends BaseDialog.Popup.Props {
   children: React.ReactNode
@@ -51,7 +51,9 @@ export function Popup({
     >
       {/* The mode is this rail's own: a dialog opened from its content is a plain dialog. */}
       <RailContext value={null}>
-        <ForceBackdropContext value={besidePage}>{children}</ForceBackdropContext>
+        <RailModeContext value={rail?.mode ?? null}>
+          <ForceBackdropContext value={besidePage}>{children}</ForceBackdropContext>
+        </RailModeContext>
       </RailContext>
     </BaseDialog.Popup>
   )

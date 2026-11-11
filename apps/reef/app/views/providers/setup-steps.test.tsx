@@ -145,3 +145,39 @@ describe('signing in to read the tools', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })
+
+describe('reading the tools after sign-in', () => {
+  // Catches: the page calling a listing that Coral is still running a
+  // failure. A device sign-in ends before Coral reads the tools, so a refresh
+  // in between finds the setup awaiting discovery with no failure recorded.
+  const signedIn: SetupView = {
+    ...setup,
+    kind: 'mcp',
+    state: 'awaiting_discovery',
+    credentialMethod: 'oauth',
+    authorized: true,
+    serverName: 'api.githubcopilot.com',
+  }
+  it.each([
+    ['still reading', '', 'Reading the tools…', 'Coral cannot read the tools'],
+    [
+      'failed',
+      'authenticated discovery did not complete',
+      'Coral cannot read the tools',
+      'Reading the tools…',
+    ],
+  ])('says the listing is %s', (_, discoveryFailure, shown, hidden) => {
+    renderForm(
+      <DiscoveryPrompt
+        setup={{ ...signedIn, discoveryFailure }}
+        form={form}
+        pending={false}
+        callbackUrl="https://coral.test/callback"
+      />,
+    )
+    expect(screen.getByText(shown)).toBeInTheDocument()
+    expect(screen.queryByText(hidden)).not.toBeInTheDocument()
+    // A listing that never finishes still has a way forward.
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+  })
+})

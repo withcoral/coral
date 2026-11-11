@@ -754,7 +754,7 @@ impl RunningServer {
     }
 
     /// Shares the process's one warm compiler with companion runtime
-    /// composition, so Saved Function save compiles where Program Admission
+    /// composition, so Private Tool save compiles where Program Admission
     /// does.
     #[must_use]
     pub fn compiler(&self) -> Arc<dyn coral_run_executor::CompilerClient> {
@@ -911,19 +911,19 @@ pub(crate) async fn start_server(
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
     let provider_workflow =
         coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
-    // Every Workspace has a Built-in Provider with this process's catalog
-    // before the process takes requests. A rollback moves Workspaces back the
-    // same way.
+    // Every Workspace has a Built-in Provider with this process's catalog,
+    // and a Private Provider, before the process takes requests. A rollback
+    // moves Workspaces back the same way.
     let booted_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
         .ok_or_else(|| AppError::FailedPrecondition("system clock is out of range".into()))?;
     provider_workflow
-        .install_missing_builtins(booted_at)
+        .install_missing_coral_providers(booted_at)
         .await
         .map_err(|error| {
-            AppError::FailedPrecondition(format!("Built-in Provider install failed: {error}"))
+            AppError::FailedPrecondition(format!("Coral's Provider install failed: {error}"))
         })?;
     provider_workflow
         .update_builtin_catalogs(booted_at)
@@ -968,7 +968,7 @@ pub(crate) async fn start_server(
         }
         None => None,
     };
-    // Program Admission and Saved Function save share one compiler client:
+    // Program Admission and Private Tool save share one compiler client:
     // the Run Executors' pull streams, or a warm compiler in this process
     // for a test that starts Coral in its own process.
     let compiler: Arc<dyn coral_run_executor::CompilerClient> = if compile_in_process {
@@ -1001,18 +1001,34 @@ pub(crate) async fn start_server(
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }
-    let saved_functions =
-        coral_functions::SavedFunctionInspection::new(database.clone(), workspaces.clone());
-    let saved_function_deletion =
-        coral_functions::SavedFunctionDeletion::new(database.clone(), workspaces.clone());
+    let private_tools =
+        coral_tools::PrivateToolInspection::new(database.clone(), workspaces.clone());
+    // A delete removes the Private Tool's exact rule and tells the search index.
+    let private_tool_workflow = coral_administration::PrivateToolWorkflow::new(
+        database.clone(),
+        coral_tools::PrivateToolDeletion::new(workspaces.clone()),
+        search_index.clone(),
+    );
+    // A Shared Tool Publish compiles through the same warm compiler.
+    let shared_tools = coral_tools::SharedToolModule::with_compiler_client(
+        database.clone(),
+        workspaces.clone(),
+        compiler.clone(),
+        runtime_limits.compilation_timeout(),
+    );
+    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
             organization: coral_workspace::OrganizationModule::new(database.clone()),
-            provider_readiness: coral_search::UniversalSearchModule::new(
+            // A publish and a removal tell the search index after they commit.
+            shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
                 database.clone(),
-                workspaces.clone(),
+                shared_tools.clone(),
+                search.clone(),
+                search_index.clone(),
             ),
+            provider_readiness: search,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             access_lifecycle: coral_administration::AccessLifecycleModule::new(
                 database.clone(),
@@ -1029,8 +1045,9 @@ pub(crate) async fn start_server(
             providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
-            saved_functions,
-            saved_function_deletion,
+            private_tools,
+            private_tool_workflow,
+            shared_tools,
             runs: runs.clone(),
             releases: releases.clone(),
             usage: usage.as_ref().map(|usage| usage.data.clone()),

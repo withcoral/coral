@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use coral_v8::{
-    AnalyzedSource, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
-    SavedFunctionCompilation, SourceReferences,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CompiledProgram, CoralDeclarations,
+    LinkedToolSource, SourceReferences,
 };
 
 use crate::compile_wire::{self as codec, ProtocolError, Read};
@@ -25,8 +25,8 @@ const ASK_AGAIN: Duration = Duration::from_secs(1);
 
 /// Why a call too large to send is rejected. Only a typed save grows that
 /// large: its Tool declarations total at most 1 MiB, but it carries one
-/// declaration of up to 256 KiB for each Saved Function it calls.
-const TOO_LARGE: &str = "The source and the declarations of the Saved Functions it calls are too large to compile; call fewer Saved Functions";
+/// declaration of up to 256 KiB for each Private or Shared Tool it calls.
+const TOO_LARGE: &str = "The source and the declarations of the custom tools it calls are too large to compile; call fewer custom tools";
 
 /// Coral's side of the compiles the pull streams carry: a
 /// [`CompilerClient`] that sends each call down a pull stream as `Compile`
@@ -273,11 +273,12 @@ impl CompilerClient for PullStreamCompiler {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        linked_tools: &[LinkedToolSource],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let called = Instant::now();
-        let call = codec::compile_call(source, saved_functions, callable);
+        let call = codec::compile_call(source, linked_tools, builtin_tools, callable);
         match self.call(called, time_left, &call)? {
             Read::Package(program) => Ok(program),
             _ => Err(ProtocolError.into()),
@@ -288,10 +289,11 @@ impl CompilerClient for PullStreamCompiler {
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError> {
+    ) -> Result<AuthoredToolCompilation, CompileError> {
         let called = Instant::now();
-        let call = codec::prepare_call(source, declarations);
+        let call = codec::prepare_call(source, builtin_tools, declarations);
         match self.call(called, time_left, &call)? {
             Read::Prepared(prepared) => Ok(prepared),
             _ => Err(ProtocolError.into()),
@@ -388,7 +390,8 @@ mod tests {
             );
             let caller = PullStreamCompiler::for_stream(streams.clone(), stream);
             let calling = thread::spawn(move || {
-                let program = caller.compile(time_left, "return 42;", &[], None)?;
+                let builtin_tools = BuiltinTools::default();
+                let program = caller.compile(time_left, "return 42;", &[], &builtin_tools, None)?;
                 Ok(program.javascript().to_owned())
             });
             if let Some(answering) = answering {
@@ -434,7 +437,8 @@ mod tests {
         let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
         let caller = PullStreamCompiler::for_stream(streams, stream);
         let source = "x".repeat(crate::MESSAGE_MAX_BYTES);
-        let rejected = caller.compile(TEST_COMPILATION_TIMEOUT, &source, &[], None);
+        let builtin_tools = BuiltinTools::default();
+        let rejected = caller.compile(TEST_COMPILATION_TIMEOUT, &source, &[], &builtin_tools, None);
         let rejection = CompileError::Diagnostics(Diagnostics::Message {
             kind: "compilation",
             message: TOO_LARGE.to_owned(),

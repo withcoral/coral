@@ -274,9 +274,11 @@ export async function openProviderSettings(page: Page) {
   // The gear sits in the rail beside its provider. Publication lands on the
   // provider route; the gear must belong to that document, not to the page a
   // redirect is about to replace.
-  await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
+  await page.waitForURL((url) =>
+    /\/(?:tools|providers\/(?!new(?:\/|$))[^/?#]+)$/.test(url.pathname),
+  )
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
-  // The bare list route is the All providers tab and names no provider. Each
+  // The Tools page's own route is the All tools tab and names no provider. Each
   // added provider's gear links to its settings route, beside the provider in
   // the rail; Coral has no gear. Wait for the
   // rail's gears before looking for the routed one, so a rail that has not
@@ -717,7 +719,7 @@ export interface RunUpdate {
   failure?: { code: string }
 }
 
-/** What `coral.workspace.search` returns for exact Call Paths. */
+/** What `coral.search` returns for exact Call Paths. */
 interface DescribedPath {
   descriptions: { call_path: string; typescript_declaration: string }[]
   missing: { call_path: string; suggestions: string[] }[]
@@ -951,6 +953,26 @@ export function programRunner(
       Object.assign(calls, counted)
     }
   }
+  /** Saves the function `name` that `declarations` declare with the authoring Tool `verb`. */
+  const authorTool = async (
+    verb: 'addCustomTool' | 'updateCustomTool',
+    path: string,
+    description: string,
+    declarations: string,
+    name: string,
+  ): Promise<ToolResult> => {
+    const fields = `path: ${JSON.stringify(path)}, description: ${JSON.stringify(description)}`
+    // A failed save keeps its Run's failure, so a scenario can show why.
+    let failure: ToolResult<RunUpdate> | undefined
+    const saved = await runUncounted(
+      `${declarations}\nreturn (await coral.${verb}({ ${fields}, source: ${name} })).data;`,
+      'Save a reusable tool',
+      (result) => {
+        failure = result
+      },
+    )
+    return saved ?? { isError: true, structuredContent: failure?.structuredContent ?? {} }
+  }
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
     return started(await rpc('tools/call', { name: 'exec', arguments: execArguments(program) }))
@@ -967,28 +989,27 @@ export function programRunner(
       })
     },
     /**
-     * Saves a function the way an agent does: a Program declares `declarations`, which declare
-     * the function `name` at its top level, and passes it to `coral.workspace.saveFunction`.
+     * Adds a Private Tool the way an agent does: a Program declares `declarations`, which declare
+     * the function `name` at its top level, and passes it to `coral.addCustomTool`.
      * Coral stores {@link savedSource} of them. The Program is one more uncounted exec of the
      * Task; a failed save is an error result.
      */
-    async saveFunction(
+    async addCustomTool(
       path: string,
       description: string,
       declarations: string,
       name: string,
     ): Promise<ToolResult> {
-      const fields = `path: ${JSON.stringify(path)}, description: ${JSON.stringify(description)}`
-      // A failed save keeps its Run's failure, so a scenario can show why.
-      let failure: ToolResult<RunUpdate> | undefined
-      const saved = await runUncounted(
-        `${declarations}\nreturn (await coral.workspace.saveFunction({ ${fields}, source: ${name} })).data;`,
-        'Save a reusable function',
-        (result) => {
-          failure = result
-        },
-      )
-      return saved ?? { isError: true, structuredContent: failure?.structuredContent ?? {} }
+      return authorTool('addCustomTool', path, description, declarations, name)
+    },
+    /** {@link addCustomTool}, but `coral.updateCustomTool` replaces the Private Tool already at `path`. */
+    async updateCustomTool(
+      path: string,
+      description: string,
+      declarations: string,
+      name: string,
+    ): Promise<ToolResult> {
+      return authorTool('updateCustomTool', path, description, declarations, name)
     },
     async wait(update: RunUpdate): Promise<ToolResult<RunUpdate>> {
       await initialize()
@@ -1002,25 +1023,23 @@ export function programRunner(
       })
     },
     /**
-     * Searches the way an agent does, with `coral.workspace.search` inside a Program. The
+     * Searches the way an agent does, with `coral.search` inside a Program. The
      * Program is one more uncounted exec of the Task; a failed Run is an error result.
      */
     async search(query?: string): Promise<ToolResult<{ hits: { call_path: string }[] }>> {
       const input = JSON.stringify(query === undefined ? {} : { query })
       const found = await runUncounted<{ hits: { call_path: string }[] }>(
-        `return (await coral.workspace.search(${input})).data;`,
+        `return (await coral.search(${input})).data;`,
       )
       return found ?? { isError: true, structuredContent: { hits: [] } }
     },
     /**
-     * Reads one Call Path's description with `coral.workspace.search` in a Program. An error
+     * Reads one Call Path's description with `coral.search` in a Program. An error
      * result when the path names nothing this caller can call, as `missing` reports it.
      */
     async describe(path: string): Promise<ToolResult<DescribedPath>> {
       const input = JSON.stringify({ paths: [path] })
-      const found = await runUncounted<DescribedPath>(
-        `return (await coral.workspace.search(${input})).data;`,
-      )
+      const found = await runUncounted<DescribedPath>(`return (await coral.search(${input})).data;`)
       if (!found) return { isError: true, structuredContent: { descriptions: [], missing: [] } }
       return { ...found, isError: found.structuredContent.missing.length > 0 }
     },
@@ -1065,7 +1084,7 @@ export async function pausedForApproval(runner: ReturnType<typeof programRunner>
 export async function openReview(page: Page, paused: RunUpdate, tool: string) {
   // The entry's link opens the Approvals Page with its review already open.
   await page.goto(paused.required_actions[0].url)
-  const review = page.getByRole('region', { name: `Review coral.workspace.${tool}`, exact: true })
+  const review = page.getByRole('region', { name: `Review coral.${tool}`, exact: true })
   await review.getByRole('button', { name: 'Approve', exact: true }).waitFor()
   return review
 }

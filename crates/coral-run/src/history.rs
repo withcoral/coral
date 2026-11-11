@@ -12,6 +12,30 @@ pub enum InvocationStatus {
     /// Durable outcome recorded.
     Ended,
 }
+/// The kind of Tool an Invocation called. A Built-in Tool is a Provider
+/// Tool of the Built-in Provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ToolKind {
+    /// A Provider Tool, which Coral dispatches to its Provider.
+    Provider,
+    /// A Private Tool, whose body Coral performs in the Program.
+    Private,
+    /// A Shared Tool, whose body Coral performs in the Program.
+    Shared {
+        /// The Shared Tool Revision the Run linked, which the call ran.
+        revision: u64,
+    },
+}
+/// The performed call whose body made an Invocation, in the same Run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationParent {
+    /// Stable Invocation identity.
+    pub id: InvocationId,
+    /// Retained Program call path.
+    pub call_path: String,
+    /// The kind of Tool it called.
+    pub tool_kind: ToolKind,
+}
 /// Source-free Run summary.
 #[derive(Clone, Debug)]
 pub struct RunSummary {
@@ -63,6 +87,11 @@ pub struct InvocationSummary {
     pub tool: String,
     /// Retained Program call path.
     pub call_path: String,
+    /// The kind of Tool it called.
+    pub tool_kind: ToolKind,
+    /// The call whose body made it; absent for the Program's own calls and
+    /// for those a module's top-level code made.
+    pub parent: Option<InvocationParent>,
     /// Native lifecycle state.
     pub state: InvocationStatus,
     /// Native ended outcome kind.

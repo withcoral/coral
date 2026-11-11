@@ -6,12 +6,12 @@ status: accepted
 
 Agent onboarding needs an agent to add a Provider. Earlier designs gave `coral.admin` a separate surface with its own
 catalog, policy, approval and records. Instead every Workspace has one **Built-in Provider**: a real Provider with a
-real Materialized Operation Catalog, called at `coral.workspace`, whose Operations Coral defines in Rust and performs
+real Materialized Operation Catalog, called directly on `coral`, whose Operations Coral defines in Rust and performs
 itself. Search, describe, Operation Access State, Approval Requests and Invocation records apply unchanged, and the
 catalog grows one Operation at a time. Each Operation takes the words Reef uses for the same action, such as
 `addProvider` for "Add provider", because an Owner reads that name when approving a call.
 
-Each Provider row stores its full Provider Call Root (`coral.providers.github`, `coral.workspace`), so Call Paths come
+Each Provider row stores its full Provider Call Root (`coral.providers.github`, `coral`), so Call Paths come
 straight from the row and no Provider can clash with the Built-in one.
 
 Rejected: a separate admin surface, which duplicates catalog, policy and approval; and a reserved `workspace`

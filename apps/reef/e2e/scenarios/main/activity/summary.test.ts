@@ -115,8 +115,12 @@ test('The Overview summary counts a declined call as decided, not to fix, reads 
     await step('The blocked row opens its tool, and you allow it there', async () => {
       await toolRow('To fix').click()
       await page.waitForURL((url) => url.pathname === `/${provider}/tools/read`)
+      // The drawer docks beside the table at this width, so the tool's row
+      // holds its policy.
+      await page.getByRole('dialog', { name: 'read', exact: true }).waitFor()
       const policy = page
-        .getByRole('dialog', { name: 'read', exact: true })
+        .getByRole('row')
+        .filter({ has: page.getByRole('checkbox', { name: 'Select read', exact: true }) })
         .getByRole('radiogroup', { name: 'Policy', exact: true })
       await policy.getByRole('radio', { name: 'Block', exact: true, checked: true }).waitFor()
       const allow = policy.getByRole('radio', { name: 'Allow', exact: true })

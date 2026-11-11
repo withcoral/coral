@@ -4,7 +4,7 @@
 
 - `TaskModule` owns goal lifecycle, visibility, bounded Task-scoped summaries,
   exact history, associations, and retention-unit decisions.
-- `TaskCommands` composes concrete Functions, Search, and Run modules.
+- `TaskCommands` composes concrete Tools, Search, and Run modules.
   MCP passes authenticated scope, Task identity, per-call intent, and operation
   inputs. The commands own durable begin and final transaction choreography.
 - Lower modules remain independently usable. Their preparation and transactional

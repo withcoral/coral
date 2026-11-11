@@ -8,7 +8,12 @@ use super::{TestModules, TracerScope};
 use crate::{Discovery, DiscoveryRequest, EntityKind, Error, ExactLookup, ExactPaths};
 use coral_catalog::{SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, ToolKey};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
-use coral_test_support::change;
+use coral_test_support::{change, trace};
+use coral_tools::{
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
+    PrivateToolSave,
+};
+use coral_workspace::AuthenticatedPrincipal;
 
 async fn look_up(fixture: &TestModules, scope: &TracerScope, paths: &[&str]) -> ExactLookup {
     let paths = ExactPaths::new(paths.iter().map(ToString::to_string).collect(), Vec::new())
@@ -90,7 +95,12 @@ async fn a_lookup_describes_each_path_it_can_and_reports_the_rest_missing_in_ord
 // operation does not hold, or one that refuses a lookup at its limit.
 #[test]
 fn a_lookup_is_bounded_before_it_reads_anything() {
-    let path = |bytes: usize| format!("coral.functions.{}", "a".repeat(bytes - 16));
+    let path = |bytes: usize| {
+        format!(
+            "coral.private.{}",
+            "a".repeat(bytes - "coral.private.".len())
+        )
+    };
     let names = |count: usize| vec!["Repository".to_owned(); count];
     for (story, paths, types, accepted) in [
         ("no path", Vec::new(), Vec::new(), false),
@@ -268,7 +278,8 @@ async fn a_missing_path_names_the_nearest_paths_the_caller_can_call_in_its_call_
             Some("github.repos.listForOrg"),
         ),
         ("coral.providers.absent.retrievePage", None),
-        ("coral.functions.retrievePage", None),
+        ("coral.private.retrievePage", None),
+        ("coral.shared.retrievePage", None),
         (
             "coral.providers.notion.retrieve-page",
             Some("notion.retrieveAPage"),
@@ -342,7 +353,7 @@ async fn a_missing_path_names_the_nearest_paths_the_caller_can_call_in_its_call_
 
 // Catches: a suggestion order led by a Tool whose name shares no word with
 // the guessed path, because only its schema text holds one: the types of
-// `coral.workspace.search` name retrievers, so a ranked query for
+// `coral.search` name retrievers, so a ranked query for
 // `retrieve policy` puts it first on SQLite, ahead of the Tools named for
 // policies.
 #[tokio::test]
@@ -353,10 +364,11 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
     let mut transaction = database.begin().await.unwrap();
     fixture
         .providers
-        .install_builtin_in_transaction(
+        .install_coral_defined_in_transaction(
             &mut transaction,
             &change(scope.user.clone(), 50, '5'),
             &scope.workspace_id,
+            coral_provider::CoralDefinedProvider::Builtin,
         )
         .await
         .unwrap()
@@ -364,7 +376,7 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
     transaction.commit().await.unwrap();
     fixture.converge().await;
 
-    let lookup = look_up(&fixture, &scope, &["coral.workspace.retrievePolicy"]).await;
+    let lookup = look_up(&fixture, &scope, &["coral.retrievePolicy"]).await;
     let found = suggestions(&lookup);
     let [(_, suggested)] = found.as_slice() else {
         panic!("one missing path: {found:?}");
@@ -373,7 +385,7 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
     named.sort_unstable();
     assert_eq!(
         named,
-        ["coral.workspace.getPolicy", "coral.workspace.updatePolicy"],
+        ["coral.getPolicy", "coral.updatePolicy"],
         "the Tools named for policies come first: {suggested:?}"
     );
 }
@@ -430,5 +442,75 @@ async fn a_ranking_failure_leaves_the_exact_suggestions_and_is_logged() {
                     .map(String::as_str)
                     == Some("\"provider_tool\"")),
         "{events:?}"
+    );
+}
+
+// Catches: a guessed Private Tool path reported with nothing to call though
+// the caller has a Tool by that name, because suggestions read only the
+// Provider Tools; or a suggestion of another Principal's Private Tool.
+#[tokio::test]
+async fn a_missing_private_path_names_the_callers_own_nearest_private_tools() {
+    let fixture = TestModules::new().await;
+    let route = super::AgentRoute::new(&fixture).await;
+    let owner = AuthenticatedPrincipal::user(route.user.clone());
+    let save = |principal: &AuthenticatedPrincipal, path: &str, at: i64| {
+        let (fixture, workspace, principal, path) = (
+            &fixture,
+            &route.workspace,
+            principal.clone(),
+            path.to_owned(),
+        );
+        async move {
+            fixture
+                .private_tools
+                .save(
+                    &PrivateToolChangeContext::new(principal, at, trace('6')),
+                    workspace,
+                    PrivateToolSave::new(
+                        PrivateToolPath::parse(&path).expect("a path"),
+                        AuthoredToolDescription::parse("Format one value").expect("a description"),
+                        AuthoredToolSource::parse(
+                            "export default async ({ value }: { value: number }): Promise<string> => `${value}`;",
+                        )
+                        .expect("a source"),
+                    ),
+                )
+                .await
+                .expect("save the Private Tool");
+        }
+    };
+    save(&owner, "people.greet", 30).await;
+    save(&route.agent, "people.greetAll", 31).await;
+    fixture.converge().await;
+
+    let paths = ExactPaths::new(
+        vec![
+            "coral.private.people.greets".to_string(),
+            "coral.private.people.greetEveryone".to_string(),
+        ],
+        Vec::new(),
+    )
+    .expect("a bounded lookup");
+    let Discovery::Exact(lookup) = fixture
+        .search
+        .discover(&owner, &route.workspace, &DiscoveryRequest::Paths(paths))
+        .await
+        .expect("an exact lookup")
+    else {
+        panic!("paths return an exact lookup");
+    };
+    assert_eq!(
+        suggestions(&lookup),
+        [
+            (
+                "coral.private.people.greets",
+                vec!["coral.private.people.greet"]
+            ),
+            (
+                "coral.private.people.greetEveryone",
+                vec!["coral.private.people.greet"]
+            ),
+        ],
+        "only the caller's own Private Tools, never the Agent's"
     );
 }

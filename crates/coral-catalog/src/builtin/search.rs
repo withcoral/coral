@@ -1,4 +1,4 @@
-//! `coral.workspace.search`: Universal Search from inside a Program. The
+//! `coral.search`: Universal Search from inside a Program. The
 //! schemas a Program is typed from, the arguments Coral reads against the
 //! input schema, and the result types Coral writes against the output schema.
 //!
@@ -33,14 +33,14 @@ pub const SEARCH_PROVIDERS_MAX: usize = 32;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::Search.key(),
-        summary: "Search the provider tools and Saved Functions you can call",
+        summary: "Search the provider tools, shared tools and private tools you can call",
         presentation: ToolPresentation::new(
             Some("Search".to_string()),
-            "Find the provider tools and Saved Functions you can call, ranked by a query, or \
-             read the exact descriptions of the Call Paths you name."
+            "Find the provider tools, shared tools and private tools you can call, ranked by \
+             a query, or read the exact descriptions of the call paths you name."
                 .to_string(),
             false,
-            vec!["discovery".to_string()],
+            vec!["Discovery".to_string()],
             Some(
                 "Pass query for hits, best first, or paths for exact descriptions. Call a hit \
                  by its complete literal call_path. A path that names nothing you can call \
@@ -100,10 +100,10 @@ struct QueryInput {
     #[schemars(
         schema_with = "provider_schema",
         description = "When the user names a service, all its namespaces from \
-                       coral.providers.<namespace>, or coral.workspace for Coral's own tools. \
-                       Otherwise leave it out. It narrows provider tools to those Providers; \
-                       Saved Functions stay. A namespace you cannot search is refused with \
-                       the full list."
+                       coral.providers.<namespace>, or coral for Coral's own tools. \
+                       Otherwise leave it out. It narrows provider tools to those providers; \
+                       shared tools and your private tools stay. A namespace you cannot \
+                       search is refused with the full list."
     )]
     provider: Option<String>,
     #[serde(default)]
@@ -132,7 +132,7 @@ struct PathsInput {
     #[schemars(
         length(min = 1, max = 10),
         inner(length(max = SEARCH_PATH_MAX_BYTES)),
-        description = "1 to 10 complete Call Paths to read exactly, each at most 1024 UTF-8 \
+        description = "1 to 10 complete call paths to read exactly, each at most 1024 UTF-8 \
                        bytes, such as coral.providers.github.repos.get."
     )]
     paths: Vec<String>,
@@ -148,7 +148,7 @@ struct PathsInput {
 struct TypesInput {
     #[schemars(
         schema_with = "one_path_schema",
-        description = "The one complete Call Path whose types to read, at most 1024 UTF-8 \
+        description = "The one complete call path whose types to read, at most 1024 UTF-8 \
                        bytes."
     )]
     paths: (String,),
@@ -271,13 +271,13 @@ impl SearchArguments {
         if paths.is_empty() || paths.len() > SEARCH_PATHS_MAX {
             problems.push(ArgumentProblem::new(
                 "paths",
-                format!("pass 1 to {SEARCH_PATHS_MAX} Call Paths"),
+                format!("pass 1 to {SEARCH_PATHS_MAX} call paths"),
             ));
         }
         if paths.iter().any(|path| path.len() > SEARCH_PATH_MAX_BYTES) {
             problems.push(ArgumentProblem::new(
                 "paths",
-                format!("a Call Path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"),
+                format!("a call path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"),
             ));
         }
         // As the schema reads it: `types`, even empty, names one path's types.
@@ -391,7 +391,7 @@ impl SearchOutput {
 }
 
 /// Whether a JSON reader holds `value` exactly.
-const fn exact_in_json(value: u64) -> bool {
+pub(super) const fn exact_in_json(value: u64) -> bool {
     value <= JSON_SAFE_INTEGER_MAX
 }
 
@@ -402,7 +402,7 @@ const fn exact_in_json(value: u64) -> bool {
 #[schemars(deny_unknown_fields, description = "")]
 pub struct SearchResult {
     /// The hits, best first; in Call Path order for a listing.
-    #[schemars(description = "The hits, best first. Without a query, in Call Path order.")]
+    #[schemars(description = "The hits, best first. Without a query, in call path order.")]
     pub hits: Vec<SearchHit>,
     /// The `offset` of the next page; `None` on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,14 +425,16 @@ pub struct SearchResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(
     deny_unknown_fields,
-    description = "One Search Hit. Call a read from it when it is complete. Read its exact \
+    description = "One search hit. Call a read from it when it is complete. Read its exact \
                    description first otherwise, and before a write."
 )]
 pub struct SearchHit {
     /// The complete Call Path.
-    #[schemars(description = "`coral.providers.<namespace>.…` for a provider tool, \
-                       `coral.workspace.…` for one of Coral's own, `coral.functions.…` for a \
-                       Saved Function.")]
+    #[schemars(
+        description = "`coral.providers.<namespace>.…` for a provider tool, `coral.…` \
+                       for one of Coral's own, `coral.shared.…` for one of your workspace's \
+                       shared tools, `coral.private.…` for one of your private tools."
+    )]
     pub call_path: String,
     /// The callable's signature, within its byte limit.
     #[schemars(
@@ -440,7 +442,7 @@ pub struct SearchHit {
                        its result, which the line always keeps: a provider tool's result data as its \
                        top-level field names when they fit, or by type name; for an MCP tool that \
                        declares no output, a note that the result is text, usually JSON, in \
-                       `data.content[0].text`; and a Saved Function's result members one level \
+                       `data.content[0].text`; and a shared or private tool's result members one level \
                        deep. `{…}` marks an object the line does not show, a bare `…` a type it \
                        cannot read, and a last `…` member or final `…` what it cut to fit. At most \
                        512 UTF-8 bytes."
@@ -495,7 +497,7 @@ pub struct SearchHit {
 #[schemars(
     rename = "Hints",
     deny_unknown_fields,
-    description = "Effect hints the Provider declared. An absent field is undeclared, not a \
+    description = "Effect hints the provider declared. An absent field is undeclared, not a \
                    protocol default."
 )]
 pub struct DeclaredHints {
@@ -549,8 +551,10 @@ pub struct SearchRetrieverStatus {
 pub enum SearchRetriever {
     /// Provider tools.
     ProviderTool,
-    /// Saved Functions.
-    SavedFunction,
+    /// The caller's own Private Tools.
+    PrivateTool,
+    /// The Workspace's Shared Tools.
+    SharedTool,
 }
 
 impl JsonSchema for SearchRetriever {
@@ -559,7 +563,7 @@ impl JsonSchema for SearchRetriever {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        words_schema(&["provider_tool", "saved_function"])
+        words_schema(&["provider_tool", "private_tool", "shared_tool"])
     }
 }
 
@@ -582,7 +586,7 @@ impl JsonSchema for SearchRetrieverState {
         let mut schema = words_schema(&["partial", "error"]);
         schema.insert(
             "description".to_owned(),
-            "- `partial`: some Providers or Saved Functions are not indexed yet, or failed; \
+            "- `partial`: some providers, shared tools or private tools are not indexed yet, or failed; \
              results may be missing.\n- `error`: the retriever could not rank; its results are \
              missing.\n\nRetry shortly or list without a query."
                 .into(),
@@ -688,34 +692,91 @@ pub enum Description {
         #[schemars(description = "")]
         approval_required: bool,
     },
-    /// A Saved Function.
+    /// One of the caller's own Private Tools. Its kind keeps the name Task
+    /// history retained, so earlier descriptions still read.
     #[schemars(description = "")]
-    SavedFunction {
+    PrivateTool {
         /// What every kind has.
         #[serde(flatten)]
         authoring: DescriptionAuthoring,
-        /// The source and saved diagnostics of the caller's own Saved
-        /// Function; absent when the lookup named `types`.
+        /// Its Provider's id: the Workspace's Private Provider.
+        #[schemars(
+            description = "",
+            extend("format" = "uuid", "minLength" = 36, "maxLength" = 36)
+        )]
+        provider_id: String,
+        /// Its Provider's display name.
+        #[schemars(description = "")]
+        provider_display_name: String,
+        /// The hints it declares.
+        #[schemars(description = "")]
+        hints: DeclaredHints,
+        /// Whether a person must approve each call.
+        #[schemars(description = "")]
+        approval_required: bool,
+        /// Its current revision, which `updateCustomTool` takes as
+        /// `expectedRevision`.
+        #[schemars(description = "", range(max = JSON_SAFE_INTEGER_MAX))]
+        revision: u64,
+        /// Its source and saved diagnostics; absent when the lookup named
+        /// `types`.
+        #[serde(flatten)]
+        detail: Option<SavedDetail>,
+    },
+    /// One of the Workspace's Shared Tools, at its current revision. It
+    /// never names who published it.
+    #[schemars(description = "")]
+    SharedTool {
+        /// What every kind has.
+        #[serde(flatten)]
+        authoring: DescriptionAuthoring,
+        /// Its Provider's id: the Workspace's Shared Provider.
+        #[schemars(
+            description = "",
+            extend("format" = "uuid", "minLength" = 36, "maxLength" = 36)
+        )]
+        provider_id: String,
+        /// Its Provider's display name.
+        #[schemars(description = "")]
+        provider_display_name: String,
+        /// The hints it declares.
+        #[schemars(description = "")]
+        hints: DeclaredHints,
+        /// Whether a person must approve each call.
+        #[schemars(description = "")]
+        approval_required: bool,
+        /// Its current revision.
+        #[schemars(description = "", range(max = JSON_SAFE_INTEGER_MAX))]
+        revision: u64,
+        /// Its source and the diagnostics published with it; absent when
+        /// the lookup named `types`.
         #[serde(flatten)]
         detail: Option<SavedDetail>,
     },
 }
 
 impl Description {
-    /// Whether a JSON reader holds every integer in it exactly: a saved
-    /// diagnostic's code, line and column. See
+    /// Whether a JSON reader holds every integer in it exactly: a Private or
+    /// Shared Tool's revision, and a saved diagnostic's code, line and column. See
     /// [`SearchOutput::is_exact_in_json`].
     #[must_use]
     pub fn is_exact_in_json(&self) -> bool {
         match self {
-            Self::ProviderTool { .. } | Self::SavedFunction { detail: None, .. } => true,
-            Self::SavedFunction {
-                detail: Some(detail),
-                ..
-            } => detail
-                .diagnostics
-                .iter()
-                .all(SavedDiagnostic::is_exact_in_json),
+            Self::ProviderTool { .. } => true,
+            Self::PrivateTool {
+                revision, detail, ..
+            }
+            | Self::SharedTool {
+                revision, detail, ..
+            } => {
+                *revision <= JSON_SAFE_INTEGER_MAX
+                    && detail.as_ref().is_none_or(|detail| {
+                        detail
+                            .diagnostics
+                            .iter()
+                            .all(SavedDiagnostic::is_exact_in_json)
+                    })
+            }
         }
     }
 }
@@ -735,7 +796,8 @@ pub struct DescriptionAuthoring {
     pub typescript_declaration: String,
 }
 
-/// A Saved Function's current source and the diagnostics saved with it.
+/// A Private or Shared Tool's current source and the diagnostics saved with
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(description = "")]
 pub struct SavedDetail {
@@ -753,7 +815,7 @@ pub struct SavedDetail {
 /// The largest integer a JSON reader holds exactly.
 const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-/// One advisory TypeScript diagnostic saved with a Saved Function.
+/// One advisory TypeScript diagnostic saved with a Private or Shared Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(rename = "Diagnostic", deny_unknown_fields, description = "")]
 pub struct SavedDiagnostic {
@@ -831,7 +893,7 @@ pub(super) mod tests {
                 "limit": 3,
                 "offset": 20
             }),
-            json!({ "paths": ["coral.providers.github.repos.get", "coral.functions.weekly"] }),
+            json!({ "paths": ["coral.providers.github.repos.get", "coral.private.weekly"] }),
             json!({ "paths": ["coral.providers.github.repos.get"], "types": ["Repository"] }),
         ]
     }
@@ -865,7 +927,7 @@ pub(super) mod tests {
             deprecated: true,
         };
         let bare = SearchHit {
-            call_path: "coral.functions.weekly".to_owned(),
+            call_path: "coral.private.weekly".to_owned(),
             signature_line: "weekly(input: {}): Promise<string>".to_owned(),
             complete: false,
             description_snippet: "The weekly report.".to_owned(),
@@ -899,7 +961,8 @@ pub(super) mod tests {
                 next_offset: Some(20),
                 retriever_statuses: vec![
                     status(SearchRetriever::ProviderTool, SearchRetrieverState::Partial),
-                    status(SearchRetriever::SavedFunction, SearchRetrieverState::Error),
+                    status(SearchRetriever::PrivateTool, SearchRetrieverState::Error),
+                    status(SearchRetriever::SharedTool, SearchRetrieverState::Partial),
                 ],
             }),
             SearchOutput::Page(SearchResult {
@@ -921,8 +984,13 @@ pub(super) mod tests {
                         hints: DeclaredHints::from(crate::ToolHints::default()),
                         approval_required: false,
                     },
-                    Description::SavedFunction {
-                        authoring: authoring("coral.functions.weekly"),
+                    Description::PrivateTool {
+                        authoring: authoring("coral.private.weekly"),
+                        provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
+                        provider_display_name: "Private".to_owned(),
+                        hints: DeclaredHints::from(crate::ToolHints::default()),
+                        approval_required: false,
+                        revision: 3,
                         detail: Some(SavedDetail {
                             source: "export default async function weekly() {}".to_owned(),
                             diagnostics: vec![SavedDiagnostic {
@@ -935,8 +1003,26 @@ pub(super) mod tests {
                             diagnostics_truncated: false,
                         }),
                     },
-                    Description::SavedFunction {
-                        authoring: authoring("coral.functions.daily"),
+                    Description::SharedTool {
+                        authoring: authoring("coral.shared.mail.remind"),
+                        provider_id: "0190f1a2-0000-7000-8000-000000000002".to_owned(),
+                        provider_display_name: "Shared".to_owned(),
+                        hints: DeclaredHints::from(crate::ToolHints::default()),
+                        approval_required: true,
+                        revision: 2,
+                        detail: Some(SavedDetail {
+                            source: "export default async function remind() {}".to_owned(),
+                            diagnostics: Vec::new(),
+                            diagnostics_truncated: false,
+                        }),
+                    },
+                    Description::PrivateTool {
+                        authoring: authoring("coral.private.daily"),
+                        provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
+                        provider_display_name: "Private".to_owned(),
+                        hints: DeclaredHints::from(crate::ToolHints::default()),
+                        approval_required: true,
+                        revision: 1,
                         detail: None,
                     },
                 ],
@@ -1035,7 +1121,7 @@ pub(super) mod tests {
                 hits: Vec::new(),
                 next_offset: None,
                 retriever_statuses: vec![SearchRetrieverStatus {
-                    retriever: SearchRetriever::SavedFunction,
+                    retriever: SearchRetriever::PrivateTool,
                     state: SearchRetrieverState::Partial,
                     coverage: SearchRetrieverCoverage {
                         eligible_units: units,
@@ -1049,8 +1135,13 @@ pub(super) mod tests {
         };
         let paths = |code, line, column| {
             SearchOutput::Paths(PathsResult {
-                descriptions: vec![Description::SavedFunction {
-                    authoring: authoring("coral.functions.weekly"),
+                descriptions: vec![Description::PrivateTool {
+                    authoring: authoring("coral.private.weekly"),
+                    provider_id: "0190f1a2-0000-7000-8000-000000000001".to_owned(),
+                    provider_display_name: "Private".to_owned(),
+                    hints: DeclaredHints::from(crate::ToolHints::default()),
+                    approval_required: false,
+                    revision: 3,
                     detail: Some(SavedDetail {
                         source: "export default async function weekly() {}".to_owned(),
                         diagnostics: vec![SavedDiagnostic {

@@ -34,7 +34,7 @@ function fakeCoral(
           {
             name: `${parent}/providers/builtin`,
             displayName: 'Coral',
-            callRoot: 'coral.workspace',
+            callRoot: 'coral',
             builtin: true,
             state: ProviderState.ACTIVE,
           },
@@ -49,7 +49,7 @@ function fakeCoral(
       }),
     },
     memberships: { listWorkspaceOwners: () => ({ owners: [] }) },
-    savedFunctions: { listSavedFunctions: () => ({ savedFunctions: [] }) },
+    privateTools: { listPrivateTools: () => ({ privateTools: [] }) },
     activity: {
       browseActivityRoots: () => ({ roots: [] }),
       browseRequiredActions: () => ({ actions: [] }),
@@ -71,7 +71,7 @@ it('leaves the Built-in Provider out of the providers card, but not out of the s
   if (result instanceof Response) throw new Error('The workspace page renders')
   expect(result.data.providers.map((provider) => provider.displayName)).toEqual(['Weather'])
   expect(result.data.activity.providers.map((provider) => provider.callRoot)).toEqual([
-    'coral.workspace',
+    'coral',
     'coral.providers.weather',
   ])
 })

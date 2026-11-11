@@ -430,7 +430,7 @@ async fn the_configured_owner_limits_reach_the_shared_run_module() {
     server.shutdown().await.expect("stop composed server");
 }
 
-/// Program Admission and Saved Function save share one warm compiler, so the
+/// Program Admission and Private Tool save share one warm compiler, so the
 /// composed process runs one compiler thread. The count is process-wide, so
 /// it is this runtime's alone only when each test runs in its own process, as
 /// under nextest; `cargo test` shares one process and skips the check.

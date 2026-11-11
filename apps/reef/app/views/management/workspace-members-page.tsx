@@ -194,7 +194,7 @@ function MembershipActions({
         description={
           action === 'role'
             ? 'Choose their role in this workspace.'
-            : `${consequence} Coral removes ${self ? 'your' : 'their'} saved functions and account connections from this workspace. Coral keeps the run history.`
+            : `${consequence} Coral removes ${self ? 'your' : 'their'} private tools and account connections from this workspace. Coral keeps the run history.`
         }
         form={form}
         intent={owner ? 'membership' : 'leave'}

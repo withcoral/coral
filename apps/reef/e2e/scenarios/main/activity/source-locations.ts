@@ -19,8 +19,8 @@ import { withOwner } from '../../../support/topology.ts'
 
 // A real Run stores where the author's code made each tool call, log and emission.
 // The API reads those locations back, and Activity highlights each record's own line in
-// the accepted program or in the Saved Function snapshot the Run accepted, even after
-// that Saved Function changes. Location rules stay in Reef's `source-location.test.ts`
+// the accepted program or in the Private Tool snapshot the Run accepted, even after
+// that Private Tool changes. Location rules stay in Reef's `source-location.test.ts`
 // and the backend's runtime and repository tests.
 
 const program = [
@@ -30,7 +30,7 @@ const program = [
   '}',
   "console.info('looked up')",
   'coral.emit({ done: true })',
-  'await coral.functions.locations.notify()',
+  'await coral.private.locations.notify()',
   "return 'ok'",
 ].join('\n')
 const snapshot = [
@@ -63,7 +63,7 @@ const inProgram = (line: number, name: string) => ({
 
 // The accepted program is the pane's default document, so it carries no name.
 const PROGRAM = null
-const SNAPSHOT = 'Saved-function snapshot: locations.notify'
+const SNAPSHOT = 'Private tool snapshot: locations.notify'
 
 /**
  * The open record's accepted-source pane: its document's name, if any, its highlighted lines,
@@ -122,21 +122,24 @@ export async function sourceLocations(context: TestContext) {
     const execute = programRunner(page, target, workspace, {
       taskIntent: `Locate calls ${crypto.randomUUID()}`,
     })
-    expect(
-      (await execute.saveFunction('locations.notify', 'Notify after lookups', snapshot, 'notify'))
-        .isError,
-    ).not.toBe(true)
+    const saved = await execute.addCustomTool(
+      'locations.notify',
+      'Notify after lookups',
+      snapshot,
+      'notify',
+    )
+    expect(saved.isError, JSON.stringify(saved.structuredContent)).not.toBe(true)
     const observed = await observeRun(execute, await execute.exec(program))
     expect(observed.update.state, JSON.stringify(observed.update.failure)).toBe('succeeded')
     const run = `workspaces/${workspace}/runs/${observed.update.run_id}`
     const task = `workspaces/${workspace}/tasks/${execute.taskId()}`
 
     type Shown = { name: string; label: string | null; line: number }
-    let savedFunction = ''
+    let privateTool = ''
     let tools: ActivityInvocation[] = []
     let outputs: ActivityEventSummary[] = []
     const inSnapshot = (line: number, name: string) => ({
-      document: { case: 'savedFunction', value: savedFunction },
+      document: { case: 'privateTool', value: privateTool },
       ...at(snapshot, line, name),
     })
     /** Opens `record` and waits until its own stored line shows highlighted in its document. */
@@ -161,12 +164,12 @@ export async function sourceLocations(context: TestContext) {
         }
       })
 
-    // The program's records first, then the Saved Function's: a failure in one still
+    // The program's records first, then the Private Tool's: a failure in one still
     // leaves the other's evidence recorded.
     await step('Read the program’s stored locations back through the management API', async () => {
       const accepted = await api.activity.inspectRun({ name: run, pageSize: 100 })
-      expect(accepted.linkedFunctions).toHaveLength(1)
-      savedFunction = accepted.linkedFunctions[0]!.savedFunction
+      expect(accepted.linkedPrivateTools).toHaveLength(1)
+      privateTool = accepted.linkedPrivateTools[0]!.privateTool
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 100 })
       tools = entries.entries.flatMap(({ record }) =>
         record.case === 'invocation' ? [record.value] : [],
@@ -174,13 +177,19 @@ export async function sourceLocations(context: TestContext) {
       outputs = entries.entries.flatMap(({ record }) =>
         record.case === 'event' && record.value.kind.startsWith('program.') ? [record.value] : [],
       )
-      expect(tools).toHaveLength(4)
+      expect(tools).toHaveLength(5)
       expect(outputs).toHaveLength(3)
       expect({
-        tools: tools.slice(0, 3).map((value) => value.sourceLocation),
+        tools: tools.slice(0, 4).map((value) => value.sourceLocation),
         outputs: outputs.slice(0, 2).map((value) => value.sourceLocation),
       }).toMatchObject({
-        tools: [inProgram(1, 'lookup'), inProgram(3, 'lookup'), inProgram(3, 'lookup')],
+        tools: [
+          inProgram(1, 'lookup'),
+          inProgram(3, 'lookup'),
+          inProgram(3, 'lookup'),
+          // The private tool call is itself a tool call; the calls its body makes follow it.
+          inProgram(7, 'notify'),
+        ],
         outputs: [inProgram(5, 'info'), inProgram(6, 'emit')],
       })
       // The exact reads carry the same locations as the entries that list them.
@@ -201,10 +210,10 @@ export async function sourceLocations(context: TestContext) {
     await highlights('log', { name: event(0), label: PROGRAM, line: 5 })
     await highlights('emission', { name: event(1), label: PROGRAM, line: 6 })
 
-    await step('Change the Saved Function; the Run keeps the snapshot it accepted', async () => {
+    await step('Change the Private Tool; the Run keeps the snapshot it accepted', async () => {
       expect(
         (
-          await execute.saveFunction(
+          await execute.updateCustomTool(
             'locations.notify',
             'Replaced after the Run',
             replacement,
@@ -213,21 +222,21 @@ export async function sourceLocations(context: TestContext) {
         ).isError,
       ).not.toBe(true)
       const accepted = await api.activity.inspectRun({ name: run, pageSize: 1 })
-      expect(accepted.linkedFunctions.map(({ path, source }) => ({ path, source }))).toEqual([
+      expect(accepted.linkedPrivateTools.map(({ path, source }) => ({ path, source }))).toEqual([
         { path: 'locations.notify', source: savedSource(snapshot, 'notify') },
       ])
     })
-    await step('Read the Saved Function’s stored locations back in its snapshot', async () => {
+    await step('Read the Private Tool’s stored locations back in its snapshot', async () => {
       expect({
-        tool: tools[3]!.sourceLocation,
+        tool: tools[4]!.sourceLocation,
         log: outputs[2]!.sourceLocation,
       }).toMatchObject({ tool: inSnapshot(2, 'lookup'), log: inSnapshot(3, 'warn') })
     })
-    await highlights('Saved Function tool', {
-      name: tools[3]!.name,
+    await highlights('Private Tool tool', {
+      name: tools[4]!.name,
       label: SNAPSHOT,
       line: 2,
     })
-    await highlights('Saved Function log', { name: event(2), label: SNAPSHOT, line: 3 })
+    await highlights('Private Tool log', { name: event(2), label: SNAPSHOT, line: 3 })
   })
 }

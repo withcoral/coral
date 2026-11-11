@@ -1,5 +1,5 @@
 //! Safe discovery responses: what discovery found, as the result types
-//! coral-catalog declares for `coral.workspace.search`. The `search` and
+//! coral-catalog declares for `coral.search`. The `search` and
 //! `describe` records Task history retains hold the same types as JSON, so
 //! no surface can show a field another does not.
 use crate::{
@@ -11,7 +11,7 @@ use coral_catalog::{
     SavedDiagnostic, SavedDiagnosticCategory, SearchOutput, SearchResult, SearchRetriever,
     SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, ToolHints,
 };
-use coral_functions::{SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory};
+use coral_tools::{AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory};
 use serde_json::{Value, json};
 
 #[cfg(test)]
@@ -125,7 +125,8 @@ fn retriever_status(status: &RetrieverStatus) -> Option<SearchRetrieverStatus> {
     Some(SearchRetrieverStatus {
         retriever: match status.retriever() {
             crate::EntityKind::ProviderTool => SearchRetriever::ProviderTool,
-            crate::EntityKind::SavedFunction => SearchRetriever::SavedFunction,
+            crate::EntityKind::PrivateTool => SearchRetriever::PrivateTool,
+            crate::EntityKind::SharedTool => SearchRetriever::SharedTool,
         },
         state,
         coverage: SearchRetrieverCoverage {
@@ -138,8 +139,8 @@ fn retriever_status(status: &RetrieverStatus) -> Option<SearchRetrieverStatus> {
     })
 }
 
-/// Projects the complete exact response, including owned source and saved
-/// diagnostics.
+/// Projects the complete exact response, including an Authored Tool's source
+/// and stored diagnostics.
 #[must_use]
 pub fn description(exact: &ExactAuthoringDescription) -> Description {
     match exact.authoring() {
@@ -155,14 +156,41 @@ pub fn description(exact: &ExactAuthoringDescription) -> Description {
             hints: DeclaredHints::from(tool.hints()),
             approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
         },
-        AuthoringDescription::SavedFunction(_function) => Description::SavedFunction {
-            authoring: authoring(exact.authoring()),
-            detail: exact.saved_function_detail().map(|detail| SavedDetail {
+        AuthoringDescription::AuthoredTool(tool) => {
+            let authoring = authoring(exact.authoring());
+            let provider_id = tool.provider_id().to_string();
+            let provider_display_name = tool.provider_display_name().to_owned();
+            // An Authored Tool declares no hints.
+            let hints = DeclaredHints::from(coral_catalog::ToolHints::default());
+            let approval_required = tool.approval_requirement() == ApprovalRequirement::Required;
+            let revision = tool.revision();
+            let detail = exact.authored_tool_detail().map(|detail| SavedDetail {
                 source: detail.source().as_str().to_owned(),
                 diagnostics: detail.diagnostics().iter().map(diagnostic).collect(),
                 diagnostics_truncated: detail.diagnostics_truncated(),
-            }),
-        },
+            });
+            match tool.kind() {
+                // The kind keeps the name retained Task history uses.
+                coral_catalog::AuthoredToolKind::Private => Description::PrivateTool {
+                    authoring,
+                    provider_id,
+                    provider_display_name,
+                    hints,
+                    approval_required,
+                    revision,
+                    detail,
+                },
+                coral_catalog::AuthoredToolKind::Shared => Description::SharedTool {
+                    authoring,
+                    provider_id,
+                    provider_display_name,
+                    hints,
+                    approval_required,
+                    revision,
+                    detail,
+                },
+            }
+        }
     }
 }
 
@@ -182,13 +210,13 @@ fn authoring(description: &AuthoringDescription) -> DescriptionAuthoring {
 
 /// One saved diagnostic as a Program reads it.
 #[must_use]
-pub fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> SavedDiagnostic {
+pub fn diagnostic(diagnostic: &AuthoredToolDiagnostic) -> SavedDiagnostic {
     SavedDiagnostic {
         category: match diagnostic.category() {
-            SavedFunctionDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
-            SavedFunctionDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
-            SavedFunctionDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
-            SavedFunctionDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
+            AuthoredToolDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
+            AuthoredToolDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
+            AuthoredToolDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
+            AuthoredToolDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
         },
         code: diagnostic.code(),
         message: diagnostic.message().to_owned(),

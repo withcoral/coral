@@ -208,7 +208,8 @@ impl Preparation {
                     let destination = match tool.execution_binding() {
                         coral_catalog::ExecutionBinding::Http(binding) => binding.server_url(),
                         coral_catalog::ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
-                        coral_catalog::ExecutionBinding::Builtin(_) => None,
+                        coral_catalog::ExecutionBinding::Builtin(_)
+                        | coral_catalog::ExecutionBinding::Code(_) => None,
                     };
                     if let Some(url) = destination {
                         review

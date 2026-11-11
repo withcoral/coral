@@ -1,8 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-
 import { utils } from '@/styles/utils'
 import { theme } from '@/wax/theme/theme.css'
-
 export const setupPage = style({ maxWidth: 1120, width: '100%', minWidth: 0 })
 export const sourceGrid = style({
   display: 'grid',
@@ -15,7 +13,6 @@ export const facts = style({
   gap: 16,
   '@media': { '(max-width: 500px)': { gridTemplateColumns: '1fr' } },
 })
-
 export const callPath = style({
   alignItems: 'center',
   display: 'flex',
@@ -23,7 +20,6 @@ export const callPath = style({
   gap: 8,
   minWidth: 0,
 })
-export const pills = style({ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 })
 export const stack = style({ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 })
 // A step under the page title it heads: spaced as the page frame spaces its header.
 export const rowActions = style({ display: 'flex', flexWrap: 'wrap', gap: 8 })
@@ -86,7 +82,6 @@ export const accountColumn = style({
 // a narrow screen they need the same separation down the page. Unlayered, so
 // this beats the grid gap Wax gives every radio group.
 export const accountRoutes = style({ columnGap: 32, rowGap: 24 })
-
 // A value Coral acts on as soon as you enter it: the action sits with the input.
 export const fieldWithAction = style({
   alignItems: 'center',
@@ -116,7 +111,6 @@ export const list = style({
   margin: 0,
   padding: 0,
 })
-
 export const removalDetails = style({ display: 'flex', flexDirection: 'column', gap: 8 })
 export const bulletList = style({
   display: 'flex',
@@ -126,10 +120,7 @@ export const bulletList = style({
   paddingLeft: 20,
   listStyle: 'disc',
 })
-
 export const longValue = style({ overflowWrap: 'anywhere' })
-
-export const emptyProviders = style({ display: 'flex', height: '100%' })
 export const filterLabel = style({
   alignItems: 'center',
   display: 'flex',
@@ -137,74 +128,6 @@ export const filterLabel = style({
   ...theme.typography.bodySmallStrong,
 })
 export const helpIcon = style({ alignItems: 'center', display: 'inline-flex' })
-// The table scrolls, so the browser can focus it. While a keyboard cursor row
-// shows where the keys act, the table draws no focus outline of its own.
-export const providersTable = style({
-  minHeight: 0,
-  selectors: { '&:focus:has([data-active])': { outline: 'none' } },
-})
-// The policy column ends a step in from the table's edge.
-globalStyle(`${providersTable} [role="row"] > :last-child`, { paddingInlineEnd: 24 })
-// A no-match status runs its copy and its button on one centred line.
-export const noMatchStatus = style({
-  alignItems: 'center',
-  columnGap: 6,
-  display: 'inline-flex',
-  flexWrap: 'wrap',
-  justifyContent: 'center',
-  rowGap: 4,
-})
-// The form lays out its controls in the Wax action bar that frames it.
-export const bulkPolicyForm = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 8,
-})
-export const toolGroupLabel = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 8,
-  gridColumn: '2 / -1',
-})
-export const providerGroupLabel = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 8,
-  gridColumn: '2 / -1',
-  minWidth: 0,
-})
-// A checked row is filled, so the selection reads down the table at a glance.
-export const checkedRow = style({
-  backgroundColor: theme.surface.onMainContent,
-  selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentHover } },
-})
-export const toolNameCell = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 8,
-  minWidth: 0,
-  // Sets the name one step in from its group's label.
-  paddingInlineStart: 40,
-})
-// The name reads as plain text; the whole row is the click target.
-/** The tool's name gives way to its hints and status in a narrow cell. */
-export const toolNameFace = style({ minWidth: 0 })
-
-// The link truncates, so its tooltip can tell when the name is cut short. `ToolName`
-// gives it the face every tool name shares.
-export const toolName = style({
-  color: 'inherit',
-  display: 'block',
-  minWidth: 0,
-  overflow: 'hidden',
-  textDecoration: 'none',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  selectors: {
-    '&:focus-visible': { borderRadius: 4, outline: `2px solid ${theme.stroke.focused}` },
-  },
-})
 export const toolDescriptionCell = style({
   display: 'flex',
   minWidth: 0,
@@ -213,35 +136,7 @@ export const toolDescriptionText = style({
   minWidth: 0,
   ...utils.boxClamp(2),
 })
-export const inlineTooltipTarget = style({ display: 'inline-flex' })
-// The collapse-all toggle starts the column, above the headings' own toggles.
-export const nameHeader = style({ alignItems: 'center', display: 'flex', gap: 8 })
-// The bars keep clear of the policy toggles beside them; the heading's label
-// and its info tip sit on one line, as the header's own text does.
-export const callsColumn = style({ marginInlineEnd: 16 })
-// A hover anywhere in a 24px band shows the count, not only on the thin bar.
-export const callsBar = style({
-  display: 'flex',
-  flexDirection: 'column',
-  height: 24,
-  justifyContent: 'center',
-  width: '100%',
-})
-// The usage tooltip leads with the hovered day, then the window's total.
-export const usageTipDay = style({ display: 'block', ...theme.typography.bodySmallStrong })
-export const usageTipTotal = style({ color: theme.content.secondary, display: 'block' })
-export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
-// The column is as wide as its toggles; the header centres over them.
-export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
-// One line: a wrapped outcome pill would change the row's height after a save.
-export const policyCell = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'nowrap',
-  gap: 6,
-})
 export const checkboxWrapper = style({ alignItems: 'center', display: 'flex' })
-
 // Catalog rows: logo, name and one line, then the action.
 // Two columns, so a card has room for its name beside two buttons. A column is
 // never narrower than 320px or half the list, so a list too narrow for two
@@ -254,8 +149,6 @@ export const catalogList = style({
   margin: 0,
   padding: 0,
 })
-// The buttons that add a catalog service from the providers rail, one per source.
-export const railSources = style({ display: 'grid', gap: 8, minWidth: 0 })
 // Wax cards in a grid: each fills its cell, so a row's cards share one height.
 export const catalogItem = style({ display: 'flex', minWidth: 0 })
 export const catalogCard = style({ height: '100%', minWidth: 0 })
@@ -296,7 +189,6 @@ export const catalogFind = style({
 // The count is short; it never wraps or gives its width to the search.
 export const catalogCount = style({ flexShrink: 0, whiteSpace: 'nowrap' })
 export const catalogSearch = style({ flex: '0 1 320px', minWidth: 200 })
-
 // In the launcher dialog the catalog takes the height the source form leaves,
 // and its rows are the only thing that scrolls.
 export const catalogPane = style({
@@ -392,7 +284,6 @@ export const orDivider = style({
     },
   },
 })
-
 /**
  * The two source panels share one grid cell. Only the chosen one shows, so the
  * block is as tall as its fields. The hidden panel stays mounted to keep what
@@ -428,7 +319,6 @@ export const sourcePanel = style({
     '&[data-hidden]': { display: 'none' },
   },
 })
-
 // Configuration: the fields on the left, what Coral was given or discovered on
 // the right. Only values the person cannot change belong in the read column.
 export const configureSplit = style({
@@ -448,7 +338,6 @@ export const groupRule = style({
   borderTop: `1px solid ${theme.stroke.secondary}`,
   gridColumn: '1 / -1',
 })
-
 // A group with nothing fixed beside it takes the whole width.
 export const fullRow = style({
   display: 'flex',
@@ -469,7 +358,6 @@ export const readColumn = style({
   gap: 16,
   minWidth: 0,
 })
-
 export const twoUp = style({
   display: 'grid',
   gap: 12,
@@ -478,7 +366,6 @@ export const twoUp = style({
   alignItems: 'start',
   '@media': { '(max-width: 640px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
 })
-
 // The catalog reads as one panel: the search box sits with the list it filters.
 export const toolsBrowser = style({
   border: `1px solid ${theme.stroke.secondary}`,
@@ -536,7 +423,6 @@ export const toolsEmpty = style({
   minHeight: 260,
   padding: 16,
 })
-
 // Credential methods: a table of inputs and a preview of what Coral sends.
 export const credentialTable = style({ maxWidth: 880 })
 export const headerPreview = style({
@@ -546,7 +432,6 @@ export const headerPreview = style({
   maxWidth: 880,
   minWidth: 0,
 })
-
 export const settingsUrl = style({
   display: 'flex',
   flexDirection: 'column',
@@ -572,7 +457,6 @@ export const settingsSourceActions = style({
 })
 
 // The provider name heads the page; the pencil sits right beside it.
-
 // The scopes take the row; the separator picker keeps its width beside them.
 export const scopesRow = style({
   display: 'flex',
@@ -617,39 +501,4 @@ export const iconError = style({
   marginInlineStart: iconIndent,
   minWidth: 0,
   order: 1,
-})
-
-// The drawer's usage: the total, the days as bars, then who called the tool.
-export const usage = style({ display: 'grid', gap: 12 })
-export const usageChart = style({ display: 'grid', gap: 4 })
-export const usageAxis = style({
-  ...theme.typography.bodySmall,
-  color: theme.content.tertiary,
-  display: 'flex',
-  justifyContent: 'space-between',
-})
-export const usageCallers = style({
-  display: 'grid',
-  gap: 4,
-  listStyle: 'none',
-  margin: 0,
-  padding: 0,
-})
-export const usageCaller = style({
-  ...theme.typography.bodySmall,
-  display: 'flex',
-  gap: 8,
-  justifyContent: 'space-between',
-  minWidth: 0,
-})
-// A long caller name wraps rather than push its count out of the drawer.
-export const usageCallerName = style({ minWidth: 0, overflowWrap: 'anywhere' })
-export const usageCallerCalls = style({ flexShrink: 0 })
-
-// A ranked row's provider, before its tool, where no heading names it.
-export const rankedProvider = style({
-  alignItems: 'center',
-  display: 'inline-flex',
-  flexShrink: 0,
-  gap: 6,
 })

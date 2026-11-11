@@ -25,10 +25,12 @@ mod organization_memberships;
 mod organization_workspaces;
 #[path = "grpc/private_access.rs"]
 mod private_access;
+#[path = "grpc/private_tools.rs"]
+mod private_tools;
 #[path = "grpc/providers.rs"]
 mod providers;
-#[path = "grpc/saved_functions.rs"]
-mod saved_functions;
+#[path = "grpc/shared_tools.rs"]
+mod shared_tools;
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_grpc::coral::{internal::v1 as internal, management::v1 as management};
 use coral_outbound::DestinationPolicy;
@@ -58,7 +60,7 @@ struct Fixture {
     provider_module: coral_provider::ProviderModule,
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
-    saved_functions: coral_functions::SavedFunctionModule,
+    private_tools: coral_tools::PrivateToolModule,
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {
@@ -105,6 +107,11 @@ fn error_info(status: &tonic::Status) -> ErrorInfo {
 fn error_reason(status: &tonic::Status) -> String {
     error_info(status).reason
 }
+
+/// A refusal's code with its stable reason, as a test compares them.
+const NOT_FOUND: (tonic::Code, &str) = (tonic::Code::NotFound, "NOT_FOUND");
+const INVALID: (tonic::Code, &str) = (tonic::Code::InvalidArgument, "INVALID_ARGUMENT");
+const DENIED: (tonic::Code, &str) = (tonic::Code::PermissionDenied, "PERMISSION_DENIED");
 
 impl Fixture {
     async fn new() -> Self {
@@ -173,6 +180,29 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
         );
+        // Every Workspace Coral serves has its Private and Shared Providers.
+        let mut tx = database.begin().await.unwrap();
+        providers
+            .install_coral_defined_in_transaction(
+                &mut tx,
+                &change(&owner),
+                workspace.id(),
+                coral_provider::CoralDefinedProvider::Private,
+            )
+            .await
+            .unwrap()
+            .skip_search();
+        providers
+            .install_coral_defined_in_transaction(
+                &mut tx,
+                &change(&owner),
+                workspace.id(),
+                coral_provider::CoralDefinedProvider::Shared,
+            )
+            .await
+            .unwrap()
+            .skip_search();
+        tx.commit().await.unwrap();
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_id_metadata_document(
                 "https://reef.example/.well-known/oauth-client".into(),
@@ -189,15 +219,22 @@ impl Fixture {
         )
         .unwrap()
         .with_accounts(accounts.clone());
-        let saved_functions = coral_functions::SavedFunctionModule::new(
+        let private_tools = coral_tools::PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
         // Search notification tests drive the workflow at its owner.
         let search_index = coral_search::SearchIndex::inert(database.clone());
+        let shared_tools = coral_tools::SharedToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
         let mcp_origin = Arc::new(OnceLock::new());
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let readiness = ready.clone();
@@ -228,14 +265,22 @@ impl Fixture {
                 ),
                 workspaces: workspaces.clone(),
                 tasks: tasks.clone(),
-                saved_functions: coral_functions::SavedFunctionInspection::new(
+                private_tools: coral_tools::PrivateToolInspection::new(
                     database.clone(),
                     workspaces.clone(),
                 ),
-                saved_function_deletion: coral_functions::SavedFunctionDeletion::new(
+                private_tool_workflow: coral_administration::PrivateToolWorkflow::new(
                     database.clone(),
-                    workspaces.clone(),
+                    coral_tools::PrivateToolDeletion::new(workspaces.clone()),
+                    search_index.clone(),
                 ),
+                shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
+                    database.clone(),
+                    shared_tools.clone(),
+                    coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
+                    search_index.clone(),
+                ),
+                shared_tools,
                 releases,
                 usage: Some(coral_usage::UsageData::new(
                     database.clone(),
@@ -275,7 +320,7 @@ impl Fixture {
             provider_module: providers,
             runs,
             tasks,
-            saved_functions,
+            private_tools,
         }
     }
 
@@ -285,7 +330,12 @@ impl Fixture {
         let database = self.database.database();
         let mut tx = database.begin().await.unwrap();
         self.provider_module
-            .install_builtin_in_transaction(&mut tx, &change(&self.owner), self.workspace.id())
+            .install_coral_defined_in_transaction(
+                &mut tx,
+                &change(&self.owner),
+                self.workspace.id(),
+                coral_provider::CoralDefinedProvider::Builtin,
+            )
             .await
             .unwrap()
             .skip_search();
@@ -381,12 +431,16 @@ impl Fixture {
         )
     }
 
-    fn saved_functions(
+    fn private_tools(
         &self,
-    ) -> management::saved_function_service_client::SavedFunctionServiceClient<Channel> {
-        management::saved_function_service_client::SavedFunctionServiceClient::new(
-            self.channel.clone(),
-        )
+    ) -> management::private_tool_service_client::PrivateToolServiceClient<Channel> {
+        management::private_tool_service_client::PrivateToolServiceClient::new(self.channel.clone())
+    }
+
+    fn shared_tools(
+        &self,
+    ) -> management::shared_tool_service_client::SharedToolServiceClient<Channel> {
+        management::shared_tool_service_client::SharedToolServiceClient::new(self.channel.clone())
     }
 
     fn policies(&self) -> management::tool_policy_service_client::ToolPolicyServiceClient<Channel> {

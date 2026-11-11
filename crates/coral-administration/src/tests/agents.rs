@@ -3,7 +3,7 @@ use super::accounts::prepare_accounts;
 use super::*;
 use coral_provider::account::{AccountScope, AuthorizationState};
 
-async fn registered_agent(
+pub(super) async fn registered_agent(
     workspaces: &WorkspaceModule,
     owner: &AuthenticatedUser,
     workspace: &WorkspaceId,

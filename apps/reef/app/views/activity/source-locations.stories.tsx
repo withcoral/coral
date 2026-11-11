@@ -31,7 +31,7 @@ const run: Extract<ActivityRow, { kind: 'run' }> = {
   requiresAction: false,
 }
 // Each record carries the location Coral stored when the author's code made it.
-const savedFunction = `${workspace}/savedFunctions/notify`
+const privateTool = `${workspace}/privateTools/notify`
 const source = [
   'export default async function reminders() {',
   "  const invoices = await coral.providers.billing.listInvoices({ status: 'overdue' })",
@@ -45,7 +45,7 @@ const source = [
   ...Array.from({ length: 60 }, (_, i) => `  // Second batch note ${i}`),
   "  console.info('sent', 2)",
   '  coral.emit({ sent: 2 })',
-  '  await coral.functions.billing.notify()',
+  '  await coral.private.billing.notify()',
   '}',
 ].join('\n')
 const snapshot = 'export default async () => {\n  await coral.providers.mail.archive({})\n}'
@@ -81,6 +81,7 @@ function tool(
     requiresAction: false,
     dispatchedAt: at(position),
     waitingNanos: '0',
+    toolKind: 'provider',
     position,
     sourceLocation,
   }
@@ -115,7 +116,7 @@ const archived = tool(
   'archive',
   'mail.archive',
   9,
-  stored(2, 'archive', { kind: 'saved_function', savedFunction }),
+  stored(2, 'archive', { kind: 'private_tool', privateTool }),
 )
 // The record of the later send ending: it links to its tool inside the same Run.
 const ended: RunEvent = {
@@ -160,7 +161,8 @@ const context: RunDetail = {
   request: null,
   requestUnavailable: false,
   source,
-  linkedFunctions: [{ savedFunction, path: 'billing.notify', source: snapshot }],
+  linkedSharedTools: [],
+  linkedPrivateTools: [{ privateTool, path: 'billing.notify', source: snapshot }],
   terminal: {
     kind: 'failed',
     code: 'program_execution_failed',
@@ -278,7 +280,7 @@ async function expectOwnHeader(dialog: HTMLElement, title: string) {
 }
 
 /** One selection: its record's own detail above, its highlighted call in the source below.
- * A Saved Function snapshot is named; the accepted program, the pane's default, is not. */
+ * A Private Tool snapshot is named; the accepted program, the pane's default, is not. */
 function selection(
   record: string,
   title: string,
@@ -316,10 +318,10 @@ export const EarlierLineLaterRecord = selection(laterSend.name, 'mail.send', pro
 export const LaterLineEarlierRecord = selection(earlierSend.name, 'mail.send', program, [3])
 /** Its call matches the source exactly, but Coral stored no location for it. */
 export const RecordWithoutLocation = selection(legacySend.name, 'mail.send', program, [])
-export const SavedFunctionCall = selection(
+export const PrivateToolCall = selection(
   archived.name,
   'mail.archive',
-  'Saved-function snapshot: billing.notify',
+  'Private tool snapshot: billing.notify',
   [2],
 )
 export const ConsoleLog = selection(`${runName}/events/7`, 'console.info #7', program, [129])
@@ -530,7 +532,7 @@ export const CopiesAndDownloadsTheProgram = copiesAndDownloads(
 )
 export const CopiesAndDownloadsASnapshot = copiesAndDownloads(
   archived.name,
-  'Saved-function snapshot: billing.notify',
+  'Private tool snapshot: billing.notify',
   snapshot,
   'billing.notify.ts',
 )

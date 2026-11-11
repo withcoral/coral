@@ -63,7 +63,7 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       async () => {
         await page.goto(`/workspaces/${workspace}/providers/new`)
         await crumbs.getByRole('heading', { name: 'Add provider', exact: true, level: 1 }).waitFor()
-        await expect.poll(trail).toEqual([name, 'Providers', 'Add provider'])
+        await expect.poll(trail).toEqual([name, 'Tools', 'Add provider'])
         await chooseFile(
           page,
           'journal.json',
@@ -72,17 +72,17 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
         await page.getByRole('button', { name: 'Read', exact: true }).click()
         await page.getByLabel('Display name', { exact: true }).waitFor()
         await crumbs.getByRole('heading', { name: 'Add Journal', exact: true, level: 1 }).waitFor()
-        await expect.poll(trail).toEqual([name, 'Providers', 'Add Journal'])
+        await expect.poll(trail).toEqual([name, 'Tools', 'Add Journal'])
         await expect.poll(titles).toEqual(['Add Journal'])
         // The step's title and actions head its content, not the top bar.
         await page.getByRole('heading', { name: 'Setup', exact: true, level: 2 }).waitFor()
         await configurationNext(page).waitFor()
         expect(await topBar.getByRole('button', { name: 'Next', exact: true }).count()).toBe(0)
-        await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
-        await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
+        await crumbs.getByRole('link', { name: 'Tools', exact: true }).click()
+        await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/tools`)
       },
     )
-    await step('Provider pages lead back to the provider and the provider list', async () => {
+    await step('Provider pages lead back to the provider and the tools page', async () => {
       const providerPath = await addProviderFromFile(
         page,
         workspace,
@@ -90,17 +90,17 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
         'ledger',
       )
       await openProviderSettings(page)
-      await expect.poll(trail).toEqual([name, 'Providers', 'Ledger', 'Settings'])
+      await expect.poll(trail).toEqual([name, 'Tools', 'Ledger', 'Settings'])
       // The provider crumb returns to the provider's tools.
       await crumbs.getByRole('link', { name: 'Ledger', exact: true }).click()
       await page.waitForURL((url) => url.pathname === providerPath)
       await openProviderSettings(page)
-      await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
-      await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
-      // The provider list's toolbar titles the page. Add provider ends that
+      await crumbs.getByRole('link', { name: 'Tools', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/tools`)
+      // The tools page's toolbar titles the page. Add provider ends that
       // toolbar, so every tab shows it.
-      await page.getByRole('heading', { name: 'Providers', exact: true, level: 1 }).waitFor()
-      await expect.poll(titles).toEqual(['Providers'])
+      await page.getByRole('heading', { name: 'Tools', exact: true, level: 1 }).waitFor()
+      await expect.poll(titles).toEqual(['Tools'])
       await page
         .getByRole('main')
         .getByRole('button', { name: 'Add provider', exact: true })

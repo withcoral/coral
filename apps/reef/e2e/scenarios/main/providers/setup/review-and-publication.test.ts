@@ -180,7 +180,7 @@ test('A catalog recipe reads in the dialog and opens its configuration', async (
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const workspace = await createWorkspace(actor.accessToken, `Recipe ${crypto.randomUUID()}`)
     await step('Choose a recipe with a bundled document from the catalog', async () => {
-      await page.goto(`/workspaces/${workspace}/providers`)
+      await page.goto(`/workspaces/${workspace}/tools`)
       // The split layout repeats the page header for the list and detail panes.
       await page.getByRole('button', { name: 'Add provider', exact: true }).first().click()
       // Gmail's document ships with Reef, so the read needs no outbound network.

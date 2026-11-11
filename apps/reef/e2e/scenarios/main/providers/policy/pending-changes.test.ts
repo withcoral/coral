@@ -21,6 +21,11 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
     await openPolicies(page, actor.accessToken)
     const held = await holdPolicies(page)
     try {
+      // At 1200px or more the drawer docks beside the table and leaves the
+      // policy to the tool's row. Narrower, it floats over that column and
+      // shows the policy itself.
+      const { height } = page.viewportSize()!
+      await page.setViewportSize({ width: 1100, height })
       await row(page, 'first').getByRole('checkbox').check()
       await row(page, 'first').getByRole('link', { name: 'first', exact: true }).click()
       const drawer = page.getByRole('dialog', { name: 'first', exact: true })
@@ -97,7 +102,9 @@ async function holdPolicies(page: Page, reject = false) {
     release = resolve
   })
   const submitted: URLSearchParams[] = []
-  await page.route('**/providers/**', async (route) => {
+  // Every group's route serves the policy action, and the bulk form posts to
+  // the first group's, which need not be a provider's.
+  await page.route('**/workspaces/**', async (route) => {
     const request = route.request()
     const form = new URLSearchParams(request.postData() ?? '')
     if (request.method() !== 'POST' || form.get('intent') !== 'policy') return route.continue()

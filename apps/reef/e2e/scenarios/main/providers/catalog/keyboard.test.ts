@@ -14,7 +14,7 @@ const cursorName = (table: Locator) =>
   table.locator('[role="row"][data-active] a[href*="/tools/"]').textContent()
 
 // Cursor movement, the summary filter, and key routing are
-// workspace-providers-page.dom.test.tsx cases; this scenario keeps what needs
+// tools-page.dom.test.tsx cases; this scenario keeps what needs
 // a real layout, real focus, and a saved policy.
 test('The keyboard drives the tools table, its drawer, and its policy', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
@@ -47,7 +47,7 @@ test('The keyboard drives the tools table, its drawer, and its policy', async (c
       )
       // A short viewport keeps most of the large catalog out of view.
       await page.setViewportSize({ width: 1440, height: 600 })
-      await page.goto(`/workspaces/${workspace}/providers`)
+      await page.goto(`/workspaces/${workspace}/tools`)
       await table.waitFor()
     })
     await step('The find shortcut focuses the tool filter', async () => {
@@ -142,15 +142,23 @@ test('The keyboard drives the tools table, its drawer, and its policy', async (c
       await page.keyboard.press('Enter')
       const drawer = page.getByRole('dialog', { name: 'op002', exact: true })
       await page.waitForURL((url) => url.pathname.endsWith('/tools/op002'))
-      // The drawer has finished opening: its keyframe animation has ended.
-      await drawer.evaluate((element) =>
-        Promise.all(element.getAnimations().map((animation) => animation.finished)),
-      )
+      // The drawer has finished opening: its keyframe animation has ended. A
+      // drawer that opens again while it closes cancels its exit, which rejects
+      // that animation's `finished`, so wait until none is left running.
+      await drawer.evaluate(async (element) => {
+        for (;;) {
+          const running = element
+            .getAnimations()
+            .filter((animation) => animation.playState !== 'finished')
+          if (running.length === 0) return
+          await Promise.allSettled(running.map((animation) => animation.finished))
+        }
+      })
       // The drawer is still animating out when ↓ arrives.
       await page.keyboard.press('Escape')
       await page.keyboard.press('ArrowDown')
       await page.getByRole('dialog').waitFor({ state: 'detached' })
-      expect(new URL(page.url()).pathname).toBe(`/workspaces/${workspace}/providers`)
+      expect(new URL(page.url()).pathname).toBe(`/workspaces/${workspace}/tools`)
       await expect.poll(() => cursorName(table)).toBe('op003')
     })
     await step('Collapsing a provider you scrolled into keeps its heading in view', async () => {

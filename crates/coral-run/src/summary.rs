@@ -199,13 +199,19 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 F::ToolNotFound
                 | F::ProviderNotFound
                 | F::ProviderPublicationFailed
-                | F::SavedFunctionNotFound
+                | F::PrivateToolExists
+                | F::PrivateToolNotFound
+                | F::PrivateToolRevisionConflict
                 | F::InvalidInput
                 | F::InputTooLarge
                 | F::UpstreamIncomplete
                 | F::UpstreamRejected
                 | F::ResultTooLarge
-                | F::RunOutputTooLarge,
+                | F::RunOutputTooLarge
+                | F::ToolResultTooLarge
+                | F::ToolFailed
+                | F::InvalidToolResult
+                | F::ParentInvocationEnded,
             )
             | None,
         )
@@ -503,7 +509,9 @@ mod tests {
             (failure(F::UpstreamUnauthorized), O::NeedsSetup),
             (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
-            (failure(F::SavedFunctionNotFound), O::Failed),
+            (failure(F::PrivateToolExists), O::Failed),
+            (failure(F::PrivateToolNotFound), O::Failed),
+            (failure(F::PrivateToolRevisionConflict), O::Failed),
             (failure(F::ProviderPublicationFailed), O::Failed),
             (failure(F::InvalidInput), O::Failed),
             (failure(F::InputTooLarge), O::Failed),
@@ -511,6 +519,10 @@ mod tests {
             (failure(F::UpstreamRejected), O::Failed),
             (failure(F::ResultTooLarge), O::Failed),
             (failure(F::RunOutputTooLarge), O::Failed),
+            (failure(F::ToolResultTooLarge), O::Failed),
+            (failure(F::ToolFailed), O::Failed),
+            (failure(F::InvalidToolResult), O::Failed),
+            (failure(F::ParentInvocationEnded), O::Failed),
             ((K::CoralFailure, None), O::Failed),
             ((K::Indeterminate, None), O::Failed),
             ((K::RunTerminated, None), O::Canceled),
