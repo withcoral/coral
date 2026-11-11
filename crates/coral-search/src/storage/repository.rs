@@ -73,11 +73,11 @@ pub(super) async fn create_extension(
 /// name.
 pub(super) enum VectorTable {
     Absent,
-    /// The table this binary creates for the dimension asked about.
-    Current,
-    /// A table this binary would not create: one of another dimension or
-    /// shape, or one that does not record the statement that created it.
-    Other,
+    /// A table whose vectors have the dimension asked about.
+    SameDimension,
+    /// A table whose vectors have another dimension, or no `halfvec`
+    /// column.
+    OtherDimension,
 }
 
 /// The statement that creates the vector table for vectors of `dimension`.
@@ -115,18 +115,21 @@ pub(super) async fn lock_vector_table(transaction: &mut Transaction<'_>) -> Resu
         .await
 }
 
-/// Reads the vector table in the first schema on the search path against the
-/// one this binary creates for `dimension`. The table's comment records the
-/// statement that created it.
+/// Reads the dimension of the vector table in the first schema on the
+/// search path. pgvector keeps a `halfvec` column's dimension as its type
+/// modifier.
 pub(super) async fn vector_table(
     transaction: &mut Transaction<'_>,
     dimension: usize,
 ) -> Result<VectorTable, Error> {
-    let rows: Vec<(Option<String>,)> = transaction
+    let rows: Vec<(Option<String>, Option<i32>)> = transaction
         .fetch_all_sql(
-            "SELECT obj_description(c.oid, 'pg_class') \
+            "SELECT t.typname::text, a.atttypmod \
              FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_catalog.pg_attribute a \
+                 ON a.attrelid = c.oid AND a.attname = 'embedding' AND NOT a.attisdropped \
+             LEFT JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
              WHERE n.nspname = current_schema() \
              AND c.relname = 'search_entity_embeddings' \
              AND c.relkind = 'r'",
@@ -135,10 +138,13 @@ pub(super) async fn vector_table(
         .await?;
     Ok(match rows.into_iter().next() {
         None => VectorTable::Absent,
-        Some((Some(created_by),)) if created_by == vector_table_statement(dimension) => {
-            VectorTable::Current
+        Some((Some(type_name), Some(type_modifier)))
+            if type_name == "halfvec"
+                && usize::try_from(type_modifier).is_ok_and(|stored| stored == dimension) =>
+        {
+            VectorTable::SameDimension
         }
-        Some(_) => VectorTable::Other,
+        Some(_) => VectorTable::OtherDimension,
     })
 }
 
@@ -148,19 +154,12 @@ pub(super) async fn drop_vector_table(transaction: &mut Transaction<'_>) -> Resu
         .await
 }
 
-/// Creates the vector table for `dimension` and records the statement as its
-/// comment.
 pub(super) async fn create_vector_table(
     transaction: &mut Transaction<'_>,
     dimension: usize,
 ) -> Result<(), Error> {
-    let statement = vector_table_statement(dimension);
-    transaction.execute_script(&statement).await?;
     transaction
-        .execute_script(&format!(
-            "COMMENT ON TABLE search_entity_embeddings IS '{}'",
-            statement.replace('\'', "''")
-        ))
+        .execute_script(&vector_table_statement(dimension))
         .await
 }
 
