@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 /// which changes the [`EmbedderRevision`] and re-embeds every Search Entity.
 pub const MANIFEST: Manifest = Manifest {
     model_id: "bge-small-en-v1.5",
-    download_url: "https://github.com/withcoral/coral-releases/releases/download/model-bge-small-en-v1.5",
+    download_url: "https://github.com/withcoral/coral-releases/releases/download/model-bge-small-en-v1.5-5c38ec7",
     model_file: ModelFile {
         name: "model.onnx",
         size: 133_093_490,
@@ -55,13 +55,13 @@ pub struct Manifest {
     /// The length of every vector.
     pub dimension: usize,
     /// The tokens the model reads from a text, special tokens included. The
-    /// rest of a longer text is cut.
+    /// tokenizer cuts the rest of a longer text.
     pub max_tokens: usize,
     /// How one vector comes from the model's per-token output.
     pub pooling: Pooling,
-    /// Text put before a query before it is embedded.
+    /// Text that goes before a query.
     pub query_prefix: &'static str,
-    /// Text put before a Search Entity's index text before it is embedded.
+    /// Text that goes before a Search Entity's index text.
     pub document_prefix: &'static str,
     /// What text of a Search Entity the Embedder embeds.
     pub index_text: IndexText,
@@ -69,8 +69,8 @@ pub struct Manifest {
     pub query_text: QueryText,
     /// How a retriever merges its vector list with its lexical list.
     pub merge: Merge,
-    /// An entry in this many first places of the vector list is strong. A
-    /// constant: it does not follow the request's limit.
+    /// An entry is strong when its rank in the vector list is this number
+    /// or lower. It is a constant: it does not follow the request's limit.
     pub strong_count: usize,
 }
 
@@ -97,8 +97,8 @@ pub enum Pooling {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexText {
     /// For a Provider Tool, the Call Path, title, description and parameter
-    /// names. For a Private or Shared Tool, the Call Path, description and
-    /// input names. The bench names it `path_title_desc_params`.
+    /// names. For a Saved Function, the Call Path, description and input
+    /// names. The bench names it `path_title_desc_params`.
     PathTitleDescriptionParameterNames,
 }
 

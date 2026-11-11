@@ -70,6 +70,9 @@ oxc_ast = "0.156"
 oxc_parser = "0.156"
 oxc_span = "0.156"
 opentelemetry = "0.33.1"
+# The build downloads ONNX Runtime 1.31.0, built by pyke, and links it
+# statically. `tracing` sends ONNX Runtime's log to Coral's.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "api-24", "download-binaries", "tls-rustls", "tracing"] }
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = "0.33.1"
 opentelemetry_sdk = "0.33.1"
@@ -101,6 +104,7 @@ sourcemap = "9.3.2"
 sse-stream = "0.2.6"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
 tokio-stream = "0.1"
 toml = "1.1"
 tonic = "0.14.9"

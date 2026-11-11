@@ -86,7 +86,7 @@ pub struct Model {
 struct Inference {
     tokenizer: Tokenizer,
     session: Session,
-    token_types: bool,
+    takes_token_type_ids: bool,
 }
 
 impl std::fmt::Debug for Model {
@@ -118,7 +118,7 @@ impl Model {
                 path: path.clone(),
                 source,
             })?;
-        let token_types = session
+        let takes_token_type_ids = session
             .inputs()
             .iter()
             .any(|input| input.name() == "token_type_ids");
@@ -126,7 +126,7 @@ impl Model {
             inference: Mutex::new(Inference {
                 tokenizer,
                 session,
-                token_types,
+                takes_token_type_ids,
             }),
         })
     }
@@ -170,7 +170,7 @@ impl Inference {
         let shape = [1_usize, tokens];
         let ids = Tensor::from_array((shape, ids)).map_err(EmbedError::Inference)?;
         let mask = Tensor::from_array((shape, mask)).map_err(EmbedError::Inference)?;
-        let outputs = if self.token_types {
+        let outputs = if self.takes_token_type_ids {
             let types =
                 Tensor::from_array((shape, vec![0_i64; tokens])).map_err(EmbedError::Inference)?;
             self.session.run(ort::inputs![
@@ -242,9 +242,9 @@ fn session_builder() -> Result<SessionBuilder, ort::Error> {
         .with_intra_threads(1)?)
 }
 
-/// ONNX Runtime allows one environment per process, and `ort` refuses a
-/// second one even after the first is dropped, so every session shares one
-/// that lives as long as the process.
+/// ONNX Runtime allows one environment per process. `ort` refuses a second
+/// one, even after the first is dropped. So every session shares this one,
+/// which lives as long as the process.
 fn environment() -> Result<Environment, ort::Error> {
     static ENVIRONMENT: Mutex<Option<Environment>> = Mutex::new(None);
     let mut slot = ENVIRONMENT.lock().unwrap_or_else(PoisonError::into_inner);
@@ -289,7 +289,7 @@ mod tests {
         let mut inference = Inference {
             tokenizer: load_tokenizer(&dir.join(MANIFEST.tokenizer_file.name)).unwrap(),
             session,
-            token_types: true,
+            takes_token_type_ids: true,
         };
         inference
             .embed("List the open pull requests of a repository.")

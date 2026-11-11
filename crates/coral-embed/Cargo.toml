@@ -10,12 +10,10 @@ publish = false
 workspace = true
 
 [dependencies]
-# The build downloads ONNX Runtime 1.31.0, built by pyke, and links it
-# statically. `tracing` sends ONNX Runtime's log to Coral's.
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "api-24", "download-binaries", "tls-rustls", "tracing"] }
+ort.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+tokenizers.workspace = true
 
 [dev-dependencies]
 serde.workspace = true

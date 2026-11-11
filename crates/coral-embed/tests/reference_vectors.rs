@@ -1,7 +1,7 @@
 //! The real model against the bench harness's vectors.
 //!
-//! These tests load the 133 MB model, so they are ignored by default. Run
-//! them with the model's files in one folder:
+//! These tests load the 133 MB model, so `cargo test` skips them. Run them
+//! with the model's files in one folder:
 //!
 //! ```text
 //! CORAL_EMBED_MODEL_DIR=<folder with model.onnx and tokenizer.json> \

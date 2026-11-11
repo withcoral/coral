@@ -1,6 +1,5 @@
 //! `coral embed-check`, hidden: loads the embedding model and times query
-//! embedding, so a platform's numbers can be measured with the shipped
-//! binary (#3051).
+//! embedding, so you can measure a platform with the shipped binary (#3051).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -64,7 +63,7 @@ pub(crate) fn run(args: &EmbedCheckArgs) -> anyhow::Result<()> {
         "query_ms p50 {:.2} p99 {:.2} max {:.2} runs {}",
         percentile(&times, 50),
         percentile(&times, 99),
-        times.last().copied().unwrap_or(f64::NAN),
+        percentile(&times, 100),
         times.len()
     );
     Ok(())
@@ -74,8 +73,11 @@ fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-/// The nearest-rank percentile of sorted values.
+/// The nearest-rank percentile of sorted values. `--runs` is at least 1, so
+/// the list is never empty.
 fn percentile(sorted: &[f64], percent: usize) -> f64 {
     let rank = (sorted.len() * percent).div_ceil(100).max(1);
-    sorted.get(rank - 1).copied().unwrap_or(f64::NAN)
+    *sorted
+        .get(rank - 1)
+        .expect("a rank in 1..=len of a list that is not empty")
 }
