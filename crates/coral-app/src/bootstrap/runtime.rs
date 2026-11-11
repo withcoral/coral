@@ -25,9 +25,9 @@ use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthori
 
 /// What a launching binary adds to Coral beyond what every build has.
 ///
-/// The `coral` binary passes the default. The released binary will pass what
-/// `ee/` registers, and each Enterprise Feature will check [`Self::edition`]
-/// each time it is used (ADR 0033).
+/// The `coral` binary passes the default. The released binary passes what
+/// `ee/` registers, and each Enterprise Feature checks [`Self::edition`] each
+/// time it is used (ADR 0033).
 #[derive(Clone, Default)]
 pub struct Extensions {
     /// Decides the deployment's Edition. The default is always Community.
