@@ -24,6 +24,8 @@ Across the 34 tasks below, custom tools gave these results:
 
 ## Example: find the pull request that fixed a release alarm
 
+A summary of the prompt:
+
 > Someone reported a failed release workflow after a change to its push steps. Which pull request fixed it?
 
 | Agent run | Total tokens | Token cost | Task time |
@@ -246,6 +248,7 @@ export default async function threadLinkedWork(input: { channel: string; ts: str
 
 Each cell shows the result without custom tools → the result with custom tools.
 The percentage is the change.
+Each task is a summary of the prompt.
 Every answer was correct in both runs, except where a task says otherwise.
 
 <div className="task-table">
