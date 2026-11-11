@@ -85,6 +85,10 @@ coral_failures! {
     ResultTooLarge => "upstream_result_too_large",
     /// The upstream result would exceed the Run's remaining output budget.
     RunOutputTooLarge => "upstream_result_too_large",
+    /// The result of a Tool that Coral performs, a Built-in Tool or one in
+    /// the Program, exceeds its accepted bound. It has no upstream, so only
+    /// its message differs.
+    ToolResultTooLarge => "upstream_result_too_large",
     /// The body of a Tool that Coral performs in the Program threw.
     ToolFailed => "tool_failed",
     /// The body of a Tool that Coral performs in the Program returned a
@@ -133,7 +137,7 @@ impl CoralFailure {
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not change the Provider",
-            Self::PrivateToolExists => "A Private Tool is already at this path",
+            Self::PrivateToolExists => "A Private Tool already exists",
             Self::PrivateToolNotFound => "Private Tool was not found",
             Self::PrivateToolRevisionConflict => "Private Tool changed since the expected revision",
             Self::CredentialRouteChanged => "Tool credential route changed",
@@ -152,6 +156,7 @@ impl CoralFailure {
             Self::UpstreamUnauthorized => "Upstream refused the request's credentials or access",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
+            Self::ToolResultTooLarge => "Tool result exceeds its limit",
             Self::ToolFailed => "Tool failed",
             Self::InvalidToolResult => "Tool result is not a JSON value",
             Self::ParentInvocationEnded => "The Tool call that made this call has ended",
@@ -216,8 +221,8 @@ pub struct Rejection {
     /// For `tool_not_found`, the Call Path the Program wrote and the nearest
     /// Discoverable Call Paths of its Call Root.
     not_found: Option<NotFound>,
-    /// For `tool_failed`, what the Tool's body threw: Program-written text,
-    /// already bounded.
+    /// For the body of a Tool that Coral performs, which threw: what it
+    /// threw, Program-written text, already bounded.
     thrown: Option<String>,
 }
 
@@ -272,14 +277,26 @@ impl Rejection {
         }
     }
 
-    /// `tool_failed` for the body of a Tool that Coral performs in the
-    /// Program, which threw `message`: text the Program wrote, which reaches
-    /// it again unchanged but bounded.
-    pub(crate) fn tool_failed(message: &str) -> Self {
+    /// What the body of a Tool that Coral performs threw, `message`: text
+    /// the Program wrote, which reaches its caller again unchanged but
+    /// bounded (ADR 0033). A Tool Error that a call in the body gave it
+    /// keeps that call's code when it is a Coral Failure, so the record says
+    /// what the caller saw. Anything else is `tool_failed`, an upstream
+    /// rejection's code included, since no Coral Failure decodes it.
+    pub(crate) fn thrown(message: &str, tool_error: Option<&str>) -> Self {
+        let failure = tool_error
+            .and_then(CoralFailure::from_code)
+            .unwrap_or(CoralFailure::ToolFailed);
         Self {
             thrown: Some(coral_v8::bounded_diagnostic_message(message)),
-            ..Self::from(CoralFailure::ToolFailed)
+            ..Self::from(failure)
         }
+    }
+
+    /// Whether a Tool's body threw this, so a call in it, not this call,
+    /// decided it.
+    pub(crate) const fn thrown_by_body(&self) -> bool {
+        self.thrown.is_some()
     }
 
     /// `tool_not_found` for the Call Path the Program wrote, with up to
@@ -694,7 +711,8 @@ mod tests {
                 "upstream_result_too_large",
                 vec![
                     CoralFailure::ResultTooLarge,
-                    CoralFailure::RunOutputTooLarge
+                    CoralFailure::RunOutputTooLarge,
+                    CoralFailure::ToolResultTooLarge,
                 ]
             )])
         );

@@ -708,7 +708,9 @@ impl PrivateToolSave {
         }
     }
 
-    pub(crate) const fn path(&self) -> &PrivateToolPath {
+    /// Returns the path relative to `coral.private` that it saves.
+    #[must_use]
+    pub const fn path(&self) -> &PrivateToolPath {
         &self.path
     }
 

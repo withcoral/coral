@@ -519,7 +519,9 @@ async fn lifecycle_actions(
 }
 
 // Catches: an authoring Tool whose refusal reaches the Program under any
-// code but its own, or whose result reports the wrong path or revision.
+// code but its own, or without saying what to correct (a taken path that
+// does not name itself and coral.updateTool), or whose result reports the
+// wrong path or revision.
 // coral-tools tests that a refusal changes nothing.
 #[tokio::test]
 async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_their_codes() {
@@ -542,14 +544,17 @@ async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_
         "{added}"
     );
 
-    for (run, code) in [
+    for (run, code, message) in [
         (
             author("addTool", "people.greet", OTHER_SOURCE, ""),
             "private_tool_exists",
+            "A Private Tool already exists at `path`: coral.private.people.greet is one of your \
+             tools; change it with coral.updateTool, or choose another path",
         ),
         (
             author("updateTool", "people.missing", OTHER_SOURCE, ""),
             "private_tool_not_found",
+            "Private Tool was not found",
         ),
         (
             author(
@@ -559,11 +564,21 @@ async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_
                 ", expectedRevision: 2",
             ),
             "private_tool_revision_conflict",
+            "Private Tool changed since the expected revision at `expectedRevision`: the \
+             current revision is 1",
         ),
-        (remove("people.missing"), "private_tool_not_found"),
+        (
+            remove("people.missing"),
+            "private_tool_not_found",
+            "Private Tool was not found",
+        ),
     ] {
         let refused = outcome(&scope, &scope.owner, run).await;
-        assert_eq!(refused.get("code"), Some(&json!(code)), "{refused}");
+        assert_eq!(
+            refused,
+            json!({ "code": code, "message": message }),
+            "{refused}"
+        );
     }
 
     for (run, revision) in [
@@ -769,7 +784,7 @@ async fn each_private_tool_call_is_one_invocation_that_copies_data_and_returns_t
 // anything but a Tool Error coded `tool_failed` with its message, a result
 // that is not JSON under any code but `invalid_tool_result`, a Tool Error
 // from a call the body makes that loses its own code, or an Invocation that
-// records any of them as anything but `tool_failed` or `invalid_tool_result`.
+// records a code other than the one its caller read.
 #[tokio::test]
 async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_tool_error() {
     let (scope, _index) = authoring_scope("user:functions-failures").await;
@@ -796,11 +811,18 @@ async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_t
             "invalid_tool_result",
         ),
         (
+            "fails.huge",
+            "const saved = async (): Promise<string> => 'x'.repeat(20_000_000);",
+            "upstream_result_too_large",
+            "Tool result exceeds its limit",
+            "upstream_result_too_large",
+        ),
+        (
             "fails.nested",
             "const saved = async () => coral.removeTool({ path: 'nothing.here' });",
             "private_tool_not_found",
             "Private Tool was not found",
-            "tool_failed",
+            "private_tool_not_found",
         ),
     ] {
         outcome(&scope, &scope.owner, add(path, source)).await;

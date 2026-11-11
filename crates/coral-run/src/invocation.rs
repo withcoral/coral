@@ -867,7 +867,13 @@ impl ToolInvoker {
             }
         };
         let result_json = self
-            .finish_result(admitted, progress, &outcome.tool_result(), &mut slot)
+            .finish_result(
+                admitted,
+                progress,
+                &outcome.tool_result(),
+                &mut slot,
+                CoralFailure::ResultTooLarge,
+            )
             .await?;
         match crate::error::UpstreamRejection::of(outcome.class()) {
             None => Ok(result_json),
@@ -879,21 +885,20 @@ impl ToolInvoker {
     }
 
     /// Records a complete Tool Result as the Upstream Outcome, through
-    /// the owner.
+    /// the owner. A result over its bound fails as `too_large`.
     async fn finish_result(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         result: &serde_json::Value,
         slot: &mut DispatchSlot,
+        too_large: CoralFailure,
     ) -> Result<String, InvocationHostError> {
         let result_json = serde_json::to_string(result).map_err(Error::ProgramValueJson)?;
         if result_json.len() > self.limits.upstream_bytes()
             || self.limits.validate_json(&result_json).is_err()
         {
-            return Err(self
-                .finish_failure(admitted, progress, CoralFailure::ResultTooLarge)
-                .await?);
+            return Err(self.finish_failure(admitted, progress, too_large).await?);
         }
         match self
             .finish_upstream(admitted, progress, &result_json, slot)
@@ -968,7 +973,16 @@ impl ToolInvoker {
             run: self,
         };
         match call.perform(&host).await {
-            Ok(result) => self.finish_result(admitted, progress, &result, slot).await,
+            Ok(result) => {
+                self.finish_result(
+                    admitted,
+                    progress,
+                    &result,
+                    slot,
+                    CoralFailure::ToolResultTooLarge,
+                )
+                .await
+            }
             Err(Error::InvocationRejected(failure)) => {
                 Err(self.finish_failure(admitted, progress, failure).await?)
             }
@@ -1495,10 +1509,15 @@ impl ToolInvoker {
         failure: impl Into<Rejection>,
     ) -> Result<InvocationHostError, Error> {
         let failure: Rejection = failure.into();
-        if matches!(
-            failure.failure(),
-            CoralFailure::ResultTooLarge | CoralFailure::RunOutputTooLarge
-        ) {
+        // A body's call counted its own oversized result.
+        if !failure.thrown_by_body()
+            && matches!(
+                failure.failure(),
+                CoralFailure::ResultTooLarge
+                    | CoralFailure::RunOutputTooLarge
+                    | CoralFailure::ToolResultTooLarge
+            )
+        {
             metric::output_rejected(metric::OutputKind::Result);
         }
         let completion = InvocationCompletion::Failure(failure.clone());
@@ -1659,7 +1678,13 @@ impl PerformedCall {
                     match serde_json::from_str::<serde_json::Value>(&json) {
                         Ok(value) => {
                             invoker
-                                .finish_result(admitted, progress, &value, &mut self.slot)
+                                .finish_result(
+                                    admitted,
+                                    progress,
+                                    &value,
+                                    &mut self.slot,
+                                    CoralFailure::ToolResultTooLarge,
+                                )
                                 .await
                         }
                         Err(_not_json) => Err(invoker
@@ -1677,8 +1702,15 @@ impl PerformedCall {
                         ),
                     )
                     .await?),
-                coral_v8::ToolBodyOutcome::Threw { message, .. } => Err(invoker
-                    .finish_failure(admitted, progress, Rejection::tool_failed(&message))
+                coral_v8::ToolBodyOutcome::Threw {
+                    message,
+                    tool_error,
+                } => Err(invoker
+                    .finish_failure(
+                        admitted,
+                        progress,
+                        Rejection::thrown(&message, tool_error.as_deref()),
+                    )
                     .await?),
             }
         }

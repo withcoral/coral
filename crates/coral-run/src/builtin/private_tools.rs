@@ -111,7 +111,7 @@ impl SaveTool {
                 Some(&declarations),
             )
             .await
-            .map_err(|error| failure("source", error))?;
+            .map_err(|error| self.failure(error))?;
         #[cfg(test)]
         host.run.prepared();
         if !host.run.still_current().await? {
@@ -123,7 +123,7 @@ impl SaveTool {
             .module
             .save_in_transaction(&mut transaction, prepared)
             .await
-            .map_err(|error| failure("source", error))?;
+            .map_err(|error| self.failure(error))?;
         let result = SavedToolResult {
             call_path: call_path(private_tool.path()),
             description: private_tool.description().as_str().to_owned(),
@@ -151,6 +151,28 @@ impl SaveTool {
             .index
             .sync_authored_tool(host.workspace_id.clone(), private_tool.id().clone());
         Ok(result.into_tool_result())
+    }
+}
+
+impl SaveTool {
+    /// Why this save failed, as the Program reads it. A taken path names
+    /// itself and the Tool that changes it; any other failure is about the
+    /// source.
+    fn failure(&self, error: coral_tools::Error) -> Error {
+        if matches!(error, coral_tools::Error::PrivateToolExists) {
+            return Error::InvocationRejected(Rejection::naming(
+                CoralFailure::PrivateToolExists,
+                vec![InputProblem::new(
+                    "path",
+                    format!(
+                        "{} is one of your tools; change it with coral.updateTool, or choose \
+                         another path",
+                        call_path(self.save.path())
+                    ),
+                )],
+            ));
+        }
+        failure("source", error)
     }
 }
 
@@ -240,7 +262,8 @@ fn problem(field: &str, error: &coral_tools::Error) -> InputProblem {
 }
 
 /// A failure the Program can read and correct, or a host error. `field` is
-/// the argument an authoring failure names.
+/// the argument an authoring failure names. A save names its taken path
+/// itself: [`SaveTool::failure`].
 fn failure(field: &str, error: coral_tools::Error) -> Error {
     use coral_tools::Error as E;
     match error {
