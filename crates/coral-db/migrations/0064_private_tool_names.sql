@@ -6,7 +6,8 @@
 -- Stored JSON is compact, so each JSON pattern starts at a key or at a
 -- string's opening quote. Text a Program or an upstream controls, such as an
 -- error message or a Final Value, stays as it was written. The Call Paths and
--- sources that Runs recorded stay as well.
+-- source snapshots that Runs recorded stay as well. Only the label that names
+-- a Private Tool's source in a stack frame is renamed.
 
 -- The Built-in Provider's Tools now sit directly on `coral`. Each Provider
 -- row stores its full Call Root, so the Built-in Provider's moves from

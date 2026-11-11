@@ -217,7 +217,8 @@ function PublishDialogBody({
                     ariaDescribedBy={pathStatusId}
                     autoComplete="off"
                     spellCheck={false}
-                    maxLength={256}
+                    // Room for a pasted call path's root, which the field drops.
+                    maxLength={256 + SHARED_ROOT.length}
                     disabled={publishing}
                     invalid={!checking && Boolean(shown?.refusal)}
                   />

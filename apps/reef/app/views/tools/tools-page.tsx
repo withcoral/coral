@@ -1069,6 +1069,8 @@ function ToolsTableScreen({
     if (!drawerKey) return
     const closeDrawer = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.repeat) return
+      // A browser or system shortcut keeps its own Escape.
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
       if (!cursorKeyApplies(event, { fromFilter: false, overControls: true })) return
       event.preventDefault()
       closeSelectedRoute()
