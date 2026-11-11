@@ -177,7 +177,7 @@ impl LinkService for Script {
         let (to_send, mut sent) = mpsc::unbounded_channel();
         let free = hello.as_ref().map_or(0, |hello| hello.free);
         let held = streams.insert("scripted".to_owned(), dialed_admission(), free, to_send);
-        let compiler = Arc::new(PullStreamCompiler::new(streams.clone(), held));
+        let compiler = Arc::new(PullStreamCompiler::for_stream(streams.clone(), held));
         let (rooms, reported) = mpsc::unbounded_channel();
         drop(self.calls.send(PullCall {
             at,

@@ -100,6 +100,12 @@ impl From<CompileFailure> for PackageFailure {
 }
 
 pub(crate) trait ProgramEngine: Send + Sync {
+    /// Blocks until a compiler can take a call, for at most the compiler
+    /// client's own bound. The compilation deadline starts after it.
+    fn ready(&self) -> Result<(), CompileFailure> {
+        Ok(())
+    }
+
     /// What each source names: one answer per source, in the order of
     /// `sources`. The first source that fails stops the analysis, and its
     /// failure names the source. An engine that finds nothing names nothing,
@@ -174,6 +180,10 @@ impl V8ProgramEngine {
 }
 
 impl ProgramEngine for V8ProgramEngine {
+    fn ready(&self) -> Result<(), CompileFailure> {
+        self.compiler.ready().map_err(CompileFailure::from)
+    }
+
     fn analyze(
         &self,
         deadline: Instant,

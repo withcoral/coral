@@ -24,7 +24,7 @@ test('Quit stops Desktop’s processes, and a relaunch keeps the workspace at th
   const quit = await withDesktopApp(
     context,
     profile,
-    async ({ page, app, reef, step }) => {
+    async ({ page, app, reef, target, step }) => {
       reefOrigin = reef
       await step('Create a workspace with a provider', async () => {
         const workspace = await createWorkspaceViaUi(page, name)
@@ -36,10 +36,21 @@ test('Quit stops Desktop’s processes, and a relaunch keeps the workspace at th
         )
         endpoint = await copyMcpEndpoint(page, app, name)
       })
+      await step('Run a Program, which starts a local Run Executor', async () => {
+        const workspace = new URL(endpoint).pathname.split('/')[2]
+        const runner = programRunner(
+          page,
+          { ...target, mcpURL: new URL(endpoint).origin },
+          workspace,
+          { taskIntent: 'Desktop first launch goal' },
+        )
+        expect((await runner.search('Look up a record')).isError).not.toBe(true)
+      })
       const running = await desktopProcesses(app)
       expect(running.runtime).toHaveLength(1)
+      expect(running.runExecutors).toHaveLength(1)
       expect(running.reef).toHaveLength(1)
-      children = [...running.runtime, ...running.reef]
+      children = [...running.runtime, ...running.runExecutors, ...running.reef]
       await step('The runtime and Reef listen only on loopback', async () => {
         // A listener on another address would also raise a firewall prompt
         // on Windows.

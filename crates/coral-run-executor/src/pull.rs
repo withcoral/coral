@@ -3,9 +3,10 @@
 
 use std::collections::HashMap;
 use std::future::{Future, pending};
+use std::hash::{BuildHasher as _, RandomState};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc as sync_mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc as sync_mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_db::Database;
@@ -204,6 +205,8 @@ pub enum Refused {
 #[derive(Clone, Default)]
 pub struct PullStreams {
     held: Arc<Mutex<HashMap<StreamId, Held>>>,
+    /// Signalled when a stream opens or reports its room.
+    roomed: Arc<Condvar>,
     next: Arc<AtomicU64>,
 }
 
@@ -255,6 +258,33 @@ impl PullStreams {
             .collect()
     }
 
+    /// The stream that takes sends with the most room, ties at random, or
+    /// none when no stream has room.
+    pub(crate) fn most_room(&self) -> Option<StreamId> {
+        let random = RandomState::new();
+        lock(&self.held)
+            .values()
+            .filter(|held| !held.closing && held.view.free > 0)
+            .max_by_key(|held| (held.view.free, random.hash_one(held.view.stream)))
+            .map(|held| held.view.stream)
+    }
+
+    /// Blocks until a stream opens or reports its room, or for `wait`.
+    pub(crate) fn wait_for_room(&self, wait: Duration) {
+        let held = lock(&self.held);
+        if held
+            .values()
+            .any(|held| !held.closing && held.view.free > 0)
+        {
+            return;
+        }
+        drop(
+            self.roomed
+                .wait_timeout(held, wait)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+
     /// Sends `runs` on `stream`, one unit each; none sends nothing.
     ///
     /// # Errors
@@ -287,17 +317,15 @@ impl PullStreams {
         time_left_ms: u32,
         call: Call,
     ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+        if too_large(&call) {
+            return Err(Refused::TooLarge);
+        }
         let takes = Takes::of(&call);
-        // Sized with the longest number, before the lock. Sent, a message
-        // past the bound would end the stream and every compile on it.
         let mut message = pull_response::Message::Compile(Compile {
-            number: u64::MAX,
+            number: 0,
             time_left_ms,
             call: Some(call),
         });
-        if message.encoded_len() > MESSAGE_MAX_BYTES {
-            return Err(Refused::TooLarge);
-        }
         let mut held = lock(&self.held);
         let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
         held.spend(1)?;
@@ -341,6 +369,7 @@ impl PullStreams {
             compiles: HashMap::new(),
         };
         lock(&self.held).insert(stream, held);
+        self.roomed.notify_all();
         stream
     }
 
@@ -353,6 +382,10 @@ impl PullStreams {
                 if let Some(held) = lock(&self.held).get_mut(&stream) {
                     held.view.free = room.free;
                     held.view.last_work = Some(Instant::now());
+                }
+                // Only room wakes the calls that wait for it.
+                if room.free > 0 {
+                    self.roomed.notify_all();
                 }
                 Ok(())
             }
@@ -384,9 +417,11 @@ impl PullStreams {
             .ok()
             .filter(|read| read.answers(takes))
             .ok_or_else(|| Status::invalid_argument("Compiled breaks the protocol"))?;
-        let answered = lock(&self.held)
-            .get_mut(&stream)
-            .and_then(|held| held.compiles.remove(&compiled.number));
+        let answered = lock(&self.held).get_mut(&stream).and_then(|held| {
+            // An answer is work, as the room report after it is.
+            held.view.last_work = Some(Instant::now());
+            held.compiles.remove(&compiled.number)
+        });
         if let Some(in_flight) = answered {
             // An answer nobody waits for any more is dropped.
             drop(in_flight.answered.try_send(read));
@@ -422,6 +457,15 @@ impl PullStreams {
             drop(held.outbound.send(Err(violation)));
         }
     }
+}
+
+/// Whether `call`, sent as a `Compile`, passes [`MESSAGE_MAX_BYTES`]. Sent,
+/// such a message would end the stream and every compile on it.
+pub(crate) fn too_large(call: &Call) -> bool {
+    // A `Compile`'s number, time left and framing around its call, at their
+    // longest.
+    const FRAMING_BYTES: usize = 32;
+    call.encoded_len() + FRAMING_BYTES > MESSAGE_MAX_BYTES
 }
 
 /// Coral's side of the link: the pull streams it holds, the credentials it

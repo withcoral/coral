@@ -167,7 +167,10 @@ pub(crate) fn failure(error: CompileError) -> wire::CompileFailure {
         }
         CompileError::MemoryLimit => Failure::MemoryLimit(true),
         CompileError::Unavailable(Unavailable::Busy) => Failure::Busy(true),
-        CompileError::Unavailable(Unavailable::Stopped) => Failure::Stopped(true),
+        // A Run Executor never waits for a compiler; its own stopped.
+        CompileError::Unavailable(Unavailable::Stopped | Unavailable::NoCompiler) => {
+            Failure::Stopped(true)
+        }
         CompileError::Unavailable(Unavailable::Failed(kind)) => Failure::Failed(kind.to_owned()),
     };
     wire::CompileFailure {

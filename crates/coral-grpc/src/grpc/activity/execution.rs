@@ -37,6 +37,7 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::Functions(_)
         | coral_run::Error::CompilationTimedOut
         | coral_run::Error::CompilerBusy
+        | coral_run::Error::CompilerUnavailable
         | coral_run::Error::PackageTooLarge { .. }
         | coral_run::Error::ProgramRuntimeUnavailable(_)
         | coral_run::Error::ProgramWorkerStopped

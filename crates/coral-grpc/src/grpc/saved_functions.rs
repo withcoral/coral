@@ -24,6 +24,7 @@ fn error(error: coral_functions::Error) -> Status {
         | E::CompilerBusy
         | E::PackageTooLarge { .. }
         | E::CompilerUnavailable(_)
+        | E::NoCompiler
         | E::CompilerWorkerStopped
         | E::Clock(_)
         | E::Json(_)

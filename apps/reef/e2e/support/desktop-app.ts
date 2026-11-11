@@ -209,17 +209,25 @@ export function launchAgain(profile: DesktopProfile): Promise<DesktopExit> {
 
 export interface DesktopProcesses {
   runtime: number[]
+  /** The runtime's local Run Executors: `coral run-executor` children. */
+  runExecutors: number[]
   reef: number[]
 }
 
-/** Finds the runtime and Reef among the app's descendants in the OS process table. */
+/** Whether a `coral` process is a local Run Executor rather than the runtime. */
+const runExecutor = (row: { args: string }) => /\srun-executor(\s|$)/.test(row.args)
+
+/**
+ * Finds the runtime, its local Run Executors and Reef among the app's
+ * descendants in the OS process table.
+ */
 export async function desktopProcesses(app: ElectronApplication): Promise<DesktopProcesses> {
   const owned = await descendantProcesses(app.process().pid!)
+  // coral.exe on Windows.
+  const coral = owned.filter((row) => /[/\\]resources[/\\]coral[/\\]coral\b/.test(row.args))
   return {
-    runtime: owned
-      // coral.exe on Windows.
-      .filter((row) => /[/\\]resources[/\\]coral[/\\]coral\b/.test(row.args))
-      .map((row) => row.pid),
+    runtime: coral.filter((row) => !runExecutor(row)).map((row) => row.pid),
+    runExecutors: coral.filter(runExecutor).map((row) => row.pid),
     reef: owned
       .filter((row) => row.args.includes('--utility-sub-type=node.mojom.NodeService'))
       .map((row) => row.pid),
@@ -231,8 +239,12 @@ export async function desktopProcesses(app: ElectronApplication): Promise<Deskto
  * would orphan the runtime, still writing to a data folder about to be removed.
  */
 async function forceStop(app: ElectronApplication) {
-  const { runtime, reef } = await desktopProcesses(app).catch(() => ({ runtime: [], reef: [] }))
-  for (const pid of [app.process().pid, ...runtime, ...reef]) {
+  const { runtime, runExecutors, reef } = await desktopProcesses(app).catch(() => ({
+    runtime: [],
+    runExecutors: [],
+    reef: [],
+  }))
+  for (const pid of [app.process().pid, ...runtime, ...runExecutors, ...reef]) {
     if (pid === undefined) continue
     try {
       process.kill(pid, 'SIGKILL')

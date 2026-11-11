@@ -61,6 +61,7 @@ impl Journey {
         .unwrap();
         let runtime = coral_app::start_runtime(coral_app::Launch {
             config_dir: Some(temp.path().to_owned()),
+            compile_in_process: true,
             ..coral_app::Launch::default()
         })
         .await

@@ -288,19 +288,25 @@ impl RunModule {
     ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
-        let compiled = self
-            .compile_package(
-                actor,
-                workspace_id,
-                submitted_source,
-                compilation_started + self.compilation_timeout,
-            )
-            .await;
+        let compiled = match self.ready().await {
+            // The wait for a compiler takes none of the compile's time.
+            Ok(()) => {
+                self.compile_package(
+                    actor,
+                    workspace_id,
+                    submitted_source,
+                    Instant::now() + self.compilation_timeout,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         let outcome = match &compiled {
             Ok(_) => CompileOutcome::Ok,
             Err(Error::CompilationTimedOut) => CompileOutcome::TimedOut,
             Err(
                 Error::CompilerBusy
+                | Error::CompilerUnavailable
                 | Error::ProgramWorkerStopped
                 | Error::ProgramRuntimeUnavailable(_)
                 | Error::CorruptData(_),
@@ -603,6 +609,15 @@ impl RunModule {
         Ok(callable)
     }
 
+    /// Waits on a blocking worker until a compiler can take a call.
+    async fn ready(&self) -> Result<(), Error> {
+        let engine = self.engine.clone();
+        match tokio::task::spawn_blocking(move || engine.ready()).await {
+            Err(_join_error) => Err(Error::ProgramWorkerStopped),
+            Ok(ready) => ready.map_err(domain_error),
+        }
+    }
+
     /// Analyzes `sources` on a blocking worker within the admission
     /// deadline: one result per source, in order.
     async fn analyze(
@@ -670,6 +685,7 @@ fn domain_error(failure: CompileFailure) -> Error {
         CompileFailure::Busy => Error::CompilerBusy,
         CompileFailure::TimedOut => Error::CompilationTimedOut,
         CompileFailure::Stopped => Error::ProgramWorkerStopped,
+        CompileFailure::NoCompiler => Error::CompilerUnavailable,
         CompileFailure::Failed(kind) => {
             tracing::warn!(
                 error.type = safe::kind(kind),

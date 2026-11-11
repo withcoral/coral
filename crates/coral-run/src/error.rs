@@ -392,6 +392,10 @@ pub enum Error {
     /// The compiler queue was full, so the Program was not judged. Retryable.
     #[error("Program compiler is busy; retry shortly")]
     CompilerBusy,
+    /// No program compiler could take the Program within the wait for one,
+    /// so it was not judged. Retryable.
+    #[error("{}", coral_v8::CompileFailure::NO_COMPILER_MESSAGE)]
+    CompilerUnavailable,
     /// The emitted package exceeded a fixed authoring limit.
     #[error("Program package exceeds the {component} limit of {maximum_bytes} bytes")]
     PackageTooLarge {
@@ -496,6 +500,7 @@ impl Error {
             Self::PermissionDenied { .. } => "permission_denied",
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
+            Self::CompilerUnavailable => "compiler_unavailable",
             Self::PackageTooLarge { .. } => "package_too_large",
             Self::ProgramRuntimeUnavailable { .. } => "program_runtime_unavailable",
             Self::ProgramWorkerStopped { .. } => "program_worker_stopped",
@@ -598,6 +603,7 @@ impl Error {
             Self::ProgramAdmission(_) => PROGRAM_ADMISSION_FAILED,
             Self::CompilationTimedOut => PROGRAM_COMPILATION_TIMED_OUT,
             Self::CompilerBusy => "program_compiler_busy",
+            Self::CompilerUnavailable => "program_compiler_unavailable",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::Functions(error) => return error.safe_rejection(),
             Self::PermissionDenied(_) => "permission_denied",
@@ -628,6 +634,9 @@ mod tests {
             Error::CompilationTimedOut
         )));
         assert!(!Error::is_compile_rejection(code(Error::CompilerBusy)));
+        assert!(!Error::is_compile_rejection(code(
+            Error::CompilerUnavailable
+        )));
         assert!(!Error::is_compile_rejection(code(Error::ShuttingDown)));
     }
 

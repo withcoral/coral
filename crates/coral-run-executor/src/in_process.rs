@@ -156,6 +156,7 @@ fn compile_error(error: coral_v8::Error) -> CompileError {
                 CompileFailure::TimedOut => CompileError::TimedOut,
                 CompileFailure::Busy => CompileError::Unavailable(Unavailable::Busy),
                 CompileFailure::Stopped => CompileError::Unavailable(Unavailable::Stopped),
+                CompileFailure::NoCompiler => CompileError::Unavailable(Unavailable::NoCompiler),
                 CompileFailure::Failed(failed) => {
                     CompileError::Unavailable(Unavailable::Failed(failed))
                 }

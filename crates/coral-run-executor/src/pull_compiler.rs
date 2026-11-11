@@ -10,67 +10,155 @@ use coral_v8::{
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::wire::v1::compile::Call;
 use crate::{
-    AnalysisError, CompileError, CompilerClient, Diagnostics, PullStreams, Refused, StreamId,
-    Unavailable,
+    AnalysisError, CompileError, CompilerClient, Diagnostics, LocalRunExecutors, PullStreams,
+    Refused, StreamId, Unavailable,
 };
+
+/// How long a call waits for a pull stream with room before it fails: the
+/// Shutdown Drain's length. A Run Executor redials within 5 s.
+pub(crate) const COMPILE_WAIT: Duration = Duration::from_secs(30);
+
+/// How often a waiting call asks the local children for room again: a
+/// request is spent once any room shows, even room another call takes.
+const ASK_AGAIN: Duration = Duration::from_secs(1);
 
 /// Why a call too large to send is rejected. Only a typed save grows that
 /// large: its Tool declarations total at most 1 MiB, but it carries one
 /// declaration of up to 256 KiB for each Saved Function it calls.
 const TOO_LARGE: &str = "The source and the declarations of the Saved Functions it calls are too large to compile; call fewer Saved Functions";
 
-/// Coral's side of the compiles one held pull stream carries: a
-/// [`CompilerClient`] that sends each call down the stream as `Compile` and
-/// waits for its `Compiled` within the call's time left.
+/// Coral's side of the compiles the pull streams carry: a
+/// [`CompilerClient`] that sends each call down a pull stream as `Compile`
+/// and waits for its `Compiled` within the call's time left.
 ///
 /// [`PullStreams`] numbers each call, spends its unit of room, and reads
-/// each answer back. A call fails as a busy compiler when the stream has no
-/// room, as a stopped one when the stream ends first, and as rejected when
-/// it is too large to send.
+/// each answer back. A call fails as a stopped compiler when its stream
+/// ends first, and as rejected when it is too large to send.
 #[derive(Clone)]
 pub struct PullStreamCompiler {
     streams: PullStreams,
-    stream: StreamId,
+    target: Target,
+}
+
+#[derive(Clone)]
+enum Target {
+    /// Every call goes to this stream, and fails as a busy compiler when it
+    /// has no room.
+    Stream(StreamId),
+    /// Each call goes to the stream with the most room, and waits for one
+    /// when none has room, asking the local children for room.
+    MostRoom {
+        children: Option<LocalRunExecutors>,
+        wait: Duration,
+    },
 }
 
 impl fmt::Debug for PullStreamCompiler {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let stream = match &self.target {
+            Target::Stream(stream) => Some(stream),
+            Target::MostRoom { .. } => None,
+        };
         formatter
             .debug_struct("PullStreamCompiler")
-            .field("stream", &self.stream)
+            .field("stream", &stream)
             .finish_non_exhaustive()
     }
 }
 
 impl PullStreamCompiler {
-    /// The client for `stream`, one of `streams`.
+    /// The client that sends each call to the stream in `streams` with the
+    /// most room, ties at random. With no room, [`CompilerClient::ready`]
+    /// waits up to [`COMPILE_WAIT`] and a call waits within its time left;
+    /// both ask `children`, when there are local children, for room.
     #[must_use]
-    pub const fn new(streams: PullStreams, stream: StreamId) -> Self {
-        Self { streams, stream }
+    pub const fn new(streams: PullStreams, children: Option<LocalRunExecutors>) -> Self {
+        Self::waiting(streams, children, COMPILE_WAIT)
+    }
+
+    /// [`Self::new`] with `wait` in place of [`COMPILE_WAIT`].
+    #[must_use]
+    pub(crate) const fn waiting(
+        streams: PullStreams,
+        children: Option<LocalRunExecutors>,
+        wait: Duration,
+    ) -> Self {
+        Self {
+            streams,
+            target: Target::MostRoom { children, wait },
+        }
+    }
+
+    /// The client for `stream`, one of `streams`, alone.
+    #[must_use]
+    pub(crate) const fn for_stream(streams: PullStreams, stream: StreamId) -> Self {
+        Self {
+            streams,
+            target: Target::Stream(stream),
+        }
+    }
+
+    /// The stream with the most room, once one has room, or none at
+    /// `until`. Each look asks the local children for room again.
+    fn room(&self, until: Instant) -> Option<StreamId> {
+        let children = match &self.target {
+            Target::Stream(stream) => return Some(*stream),
+            Target::MostRoom { children, .. } => children,
+        };
+        loop {
+            if let Some(stream) = self.streams.most_room() {
+                return Some(stream);
+            }
+            if let Some(children) = children {
+                children.request_room();
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            self.streams.wait_for_room(left.min(ASK_AGAIN));
+        }
     }
 
     /// Sends `call` and waits for its answer, which is no compile or
     /// prepare failure. The time left runs from `called`, when its caller
     /// called, so building and sending the call count.
-    fn call(&self, called: Instant, time_left: Duration, call: Call) -> Result<Read, CompileError> {
-        let left = || time_left.saturating_sub(called.elapsed());
-        if left().is_zero() {
-            return Err(CompileError::TimedOut);
+    fn call(
+        &self,
+        called: Instant,
+        time_left: Duration,
+        call: &Call,
+    ) -> Result<Read, CompileError> {
+        // The source, not the compiler, passed the bound: rejected before
+        // it waits for room, and nothing is sent.
+        if crate::pull::too_large(call) {
+            return Err(CompileError::Diagnostics(Diagnostics::Message {
+                kind: "compilation",
+                message: TOO_LARGE.to_owned(),
+            }));
         }
-        let time_left_ms = u32::try_from(left().as_millis()).unwrap_or(u32::MAX);
-        let answer = self
-            .streams
-            .compile(self.stream, time_left_ms, call)
-            .map_err(|refused| match refused {
-                Refused::NoRoom => CompileError::Unavailable(Unavailable::Busy),
-                Refused::Closed => CompileError::Unavailable(Unavailable::Stopped),
-                // The source, not the compiler, passed the bound. Nothing was
-                // sent, so the stream and its compiles go on.
-                Refused::TooLarge => CompileError::Diagnostics(Diagnostics::Message {
-                    kind: "compilation",
-                    message: TOO_LARGE.to_owned(),
-                }),
-            })?;
+        let left = || time_left.saturating_sub(called.elapsed());
+        let answer = loop {
+            let stream = self
+                .room(called + time_left)
+                .ok_or(CompileError::TimedOut)?;
+            if left().is_zero() {
+                return Err(CompileError::TimedOut);
+            }
+            let time_left_ms = u32::try_from(left().as_millis()).unwrap_or(u32::MAX);
+            match self.streams.compile(stream, time_left_ms, call.clone()) {
+                Ok(answer) => break answer,
+                // Another call took the room first: look again.
+                Err(Refused::NoRoom | Refused::Closed)
+                    if matches!(self.target, Target::MostRoom { .. }) => {}
+                Err(Refused::NoRoom) => return Err(CompileError::Unavailable(Unavailable::Busy)),
+                Err(Refused::Closed) => {
+                    return Err(CompileError::Unavailable(Unavailable::Stopped));
+                }
+                // Checked above.
+                Err(Refused::TooLarge) => return Err(ProtocolError.into()),
+            }
+        };
         match answer.recv_timeout(left()) {
             Ok(Read::Failure(error)) => Err(error),
             Ok(answer) => Ok(answer),
@@ -83,6 +171,16 @@ impl PullStreamCompiler {
 }
 
 impl CompilerClient for PullStreamCompiler {
+    fn ready(&self) -> Result<(), CompileError> {
+        let wait = match &self.target {
+            Target::Stream(_) => return Ok(()),
+            Target::MostRoom { wait, .. } => *wait,
+        };
+        self.room(Instant::now() + wait)
+            .map(drop)
+            .ok_or(CompileError::Unavailable(Unavailable::NoCompiler))
+    }
+
     fn analyze(
         &self,
         time_left: Duration,
@@ -96,7 +194,7 @@ impl CompilerClient for PullStreamCompiler {
         // A call that never reached a source stops at the first.
         let stopped = |error| AnalysisError { index: 0, error };
         let call = codec::analyze_call(sources);
-        match self.call(called, time_left, call).map_err(stopped)? {
+        match self.call(called, time_left, &call).map_err(stopped)? {
             Read::Analyzed(analyzed) => Ok(analyzed),
             Read::AnalysisFailure(failure) => Err(failure),
             _ => Err(stopped(ProtocolError.into())),
@@ -112,7 +210,7 @@ impl CompilerClient for PullStreamCompiler {
     ) -> Result<CompiledProgram, CompileError> {
         let called = Instant::now();
         let call = codec::compile_call(source, saved_functions, callable);
-        match self.call(called, time_left, call)? {
+        match self.call(called, time_left, &call)? {
             Read::Package(program) => Ok(program),
             _ => Err(ProtocolError.into()),
         }
@@ -126,7 +224,7 @@ impl CompilerClient for PullStreamCompiler {
     ) -> Result<SavedFunctionCompilation, CompileError> {
         let called = Instant::now();
         let call = codec::prepare_call(source, declarations);
-        match self.call(called, time_left, call)? {
+        match self.call(called, time_left, &call)? {
             Read::Prepared(prepared) => Ok(prepared),
             _ => Err(ProtocolError.into()),
         }
@@ -220,7 +318,7 @@ mod tests {
                 free,
                 outbound,
             );
-            let caller = PullStreamCompiler::new(streams.clone(), stream);
+            let caller = PullStreamCompiler::for_stream(streams.clone(), stream);
             let calling = thread::spawn(move || {
                 let program = caller.compile(time_left, "return 42;", &[], None)?;
                 Ok(program.javascript().to_owned())
@@ -248,7 +346,7 @@ mod tests {
         let (outbound, _sent) = mpsc::unbounded_channel();
         let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
         streams.end(stream, None);
-        let ended = PullStreamCompiler::new(streams, stream);
+        let ended = PullStreamCompiler::for_stream(streams, stream);
         let program = AnalyzedSource::Program("return 1;".to_owned());
         let after = ended.analyze(TEST_COMPILATION_TIMEOUT, &[program]);
         assert_eq!(
@@ -266,7 +364,7 @@ mod tests {
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
         let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
-        let caller = PullStreamCompiler::new(streams, stream);
+        let caller = PullStreamCompiler::for_stream(streams, stream);
         let source = "x".repeat(crate::MESSAGE_MAX_BYTES);
         let rejected = caller.compile(TEST_COMPILATION_TIMEOUT, &source, &[], None);
         let rejection = CompileError::Diagnostics(Diagnostics::Message {
@@ -276,3 +374,6 @@ mod tests {
         assert_eq!(rejected.map(drop), Err(rejection));
     }
 }
+
+#[cfg(test)]
+mod routing_tests;

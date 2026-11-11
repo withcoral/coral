@@ -56,12 +56,20 @@ pub struct Launch {
     pub usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral.
     pub extensions: Extensions,
+    /// Compile in this process instead of on Run Executors: for a test that
+    /// starts Coral in its own process, whose binary is no `coral`.
+    pub compile_in_process: bool,
 }
 
 impl Launch {
     /// Passes this launch to `builder`.
     fn configure(self, builder: ServerBuilder) -> ServerBuilder {
         let builder = builder.with_extensions(self.extensions);
+        let builder = if self.compile_in_process {
+            builder.with_in_process_compiler()
+        } else {
+            builder
+        };
         let builder = match self.service_version {
             Some(version) => builder.with_service_version(version),
             None => builder,

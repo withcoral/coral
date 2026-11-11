@@ -37,6 +37,19 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
 /// time runs out, while it waits or while it compiles. A call carries source
 /// and no authority.
 pub trait CompilerClient: Send + Sync {
+    /// Blocks until a compiler can take a call, for at most the client's
+    /// own bound. A caller starts its compilation deadline after it, so the
+    /// wait for a compiler takes none of the compile's time. A compiler in
+    /// this process is always ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unavailable::NoCompiler`] when none can take a call by the
+    /// bound.
+    fn ready(&self) -> Result<(), CompileError> {
+        Ok(())
+    }
+
     /// The Saved Functions and Tool Call Paths each source names directly,
     /// in the order of `sources`.
     ///
@@ -153,6 +166,8 @@ pub enum Unavailable {
     /// The compiler failed for a reason the source did not cause, with the
     /// failure's bounded kind and none of its private text.
     Failed(&'static str),
+    /// No compiler could take the call within the wait for one.
+    NoCompiler,
 }
 
 impl CompileError {
@@ -165,7 +180,9 @@ impl CompileError {
             Self::Diagnostics(Diagnostics::UnknownTools(_)) => "unknown_tool_calls",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
-            Self::Unavailable(Unavailable::Stopped) => "compiler_unavailable",
+            Self::Unavailable(Unavailable::Stopped | Unavailable::NoCompiler) => {
+                "compiler_unavailable"
+            }
             Self::Diagnostics(Diagnostics::Message { kind, .. })
             | Self::Unavailable(Unavailable::Failed(kind)) => kind,
         }
@@ -199,6 +216,7 @@ impl From<CompileError> for CompileFailure {
             CompileError::Unavailable(Unavailable::Busy) => Self::Busy,
             CompileError::Unavailable(Unavailable::Stopped) => Self::Stopped,
             CompileError::Unavailable(Unavailable::Failed(kind)) => Self::Failed(kind),
+            CompileError::Unavailable(Unavailable::NoCompiler) => Self::NoCompiler,
         }
     }
 }

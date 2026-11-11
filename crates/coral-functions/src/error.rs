@@ -33,6 +33,10 @@ pub enum Error {
         /// Fixed accepted maximum.
         maximum_bytes: usize,
     },
+    /// No compiler could take the source within the wait for one, so it
+    /// was not judged. Retryable.
+    #[error("{}", coral_v8::CompileFailure::NO_COMPILER_MESSAGE)]
+    NoCompiler,
     /// The compiler-only isolate could not initialize.
     #[error("Saved Function compiler is unavailable: {0}")]
     CompilerUnavailable(String),
@@ -70,7 +74,7 @@ impl Error {
             Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::PackageTooLarge { .. } => "package_too_large",
-            Self::CompilerUnavailable { .. } => "compiler_unavailable",
+            Self::CompilerUnavailable { .. } | Self::NoCompiler => "compiler_unavailable",
             Self::CompilerWorkerStopped { .. } => "compiler_worker_stopped",
             Self::Clock { .. } => "clock",
             Self::Json { .. } => "json",
@@ -96,6 +100,7 @@ impl Error {
             }
             Self::SavedFunctionCompilationTimedOut => "saved_function_compilation_timed_out",
             Self::CompilerBusy => "saved_function_compiler_busy",
+            Self::NoCompiler => "saved_function_compiler_unavailable",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::PermissionDenied(_) => "permission_denied",
             _ => return None,

@@ -47,6 +47,12 @@ pub(crate) struct PreparedSavedFunction {
 }
 
 pub(crate) trait SavedFunctionCompiler: Send + Sync {
+    /// Blocks until a compiler can take a call, for at most the compiler
+    /// client's own bound. The compilation deadline starts after it.
+    fn ready(&self) -> Result<(), CompileFailure> {
+        Ok(())
+    }
+
     /// Finds the Call Paths to type by `deadline`. `None` leaves the source
     /// untyped, so `prepare` reports any failure of a source this cannot
     /// analyze.
@@ -66,6 +72,10 @@ struct V8SavedFunctionCompiler {
 }
 
 impl SavedFunctionCompiler for V8SavedFunctionCompiler {
+    fn ready(&self) -> Result<(), CompileFailure> {
+        self.compiler.ready().map_err(CompileFailure::from)
+    }
+
     fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences> {
         self.compiler
             .analyze(
@@ -620,6 +630,12 @@ impl SavedFunctionModule {
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
+        let compiler = self.compiler.clone();
+        tokio::task::spawn_blocking(move || compiler.ready())
+            .await
+            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            .map_err(|_none| Error::NoCompiler)?;
+        // The wait for a compiler takes none of the compile's time.
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
@@ -639,6 +655,7 @@ impl SavedFunctionModule {
                 CompileFailure::Busy => Error::CompilerBusy,
                 CompileFailure::TimedOut => Error::SavedFunctionCompilationTimedOut,
                 CompileFailure::Stopped => Error::CompilerWorkerStopped,
+                CompileFailure::NoCompiler => Error::NoCompiler,
                 CompileFailure::Failed(kind) => {
                     tracing::warn!(
                         error.type = safe::kind(kind),
