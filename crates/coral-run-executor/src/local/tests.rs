@@ -161,28 +161,34 @@ async fn a_start_that_fails_or_says_no_hello_in_time_backs_off_until_a_hello() {
 async fn a_child_idle_for_five_minutes_retires_and_its_verifier_is_forgotten() {
     let harness = Harness::start();
     harness.request_room().await;
+    // Work that waited takes a unit before the supervisor sees the stream.
     let stream = harness.hello(0, MAX_RUNS_HELD);
+    let run = || vec![TakenRun::default()];
+    harness.streams.take(stream, run()).unwrap();
 
     // A request while a pull stream has room starts nothing.
     harness.request_room().await;
     sleep(2 * SECOND).await;
     assert_eq!(harness.starts(), [0]);
 
-    // A Run it holds keeps it, however long.
+    // The Runs it holds keep it, however long.
     sleep(4 * MINUTE).await;
-    let run = vec![TakenRun::default()];
-    harness.streams.take(stream, run).unwrap();
+    harness.streams.take(stream, run()).unwrap();
     sleep(7 * MINUTE).await;
     assert!(!harness.child(0, |child| child.stdin_closed));
 
-    // The idle period starts when its room is whole again.
-    let room = pull_request::Message::Room(Room {
-        free: MAX_RUNS_HELD,
-    });
-    let report = PullRequest {
-        message: Some(room),
+    // One Run ends; the one it took first still keeps it.
+    let report = |free| PullRequest {
+        message: Some(pull_request::Message::Room(Room { free })),
     };
-    harness.streams.receive(stream, &report).unwrap();
+    let one_held = report(MAX_RUNS_HELD - 1);
+    harness.streams.receive(stream, &one_held).unwrap();
+    sleep(6 * MINUTE).await;
+    assert!(!harness.child(0, |child| child.stdin_closed));
+
+    // The idle period starts when its room is whole again.
+    let whole = report(MAX_RUNS_HELD);
+    harness.streams.receive(stream, &whole).unwrap();
 
     // Its pull stream moves at the connection age. While it is away, a
     // request for room starts nothing, and the move is no work.

@@ -182,7 +182,10 @@ impl<S: ProcessStarter> Supervisor<S> {
                 let (_, room) = *child.hello.get_or_insert_with(|| {
                     self.backoff = FIRST_BACKOFF;
                     child.last_work = now;
-                    (Uuid::try_parse(&stream.run_executor_id).ok(), stream.free)
+                    (
+                        Uuid::try_parse(&stream.run_executor_id).ok(),
+                        stream.hello_free,
+                    )
                 });
                 child.last_seen = now;
                 if stream.free < room {

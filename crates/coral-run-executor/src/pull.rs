@@ -167,6 +167,8 @@ pub struct HeldStream {
     pub(crate) credential: CredentialId,
     /// The units Coral may still send it.
     pub free: u32,
+    /// The room its `Hello` declared, which no send or report changes.
+    pub(crate) hello_free: u32,
     /// When it last took a unit or freed one: Coral sent it a Run or a
     /// compile, or it reported its room. None since it opened, which is no
     /// work: a stream reopens at each connection age.
@@ -288,6 +290,7 @@ impl PullStreams {
                 kind,
                 credential,
                 free,
+                hello_free: free,
                 last_work: None,
             },
             closing: false,
