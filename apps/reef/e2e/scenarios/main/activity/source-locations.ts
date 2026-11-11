@@ -122,10 +122,13 @@ export async function sourceLocations(context: TestContext) {
     const execute = programRunner(page, target, workspace, {
       taskIntent: `Locate calls ${crypto.randomUUID()}`,
     })
-    expect(
-      (await execute.addCustomTool('locations.notify', 'Notify after lookups', snapshot, 'notify'))
-        .isError,
-    ).not.toBe(true)
+    const saved = await execute.addCustomTool(
+      'locations.notify',
+      'Notify after lookups',
+      snapshot,
+      'notify',
+    )
+    expect(saved.isError, JSON.stringify(saved.structuredContent)).not.toBe(true)
     const observed = await observeRun(execute, await execute.exec(program))
     expect(observed.update.state, JSON.stringify(observed.update.failure)).toBe('succeeded')
     const run = `workspaces/${workspace}/runs/${observed.update.run_id}`
@@ -174,13 +177,19 @@ export async function sourceLocations(context: TestContext) {
       outputs = entries.entries.flatMap(({ record }) =>
         record.case === 'event' && record.value.kind.startsWith('program.') ? [record.value] : [],
       )
-      expect(tools).toHaveLength(4)
+      expect(tools).toHaveLength(5)
       expect(outputs).toHaveLength(3)
       expect({
-        tools: tools.slice(0, 3).map((value) => value.sourceLocation),
+        tools: tools.slice(0, 4).map((value) => value.sourceLocation),
         outputs: outputs.slice(0, 2).map((value) => value.sourceLocation),
       }).toMatchObject({
-        tools: [inProgram(1, 'lookup'), inProgram(3, 'lookup'), inProgram(3, 'lookup')],
+        tools: [
+          inProgram(1, 'lookup'),
+          inProgram(3, 'lookup'),
+          inProgram(3, 'lookup'),
+          // The private tool call is itself a tool call; the calls its body makes follow it.
+          inProgram(7, 'notify'),
+        ],
         outputs: [inProgram(5, 'info'), inProgram(6, 'emit')],
       })
       // The exact reads carry the same locations as the entries that list them.
@@ -219,12 +228,12 @@ export async function sourceLocations(context: TestContext) {
     })
     await step('Read the Private Tool’s stored locations back in its snapshot', async () => {
       expect({
-        tool: tools[3]!.sourceLocation,
+        tool: tools[4]!.sourceLocation,
         log: outputs[2]!.sourceLocation,
       }).toMatchObject({ tool: inSnapshot(2, 'lookup'), log: inSnapshot(3, 'warn') })
     })
     await highlights('Private Tool tool', {
-      name: tools[3]!.name,
+      name: tools[4]!.name,
       label: SNAPSHOT,
       line: 2,
     })
