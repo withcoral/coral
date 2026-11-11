@@ -34,7 +34,7 @@ flowchart LR
 
 - **A self-hosted Coral deployment, version 1.6.1 or later.** This guide covers [Docker Compose](/getting-started/self-host/docker-compose) and [Kubernetes](/getting-started/self-host/kubernetes).
 - **An AWS Region for the endpoint.** The examples use `https://aws-mcp.us-east-1.api.aws/mcp`. AWS lists the [other Regions](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html#step-2-choose-auth-method).
-- **A place on AWS to run the bridge.** The bridge gets its IAM role from Amazon EC2, ECS or EKS. To run it anywhere else, use [IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html), which this guide does not cover.
+- **A place on AWS to run the bridge.** The Docker Compose example gets the bridge's IAM role from an Amazon EC2 instance. The Kubernetes example gets it from Amazon EKS. This guide does not cover other platforms. On Amazon ECS, give the bridge a [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). Outside AWS, use [IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html).
 - **Permission to create an IAM role** in the AWS account that the provider reads.
 
 ## Set up the bridge
@@ -95,10 +95,7 @@ flowchart LR
 
         Set `AWS_MCP_API_KEY` to the key from the previous step, in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file.
 
-        Give the role to the bridge:
-
-        - **Amazon EC2:** [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). Set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
-        - **Amazon ECS:** set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) of the task that runs the bridge.
+        To give the role to the bridge, [attach the role to the EC2 instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html) that runs the compose project. Set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
 
         The bridge's MCP server URL is `http://aws-mcp:8000/mcp`.
       </Tab>
@@ -256,9 +253,9 @@ With `--logLevel none`, the bridge logs nothing. Remove the option to see the er
 | Problem                                                    | What to do                                                                                                |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | "Coral's outbound settings do not allow this address."     | Add the `[outbound]` policy to Coral's configuration, then restart Coral.                                 |
-| "Coral cannot read this server's OAuth resource metadata." | Your Coral version is earlier than 1.6.1. Upgrade Coral.                                                  |
+| "Coral cannot read this server's OAuth resource metadata." | Check the bridge's URL. If it is correct, check that Coral is version 1.6.1 or later.                     |
 | The bridge returns `401 Unauthorized`                      | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key. |
-| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the instance's role, the task role or the service account's role.   |
+| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the instance's role or the service account's role.                  |
 | `InvalidSignatureException` in the bridge's logs           | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong.              |
 | A tool returns an access denied error                      | The bridge's IAM role lacks the permission. Attach a policy that grants it.                               |
 | The first call after a restart is slow                     | The bridge downloads the proxy when it first runs it. Later calls are faster.                             |
