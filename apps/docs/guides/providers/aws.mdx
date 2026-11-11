@@ -11,16 +11,14 @@ The [AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/
 
 With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). You'll need a small bridge next to Coral so requests going to the AWS MCP Server are signed with SigV4.
 
-The bridge uses three existing tools in two containers.
+The bridge uses two existing tools in one container.
 
 - [MCP Proxy for AWS](https://github.com/aws/mcp-proxy-for-aws) signs each request with the bridge's AWS credentials and sends it to the AWS MCP Server.
 - [Supergateway](https://github.com/supercorp-ai/supergateway) runs the proxy, serves it as a Streamable HTTP endpoint and checks an API key on each request.
-- [Caddy](https://caddyserver.com) sits in front of Supergateway. It answers `404` to Coral's lookups for OAuth metadata, so that Coral offers bearer token sign-in.
 
 ```mermaid
 flowchart LR
-  coral[Coral] -- "HTTP + API key" --> caddy[Caddy]
-  caddy --> bridge["Supergateway + MCP Proxy for AWS"]
+  coral[Coral] -- "HTTP + API key" --> bridge["Supergateway + MCP Proxy for AWS"]
   bridge -- "HTTPS + SigV4" --> aws[AWS MCP Server]
   aws --> apis[AWS APIs]
 ```
@@ -34,7 +32,7 @@ flowchart LR
 
 ## Before you start
 
-- **A self-hosted Coral deployment.** This guide covers [Docker Compose](/getting-started/self-host/docker-compose) and [Kubernetes](/getting-started/self-host/kubernetes).
+- **A self-hosted Coral deployment, version 1.6.1 or later.** This guide covers [Docker Compose](/getting-started/self-host/docker-compose) and [Kubernetes](/getting-started/self-host/kubernetes).
 - **An AWS Region for the endpoint.** The examples use `https://aws-mcp.us-east-1.api.aws/mcp`. AWS lists the [other Regions](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html#step-2-choose-auth-method).
 - **A place on AWS to run the bridge.** The bridge gets its IAM role from Amazon EC2, ECS or EKS. To run it anywhere else, use [IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html), which this guide does not cover.
 - **Permission to create an IAM role** in the AWS account that the provider reads.
@@ -67,7 +65,7 @@ flowchart LR
   <Step title="Run the bridge">
     <Tabs>
       <Tab title="Docker Compose">
-        Add these services to the compose file that runs Coral.
+        Add this service to the compose file that runs Coral.
 
         ```yaml
         services:
@@ -93,23 +91,6 @@ flowchart LR
               - none
             environment:
               SUPERGATEWAY_API_KEY: ${AWS_MCP_API_KEY}
-
-          aws-mcp-front:
-            image: caddy:2
-            configs:
-              - source: aws-mcp-caddyfile
-                target: /etc/caddy/Caddyfile
-
-        configs:
-          aws-mcp-caddyfile:
-            content: |
-              :8080 {
-                @metadata path /.well-known/*
-                respond @metadata 404
-                reverse_proxy aws-mcp:8000 {
-                  flush_interval -1
-                }
-              }
         ```
 
         Set `AWS_MCP_API_KEY` to the key from the previous step, in your shell or in the [`.env` file](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) next to the compose file.
@@ -119,7 +100,7 @@ flowchart LR
         - **Amazon EC2:** [attach the role to the instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/attach-iam-role.html). Set the instance metadata [hop limit](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#imds-considerations) to `2` so that the container can reach the instance metadata service.
         - **Amazon ECS:** set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) of the task that runs the bridge.
 
-        The bridge's MCP server URL is `http://aws-mcp-front:8080/mcp`.
+        The bridge's MCP server URL is `http://aws-mcp:8000/mcp`.
       </Tab>
       <Tab title="Kubernetes">
         On Amazon EKS, let the role trust the bridge's service account with [IAM roles for service accounts](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) or [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html). The example uses IAM roles for service accounts.
@@ -142,21 +123,6 @@ flowchart LR
           namespace: coral
           annotations:
             eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/coral-aws-mcp
-        ---
-        apiVersion: v1
-        kind: ConfigMap
-        metadata:
-          name: aws-mcp-caddy
-          namespace: coral
-        data:
-          Caddyfile: |
-            :8080 {
-              @metadata path /.well-known/*
-              respond @metadata 404
-              reverse_proxy 127.0.0.1:8000 {
-                flush_interval -1
-              }
-            }
         ---
         apiVersion: apps/v1
         kind: Deployment
@@ -201,22 +167,13 @@ flowchart LR
                         secretKeyRef:
                           name: aws-mcp-auth
                           key: api-key
+                  ports:
+                    - name: http
+                      containerPort: 8000
                   readinessProbe:
                     httpGet:
                       path: /healthz
-                      port: 8000
-                - name: front
-                  image: caddy:2
-                  ports:
-                    - name: http
-                      containerPort: 8080
-                  volumeMounts:
-                    - name: caddy
-                      mountPath: /etc/caddy
-              volumes:
-                - name: caddy
-                  configMap:
-                    name: aws-mcp-caddy
+                      port: http
         ---
         apiVersion: v1
         kind: Service
@@ -228,13 +185,13 @@ flowchart LR
             app.kubernetes.io/name: aws-mcp
           ports:
             - name: http
-              port: 8080
+              port: 8000
               targetPort: http
         ```
 
         Keep the Service as `ClusterIP`. Do not add an Ingress for it.
 
-        The bridge's MCP server URL is `http://aws-mcp.coral.svc.cluster.local:8080/mcp`.
+        The bridge's MCP server URL is `http://aws-mcp.coral.svc.cluster.local:8000/mcp`.
       </Tab>
     </Tabs>
 
@@ -299,7 +256,7 @@ With `--logLevel none`, the bridge logs nothing. Remove the option to see the er
 | Problem                                                    | What to do                                                                                                |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | "Coral's outbound settings do not allow this address."     | Add the `[outbound]` policy to Coral's configuration, then restart Coral.                                 |
-| "Coral cannot read this server's OAuth resource metadata." | The URL reaches Supergateway directly. Use the Caddy URL, on port `8080`.                                 |
+| "Coral cannot read this server's OAuth resource metadata." | Your Coral version is earlier than 1.6.1. Upgrade Coral.                                                  |
 | The bridge returns `401 Unauthorized`                      | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key. |
 | `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the instance's role, the task role or the service account's role.   |
 | `InvalidSignatureException` in the bridge's logs           | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong.              |
