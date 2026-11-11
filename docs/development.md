@@ -143,23 +143,21 @@ runtime state under `.dev/`.
 endpoint, using the same endpoint and headers as Coral. `OTEL_*` variables in your
 shell override them for Reef only. Restart it after you change those settings.
 
-For left/right Herdr panes, start in **one ordinary shell pane in a fresh
-workspace**, not a coding-agent pane:
+To run Coral and Reef side by side, start in **the only pane of a fresh tab or
+workspace**. Use an ordinary shell, not a coding-agent pane:
 
 ```bash
-/path/to/checkout/dev run --herdr
+/path/to/checkout/dev run --split
 ```
+
+It works in Herdr, Rex and the Herdr app, and finds the one you are in.
 
 This keeps Coral in the left pane and starts Reef on the right without changing
 focus. Each pane is independent: stop each with Ctrl-C. Restart with `./dev coral`
 or `./dev reef`. The same two commands work in ordinary separate terminals.
 
-For the same layout in Rex, start in **the only pane of a fresh tab**, an
-ordinary shell rather than a coding-agent pane:
-
-```bash
-/path/to/checkout/dev run --rex
-```
+To support another terminal app, add an entry to `hosts` in
+`scripts/dev/panes.mjs` and a row to the table in `scripts/dev/panes.test.mjs`.
 
 ```bash
 ./dev doctor  # Check an already-running stack, including its HTTPS routes

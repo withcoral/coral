@@ -2,60 +2,7 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 import { join } from 'node:path'
-import { ports, shellQuote } from './config.mjs'
-
-export function configureHerdrPanes(root, invoke, insideHerdr) {
-  if (!insideHerdr) throw new Error('Run --herdr only inside a fresh Herdr shell workspace')
-  const current = invoke(['pane', 'current', '--current']).result?.pane
-  const layout = invoke(['pane', 'layout', '--current']).result?.layout
-  if (!current?.pane_id || current.agent || layout?.panes?.length !== 1)
-    throw new Error('Start ./dev run --herdr from one ordinary shell pane in a fresh workspace')
-  const split = invoke([
-    'pane',
-    'split',
-    '--current',
-    '--direction',
-    'right',
-    '--cwd',
-    root,
-    '--no-focus',
-  ])
-  const right = split.result?.pane?.pane_id
-  if (!right) throw new Error('Herdr did not return the new pane ID')
-  invoke(['pane', 'rename', current.pane_id, 'Coral'])
-  invoke(['pane', 'rename', right, 'Reef'])
-  invoke(['pane', 'run', right, `${shellQuote(join(root, 'dev'))} reef`])
-}
-
-export function configureRexPanes(root, invoke, session, block) {
-  if (!session || !block) throw new Error('Run --rex only inside a fresh Rex shell tab')
-  const window = invoke(['session', 'inspect', session, '--json']).windows?.find((window) =>
-    window.layers?.some((layer) => layer.blocks?.some((b) => b.block_id === block)),
-  )
-  const blocks = window?.layers?.flatMap((layer) => layer.blocks ?? []) ?? []
-  if (blocks.length !== 1)
-    throw new Error('Start ./dev run --rex from the only pane in a fresh tab')
-  const split = invoke([
-    'split',
-    '-s',
-    session,
-    '-b',
-    block,
-    '--split',
-    'right',
-    '-c',
-    root,
-    '--label',
-    'Reef',
-    '--focus=false',
-    '--json',
-  ])
-  const right = split.block_ids?.[0]
-  if (!right) throw new Error('Rex did not return the new pane ID')
-  invoke(['block', 'rename', '-s', session, block, 'Coral'])
-  invoke(['send', '-s', session, '-b', right, `${shellQuote(join(root, 'dev'))} reef`])
-  invoke(['send-key', '-s', session, '-b', right, 'enter'])
-}
+import { ports } from './config.mjs'
 
 export function commands(root, config, ambient) {
   return {

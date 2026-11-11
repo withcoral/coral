@@ -113,7 +113,14 @@
           "guides/concepts",
           "guides/permissions",
           "guides/providers",
-          "guides/database-providers"
+          "guides/database-providers",
+          {
+            "group": "Provider-specific guides",
+            "pages": [
+              "guides/providers/aws",
+              "guides/providers/slack"
+            ]
+          }
         ]
       },
       {

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -7,14 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import test from 'node:test'
-import {
-  assertPortsFree,
-  commands,
-  configureHerdrPanes,
-  configureRexPanes,
-  supervise,
-  waitForReady,
-} from './runtime.mjs'
+import { assertPortsFree, commands, supervise, waitForReady } from './runtime.mjs'
 
 async function eventually(predicate) {
   for (let i = 0; i < 200; i++) {
@@ -169,133 +161,3 @@ test(
     }
   },
 )
-
-test('Herdr refuses outside/agent/split contexts and uses returned IDs without stealing focus', () => {
-  assert.throws(
-    () => configureHerdrPanes('/repo', () => assert.fail('must not inspect Herdr'), false),
-    /inside/,
-  )
-  for (const [agent, count] of [
-    ['pi', 1],
-    [undefined, 2],
-  ]) {
-    const calls = []
-    assert.throws(
-      () =>
-        configureHerdrPanes(
-          '/repo',
-          (args) => {
-            calls.push(args)
-            return args[1] === 'current'
-              ? { result: { pane: { pane_id: 'actual:left', agent } } }
-              : { result: { layout: { panes: Array(count).fill({}) } } }
-          },
-          true,
-        ),
-      /ordinary shell/,
-    )
-    assert.ok(!calls.some((args) => args[1] === 'split'))
-  }
-  const calls = []
-  configureHerdrPanes(
-    '/repo with spaces',
-    (args) => {
-      calls.push(args)
-      if (args[1] === 'current') return { result: { pane: { pane_id: 'actual:left' } } }
-      if (args[1] === 'layout') return { result: { layout: { panes: [{}] } } }
-      if (args[1] === 'split') return { result: { pane: { pane_id: 'returned:right' } } }
-      return {}
-    },
-    true,
-  )
-  assert.deepEqual(calls[2], [
-    'pane',
-    'split',
-    '--current',
-    '--direction',
-    'right',
-    '--cwd',
-    '/repo with spaces',
-    '--no-focus',
-  ])
-  assert.deepEqual(calls[3], ['pane', 'rename', 'actual:left', 'Coral'])
-  assert.deepEqual(calls[4], ['pane', 'rename', 'returned:right', 'Reef'])
-  assert.deepEqual(calls[5], ['pane', 'run', 'returned:right', "'/repo with spaces/dev' reef"])
-})
-
-test('Rex refuses outside/split contexts and uses returned IDs without stealing focus', () => {
-  assert.throws(
-    () =>
-      configureRexPanes('/repo', () => assert.fail('must not inspect Rex'), undefined, 'b:left'),
-    /inside/,
-  )
-  const windowWith = (ids) => ({
-    windows: [
-      { layers: [{ blocks: [{ block_id: 'b:other' }] }] },
-      { layers: [{ blocks: ids.map((block_id) => ({ block_id })) }] },
-    ],
-  })
-  for (const ids of [['b:left', 'b:extra'], []]) {
-    const calls = []
-    assert.throws(
-      () =>
-        configureRexPanes(
-          '/repo',
-          (args) => {
-            calls.push(args)
-            return windowWith(ids)
-          },
-          's:1',
-          'b:left',
-        ),
-      /fresh tab/,
-    )
-    assert.deepEqual(calls, [['session', 'inspect', 's:1', '--json']])
-  }
-  const calls = []
-  configureRexPanes(
-    '/repo with spaces',
-    (args) => {
-      calls.push(args)
-      if (args[0] === 'session') return windowWith(['b:left'])
-      if (args[0] === 'split') return { block_ids: ['b:right'] }
-      return {}
-    },
-    's:1',
-    'b:left',
-  )
-  assert.deepEqual(calls, [
-    ['session', 'inspect', 's:1', '--json'],
-    [
-      'split',
-      '-s',
-      's:1',
-      '-b',
-      'b:left',
-      '--split',
-      'right',
-      '-c',
-      '/repo with spaces',
-      '--label',
-      'Reef',
-      '--focus=false',
-      '--json',
-    ],
-    ['block', 'rename', '-s', 's:1', 'b:left', 'Coral'],
-    ['send', '-s', 's:1', '-b', 'b:right', "'/repo with spaces/dev' reef"],
-    ['send-key', '-s', 's:1', '-b', 'b:right', 'enter'],
-  ])
-})
-
-test('./dev run --rex refuses outside Rex before any other check', () => {
-  const env = { ...process.env }
-  delete env.REX_SESSION
-  delete env.REX_BLOCK
-  const result = spawnSync(
-    process.execPath,
-    [join(import.meta.dirname, 'cli.mjs'), 'run', '--rex'],
-    { encoding: 'utf8', env },
-  )
-  assert.match(result.stderr, /Run --rex only inside a fresh Rex shell tab/)
-  assert.equal(result.status, 1)
-})

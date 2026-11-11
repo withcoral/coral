@@ -1,6 +1,6 @@
 //! Builds and runs the Coral gRPC server.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -364,6 +364,14 @@ impl PreparedServerBuilder {
         }
         let run_executor_listener = deployment_config
             .run_executor_listener(session_auth.is_some(), &AppEnvironment::required_env_var)?;
+        let local_children = match deployment_config.local_run_executors()? {
+            Some(settings) => Some(LocalChildren {
+                settings,
+                program: std::env::current_exe()?,
+                environment: super::env::run_executor_environment(),
+            }),
+            None => None,
+        };
         let workspace_authentication = session_auth
             .as_ref()
             .map(|auth| auth.workspace_authentication(coral_db.clone()));
@@ -449,6 +457,7 @@ impl PreparedServerBuilder {
             state_lock,
             instance,
             run_executor_listener,
+            local_children,
         )
         .await?;
         server.authorization_server = authorization_server
@@ -554,6 +563,8 @@ pub struct RunningServer {
     accounts: Option<coral_provider::account::AccountModule>,
     runs: coral_run::RunModule,
     compiler: Arc<dyn coral_run_executor::CompilerClient>,
+    /// The local child supervisor; none with the children turned off.
+    local_run_executors: Option<coral_run_executor::LocalRunExecutors>,
     readiness: EngineReadiness,
     run_recovery: JoinHandle<()>,
     device_recovery: Option<JoinHandle<()>>,
@@ -648,6 +659,10 @@ impl RunningServer {
 
     async fn shutdown_inner(&self) -> Result<(), AppError> {
         self.drain_runs().await;
+        // Each child's stdin closes, and nothing waits for the children.
+        if let Some(supervisor) = &self.local_run_executors {
+            supervisor.stop();
+        }
         if let Some(worker) = &self.device_recovery {
             worker.abort();
         }
@@ -750,6 +765,9 @@ impl RunningServer {
 impl Drop for RunningServer {
     fn drop(&mut self) {
         self.readiness.stop_serving();
+        if let Some(supervisor) = &self.local_run_executors {
+            supervisor.stop();
+        }
         self.run_recovery.abort();
         if let Some(worker) = &self.device_recovery {
             worker.abort();
@@ -855,6 +873,7 @@ pub(crate) async fn start_server(
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
     run_executor_listener: RunExecutorListener,
+    local_children: Option<LocalChildren>,
 ) -> Result<RunningServer, AppError> {
     let coral_instance_id = instance.to_string();
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
@@ -973,14 +992,43 @@ pub(crate) async fn start_server(
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
+    let run_executor_credentials =
+        coral_run_executor::Credentials::new(run_executor_listener.tokens);
     let run_executors = (
         TcpListener::bind(run_executor_listener.bind).await?,
         coral_run_executor::LinkServer::new(
-            coral_run_executor::Credentials::new(run_executor_listener.tokens),
+            run_executor_credentials.clone(),
             database.clone(),
             coral_instance_id,
         ),
     );
+    let local_run_executors = match local_children {
+        Some(children) => {
+            // A local child dials this host: loopback, unless the listener
+            // is bound to one address.
+            let mut address = run_executors.0.local_addr()?;
+            if address.ip().is_unspecified() {
+                address.set_ip(match address {
+                    SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                    SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+                });
+            }
+            let command = coral_run_executor::ChildCommand {
+                program: children.program,
+                coral_address: format!("http://{address}"),
+                max_runs_held: children.settings.max_runs_held,
+                compiler_heap_bytes: runtime_limits.isolate().compiler_heap_bytes(),
+                environment: children.environment,
+            };
+            Some(coral_run_executor::LocalRunExecutors::start(
+                command,
+                children.settings.limit,
+                run_executor_credentials,
+                run_executors.1.streams(),
+            ))
+        }
+        None => None,
+    };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (task_finished_tx, task_finished) = watch::channel(false);
 
@@ -1040,6 +1088,7 @@ pub(crate) async fn start_server(
         accounts,
         runs,
         compiler,
+        local_run_executors,
         mcp_origin,
         endpoint_uri,
         local_addr,
@@ -1051,6 +1100,14 @@ pub(crate) async fn start_server(
         task: Mutex::new(Some(task)),
         _state_lock: state_lock,
     })
+}
+
+/// What bootstrap resolved to start local Run Executors: the `[runtime]`
+/// settings, this process's own binary and the children's environment.
+pub(crate) struct LocalChildren {
+    settings: super::server_config::LocalRunExecutorSettings,
+    program: std::path::PathBuf,
+    environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }
 
 /// One pass of the expired-lease sweep; a failed pass is logged, and the next

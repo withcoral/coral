@@ -593,8 +593,10 @@ dependencies = [
  "assert_cmd",
  "clap",
  "coral-app",
+ "coral-db",
  "coral-mcp",
  "coral-run-executor",
+ "coral-test-support",
  "reqwest",
  "tempfile",
  "thiserror",
@@ -1026,6 +1028,8 @@ dependencies = [
  "coral-value",
  "hyper-util",
  "prost",
+ "ring",
+ "rustix 1.1.6",
  "sea-query",
  "serde_json",
  "sha2 0.11.1",
@@ -1037,6 +1041,7 @@ dependencies = [
  "tonic-prost",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

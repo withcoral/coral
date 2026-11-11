@@ -106,15 +106,28 @@ impl Credentials {
         }
     }
 
-    /// The kind `authorization`, a request's header value, admits.
-    fn admit(&self, authorization: Option<&str>) -> Option<Kind> {
+    /// The kind `authorization`, a request's header value, admits, and the
+    /// credential that admits it.
+    pub(crate) fn admit(&self, authorization: Option<&str>) -> Option<(Kind, CredentialId)> {
         let (scheme, token) = authorization?.split_once(' ')?;
         // An authentication scheme's name ignores case.
         if !scheme.eq_ignore_ascii_case("Bearer") {
             return None;
         }
         let verifier = verifier(token);
-        lock(&self.0).get(&verifier).copied()
+        let kind = lock(&self.0).get(&verifier).copied()?;
+        Some((kind, CredentialId(verifier)))
+    }
+}
+
+/// Which admitted credential opened a pull stream: how the local child
+/// supervisor finds its child's stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CredentialId(Verifier);
+
+impl std::fmt::Debug for CredentialId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CredentialId")
     }
 }
 
@@ -122,6 +135,13 @@ impl Credentials {
 pub struct LocalCredential {
     credentials: Credentials,
     verifier: Verifier,
+}
+
+impl LocalCredential {
+    /// The id its pull streams carry.
+    pub(crate) fn id(&self) -> CredentialId {
+        CredentialId(self.verifier)
+    }
 }
 
 impl Drop for LocalCredential {
@@ -141,10 +161,18 @@ pub struct HeldStream {
     pub stream: StreamId,
     /// The id its Run Executor declared, for operators only.
     pub run_executor_id: String,
-    /// The credential that admitted it.
+    /// The kind of credential that admitted it.
     pub kind: Kind,
+    /// The credential that admitted it.
+    pub(crate) credential: CredentialId,
     /// The units Coral may still send it.
     pub free: u32,
+    /// The room its `Hello` declared, which no send or report changes.
+    pub(crate) hello_free: u32,
+    /// When it last took a unit or freed one: Coral sent it a Run or a
+    /// compile, or it reported its room. None since it opened, which is no
+    /// work: a stream reopens at each connection age.
+    pub(crate) last_work: Option<Instant>,
 }
 
 /// Why a send went nowhere.
@@ -184,6 +212,7 @@ impl Held {
             return Err(Refused::Closed);
         }
         self.view.free = self.view.free.checked_sub(units).ok_or(Refused::NoRoom)?;
+        self.view.last_work = Some(Instant::now());
         Ok(())
     }
 
@@ -246,10 +275,10 @@ impl PullStreams {
         Ok(answered)
     }
 
-    fn insert(
+    pub(crate) fn insert(
         &self,
         run_executor_id: String,
-        kind: Kind,
+        (kind, credential): (Kind, CredentialId),
         free: u32,
         outbound: mpsc::UnboundedSender<Result<PullResponse, Status>>,
     ) -> StreamId {
@@ -259,7 +288,10 @@ impl PullStreams {
                 stream,
                 run_executor_id,
                 kind,
+                credential,
                 free,
+                hello_free: free,
+                last_work: None,
             },
             closing: false,
             outbound,
@@ -271,13 +303,16 @@ impl PullStreams {
     }
 
     /// Applies one message from `stream`'s Run Executor.
-    fn receive(&self, stream: StreamId, request: &PullRequest) -> Result<(), Status> {
+    pub(crate) fn receive(&self, stream: StreamId, request: &PullRequest) -> Result<(), Status> {
         let mut held = lock(&self.held);
         let Some(held) = held.get_mut(&stream) else {
             return Ok(());
         };
         match &request.message {
-            Some(pull_request::Message::Room(room)) => held.view.free = room.free,
+            Some(pull_request::Message::Room(room)) => {
+                held.view.free = room.free;
+                held.view.last_work = Some(Instant::now());
+            }
             Some(pull_request::Message::Compiled(compiled)) => {
                 let (_, answer) = held.compiles.remove(&compiled.number).ok_or_else(|| {
                     Status::invalid_argument("Compiled answers no Compile in flight")
@@ -295,7 +330,7 @@ impl PullStreams {
 
     /// Stops sends on `stream`. Returns when its compiles in flight are
     /// due: the last deadline among them, or now.
-    fn close(&self, stream: StreamId) -> Instant {
+    pub(crate) fn close(&self, stream: StreamId) -> Instant {
         let mut held = lock(&self.held);
         let now = Instant::now();
         held.get_mut(&stream).map_or(now, |held| {
@@ -417,7 +452,7 @@ impl LinkService for PullService {
             .metadata()
             .get("authorization")
             .and_then(|value| value.to_str().ok());
-        let kind = self.link.credentials.admit(authorization).ok_or_else(|| {
+        let admitted = self.link.credentials.admit(authorization).ok_or_else(|| {
             Status::unauthenticated("the Run Executor credential is not accepted")
         })?;
         let mut inbound = request.into_inner();
@@ -446,6 +481,7 @@ impl LinkService for PullService {
             .map_err(|_invalid| Status::invalid_argument("the Run Executor id is not a UUID"))?
             .to_string();
         let opened = Instant::now();
+        let kind = admitted.0;
         self.renew(&run_executor_id, kind).await.map_err(|error| {
             tracing::warn!(
                 error.type = safe::kind(error.code()),
@@ -462,10 +498,10 @@ impl LinkService for PullService {
         };
         // The receiver is still here, so the send lands.
         drop(outbound.send(Ok(welcome)));
-        let stream = self
-            .link
-            .streams
-            .insert(run_executor_id.clone(), kind, hello.free, outbound);
+        let stream =
+            self.link
+                .streams
+                .insert(run_executor_id.clone(), admitted, hello.free, outbound);
         tokio::spawn(
             self.clone()
                 .hold(stream, inbound, opened, run_executor_id, kind),
