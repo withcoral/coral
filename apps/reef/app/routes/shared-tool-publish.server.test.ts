@@ -260,7 +260,7 @@ it.each([
     name: 'a member',
     query: 'tool=people.remind',
     refuse: () => coralRefusal(Code.PermissionDenied, 'PERMISSION_DENIED'),
-    refusal: 'Only an owner can publish to shared tools.',
+    refusal: 'Ask a workspace owner to publish this tool.',
   },
   {
     name: 'a private tool that is gone',
@@ -421,13 +421,13 @@ it.each([
         message: 'a restore publishes the exact source and description of the revision it names',
       }),
     status: 400,
-    error: 'This content is not that of the revision you restore. Review the revision again.',
+    error: 'This content differs from the revision. Review the revision again.',
   },
   {
     name: 'the caller is a member',
     refuse: () => coralRefusal(Code.PermissionDenied, 'PERMISSION_DENIED'),
     status: 403,
-    error: 'Only an owner can publish to shared tools.',
+    error: 'Ask a workspace owner to publish this tool.',
   },
   {
     name: 'the workspace is archived',

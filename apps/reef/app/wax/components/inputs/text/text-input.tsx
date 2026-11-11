@@ -1,6 +1,6 @@
 import { Field } from '@base-ui/react/field'
 import classNames from 'classnames'
-import { useRef } from 'react'
+import { useId, useRef } from 'react'
 
 import { useComposedRefs } from '@/utils/compose-refs'
 import { IconButton } from '@/wax/components/button'
@@ -80,6 +80,11 @@ export function TextInput({
 }: TextInputProps) {
   const input = useRef<HTMLInputElement>(null)
   const inputRef = useComposedRefs(ref, input)
+  const prefixId = useId()
+  // The prefix comes first, as it does in the field.
+  const describedBy = prefix
+    ? [prefixId, ariaDescribedBy].filter(Boolean).join(' ')
+    : ariaDescribedBy
   const clearable = type === 'search' && !!value && !!onChange && !disabled && !readOnly
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     onChange?.(event.target.value)
@@ -89,9 +94,10 @@ export function TextInput({
       <div className={classNames(styles.container, prefix && styles.prefixedContainer)}>
         {prefix && (
           // A press on the prefix puts the caret in the field, as a press on its border does.
+          // It describes the field, so a screen reader says it with the field's name.
           <span
-            aria-hidden
             className={styles.prefix}
+            id={prefixId}
             onMouseDown={(event) => {
               event.preventDefault()
               input.current?.focus()
@@ -110,7 +116,7 @@ export function TextInput({
         )}
         <Field.Control
           aria-label={ariaLabel}
-          aria-describedby={ariaDescribedBy}
+          aria-describedby={describedBy}
           autoComplete={autoComplete}
           // Password managers ignore autocomplete="off", so they each need their own opt-out.
           data-1p-ignore={autoComplete === 'off' || undefined}

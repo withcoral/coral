@@ -187,11 +187,13 @@ function rowDuration(row: ActivityRow) {
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
 }
 function emptyBranchMessage(row: ExpandableRow) {
-  if (row.kind === 'invocation')
+  // Reef cannot tell whether a call or a Run in an unknown state has ended.
+  if (row.kind === 'invocation') {
+    if (row.state === 'unknown') return 'This tool has no recorded calls.'
     return row.state === 'ended' ? 'This tool made no calls.' : 'This tool has not made a call yet.'
+  }
   if (row.kind === 'task')
     return row.endedAt ? 'This task made no calls.' : 'This task has not made a call yet.'
-  // Reef cannot tell whether a Run in an unknown state has ended.
   if (row.state === 'unknown') return 'This execution has no recorded tools.'
   return row.state === 'running'
     ? 'This execution has not called a tool yet.'
@@ -858,11 +860,11 @@ export function Activity({
         state: tokens.next(),
       })
     }
-    /** Space: whether it toggled a Task or Run. */
+    /** Space: whether it toggled an expandable record. */
     const toggle = (owner: 'table' | 'rail') => {
       const current = latest.current
       const row = owner === 'rail' ? current.selectedRow : current.activeStop?.row
-      // The rail toggles only a Task or Run it shows itself, never a final value.
+      // The rail toggles only an expandable record it shows itself, never a final value.
       if (!row || (owner === 'rail' && (!current.open || row.name !== current.selected)))
         return false
       if (expandable(row)) {
@@ -870,7 +872,7 @@ export function Activity({
         actions.toggle(row.name, true)
         return true
       }
-      // In the table, any other record collapses the closest Task or Run around it.
+      // In the table, any other record collapses the closest expandable record around it.
       const parent = owner === 'table' && current.activeStop?.parents[0]
       if (!parent) return false
       actions.toggle(parent, true)

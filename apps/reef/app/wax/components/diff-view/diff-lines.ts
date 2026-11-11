@@ -126,7 +126,9 @@ function removedFirst(edits: Edit[]): Edit[] {
   let removed = 0
   let added = 0
   const flush = () => {
-    ordered.push(...Array<Edit>(removed).fill('removed'), ...Array<Edit>(added).fill('added'))
+    // One push for each line: a spread of a very long run passes more arguments than a call takes.
+    for (let count = 0; count < removed; count += 1) ordered.push('removed')
+    for (let count = 0; count < added; count += 1) ordered.push('added')
     removed = 0
     added = 0
   }

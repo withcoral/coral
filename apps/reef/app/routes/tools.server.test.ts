@@ -571,7 +571,7 @@ it.each([
     name: 'it is gone',
     fields: { path: 'mail.gone', expectedRevision: '1' },
     status: 404,
-    error: 'You cannot remove this shared tool. It no longer exists. Close this panel.',
+    error: 'Coral could not remove this shared tool. It no longer exists. Close this panel.',
   },
 ])('keeps a removal refused because $name in the dialog', async ({ fields, status, error }) => {
   serve(WorkspaceRole.OWNER)

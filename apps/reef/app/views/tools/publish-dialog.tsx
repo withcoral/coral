@@ -200,7 +200,14 @@ function PublishDialogBody({
                     autoFocus
                     prefix={SHARED_ROOT}
                     value={pathInput}
-                    onChange={setPathInput}
+                    // A pasted call path already holds the root the field shows.
+                    onChange={(value) =>
+                      setPathInput(
+                        value.trimStart().startsWith(SHARED_ROOT)
+                          ? value.trimStart().slice(SHARED_ROOT.length)
+                          : value,
+                      )
+                    }
                     onKeyDown={(event) => {
                       // Enter reviews the path. It does not publish a review of another path.
                       if (event.key !== 'Enter') return

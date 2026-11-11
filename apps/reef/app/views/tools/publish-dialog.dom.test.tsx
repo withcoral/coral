@@ -226,6 +226,7 @@ test('reviews the path the owner enters before it publishes there', async () => 
   // Enter reviews the path at once. The field drops the root a pasted call path starts with.
   await user.clear(path)
   await user.type(path, 'coral.shared.mail')
+  expect(path).toHaveValue('mail')
   // The review on screen is of the first path, so it cannot publish at this one.
   expect(await publishButton()).toBeDisabled()
   await user.keyboard('{Enter}')

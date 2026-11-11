@@ -726,7 +726,7 @@ test.each([
   expect(within(drawer).queryAllByRole('button', { name: 'Publish' })).toHaveLength(
     publishes ? 1 : 0,
   )
-  expect(within(drawer).queryAllByText('Only an owner can publish to shared tools.')).toHaveLength(
+  expect(within(drawer).queryAllByText('Ask a workspace owner to publish this tool.')).toHaveLength(
     says ? 1 : 0,
   )
 })
@@ -1624,6 +1624,21 @@ test('an arrow key right after Escape moves the cursor, not the drawer', async (
   expect(router.state.location.pathname).toBe('/workspaces/demo/tools')
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(cursorName()).toBe('repos.get')
+})
+
+// Catches: Escape pressed from the table that leaves the drawer beside it open.
+// The drawer is a rail, which closes on Escape only from inside itself.
+test('Escape from the table closes the drawer beside it', async () => {
+  const { router } = renderPage()
+  await user.click(within(rowOf('issues.list')).getByRole('link', { name: 'issues.list' }))
+  await settle()
+  expect(screen.getByRole('dialog')).toBeVisible()
+  rowOf('issues.list').focus()
+  await user.keyboard('{Escape}')
+  await settle()
+  expect(router.state.location.pathname).toBe('/workspaces/demo/tools')
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(cursorName()).toBe('issues.list')
 })
 
 // Catches: a drawer closed with the pointer losing the row it showed.

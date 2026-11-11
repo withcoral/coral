@@ -139,7 +139,7 @@ export async function deletePrivateTool(
   } catch (error) {
     return actionFailure(
       error,
-      'You cannot delete this private tool. ',
+      'Coral could not delete this private tool. ',
       'It no longer exists. Close this panel.',
     )
   }

@@ -339,7 +339,7 @@ it.each<[string, ActivityViewProps['more'], string]>([
 })
 
 // An expanded record with no children says why, in terms of its own lifecycle.
-// A Run in a state Reef does not know may still be running, so its copy claims neither.
+// A Run or a tool call in a state Reef does not know may still be running, so its copy claims neither.
 it.each<[string, ActivityRow, string]>([
   ['ended Run', run, 'This execution called no tools.'],
   [
@@ -354,6 +354,11 @@ it.each<[string, ActivityRow, string]>([
   ],
   ['ended Task', goal, 'This task made no calls.'],
   ['open Task', { ...goal, outcome: 'open', endedAt: null }, 'This task has not made a call yet.'],
+  [
+    'private tool call in an unknown state',
+    { ...invocation, toolKind: 'private', state: 'unknown', endedAt: null },
+    'This tool has no recorded calls.',
+  ],
 ])('an expanded %s with no children explains why', (_name, row, copy) => {
   renderRoute(
     <Activity

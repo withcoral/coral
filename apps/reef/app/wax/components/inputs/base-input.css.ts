@@ -92,7 +92,8 @@ export const prefixedContainer = style([
     // The input keeps its own end padding.
     paddingInlineEnd: 0,
     selectors: {
-      '&:has(input:hover:not(:focus):not(:disabled):not([data-invalid]))': {
+      // The whole field shows hover: the prefix and the padding as well as the input.
+      '&:hover:not(:has(input:focus)):not(:has(input:disabled)):not(:has(input[data-invalid]))': {
         borderColor: theme.input.stroke.hover,
       },
       '&:has(input:focus:not([data-invalid]))': { borderColor: theme.input.stroke.focus },
@@ -112,17 +113,22 @@ export const prefix = style({
   flexShrink: 0,
   userSelect: 'none',
   whiteSpace: 'nowrap',
-  selectors: { [`${prefixedContainer}:has(input:disabled) &`]: { color: theme.content.disabled } },
+  selectors: {
+    [`${prefixedContainer}:has(input:disabled) &`]: {
+      color: theme.content.disabled,
+      cursor: 'not-allowed',
+    },
+  },
 })
 
 // The container draws the border, so the input draws none and starts at the prefix.
+// It keeps its own block padding: the container's border takes the place of its
+// own, so the field is as tall as a plain one.
 // Doubled, it outranks the input's own state rules in any CSS order.
 export const prefixedInput = style({
   selectors: {
     '&&': {
       border: 'none',
-      // The border's pixel each side, so the field keeps its height.
-      paddingBlock: 7,
       paddingInlineStart: 0,
     },
   },

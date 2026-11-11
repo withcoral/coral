@@ -1062,6 +1062,20 @@ function ToolsTableScreen({
         navigate(toolPath(next.provider, next.tool), { replace: true, preventScrollReset: true })
       }
     }
+  // The drawer is a rail, which closes on Escape only from inside itself. From
+  // the table beside it, the page closes it. A menu or a field keeps the key.
+  // The rail stops the key before it bubbles to the window, so listen before it does.
+  useEffect(() => {
+    if (!drawerKey) return
+    const closeDrawer = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.repeat) return
+      if (!cursorKeyApplies(event, { fromFilter: false, overControls: true })) return
+      event.preventDefault()
+      closeSelectedRoute()
+    }
+    window.addEventListener('keydown', closeDrawer, true)
+    return () => window.removeEventListener('keydown', closeDrawer, true)
+  })
   const toggleHeading = (stop: Extract<CursorStop, { kind: 'heading' }>) =>
     toggleCollapsed(stop.key, stop.index, stop.depth)
   // On a tool, ← and → step its policy through the toggle's order,
@@ -2381,6 +2395,11 @@ function ToolDetailsDrawer({
   const description = prose?.description.trim() ?? ''
   const callPath = tool && provider ? toolCallPath(provider.callRoot, tool.relativePath) : ''
   const usage = tool && provider ? usageOf(toolCalls, provider, tool) : null
+  // A policy change saved here does not reload the catalog, so a publish
+  // starts from the policy the reader now sees, not the loaded one.
+  const mutations = usePolicyMutations()
+  const policy =
+    tool && provider ? (mutations.state(provider.id, tool.key).policy ?? tool.policy) : undefined
   // The drawer stays open from one tool to the next, so only its content
   // changes. The content mounts once per tool, which starts it at the top.
   const popup = useRef<HTMLDivElement>(null)
@@ -2430,7 +2449,7 @@ function ToolDetailsDrawer({
                         canChange
                           ? {
                               workspacePath: workspace.path,
-                              policy: tool.policy,
+                              policy: policy ?? tool.policy,
                               currentUser: workspace.currentUser,
                             }
                           : canDelete && workspace.effectiveRole !== 'owner'
@@ -2515,7 +2534,7 @@ function ToolDetailsDrawer({
                   form={form}
                   workspace={workspace}
                   canChange={canChange}
-                  policy={tool.policy}
+                  policy={policy ?? tool.policy}
                 />
               )}
             </div>

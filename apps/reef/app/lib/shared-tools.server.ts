@@ -275,7 +275,7 @@ const publishRefusals = {
     'A tool that this source calls changed after your review. Review the declaration again.',
   taken: 'Another shared tool uses this path, or a part of it. Enter another path.',
   unreadable: 'The private tool or the revision no longer exists. Close this dialog.',
-  denied: 'Only an owner can publish to shared tools.',
+  denied: 'Ask a workspace owner to publish this tool.',
 }
 
 /**
@@ -289,7 +289,7 @@ function publishFailure(error: unknown): [status: number, message: string] {
       SHARED_TOOL_PATH_INVALID:
         'Enter a path of 1 to 16 names with a dot between each, such as mail.remind. Each name is a JavaScript identifier.',
       SHARED_TOOL_RESTORE_DIFFERS:
-        'This content is not that of the revision you restore. Review the revision again.',
+        'This content differs from the revision. Review the revision again.',
     }
     if (error.code === Code.InvalidArgument && corrections[error.rawMessage])
       return [400, corrections[error.rawMessage]!]
@@ -440,11 +440,11 @@ function removalFailure(error: unknown): [status: number, message: string] {
         'Another owner published this shared tool again. Check the new revision before you remove it.',
       ]
     if (error.code === Code.PermissionDenied)
-      return [403, 'Only an owner can remove a shared tool.']
+      return [403, 'Ask a workspace owner to remove this shared tool.']
   }
   return failureReason(
     error,
-    'You cannot remove this shared tool. ',
+    'Coral could not remove this shared tool. ',
     'It no longer exists. Close this panel.',
   )
 }

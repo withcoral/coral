@@ -1747,9 +1747,16 @@ export async function loadActivity(
     page.initialRecord = undefined
     page.initialRequest = undefined
   }
+  // The record a link opens is also the selected row, so one read of the calls
+  // that hold it serves both reveals below.
+  let held: { parent: string; calls: string[] } | undefined
+  const callsHolding = async (parent: string) => {
+    if (held?.parent !== parent) held = { parent, calls: await enclosingCalls(api, parent, signal) }
+    return held.calls
+  }
   if (page.initialRecord && page.detail?.kind === 'invocation') {
     const { run, parent } = page.detail.invocation
-    const calls = parent ? await enclosingCalls(api, parent.invocation, signal) : []
+    const calls = parent ? await callsHolding(parent.invocation) : []
     // The Run and each call that holds the record open at the record inside them.
     const inside = [...calls, page.initialRecord]
     for (const [index, name] of [run, ...calls].entries()) {
@@ -1773,7 +1780,7 @@ export async function loadActivity(
       if (name && !page.expanded.includes(name)) page.expanded.push(name)
     // A call a tool's body made opens inside the calls that hold it.
     if (row.kind === 'invocation' && row.parent)
-      revealCalls(row.run, await enclosingCalls(api, row.parent.invocation, signal), row.name)
+      revealCalls(row.run, await callsHolding(row.parent.invocation), row.name)
   }
   try {
     const value = await api.activity.browseActivityRoots(

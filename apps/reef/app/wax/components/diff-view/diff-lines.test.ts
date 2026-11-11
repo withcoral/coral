@@ -102,6 +102,16 @@ it('keeps the unchanged lines of a long text unchanged', () => {
   expect(rows(changed)).toEqual(['- 2501 . line 2500', '+ . 2501 changed'])
 })
 
+// Catches: a changed run long enough to pass more arguments than one call takes.
+it('orders a very long changed run as its removals, then its additions', () => {
+  const count = 150_000
+  const diff = diffLines('before\n'.repeat(count), 'after\n'.repeat(count))
+  const kinds = (from: number, to: number) => new Set(diff.slice(from, to).map((line) => line.kind))
+  expect(kinds(0, count)).toEqual(new Set(['removed']))
+  expect(kinds(count, 2 * count)).toEqual(new Set(['added']))
+  expect(rows(diff.slice(2 * count))).toEqual([`  ${count + 1} ${count + 1} `])
+})
+
 // Catches: a fold that hides a changed line or its context, that folds a run
 // too short to be worth it, or that miscounts the lines it hides.
 it('folds each long run of unchanged lines down to the context around a change', () => {

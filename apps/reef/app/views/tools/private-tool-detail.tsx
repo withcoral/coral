@@ -46,7 +46,7 @@ export function PrivateToolActions({
     <>
       {publish === 'owner-only' && (
         <Typography.BodySmall as="span" variant="secondary">
-          Only an owner can publish to shared tools.
+          Ask a workspace owner to publish this tool.
         </Typography.BodySmall>
       )}
       {publish && publish !== 'owner-only' && (
