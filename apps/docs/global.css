@@ -130,3 +130,85 @@ kbd,
 .prose table {
   border-color: var(--hairline) !important;
 }
+
+/* The task table on /examples/custom-tools: a wide task column, compact
+   numeric columns that keep each figure on one line, and the change on its
+   own line under the figures. */
+.task-table {
+  overflow-x: auto;
+}
+
+.task-table table {
+  width: 100%;
+  min-width: 720px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.task-table .c-task { width: auto; }
+.task-table .c-tok { width: 10rem; }
+.task-table .c-usd { width: 7rem; }
+.task-table .c-sec { width: 6.25rem; }
+
+.task-table th,
+.task-table td {
+  padding: 0.75rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+
+.task-table th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.task-table .num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-table .note {
+  margin-top: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #15803d;
+}
+
+.task-table p {
+  margin: 0;
+}
+
+.task-table .tools {
+  margin-top: 0.375rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.task-table .tools code {
+  font-size: 0.6875rem;
+  padding: 0.05rem 0.3rem;
+}
+
+.task-table .provider {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgb(0 0 0 / 0.5);
+  margin-right: 0.25rem;
+}
+
+.task-table .delta {
+  display: block;
+  font-size: 0.75rem;
+  color: rgb(0 0 0 / 0.5);
+}
+
+.task-table .delta.down {
+  color: #15803d;
+}
