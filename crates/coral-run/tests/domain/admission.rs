@@ -198,7 +198,7 @@ async fn program_calls_one_private_tool_repeatedly_after_top_level_initializatio
                             return value <= 1 ? 1 : value * factorial(value - 1);
                         }
                         function offset(value: number): number { return value + 1; }
-                        export default function calculate(value: number): number {
+                        export default function calculate({ value }: { value: number }): number {
                             return offset(factorial(value));
                         }
                     ",
@@ -215,8 +215,8 @@ async fn program_calls_one_private_tool_repeatedly_after_top_level_initializatio
             &workspace_id,
             submission(
                 r"
-                    const first = await coral.private.math.factorial(4);
-                    const second = await coral.private.math.factorial(3);
+                    const first = await coral.private.math.factorial({ value: 4 });
+                    const second = await coral.private.math.factorial({ value: 3 });
                     return { first, second };
                 ",
             ),
@@ -253,17 +253,17 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
         (
             "math.increment",
             "Increment one number",
-            "export default function increment(value: number): number { return value + 1; }",
+            "export default function increment({ value }: { value: number }): number { return value + 1; }",
         ),
         (
             "math.incrementTwice",
             "Increment one number twice",
-            "const incremented = await coral.private.math.increment(40); export default function incrementTwice(): Promise<number> { return coral.private.math.increment(incremented); }",
+            "const incremented = await coral.private.math.increment({ value: 40 }); export default function incrementTwice(): Promise<number> { return coral.private.math.increment({ value: incremented }); }",
         ),
         (
             "math.triple",
             "Triple one number",
-            "export default function triple(value: number): number { return value * 3; }",
+            "export default function triple({ value }: { value: number }): number { return value * 3; }",
         ),
     ] {
         private_tools
@@ -284,7 +284,7 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
         .start(
             &principal,
             &workspace_id,
-            submission("const triple = coral.private.math.triple; return [await coral.private.math.incrementTwice(), await triple(14)];",
+            submission("const triple = coral.private.math.triple; return [await coral.private.math.incrementTwice(), await triple({ value: 14 })];",
             ),
         )
         .await
@@ -311,7 +311,7 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
         runs.start(
             &principal,
             &workspace_id,
-            submission("const triple = coral.private.math.triple; return [await coral.private.math.incrementTwice(), await triple(14)];",
+            submission("const triple = coral.private.math.triple; return [await coral.private.math.incrementTwice(), await triple({ value: 14 })];",
             ),
         )
         .await,
@@ -767,13 +767,13 @@ async fn equivalent_callable_default_export_forms_execute() {
         .user_scope("user:export-forms", "Run export forms")
         .await;
     let forms = [
-        "function answer(value: number): number { return value; } export { answer as default };",
-        "function answer(value: number): number { return value; } export {}; export { answer as default };",
-        "function answer(value: number): number { return value; } export type {}; export { answer as default };",
-        "const answer = (value: number): number => value; export default answer;",
-        "let answer = (_value: number): number => 42; export default answer; answer = () => 0;",
-        "export default (value: number): number => value;",
-        "export default async function answer(value: number): Promise<number> { return value; }",
+        "function answer({ value }: { value: number }): number { return value; } export { answer as default };",
+        "function answer({ value }: { value: number }): number { return value; } export {}; export { answer as default };",
+        "function answer({ value }: { value: number }): number { return value; } export type {}; export { answer as default };",
+        "const answer = ({ value }: { value: number }): number => value; export default answer;",
+        "let answer = (_input: { value: number }): number => 42; export default answer; answer = () => 0;",
+        "export default ({ value }: { value: number }): number => value;",
+        "export default async function answer({ value }: { value: number }): Promise<number> { return value; }",
     ];
 
     for (index, source) in forms.into_iter().enumerate() {
@@ -799,7 +799,7 @@ async fn equivalent_callable_default_export_forms_execute() {
             .start(
                 &principal,
                 &workspace_id,
-                submission("return await coral.private.forms.answer(42);"),
+                submission("return await coral.private.forms.answer({ value: 42 });"),
             )
             .await
             .expect("accept linked export form");

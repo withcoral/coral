@@ -57,11 +57,11 @@ pub enum Error {
     /// live Shared Tools.
     #[error("{}", path_conflict(*.0))]
     PathConflict(AuthoredToolKind),
-    /// The source's arguments or result cannot cross a Tool call as data:
-    /// the reason names the Tool's Call Path and where the declaration holds
-    /// a function, a class instance, a `Date`, `Map` or `Set`, a `bigint` or
-    /// a `symbol`.
-    #[error("a {} takes and returns only data: {}", .0.name(), .1)]
+    /// The source does not take one object, or its argument or result
+    /// cannot cross a Tool call as data: the reason names the Tool's Call
+    /// Path and the parameter, or where the declaration holds a function, a
+    /// class instance, a `Date`, `Map` or `Set`, a `bigint` or a `symbol`.
+    #[error("a {} takes one object and returns only data: {}", .0.name(), .1)]
     NotData(AuthoredToolKind, String),
     /// Compilation exceeded the fixed authoring deadline.
     #[error("{} compilation exceeded the two-second deadline", .0.name())]

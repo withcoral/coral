@@ -112,7 +112,7 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
     save(
         &fixture,
         "helpers.double",
-        "export default function double(value: number): number { return value * 2; }",
+        "export default function double({ value }: { value: number }): number { return value * 2; }",
     )
     .await;
     let cases: &[(&str, &str, Located)] = &[
@@ -123,8 +123,8 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
         ),
         (
             "a Private Tool the caller owns",
-            "  return coral.private.helpers.double(\"two\");",
-            vec![(2345, Some(2), Some(39))],
+            "  return coral.private.helpers.double({ value: \"two\" });",
+            vec![(2322, Some(2), Some(41))],
         ),
         (
             "a Tool the caller cannot discover",
@@ -143,13 +143,13 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
     let saved = save(
         &fixture,
         "github.repoName",
-        "export default async function repoName(owner: string, repo: string) {\n  return (await coral.providers.github.repos.get({ owner, repo })).data.full_name;\n}",
+        "export default async function repoName({ owner, repo }: { owner: string; repo: string }) {\n  return (await coral.providers.github.repos.get({ owner, repo })).data.full_name;\n}",
     )
     .await;
     assert!(saved.diagnostics().is_empty(), "{:?}", saved.diagnostics());
     assert_eq!(
         saved.declaration().as_str(),
-        "export default function repoName(owner: string, repo: string): Promise<string>;\n",
+        "export default function repoName({ owner, repo }: {\n    owner: string;\n    repo: string;\n}): Promise<string>;\n",
         "the declaration carries the Tool's result type"
     );
 }

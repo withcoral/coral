@@ -230,14 +230,14 @@ impl SharedScope {
 
 /// A Shared Tool that calls the caller's own `coral.private.contacts.find`
 /// and returns an array with a hole.
-const REMIND_SOURCE: &str = "export default async function remind(name: string) {
-    const to = await coral.private.contacts.find(name);
+const REMIND_SOURCE: &str = "export default async function remind({ name }: { name: string }) {
+    const to = await coral.private.contacts.find({ name });
     return { to, sent: [1, undefined] };
 }";
 
 /// A Private Tool that names whose it is.
 fn contacts(owner: &str) -> String {
-    format!("export default async (name: string) => `{owner}:${{name}}`;")
+    format!("export default async ({{ name }}: {{ name: string }}) => `{owner}:${{name}}`;")
 }
 
 // Catches: a Shared Tool that only its publisher can call, that returns a
@@ -266,7 +266,10 @@ async fn every_principal_calls_a_shared_tool_with_its_own_private_tools_and_gets
 
     for (name, caller) in &callers {
         let (run, value) = shared
-            .run(caller, "return await coral.shared.mail.remind('Ada');")
+            .run(
+                caller,
+                "return await coral.shared.mail.remind({ name: 'Ada' });",
+            )
             .await;
 
         // Its own value, copied as data: no `{ data, metadata }` wrapper, and
@@ -365,7 +368,7 @@ async fn admission_refuses_a_linked_tool_that_is_missing_and_names_it() {
     let cases = [
         (
             "the caller has no such Private Tool",
-            "return await coral.shared.mail.remind('Ada');",
+            "return await coral.shared.mail.remind({ name: 'Ada' });",
             vec![
                 "Shared Tool coral.shared.mail.remind:2:",
                 "coral.private.contacts.find",
@@ -770,7 +773,7 @@ async fn an_owners_rule_on_a_shared_tool_applies_to_every_caller_and_survives_a_
         .scope
         .start(
             &shared.member,
-            submission("return await coral.shared.mail.remind('Ada');"),
+            submission("return await coral.shared.mail.remind({ name: 'Ada' });"),
         )
         .await;
     let approvals = shared.scope.fixture.approvals();
@@ -820,7 +823,7 @@ async fn an_owners_rule_on_a_shared_tool_applies_to_every_caller_and_survives_a_
     shared
         .save_private(&shared.agent, "contacts.find", &contacts("agent"))
         .await;
-    let program = "try { return await coral.shared.mail.remind('Ada'); } catch (error) {
+    let program = "try { return await coral.shared.mail.remind({ name: 'Ada' }); } catch (error) {
         if (!(error instanceof coral.ToolError)) throw error;
         return { code: error.code };
     }";

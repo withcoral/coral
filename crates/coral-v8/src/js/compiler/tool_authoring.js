@@ -126,9 +126,68 @@ function defaultExportSignatures(checker, sourceFile) {
   return checker.getSignaturesOfType(callable, ts.SignatureKind.Call);
 }
 
+// Whether `type` lets a Tool's one parameter be an object: an object type,
+// `object`, or a type that says nothing about the value. `undefined` passes
+// too, so the parameter may be optional.
+function admitsObjectInput(checker, type, depth = 0) {
+  if (depth > 64) return true;
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) {
+    return true;
+  }
+  if (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) return true;
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const constraint = checker.getBaseConstraintOfType(type);
+    return !constraint || constraint === type || admitsObjectInput(checker, constraint, depth + 1);
+  }
+  if (type.isUnion())
+    return type.types.every((branch) => admitsObjectInput(checker, branch, depth + 1));
+  if (type.isIntersection()) {
+    return type.types.some((branch) => admitsObjectInput(checker, branch, depth + 1));
+  }
+  return (
+    (type.flags & ts.TypeFlags.Object) !== 0 &&
+    !checker.isArrayType(type) &&
+    !checker.isTupleType(type) &&
+    checker.getSignaturesOfType(type, ts.SignatureKind.Call).length === 0
+  );
+}
+
+function parameterDeclaration(parameter) {
+  return parameter.valueDeclaration || parameter.declarations?.[0];
+}
+
+// Why a Tool's default export does not take one object, as `{ node, reason }`
+// with the parameter to change, or undefined when it does (ADR 0033). A Tool
+// takes one argument, an object, as a Provider Tool does.
+function toolInputShapeError(checker, signatures) {
+  const takeOne = 'take one object instead, such as `({ name }: { name: string })`';
+  for (const signature of signatures) {
+    const parameters = signature.getParameters();
+    if (parameters.length > 1) {
+      return {
+        node: parameterDeclaration(parameters[1]),
+        reason: `it takes ${parameters.length} parameters; ${takeOne}`,
+      };
+    }
+    const [parameter] = parameters;
+    const node = parameter && parameterDeclaration(parameter);
+    if (!node) continue;
+    if (node.dotDotDotToken) {
+      return { node, reason: `\`input\` is a rest parameter; ${takeOne}` };
+    }
+    const type = checker.getTypeOfSymbolAtLocation(parameter, node);
+    if (!admitsObjectInput(checker, type)) {
+      const shown = checker.typeToString(checker.getNonNullableType(type));
+      return { node, reason: `\`input\` has type ${shown}; ${takeOne}` };
+    }
+  }
+  return undefined;
+}
+
 // Where an Authored Tool's arguments or its awaited result hold something that
 // cannot cross a Tool call as JSON data, such as "`input.callback` is a
-// function", or undefined when they hold only data. `any`, `unknown` and a
+// function", or undefined when they hold only data. Its one argument is
+// `input`, whatever the parameter is called. `any`, `unknown` and a
 // type parameter without a constraint say nothing about the value, so they
 // pass, and so does `void`, which crosses as null.
 function notDataBoundary(program, sourceFile) {
@@ -200,12 +259,14 @@ function notDataBoundary(program, sourceFile) {
     return undefined;
   }
 
-  for (const signature of defaultExportSignatures(checker, sourceFile)) {
-    for (const [index, parameter] of signature.getParameters().entries()) {
+  const signatures = defaultExportSignatures(checker, sourceFile);
+  const shape = toolInputShapeError(checker, signatures);
+  if (shape !== undefined) return shape.reason;
+  for (const signature of signatures) {
+    for (const parameter of signature.getParameters()) {
       const node = parameter.valueDeclaration || parameter.declarations?.[0];
       if (!node) continue;
-      const path = ts.isIdentifier(node.name) ? `input.${node.name.text}` : `input[${index}]`;
-      const found = find(checker.getTypeOfSymbolAtLocation(parameter, node), path, new Set(), 0);
+      const found = find(checker.getTypeOfSymbolAtLocation(parameter, node), 'input', new Set(), 0);
       if (found !== undefined) return found;
     }
     const result = checker.getReturnTypeOfSignature(signature);
@@ -326,13 +387,12 @@ function projectDeclarationFields(program, sourceFile) {
   }
 
   for (const signature of signatures) {
-    for (const [index, parameter] of signature.getParameters().entries()) {
+    for (const parameter of signature.getParameters()) {
       const node = parameter.valueDeclaration || parameter.declarations?.[0];
       if (!node) continue;
-      const path = ts.isIdentifier(node.name) ? `input.${node.name.text}` : `input[${index}]`;
       const type = checker.getTypeOfSymbolAtLocation(parameter, node);
-      recordDeclarationField(node.dotDotDotToken ? `${path}[]` : path, [node], type);
-      visitType(type, path);
+      recordDeclarationField('input', [node], type);
+      visitType(type, 'input');
     }
     const result = checker.getReturnTypeOfSignature(signature);
     const node = signature.getDeclaration();

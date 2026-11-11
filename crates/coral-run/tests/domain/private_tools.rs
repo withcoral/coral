@@ -8,7 +8,7 @@ use coral_policy::ToolAccessState;
 use serde_json::{Value, json};
 
 /// The function each Program saves: `saved`, declared at its top level.
-const SOURCE: &str = "const saved = (name: string): string => `hello ${name}`;";
+const SOURCE: &str = "const saved = ({ name }: { name: string }): string => `hello ${name}`;";
 
 /// An Admin scope whose Runs author Private Tools, with no exact rule on
 /// either Tool, and the index each save notifies.
@@ -65,7 +65,7 @@ fn add(path: &str, declarations: &str) -> RunSubmission {
 }
 
 fn greet() -> RunSubmission {
-    submission("return coral.private.people.greet('Ada');")
+    submission("return coral.private.people.greet({ name: 'Ada' });")
 }
 
 /// Runs `run` as `actor` and returns its Final Value.
@@ -345,7 +345,7 @@ async fn a_program_calls_its_function_then_saves_it_in_one_run() {
     let by_path = format!(
         "{SOURCE}\nawait coral.addTool({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
-         return coral.private.people.greet('Ada');"
+         return coral.private.people.greet({{ name: 'Ada' }});"
     );
     assert!(admission_refuses(&scope, &scope.owner, submission(&by_path)).await);
     assert!(
@@ -354,7 +354,7 @@ async fn a_program_calls_its_function_then_saves_it_in_one_run() {
     );
 
     let tested = format!(
-        "{SOURCE}\nconst greeting = saved('Ada');\n\
+        "{SOURCE}\nconst greeting = saved({{ name: 'Ada' }});\n\
          await coral.addTool({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
          return greeting;"
@@ -465,7 +465,7 @@ async fn programs_reach_the_builtin_and_private_tools_on_coral() {
 
 /// The function `addTool` and `updateTool` save in place of `saved`: it
 /// says goodbye, so a call shows which version is current.
-const OTHER_SOURCE: &str = "const saved = (name: string): string => `bye ${name}`;";
+const OTHER_SOURCE: &str = "const saved = ({ name }: { name: string }): string => `bye ${name}`;";
 
 /// A Program that declares `declarations` and returns `expression`'s
 /// value, or a Tool error's code and message.
@@ -749,14 +749,14 @@ async fn each_private_tool_call_is_one_invocation_that_copies_data_and_returns_t
         [
             (
                 "coral.private.data.echo",
-                json!([{ "values": [1, null, 3] }]),
+                json!({ "values": [1, null, 3] }),
                 Some(crate::InvocationOutcome::UpstreamOutcome(
                     json!({ "values": [1, null, 3, 4], "secondIsNull": true, "missing": [null] })
                 )),
             ),
             (
                 "coral.private.data.echo",
-                json!([{ "values": [] }]),
+                json!({ "values": [] }),
                 Some(crate::InvocationOutcome::UpstreamOutcome(
                     json!({ "values": [4], "secondIsNull": false, "missing": [null] })
                 )),
@@ -792,7 +792,7 @@ async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_t
             "fails.result",
             "const saved = async (): Promise<any> => 10n;",
             "invalid_tool_result",
-            "Tool result is not a JSON value",
+            "Tool result is not a JSON value at `result`: it is a bigint; use a number or a string",
             "invalid_tool_result",
         ),
         (
@@ -841,7 +841,10 @@ async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
     let module = private_tool_module(&scope);
     for (path, body) in [
         ("old.workspace", "coral.workspace.search({ query: 'x' })"),
-        ("old.functions", "coral.functions.people.greet('Ada')"),
+        (
+            "old.functions",
+            "coral.functions.people.greet({ name: 'Ada' })",
+        ),
     ] {
         // Coral never rewrites a stored source, so one saved before the old
         // roots went can still name them.
@@ -875,7 +878,7 @@ async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
             "Program:1:14: coral.saveFunction names no Tool that you can call.",
         ),
         (
-            "return await coral.functions.people.greet('Ada');",
+            "return await coral.functions.people.greet({ name: 'Ada' });",
             "Program:1:14: coral.functions.people.greet names no Tool that you can call.",
         ),
         (
@@ -918,14 +921,14 @@ async fn a_missing_private_tool_is_refused_like_any_unknown_path_with_its_neares
         author(
             "addTool",
             "people.greetPerson",
-            "const saved = async (name: string): Promise<string> => `hello ${name}`;",
+            "const saved = async ({ name }: { name: string }): Promise<string> => `hello ${name}`;",
             "",
         ),
     )
     .await;
     for (source, refusal) in [
         (
-            "return await coral.private.people.personGreet('Ada');",
+            "return await coral.private.people.personGreet({ name: 'Ada' });",
             "Program:1:14: coral.private.people.personGreet names no Tool that you can call. \
              Nearest: coral.private.people.greetPerson.",
         ),
@@ -950,7 +953,8 @@ async fn a_missing_private_tool_is_refused_like_any_unknown_path_with_its_neares
 
 /// A tool whose body makes one call of its own, so a row for that call
 /// shows the body ran.
-const CALLING_SOURCE: &str = "const saved = async (name: string): Promise<string> => {
+const CALLING_SOURCE: &str =
+    "const saved = async ({ name }: { name: string }): Promise<string> => {
     await coral.listProviders();
     return `hello ${name}`;
 };";
@@ -1367,7 +1371,7 @@ fn author_with(verb: &str, declarations: &str, extra: &str) -> RunSubmission {
 /// Calls `people.greet` and returns its value, or its Tool Error's code
 /// and message.
 fn greet_or_code() -> RunSubmission {
-    tool_call("", "coral.private.people.greet('Ada')")
+    tool_call("", "coral.private.people.greet({ name: 'Ada' })")
 }
 
 /// One row of [`calls_inside_a_body_follow_their_own_policy_and_the_kill_switch`]:
@@ -1412,7 +1416,7 @@ async fn calls_inside_a_body_follow_their_own_policy_and_the_kill_switch() {
             author(
                 "addTool",
                 "people.inner",
-                "const saved = async (name: string): Promise<string> => `inner ${name}`;",
+                "const saved = async ({ name }: { name: string }): Promise<string> => `inner ${name}`;",
                 &format!(", policy: {}", json!(row.inner_declared)),
             ),
         )
@@ -1423,9 +1427,9 @@ async fn calls_inside_a_body_follow_their_own_policy_and_the_kill_switch() {
             &scope.owner,
             author_with(
                 "addTool",
-                "const saved = async (name: string): Promise<string> => {
+                "const saved = async ({ name }: { name: string }): Promise<string> => {
                     await coral.listProviders();
-                    return await coral.private.people.inner(name);
+                    return await coral.private.people.inner({ name });
                 };",
                 "",
             ),

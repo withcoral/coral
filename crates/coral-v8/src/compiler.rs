@@ -501,6 +501,9 @@ struct CompileOutput {
     wrapper_valid: bool,
     validation_error: Option<String>,
     save_refusal: Option<String>,
+    /// A linked stored source that does not take one object: its message
+    /// names the Tool and where.
+    linked_tool_refusal: Option<String>,
     diagnostics: Vec<CompilerDiagnostic>,
 }
 
@@ -799,6 +802,9 @@ fn decode_compiled_program(json: &str) -> Result<CompiledProgram, Error> {
     }
     if let Some(message) = output.save_refusal {
         return Err(Error::InvalidPrivateToolSave(message));
+    }
+    if let Some(message) = output.linked_tool_refusal {
+        return Err(Error::InvalidAuthoredTool(message));
     }
     if !output.wrapper_valid {
         return Err(Error::InvalidProgramBody);

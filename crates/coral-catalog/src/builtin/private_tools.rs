@@ -43,7 +43,9 @@ const UPDATE_POLICY_DESCRIPTION: &str = policy_description!("Omit it to keep the
 
 const SAVE_NOTES: &str = "Pass source as the name of a function declared at the top level of \
                           this Program, with function or const: not a string, an inline \
-                          function or any other expression. Coral saves the function with the \
+                          function or any other expression. The function takes one object, \
+                          such as ({ id }: { id: string }), and returns JSON data: convert a \
+                          Date, Map or Set first. Coral saves the function with the \
                           top-level declarations it uses. Call it before saving, and call the \
                           saved tool by its path in later Programs. Type errors do not stop the \
                           save: read diagnostics in the result, and fix an error with \

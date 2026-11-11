@@ -83,6 +83,28 @@ function compileProgram(body, builtinTools, fileName, targetName) {
   );
 }
 
+// Why a stored source the Program links cannot be called, or undefined:
+// one saved before every Tool took one object (ADR 0033). Coral never
+// rewrites a stored source, so its author saves or publishes it again.
+function linkedToolInputRefusal({ program, sourceFile, pathSegments, root }) {
+  if (hasSyntaxErrors(sourceFile) || !Array.isArray(pathSegments)) return undefined;
+  let shape;
+  try {
+    const checker = program.getTypeChecker();
+    shape = toolInputShapeError(checker, defaultExportSignatures(checker, sourceFile));
+  } catch {
+    // A source without one default callable fails where it is compiled.
+    return undefined;
+  }
+  if (shape?.node === undefined) return undefined;
+  const at = sourceFile.getLineAndCharacterOfPosition(shape.node.getStart(sourceFile));
+  const shared = root === 'shared';
+  const fix = shared
+    ? 'A Workspace Owner must publish a new revision.'
+    : 'Save it again with coral.updateTool.';
+  return `${shared ? 'Shared' : 'Private'} Tool coral.${shared ? 'shared' : 'private'}.${pathSegments.join('.')}:${at.line + 1}:${at.character + 1}: ${shape.reason}. ${fix}`;
+}
+
 function compileLinkedProgram(body, linkedTools, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   if (!Array.isArray(linkedTools)) {
@@ -136,6 +158,21 @@ function compileLinkedProgram(body, linkedTools, builtinTools, fileName, targetN
       undefined,
       modules[index].program,
     );
+  }
+  const linkedToolRefusal =
+    validationError === undefined
+      ? modules.map(linkedToolInputRefusal).find((refusal) => refusal !== undefined)
+      : undefined;
+  if (linkedToolRefusal !== undefined) {
+    return {
+      outputText: '',
+      sourceMapText: null,
+      authoredMappings: [],
+      wrapperValid: true,
+      validationError: null,
+      linkedToolRefusal,
+      diagnostics: [],
+    };
   }
   const carrier = privateToolCarrierName([
     ordinaryProgram,

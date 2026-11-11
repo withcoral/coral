@@ -638,11 +638,11 @@ fn perform_callback(
     );
 }
 
-/// `__coralToolComplete(handle, returned, threw, thrown)`: how the body of
-/// the permitted call `handle` ended: `returned` is its native-JSON value,
-/// or undefined when it cannot be encoded, unless `threw` holds the message
-/// of what it threw, `thrown`. The Promise settles as the call's caller
-/// does.
+/// `__coralToolComplete(handle, returned, threw, thrown, field, reason)`:
+/// how the body of the permitted call `handle` ended: `returned` is its
+/// native-JSON value, unless `threw` holds the message of what it threw,
+/// `thrown`. Without either, it returned something that is not data, at
+/// `field` for `reason`. The Promise settles as the call's caller does.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "V8's native Function callback Interface requires arguments by value"
@@ -686,7 +686,18 @@ fn complete_callback(
             None,
         )
     } else {
-        (ToolBodyOutcome::NotData, None)
+        let field = arguments.get(4);
+        let reason = arguments.get(5);
+        let text = |scope: &mut v8::PinScope<'_, '_>, value: v8::Local<'_, v8::Value>| {
+            value
+                .is_string()
+                .then(|| crate::bounded_diagnostic_message(&value.to_rust_string_lossy(scope)))
+        };
+        let outcome = ToolBodyOutcome::NotData {
+            field: text(scope, field).unwrap_or_else(|| "result".to_owned()),
+            reason: text(scope, reason).unwrap_or_default(),
+        };
+        (outcome, None)
     };
     let Some(resolver) = v8::PromiseResolver::new(scope) else {
         terminate_program_host(scope);
@@ -796,6 +807,32 @@ impl Caller {
     }
 }
 
+/// Why a Tool call's arguments cannot cross it, from the bootstrap: `field`,
+/// a path from the arguments object that is empty for the object itself, and
+/// `reason`, which the bootstrap words. Without a reason the message says
+/// only that they are invalid.
+fn invalid_arguments_message(
+    scope: &mut v8::PinScope<'_, '_>,
+    field: v8::Local<'_, v8::Value>,
+    reason: v8::Local<'_, v8::Value>,
+) -> String {
+    const INVALID: &str = "Tool arguments are invalid";
+    if !reason.is_string() {
+        return INVALID.to_owned();
+    }
+    let reason = reason.to_rust_string_lossy(scope);
+    let field = if field.is_string() {
+        field.to_rust_string_lossy(scope)
+    } else {
+        String::new()
+    };
+    crate::bounded_diagnostic_message(&if field.is_empty() {
+        format!("{INVALID}: {reason}")
+    } else {
+        format!("{INVALID} at `{field}`: {reason}")
+    })
+}
+
 /// Starts one Tool call by Call Path and encoded arguments, which `start`
 /// hands to the host, and returns its pending Promise.
 fn start_tool_call(
@@ -815,12 +852,8 @@ fn start_tool_call(
     };
     let path = path.to_rust_string_lossy(scope);
     let Ok(arguments_json) = v8::Local::<v8::String>::try_from(arguments.get(1)) else {
-        reject_tool_promise(
-            scope,
-            &mut return_value,
-            "invalid_input",
-            "Tool arguments are invalid",
-        );
+        let message = invalid_arguments_message(scope, arguments.get(2), arguments.get(3));
+        reject_tool_promise(scope, &mut return_value, "invalid_input", &message);
         return;
     };
     let arguments_json = arguments_json.to_rust_string_lossy(scope);

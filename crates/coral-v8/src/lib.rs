@@ -143,9 +143,15 @@ pub enum ToolBodyOutcome {
     /// It returned a value, here as native JSON. A body that returns
     /// `undefined` returns `null`.
     Returned(String),
-    /// It returned a value that native JSON cannot encode, such as a
-    /// `bigint`, a cycle, or a function.
-    NotData,
+    /// It returned a value that is not data, such as a `bigint`, a `Date`,
+    /// `NaN`, a cycle, or a function (ADR 0033).
+    NotData {
+        /// Where the value is, as a path from `result`.
+        field: String,
+        /// Why it is not data, bounded text the bootstrap wrote; empty when
+        /// it gave none.
+        reason: String,
+    },
     /// It threw. `message` is the thrown Error's message, or the thrown
     /// value as text. `tool_error` holds the code of a Tool Error that a Tool
     /// call gave the body, which reaches the caller unchanged.

@@ -15,7 +15,7 @@ fn program_at(line: u32, column: u32) -> Option<SourceLocation> {
     })
 }
 
-const ACCEPTED_PRIVATE_TOOL: &str = "export default async function forecast(city: string) {\n    console.warn(city);\n    return coral.providers.weather.getForecast({ city });\n}";
+const ACCEPTED_PRIVATE_TOOL: &str = "export default async function forecast({ city }: { city: string }) {\n    console.warn(city);\n    return coral.providers.weather.getForecast({ city });\n}";
 
 fn private_tools(fixture: &TestModules) -> PrivateToolModule {
     PrivateToolModule::new(
@@ -60,7 +60,7 @@ async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
             &tool.principal,
             &tool.workspace_id,
             submission(
-                "const cities: string[] = [\"Paris\", \"Rome\"];\nfor (const city of cities) {\n    await coral.emit({ city });\n}\nawait coral.private.weather.forecast(\"Oslo\");\nawait Promise.all(cities.map((city) => coral.providers.weather.getForecast({ city })));",
+                "const cities: string[] = [\"Paris\", \"Rome\"];\nfor (const city of cities) {\n    await coral.emit({ city });\n}\nawait coral.private.weather.forecast({ city: \"Oslo\" });\nawait Promise.all(cities.map((city) => coral.providers.weather.getForecast({ city })));",
             ),
         )
         .await

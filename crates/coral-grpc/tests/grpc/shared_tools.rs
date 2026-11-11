@@ -11,11 +11,11 @@ use coral_workspace::{
 };
 use management::publish_shared_tool_request::Origin;
 
-const SOURCE: &str =
-    "export default async function remind(name: string): Promise<string> { return name; }";
+const SOURCE: &str = "export default async function remind(input: { name: string }): Promise<string> { return input.name; }";
 
 /// The declaration [`SOURCE`] emits, which the Owner of each publish reviewed.
-const DECLARATION: &str = "export default function remind(name: string): Promise<string>;\n";
+const DECLARATION: &str =
+    "export default function remind(input: {\n    name: string;\n}): Promise<string>;\n";
 
 /// Saves `user`'s Private Tool `draft`, which each publish copies.
 async fn save_draft(f: &Fixture, user: &AuthenticatedUser) {

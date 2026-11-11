@@ -28,6 +28,12 @@
   const NativeProxy = Proxy;
   const NativePromise = Promise;
   const nativePromiseResolve = Promise.resolve;
+  const ObjectPrototype = Object.prototype;
+  const getPrototypeOf = Object.getPrototypeOf;
+  const objectTag = Object.prototype.toString;
+  const regExpTest = RegExp.prototype.test;
+  const numberIsFinite = Number.isFinite;
+  const IDENTIFIER = /^[A-Za-z_$][0-9A-Za-z_$]*$/u;
 
   class ToolError extends NativeError {
     // oxlint-disable-next-line constructor-super -- Programs must not construct a ToolError.
@@ -79,6 +85,110 @@
     return encoded;
   };
 
+  // Tool data is what JSON holds: null, booleans, finite numbers, strings,
+  // arrays and plain objects (ADR 0033). `encodeData` copies a value into
+  // fresh containers as it checks it, so each getter runs once and no
+  // `toJSON` replaces what it encodes. Anything else is refused, never
+  // converted: `notData` then holds where it is, as a path from `root`,
+  // and why. Only Coral's own natives are called, since a Program can
+  // replace any prototype's methods.
+  const notData = { field: '', reason: '' };
+  const NOT_DATA = freeze(create(null));
+  const refuse = (field, reason) => {
+    notData.field = field;
+    notData.reason = reason;
+    return NOT_DATA;
+  };
+  const fieldPath = (parent, key) => {
+    if (typeof key === 'number') return `${parent}[${key}]`;
+    if (!reflectApply(regExpTest, IDENTIFIER, [key])) return `${parent}[${nativeStringify(key)}]`;
+    return parent === '' ? key : `${parent}.${key}`;
+  };
+  // The standard objects an author is likely to pass, and the data to use
+  // instead. Another prototype is named by its class.
+  const NAMED_OBJECTS = freeze({
+    __proto__: null,
+    '[object Date]': 'a Date; use a string, such as date.toISOString()',
+    '[object Map]': 'a Map; use an object, such as Object.fromEntries(map)',
+    '[object Set]': 'a Set; use an array, such as [...set]',
+    '[object Promise]': 'a Promise; await it first',
+    '[object RegExp]': 'a RegExp; use a string',
+    '[object Error]': 'an Error; use its message',
+  });
+  const notPlain = (value) => {
+    const named = NAMED_OBJECTS[reflectApply(objectTag, value, [])];
+    if (named !== undefined) return `it is ${named}`;
+    const constructor = getPrototypeOf(value).constructor;
+    const name = typeof constructor === 'function' ? constructor.name : undefined;
+    return typeof name === 'string' && name !== ''
+      ? `it is an instance of class ${name}; use a plain object`
+      : 'it is not a plain object; use a plain object';
+  };
+  const copyData = (value, path, ancestors) => {
+    switch (typeof value) {
+      case 'string':
+      case 'boolean':
+      case 'undefined':
+        return value;
+      case 'number':
+        if (numberIsFinite(value)) return value;
+        throw refuse(path, `it is ${nativeString(value)}; use a finite number or null`);
+      case 'bigint':
+        throw refuse(path, 'it is a bigint; use a number or a string');
+      case 'symbol':
+        throw refuse(path, 'it is a symbol; use a string');
+      case 'function':
+        throw refuse(path, 'it is a function; use data');
+      default:
+        break;
+    }
+    if (value === null) return null;
+    for (let index = 0; index < ancestors.length; index += 1) {
+      if (ancestors[index] === value) throw refuse(path, 'it contains itself');
+    }
+    ancestors[ancestors.length] = value;
+    let copy;
+    if (isArray(value)) {
+      copy = [];
+      const length = value.length;
+      for (let index = 0; index < length; index += 1) {
+        const element = copyData(value[index], fieldPath(path, index), ancestors);
+        copy[index] = element === undefined ? null : element;
+      }
+    } else {
+      const prototype = getPrototypeOf(value);
+      if (prototype !== ObjectPrototype && prototype !== null) throw refuse(path, notPlain(value));
+      copy = create(null);
+      const names = keys(value);
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index];
+        const element = copyData(value[name], fieldPath(path, name), ancestors);
+        if (element !== undefined) copy[name] = element;
+      }
+    }
+    ancestors.length -= 1;
+    return copy;
+  };
+  // `value` as JSON text, or undefined when it is not data. A getter or
+  // proxy that throws, or nesting too deep to walk, leaves it unreadable.
+  const encodeData = (value, root) => {
+    let copy;
+    try {
+      copy = copyData(value, root, []);
+    } catch (thrown) {
+      if (thrown !== NOT_DATA) refuse(root, 'it could not be read as data');
+      return undefined;
+    }
+    return nativeStringify(copy === undefined ? null : copy);
+  };
+  // What a Tool call's one argument is when it is not an object.
+  const argumentKind = (value) => {
+    if (value === null) return 'null';
+    if (isArray(value)) return 'an array';
+    if (value === undefined) return 'undefined';
+    return `a ${typeof value}`;
+  };
+
   const callablePath = (path) =>
     new NativeProxy(function coralToolPath() {}, {
       get(_target, property) {
@@ -89,19 +199,25 @@
       },
       apply(_target, _receiver, args) {
         if (args.length > 1) {
-          return invoke(path);
+          return invoke(path, undefined, '', `pass one object, not ${args.length} arguments`);
         }
         let encoded = '{}';
         if (args.length === 1) {
+          let input;
           try {
             // Plain comparisons, so no prototype a Program can replace
             // decides which Tool takes a carried source. Admission lists
             // the same Tools in SAVING_TOOLS; change both.
             const saving = path === 'coral.addTool' || path === 'coral.updateTool';
-            const input = saving ? savingArguments(args[0]) : args[0];
+            input = saving ? savingArguments(args[0]) : args[0];
             if (input === undefined) return invoke(path);
             encoded = nativeStringify(input);
           } catch {
+            // A Provider Tool's arguments still cross as `JSON.stringify`
+            // writes them; when it cannot, say where.
+            if (encodeData(input, '') === undefined) {
+              return invoke(path, undefined, notData.field, notData.reason);
+            }
             return invoke(path);
           }
           if (typeof encoded !== 'string') {
@@ -127,40 +243,44 @@
 
   // One call to a Private or Shared Tool, which Coral performs by running `body()`,
   // the linked module's default export, in this Program: one Invocation.
-  // The call crosses to Coral and back, so its arguments and result are
-  // copied as JSON, and it settles only once its completion is durable.
+  // The call crosses to Coral and back, so it takes one object, its
+  // argument and result are copied as data, and it settles only once its
+  // completion is durable. Arguments that are not data are refused before
+  // the call is one.
   // Admission and approval come first; the body runs only once permitted.
   // The body runs as the body of `handle`, so every Tool call it makes,
   // after any await, is that call's own; this function's own awaits stay
   // the caller's. A returned thenable is resolved there too, so its `then`
   // runs as the body.
   const performTool = async (callPath, body, args) => {
-    let encoded;
-    try {
-      encoded = nativeStringify(args);
-    } catch {
-      return perform(callPath);
+    // Every refusal and the permit are asked before any await, so the
+    // caller's frame names the call site.
+    if (args.length > 1) {
+      return perform(callPath, undefined, '', `pass one object, not ${args.length} arguments`);
     }
-    if (typeof encoded !== 'string') return perform(callPath);
-    // Before any await, so the caller's frame names the call site.
+    const input = args.length === 0 ? {} : args[0];
+    if (typeof input !== 'object' || input === null || isArray(input)) {
+      return perform(callPath, undefined, '', `pass one object, not ${argumentKind(input)}`);
+    }
+    const encoded = encodeData(input, '');
+    if (encoded === undefined) return perform(callPath, undefined, notData.field, notData.reason);
     const permitted = perform(callPath, encoded);
     const handle = await permitted;
     let returned;
     try {
       const value = await runBody(handle, () =>
         reflectApply(nativePromiseResolve, NativePromise, [
-          reflectApply(body(), undefined, nativeParse(encoded)),
+          reflectApply(body(), undefined, [nativeParse(encoded)]),
         ]),
       );
-      try {
-        returned = value === undefined ? 'null' : nativeStringify(value);
-      } catch {
-        returned = undefined;
-      }
+      returned = encodeData(value, 'result');
     } catch (thrown) {
       return complete(handle, undefined, thrownMessage(thrown), thrown);
     }
-    return complete(handle, typeof returned === 'string' ? returned : undefined);
+    if (returned === undefined) {
+      return complete(handle, undefined, undefined, undefined, notData.field, notData.reason);
+    }
+    return complete(handle, returned);
   };
 
   const emit = (value) => {

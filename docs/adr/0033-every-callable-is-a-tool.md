@@ -4,8 +4,8 @@ status: proposed
 
 # Every callable is a Tool: Private and Shared Tools are Invocations that Coral performs
 
-A Program calls three kinds of Tool, and every Tool call has one contract: it is asynchronous, takes and returns only
-data, is one Tool Invocation, and has a Tool Access State.
+A Program calls three kinds of Tool, and every Tool call has one contract: it is asynchronous, takes one object of
+data and returns data, is one Tool Invocation, and has a Tool Access State.
 
 - A **Provider Tool** is at `coral.providers.<namespace>.<path>`. The Built-in Provider's Tools now sit directly on
   `coral`: `coral.search`, `coral.addProvider`, `coral.addTool`.
@@ -35,6 +35,14 @@ a call.
     `addTool` omits it, and an update that omits it keeps the current one. Owner rules override it, as for any Tool.
 - **A Private Tool call is an Invocation.** Each call crosses to Coral and back, so the call is always asynchronous and
   takes and returns only data.
+  - **One object in.** A Private or Shared Tool takes one argument, an object, as a Provider Tool does. Its default
+    export declares at most one parameter, and that parameter's type is an object; a save or publish refuses anything
+    else. A call with no argument passes `{}`. Field paths start at `input`, whatever the parameter is called.
+  - **JSON data only, never converted.** Arguments and results hold only `null`, booleans, finite numbers, strings,
+    arrays and plain objects. Coral refuses anything else and names where it is: a function, a symbol, a `bigint`,
+    `NaN` or an infinity, a `Date`, `Map`, `Set` or other class instance, or a cycle. A call refuses bad arguments
+    with `invalid_input` before it becomes an Invocation, and a body that returns a bad value ends its call with
+    `invalid_tool_result`. A property set to `undefined` is absent, and an `undefined` array element is `null`.
   - The Tool calls its body makes are child Invocations linked to it. The parent ends only after its children, and Coral
     refuses a child call made after its parent ended.
   - A throw in the body reaches the caller as a Tool Error with code `tool_failed`. A Tool Error from a nested call
@@ -81,6 +89,12 @@ a call.
   it. Owner-published Tools would have given one catalog two writers.
 - **`coral.tools` or `coral.library` as the shared root, `coral.mine` and `coral.ours`, or renaming `coral.providers`.**
   `private` and `shared` name the scope, which is how people describe the act of sharing.
+- **Positional parameters, as Saved Functions took.** They kept every existing Saved Function working, but a tool
+  would take a different argument shape from a Provider Tool. Its Invocation would record an array, and its field
+  paths would need a root of their own.
+- **Copying as `JSON.stringify` does.** It needs no new code and matches what an isolated tool would receive, but it
+  loses data silently: a `Map` arrives as `{}`, a function disappears and `NaN` becomes `null`. A refusal that names
+  the field is cheaper for an agent to fix than wrong output it never notices.
 - **Permanent aliases for the old roots, or refusals that name the new path.** Either is code that Coral keeps for
   names no Program should still use.
 - **Banning some calls from Shared Tool bodies:** the authoring Tools, Owner-only Built-ins, Private Tools, `globalThis`
@@ -95,6 +109,10 @@ a call.
   distinct Saved Function sources from local development and evaluation databases: all are already asynchronous, none
   takes a callback or returns a function, a class instance or a `Date`, and one references another function. An
   `undefined` array element now arrives as `null`. A caller now catches a `ToolError`, not the original error object.
+- **A Saved Function with positional parameters stops working.** Admission refuses a Program that links one, naming
+  the tool, until its author saves it again with one object parameter. A Shared Tool revision published that way
+  needs a new revision. A caller that passed a `Date` or a `Map` now converts it first, for example with
+  `toISOString()` or `Object.fromEntries()`.
 - **A Tool Invocation can perform no dispatch and have children.** This needs:
   - a parent link in the Invocation schema;
   - a call that resolves when it is permitted, then completes when its body ends;

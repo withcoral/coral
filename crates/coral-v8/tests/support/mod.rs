@@ -57,9 +57,9 @@ impl ToolCompletion for AtOnce {
         };
         let completed = match outcome {
             ToolBodyOutcome::Returned(json) => Ok(json),
-            ToolBodyOutcome::NotData => Err(rejected(
+            ToolBodyOutcome::NotData { field, reason } => Err(rejected(
                 "invalid_tool_result",
-                "Tool result is not a JSON value".into(),
+                format!("Tool result is not a JSON value at `{field}`: {reason}").into(),
             )),
             ToolBodyOutcome::Threw { message, .. } => Err(rejected("tool_failed", message.into())),
         };

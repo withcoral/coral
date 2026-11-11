@@ -716,7 +716,7 @@ async fn a_review_returns_what_the_owner_approves_and_writes_nothing() {
         .await
         .expect("publish the first revision");
     let before = fixture.everything().await;
-    let reviewed = "export default async function remind(name: string): Promise<string> {\n\
+    let reviewed = "export default async function remind({ name }: { name: string }): Promise<string> {\n\
         let tool = name;\n\
         await coral.providers.demo[tool]();\n\
         await coral.private.contacts.find();\n\

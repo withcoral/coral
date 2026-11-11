@@ -140,6 +140,8 @@ await coral.private.triage.staleIssues({ days: 30 });
 
 A [program](#programs) calls one the same way it calls a [tool](#tools). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
 
+A private tool takes one object and returns JSON data. Coral refuses a `Date`, a `Map`, `NaN` or a function instead of converting it, and names where it is.
+
 A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.addTool`. Coral saves the function with the top-level declarations it uses. `coral.addTool` fails when the path is already taken. A program replaces a private tool with `coral.updateTool` and removes one with `coral.removeTool`. All three act only on the principal's own private tools.
 
 ```ts

@@ -19,8 +19,8 @@ use coral_workspace::{
 use tempfile::TempDir;
 
 const PRIVATE_TOOL: &str =
-    "export default function forecast(city: string) {\n    console.info(city);\n}";
-const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast(\"Oslo\");";
+    "export default function forecast({ city }: { city: string }) {\n    console.info(city);\n}";
+const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast({ city: \"Oslo\" });";
 
 /// Accepts one Run in the server's database and waits for it to succeed.
 async fn record_run(

@@ -48,7 +48,7 @@ async fn upgrade_moves_the_builtin_tools_and_private_tools_to_the_new_roots() {
                  return { \
                  functions: await paths('greet person'), \
                  tools: await paths('list providers'), \
-                 greeting: await coral.private.people.greet('Ada'), \
+                 greeting: await coral.private.people.greet({ name: 'Ada' }), \
                  disabled: await coral.getProvider({ namespace: 'absent' }).then( \
                  () => 'called', (error) => error.code) };",
             ),
@@ -125,7 +125,7 @@ async fn builtin_tools_a_rule_and_a_private_tool(
             PrivateToolPath::parse("people.greet").expect("path"),
             AuthoredToolDescription::parse("Greet one person by name.").expect("description"),
             AuthoredToolSource::parse(
-                "export default function greet(name: string): string { return `hello ${name}`; }",
+                "export default function greet({ name }: { name: string }): string { return `hello ${name}`; }",
             )
             .expect("source"),
         ),

@@ -470,7 +470,7 @@ async fn a_missing_private_path_names_the_callers_own_nearest_private_tools() {
                         PrivateToolPath::parse(&path).expect("a path"),
                         AuthoredToolDescription::parse("Format one value").expect("a description"),
                         AuthoredToolSource::parse(
-                            "export default async (value: number): Promise<string> => `${value}`;",
+                            "export default async ({ value }: { value: number }): Promise<string> => `${value}`;",
                         )
                         .expect("a source"),
                     ),

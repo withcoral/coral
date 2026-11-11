@@ -1667,8 +1667,15 @@ impl PerformedCall {
                             .await?),
                     }
                 }
-                coral_v8::ToolBodyOutcome::NotData => Err(invoker
-                    .finish_failure(admitted, progress, CoralFailure::InvalidToolResult)
+                coral_v8::ToolBodyOutcome::NotData { field, reason } => Err(invoker
+                    .finish_failure(
+                        admitted,
+                        progress,
+                        Rejection::naming(
+                            CoralFailure::InvalidToolResult,
+                            vec![crate::error::InputProblem::new(field, reason)],
+                        ),
+                    )
                     .await?),
                 coral_v8::ToolBodyOutcome::Threw { message, .. } => Err(invoker
                     .finish_failure(admitted, progress, Rejection::tool_failed(&message))

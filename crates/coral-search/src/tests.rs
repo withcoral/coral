@@ -353,7 +353,7 @@ async fn queries_match_safe_tool_fields_and_private_tool_declarations() {
         .expect("Private Tool declaration match");
     assert_eq!(
         saved_declaration_match.evidence().paths(),
-        ["input.value.temperatureC"],
+        ["input.temperatureC"],
         "Private Tool evidence must use callable-rooted compiler-projected declaration fields"
     );
 }

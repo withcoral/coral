@@ -735,13 +735,12 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
                     [key: string]: unknown;
                     [Symbol.iterator](): Iterator<unknown>;
                 }
-                function inspect(value: Choice<RecursiveNode>, ...flags: string[]): Promise<ResultValue>;
-                function inspect<T extends RecursiveNode>(generic: T, mode: "generic"): Promise<ResultValue>;
-                function inspect(value: Choice<RecursiveNode>, ...flags: string[]): Promise<ResultValue> {
-                    void flags;
+                function inspect(input: { value: Choice<RecursiveNode>; flags: string[] }): Promise<ResultValue>;
+                function inspect<T extends RecursiveNode>(input: { generic: T; mode: "generic" }): Promise<ResultValue>;
+                function inspect(input: { value: Choice<RecursiveNode>; flags: string[] }): Promise<ResultValue> {
                     return Promise.resolve({
                         status: "ready",
-                        "wire-name": value,
+                        "wire-name": input.value,
                         [Symbol.iterator]: function* () {},
                     });
                 }
@@ -780,7 +779,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
                 interface Item { id: string }
                 type Items = Array<Item>;
                 interface Options { callback: (nested: Item) => Item }
-                export default function inspect(options: Options, ...items: Items): Item[] {
+                export default function inspect({ options, items }: { options: Options; items: Items }): Item[] {
                     return items.map(options.callback);
                 }
             ",
@@ -805,11 +804,11 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
     for (case, source) in [
         (
             "tuple rest",
-            "interface Item { id: string } export default function inspect(...items: [Item, Item]): number { return items.length; }",
+            "interface Item { id: string } export default function inspect({ items }: { items: [Item, Item] }): number { return items.length; }",
         ),
         (
             "generic constrained rest",
-            "interface Item { id: string } export default function inspect<T extends Item[]>(...items: T): number { return items.length; }",
+            "interface Item { id: string } export default function inspect<T extends Item[]>({ items }: { items: T }): number { return items.length; }",
         ),
     ] {
         let projected = compiler
@@ -838,7 +837,7 @@ fn private_tool_declaration_fields_follow_the_callable_contract() {
             .declaration_fields()
             .expect("declaration projection is ready")
             .iter()
-            .any(|field| field.path() == "input[0].label")
+            .any(|field| field.path() == "input.label")
     );
 }
 
@@ -935,13 +934,13 @@ fn declaration_projection_uses_resolved_public_instance_types() {
             static cache: string = "";
             public name: string = "";
         }
-        export default function inspect(
-            picked: Pick<Item, "customerEmail">,
-            renamed: Renamed<Item>,
-            boxed: Box,
-            model: Model,
-            status: Status,
-        ): Promise<Readonly<Item>> { return Promise.resolve({ customerEmail: "" }); }
+        export default function inspect(input: {
+            picked: Pick<Item, "customerEmail">;
+            renamed: Renamed<Item>;
+            boxed: Box;
+            model: Model;
+            status: Status;
+        }): Promise<Readonly<Item>> { return Promise.resolve({ customerEmail: "" }); }
         "#,
         )
         .expect("prepare resolved types");
@@ -2474,7 +2473,7 @@ fn in_private_tool(path: &str, line: u32, column: u32) -> Option<AuthoredLocatio
 fn host_calls_carry_the_authored_location_of_each_call() {
     let helpers = linked_source(
         &["debug", "fetch"],
-        "console.info(\"linked\");\n\nexport default async function fetch(id: number) {\n    return coral.providers.demo.getItem({ id });\n}",
+        "console.info(\"linked\");\n\nexport default async function fetch({ id }: { id: number }) {\n    return coral.providers.demo.getItem({ id });\n}",
     );
     // (Program, Private Tools, every host call in arrival order)
     #[expect(clippy::type_complexity, reason = "one readable table of cases")]
@@ -2527,7 +2526,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // A call inside a Private Tool names that Private Tool's source,
         // including its top-level initialization before the Program body.
         (
-            "\nawait coral.private.debug.fetch(7);",
+            "\nawait coral.private.debug.fetch({ id: 7 });",
             vec![helpers],
             vec![
                 ("log", in_private_tool("debug.fetch", 1, 9)),
@@ -2538,10 +2537,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // A call inside a Shared Tool names that Shared Tool's source, never
         // the caller's.
         (
-            "\nawait coral.shared.mail.remind(7);",
+            "\nawait coral.shared.mail.remind({ id: 7 });",
             vec![shared_source(
                 &["mail", "remind"],
-                "export default async function remind(id: number) {\n    return coral.providers.demo.getItem({ id });\n}",
+                "export default async function remind({ id }: { id: number }) {\n    return coral.providers.demo.getItem({ id });\n}",
             )],
             vec![
                 ("perform", at(2, 25)),
@@ -2650,7 +2649,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.private.locations.implicit(); coral.private.locations.guarded(true); coral.private.locations.boxed()",
+            "coral.private.locations.implicit(); coral.private.locations.guarded({ flag: true }); coral.private.locations.boxed()",
             vec![
                 linked_source(
                     &["locations", "implicit"],
@@ -2658,7 +2657,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ),
                 linked_source(
                     &["locations", "guarded"],
-                    "export default function guarded(flag: boolean) {\n  // a comment\n  if (!flag) return\n  /* block */ console.debug('after')\n}",
+                    "export default function guarded({ flag }: { flag: boolean }) {\n  // a comment\n  if (!flag) return\n  /* block */ console.debug('after')\n}",
                 ),
                 linked_source(
                     &["locations", "boxed"],
@@ -2668,7 +2667,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![
                 ("perform", at(1, 25)),
                 ("perform", at(1, 61)),
-                ("perform", at(1, 100)),
+                ("perform", at(1, 110)),
                 ("log", in_private_tool("locations.implicit", 1, 30)),
                 ("log", in_private_tool("locations.guarded", 4, 23)),
                 ("log", in_private_tool("locations.boxed", 5, 32)),
@@ -2691,10 +2690,10 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.private.locations.documented(`${1}`)",
+            "coral.private.locations.documented({ value: `${1}` })",
             vec![linked_source(
                 &["locations", "documented"],
-                "/** Logs one value. */\nexport default function documented(value: string) {\n  console.log(`value ${value}`, /x/g.test(value))\n}",
+                "/** Logs one value. */\nexport default function documented({ value }: { value: string }) {\n  console.log(`value ${value}`, /x/g.test(value))\n}",
             )],
             vec![
                 ("perform", at(1, 25)),
@@ -3251,7 +3250,7 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
          async function helper(label: string) {\n\
              await coral.providers.demo.second({ label });\n\
          }\n\
-         export default async function echo(label: string) {\n\
+         export default async function echo({ label }: { label: string }) {\n\
              await coral.providers.demo.first({ label });\n\
              await Promise.all([helper(label), Promise.resolve()]);\n\
              return label;\n\
@@ -3261,13 +3260,13 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
         &["tag", "outer"],
         "export default async function outer() {\n\
              await coral.providers.demo.before({});\n\
-             return await coral.private.tag.echo(\"z\");\n\
+             return await coral.private.tag.echo({ label: \"z\" });\n\
          }",
     );
     // A body that returns a thenable runs its `then` as the body too.
     let thenable = linked_source(
         &["tag", "thenable"],
-        "export default function thenable(label: string): any {\n\
+        "export default function thenable({ label }: { label: string }): any {\n\
              return { then(resolve: (value: string) => void) {\n\
                  coral.providers.demo.first({ label }).then(() => resolve(label));\n\
              } };\n\
@@ -3279,10 +3278,10 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
             compilation_deadline(),
             "await coral.providers.demo.top({});\n\
              const labels = await Promise.all([\n\
-                 coral.private.tag.echo(\"x\"),\n\
-                 coral.private.tag.echo(\"y\"),\n\
+                 coral.private.tag.echo({ label: \"x\" }),\n\
+                 coral.private.tag.echo({ label: \"y\" }),\n\
                  coral.private.tag.outer(),\n\
-                 coral.private.tag.thenable(\"t\"),\n\
+                 coral.private.tag.thenable({ label: \"t\" }),\n\
              ]);\n\
              await coral.providers.demo.after({});\n\
              return labels;",
@@ -3304,21 +3303,21 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
         .map(|(caller, path, arguments)| (caller.clone(), path.clone(), arguments.clone()))
         .collect::<Vec<_>>();
     calls.sort();
-    let x = Some(r#"coral.private.tag.echo["x"]"#.to_string());
-    let y = Some(r#"coral.private.tag.echo["y"]"#.to_string());
-    let z = Some(r#"coral.private.tag.echo["z"]"#.to_string());
-    let outer = Some("coral.private.tag.outer[]".to_string());
-    let thenable = Some(r#"coral.private.tag.thenable["t"]"#.to_string());
+    let x = Some(r#"coral.private.tag.echo{"label":"x"}"#.to_string());
+    let y = Some(r#"coral.private.tag.echo{"label":"y"}"#.to_string());
+    let z = Some(r#"coral.private.tag.echo{"label":"z"}"#.to_string());
+    let outer = Some("coral.private.tag.outer{}".to_string());
+    let thenable = Some(r#"coral.private.tag.thenable{"label":"t"}"#.to_string());
     let call = |caller: &Caller, path: &str, arguments: &str| {
         (caller.clone(), path.to_string(), arguments.to_string())
     };
     let mut expected = vec![
         call(&None, "coral.providers.demo.init", "{}"),
         call(&None, "coral.providers.demo.top", "{}"),
-        call(&None, "coral.private.tag.echo", r#"["x"]"#),
-        call(&None, "coral.private.tag.echo", r#"["y"]"#),
-        call(&None, "coral.private.tag.outer", "[]"),
-        call(&None, "coral.private.tag.thenable", r#"["t"]"#),
+        call(&None, "coral.private.tag.echo", r#"{"label":"x"}"#),
+        call(&None, "coral.private.tag.echo", r#"{"label":"y"}"#),
+        call(&None, "coral.private.tag.outer", "{}"),
+        call(&None, "coral.private.tag.thenable", r#"{"label":"t"}"#),
         call(&thenable, "coral.providers.demo.first", r#"{"label":"t"}"#),
         call(&None, "coral.providers.demo.after", "{}"),
         call(&x, "coral.providers.demo.first", r#"{"label":"x"}"#),
@@ -3326,10 +3325,279 @@ fn a_bodys_tool_calls_reach_the_call_it_runs_for() {
         call(&y, "coral.providers.demo.first", r#"{"label":"y"}"#),
         call(&y, "coral.providers.demo.second", r#"{"label":"y"}"#),
         call(&outer, "coral.providers.demo.before", "{}"),
-        call(&outer, "coral.private.tag.echo", r#"["z"]"#),
+        call(&outer, "coral.private.tag.echo", r#"{"label":"z"}"#),
         call(&z, "coral.providers.demo.first", r#"{"label":"z"}"#),
         call(&z, "coral.providers.demo.second", r#"{"label":"z"}"#),
     ];
     expected.sort();
     assert_eq!(calls, expected);
+}
+
+/// Permits each performed call at once and records the arguments of each
+/// call that reaches it.
+#[derive(Default)]
+struct DataHost {
+    performed: Mutex<Vec<String>>,
+    invoked: Mutex<Vec<String>>,
+}
+
+impl ProgramHost for DataHost {
+    fn perform(
+        self: Arc<Self>,
+        _call_path: String,
+        arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::PermitFuture {
+        self.performed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(arguments_json);
+        support::permit_at_once(support::host_calls(self))
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        self.invoked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(arguments_json);
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+}
+
+// Catches: a Private or Shared Tool call that converts what is not JSON data
+// instead of refusing it (a Date becoming a string, a Map `{}`, NaN `null`, a
+// function vanishing), on either side of the call; a refusal that does not
+// say where; a call with positional or non-object arguments, or arguments
+// that are not data, that reaches the host; a body that receives anything
+// but its one object; or a Provider call that cannot encode its arguments
+// and does not say where.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of every value and argument shape the data rule covers"
+)]
+fn a_performed_call_takes_one_object_and_crosses_only_data() {
+    const DATE: &str = "it is a Date; use a string, such as date.toISOString()";
+    let make = linked_source(
+        &["data", "make"],
+        r#"class Box { value = 1 }
+export default async function make({ kind }: { kind: string }): Promise<any> {
+  const cycle: any = {};
+  cycle.self = cycle;
+  const values: Record<string, unknown> = {
+    date: new Date(0),
+    map: new Map([["a", 1]]),
+    set: new Set([1]),
+    nan: NaN,
+    infinity: -Infinity,
+    bigint: BigInt(1),
+    symbol: Symbol("s"),
+    function: () => 1,
+    cycle,
+    instance: new Box(),
+    nested: { items: [1, { at: new Date(0) }] },
+    oddKey: { "a b": NaN },
+    absent: { kept: 1, dropped: undefined, list: [undefined] },
+  };
+  return values[kind];
+}"#,
+    );
+    let echo = linked_source(
+        &["data", "echo"],
+        "export default async (input: any): Promise<any> => input.value;",
+    );
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .compile_linked(
+            compilation_deadline(),
+            r#"const outcome = async (call: () => Promise<unknown>) => {
+  try { return { value: await call() }; }
+  catch (error: any) { return { code: error.code, message: error.message }; }
+};
+const tools: any = coral.private.data;
+const results: unknown[] = [];
+for (const kind of ["date", "map", "set", "nan", "infinity", "bigint", "symbol", "function", "cycle", "instance", "nested", "oddKey", "absent"]) {
+  results.push(await outcome(() => tools.make({ kind })));
+}
+class Box { value = 1 }
+const cycle: any = {};
+cycle.self = cycle;
+const args: unknown[] = [];
+for (const value of [new Date(0), new Map(), NaN, Infinity, BigInt(1), Symbol("s"), () => 1, cycle, new Box(), { items: [1, { at: new Date(0) }] }, { kept: 1, dropped: undefined, list: [undefined] }]) {
+  args.push(await outcome(() => tools.echo({ value })));
+}
+const shapes: unknown[] = [];
+for (const call of [() => tools.echo(), () => tools.echo("x"), () => tools.echo(null), () => tools.echo([1]), () => tools.echo(undefined), () => tools.echo({}, {}), () => tools.echo(new Date(0))]) {
+  shapes.push(await outcome(call));
+}
+const provider = [
+  await outcome(() => (coral.providers as any).demo.take({ n: BigInt(1) })),
+  await outcome(() => (coral.providers as any).demo.take({}, {})),
+];
+return { results, args, shapes, provider };"#,
+            &[make, echo],
+        )
+        .expect("compile the Program");
+    let host = Arc::new(DataHost::default());
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("execute the Program");
+
+    let input = |field: &str, reason: &str| {
+        let message = if field.is_empty() {
+            format!("Tool arguments are invalid: {reason}")
+        } else {
+            format!("Tool arguments are invalid at `{field}`: {reason}")
+        };
+        serde_json::json!({ "code": "invalid_input", "message": message })
+    };
+    let result = |field: &str, reason: &str| {
+        serde_json::json!({
+            "code": "invalid_tool_result",
+            "message": format!("Tool result is not a JSON value at `{field}`: {reason}"),
+        })
+    };
+    let value = |value: serde_json::Value| serde_json::json!({ "value": value });
+    let expected = serde_json::json!({
+        "results": [
+            result("result", DATE),
+            result("result", "it is a Map; use an object, such as Object.fromEntries(map)"),
+            result("result", "it is a Set; use an array, such as [...set]"),
+            result("result", "it is NaN; use a finite number or null"),
+            result("result", "it is -Infinity; use a finite number or null"),
+            result("result", "it is a bigint; use a number or a string"),
+            result("result", "it is a symbol; use a string"),
+            result("result", "it is a function; use data"),
+            result("result.self", "it contains itself"),
+            result("result", "it is an instance of class Box; use a plain object"),
+            result("result.items[1].at", DATE),
+            result(r#"result["a b"]"#, "it is NaN; use a finite number or null"),
+            value(serde_json::json!({ "kept": 1, "list": [null] })),
+        ],
+        "args": [
+            input("value", DATE),
+            input("value", "it is a Map; use an object, such as Object.fromEntries(map)"),
+            input("value", "it is NaN; use a finite number or null"),
+            input("value", "it is Infinity; use a finite number or null"),
+            input("value", "it is a bigint; use a number or a string"),
+            input("value", "it is a symbol; use a string"),
+            input("value", "it is a function; use data"),
+            input("value.self", "it contains itself"),
+            input("value", "it is an instance of class Box; use a plain object"),
+            input("value.items[1].at", DATE),
+            value(serde_json::json!({ "kept": 1, "list": [null] })),
+        ],
+        "shapes": [
+            value(serde_json::Value::Null),
+            input("", "pass one object, not a string"),
+            input("", "pass one object, not null"),
+            input("", "pass one object, not an array"),
+            input("", "pass one object, not undefined"),
+            input("", "pass one object, not 2 arguments"),
+            input("", DATE),
+        ],
+        "provider": [
+            input("n", "it is a bigint; use a number or a string"),
+            input("", "pass one object, not 2 arguments"),
+        ],
+    });
+    let actual: serde_json::Value =
+        serde_json::from_str(output.final_value_json().expect("a Final Value")).expect("JSON");
+    assert_eq!(actual, expected);
+
+    // A refused argument never reaches the host, and the body receives the
+    // one object it was called with, as data.
+    let kinds = [
+        "date", "map", "set", "nan", "infinity", "bigint", "symbol", "function", "cycle",
+        "instance", "nested", "oddKey", "absent",
+    ];
+    let mut performed = kinds
+        .iter()
+        .map(|kind| format!(r#"{{"kind":"{kind}"}}"#))
+        .collect::<Vec<_>>();
+    performed.push(r#"{"value":{"kept":1,"list":[null]}}"#.to_string());
+    performed.push("{}".to_string());
+    assert_eq!(*host.performed.lock().expect("performed calls"), performed);
+    assert!(host.invoked.lock().expect("invoked calls").is_empty());
+}
+
+// Catches: a Program that links a stored Private or Shared Tool saved before
+// every Tool took one object, and is accepted, so the tool fails only when
+// called; or a refusal that does not name the tool, the parameter's
+// location, and what its author does next.
+#[test]
+fn linking_refuses_a_stored_tool_that_does_not_take_one_object() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    for (linked, refusal) in [
+        (
+            linked_source(
+                &["people", "greet"],
+                "export default function greet(name: string): string { return name; }",
+            ),
+            "Private Tool coral.private.people.greet:1:31: `input` has type string; take one \
+             object instead, such as `({ name }: { name: string })`. Save it again with \
+             coral.updateTool.",
+        ),
+        (
+            linked_source(
+                &["math", "add"],
+                "export default (a: number,\n  b: number): number => a + b;",
+            ),
+            "Private Tool coral.private.math.add:2:3: it takes 2 parameters; take one object \
+             instead, such as `({ name }: { name: string })`. Save it again with \
+             coral.updateTool.",
+        ),
+        (
+            shared_source(
+                &["mail", "remind"],
+                "export default async (...names: string[]) => names.length;",
+            ),
+            "Shared Tool coral.shared.mail.remind:1:23: `input` is a rest parameter; take one \
+             object instead, such as `({ name }: { name: string })`. A Workspace Owner must \
+             publish a new revision.",
+        ),
+    ] {
+        let refused = compiler.compile_linked(compilation_deadline(), "return 1;", &[linked]);
+        assert!(
+            matches!(&refused, Err(coral_v8::Error::InvalidAuthoredTool(message)) if message == refusal),
+            "{refusal}: {:?}",
+            refused.err()
+        );
+    }
+    // Neither an untyped parameter nor no parameter at all is refused.
+    for source in [
+        "export default async function greet(input) { return input; }",
+        "export default async () => 1;",
+    ] {
+        compiler
+            .compile_linked(
+                compilation_deadline(),
+                "return 1;",
+                &[linked_source(&["people", "greet"], source)],
+            )
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+    }
 }

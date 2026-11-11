@@ -74,11 +74,7 @@ async fn private_tool_save_publishes_exact_authoring_record_and_event() {
     else {
         panic!("declaration fields must be ready");
     };
-    assert!(
-        fields
-            .iter()
-            .any(|field| field.path() == "input.input.value")
-    );
+    assert!(fields.iter().any(|field| field.path() == "input.value"));
     let events = fixture
         .private_tools
         .list_lifecycle_events(&principal, &workspace_id)
@@ -475,7 +471,7 @@ async fn entry_reads_return_current_private_tools_with_revision_and_declaration_
             read.declaration_fields()
                 .expect("ready declaration fields")
                 .iter()
-                .any(|field| field.path() == "input.input.value")
+                .any(|field| field.path() == "input.value")
         );
     }
 
@@ -1407,10 +1403,16 @@ async fn private_tool_authoring_keeps_semantic_advice_but_rejects_unresolved_pub
     );
 }
 
-// Catches: a save that accepts a Private Tool whose arguments or result
-// cannot cross a Tool call as data, anywhere in its declaration, or that
-// refuses one whose types say nothing about the data (`any`, `unknown`).
+// Catches: a save that accepts a Private Tool that does not take one object,
+// or whose argument or result cannot cross a Tool call as data, anywhere in
+// its declaration; a refusal whose path does not start at `input` whatever
+// the parameter is called; or one that refuses a Tool whose types say nothing
+// about the data (`any`, `unknown`), that is optional, or takes nothing.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of every parameter shape and value the data rule covers"
+)]
 async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
     let fixture = PrivateToolTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:data-only-author").await;
@@ -1425,7 +1427,35 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
     for (source, reason) in [
         (
             "export default (callback: () => number) => callback();",
+            "`input` has type () => number; take one object instead",
+        ),
+        (
+            "export default ({ callback }: { callback: () => number }) => callback();",
             "`input.callback` is a function",
+        ),
+        (
+            "export default (input: { at: Date }) => input.at.getTime();",
+            "`input.at` is a Date",
+        ),
+        (
+            "export default (name: string) => name;",
+            "`input` has type string; take one object instead",
+        ),
+        (
+            "export default (ids: string[]) => ids.length;",
+            "`input` has type string[]; take one object instead",
+        ),
+        (
+            "export default (input: { a: string } | string) => input;",
+            "`input` has type string | { a: string; }; take one object instead",
+        ),
+        (
+            "export default (a: { x: number }, b: { y: number }) => a.x + b.y;",
+            "it takes 2 parameters; take one object instead",
+        ),
+        (
+            "export default (...rest: { x: number }[]) => rest.length;",
+            "`input` is a rest parameter; take one object instead",
         ),
         ("export default () => () => 1;", "`result` is a function"),
         (
@@ -1441,11 +1471,11 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
             "`result` is a Map",
         ),
         (
-            "export default (values: Set<string>[]) => values.length;",
+            "export default ({ values }: { values: Set<string>[] }) => values.length;",
             "`input.values[]` is a Set",
         ),
         (
-            "export default (value: bigint) => Number(value);",
+            "export default (args: { value: bigint }) => Number(args.value);",
             "`input.value` is a bigint",
         ),
         (
@@ -1479,6 +1509,10 @@ async fn a_save_refuses_a_declaration_whose_inputs_or_result_are_not_data() {
         "export default (input: unknown): unknown => input;",
         "export default async (input: { name: string; tags: readonly string[]; at?: [number, string | null] }): Promise<Record<string, boolean>> => ({ [input.name]: true });",
         "export default async (): Promise<void> => {};",
+        "export default async (input?: { limit: number }): Promise<number> => input?.limit ?? 0;",
+        "export default async ({ id }: { id: string }): Promise<string> => id;",
+        "export default async (input: object): Promise<number> => Object.keys(input).length;",
+        "export default async <T extends { id: string }>(input: T): Promise<string> => input.id;",
     ] {
         fixture
             .private_tools

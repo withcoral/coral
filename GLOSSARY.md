@@ -324,8 +324,8 @@ are called: `coral.providers.<provider-namespace>` for an Owner-created Provider
 Provider. _Avoid_: namespace, prefix
 
 **Tool**: A named callable that a Program calls with data and that returns data: a Provider Tool, a Private Tool, or
-a Shared Tool. Every Tool call is asynchronous, takes and returns only data, and is one Tool Invocation with a Tool
-Access State. _Avoid_: Function, operation, action
+a Shared Tool. Every Tool call is asynchronous, takes one object of data and returns data, and is one Tool Invocation
+with a Tool Access State. Data is what JSON holds: `null`, booleans, finite numbers, strings, arrays and plain objects. _Avoid_: Function, operation, action
 
 **Provider Tool**: A single callable action exposed by an Upstream Service, or by Coral for the Built-in Provider,
 through a Provider and made available by Coral.

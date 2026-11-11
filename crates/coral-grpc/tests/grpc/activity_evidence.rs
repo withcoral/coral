@@ -1594,7 +1594,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
                 coral_tools::PrivateToolPath::parse("report.forecast").unwrap(),
                 coral_tools::AuthoredToolDescription::parse("Forecast one city").unwrap(),
                 coral_tools::AuthoredToolSource::parse(
-                    "export default async function forecast(city: string) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
+                    "export default async function forecast({ city }: { city: string }) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
                 )
                 .unwrap(),
             ),
@@ -1603,7 +1603,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .unwrap();
     let run = start(
         &f,
-        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast(\"Oslo\");\nawait coral.providers.evidence.read({ body: {} });",
+        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast({ city: \"Oslo\" });\nawait coral.providers.evidence.read({ body: {} });",
     )
     .await;
     let detail = terminal(&f, &run).await;
