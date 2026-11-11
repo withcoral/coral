@@ -484,62 +484,38 @@ impl LinkedSavedFunctionSource {
     }
 }
 
-/// The Call Paths one Saved Function module or Program body names
-/// directly, as typed preparation and Program Admission need them.
+/// One source for [`ProgramCompiler::analyze`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SavedFunctionCallPaths {
-    functions: Vec<SavedFunctionReference>,
-    tools: ToolReferences,
+pub enum AnalyzedSource {
+    /// A Program body.
+    Program(String),
+    /// A Saved Function module.
+    SavedFunction(String),
 }
 
-impl SavedFunctionCallPaths {
-    /// Returns the directly named `coral.functions` paths.
+/// What one Program body or Saved Function module names directly: the
+/// Saved Functions that link or type it, and the Tools it may call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceReferences {
+    functions: Vec<SavedFunctionReference>,
+    tool_call_paths: Vec<String>,
+}
+
+impl SourceReferences {
+    /// Returns the directly named `coral.functions` paths, in path order.
     #[must_use]
     pub fn functions(&self) -> &[SavedFunctionReference] {
         &self.functions
     }
 
-    /// Returns the literal `coral.providers` and `coral.workspace` chains.
+    /// Returns every prefix of a literal `coral.providers` or
+    /// `coral.workspace` chain that could be a Tool Call Path, such as
+    /// `coral.providers.github.repos.get`, so `get.call(...)` still names
+    /// `get`. Aliased roots are not followed.
     #[must_use]
-    pub const fn tools(&self) -> &ToolReferences {
-        &self.tools
+    pub fn tool_call_paths(&self) -> &[String] {
+        &self.tool_call_paths
     }
-}
-
-/// The literal `coral.providers` and `coral.workspace` chains one source
-/// names. Aliased roots are not followed.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolReferences {
-    call_paths: Vec<String>,
-    chains: Vec<ToolChain>,
-}
-
-impl ToolReferences {
-    /// Returns every chain prefix that could be a Tool Call Path, such
-    /// as `coral.providers.github.repos.get`, so `get.call(...)` still names
-    /// `get`.
-    #[must_use]
-    pub fn call_paths(&self) -> &[String] {
-        &self.call_paths
-    }
-
-    fn chains_json(&self) -> Result<String, Error> {
-        serde_json::to_string(&self.chains)
-            .map_err(|error| Error::CompilerProtocol(error.to_string()))
-    }
-}
-
-/// One literal chain, relative to `coral`, where it starts in the source, and
-/// whether it is called.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct ToolChain {
-    segments: Vec<String>,
-    start: u64,
-    called: bool,
-    /// The one-based authored line and column where it starts.
-    line: u64,
-    column: u64,
 }
 
 /// A called literal `coral.providers` or `coral.workspace` chain that names
@@ -607,14 +583,8 @@ impl CallableDeclaration {
 #[serde(rename_all = "camelCase")]
 pub struct CoralDeclarations {
     declaration_max_bytes: usize,
-    tools: Option<TypedTools>,
+    tools: Option<Vec<CallableDeclaration>>,
     functions: Option<Vec<CallableDeclaration>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct TypedTools {
-    chains: Vec<ToolChain>,
-    declarations: Vec<CallableDeclaration>,
 }
 
 impl CoralDeclarations {
@@ -630,19 +600,11 @@ impl CoralDeclarations {
     }
 
     /// Types `coral.providers` and `coral.workspace` from the Tools the
-    /// caller can call. `references` are what
-    /// [`ProgramCompiler::saved_function_call_paths`] found in the same
-    /// source.
+    /// caller can call, such as those of the
+    /// [`SourceReferences::tool_call_paths`] that the source names.
     #[must_use]
-    pub fn with_tools(
-        mut self,
-        references: &ToolReferences,
-        declarations: Vec<CallableDeclaration>,
-    ) -> Self {
-        self.tools = Some(TypedTools {
-            chains: references.chains.clone(),
-            declarations,
-        });
+    pub fn with_tools(mut self, tools: Vec<CallableDeclaration>) -> Self {
+        self.tools = Some(tools);
         self
     }
 

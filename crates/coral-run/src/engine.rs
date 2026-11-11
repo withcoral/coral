@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
-use coral_run_executor::{CompileError, CompilerClient, Diagnostics, time_left};
+use coral_run_executor::{AnalysisError, CompileError, CompilerClient, Diagnostics, time_left};
 use coral_v8::CompileFailure;
 
 use crate::execution::ExecutionStop;
@@ -46,72 +46,81 @@ pub(crate) struct SavedFunctionReference {
     pub(crate) column: u64,
 }
 
-/// What one Program body names: the Saved Functions admission links and,
-/// from an engine that finds them, the Tool chains admission checks.
-pub(crate) struct ProgramReferences {
+/// One source admission analyzes.
+#[derive(Clone, Debug)]
+pub(crate) enum AdmissionSource {
+    /// The submitted Program body.
+    Program(String),
+    /// One Saved Function module of the closure.
+    SavedFunction {
+        path: SavedFunctionPath,
+        source: String,
+    },
+}
+
+impl AdmissionSource {
+    /// How a rejection names the source.
+    fn name(&self) -> String {
+        source_name(match self {
+            Self::Program(_) => None,
+            Self::SavedFunction { path, .. } => Some(path),
+        })
+    }
+}
+
+/// How a rejection names the Program, or the Saved Function at `path`.
+pub(crate) fn source_name(path: Option<&SavedFunctionPath>) -> String {
+    path.map_or_else(
+        || "Program".to_string(),
+        |path| format!("Saved Function coral.functions.{}", path.as_str()),
+    )
+}
+
+/// What one source names: the Saved Functions admission links and the
+/// Tool Call Paths it checks.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AdmissionReferences {
     pub(crate) functions: Vec<SavedFunctionReference>,
-    pub(crate) tools: Option<coral_v8::ToolReferences>,
+    pub(crate) tool_call_paths: Vec<String>,
+}
+
+/// Why an engine compiled no package.
+#[derive(Debug)]
+pub(crate) enum PackageFailure {
+    /// The Program calls these Tools, which name nothing the caller can call.
+    UnknownTools(Vec<coral_v8::UnknownToolCall>),
+    /// Any other failure.
+    Compile(CompileFailure),
+}
+
+impl From<CompileFailure> for PackageFailure {
+    fn from(failure: CompileFailure) -> Self {
+        Self::Compile(failure)
+    }
 }
 
 pub(crate) trait ProgramEngine: Send + Sync {
-    fn program_saved_function_references(
+    /// What each source names: one answer per source, in the order of
+    /// `sources`. The first source that fails stops the analysis, and its
+    /// failure names the source. An engine that finds nothing names nothing,
+    /// and admission links and checks nothing.
+    fn analyze(
         &self,
         _deadline: Instant,
-        _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        Ok(Vec::new())
+        sources: &[AdmissionSource],
+    ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
+        Ok(vec![AdmissionReferences::default(); sources.len()])
     }
 
-    /// The Saved Functions and Tools one Program body names, from one
-    /// analysis. An engine that finds no Tool chains names its Saved
-    /// Functions alone, and admission checks no Call Path.
-    fn program_references(
-        &self,
-        deadline: Instant,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        Ok(ProgramReferences {
-            functions: self.program_saved_function_references(deadline, source)?,
-            tools: None,
-        })
-    }
-
-    /// The called chains of `tools` that name none of the `callable`
-    /// Call Paths.
-    fn unknown_tool_calls(
-        &self,
-        _deadline: Instant,
-        _tools: &coral_v8::ToolReferences,
-        _callable: &[String],
-    ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
-        Ok(Vec::new())
-    }
-
-    fn saved_function_dependency_references(
-        &self,
-        _deadline: Instant,
-        _path: &SavedFunctionPath,
-        _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        Ok(Vec::new())
-    }
-
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
-
-    fn compile_with_saved_functions(
+    /// `source` lowered with the Saved Functions it links, checked first
+    /// against the `callable` Call Paths when there are any.
+    fn compile(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, CompileFailure> {
-        if linked.is_empty() {
-            self.compile(deadline, source)
-        } else {
-            Err(CompileFailure::Rejected(
-                "scripted Program compiler does not support Saved Functions".to_string(),
-            ))
-        }
-    }
+        callable: Option<&[String]>,
+    ) -> Result<ProgramPackage, PackageFailure>;
 
     fn execute(
         &self,
@@ -165,61 +174,52 @@ impl V8ProgramEngine {
 }
 
 impl ProgramEngine for V8ProgramEngine {
-    fn program_references(
+    fn analyze(
         &self,
         deadline: Instant,
-        source: &str,
-    ) -> Result<ProgramReferences, CompileFailure> {
-        let source_name = "Program";
-        let named = self
-            .compiler
-            .program_references(time_left(deadline), source)
-            .map_err(|error| compile_failure_for_source(error, source_name))?;
-        Ok(ProgramReferences {
-            functions: parse_saved_function_references(named.functions().to_vec(), source_name)?,
-            tools: Some(named.tools().clone()),
-        })
-    }
-
-    fn unknown_tool_calls(
-        &self,
-        deadline: Instant,
-        tools: &coral_v8::ToolReferences,
-        callable: &[String],
-    ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
-        Ok(self
-            .compiler
-            .unknown_tool_calls(time_left(deadline), tools, callable)?)
-    }
-
-    fn saved_function_dependency_references(
-        &self,
-        deadline: Instant,
-        path: &SavedFunctionPath,
-        source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        let source_name = format!("Saved Function coral.functions.{}", path.as_str());
+        sources: &[AdmissionSource],
+    ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
+        let analyzed = sources
+            .iter()
+            .map(|source| match source {
+                AdmissionSource::Program(body) => coral_v8::AnalyzedSource::Program(body.clone()),
+                AdmissionSource::SavedFunction { source, .. } => {
+                    coral_v8::AnalyzedSource::SavedFunction(source.clone())
+                }
+            })
+            .collect::<Vec<_>>();
         let references = self
             .compiler
-            .dependency_references(time_left(deadline), source)
-            .map_err(|error| compile_failure_for_source(error, &source_name))?;
-        Ok(parse_saved_function_references(references, &source_name)?)
+            .analyze(time_left(deadline), &analyzed)
+            .map_err(|AnalysisError { index, error }| match sources.get(index) {
+                Some(source) => compile_failure_for_source(error, &source.name()),
+                None => CompileFailure::Failed("compiler_protocol"),
+            })?;
+        if references.len() != sources.len() {
+            return Err(CompileFailure::Failed("compiler_protocol"));
+        }
+        sources
+            .iter()
+            .zip(references)
+            .map(|(source, references)| {
+                Ok(AdmissionReferences {
+                    functions: parse_saved_function_references(
+                        references.functions().to_vec(),
+                        &source.name(),
+                    )?,
+                    tool_call_paths: references.tool_call_paths().to_vec(),
+                })
+            })
+            .collect()
     }
 
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        let compiled = self.compiler.compile(time_left(deadline), source, &[])?;
-        package_from_compiled(&compiled)
-    }
-
-    fn compile_with_saved_functions(
+    fn compile(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, CompileFailure> {
-        if linked.is_empty() {
-            return self.compile(deadline, source);
-        }
+        callable: Option<&[String]>,
+    ) -> Result<ProgramPackage, PackageFailure> {
         let sources = linked
             .iter()
             .map(|snapshot| {
@@ -231,8 +231,14 @@ impl ProgramEngine for V8ProgramEngine {
             .collect::<Vec<_>>();
         let compiled = self
             .compiler
-            .compile(time_left(deadline), source, &sources)?;
-        package_from_compiled(&compiled)
+            .compile(time_left(deadline), source, &sources, callable)
+            .map_err(|error| match error {
+                CompileError::Diagnostics(Diagnostics::UnknownTools(calls)) => {
+                    PackageFailure::UnknownTools(calls)
+                }
+                other => PackageFailure::Compile(other.into()),
+            })?;
+        Ok(package_from_compiled(&compiled)?)
     }
 
     fn execute(

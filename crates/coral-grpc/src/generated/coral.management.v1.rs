@@ -15197,12 +15197,10 @@ pub enum UsageSendBlock {
     None = 1,
     /// `DO_NOT_TRACK` is set.
     DoNotTrack = 2,
-    /// `CORAL_TELEMETRY` is `0` or `false`.
-    CoralTelemetry = 3,
-    /// `CI` is set.
-    Ci = 4,
+    /// `CORAL_DISABLE_USAGE_DATA` is set.
+    CoralDisableUsageData = 3,
     /// A source or development build.
-    SourceBuild = 5,
+    SourceBuild = 4,
 }
 impl UsageSendBlock {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -15214,8 +15212,7 @@ impl UsageSendBlock {
             Self::Unspecified => "USAGE_SEND_BLOCK_UNSPECIFIED",
             Self::None => "USAGE_SEND_BLOCK_NONE",
             Self::DoNotTrack => "USAGE_SEND_BLOCK_DO_NOT_TRACK",
-            Self::CoralTelemetry => "USAGE_SEND_BLOCK_CORAL_TELEMETRY",
-            Self::Ci => "USAGE_SEND_BLOCK_CI",
+            Self::CoralDisableUsageData => "USAGE_SEND_BLOCK_CORAL_DISABLE_USAGE_DATA",
             Self::SourceBuild => "USAGE_SEND_BLOCK_SOURCE_BUILD",
         }
     }
@@ -15225,8 +15222,9 @@ impl UsageSendBlock {
             "USAGE_SEND_BLOCK_UNSPECIFIED" => Some(Self::Unspecified),
             "USAGE_SEND_BLOCK_NONE" => Some(Self::None),
             "USAGE_SEND_BLOCK_DO_NOT_TRACK" => Some(Self::DoNotTrack),
-            "USAGE_SEND_BLOCK_CORAL_TELEMETRY" => Some(Self::CoralTelemetry),
-            "USAGE_SEND_BLOCK_CI" => Some(Self::Ci),
+            "USAGE_SEND_BLOCK_CORAL_DISABLE_USAGE_DATA" => {
+                Some(Self::CoralDisableUsageData)
+            }
             "USAGE_SEND_BLOCK_SOURCE_BUILD" => Some(Self::SourceBuild),
             _ => None,
         }

@@ -238,7 +238,13 @@ impl ProviderModule {
                         });
                         let requirement = match coral_upstream::discover_authorization(self.outbound_policy, validated.as_str(), &challenge, &initial_headers).await {
                             Ok(requirement) => Some(StoredRequirement::from_discovery(&requirement)),
-                            Err(coral_upstream::AuthorizationDiscoveryError::ResourceMetadataMissing) => None,
+                            // The server refused this request and named no
+                            // metadata. Well-known locations that hold none,
+                            // or refuse the same way, mean it has no OAuth.
+                            Err(
+                                coral_upstream::AuthorizationDiscoveryError::ResourceMetadataMissing
+                                | coral_upstream::AuthorizationDiscoveryError::ResourceMetadataUnauthorized,
+                            ) => None,
                             Err(error) => return Err(Error::AuthorizationDiscovery(error.code())),
                         };
                         return self

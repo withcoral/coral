@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.6.0](https://github.com/withcoral/coral/compare/v1.5.0...v1.6.0) (2026-11-10)
+
+
+### Features
+
+* **mcp:** save and delete Saved Functions from Programs ([#2942](https://github.com/withcoral/coral/issues/2942)) ([0ea2de3](https://github.com/withcoral/coral/commit/0ea2de360a6ac42f1e6429045afd49362047f5f2))
+* **mcp:** serve MCP requests without sessions so any Coral Instance answers ([#2719](https://github.com/withcoral/coral/issues/2719)) ([36a8521](https://github.com/withcoral/coral/commit/36a85215503d7118eb3f3aab851d9da2da055b36))
+* **mcp:** tell the assistant how to hand a Run to its user and show the link while it waits ([#2846](https://github.com/withcoral/coral/issues/2846)) ([fc6ba03](https://github.com/withcoral/coral/commit/fc6ba03147888ffb25ddf1f8948fc3846637ff47))
+* **run:** add coral run-executor, which dials Coral and opens its pull stream ([#2932](https://github.com/withcoral/coral/issues/2932)) ([3b3aed7](https://github.com/withcoral/coral/commit/3b3aed7686002082d514628e5694371ac7b6f74c)), closes [#2891](https://github.com/withcoral/coral/issues/2891)
+* **run:** add the cpu_limit_exceeded failure code ([#2923](https://github.com/withcoral/coral/issues/2923)) ([ce0bb59](https://github.com/withcoral/coral/commit/ce0bb5917ff70c660eacf74d573790062e438165)), closes [#2887](https://github.com/withcoral/coral/issues/2887)
+* **run:** enforce the Run CPU Budget ([#2929](https://github.com/withcoral/coral/issues/2929)) ([f4ebd32](https://github.com/withcoral/coral/commit/f4ebd32db37ca7cf317f0ec5b398ed931c1d94d6)), closes [#2888](https://github.com/withcoral/coral/issues/2888)
+* **run:** listen for Run Executors and hold their pull streams ([#2954](https://github.com/withcoral/coral/issues/2954)) ([1f72a0e](https://github.com/withcoral/coral/commit/1f72a0e1c2e4b936a2201480a5490163d4859a85)), closes [#2892](https://github.com/withcoral/coral/issues/2892)
+* **search:** name each caller's namespaces in exec and let provider take several ([#2959](https://github.com/withcoral/coral/issues/2959)) ([92a907c](https://github.com/withcoral/coral/commit/92a907c8ea1861cdb2d32658710ed29aa1f5b01f))
+* **ui:** add the usage data page ([#2997](https://github.com/withcoral/coral/issues/2997)) ([3a7b68e](https://github.com/withcoral/coral/commit/3a7b68e057d500ae11b69a7bce17fb14d87b9347))
+* **ui:** drop providers with no matching tools from a filtered tools table ([#2943](https://github.com/withcoral/coral/issues/2943)) ([99c700f](https://github.com/withcoral/coral/commit/99c700fb38618ddbf046d121af9cbb85b79741ae))
+* **ui:** show tool usage on the provider page and filter tools by policy ([#2940](https://github.com/withcoral/coral/issues/2940)) ([9840bc4](https://github.com/withcoral/coral/commit/9840bc40daf548686e27d56ec14141f2e404825e))
+* **usage-data:** send one anonymous usage report a day ([#3001](https://github.com/withcoral/coral/issues/3001)) ([c51bece](https://github.com/withcoral/coral/commit/c51bece9135510b57209759e6d40ab624722097e))
+
+
+### Bug Fixes
+
+* **desktop:** keep a Quit asked during an update, and let Quit work after a failed update stop ([#2990](https://github.com/withcoral/coral/issues/2990)) ([87d37fa](https://github.com/withcoral/coral/commit/87d37faddf3245eb487b9dd75adf1ce855c51d85))
+* **docs:** correct the configuration reference and add the missing settings ([#3017](https://github.com/withcoral/coral/issues/3017)) ([b2c8ad6](https://github.com/withcoral/coral/commit/b2c8ad66c64e507d7e42fd15f6e4b950e091b337))
+* **docs:** remove the benchmarks link from the docs footer ([#3007](https://github.com/withcoral/coral/issues/3007)) ([d66dc17](https://github.com/withcoral/coral/commit/d66dc1743032a4b67a2dca0247d78cc2fff29281))
+* **mcp:** balance the required-action card and mark its kind with an icon ([#2936](https://github.com/withcoral/coral/issues/2936)) ([d8c9ecf](https://github.com/withcoral/coral/commit/d8c9ecf41b249b05e48b782cd23262dcc7080871))
+* **providers:** accept any number of OAuth scopes and explain sign-in discovery failures ([#2988](https://github.com/withcoral/coral/issues/2988)) ([20d3ac7](https://github.com/withcoral/coral/commit/20d3ac730195ec02bec4e773b825a7ec4b82746c))
+* **providers:** ask for each tool's server and show only blocking reasons ([#2879](https://github.com/withcoral/coral/issues/2879)) ([3a0f172](https://github.com/withcoral/coral/commit/3a0f172490e3741bcd8393b420f05e4f4c4a4ce3))
+* **providers:** read OAuth token responses without leaving copies in freed memory ([#2995](https://github.com/withcoral/coral/issues/2995)) ([a479cb3](https://github.com/withcoral/coral/commit/a479cb3ffda99db09682c0e90fc200069137596a))
+* **run:** count an approval by its decision time, not the clock ([#2924](https://github.com/withcoral/coral/issues/2924)) ([5f4806e](https://github.com/withcoral/coral/commit/5f4806e32cd3cb9567f30d3a5be9a27423d6c44b)), closes [#2889](https://github.com/withcoral/coral/issues/2889)
+* **run:** end an MCP tool call refused with 401 or 403 as a catchable Tool Error ([#2991](https://github.com/withcoral/coral/issues/2991)) ([6ec4b25](https://github.com/withcoral/coral/commit/6ec4b258c3507e362b014880d018dc5b636f6724))
+* **run:** give an MCP tool call refused with 401 or 403 its own upstream_unauthorized code ([#2996](https://github.com/withcoral/coral/issues/2996)) ([1ad0b47](https://github.com/withcoral/coral/commit/1ad0b47f415f9d2d2dee88e86f6284cc3502c23f))
+* **run:** rebuild the TypeScript compiler outside a request's deadline ([#2918](https://github.com/withcoral/coral/issues/2918)) ([481392f](https://github.com/withcoral/coral/commit/481392f92a8b4ac9a5ab9375a032d572a10eff6c))
+* **ui:** clarify onboarding provider suggestions ([#2951](https://github.com/withcoral/coral/issues/2951)) ([051b11d](https://github.com/withcoral/coral/commit/051b11d9c3b8fa9b3ac80ceae9afaa79e647ad9e))
+* **ui:** link the community Slack from the help menu and docs footer ([#3006](https://github.com/withcoral/coral/issues/3006)) ([fd83765](https://github.com/withcoral/coral/commit/fd837655adc771cac114231cc1501f4cb885218d))
+* **ui:** name the role button with its role, and match combobox text without its spaces ([#2947](https://github.com/withcoral/coral/issues/2947)) ([eb424a9](https://github.com/withcoral/coral/commit/eb424a90a4463dde8afd1875ea5c7cf4fd5ea1e4))
+* **ui:** respect reduced motion in Wax and draw an empty LineChart ([#2871](https://github.com/withcoral/coral/issues/2871)) ([75ba19e](https://github.com/withcoral/coral/commit/75ba19eebfc9872687e4c956d66b0c85f0d83f7d))
+* **ui:** sign in again when Coral refuses a provider change for a lapsed sign-in ([#2992](https://github.com/withcoral/coral/issues/2992)) ([2799e50](https://github.com/withcoral/coral/commit/2799e507e0472df8e7ab979a49079b47baf59dca))
+* **usage-data:** turn off sending with CORAL_DISABLE_USAGE_DATA ([#3018](https://github.com/withcoral/coral/issues/3018)) ([206eb89](https://github.com/withcoral/coral/commit/206eb8935d593a0ee6d3f1bf5fda40e983e61d6c))
+
+
+### Performance Improvements
+
+* **activity:** index invocation history and pending actions ([#2993](https://github.com/withcoral/coral/issues/2993)) ([7925641](https://github.com/withcoral/coral/commit/7925641d90b08b0f746c782e2e4a5f7a053e7395))
+* **activity:** measure a Task's context by each child's Run key ([#2876](https://github.com/withcoral/coral/issues/2876)) ([7c41676](https://github.com/withcoral/coral/commit/7c4167631ac9c9831056839e24b42f250a0a519c))
+* **activity:** speed up activity summaries ([#2877](https://github.com/withcoral/coral/issues/2877)) ([6fe4708](https://github.com/withcoral/coral/commit/6fe47089b60696b167d6f24a1a8e5f373a464516))
+* **run:** share one warm compiler between Program Admission and Saved Function save ([#2928](https://github.com/withcoral/coral/issues/2928)) ([c537e02](https://github.com/withcoral/coral/commit/c537e02cdd7aa77dad776e4c8fdd254f59f67c07)), closes [#2890](https://github.com/withcoral/coral/issues/2890)
+
 ## [1.5.0](https://github.com/withcoral/coral/compare/v1.4.0...v1.5.0) (2026-11-04)
 
 

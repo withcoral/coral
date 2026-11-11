@@ -488,12 +488,25 @@ function referenceAnalysisProgram(source, fileName, targetName) {
   return { program, sourceFile };
 }
 
-// The Saved Functions and Tools one Program body names, from one analysis:
-// what Program Admission links and checks.
-function analyzeSavedFunctionPaths(body, fileName, targetName) {
+// One Program body's reference analysis, or undefined when it is not one
+// async-function body.
+function programReferenceAnalysis(body, fileName, targetName) {
   const wrapped = wrapProgramBody(body);
   const { program, sourceFile } = referenceAnalysisProgram(wrapped.source, fileName, targetName);
-  if (!hasExpectedProgramShape(sourceFile)) {
+  return hasExpectedProgramShape(sourceFile) ? { wrapped, program, sourceFile } : undefined;
+}
+
+// The called Tool chains of one Program body, as the running Program calls
+// them.
+function programToolChains({ wrapped, program, sourceFile }) {
+  return calledPathChains(toolReferenceChains(sourceFile, program, wrapped.authoredMappings));
+}
+
+// The Saved Functions and Tools one Program body names, from one analysis:
+// what Program Admission links and checks.
+function analyzeProgram(body, fileName, targetName) {
+  const analysis = programReferenceAnalysis(body, fileName, targetName);
+  if (analysis === undefined) {
     return {
       references: [],
       validationError: {
@@ -503,16 +516,10 @@ function analyzeSavedFunctionPaths(body, fileName, targetName) {
       },
     };
   }
-
+  const { wrapped, program, sourceFile } = analysis;
   const functions = savedFunctionPathAnalysis(sourceFile, program, wrapped.authoredMappings);
   if (functions.validationError !== undefined) return functions;
-  const chains = calledPathChains(
-    toolReferenceChains(sourceFile, program, wrapped.authoredMappings),
-  );
-  return {
-    ...functions,
-    tools: { callPaths: candidateToolPaths(chains), chains },
-  };
+  return { ...functions, chains: programToolChains(analysis) };
 }
 
 // The chains as the running Program calls them: it joins segments with
@@ -544,11 +551,6 @@ function savedFunctionDependencyAnalysis(sourceFile, program) {
     };
   }
   return savedFunctionPathAnalysis(sourceFile, program);
-}
-
-function analyzeSavedFunctionDependencies(source, fileName, targetName) {
-  const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  return savedFunctionDependencyAnalysis(sourceFile, program);
 }
 
 // The number of segments under `coral` that name a Tool's Call Root:
@@ -609,15 +611,26 @@ function candidateToolPaths(chains) {
   return [...paths].toSorted();
 }
 
+// The Tool chains one Saved Function module names.
+function savedFunctionToolChains(source, fileName, targetName) {
+  const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
+  return toolReferenceChains(sourceFile, program);
+}
+
 // The Saved Functions and Tools one Saved Function module names, from
-// one analysis: what its typed preparation needs.
-function analyzeSavedFunctionCallPaths(source, fileName, targetName) {
+// one analysis: what Program Admission links and its typed preparation
+// needs.
+function analyzeSavedFunction(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
   const dependencies = savedFunctionDependencyAnalysis(sourceFile, program);
   if (dependencies.validationError !== undefined) return dependencies;
-  const chains = toolReferenceChains(sourceFile, program);
-  return {
-    ...dependencies,
-    tools: { callPaths: candidateToolPaths(chains), chains },
-  };
+  return { ...dependencies, chains: toolReferenceChains(sourceFile, program) };
+}
+
+// One analysis as the bridge returns it: the chains stay in the compiler,
+// and only the Call Paths they could name leave it.
+function analysisResult({ chains, ...analysis }) {
+  return chains === undefined
+    ? analysis
+    : { ...analysis, toolCallPaths: candidateToolPaths(chains) };
 }

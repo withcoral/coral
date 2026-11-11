@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
   display: 'flex',
@@ -82,3 +83,8 @@ export const statCards = style({
   gap: 12,
   gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
 })
+
+// A stat's label and value, as `Stat` stacks them.
+export const loadingStat = style({ display: 'flex', flexDirection: 'column', gap: 4 })
+// As tall as the filter field: one line of its text, its padding and its border.
+export const loadingFilter = style({ ...theme.typography.body, height: 'calc(1lh + 14px)' })

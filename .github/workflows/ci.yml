@@ -86,13 +86,27 @@ jobs:
           cache-key: ci-rust
       - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
         with:
-          tool: nextest
+          tool: nextest,cargo-deny
       # make rust-checks installs Squawk from npm.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           package-manager-cache: false
       - run: make rust-checks
+
+  # Runs on every change, apps and docs included: besides the Cargo checks,
+  # it keeps the enterprise licence header out of every file outside ee/.
+  ee-boundary:
+    name: Rust / ee boundary
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # `cargo metadata` needs the toolchain, not a build cache.
+      - run: rustup show
+      - run: make ee-boundary
 
   rust-embedded-js:
     name: Rust / Embedded JS
@@ -247,7 +261,7 @@ jobs:
   # requiring the gates one by one would also pass when `changes` fails.
   required:
     name: Required
-    needs: [changes, rust, rust-embedded-js, postgres, rust-windows, reef, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance]
+    needs: [changes, rust, ee-boundary, rust-embedded-js, postgres, rust-windows, reef, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance]
     if: ${{ always() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5

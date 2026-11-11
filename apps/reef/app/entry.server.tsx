@@ -9,11 +9,19 @@ import { renderToPipeableStream } from 'react-dom/server'
 import type { EntryContext } from 'react-router'
 import { ServerRouter } from 'react-router'
 
+import { CORAL_CALL_TIMEOUT_MS } from '@/lib/coral-request.server'
 import { requestInstrumentation } from '../server-tracing.js'
 
 export const instrumentations = [requestInstrumentation]
 
-export const streamTimeout = 5_000
+// How long a streamed promise, such as the Overview's activity summary, may stay pending
+// before React Router rejects it. React Router starts this clock when it encodes the
+// loader's data, after the summary's Coral call has started its own deadline. The extra
+// second leaves room for that call's answer, or its deadline failure, to settle and be
+// encoded before this timeout fires. It is a margin, not a guarantee: a busy event loop
+// can still let this timeout win. No page renders a Suspense boundary, so
+// the timeout only bounds streamed data, never a page's first render.
+export const streamTimeout = CORAL_CALL_TIMEOUT_MS + 1_000
 
 export default function handleRequest(
   request: Request,

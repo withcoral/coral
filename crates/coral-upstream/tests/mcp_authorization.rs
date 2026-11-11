@@ -383,6 +383,77 @@ async fn well_known_fallbacks_and_protected_resource_scopes_apply_without_challe
 }
 
 #[tokio::test]
+async fn a_refused_well_known_lookup_is_told_apart_from_missing_and_unavailable_metadata() {
+    use AuthorizationDiscoveryError::{
+        ResourceMetadataMissing as Missing, ResourceMetadataUnauthorized as Unauthorized,
+        ResourceMetadataUnavailable as Unavailable,
+    };
+    let server = MockServer::start().await;
+    let mcp = format!("{}/mcp", server.uri());
+    let specific = "/.well-known/oauth-protected-resource/mcp";
+    let root = "/.well-known/oauth-protected-resource";
+    let issuer = "/.well-known/oauth-authorization-server";
+    let named = format!("{}{specific}", server.uri());
+    let answer = |at: &'static str, status: u16| {
+        Mock::given(method("GET"))
+            .and(path(at))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+    };
+    // Path-specific status, root status, whether the challenge names the
+    // path-specific location, and the outcome.
+    for (at_specific, at_root, names, expected) in [
+        (404, 410, false, Missing),
+        (401, 401, false, Unauthorized),
+        (404, 401, false, Unauthorized),
+        (401, 404, false, Unauthorized),
+        // Any other refusal still stops discovery.
+        (401, 403, false, Unavailable),
+        (403, 401, false, Unavailable),
+        // A location the challenge names is the only one asked, and it must
+        // answer.
+        (404, 401, true, Missing),
+        (401, 404, true, Unavailable),
+    ] {
+        server.reset().await;
+        answer(specific, at_specific).await;
+        answer(root, at_root).await;
+        let error = discover(&mcp, &challenge(names.then_some(named.as_str()), &[]))
+            .await
+            .expect_err("no metadata");
+        assert_eq!(
+            error, expected,
+            "{at_specific} then {at_root}, named: {names}"
+        );
+    }
+    // Setup alone reads a refusal as absence, so its diagnostic code stays.
+    assert_eq!(Unauthorized.code(), Unavailable.code());
+    // A refused path-specific location does not hide the root document.
+    let document = json!({"resource": mcp, "authorization_servers": [server.uri()]});
+    server.reset().await;
+    answer(specific, 401).await;
+    mount_json(&server, root, &document).await;
+    mount_json(
+        &server,
+        issuer,
+        &authorization_server(&server.uri(), &json!({})),
+    )
+    .await;
+    let requirement = discover(&mcp, &challenge(None, &[]))
+        .await
+        .expect("root document");
+    assert_eq!(requirement.resource(), mcp);
+    // An authorization server that refuses its own metadata stays unavailable.
+    server.reset().await;
+    mount_json(&server, root, &document).await;
+    answer(issuer, 401).await;
+    let error = discover(&mcp, &challenge(None, &[]))
+        .await
+        .expect_err("refused issuer metadata");
+    assert_eq!(error, Unavailable);
+}
+
+#[tokio::test]
 async fn issuer_paths_and_multiple_issuers_follow_the_specification_order() {
     let server = MockServer::start().await;
     let mcp = format!("{}/mcp", server.uri());

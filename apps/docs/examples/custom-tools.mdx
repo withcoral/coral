@@ -1,0 +1,298 @@
+---
+title: "Custom tools: task examples"
+description: "See how custom tools change the tokens, cost and time of real agent tasks."
+mode: "wide"
+---
+
+Coral saves the tool-calling code that an agent writes as a custom tool.
+The next agent calls that tool and does not write the code again.
+This page shows the effect on real tasks.
+
+The agent ran each task twice:
+
+- **Without custom tools.** The agent started cold, with only the provider tools (Slack, Linear, GitHub).
+- **With custom tools.** The agent could also call the custom tools that Coral saved from earlier runs.
+
+Across the 34 tasks below, custom tools gave these results:
+
+<CardGroup cols={4}>
+  <Card title="−37% tokens" icon="coins">12.2M → 7.7M</Card>
+  <Card title="−31% cost" icon="dollar-sign">&#36;9.86 → &#36;6.79</Card>
+  <Card title="−29% time" icon="timer">47 min → 33 min</Card>
+  <Card title="34 / 34 correct" icon="circle-check">Up from 33 / 34</Card>
+</CardGroup>
+
+## Example: find the pull request that fixed a Slack alarm
+
+> Around late July, Alberto raised a 'release-please failed' alarm in #engineering.
+> The workflow had broken after an earlier change consolidated the push steps, and Simon said a fix was coming.
+> Which pull request ended up fixing it?
+
+| Agent run | Total tokens | Token cost | Task time |
+|---|--:|--:|--:|
+| Without custom tools | 423,710 | &#36;0.36 | 78 s |
+| With custom tools | 173,032 | &#36;0.13 | 34 s |
+
+The agent used two custom tools.
+Each tool is a TypeScript program that calls the provider tools.
+
+### `slack.searchMessages`
+
+Finds Slack messages that match a query across the channels that the agent can read.
+
+<CodeGroup>
+
+```ts searchMessages.d.ts
+export default function searchMessages(input: {
+    query: string;
+    channels?: string[];
+    oldest?: string;
+    latest?: string;
+    limit?: number;
+    allChannels?: boolean;
+}): Promise<{
+    ok: boolean;
+    error?: string;
+    window: {
+        oldest: string;
+        latest: string;
+    };
+    channelsScanned: string[];
+    channelsNotScanned: string[];
+    skipped: {
+        channel: string;
+        error: string;
+    }[];
+    matched: number;
+    matches: {
+        channel: string;
+        channelId: string;
+        ts: string;
+        time: string;
+        author: string;
+        thread_ts?: string;
+        replies: number;
+        text: string;
+    }[];
+    note: string;
+}>;
+```
+
+```ts searchMessages.ts expandable
+export default async function searchMessages(input: { query: string; channels?: string[]; oldest?: string; latest?: string; limit?: number; allChannels?: boolean }): Promise<{
+  ok: boolean; error?: string; window: { oldest: string; latest: string };
+  channelsScanned: string[]; channelsNotScanned: string[]; skipped: { channel: string; error: string }[];
+  matched: number; matches: { channel: string; channelId: string; ts: string; time: string; author: string; thread_ts?: string; replies: number; text: string }[]; note: string;
+}> {
+  const A: any = (input as any)?.input ?? input ?? {};
+  const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const unix = (s?: unknown) => s == null || s === "" ? undefined : /^\d+(\.\d+)?$/.test(String(s)) ? Number(s) : Math.floor(Date.parse(String(s)) / 1000);
+  const listChannels = async () => {
+    const out: any[] = []; let cursor: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const r: any = await coral.providers.slack.conversationsList({ limit: 1000, types: "public_channel,private_channel", cursor });
+      if (!r?.data?.ok) throw new Error(`Slack conversations.list failed: ${r?.data?.error ?? r?.metadata?.status}`);
+      out.push(...(r.data.channels ?? [])); cursor = r.data.response_metadata?.next_cursor || undefined; if (!cursor) break;
+    }
+    return out;
+  };
+  const nameOf = async (ids: string[]) => {
+    const names: Record<string, string> = {};
+    await Promise.all(Array.from(new Set(ids.filter(Boolean))).slice(0, 20).map(async id => {
+      const u: any = await coral.providers.slack.usersInfo({ user: id });
+      if (u?.data?.ok) names[id] = u.data.user?.real_name || u.data.user?.profile?.display_name || u.data.user?.name || id;
+    }));
+    return names;
+  };
+
+  const started = Date.now(), now = Math.floor(started / 1000);
+  const oldest = unix(A.oldest ?? A.after ?? A.since) ?? now - 120 * 86400, latest = unix(A.latest ?? A.before ?? A.until);
+  const window = { oldest: new Date(oldest * 1000).toISOString(), latest: latest ? new Date(latest * 1000).toISOString() : "now" };
+  const query = String(A.query ?? A.q ?? A.text ?? "").trim();
+  const words = query.toLowerCase().split(/[^a-z0-9#@._-]+/).filter((w: string) => w.length > 1);
+  const need = words.length <= 2 ? words.length : Math.ceil(words.length * 0.6);
+  const base = { window, channelsScanned: [] as string[], channelsNotScanned: [] as string[], skipped: [] as { channel: string; error: string }[], matched: 0, matches: [] as any[] };
+  if (!words.length) return { ok: false, error: "Pass query: the words to look for.", ...base, note: "" };
+  let chans: any[];
+  try { chans = await listChannels(); } catch (e) { return { ok: false, error: msg(e), ...base, note: "" }; }
+  const wanted = (A.channels ?? A.channel ? [].concat(A.channels ?? A.channel) : []).map((c: any) => String(c).replace(/^#/, "").toLowerCase());
+  const usable = chans.filter(c => c.is_member && !(latest && c.created > latest) && !(c.is_archived && c.updated && c.updated / 1000 < oldest)
+    && (!wanted.length || wanted.includes(String(c.name).toLowerCase()) || wanted.includes(String(c.id).toLowerCase())));
+  const score = (c: any) => { const n = String(c.name).toLowerCase(), about = `${c.topic?.value ?? ""} ${c.purpose?.value ?? ""}`.toLowerCase();
+    return words.reduce((s: number, w: string) => s + (n.includes(w) ? 3 : 0) + (about.includes(w) ? 1 : 0), 0); };
+  const ranked = usable.map(c => ({ c, s: score(c) })).sort((a, b) => b.s - a.s || (b.c.updated ?? 0) - (a.c.updated ?? 0)).map(x => x.c);
+  const cap = A.allChannels || wanted.length ? ranked.length : Math.min(ranked.length, Number(A.maxChannels ?? 15));
+  const limit = Math.min(Number(A.limit ?? 15), 40);
+  const scanned: string[] = [], skipped: { channel: string; error: string }[] = [], hits: any[] = [];
+  const scan = async (c: any) => {
+    let cursor: string | undefined;
+    for (let p = 0; p < 3; p++) {
+      const r: any = await coral.providers.slack.conversationsHistory({ channel: c.id, oldest, latest, limit: 200, cursor });
+      if (!r?.data?.ok) { skipped.push({ channel: c.name, error: String(r?.data?.error ?? r?.metadata?.status) }); return; }
+      for (const m of r.data.messages ?? []) {
+        const text = String(m.text ?? ""), low = text.toLowerCase();
+        if (words.filter((w: string) => low.includes(w)).length >= need)
+          hits.push({ channel: c.name, channelId: c.id, ts: m.ts, time: new Date(Number(m.ts) * 1000).toISOString(), user: m.user, author: m.username ?? m.user ?? "",
+            thread_ts: m.thread_ts, replies: m.reply_count ?? 0, text: text.length > 240 ? text.slice(0, 240) + "…" : text });
+      }
+      cursor = r.data.response_metadata?.next_cursor || undefined; if (!r.data.has_more || !cursor) break;
+    }
+    scanned.push(c.name);
+  };
+  let i = 0;
+  while (i < cap && Date.now() - started < 20000) {
+    await Promise.all(ranked.slice(i, Math.min(i + 3, cap)).map(scan)); i += 3;
+    if (!A.allChannels && !wanted.length && hits.length >= limit * 2 && i >= 6) break;
+  }
+  hits.sort((a, b) => Number(b.ts) - Number(a.ts));
+  const shown = hits.slice(0, limit);
+  const names = await nameOf(shown.map(m => m.user));
+  const matches = shown.map(({ user, ...m }) => ({ ...m, author: names[user] ?? m.author }));
+  const notScanned = ranked.slice(Math.min(i, ranked.length)).map(c => c.name);
+  const limited = skipped.filter(s => s.error === "ratelimited").map(s => s.channel);
+  const note = [notScanned.length ? `${notScanned.length} member channels not scanned (lowest-ranked or out of time); pass channels: [...] or allChannels: true to scan them.` : "",
+    limited.length ? `Slack rate-limited ${limited.length} channels; retry with channels: ${JSON.stringify(limited.slice(0, 10))}.` : "",
+    "Matches are top-level messages and thread roots; read replies with slack.threadReplies."].filter(Boolean).join(" ");
+  return { ok: true, ...base, channelsScanned: scanned, channelsNotScanned: notScanned.slice(0, 40), skipped, matched: hits.length, matches, note };
+}
+```
+
+</CodeGroup>
+
+### `slack.threadLinkedWork`
+
+Reads a Slack thread and looks up the GitHub pull requests, GitHub issues and Linear issues that it links to.
+
+<CodeGroup>
+
+```ts threadLinkedWork.d.ts
+export default function threadLinkedWork(input: {
+    channel: string;
+    ts: string;
+}): Promise<{
+    ok: boolean;
+    error?: string;
+    channel: string;
+    messages: {
+        time: string;
+        author: string;
+        text: string;
+    }[];
+    linked: {
+        source: string;
+        ref: string;
+        title?: string;
+        state?: string;
+        owner?: string;
+        url?: string;
+        error?: string;
+    }[];
+}>;
+```
+
+```ts threadLinkedWork.ts expandable
+export default async function threadLinkedWork(input: { channel: string; ts: string }): Promise<{
+  ok: boolean; error?: string; channel: string; messages: { time: string; author: string; text: string }[];
+  linked: { source: string; ref: string; title?: string; state?: string; owner?: string; url?: string; error?: string }[];
+}> {
+  const A: any = (input as any)?.input ?? input ?? {};
+  const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const unix = (s?: unknown) => s == null || s === "" ? undefined : /^\d+(\.\d+)?$/.test(String(s)) ? Number(s) : Math.floor(Date.parse(String(s)) / 1000);
+  const listChannels = async () => {
+    const out: any[] = []; let cursor: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const r: any = await coral.providers.slack.conversationsList({ limit: 1000, types: "public_channel,private_channel", cursor });
+      if (!r?.data?.ok) throw new Error(`Slack conversations.list failed: ${r?.data?.error ?? r?.metadata?.status}`);
+      out.push(...(r.data.channels ?? [])); cursor = r.data.response_metadata?.next_cursor || undefined; if (!cursor) break;
+    }
+    return out;
+  };
+  const nameOf = async (ids: string[]) => {
+    const names: Record<string, string> = {};
+    await Promise.all(Array.from(new Set(ids.filter(Boolean))).slice(0, 20).map(async id => {
+      const u: any = await coral.providers.slack.usersInfo({ user: id });
+      if (u?.data?.ok) names[id] = u.data.user?.real_name || u.data.user?.profile?.display_name || u.data.user?.name || id;
+    }));
+    return names;
+  };
+
+  let channel = String(A.channel ?? A.channelId ?? "").replace(/^#/, "");
+  const ts = String(A.ts ?? A.thread_ts ?? "");
+  if (!channel || !ts) return { ok: false, error: "Pass channel (name or id) and ts (the thread's root timestamp).", channel, messages: [], linked: [] };
+  if (!/^[CGD][A-Z0-9]+$/.test(channel)) { try { channel = (await listChannels()).find((c: any) => c.name === channel)?.id ?? channel; } catch (e) { return { ok: false, error: msg(e), channel, messages: [], linked: [] }; } }
+  const r: any = await coral.providers.slack.conversationsReplies({ channel, ts: Number(ts), limit: 200 });
+  if (!r?.data?.ok) return { ok: false, error: `Slack conversations.replies failed: ${r?.data?.error ?? r?.metadata?.status}`, channel, messages: [], linked: [] };
+  const raw: any[] = r.data.messages ?? [];
+  const names = await nameOf(raw.map(m => m.user));
+  const messages = raw.map(m => ({ time: new Date(Number(m.ts) * 1000).toISOString(), author: names[m.user] ?? m.user ?? "", text: String(m.text ?? "").slice(0, 1200) }));
+  const all = raw.map(m => String(m.text ?? "")).join("\n");
+  const linked: any[] = []; const seen = new Set<string>();
+  for (const m of all.matchAll(/https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)/g)) {
+    if (seen.has(m[0]) || linked.length >= 15) continue; seen.add(m[0]);
+    const g: any = m[3] === "pull" ? await coral.providers.github.pulls._get({ owner: m[1], repo: m[2], pull_number: Number(m[4]) }) : await coral.providers.github.issues._get({ owner: m[1], repo: m[2], issue_number: Number(m[4]) });
+    linked.push(g?.metadata?.status < 300 ? { source: "github", ref: `${m[2]}#${m[4]}`, title: g.data.title, state: g.data.merged_at ? "merged" : g.data.state, owner: g.data.user?.login, url: m[0] } : { source: "github", ref: m[0], error: `status ${g?.metadata?.status}` });
+  }
+  const parse = (x: any) => { try { return JSON.parse((x?.data?.content ?? []).map((c: any) => c?.text ?? "").join("") || "{}"); } catch { return {}; } };
+  for (const m of all.matchAll(/\b([A-Z][A-Z0-9]{1,9}-\d+)\b/g)) {
+    if (seen.has(m[1]) || linked.length >= 15) continue; seen.add(m[1]);
+    const d = parse(await coral.providers.linear.getIssue({ id: m[1], fields: ["id", "title", "status", "assignee", "team", "url"] }));
+    if (d?.id) linked.push({ source: "linear", ref: d.id, title: d.title, state: d.status, owner: d.assignee, url: d.url });
+  }
+  return { ok: true, channel, messages, linked };
+}
+```
+
+</CodeGroup>
+
+## All tasks
+
+Each cell shows the result without custom tools → the result with custom tools.
+The percentage is the change.
+Every answer was correct in both runs, except where a task says otherwise.
+
+<div className="task-table">
+<table>
+<colgroup>
+<col className="c-task" /><col className="c-tok" /><col className="c-usd" /><col className="c-sec" />
+</colgroup>
+<thead><tr>
+<th>Task</th><th className="num">Tokens</th><th className="num">Cost</th><th className="num">Time</th>
+</tr></thead>
+<tbody>
+<tr><td><p className="task">In our coral repo (phoebeai/adp), the late-March 2026 change added a benchmark mode for planting fake "flag" rows into connector data via <code>coral benchmark plant</code>. Suppose the server is already running with benchmark mode turned on. If I plant flags for a table again, do running queries see the new rows without restarting the server? Does the second plant replace the flag rows I planted before, or add to them? And if the flag file for a table ends up corrupt, does the query fail or still return something?</p><p className="tools"><span className="provider">github</span> <code>github.fileContentsAtRef</code> <code>github.pullRequestDetails</code> <code>github.searchPullRequests</code></p></td><td className="num">346,520 → 355,907<span className="delta up">+3%</span></td><td className="num">&#36;0.36 → &#36;0.34<span className="delta down">−5%</span></td><td className="num">72 s → 72 s<span className="delta">0%</span></td></tr>
+<tr><td><p className="task">In the withcoral/coral repo, the community Shortcut source PR from late May 2026 went through a lot of review rounds. Near the end, the reviewer said the new workflow states table wouldn't actually give one row per state. How did that concern get resolved? I need to know whether the author fixed the table or dropped it, which commit did it (short SHA is fine), and who gave the final approval.</p><p className="tools"><span className="provider">github</span> <code>github.pullRequestReviews</code> <code>github.searchPullRequests</code></p></td><td className="num">197,929 → 185,666<span className="delta down">−6%</span></td><td className="num">&#36;0.26 → &#36;0.20<span className="delta down">−23%</span></td><td className="num">45 s → 33 s<span className="delta down">−27%</span></td></tr>
+<tr><td><p className="task">Back in May someone on the Benchmarks team filed a bug that <code>make deploy-branch</code> dies with a Helm "field is immutable" error if you run it twice in the same minute. I think it got closed in favor of another ticket. Which Linear issue should I follow for that bug?</p><p className="tools"><span className="provider">linear</span> <code>linear.issueRelations</code> <code>linear.searchIssues</code></p></td><td className="num">314,996 → 286,839<span className="delta down">−9%</span></td><td className="num">&#36;0.27 → &#36;0.25<span className="delta down">−10%</span></td><td className="num">44 s → 42 s<span className="delta down">−3%</span></td></tr>
+<tr><td><p className="task">Back in May I reported in the Benchmarks team that <code>make deploy-branch</code> blows up with a Helm "field is immutable" error if you run it twice within the same minute. I'm pretty sure my ticket got closed in favor of another one. Which Linear issue should I actually follow for that bug?</p><p className="tools"><span className="provider">linear</span> <code>linear.issueRelations</code> <code>linear.searchIssues</code></p></td><td className="num">317,157 → 266,456<span className="delta down">−16%</span></td><td className="num">&#36;0.28 → &#36;0.22<span className="delta down">−19%</span></td><td className="num">42 s → 36 s<span className="delta down">−15%</span></td></tr>
+<tr><td><p className="task">Back in early May someone on the Benchmarks team reported that running make deploy-branch twice within the same minute fails with a Helm/K8s 'field is immutable' error. I think that report got closed as a dupe. Which Linear issue is the canonical one I should follow for that bug?</p><p className="tools"><span className="provider">linear</span> <code>linear.issueRelations</code> <code>linear.searchIssues</code></p></td><td className="num">330,393 → 244,283<span className="delta down">−26%</span></td><td className="num">&#36;0.31 → &#36;0.24<span className="delta down">−22%</span></td><td className="num">50 s → 37 s<span className="delta down">−26%</span></td></tr>
+<tr><td><p className="task">Back in May someone on the Benchmarks team filed a bug about <code>make deploy-branch</code> blowing up with a Helm/K8s 'field is immutable' error when you rerun it twice within the same minute, and I think it ended up getting filed twice. Not the nightly CI release-name collision one — the dev deploy-branch one. Which Linear issue is the canonical one I should follow?</p><p className="tools"><span className="provider">linear</span> <code>linear.issuePlanning</code> <code>linear.issueRelations</code> <code>linear.searchIssues</code></p></td><td className="num">326,817 → 266,878<span className="delta down">−18%</span></td><td className="num">&#36;0.28 → &#36;0.29<span className="delta up">+1%</span></td><td className="num">69 s → 49 s<span className="delta down">−29%</span></td></tr>
+<tr><td><p className="task">Back in March, the Sources team fixed an auth bug in their Auth project where a corrupted or hand-edited allowed-sources scope on an agent token could silently end up giving it unrestricted access. What was the issue ID, and which adp pull request fixed it?</p><p className="tools"><span className="provider">github+linear</span> <code>github.searchPullRequests</code> <code>linear.issueComments</code> <code>linear.issuePlanning</code> <code>linear.searchIssues</code></p></td><td className="num">595,074 → 240,775<span className="delta down">−60%</span></td><td className="num">&#36;0.42 → &#36;0.20<span className="delta down">−53%</span></td><td className="num">95 s → 61 s<span className="delta down">−36%</span></td></tr>
+<tr><td><p className="task">Back in May the Benchmarks team found that the K8s CRAG runs had quietly started failing because Coral re-pushed different content under the same image tag we were pinned to. There were a few follow-up tickets around the Coral pin after that — I'm looking for the one that was specifically about making the benchmark build stop trusting a mutable tag. What's its issue ID, and which coral-benchmarks pull request was linked to it as the fix?</p><p className="tools"><span className="provider">github+linear</span> <code>github.searchPullRequests</code> <code>linear.issueComments</code> <code>linear.issuePlanning</code> <code>linear.searchIssues</code></p></td><td className="num">325,055 → 283,273<span className="delta down">−13%</span></td><td className="num">&#36;0.23 → &#36;0.26<span className="delta up">+11%</span></td><td className="num">63 s → 60 s<span className="delta down">−5%</span></td></tr>
+<tr><td><p className="task">Back in May the Benchmarks team changed the nightly benchmark Slack digest so its metric deltas stopped comparing against just the single previous run. It was tracked under their Visibility &amp; CI benchmarking project. What was the issue ID for that work, and what default baseline window did it settle on?</p><p className="tools"><span className="provider">github+linear</span> <code>github.pullRequestReviews</code> <code>github.searchPullRequests</code> <code>linear.issueComments</code> <code>linear.issuePlanning</code> <code>linear.searchIssues</code></p></td><td className="num">342,979 → 267,356<span className="delta down">−22%</span></td><td className="num">&#36;0.31 → &#36;0.25<span className="delta down">−19%</span></td><td className="num">50 s → 49 s<span className="delta down">−2%</span></td></tr>
+<tr><td><p className="task">At the start of July the Benchmarks team got the nightly Slack digest linking back to the MLflow run again, since the old footer link had been dropped from the success-path post. I think it was tracked under General Improvements. What was the issue ID for that work, and what was the number of the coral-benchmarks PR that shipped it?</p><p className="tools"><span className="provider">github+linear</span> <code>github.searchPullRequests</code> <code>linear.issuePlanning</code> <code>linear.searchIssues</code></p></td><td className="num">482,900 → 246,864<span className="delta down">−49%</span></td><td className="num">&#36;0.34 → &#36;0.21<span className="delta down">−38%</span></td><td className="num">61 s → 45 s<span className="delta down">−26%</span></td></tr>
+<tr><td><p className="task">Back in June the Benchmarks team had a cleanup ticket in their general improvements work about resolving the CTF cases and challenge set just once and passing them along, so we'd stop pulling the same thing from MLflow twice. What was the root blocker for that ticket — the issue at the very start of the chain of blockers that held it up? Give me its issue ID.</p><p className="tools"><span className="provider">linear</span> <code>linear.issueRelations</code> <code>linear.searchIssues</code></p></td><td className="num">253,122 → 239,451<span className="delta down">−5%</span></td><td className="num">&#36;0.23 → &#36;0.20<span className="delta down">−14%</span></td><td className="num">46 s → 55 s<span className="delta up">+19%</span></td></tr>
+<tr><td><p className="task">Back on July 1st, in the #benchmarks thread about that night's vakra regression, James dropped a side note about fixing a bug where the latest data point wasn't showing up on the graph. What ticket ended up tracking that, and which PR actually shipped the fix?</p><p className="tools"><span className="provider">github+linear+slack</span> <code>github.searchPullRequests</code> <code>linear.issuePlanning</code> <code>linear.searchIssues</code> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code> <code>workspace.searchAll</code></p></td><td className="num">602,256 → 351,791<span className="delta down">−42%</span></td><td className="num">&#36;0.46 → &#36;0.37<span className="delta down">−19%</span></td><td className="num">79 s → 78 s<span className="delta">0%</span></td></tr>
+<tr><td><p className="task">Back in January someone in #engineering asked why the Sentry cron alerts were so noisy and how they'd been set up, and got an explanation in the thread. Who were the two people in that exchange?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">270,707 → 154,637<span className="delta down">−43%</span></td><td className="num">&#36;0.19 → &#36;0.14<span className="delta down">−28%</span></td><td className="num">58 s → 38 s<span className="delta down">−34%</span></td></tr>
+<tr><td><p className="task">Back in January someone in #engineering asked how our Sentry cron alerts were set up and why they were so noisy, and got an answer in the thread. Who had that exchange?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">376,155 → 155,076<span className="delta down">−59%</span></td><td className="num">&#36;0.30 → &#36;0.14<span className="delta down">−53%</span></td><td className="num">53 s → 40 s<span className="delta down">−25%</span></td></tr>
+<tr><td><p className="task">Back in March someone in #engineering asked if anyone would object to switching off the ClickHouse metrics in Datadog because of the cost. Who actually had that exchange? I just need the two people who went back and forth on it.</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">260,764 → 200,611<span className="delta down">−23%</span></td><td className="num">&#36;0.19 → &#36;0.16<span className="delta down">−19%</span></td><td className="num">60 s → 75 s<span className="delta up">+23%</span></td></tr>
+<tr><td><p className="task">Who were the two people going back and forth in #engineering in August about getting Windows code signing set up for the desktop app (the Azure account/subscription question)?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">315,449 → 182,634<span className="delta down">−42%</span></td><td className="num">&#36;0.22 → &#36;0.14<span className="delta down">−36%</span></td><td className="num">64 s → 41 s<span className="delta down">−37%</span></td></tr>
+<tr><td><p className="task">Back in March 2025, someone from our side and someone at [user] went back and forth in Slack to get [user's] Grafana connected to Phoebe for the first time (getting past their firewall, sharing credentials, testing the connection). Who were the two people actually talking to each other in that conversation?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">310,920 → 189,488<span className="delta down">−39%</span></td><td className="num">&#36;0.28 → &#36;0.18<span className="delta down">−37%</span></td><td className="num">44 s → 75 s<span className="delta up">+70%</span></td></tr>
+<tr><td><p className="task">Back in late October 2025 we kicked off the project to add 0/1/2 rating buttons to Phoebe investigations, partly so [user] could grade responses during their two-week evaluation. In the engineering channel there was some back and forth about what exactly a user would be rating when an investigation has several follow-up responses. What did we decide for the initial version?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">368,112 → 295,645<span className="delta down">−20%</span></td><td className="num">&#36;0.30 → &#36;0.24<span className="delta down">−21%</span></td><td className="num">54 s → 101 s<span className="delta up">+87%</span></td></tr>
+<tr><td><p className="task">Back in early November 2025, James started a thread in #engineering about taking our prompts (starting with the Datadog ones) out of the codebase because deploying prompt changes was too slow. Which of the options he listed did we go with, and how did that end up?</p><p className="tools"><span className="provider">github+slack</span> <code>github.searchPullRequests</code> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code> <code>workspace.searchAll</code></p></td><td className="num">259,713 → 216,735<span className="delta down">−17%</span></td><td className="num">&#36;0.22 → &#36;0.19<span className="delta down">−16%</span></td><td className="num">50 s → 52 s<span className="delta up">+2%</span></td></tr>
+<tr><td><p className="task">Back in early 2025 someone in #engineering started a thread re-litigating our infrastructure-as-code tool choice (Pulumi vs Terraform) before importing the manually created AWS resources. I remember the pros/cons list but not how it ended. What did we finally decide, and under what circumstances did we say we'd revisit it?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code> <code>workspace.searchAll</code></p></td><td className="num">265,311 → 330,849<span className="delta up">+25%</span></td><td className="num">&#36;0.21 → &#36;0.29<span className="delta up">+35%</span></td><td className="num">50 s → 118 s<span className="delta up">+133%</span></td></tr>
+<tr><td><p className="task">In early September James started a thread in #engineering complaining about what we were paying for Pulumi, even after the switch to the enterprise plan. What did we end up deciding to do about our infrastructure-as-code tooling, and what other options came up in that thread?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code> <code>workspace.searchAll</code></p></td><td className="num">274,821 → 192,666<span className="delta down">−30%</span></td><td className="num">&#36;0.22 → &#36;0.18<span className="delta down">−16%</span></td><td className="num">71 s → 72 s<span className="delta">0%</span></td></tr>
+<tr><td><p className="task">Back in early November 2025 James started a thread in #engineering about moving our Datadog prompts out of the codebase so prompt changes didn't need a ~50 minute deploy. He listed a couple of places we could keep them instead. Which option did he actually try, and what was the final call on it?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code></p></td><td className="num">207,450 → 161,123<span className="delta down">−22%</span></td><td className="num">&#36;0.21 → &#36;0.15<span className="delta down">−28%</span></td><td className="num">41 s → 48 s<span className="delta up">+17%</span></td></tr>
+<tr><td><p className="task">Back in early September James grumbled in #engineering that we were still paying around $5k a year for Pulumi even after Simon moved us onto the enterprise plan, and a couple of people suggested other options. What did we end up deciding to do about our infrastructure-as-code tooling, and what was the other option someone floated that we didn't go with?</p><p className="tools"><span className="provider">linear+slack</span> <code>linear.searchIssues</code> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">398,130 → 340,896<span className="delta down">−14%</span></td><td className="num">&#36;0.34 → &#36;0.26<span className="delta down">−22%</span></td><td className="num">100 s → 112 s<span className="delta up">+12%</span></td></tr>
+<tr><td><p className="task">On October 8 someone in the lagoon channel asked where we were on self-hosted docs that [user] could self-serve with. Which PR did that get handed off to, and once it merged, did we decide to publish the docs right away or hold them until the repo swap?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code> <code>slack.threadReplies</code></p></td><td className="num">321,103 → 173,440<span className="delta down">−46%</span></td><td className="num">&#36;0.23 → &#36;0.18<span className="delta down">−24%</span></td><td className="num">56 s → 43 s<span className="delta down">−23%</span></td></tr>
+<tr><td><p className="task">Back in mid-November 2025, Alberto asked in the engineering channel for a backend engineer to take on the resources endpoint work that was blocking the @-mentions feature (it was fetching every resource and blowing up for big orgs). Who picked that up, and what was the number of the draft PR they opened for it?</p><p className="tools"><span className="provider">github+slack</span> <code>github.searchPullRequests</code> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code></p></td><td className="num">248,045 → 255,342<span className="delta up">+3%</span></td><td className="num">&#36;0.22 → &#36;0.19<span className="delta down">−16%</span></td><td className="num">37 s → 87 s<span className="delta up">+133%</span></td></tr>
+<tr><td><p className="task">Around late July, Alberto raised a 'release-please failed' alarm in #engineering. The workflow had broken after an earlier change consolidated the push steps, and Simon said a fix was coming. Which pull request ended up fixing it?</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code></p></td><td className="num">423,710 → 173,032<span className="delta down">−59%</span></td><td className="num">&#36;0.36 → &#36;0.13<span className="delta down">−65%</span></td><td className="num">78 s → 34 s<span className="delta down">−56%</span></td></tr>
+<tr><td><p className="task">Back around the end of November 2025 someone flagged in the engineering channel that the TipTap -&gt; Lexical editor migration needed backend changes after all, because incident docs saved in Lexical couldn't be converted to markdown for the LLM. Which pull request ended up shipping the Lexical-to-Markdown fix that came out of that conversation?</p><p className="tools"><span className="provider">github+slack</span> <code>github.searchPullRequests</code> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code></p></td><td className="num">506,996 → 243,002<span className="delta down">−52%</span></td><td className="num">&#36;0.43 → &#36;0.19<span className="delta down">−55%</span></td><td className="num">91 s → 83 s<span className="delta down">−9%</span></td></tr>
+<tr><td><p className="task">Back in late July 2026 someone flagged in the engineering channel that the release-please workflow had started failing while they were reworking the desktop packaging, and Simon said a fix was on the way. Which pull request actually fixed it?</p><p className="tools"><span className="provider">github+slack</span> <code>github.searchPullRequests</code> <code>slack.searchMessages</code> <code>slack.threadLinkedWork</code></p></td><td className="num">323,958 → 203,697<span className="delta down">−37%</span></td><td className="num">&#36;0.23 → &#36;0.15<span className="delta down">−36%</span></td><td className="num">49 s → 48 s<span className="delta down">−1%</span></td></tr>
+<tr><td><p className="task">Which Slack channel was it where Matt shared some cheap flight options for the UK crew heading to the Sicily offsite? I think it was sometime in summer 2025, before the trip in October.</p><p className="tools"><span className="provider">slack</span> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">268,707 → 188,696<span className="delta down">−30%</span></td><td className="num">&#36;0.26 → &#36;0.17<span className="delta down">−36%</span></td><td className="num">46 s → 89 s<span className="delta up">+96%</span></td></tr>
+<tr><td><p className="task">Which Slack channel was it where Simon grumbled about OpenAI folding the ChatGPT desktop app into Codex? I think it was the second week of July 2026.</p><p className="tools"><span className="provider">slack</span> <code>slack.messagesByUser</code> <code>slack.searchMessages</code></p></td><td className="num">309,061 → 170,667<span className="delta down">−45%</span></td><td className="num">&#36;0.26 → &#36;0.18<span className="delta down">−29%</span></td><td className="num">141 s → 61 s<span className="delta down">−57%</span></td></tr>
+<tr><td><p className="task">Which Slack channel did James Summerfield post in during March 2026 about reviewing suppressed Rust lint warnings? He offered to clean them up himself.</p><p className="tools"><span className="provider">slack</span> <code>slack.messagesByUser</code></p></td><td className="num">238,641 → 124,227<span className="delta down">−48%</span></td><td className="num">&#36;0.22 → &#36;0.10<span className="delta down">−51%</span></td><td className="num">130 s → 34 s<span className="delta down">−74%</span></td></tr>
+<tr><td><p className="task">Where in Slack did Simon share Codex's diagnosis of our release automation choking on itself? It was sometime in the second half of July 2026 — I just need the channel.</p><p className="note">Answer: wrong without custom tools, correct with them</p><p className="tools"><span className="provider">slack</span> <code>slack.messagesByUser</code></p></td><td className="num">1,178,574 → 127,995<span className="delta down">−89%</span></td><td className="num">&#36;0.73 → &#36;0.11<span className="delta down">−84%</span></td><td className="num">516 s → 27 s<span className="delta down">−95%</span></td></tr>
+<tr><td><p className="task">Which Slack channel did Rachel post in toward the end of May 2026 about tracking whether AI assistants recommend Coral, asking people to help add to her list of prompts where Coral should be the answer?</p><p className="tools"><span className="provider">slack</span> <code>slack.messagesByUser</code> <code>slack.searchMessages</code> <code>slack.threadReplies</code></p></td><td className="num">355,140 → 233,702<span className="delta down">−34%</span></td><td className="num">&#36;0.23 → &#36;0.17<span className="delta down">−27%</span></td><td className="num">158 s → 83 s<span className="delta down">−48%</span></td></tr>
+<tr><td><p className="task">Which Slack channel was it where James Summerfield complained about our public example agent repo requiring an update for dependencies? Pretty sure it was toward the end of June 2026. I just need the channel name.</p><p className="tools"><span className="provider">slack</span> <code>slack.messagesByUser</code></p></td><td className="num">251,346 → 135,489<span className="delta down">−46%</span></td><td className="num">&#36;0.25 → &#36;0.13<span className="delta down">−46%</span></td><td className="num">149 s → 31 s<span className="delta down">−79%</span></td></tr>
+</tbody>
+</table>
+</div>

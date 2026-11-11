@@ -73,8 +73,10 @@ it('passes both reports through byte for byte', async () => {
 // Catches: a block Coral reports not reaching the page's banner.
 it.each([
   [UsageSendBlock.DO_NOT_TRACK, { kind: 'environment', variable: 'DO_NOT_TRACK' }],
-  [UsageSendBlock.CORAL_TELEMETRY, { kind: 'environment', variable: 'CORAL_TELEMETRY' }],
-  [UsageSendBlock.CI, { kind: 'environment', variable: 'CI' }],
+  [
+    UsageSendBlock.CORAL_DISABLE_USAGE_DATA,
+    { kind: 'environment', variable: 'CORAL_DISABLE_USAGE_DATA' },
+  ],
   [UsageSendBlock.SOURCE_BUILD, { kind: 'build' }],
   [UsageSendBlock.UNSPECIFIED, { kind: 'unknown' }],
 ])('shows why this process never sends (%s)', async (block, expected) => {

@@ -7,9 +7,10 @@ use coral_value as _;
 use std::sync::{Arc, Mutex};
 
 use coral_v8::{
-    AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutionControl, ProgramExecutor,
-    ProgramHost, ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE, ToolHostError,
+    AnalyzedSource, AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error,
+    IsolateLimits, LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutionControl,
+    ProgramExecutor, ProgramHost, ProgramOutputHostError, SavedFunctionReference,
+    TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
 #[cfg(unix)]
@@ -30,6 +31,31 @@ fn linked_source(path: &[&str], source: &str) -> LinkedSavedFunctionSource {
         path.iter().map(|segment| (*segment).to_string()).collect(),
         source.to_string(),
     )
+}
+
+/// The Saved Functions one Program body names.
+fn program_references(
+    compiler: &ProgramCompiler,
+    body: &str,
+) -> Result<Vec<SavedFunctionReference>, coral_v8::Error> {
+    analyzed_functions(compiler, &AnalyzedSource::Program(body.to_owned()))
+}
+
+/// The Saved Functions one Saved Function module names.
+fn module_references(
+    compiler: &ProgramCompiler,
+    module: &str,
+) -> Result<Vec<SavedFunctionReference>, coral_v8::Error> {
+    analyzed_functions(compiler, &AnalyzedSource::SavedFunction(module.to_owned()))
+}
+
+fn analyzed_functions(
+    compiler: &ProgramCompiler,
+    source: &AnalyzedSource,
+) -> Result<Vec<SavedFunctionReference>, coral_v8::Error> {
+    compiler
+        .analyze(compilation_deadline(), source)
+        .map(|references| references.functions().to_vec())
 }
 
 fn reference_paths(references: &[SavedFunctionReference]) -> Vec<&str> {
@@ -346,9 +372,7 @@ fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
 fn saved_function_reference_analysis_is_static_and_runtime_only() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
-    let paths = compiler
-        .saved_function_paths(compilation_deadline(),
-            r"
+    let paths = program_references(&compiler, r"
                 type Erased = typeof coral.functions.types.only;
                 interface ErasedHeritage extends coral.functions.types.interfaceOnly {}
                 declare class AmbientHeritage extends coral.functions.types.ambientOnly {}
@@ -377,39 +401,32 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
         "unexpected references: {paths:?}"
     );
 
-    let dependencies = compiler
-        .saved_function_dependency_paths(
-            compilation_deadline(),
-            r"
+    let dependencies = module_references(
+        &compiler,
+        r"
                 export default function compose(): number {
                     type Erased = typeof coral.functions.types.only;
                     return coral.functions.alpha.one();
                 }
             ",
-        )
-        .expect("analyze literal Saved Function dependencies");
+    )
+    .expect("analyze literal Saved Function dependencies");
     assert_eq!(reference_paths(&dependencies), ["alpha.one"]);
     assert!(matches!(
         dependencies.as_slice(),
         [reference] if (reference.line(), reference.column()) == (4, 28)
     ));
 
-    let overload_only = compiler
-        .saved_function_dependency_paths(compilation_deadline(),
-            "function coral(value: string): void; export default function compose() { return coral.functions.alpha.one(); }",
+    let overload_only = module_references(&compiler, "function coral(value: string): void; export default function compose() { return coral.functions.alpha.one(); }",
         )
         .expect("analyze through an erased overload declaration");
     assert_eq!(reference_paths(&overload_only), ["alpha.one"]);
-    let erased_overload = compiler
-        .saved_function_dependency_paths(compilation_deadline(),
-            "function erased(value = coral.functions.types.overloadOnly()): void; export default function compose() { return 42; }",
+    let erased_overload = module_references(&compiler, "function erased(value = coral.functions.types.overloadOnly()): void; export default function compose() { return 42; }",
         )
         .expect("ignore an erased overload declaration");
     assert!(erased_overload.is_empty());
 
-    let shadowed_global = compiler
-        .saved_function_paths(compilation_deadline(),
-            "const globalThis = { coral: { functions: { local: { value: () => 42 } } } }; return globalThis.coral.functions.local.value();",
+    let shadowed_global = program_references(&compiler, "const globalThis = { coral: { functions: { local: { value: () => 42 } } } }; return globalThis.coral.functions.local.value();",
         )
         .expect("ignore a local globalThis binding");
     assert!(shadowed_global.is_empty());
@@ -438,8 +455,7 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
         "const pick = (root: any, key: string) => root[key]; return pick(coral.functions, 'alpha')();",
         "const key = 'base'; class RuntimeHeritage extends coral.functions.models[key] {} return RuntimeHeritage;",
     ] {
-        compiler
-            .saved_function_paths(compilation_deadline(), source)
+        program_references(&compiler, source)
             .expect_err("computed or aliased Program reference must be rejected");
     }
 }
@@ -453,15 +469,13 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
         "return (coral as any).functions.alpha.one();",
         "return (((coral as any))).functions.alpha.one();",
     ] {
-        let references = compiler
-            .saved_function_paths(compilation_deadline(), source)
+        let references = program_references(&compiler, source)
             .expect("transparent wrappers preserve a literal reference");
         assert_eq!(reference_paths(&references), ["alpha.one"]);
     }
 
     let source = "type __coralModel = number; const __coralValue: __coralModel = 1; let global = globalThis; return global[\"JSON\"].stringify(__coralValue);";
-    let ordinary_globals = compiler
-        .saved_function_paths(compilation_deadline(), source)
+    let ordinary_globals = program_references(&compiler, source)
         .expect("ordinary globals and local compiler-prefix names remain available");
     assert!(ordinary_globals.is_empty());
     compiler

@@ -1,7 +1,14 @@
+import { useEffect, useState } from 'react'
+import { ConnectError } from '@connectrpc/connect'
 import { data, redirect, useLocation, useNavigate, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
-import { DEFAULT_SUMMARY_DAYS, summaryDays, summarySearch } from '@/lib/activity-summary'
+import {
+  DEFAULT_SUMMARY_DAYS,
+  summaryDays,
+  summarySearch,
+  type ActivitySummaryData,
+} from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import {
@@ -47,7 +54,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         headers: privateHeaders,
       })
     const days = summaryDays(query) ?? DEFAULT_SUMMARY_DAYS
-    const [agents, providers, owners, own, summary] = await Promise.all([
+    // Streamed, not awaited: the page, a saved change and a refresh never wait for a slow
+    // summary. The page shows a failed read as unavailable.
+    const summary = glimpseActivitySummary(api, w.name, days, request.signal)
+    summary.catch((error: unknown) => {
+      // A defect in Reef itself must not hide behind an unavailable summary.
+      if (!(error instanceof ConnectError))
+        console.error('Unexpected failure in a Reef loader:', error)
+    })
+    const [agents, providers, owners, own] = await Promise.all([
       owner ? api.agents.listAgents({ parent: w.name, pageSize: GLIMPSE_FETCH }) : null,
       listAllProviders(api, w.name),
       people ? api.memberships.listWorkspaceOwners({ parent: w.name }) : null,
@@ -56,7 +71,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         : api.memberships.getWorkspaceMembership({
             name: `${w.name}/memberships/${w.currentUser.slice('users/'.length)}`,
           }),
-      glimpseActivitySummary(api, w.name, days, request.signal),
     ])
     const views = providers.map((provider) => ({
       id: provider.name.split('/').at(-1)!,
@@ -154,8 +168,10 @@ export default function WorkspaceRoute({ loaderData }: Route.ComponentProps) {
   )
 }
 
-/** The loader's summary, read again while you look at it. While a new period loads, the
- * picker shows that period and the numbers fade.
+/** The loader's summary, read again while you look at it. The page never waits for it:
+ * the summary settles here, after the page renders. While a read is in flight, the picker
+ * shows the period you chose and the numbers you saw fade; an earlier read that settles late
+ * never replaces them.
  */
 function LiveSummary({
   days,
@@ -170,13 +186,14 @@ function LiveSummary({
   const target =
     navigation.location?.pathname === location.pathname ? navigation.location : location
   const chosen = summaryDays(new URLSearchParams(target.search).get('days')) ?? DEFAULT_SUMMARY_DAYS
+  const settled = useSettled(summary)
   return (
     <ActivitySummary
-      summary={summary}
+      summary={settled?.value}
       providers={providers}
       owner={owner}
       days={chosen}
-      pending={chosen !== days}
+      pending={chosen !== days || settled?.read !== summary}
       onDaysChange={(next) =>
         void navigate(
           { search: summarySearch(location.search, next) },
@@ -185,4 +202,26 @@ function LiveSummary({
       }
     />
   )
+}
+
+/** The latest read that settled, and its summary. A failed read is unavailable, never
+ * zeros. Suspense would hold the page's own update until the summary settles, so the read
+ * settles in an effect, and a read that a newer one replaced never shows.
+ */
+function useSettled(read: Promise<ActivitySummaryData | null>) {
+  const [settled, setSettled] = useState<{
+    read: Promise<ActivitySummaryData | null>
+    value: ActivitySummaryData | null
+  }>()
+  useEffect(() => {
+    let current = true
+    const show = (value: ActivitySummaryData | null) => {
+      if (current) setSettled({ read, value })
+    }
+    read.then(show, () => show(null))
+    return () => {
+      current = false
+    }
+  }, [read])
+  return settled
 }

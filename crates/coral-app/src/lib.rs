@@ -23,7 +23,7 @@ pub use auth::{
     WorkspaceAuthentication,
 };
 pub use bootstrap::{
-    AppError, LOCAL_OUTBOUND_DEFAULTS, Launch, ListenerReadiness, McpHttpServeConfig,
+    AppError, Extensions, LOCAL_OUTBOUND_DEFAULTS, Launch, ListenerReadiness, McpHttpServeConfig,
     PreparedServerBuilder, RunningRuntime, RunningServer, RuntimeError, ServeSettings,
     ServerBuilder, ServerMode, SessionAuthSettings, start_runtime,
 };

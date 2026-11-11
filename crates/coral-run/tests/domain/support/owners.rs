@@ -52,7 +52,9 @@ impl ProgramEngine for BurstEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, CompileFailure> {
+        _linked: &[SavedFunctionSelection],
+        _callable: Option<&[String]>,
+    ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 

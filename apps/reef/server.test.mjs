@@ -8,6 +8,8 @@ import { test } from 'node:test'
 import { createServer as createHttp2Server } from 'node:http2'
 import { gunzipSync } from 'node:zlib'
 
+import { BinaryReader, BinaryWriter, WireType } from '@bufbuild/protobuf/wire'
+import { chromium } from 'playwright'
 import { createCookie } from 'react-router'
 
 import { createRequestListener, createWebRequest, startServer } from './server.js'
@@ -740,6 +742,120 @@ test('stops waiting for a listening port when the child exits', async () => {
   await assert.rejects(listeningPort(child), /server exited before listening \(2\)/)
 })
 
+// The Overview through the production server and a real browser, over a Coral that holds
+// each activity summary until the test answers it.
+// Catches: an Overview whose page, hydration or navigation waits for a slow summary, or a
+// summary that fails and takes the page with it.
+// A person's browser. Reef renders a bot's page, headless Chrome's too, once everything
+// it streams has settled, so a bot's Overview waits for the summary by design.
+const BROWSER =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+// How long a step that must not wait for the summary may take. It stays well below Reef's
+// 10-second Coral deadline, so a page that waits for the summary to time out fails here
+// instead of arriving late and passing.
+const ARRIVES_MS = 3_000
+
+test('the Overview streams its activity summary after the page and keeps the page when it fails', async (t) => {
+  const coral = await startOverviewPeer()
+  const authorization = await startSessionPeer()
+  const child = startReef({ CORAL_ENDPOINT: coral.url, CORAL_WEB_AUTH_ISSUER: authorization.url })
+  const stderr = streamText(child.stderr)
+  t.after(async () => {
+    coral.releaseAll()
+    await stopChild(child)
+    await stderr
+    await coral.close()
+    await authorization.close()
+  })
+  const origin = `http://127.0.0.1:${await listeningPort(child)}`
+  const cookie = await validSessionCookie(authorization.url)
+  const workspace = '/workspaces/00000000-0000-4000-8000-000000000001'
+  const headers = { Cookie: cookie, 'User-Agent': BROWSER }
+
+  await t.test('the page arrives first, and a failed summary still ends it', async () => {
+    const response = await within(fetch(`${origin}${workspace}`, { headers }), 'The page')
+    assert.equal(response.status, 200)
+    const body = response.body.getReader()
+    const page = await readUntil(body, /Loading activity…/, ARRIVES_MS)
+    assert.match(page, /Streamed workspace/)
+    // Throws unless Reef still waits for this read.
+    await (await coral.held(7)).fail(13)
+    // The response ends once the failure streams; the browser test shows what the page does.
+    await readUntil(body, null, ARRIVES_MS)
+  })
+
+  await t.test(
+    'navigation data arrives first, and the summary follows in the same response',
+    async () => {
+      const response = await within(
+        fetch(`${origin}${workspace}.data?days=30`, { headers }),
+        'The navigation data',
+      )
+      assert.equal(response.status, 200)
+      const body = response.body.getReader()
+      const first = await readUntil(body, /Streamed workspace/, ARRIVES_MS)
+      assert.doesNotMatch(first, /987654/)
+      await (await coral.held(30)).answer(987654)
+      assert.match(await readUntil(body, null, ARRIVES_MS), /987654/)
+    },
+  )
+
+  await t.test(
+    'the hydrated page shows the document’s failed summary, then navigates to an answered one',
+    async (browserTest) => {
+      const browser = await chromium.launch()
+      browserTest.after(() => browser.close())
+      const context = await browser.newContext({ userAgent: BROWSER })
+      const [name, value] = cookie.split(/=(.*)/s)
+      await context.addCookies([{ name, value, url: origin }])
+      const page = await context.newPage()
+      // The document stays open until its summary settles, so wait for its first bytes only.
+      await page.goto(`${origin}${workspace}`, { waitUntil: 'commit', timeout: ARRIVES_MS })
+      const region = page.getByRole('region', { name: 'Activity summary', exact: true })
+      await region
+        .getByRole('status')
+        .filter({ hasText: 'Loading activity…' })
+        .waitFor({ timeout: ARRIVES_MS })
+
+      // The server rendered the loading state, so only the hydrated page can show the
+      // document's failed summary.
+      await (await coral.held(7)).fail(13)
+      await region
+        .getByText('The summary is not available. Try again later.')
+        .waitFor({ timeout: ARRIVES_MS })
+      await page
+        .getByRole('heading', { name: 'Streamed workspace', level: 1 })
+        .waitFor({ timeout: ARRIVES_MS })
+
+      await region.getByRole('radio', { name: '30 days' }).click({ timeout: ARRIVES_MS })
+      await page.waitForURL(`${origin}${workspace}?days=30`, {
+        waitUntil: 'commit',
+        timeout: ARRIVES_MS,
+      })
+      await (await coral.held(30)).answer(987654)
+      await region.getByRole('tab', { name: /^Calls\s*987,654\b/ }).waitFor({ timeout: ARRIVES_MS })
+    },
+  )
+})
+
+/** `promise`, or a failure named for `what` once `ARRIVES_MS` passes. */
+async function within(promise, what) {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${what} did not arrive within ${ARRIVES_MS} ms`)),
+          ARRIVES_MS,
+        )
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function startReef(env) {
   return spawn(process.execPath, ['server.mjs'], {
     cwd: import.meta.dirname,
@@ -934,4 +1050,146 @@ async function stopChild(child) {
   }
   child.kill('SIGTERM')
   return once(child, 'exit')
+}
+
+/** Coral for the Overview: a workspace, empty lists, and each activity summary held until
+ * the test answers or fails it. */
+async function startOverviewPeer() {
+  const summaries = []
+  const sessions = new Set()
+  const peer = createHttp2Server()
+  peer.on('session', (session) => {
+    sessions.add(session)
+    session.on('close', () => sessions.delete(session))
+  })
+  peer.on('stream', async (stream, headers) => {
+    stream.on('error', () => undefined)
+    const chunks = []
+    for await (const chunk of stream) chunks.push(chunk)
+    const request = Buffer.concat(chunks).subarray(5)
+    const path = headers[':path']
+    if (path.endsWith('/GetWorkspace')) {
+      const name = protoField(request, 1)
+      grpcReply(
+        stream,
+        new BinaryWriter()
+          .tag(1, WireType.LengthDelimited)
+          .string(name)
+          .tag(2, WireType.LengthDelimited)
+          .string('Streamed workspace')
+          .tag(3, WireType.Varint)
+          .int32(1) // WORKSPACE_STATE_ACTIVE
+          .tag(4, WireType.LengthDelimited)
+          .string('etag')
+          .tag(7, WireType.Varint)
+          .int32(1) // WORKSPACE_ROLE_OWNER
+          .finish(),
+      )
+    } else if (path.endsWith('/SummarizeActivity')) {
+      const days = protoField(request, 2)
+      const summary = { days, settled: false, abandoned: false }
+      // Reef gives up on a read at its own deadline. A read it abandoned can no longer be
+      // answered, so settling it fails the test instead of passing unseen.
+      stream.once('close', () => {
+        if (!summary.settled) summary.abandoned = true
+      })
+      const settle = (send) => {
+        if (summary.settled) throw new Error(`The ${days}-day summary is already settled`)
+        if (summary.abandoned || stream.destroyed)
+          throw new Error(`Reef stopped waiting for the ${days}-day summary`)
+        summary.settled = true
+        send()
+      }
+      summary.answer = async (answered) =>
+        settle(() =>
+          grpcReply(
+            stream,
+            new BinaryWriter()
+              .tag(1, WireType.LengthDelimited)
+              .bytes(new BinaryWriter().tag(1, WireType.Varint).int64(answered).finish())
+              .finish(),
+          ),
+        )
+      summary.fail = async (code) => settle(() => grpcFailure(stream, code))
+      summaries.push(summary)
+    } else {
+      // An empty list, or a default message, for everything else the page reads.
+      grpcReply(stream, new Uint8Array())
+    }
+  })
+  peer.listen(0, '127.0.0.1')
+  await once(peer, 'listening')
+  return {
+    url: `http://127.0.0.1:${peer.address().port}`,
+    /** The first summary read for `days` that Reef still waits for, once Reef asks. */
+    async held(days) {
+      for (let tries = 0; tries < 60; tries++) {
+        const summary = summaries.find(
+          (read) => read.days === days && !read.settled && !read.abandoned,
+        )
+        if (summary) return summary
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error(`Reef is not waiting for a ${days}-day summary`)
+    },
+    /** Fails every read Reef still waits for, so the server can stop. */
+    releaseAll() {
+      for (const summary of summaries)
+        // A read Reef abandoned in the meantime throws; nothing waits for it any more.
+        if (!summary.settled && !summary.abandoned) summary.fail(14).catch(() => undefined)
+    },
+    async close() {
+      for (const session of sessions) session.destroy()
+      await new Promise((resolve) => peer.close(resolve))
+    },
+  }
+}
+
+/** The first value of field `number` in a protobuf message: a string or an unsigned number. */
+function protoField(message, number) {
+  const reader = new BinaryReader(message)
+  while (reader.pos < reader.len) {
+    const [field, type] = reader.tag()
+    if (field === number) return type === WireType.Varint ? reader.uint32() : reader.string()
+    reader.skip(type)
+  }
+  return undefined
+}
+
+function grpcReply(stream, message) {
+  const frame = Buffer.alloc(5 + message.length)
+  frame.writeUInt32BE(message.length, 1)
+  frame.set(message, 5)
+  stream.respond({ ':status': 200, 'content-type': 'application/grpc' }, { waitForTrailers: true })
+  stream.once('wantTrailers', () => stream.sendTrailers({ 'grpc-status': '0' }))
+  stream.end(frame)
+}
+
+function grpcFailure(stream, code) {
+  stream.respond({ ':status': 200, 'content-type': 'application/grpc', 'grpc-status': `${code}` })
+  stream.end()
+}
+
+/** The text `body` sends until it matches `pattern`, or until it ends when `pattern` is null. */
+async function readUntil(body, pattern, timeoutMs = 10_000) {
+  const decoder = new TextDecoder()
+  let text = ''
+  let late = false
+  const deadline = setTimeout(() => {
+    late = true
+    void body.cancel()
+  }, timeoutMs)
+  try {
+    for (;;) {
+      if (pattern && pattern.test(text)) return text
+      const { done, value } = await body.read()
+      if (done) break
+      text += decoder.decode(value, { stream: true })
+    }
+  } finally {
+    clearTimeout(deadline)
+  }
+  if (late) throw new Error(`The response did not ${pattern ? `send ${pattern}` : 'end'} in time`)
+  if (pattern) throw new Error(`The response ended without ${pattern}: ${text.slice(-500)}`)
+  return text
 }
