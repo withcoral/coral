@@ -11,6 +11,7 @@ use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStr
 
 use crate::cpu::{CpuTooOld, check_cpu};
 use crate::manifest::{MANIFEST, Pooling};
+use crate::query_first::QueryFirst;
 
 /// Text in, vector out. Search code takes this interface, so its tests can
 /// give fixed vectors and load no model.
@@ -77,10 +78,11 @@ pub enum LoadError {
 /// The manifest's model, loaded from its files.
 ///
 /// Calls take turns on one session, each on the calling thread: the session
-/// has one intra-op thread, so the caller's thread priority applies. Give
-/// work that must not wait for another caller its own `Model`.
+/// has one intra-op thread, so the caller's thread priority applies. A query
+/// goes before every document that has not started, so it waits for at most
+/// the one document that runs. Documents wait while queries keep coming.
 pub struct Model {
-    inference: Mutex<Inference>,
+    inference: QueryFirst<Inference>,
 }
 
 struct Inference {
@@ -123,32 +125,24 @@ impl Model {
             .iter()
             .any(|input| input.name() == "token_type_ids");
         Ok(Self {
-            inference: Mutex::new(Inference {
+            inference: QueryFirst::new(Inference {
                 tokenizer,
                 session,
                 takes_token_type_ids,
             }),
         })
     }
-
-    fn embed(&self, prefix: &str, text: &str) -> Result<Vec<f32>, EmbedError> {
-        // A panic inside a call leaves no state behind in the tokenizer or
-        // the session, so a poisoned lock is still safe to use.
-        let mut inference = self
-            .inference
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        inference.embed(&format!("{prefix}{text}"))
-    }
 }
 
 impl Embed for Model {
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
-        self.embed(MANIFEST.query_prefix, text)
+        let text = format!("{}{text}", MANIFEST.query_prefix);
+        self.inference.query(|inference| inference.embed(&text))
     }
 
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
-        self.embed(MANIFEST.document_prefix, text)
+        let text = format!("{}{text}", MANIFEST.document_prefix);
+        self.inference.document(|inference| inference.embed(&text))
     }
 }
 

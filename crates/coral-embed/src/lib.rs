@@ -12,6 +12,7 @@
 mod cpu;
 mod manifest;
 mod model;
+mod query_first;
 
 // The integration tests read their fixture with serde.
 #[cfg(test)]
