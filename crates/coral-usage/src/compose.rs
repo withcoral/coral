@@ -8,8 +8,8 @@ use crate::day::{day_of, day_string};
 use crate::environment::Build;
 use crate::report::{
     Accounts, ApprovalCounts, Clients, CoralBlock, Day, Host, Milestones, PrivateToolCounts,
-    Providers, RunCounts, RunFailures, TaskCounts, ToolInvocationCounts, Totals, UsageReport,
-    count,
+    Providers, RunCounts, RunFailures, SharedToolCounts, TaskCounts, ToolInvocationCounts, Totals,
+    UsageReport, VERSION, count,
 };
 use crate::repository::activity::{self, Window};
 use crate::repository::install::{Install, MilestoneDays};
@@ -45,19 +45,17 @@ pub(crate) async fn compose(
     let approvals =
         coral_run::usage_repository::approval_outcomes(tx, window.start, window.end).await?;
     let tasks = coral_task::usage_repository::tasks_started(tx, window.start, window.end).await?;
-    let saved =
-        coral_tools::usage_repository::private_tools_created(tx, window.start, window.end).await?;
-    let called =
-        coral_run::usage_repository::private_tool_calls(tx, window.start, window.end).await?;
-    let reuse_today = activity::reuse(tx, window).await?;
+    let private_tool_counts = private_tool_counts(tx, window).await?;
+    let shared_tool_counts = shared_tool_counts(tx, window).await?;
     let totals = coral_workspace::usage_repository::workspace_totals(tx).await?;
     let private_tools = coral_tools::usage_repository::private_tool_total(tx).await?;
+    let shared_tools = coral_tools::usage_repository::shared_tool_total(tx).await?;
     let providers = coral_provider::usage_repository::provider_totals(tx).await?;
 
     let milestones = milestones(tx, install.milestones, day, window.end).await?;
 
     let report = UsageReport {
-        v: 1,
+        v: VERSION,
         install: &install.id,
         coral: CoralBlock::new(host),
         build: build.wire(),
@@ -92,11 +90,8 @@ pub(crate) async fn compose(
                 denied: count(approvals.declined),
                 expired: count(approvals.expired),
             },
-            private_tools: PrivateToolCounts {
-                saved: count(saved),
-                called: count(called),
-                tasks_reusing_one: count(reuse_today.tasks),
-            },
+            private_tools: private_tool_counts,
+            shared_tools: shared_tool_counts,
             tasks: TaskCounts {
                 started: count(tasks),
             },
@@ -107,6 +102,7 @@ pub(crate) async fn compose(
             users: count(totals.users),
             agents: count(totals.agents),
             private_tools: count(private_tools),
+            shared_tools: count(shared_tools),
             providers: Providers {
                 // Coral does not record which recipe made a provider yet, so
                 // every provider counts by its kind.
@@ -123,6 +119,42 @@ pub(crate) async fn compose(
     let json = serde_json::to_string(&report)
         .map_err(|_error| Error::CorruptData("the usage report does not serialize"))?;
     Ok(Composed { json, milestones })
+}
+
+/// The Private Tools created, used by Runs, and reused in a later Task in
+/// `window`.
+async fn private_tool_counts(
+    tx: &mut Transaction<'_>,
+    window: Window,
+) -> Result<PrivateToolCounts, Error> {
+    let saved =
+        coral_tools::usage_repository::private_tools_created(tx, window.start, window.end).await?;
+    let called =
+        coral_run::usage_repository::private_tool_calls(tx, window.start, window.end).await?;
+    let reuse = activity::reuse(tx, window).await?;
+    Ok(PrivateToolCounts {
+        saved: count(saved),
+        called: count(called),
+        tasks_reusing_one: count(reuse.tasks),
+    })
+}
+
+/// The Shared Tools first published, removed, and used by Runs in `window`.
+async fn shared_tool_counts(
+    tx: &mut Transaction<'_>,
+    window: Window,
+) -> Result<SharedToolCounts, Error> {
+    let published =
+        coral_tools::usage_repository::shared_tools_published(tx, window.start, window.end).await?;
+    let removed =
+        coral_tools::usage_repository::shared_tools_removed(tx, window.start, window.end).await?;
+    let called =
+        coral_run::usage_repository::shared_tool_calls(tx, window.start, window.end).await?;
+    Ok(SharedToolCounts {
+        published: count(published),
+        removed: count(removed),
+        called: count(called),
+    })
 }
 
 /// Each milestone's first day as of the end of the report's day: the

@@ -1771,3 +1771,77 @@ async fn pages_of_history_follow_one_another_without_a_gap_or_a_repeat() {
         );
     }
 }
+
+// Catches: a usage total that counts a tombstone or a revision as a Shared
+// Tool, or a day's count that takes a new revision for a new Shared Tool.
+#[tokio::test]
+async fn usage_data_counts_live_shared_tools_and_each_one_published_or_removed() {
+    use crate::usage_repository::{
+        shared_tool_total, shared_tools_published, shared_tools_removed,
+    };
+
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    // The live total, and the Shared Tools published and removed in
+    // `[start, end)`.
+    let usage = async |start, end| {
+        let mut tx = fixture
+            .database
+            .begin_read_snapshot()
+            .await
+            .expect("snapshot");
+        let counts = (
+            shared_tool_total(&mut tx).await.expect("total"),
+            shared_tools_published(&mut tx, start, end)
+                .await
+                .expect("published"),
+            shared_tools_removed(&mut tx, start, end)
+                .await
+                .expect("removed"),
+        );
+        tx.commit().await.expect("commit");
+        counts
+    };
+    let (before, _, _) = usage(0, 1).await;
+
+    fixture
+        .publish_at(30, &fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish a Shared Tool");
+    assert_eq!(usage(30, 31).await, (before + 1, 1, 0), "a publish");
+
+    fixture
+        .publish_at(40, &fixture.owner, "mail.remind", REVIEWED, 1)
+        .await
+        .expect("publish a new revision");
+    assert_eq!(usage(40, 41).await, (before + 1, 0, 0), "a new revision");
+
+    fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 50, 'e'),
+            &fixture.workspace,
+            &shared_path("mail.remind"),
+            2,
+        )
+        .await
+        .expect("remove the Shared Tool");
+    assert_eq!(usage(50, 51).await, (before, 0, 1), "a removal");
+
+    // Its path is free, and the next publish there is another Shared Tool.
+    fixture
+        .publish_at(60, &fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish at the freed path");
+    assert_eq!(
+        usage(60, 61).await,
+        (before + 1, 1, 0),
+        "a publish after removal"
+    );
+    assert_eq!(
+        usage(0, 60).await,
+        (before + 1, 1, 1),
+        "before the second publish"
+    );
+}

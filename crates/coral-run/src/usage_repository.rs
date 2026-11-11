@@ -145,6 +145,21 @@ pub async fn private_tool_calls(
     crate::run_repository::private_tool_calls(tx, start, end).await
 }
 
+/// Counts the Shared Tools the Runs accepted in `[start, end)` unix
+/// nanoseconds used, across every Workspace: one per Shared Tool a Run
+/// used. The caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn shared_tool_calls(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    crate::run_repository::shared_tool_calls(tx, start, end).await
+}
+
 /// When the first Run that Coral still keeps succeeded, before `end` unix
 /// nanoseconds. The caller authorizes the read.
 ///
@@ -165,7 +180,7 @@ mod tests {
 
     use super::{
         ApprovalOutcomes, InvocationEndings, approval_outcomes, approval_requests,
-        first_success_before, invocation_endings, private_tool_calls,
+        first_success_before, invocation_endings, private_tool_calls, shared_tool_calls,
     };
     use crate::approval::ApprovalState;
     use crate::{InvocationResultKind, RunState};
@@ -287,10 +302,11 @@ mod tests {
         tx.commit().await.expect("commit");
     }
 
-    /// A Run counts each Private Tool it used once, by when it was
-    /// accepted. Only a succeeded Run dates the first success.
+    /// A Run counts each Private or Shared Tool it used once, by when it was
+    /// accepted, and each kind counts only its own. Only a succeeded Run
+    /// dates the first success.
     #[tokio::test]
-    async fn private_tool_calls_and_the_first_success_hold_to_their_window() {
+    async fn tool_calls_and_the_first_success_hold_to_their_window() {
         let db = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("test database");
@@ -310,18 +326,35 @@ mod tests {
                  VALUES ('{run}', 'ws1', '{tool}', '{tool}', 'return 1')"
             ));
         }
+        fixture.push(
+            "INSERT INTO shared_tool_records (id, workspace_id, path, current_revision, \
+                created_by_user_id, created_at_unix_nanos) VALUES ('s1', 'ws1', 'mail', 1, 'runner', 1)"
+                .to_owned(),
+        );
+        for run in ["r1", "r3"] {
+            fixture.push(format!(
+                "INSERT INTO program_run_shared_tool_snapshots (run_id, workspace_id, \
+                    shared_tool_id, path, revision, source) \
+                 VALUES ('{run}', 'ws1', 's1', 'mail', 1, 'return 1')"
+            ));
+        }
         for statement in &fixture {
             db.execute_fixture_sql(statement).await.expect(statement);
         }
 
         let database = db.database();
         let mut tx = database.begin_read_snapshot().await.expect("snapshot");
-        for (start, end, calls) in [(0, 20, 2), (0, 21, 3), (11, 20, 0)] {
+        for (start, end, private, shared) in [(0, 20, 2, 1), (0, 21, 3, 2), (11, 20, 0, 0)] {
             assert_eq!(
-                private_tool_calls(&mut tx, start, end)
-                    .await
-                    .expect("calls"),
-                calls,
+                (
+                    private_tool_calls(&mut tx, start, end)
+                        .await
+                        .expect("Private Tool calls"),
+                    shared_tool_calls(&mut tx, start, end)
+                        .await
+                        .expect("Shared Tool calls"),
+                ),
+                (private, shared),
                 "[{start}, {end})"
             );
         }

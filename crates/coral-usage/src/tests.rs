@@ -250,6 +250,7 @@ async fn a_report_matches_the_collectors_example() {
     // and a left-out client is 0.
     report["day"]["clients"] = collector["day"]["clients"].clone();
     same_shape(&report, &collector, "");
+    assert_eq!(report["v"], collector["v"]);
 }
 
 /// A Program error that coral-run marks as a Coral `ToolError`.
@@ -369,6 +370,31 @@ fn tool_calls(run: &str, at: i64) -> String {
     sql.concat()
 }
 
+/// Shared Tool `id` at `path`, published at `published` and removed at
+/// `removed`, with its lifecycle Events.
+fn shared_tool(id: &str, path: &str, published: i64, removed: Option<i64>) -> String {
+    let event = |action: &str, at: i64| {
+        format!(
+            "INSERT INTO shared_tool_lifecycle_events (id, workspace_id, actor_user_id, \
+                authority_source, action, target_shared_tool_id, target_path, revision, \
+                content_hash, occurred_at_unix_nanos, trace_id) \
+             VALUES ('{id}-{action}', 'ws1', 'usage-owner', 'workspace_membership', \
+                'shared_tool.{action}', '{id}', '{path}', 1, '{hash}', {at}, '{trace}');",
+            hash = "0".repeat(64),
+            trace = "0".repeat(32),
+        )
+    };
+    let mut sql = vec![format!(
+        "INSERT INTO shared_tool_records (id, workspace_id, path, current_revision, \
+            created_by_user_id, created_at_unix_nanos, removed_at_unix_nanos) \
+         VALUES ('{id}', 'ws1', '{path}', 1, 'usage-owner', {published}, {removed});",
+        removed = removed.map_or_else(|| "NULL".to_owned(), |at| at.to_string()),
+    )];
+    sql.push(event("published", published));
+    sql.extend(removed.map(|at| event("removed", at)));
+    sql.concat()
+}
+
 #[tokio::test]
 async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     let fixture = Fixture::new().await;
@@ -384,7 +410,7 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     sql.push(run("r6", "t1", "interrupted", d7(9), d7(9), ""));
     sql.push(run("r7", "t1", "canceled", d7(10), d7(10), ""));
     // A Private Tool created during r1 (in t1), used again by t1 (r8) and
-    // then by t2 (r9). The report's keys keep the name Saved Function.
+    // then by t2 (r9).
     sql.push(format!(
         "INSERT INTO private_tool_lifecycle_events (id, workspace_id, actor_principal_id, \
             actor_principal_kind, action, target_private_tool_id, target_path, outcome, \
@@ -431,23 +457,24 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     );
     assert_eq!(day7["day"]["tasks"]["started"], 1);
     assert_eq!(
-        day7["day"]["saved_functions"],
+        day7["day"]["private_tools"],
         json!({"saved": 1, "called": 1, "tasks_reusing_one": 0})
     );
+
     let day8 = fixture.report("2026-11-08").await;
     assert_eq!(day8["day"]["tool_invocations"]["succeeded"], 1);
     assert_eq!(
-        day8["day"]["saved_functions"],
+        day8["day"]["private_tools"],
         json!({"saved": 0, "called": 1, "tasks_reusing_one": 1})
     );
     let milestones = json!({
         "first_successful_run": "2026-11-07",
-        "first_saved_function": "2026-11-07",
-        "function_reused_in_later_task": "2026-11-08",
+        "first_private_tool": "2026-11-07",
+        "private_tool_reused_in_later_task": "2026-11-08",
     });
     assert_eq!(day8["milestones"], milestones);
     assert_eq!(
-        fixture.report("2026-11-06").await["milestones"]["function_reused_in_later_task"],
+        fixture.report("2026-11-06").await["milestones"]["private_tool_reused_in_later_task"],
         Value::Null
     );
 
@@ -465,6 +492,49 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
         .await
         .expect("reports");
     assert_eq!(fixture.report("2026-11-09").await["milestones"], milestones);
+}
+
+/// coral-tools and coral-run own which lifecycle Events and snapshots
+/// count; this checks that each lands in its day and the total.
+#[tokio::test]
+async fn a_report_counts_its_days_shared_tools() {
+    let fixture = Fixture::new().await;
+    let (d7, d8) = (|h| at(7, h), |h| at(8, h));
+    // Two Shared Tools published on day 7. A Run each day uses the first;
+    // the second is removed on day 8.
+    let mut sql = vec![
+        shared_tool("s1", "mail", d7(3), None),
+        shared_tool("s2", "digest", d7(4), Some(d8(3))),
+        task("t1", d7(1)),
+    ];
+    for (run_id, accepted) in [("r1", d7(5)), ("r2", d8(5))] {
+        sql.push(run(run_id, "t1", "succeeded", accepted, accepted, ""));
+        sql.push(format!(
+            "INSERT INTO program_run_shared_tool_snapshots (run_id, workspace_id, shared_tool_id, \
+                path, revision, source) VALUES ('{run_id}', 'ws1', 's1', 'mail', 1, 'return 1');"
+        ));
+    }
+    for statement in sql.concat().split_terminator(';') {
+        if !statement.trim().is_empty() {
+            fixture.sql(statement).await;
+        }
+    }
+
+    fixture.check_daily(&fixture.sending(), 6..=9).await;
+
+    let (day7, day8) = (
+        fixture.report("2026-11-07").await,
+        fixture.report("2026-11-08").await,
+    );
+    assert_eq!(
+        day7["day"]["shared_tools"],
+        json!({"published": 2, "removed": 0, "called": 1})
+    );
+    assert_eq!(
+        day8["day"]["shared_tools"],
+        json!({"published": 0, "removed": 1, "called": 1})
+    );
+    assert_eq!(day8["totals"]["shared_tools"], 1);
 }
 
 #[tokio::test]

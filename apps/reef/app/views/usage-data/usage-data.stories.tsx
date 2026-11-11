@@ -11,7 +11,7 @@ import { UsageDataPage } from './usage-data-page'
  * each milestone, the latest totals, and adds up the days.
  */
 interface UsageReport {
-  v: 1
+  v: 2
   install: string
   coral: {
     version: string
@@ -26,8 +26,8 @@ interface UsageReport {
   /** When each first happened. A date never changes once it is set. */
   milestones: {
     first_successful_run: string | null
-    first_saved_function: string | null
-    function_reused_in_later_task: string | null
+    first_private_tool: string | null
+    private_tool_reused_in_later_task: string | null
   }
   /** What happened on one UTC day. The next report starts again from zero. */
   day: {
@@ -37,7 +37,8 @@ interface UsageReport {
     run_failures: Partial<Record<RunFailure, number>>
     tool_invocations: { succeeded: number; failed: number; approval_required: number }
     approvals: { approved: number; denied: number; expired: number }
-    saved_functions: { saved: number; called: number; tasks_reusing_one: number }
+    private_tools: { saved: number; called: number; tasks_reusing_one: number }
+    shared_tools: { published: number; removed: number; called: number }
     tasks: { started: number }
     /** Runs by MCP client, mapped to a fixed list. Any other client is `other`. */
     clients: Partial<Record<McpClient, number>>
@@ -47,7 +48,8 @@ interface UsageReport {
     workspaces: number
     users: number
     agents: number
-    saved_functions: number
+    private_tools: number
+    shared_tools: number
     /** Providers made from a Coral recipe, by recipe. Custom providers are only counted. */
     providers: {
       recipe: Record<string, number>
@@ -63,7 +65,7 @@ type McpClient = 'claude-code' | 'claude-desktop' | 'cursor' | 'codex' | 'chatgp
 
 // Fixtures. The install ID is random per install. The next report covers today so far.
 const report: UsageReport = {
-  v: 1,
+  v: 2,
   install: '3f9c8d2e-5b41-4c7a-9e06-1d7b2c4fa21e',
   coral: {
     version: '0.14.2',
@@ -76,8 +78,8 @@ const report: UsageReport = {
   build: 'release',
   milestones: {
     first_successful_run: '2026-11-04',
-    first_saved_function: '2026-11-05',
-    function_reused_in_later_task: '2026-11-06',
+    first_private_tool: '2026-11-05',
+    private_tool_reused_in_later_task: '2026-11-06',
   },
   day: {
     date: '2026-11-06',
@@ -85,7 +87,8 @@ const report: UsageReport = {
     run_failures: { compile: 3, tool_error: 2, timeout: 1, cpu_budget: 1 },
     tool_invocations: { succeeded: 212, failed: 9, approval_required: 4 },
     approvals: { approved: 3, denied: 1, expired: 0 },
-    saved_functions: { saved: 2, called: 17, tasks_reusing_one: 3 },
+    private_tools: { saved: 2, called: 17, tasks_reusing_one: 3 },
+    shared_tools: { published: 1, removed: 0, called: 8 },
     tasks: { started: 9 },
     clients: { 'claude-code': 30, cursor: 11, other: 7 },
   },
@@ -93,7 +96,8 @@ const report: UsageReport = {
     workspaces: 2,
     users: 1,
     agents: 1,
-    saved_functions: 5,
+    private_tools: 5,
+    shared_tools: 2,
     providers: { recipe: { github: 1, linear: 1, gmail: 1 }, custom_openapi: 1, custom_mcp: 0 },
     accounts: { oauth: 3, secret: 1 },
   },
@@ -101,20 +105,22 @@ const report: UsageReport = {
 // Yesterday's report: the reuse milestone had not happened yet, and there was less set up.
 const earlier: UsageReport = {
   ...report,
-  milestones: { ...report.milestones, function_reused_in_later_task: null },
+  milestones: { ...report.milestones, private_tool_reused_in_later_task: null },
   day: {
     date: '2026-11-05',
     runs: { succeeded: 12, failed: 4, timed_out: 0, canceled: 1 },
     run_failures: { compile: 3, tool_error: 1 },
     tool_invocations: { succeeded: 58, failed: 5, approval_required: 2 },
     approvals: { approved: 2, denied: 0, expired: 0 },
-    saved_functions: { saved: 3, called: 4, tasks_reusing_one: 0 },
+    private_tools: { saved: 3, called: 4, tasks_reusing_one: 0 },
+    shared_tools: { published: 1, removed: 0, called: 2 },
     tasks: { started: 5 },
     clients: { 'claude-code': 17 },
   },
   totals: {
     ...report.totals,
-    saved_functions: 3,
+    private_tools: 3,
+    shared_tools: 1,
     providers: { recipe: { github: 1, linear: 1 }, custom_openapi: 1, custom_mcp: 0 },
     accounts: { oauth: 2, secret: 1 },
   },

@@ -40,7 +40,7 @@ pub(crate) use termination::{
     Takeover, finish_run, finish_termination, finish_unstarted_run, interrupt_run,
     request_termination,
 };
-pub(crate) use usage::{first_success_before, private_tool_calls, run_endings};
+pub(crate) use usage::{first_success_before, private_tool_calls, run_endings, shared_tool_calls};
 
 #[derive(Iden)]
 enum ProgramRunRecords {

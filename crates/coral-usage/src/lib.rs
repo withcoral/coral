@@ -20,8 +20,9 @@
 //!   argument, a result, a credential or a name.
 //! - A report is stored as the JSON that is sent, and read back byte for
 //!   byte. The collector rejects any field it does not know, so the types in
-//!   `report` match its contract exactly. The contract names Private Tools
-//!   by their earlier name, Saved Functions, and a report keeps those keys.
+//!   `report` match its contract exactly. A report stored before an upgrade
+//!   is sent as stored, in its own version: the collector accepts each
+//!   version a release sent.
 //! - A process with a [`SendBlock`] never makes or sends a report: an
 //!   environment variable bootstrap read, or a source build. A day gets a
 //!   report only when a process that may send checked on it, so a day that

@@ -1,9 +1,12 @@
-//! Private Tool counts for anonymous usage data. Each read joins the
-//! caller's snapshot and returns counts or dates alone: never a path, a
+//! Private and Shared Tool counts for anonymous usage data. Each read joins
+//! the caller's snapshot and returns counts or dates alone: never a path, a
 //! source or a description. coral-tools keeps the lifecycle spellings
-//! these counts match. Shared Tools are not counted.
+//! these counts match.
 
 pub use crate::repository::{first_created_before, private_tool_total, private_tools_created};
+pub use crate::shared_tool_repository::{
+    shared_tool_total, shared_tools_published, shared_tools_removed,
+};
 
 #[cfg(test)]
 mod tests {

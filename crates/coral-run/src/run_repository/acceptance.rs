@@ -236,7 +236,7 @@ fn stored_usize(value: usize) -> Result<i64, Error> {
         .map_err(|_error| Error::CorruptData("Program limit exceeds durable range".to_string()))
 }
 
-#[derive(Iden)]
+#[derive(Iden, Clone, Copy)]
 pub(super) enum ProgramRunPrivateToolSnapshots {
     Table,
     RunId,
@@ -272,8 +272,8 @@ async fn insert_run_snapshot(
     Ok(())
 }
 
-#[derive(Iden)]
-enum ProgramRunSharedToolSnapshots {
+#[derive(Iden, Clone, Copy)]
+pub(super) enum ProgramRunSharedToolSnapshots {
     Table,
     RunId,
     WorkspaceId,

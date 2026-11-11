@@ -994,3 +994,72 @@ pub(crate) async fn list_lifecycle_event_page(
     };
     Ok(Some(SharedToolLifecycleEventPage { events, next_after }))
 }
+
+/// A Shared Tool's first revision: the publish that made it.
+const FIRST_REVISION: i64 = 1;
+
+/// Counts the live Shared Tools, across every Workspace. A removed one is a
+/// tombstone and does not count, and neither does a revision. The caller
+/// authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn shared_tool_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
+    let total = Query::select()
+        .expr(Expr::col(SharedToolRecords::Id).count())
+        .from(SharedToolRecords::Table)
+        .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
+        .to_owned();
+    count_of(tx, total).await
+}
+
+/// Counts the Shared Tools first published in `[start, end)` unix
+/// nanoseconds, across every Workspace: the publishes that made their first
+/// revision. A new revision or a restore does not count. The caller
+/// authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn shared_tools_published(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    let mut events = lifecycle_events_in(SharedToolLifecycleAction::Published, start, end);
+    events.and_where(Expr::col(SharedToolLifecycleEvents::Revision).eq(FIRST_REVISION));
+    count_of(tx, events).await
+}
+
+/// Counts the Shared Tools removed in `[start, end)` unix nanoseconds,
+/// across every Workspace. The caller authorizes the read.
+///
+/// # Errors
+///
+/// Returns a database failure.
+pub async fn shared_tools_removed(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    let events = lifecycle_events_in(SharedToolLifecycleAction::Removed, start, end);
+    count_of(tx, events).await
+}
+
+/// A query that counts the lifecycle Events of `action` in `[start, end)`.
+fn lifecycle_events_in(action: SharedToolLifecycleAction, start: i64, end: i64) -> SelectStatement {
+    Query::select()
+        .expr(Expr::col(SharedToolLifecycleEvents::Id).count())
+        .from(SharedToolLifecycleEvents::Table)
+        .and_where(Expr::col(SharedToolLifecycleEvents::Action).eq(action.as_storage_str()))
+        .and_where(Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos).gte(start))
+        .and_where(Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos).lt(end))
+        .to_owned()
+}
+
+/// The one count a counting query returns.
+async fn count_of(tx: &mut Transaction<'_>, query: SelectStatement) -> Result<u64, Error> {
+    let counted: Option<(i64,)> = tx.fetch_optional(query).await?;
+    Ok(counted.map_or(0, |(counted,)| u64::try_from(counted).unwrap_or_default()))
+}
