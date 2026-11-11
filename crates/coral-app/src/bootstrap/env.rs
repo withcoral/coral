@@ -71,9 +71,15 @@ pub(crate) fn run_executor_environment() -> Vec<(OsString, OsString)> {
     std::env::vars_os()
         .filter(|(name, _)| {
             name.to_str().is_some_and(|name| {
-                matches!(name, "TZ" | "LANG")
+                // Windows ignores the case of a variable's name.
+                let name = if cfg!(windows) {
+                    name.to_ascii_uppercase()
+                } else {
+                    name.to_owned()
+                };
+                matches!(name.as_str(), "TZ" | "LANG")
                     || name.starts_with("LC_")
-                    || (cfg!(windows) && name.eq_ignore_ascii_case("SystemRoot"))
+                    || (cfg!(windows) && name == "SYSTEMROOT")
             })
         })
         .collect()

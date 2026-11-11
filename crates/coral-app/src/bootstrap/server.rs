@@ -751,13 +751,6 @@ impl RunningServer {
         Arc::clone(&self.compiler)
     }
 
-    /// The local child supervisor, which starts a Run Executor when work
-    /// waits and no pull stream has room. None with the children turned off.
-    #[must_use]
-    pub fn local_run_executors(&self) -> Option<coral_run_executor::LocalRunExecutors> {
-        self.local_run_executors.clone()
-    }
-
     /// Publishes the canonical MCP origin after the companion listener binds.
     /// Bootstrap supplies the validated public origin or actual local listener address.
     /// # Panics

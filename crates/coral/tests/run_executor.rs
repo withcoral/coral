@@ -106,6 +106,16 @@ impl ProcessStarter for SharedStarter {
     }
 }
 
+/// A test that fails before the child retires leaves no process behind.
+impl Drop for SharedChild {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .kill();
+    }
+}
+
 impl LocalChild for SharedChild {
     fn close_stdin(&mut self) {
         self.0.lock().expect("the child").close_stdin();

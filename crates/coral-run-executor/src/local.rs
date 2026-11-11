@@ -153,11 +153,13 @@ impl<S: ProcessStarter> Supervisor<S> {
         ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tokio::select! {
+                // A stop wins over a request that waits beside it.
+                biased;
+                () = stopped.notified() => return,
                 request = requested.recv() => match request {
                     Some(()) => self.wanted = true,
                     None => return,
                 },
-                () = stopped.notified() => return,
                 _ = ticks.tick() => {}
             }
             let now = Instant::now();
@@ -214,7 +216,9 @@ impl<S: ProcessStarter> Supervisor<S> {
                     child.retiring = true;
                     self.start_failed(now);
                 }
-            } else if stream.is_some() && now.duration_since(child.last_work) >= IDLE {
+            } else if now.duration_since(child.last_work) >= IDLE {
+                // A child whose pull stream stays away that long holds
+                // nothing Coral can reach, so it retires too.
                 child.process.close_stdin();
                 child.retiring = true;
             }

@@ -163,6 +163,11 @@ async fn a_child_idle_for_five_minutes_retires_and_its_verifier_is_forgotten() {
     harness.request_room().await;
     let stream = harness.hello(0, MAX_RUNS_HELD);
 
+    // A request while a pull stream has room starts nothing.
+    harness.request_room().await;
+    sleep(2 * SECOND).await;
+    assert_eq!(harness.starts(), [0]);
+
     // A Run it holds keeps it, however long.
     sleep(4 * MINUTE).await;
     let run = vec![TakenRun::default()];

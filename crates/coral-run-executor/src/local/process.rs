@@ -49,7 +49,9 @@ impl ProcessStarter for ChildCommand {
             .take()
             .ok_or_else(|| io::Error::other("the child has no stdin"))
             .and_then(|mut stdin| {
-                stdin.write_all(format!("{}\n", token.expose()).as_bytes())?;
+                // The token is never copied into another buffer.
+                stdin.write_all(token.expose().as_bytes())?;
+                stdin.write_all(b"\n")?;
                 Ok(stdin)
             });
         match written {
