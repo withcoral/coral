@@ -11,6 +11,8 @@
   --coral-eyebrow: #d53c05;
   --coral-glow: #fdf2ef;
   --hairline: rgb(0 0 0 / 0.06);
+  --text-muted: rgb(0 0 0 / 0.6);
+  --text-positive: #15803d;
 }
 
 /* Inter set as withcoral.com sets it: a touch tighter, in black at 80%. */
@@ -175,7 +177,7 @@ kbd,
   margin-top: 0.375rem;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #15803d;
+  color: var(--text-positive);
 }
 
 .task-table p {
@@ -199,16 +201,16 @@ kbd,
   font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: rgb(0 0 0 / 0.6);
+  color: var(--text-muted);
   margin-right: 0.25rem;
 }
 
 .task-table .delta {
   display: block;
   font-size: 0.75rem;
-  color: rgb(0 0 0 / 0.6);
+  color: var(--text-muted);
 }
 
 .task-table .delta.down {
-  color: #15803d;
+  color: var(--text-positive);
 }
