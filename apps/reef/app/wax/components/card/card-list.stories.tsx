@@ -102,7 +102,7 @@ export const AsReactRouterLinks: Story = {
                 {...card}
                 as={Link}
                 prefetch="intent"
-                to={`/workspaces/default/functions/${id}`}
+                to={`/workspaces/default/tools/${id}`}
               />
             </Card.Item>
           ))}

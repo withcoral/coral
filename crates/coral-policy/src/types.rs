@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{CatalogSearchTarget, ToolKey, ToolPolicyFacts};
+use coral_catalog::{CatalogSearchTarget, ToolAccessState, ToolKey, ToolPolicyFacts};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -49,54 +49,66 @@ impl ToolPolicyTarget {
     }
 }
 
-/// Workspace decision for one exact Tool through one Provider.
+/// One Tool's row in a Provider's policy listing: what the row shows, its
+/// decision and, in the Private Provider, the Agent whose Private Tool it is
+/// (`None` for the reader's own, and for every other Provider's Tools).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedTool {
+    /// What the row shows.
+    pub listing: coral_catalog::ToolListing,
+    /// The Tool's decision now.
+    pub decision: ToolPolicyDecision,
+    /// The Agent whose Private Tool this is.
+    pub agent: Option<coral_workspace::PrincipalId>,
+}
+
+/// Who owns a Private Tool, which decides whether an Owner's exact rule on
+/// it applies (ADR 0034). An Owner sets rules on the Private Tools they can
+/// read: their own and every Agent's. No Owner can read a Member's, so a
+/// Member's Private Tool takes its declared default, even under a rule its
+/// author set while an Owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolAccessState {
-    /// Admission can continue without an Invocation Approval.
-    Enabled,
-    /// Admission requires an exact Invocation Approval.
-    ApprovalRequired,
-    /// Admission is rejected.
-    Disabled,
+pub enum PrivateToolOwner {
+    /// An Agent of the Workspace.
+    Agent,
+    /// A User who is a Workspace Owner now.
+    Owner,
+    /// A User who is not a Workspace Owner now.
+    Member,
 }
 
-impl ToolAccessState {
-    pub(crate) const fn as_storage_str(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-            Self::ApprovalRequired => "approval_required",
-            Self::Disabled => "disabled",
+impl PrivateToolOwner {
+    /// The owner of `kind` whose current Workspace role is `role`; an
+    /// Agent has none.
+    #[must_use]
+    pub fn of(
+        kind: coral_workspace::PrincipalKind,
+        role: Option<coral_workspace::WorkspaceRole>,
+    ) -> Self {
+        match (kind, role) {
+            (coral_workspace::PrincipalKind::Agent, _) => Self::Agent,
+            (coral_workspace::PrincipalKind::User, Some(coral_workspace::WorkspaceRole::Owner)) => {
+                Self::Owner
+            }
+            (coral_workspace::PrincipalKind::User, _) => Self::Member,
         }
     }
 
-    pub(crate) fn from_storage_str(value: &str) -> Result<Self, Error> {
-        match value {
-            "enabled" => Ok(Self::Enabled),
-            "approval_required" => Ok(Self::ApprovalRequired),
-            "disabled" => Ok(Self::Disabled),
-            _ => Err(Error::CorruptData(format!(
-                "Tool policy has unrecognized access state '{value}'"
-            ))),
-        }
+    /// Whether an Owner's exact rule applies to this owner's Private Tools.
+    #[must_use]
+    pub const fn takes_rules(self) -> bool {
+        !matches!(self, Self::Member)
     }
-}
 
-impl From<ToolAccessState> for coral_catalog::BuiltinAccessState {
-    fn from(state: ToolAccessState) -> Self {
-        match state {
-            ToolAccessState::Enabled => Self::Enabled,
-            ToolAccessState::ApprovalRequired => Self::ApprovalRequired,
-            ToolAccessState::Disabled => Self::Disabled,
-        }
-    }
-}
-
-impl From<coral_catalog::BuiltinAccessState> for ToolAccessState {
-    fn from(state: coral_catalog::BuiltinAccessState) -> Self {
-        match state {
-            coral_catalog::BuiltinAccessState::Enabled => Self::Enabled,
-            coral_catalog::BuiltinAccessState::ApprovalRequired => Self::ApprovalRequired,
-            coral_catalog::BuiltinAccessState::Disabled => Self::Disabled,
+    /// Whether an Owner's exact rule on an Authored Tool of `kind` applies
+    /// to a call by this caller. A Shared Tool is the Workspace's, so its
+    /// rule applies to every caller. A Private Tool is its caller's own, so
+    /// its rule applies only while the caller takes rules.
+    #[must_use]
+    pub const fn takes_rule_on(self, kind: coral_catalog::AuthoredToolKind) -> bool {
+        match kind {
+            coral_catalog::AuthoredToolKind::Shared => true,
+            coral_catalog::AuthoredToolKind::Private => self.takes_rules(),
         }
     }
 }
@@ -112,6 +124,13 @@ impl ExactToolRules {
         rules: BTreeMap<ProviderId, BTreeMap<ToolKey, ToolAccessState>>,
     ) -> Self {
         Self { rules }
+    }
+
+    /// Returns every exact rule, by Provider and Tool Key.
+    pub(crate) const fn by_provider(
+        &self,
+    ) -> &BTreeMap<ProviderId, BTreeMap<ToolKey, ToolAccessState>> {
+        &self.rules
     }
 
     /// Returns the Workspace decision for one Tool: its exact rule, else
@@ -130,6 +149,29 @@ impl ExactToolRules {
             .unwrap_or_else(|| crate::default_access_state(facts))
     }
 
+    /// Returns the Workspace decision for the Authored Tool `tool_key` of
+    /// its kind's Provider `provider_id`, whose current revision declares
+    /// `declared`, as [`crate::authored_tool_decision_in_transaction`]
+    /// decides a call: an Owner's exact rule when it applies, else
+    /// `declared`. A rule on a Shared Tool applies to every caller. A rule
+    /// on a Private Tool applies only while `caller`, whose Tool it is,
+    /// takes rules.
+    #[must_use]
+    pub fn authored_tool_access_state(
+        &self,
+        provider_id: &ProviderId,
+        tool_key: &ToolKey,
+        kind: coral_catalog::AuthoredToolKind,
+        declared: ToolAccessState,
+        caller: PrivateToolOwner,
+    ) -> ToolAccessState {
+        caller
+            .takes_rule_on(kind)
+            .then(|| self.rules.get(provider_id)?.get(tool_key).copied())
+            .flatten()
+            .unwrap_or(declared)
+    }
+
     /// Whether the Workspace disables `tool` of `provider_id`, so no
     /// Principal can call it, discovery leaves it out, and no count includes
     /// it.
@@ -138,8 +180,8 @@ impl ExactToolRules {
         self.access_state(provider_id, tool.key(), tool.policy_facts()) == ToolAccessState::Disabled
     }
 
-    /// Returns every Tool that an exact rule disables. No default is
-    /// `disabled`, so no other Tool is disabled.
+    /// Returns every Tool that an exact rule disables. No Provider Tool's
+    /// default is `disabled`, so no other Provider Tool is disabled.
     pub fn disabled(&self) -> impl Iterator<Item = (&ProviderId, &ToolKey)> {
         self.rules.iter().flat_map(|(provider_id, tools)| {
             tools

@@ -12,7 +12,6 @@ use axum::http::header;
 use axum::routing::get;
 use coral_auth as _;
 use coral_catalog::{OpenApiDocument, ToolKey};
-use coral_functions::SavedFunctionModule;
 use coral_mcp::{McpHttpConfig, McpModules, SUPPORTED_PROTOCOL_VERSIONS, start_local};
 use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
@@ -22,6 +21,7 @@ use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
 use coral_telemetry::testing::{ExportCapture, SpanCapture};
 use coral_test_support::TestDatabase;
+use coral_tools::PrivateToolModule;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
     local_organization_owner,
@@ -229,8 +229,8 @@ struct Tracer {
     runs: RunModule,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
-    /// Reads what Coral recorded about Saved Function changes.
-    saved_functions: SavedFunctionModule,
+    /// Reads what Coral recorded about Private Tool changes.
+    private_tools: PrivateToolModule,
     /// The search index. The Task save notifies it; the tracer Provider is
     /// published without the Provider workflow, so `start` indexes it with one
     /// reconcile pass.
@@ -265,13 +265,13 @@ impl Tracer {
             workspaces.clone(),
         );
         let policies = ToolPolicyModule::new(db.clone(), workspaces.clone());
-        let saved_functions = SavedFunctionModule::new(
+        let private_tools = PrivateToolModule::new(
             db.clone(),
             workspaces.clone(),
             coral_run::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
-        .expect("start Saved Function compiler");
+        .expect("start Private Tool compiler");
         let runs = RunModule::new(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
@@ -283,7 +283,7 @@ impl Tracer {
             coral_run::RunInbox::table(db.clone()),
         )
         .expect("start real Program runtime")
-        // Built-in Tools such as coral.workspace.search run only where Reef's
+        // Built-in Tools such as coral.search run only where Reef's
         // origin is named, as every Coral that runs Programs names it.
         .with_human_interface(
             coral_run::HumanInterfaceUrl::parse("https://reef.example.test")
@@ -294,19 +294,31 @@ impl Tracer {
         let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
         let workspace_b = create_workspace(&workspaces, &local_user, "Tracer B", 11, '2').await;
-        // Agents discover through the Built-in Provider's search, which
+        // Agents discover through the Built-in Provider's search and describe
+        // their Private Tools through the Private Provider, both of which
         // creating a Workspace in production installs.
         for (workspace, at) in [(&workspace_a, 13), (&workspace_b, 14)] {
             let mut transaction = db.begin().await.expect("begin the Built-in install");
             providers
-                .install_builtin_in_transaction(
+                .install_coral_defined_in_transaction(
                     &mut transaction,
                     &change(local_user.clone(), at, '2'),
                     workspace,
+                    coral_provider::CoralDefinedProvider::Builtin,
                 )
                 .await
                 .expect("install the Built-in Provider")
                 // The reconcile below indexes it.
+                .skip_search();
+            providers
+                .install_coral_defined_in_transaction(
+                    &mut transaction,
+                    &change(local_user.clone(), at, '2'),
+                    workspace,
+                    coral_provider::CoralDefinedProvider::Private,
+                )
+                .await
+                .expect("install the Private Provider")
                 .skip_search();
             transaction
                 .commit()
@@ -326,8 +338,8 @@ impl Tracer {
         index.reconcile().await;
         // Programs save through the one module the Task commands use, and
         // notify the same index.
-        let runs = runs.with_saved_functions(coral_run::SavedFunctions::new(
-            saved_functions.clone(),
+        let runs = runs.with_private_tools(coral_run::PrivateTools::new(
+            private_tools.clone(),
             index.clone(),
         ));
         let agent = workspaces
@@ -374,7 +386,7 @@ impl Tracer {
             runs,
             policies,
             approvals,
-            saved_functions,
+            private_tools,
             index,
         }
     }
@@ -506,7 +518,7 @@ async fn start_task(client: &SdkClient, goal: &str) -> String {
 }
 
 /// Runs `program` in `task` and returns its Final Value, as an agent reads
-/// what a Program found with `coral.workspace.search`.
+/// what a Program found with `coral.search`.
 async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
     let mut update = structured(
         &call(
@@ -538,15 +550,15 @@ async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
 }
 
 /// Calls the Built-in authoring `tool` with `arguments` from a Program in
-/// `task`, as an agent saves or deletes a Saved Function, and returns the
-/// Tool Result's data or the failure the Program caught.
+/// `task`, as an agent adds, updates or removes a Private Tool, and returns
+/// the Tool Result's data or the failure the Program caught.
 async fn authoring_value(client: &SdkClient, task: &str, tool: &str, arguments: &Value) -> Value {
     program_value(client, task, &authoring_program(tool, arguments)).await
 }
 
 /// Saves the function `name` that `declarations` declare at the top level
-/// of a Program in `task`, as an agent saves a Saved Function, and returns
-/// the Tool Result's data or the failure the Program caught.
+/// of a Program in `task`, as an agent adds a Private Tool, and returns the
+/// Tool Result's data or the failure the Program caught.
 async fn saving_value(client: &SdkClient, task: &str, save: &Save<'_>) -> Value {
     program_value(client, task, &save.program()).await
 }
@@ -561,14 +573,14 @@ struct Save<'a> {
 }
 
 impl Save<'_> {
-    /// The Program that declares the function and saves it, as
+    /// The Program that declares the function and adds it, as
     /// [`authoring_program`] calls a Tool.
     fn program(&self) -> String {
         format!(
             "{}\n{}",
             self.declarations,
             authored_call(
-                "saveFunction",
+                "addCustomTool",
                 &format!(
                     "{{ path: {}, description: {}, source: {} }}",
                     json!(self.path),
@@ -580,7 +592,7 @@ impl Save<'_> {
     }
 }
 
-/// A Program that calls `coral.workspace.<tool>` with `arguments` and
+/// A Program that calls `coral.<tool>` with `arguments` and
 /// returns the Tool Result's data, or the code and message it caught.
 fn authoring_program(tool: &str, arguments: &Value) -> String {
     authored_call(tool, &arguments.to_string())
@@ -589,7 +601,7 @@ fn authoring_program(tool: &str, arguments: &Value) -> String {
 /// [`authoring_program`] with `arguments` as TypeScript source.
 fn authored_call(tool: &str, arguments: &str) -> String {
     format!(
-        "try {{ return (await coral.workspace.{tool}({arguments})).data; }} \
+        "try {{ return (await coral.{tool}({arguments})).data; }} \
          catch (error) {{ if (!(error instanceof coral.ToolError)) throw error; \
          return {{ code: error.code, message: error.message }}; }}"
     )
@@ -801,11 +813,11 @@ async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_ver
             "`wait`",
             "`next_cursor`",
             "`url`",
-            "complete literal Call Path",
+            "complete literal call path",
             "`fetch`",
             "`setTimeout`",
             "`coral.ToolError`",
-            "`coral.workspace.search`",
+            "`coral.search`",
             "`invoking_user`",
         ] {
             assert!(
@@ -1018,7 +1030,7 @@ async fn check_raw_oversized_items(endpoint: &str, task: &str, version: &Protoco
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table of failure projections: Program, Tool, aggregate, and Saved Function errors"
+    reason = "one table of failure projections: Program, Tool, aggregate, and Private Tool errors"
 )]
 async fn program_failures_are_run_updates_with_existing_error_facts() {
     capture();
@@ -1115,7 +1127,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     assert_eq!(
         structured(&refused)["message"],
         "Program admission failed: Program:1:7: coral.providers.missing.tool names no Tool \
-         that you can call. Find one with coral.workspace.search."
+         that you can call. Find one with coral.search."
     );
 
     // A path built as the Program runs fails when called.
@@ -1145,7 +1157,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         assert_eq!(
             error["message"],
             "coral.providers.missing.tool names no Tool that you can call. Find one with \
-             coral.workspace.search."
+             coral.search."
         );
         assert_eq!(
             error.pointer("/frames/0/source").unwrap_or(&Value::Null),
@@ -1318,32 +1330,37 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         &Save {
             path: "diagnostics.fail",
             description: "Fail with an authored message",
-            declarations: "function fail() { throw new Error('saved-function-canary'); }",
+            declarations: "function fail() { throw new Error('private-tool-canary'); }",
             name: "fail",
         },
     )
     .await;
     assert_eq!(
         saved_failure.get("call_path"),
-        Some(&json!("coral.functions.diagnostics.fail")),
+        Some(&json!("coral.private.diagnostics.fail")),
         "{saved_failure}"
     );
     let linked_failure = call(
         &client_a,
         "exec",
         json!({
-            "task_id":task_id, "intent":"Observe the Saved Function failure", "wait_ms":5000,
-            "program":"return coral.functions.diagnostics.fail();"
+            "task_id":task_id, "intent":"Observe the Private Tool failure", "wait_ms":5000,
+            "program":"return coral.private.diagnostics.fail();"
         }),
     )
     .await;
+    // The throw reaches the caller as a Tool Error at its call site.
     assert_eq!(
         structured(&linked_failure).pointer("/failure/error/frames/0/source"),
-        Some(&json!("Saved Function coral.functions.diagnostics.fail"))
+        Some(&json!("Program"))
+    );
+    assert_eq!(
+        structured(&linked_failure).pointer("/failure/error/tool/code"),
+        Some(&json!("tool_failed"))
     );
     assert_eq!(
         structured(&linked_failure).pointer("/failure/error/message"),
-        Some(&json!("saved-function-canary"))
+        Some(&json!("private-tool-canary"))
     );
 }
 
@@ -1382,8 +1399,8 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     let found = program_value(
         &client_a,
         &task_id,
-        r#"const found = await coral.workspace.search({ query: "getForecast" });
-const read = await coral.workspace.search({
+        r#"const found = await coral.search({ query: "getForecast" });
+const read = await coral.search({
   paths: ["coral.providers.weather.getForecast", "coral.providers.weather.getForcast"],
 });
 return { found: found.data, read: read.data };"#,
@@ -1470,33 +1487,33 @@ return { found: found.data, read: read.data };"#,
     .await;
     assert_eq!(
         saved.get("call_path"),
-        Some(&json!("coral.functions.weather.currentTemperature")),
+        Some(&json!("coral.private.weather.currentTemperature")),
         "{saved}"
     );
     assert!(saved.get("declaration").is_some_and(Value::is_string));
     // The save notifies search; wait for its write, with no reconcile pass.
     tracer.index.settled().await;
-    let searched_function = program_value(
+    let searched_private_tool = program_value(
         &client_a,
         &task_id,
-        r#"return (await coral.workspace.search({ query: "currentTemperature", limit: 1 })).data;"#,
+        r#"return (await coral.search({ query: "currentTemperature", limit: 1 })).data;"#,
     )
     .await;
-    let searched_function = &searched_function;
-    let function_result = searched_function["hits"]
+    let searched_private_tool = &searched_private_tool;
+    let private_tool_result = searched_private_tool["hits"]
         .as_array()
         .and_then(|items| items.first())
-        .expect("Saved Function search result");
+        .expect("Private Tool search result");
     assert_eq!(
-        function_result["call_path"],
-        "coral.functions.weather.currentTemperature"
+        private_tool_result["call_path"],
+        "coral.private.weather.currentTemperature"
     );
-    assert!(function_result.get("source").is_none());
-    assert!(function_result["signature_line"].is_string());
+    assert!(private_tool_result.get("source").is_none());
+    assert!(private_tool_result["signature_line"].is_string());
     for absent in ["provider_display_name", "hints", "typescript_declaration"] {
         assert!(
-            function_result.get(absent).is_none(),
-            "a Saved Function hit has no {absent}"
+            private_tool_result.get(absent).is_none(),
+            "a Private Tool hit has no {absent}"
         );
     }
 
@@ -1506,7 +1523,7 @@ return { found: found.data, read: read.data };"#,
         json!({
             "task_id": task_id,
             "intent": "Call the reusable weather helper",
-            "program": "return await coral.functions.weather.currentTemperature();",
+            "program": "return await coral.private.weather.currentTemperature();",
             "run_timeout_ms": 60_000,
             "wait_ms": 5_000
         }),
@@ -1543,13 +1560,13 @@ return { found: found.data, read: read.data };"#,
     let deleted = authoring_value(
         &client_a,
         &task_id,
-        "deleteFunction",
+        "removeCustomTool",
         &json!({ "path": "weather.currentTemperature" }),
     )
     .await;
     assert_eq!(
         deleted.get("call_path"),
-        Some(&json!("coral.functions.weather.currentTemperature")),
+        Some(&json!("coral.private.weather.currentTemperature")),
         "{deleted}"
     );
 
@@ -1559,7 +1576,7 @@ return { found: found.data, read: read.data };"#,
     })).await;
     assert_eq!(structured(&oversized)["code"], "invalid_input");
     // A function that does not compile fails the Program that saves it.
-    let invalid_function = call(
+    let invalid_private_tool = call(
         &client_a,
         "exec",
         json!({
@@ -1575,9 +1592,9 @@ return { found: found.data, read: read.data };"#,
     )
     .await;
     assert_eq!(
-        structured(&invalid_function)["code"],
+        structured(&invalid_private_tool)["code"],
         "program_admission_failed",
-        "{invalid_function:?}"
+        "{invalid_private_tool:?}"
     );
     for invalid in [" ".to_string(), "bad\0text".to_string(), "🪸".repeat(4097)] {
         let rejected = call(
@@ -1662,7 +1679,7 @@ async fn a_failed_namespace_lookup_still_lists_every_tool() {
 
 /// `exec`'s description teaches discovery with one example. Its first
 /// Program type-checks against the declaration Coral publishes for
-/// `coral.workspace.search`, and runs against a real search, so the fields
+/// `coral.search`, and runs against a real search, so the fields
 /// it names are the fields a Program reads.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_exec_example_type_checks_and_reads_a_real_search() {
@@ -1710,7 +1727,7 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         list.lines()
             .map(|line| line.split('\t').next().expect("a namespace"))
             .collect::<Vec<_>>(),
-        ["acme_code", "coral.workspace", "weather"],
+        ["acme_code", "coral", "weather"],
         "{list}"
     );
 
@@ -1741,11 +1758,13 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         else {
             panic!("three fields of a hit: {hit}");
         };
-        // The filter keeps `acme_code`'s tools and Saved Functions.
+        // The filter keeps `acme_code`'s tools, shared tools and the
+        // caller's private tools.
         assert!(
             call_path.as_str().is_some_and(|path| {
                 path.starts_with("coral.providers.acme_code.")
-                    || path.starts_with("coral.functions.")
+                    || path.starts_with("coral.private.")
+                    || path.starts_with("coral.shared.")
             }),
             "{hit}"
         );
@@ -2890,7 +2909,7 @@ impl RawSession {
     }
 
     /// Runs `program` in `task` and returns its Final Value, as an agent
-    /// reads what a Program found with `coral.workspace.search`.
+    /// reads what a Program found with `coral.search`.
     async fn program_value(&self, task: &str, program: &str) -> Value {
         let mut update = self
             .tool(

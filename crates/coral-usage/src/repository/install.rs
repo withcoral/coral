@@ -8,6 +8,8 @@ use crate::Error;
 use crate::SentReport;
 use crate::day::{day_string, parse_day};
 
+/// The two Private Tool milestone columns keep the names migration 0060
+/// gave them, from when a Private Tool was a Saved Function.
 #[derive(Iden)]
 enum UsageInstalls {
     Table,
@@ -50,8 +52,8 @@ pub(crate) struct Install {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MilestoneDays {
     pub first_successful_run: Option<NaiveDate>,
-    pub first_saved_function: Option<NaiveDate>,
-    pub function_reused: Option<NaiveDate>,
+    pub first_private_tool: Option<NaiveDate>,
+    pub private_tool_reused: Option<NaiveDate>,
 }
 
 /// A report waiting to be sent.
@@ -85,8 +87,8 @@ impl TryFrom<InstallRow> for Install {
             sharing_since: row.changed_at_unix_nanos,
             milestones: MilestoneDays {
                 first_successful_run: day(row.first_successful_run_day)?,
-                first_saved_function: day(row.first_saved_function_day)?,
-                function_reused: day(row.function_reused_day)?,
+                first_private_tool: day(row.first_saved_function_day)?,
+                private_tool_reused: day(row.function_reused_day)?,
             },
         })
     }
@@ -266,12 +268,12 @@ pub(crate) async fn keep_milestones(
                 UsageInstalls::FirstSavedFunctionDay,
                 keep(
                     UsageInstalls::FirstSavedFunctionDay,
-                    days.first_saved_function,
+                    days.first_private_tool,
                 ),
             )
             .value(
                 UsageInstalls::FunctionReusedDay,
-                keep(UsageInstalls::FunctionReusedDay, days.function_reused),
+                keep(UsageInstalls::FunctionReusedDay, days.private_tool_reused),
             )
             .to_owned(),
     )

@@ -90,9 +90,9 @@ pub enum AttemptKind {
     Search,
     /// One exact current description.
     Describe,
-    /// Non-executing Saved Function save.
+    /// Non-executing Private Tool save.
     Save,
-    /// Current Saved Function deletion.
+    /// Current Private Tool deletion.
     Delete,
     /// Program admission, not its execution outcome.
     Submit,
@@ -154,8 +154,8 @@ pub enum AttemptEvidence {
     },
     /// Durable Run acceptance. Execution results belong to Run.
     Run(coral_run::RunId),
-    /// Saved Function identity. Current definition and lifecycle evidence remain independent.
-    SavedFunction(coral_functions::SavedFunctionId),
+    /// Private Tool identity. Current definition and lifecycle evidence remain independent.
+    PrivateTool(coral_tools::PrivateToolId),
     /// Known rejection without an accepted owning mutation.
     Rejected(AttemptFailure),
 }
@@ -164,7 +164,7 @@ impl AttemptEvidence {
     pub(crate) const fn outcome(&self) -> AttemptOutcome {
         match self {
             Self::Rejected(_) => AttemptOutcome::Rejected,
-            Self::Discovery { .. } | Self::Run(_) | Self::SavedFunction(_) => {
+            Self::Discovery { .. } | Self::Run(_) | Self::PrivateTool(_) => {
                 AttemptOutcome::Succeeded
             }
         }

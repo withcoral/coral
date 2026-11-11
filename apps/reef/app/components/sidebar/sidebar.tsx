@@ -129,14 +129,14 @@ function workspaceDestinations(
       label: 'Activity',
       also: `${w}/runs/`,
     },
-    { to: `${w}/providers`, icon: 'Plug', label: 'Providers' },
+    // Each provider's own pages sit under its resource path, outside Tools.
+    { to: `${w}/tools`, icon: 'Wrench', label: 'Tools', also: `${w}/providers/` },
     {
       to: `${w}/accounts`,
       icon: 'KeyRound',
       label: 'Accounts',
       pending: pending(count?.connections, 'connection request'),
     },
-    { to: `${w}/functions`, icon: 'SquareFunction', label: 'Functions' },
     ...(owner ? [{ to: `${w}/agents`, icon: 'Bot' as const, label: 'Agents' }] : []),
     // A local deployment has no other people to manage.
     ...(people ? [{ to: `${w}/members`, icon: 'Users' as const, label: 'Members' }] : []),

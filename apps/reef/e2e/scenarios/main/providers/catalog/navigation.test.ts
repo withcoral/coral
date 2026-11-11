@@ -11,7 +11,7 @@ import {
 test('Workspace tools preserve deep links, settings, and independent filters', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     let installation = ''
-    let providersPage = ''
+    let toolsPage = ''
     const table = page.getByRole('table', { name: 'Tools', exact: true })
     const filter = page.getByRole('searchbox', { name: 'Filter tools', exact: true })
     await step('Open the workspace tools table', async () => {
@@ -25,8 +25,8 @@ test('Workspace tools preserve deep links, settings, and independent filters', a
         }),
         'catalog',
       )
-      providersPage = `/workspaces/${workspace}/providers`
-      await page.goto(providersPage)
+      toolsPage = `/workspaces/${workspace}/tools`
+      await page.goto(toolsPage)
       await table.waitFor()
       // Coral's own provider lists first, so find this provider by its row.
       const action = await table
@@ -120,30 +120,37 @@ test('Workspace tools preserve deep links, settings, and independent filters', a
       expect(
         await page.getByRole('checkbox', { name: 'Select works', exact: true }).isChecked(),
       ).toBe(true)
-      // All providers is the bare list address, and shows every provider.
-      await railEntry('All providers').click()
-      await page.waitForURL((url) => url.pathname === providersPage)
-      await expect.poll(() => railEntry('All providers').getAttribute('aria-current')).toBe('page')
+      // All tools is the page's own address, and shows every group.
+      await railEntry('All tools').click()
+      await page.waitForURL((url) => url.pathname === toolsPage)
+      await expect.poll(() => railEntry('All tools').getAttribute('aria-current')).toBe('page')
       await group('Second catalog').waitFor()
       expect(await group('Catalog').count()).toBe(1)
+      // A group heading's name opens the group's own tab, as its rail entry does.
+      await group('Second catalog')
+        .getByRole('link', { name: 'Second catalog', exact: true })
+        .click()
+      await page.waitForURL((url) => !url.pathname.startsWith(toolsPage))
+      await expect.poll(() => railEntry('Second catalog').getAttribute('aria-current')).toBe('page')
+      await expect.poll(() => group('Catalog').count()).toBe(0)
     })
-    await step('Open a tool from All providers and stay on All providers', async () => {
+    await step('Open a tool from All tools and stay on All tools', async () => {
       await page.setViewportSize({ width: 1440, height: 1000 })
-      await page.goto(providersPage)
+      await page.goto(toolsPage)
       await table.waitFor()
       await table.getByRole('link', { name: 'works', exact: true }).click()
       const drawer = page.getByRole('dialog', { name: 'works', exact: true })
       await drawer.waitFor()
-      // Closing returns to the tab the drawer opened over, every provider's list.
+      // Closing returns to the tab the drawer opened over, every group's list.
       await drawer.getByRole('button', { name: 'Close', exact: true }).click()
-      await page.waitForURL((url) => url.pathname === providersPage)
+      await page.waitForURL((url) => url.pathname === toolsPage)
       await table.getByRole('rowgroup', { name: 'Second catalog', exact: true }).waitFor()
       await table.getByRole('rowgroup', { name: 'Catalog', exact: true }).waitFor()
     })
     await step('A new tab opens at its top', async () => {
       // A short viewport lets the table scroll.
       await page.setViewportSize({ width: 1440, height: 600 })
-      await page.goto(providersPage)
+      await page.goto(toolsPage)
       await table.waitFor()
       await table.evaluate((element) => {
         element.scrollTop = 300
@@ -153,7 +160,7 @@ test('Workspace tools preserve deep links, settings, and independent filters', a
         .getByRole('navigation', { name: 'installed providers', exact: true })
         .getByRole('link', { name: /\bSecond catalog\b(?!.* settings$)/ })
         .click()
-      await page.waitForURL((url) => url.pathname !== providersPage)
+      await page.waitForURL((url) => url.pathname !== toolsPage)
       await expect.poll(() => table.evaluate((element) => element.scrollTop)).toBe(0)
       await page.setViewportSize({ width: 1440, height: 1000 })
     })

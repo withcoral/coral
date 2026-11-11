@@ -12,6 +12,7 @@ import {
   ActivityInvocationState,
   ActivityInvocationOutcome,
   ActivityLogLevel,
+  ActivityToolKind,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
@@ -83,14 +84,17 @@ const tool = {
 type StoredLocation = {
   document:
     | { case: 'program'; value: Record<string, never> }
-    | { case: 'savedFunction'; value: string }
+    | { case: 'privateTool'; value: string }
     | { case: undefined; value?: undefined }
   line: number
   column: number
 }
-const linkedSnapshot = `${workspace}/savedFunctions/00000000-0000-4000-8000-000000000009`
+// The tool call whose body made a call, as Coral sends it.
+type ActivityParent = { callPath: string; toolKind: ActivityToolKind; sharedToolRevision: bigint }
+const callerInvocation = `${workspace}/invocations/00000000-0000-4000-8000-000000000010`
+const linkedSnapshot = `${workspace}/privateTools/00000000-0000-4000-8000-000000000009`
 const inSnapshot: StoredLocation = {
-  document: { case: 'savedFunction', value: linkedSnapshot },
+  document: { case: 'privateTool', value: linkedSnapshot },
   line: 2,
   column: 11,
 }
@@ -307,7 +311,7 @@ function catalog(
   options: {
     namespaces?: string[]
     tools?: string[]
-    functions?: string[]
+    privateTools?: string[]
     concealed?: boolean
   } = {},
 ): Handlers {
@@ -329,9 +333,9 @@ function catalog(
         })),
       }),
     },
-    savedFunctions: {
-      listSavedFunctions: () => ({
-        savedFunctions: (options.functions ?? []).map((path) => ({ path })),
+    privateTools: {
+      listPrivateTools: () => ({
+        privateTools: (options.privateTools ?? []).map((path) => ({ path })),
       }),
     },
   }
@@ -465,9 +469,10 @@ function runDetail(
           accountConnection:
             options.retainedConnection && input.accountConnection === connection ? connection : '',
           submittedSource: 'return secretSource;',
-          linkedFunctions: [
+          linkedSharedTools: [],
+          linkedPrivateTools: [
             {
-              savedFunction: 'saved-before-deletion',
+              privateTool: 'saved-before-deletion',
               path: 'old',
               source: 'export default () => 41',
             },
@@ -533,6 +538,8 @@ function invocationDetail(
     /** Retains a shared account connection request instead of an approval. */
     connection?: boolean
     location?: StoredLocation
+    /** The tool call whose body made this one, as Coral sends it. */
+    parent?: ActivityParent
     invocationUnavailable?: Code
   } = {},
 ): Handlers {
@@ -550,6 +557,7 @@ function invocationDetail(
             outcome: options.resolved ? ActivityInvocationOutcome.UPSTREAM_OUTCOME : undefined,
             requiresAction: !options.ordinary,
             sourceLocation: options.location,
+            parent: options.parent && { invocation: callerInvocation, ...options.parent },
           },
           argumentsJson: '{"to":"private@example.com"}',
           outcome: options.resolved
@@ -653,6 +661,121 @@ function revealLink(page: ActivityPage, location: string): URL {
   const href = activityNavigation(page, pathname, search).revealHref(page.selectedRow!)
   return new URL(href, 'http://reef')
 }
+
+/** A Run whose program calls `outer`, whose body calls `inner`, whose body calls `leaf`. */
+const nested = {
+  outer: `${workspace}/invocations/00000000-0000-4000-8000-000000000020`,
+  inner: `${workspace}/invocations/00000000-0000-4000-8000-000000000021`,
+  leaf: `${workspace}/invocations/00000000-0000-4000-8000-000000000022`,
+}
+function nestedCalls(): Handlers {
+  const call = (name: string, callPath: string, parent?: string) => ({
+    ...tool,
+    name,
+    callPath,
+    requiresAction: false,
+    state: ActivityInvocationState.ENDED,
+    outcome: ActivityInvocationOutcome.UPSTREAM_OUTCOME,
+    toolKind: callPath.startsWith('coral.private.')
+      ? ActivityToolKind.PRIVATE
+      : ActivityToolKind.PROVIDER,
+    parent: parent
+      ? {
+          invocation: parent,
+          callPath: parent === nested.outer ? 'coral.private.outer' : 'coral.private.inner',
+          toolKind: ActivityToolKind.PRIVATE,
+          sharedToolRevision: 0n,
+        }
+      : undefined,
+  })
+  const calls = {
+    [nested.outer]: call(nested.outer, 'coral.private.outer'),
+    [nested.inner]: call(nested.inner, 'coral.private.inner', nested.outer),
+    [nested.leaf]: call(nested.leaf, 'coral.providers.mail.send', nested.inner),
+  }
+  const inside = (parent?: string) =>
+    Object.values(calls).filter((value) => value.parent?.invocation === parent)
+  return {
+    activity: {
+      browseRunEntries: (input) => {
+        const level = input.level
+        const rows =
+          level?.case === 'parent'
+            ? inside(level.value)
+            : level?.case === 'topLevel'
+              ? inside(undefined)
+              : Object.values(calls)
+        return {
+          run: execution,
+          entries: rows.map((value) => ({ record: { case: 'invocation' as const, value } })),
+          total: BigInt(rows.length),
+          offset: 0n,
+          nextAfter: 0n,
+          hasMore: false,
+        }
+      },
+      inspectInvocation: (input) => ({
+        invocation: calls[input.name] ?? refuse('tool unavailable', Code.NotFound),
+        argumentsJson: '{}',
+        requests: [],
+      }),
+    },
+  }
+}
+/** Each window `loadActivity` read, by the record that holds it, with its anchor. */
+function windowsRead(calls: { method: string; input: unknown }[]) {
+  return calls.flatMap(({ method, input }) => {
+    if (method !== 'entries') return []
+    const { level, anchor } = input as {
+      level?: { case?: string; value?: unknown }
+      anchor: string
+    }
+    return [[level?.case === 'parent' ? level.value : 'run', anchor]]
+  })
+}
+
+describe('tool calls inside tool calls', () => {
+  // Catches: a Run that lists the calls a tool's body made beside the program's own, or an
+  // expanded call that lists none, or another call's.
+  it('lists each call inside the tool call whose body made it', async () => {
+    const { api, calls } = coral(list(), taskDetail(), nestedCalls())
+    // Listed inner first: a call loads once the call that holds it has.
+    const page = await loadActivity(
+      request({ expand: [task, run, nested.inner, nested.outer], tree: '1' }),
+      api,
+      { scope },
+    )
+    const names = (holder: string) => page.branches[holder]?.rows.map((row) => row.name)
+    expect(names(run)).toEqual([nested.outer])
+    expect(names(nested.outer)).toEqual([nested.inner])
+    expect(names(nested.inner)).toEqual([nested.leaf])
+    expect(windowsRead(calls).map(([holder]) => holder)).toEqual([
+      'run',
+      nested.outer,
+      nested.inner,
+    ])
+  })
+  // Catches: a collapsed tool call that still reads the calls inside it.
+  it('reads nothing inside a tool call you have not expanded', async () => {
+    const { api, calls } = coral(list(), taskDetail(), nestedCalls())
+    const page = await loadActivity(request({ expand: [task, run], tree: '1' }), api, { scope })
+    expect(page.branches[nested.outer]).toBeUndefined()
+    expect(windowsRead(calls).map(([holder]) => holder)).toEqual(['run'])
+  })
+  // Catches: a link to a nested call that opens its Run but not the calls that hold it, so the
+  // call it names does not show.
+  it('opens every tool call that holds a linked call, each at the call inside it', async () => {
+    const { api, calls } = coral(list(), taskDetail(), nestedCalls(), runDetail())
+    const page = await loadActivity(request({ record: nested.leaf }), api, { scope })
+    expect(page.expanded).toEqual(expect.arrayContaining([run, nested.outer, nested.inner]))
+    expect(windowsRead(calls)).toEqual([
+      ['run', nested.outer],
+      [nested.outer, nested.inner],
+      [nested.inner, nested.leaf],
+    ])
+    expect(page.branches[nested.inner]?.rows.map((row) => row.name)).toEqual([nested.leaf])
+  })
+})
 
 describe('hierarchical activity through the private server interface', () => {
   it('selects and loads the exact tool approval once, but never chooses another action during observation', async () => {
@@ -1271,31 +1394,36 @@ describe('hierarchical activity through the private server interface', () => {
   })
   it.each([
     {
-      name: 'links your own Saved Function hit to the current function',
-      functions: ['github.openIssuesByLabel'],
-      href: `/${workspace}/functions/github.openIssuesByLabel`,
+      name: 'links your own Private Tool hit to the current private tool',
+      privateTools: ['github.openIssuesByLabel'],
+      href: `/${workspace}/tools/private/github.openIssuesByLabel`,
       reads: 1,
     },
-    { name: 'leaves a deleted Saved Function without a link', functions: [], href: null, reads: 1 },
     {
-      // Reef opens only your own functions, and the Agent owns the function that its search found.
-      name: "leaves an Agent's Saved Function hit without a link",
-      functions: ['github.openIssuesByLabel'],
+      name: 'leaves a deleted Private Tool without a link',
+      privateTools: [],
+      href: null,
+      reads: 1,
+    },
+    {
+      // Reef opens only your own private tools, and the Agent owns the one that its search found.
+      name: "leaves an Agent's Private Tool hit without a link",
+      privateTools: ['github.openIssuesByLabel'],
       agentRun: true,
       href: null,
       reads: 0,
     },
-  ])('$name', async ({ functions, agentRun, href, reads }) => {
+  ])('$name', async ({ privateTools, agentRun, href, reads }) => {
     const { api, calls } = coral(
       list(),
       interactionDetail({ response: stored.mixed, agentRun }),
-      catalog({ namespaces: ['github'], functions }),
+      catalog({ namespaces: ['github'], privateTools }),
     )
     const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
-    const [savedFunction, merge] = searchHits(page)
-    expect(savedFunction).toMatchObject({ kind: 'saved_function', currentHref: href })
+    const [privateTool, merge] = searchHits(page)
+    expect(privateTool).toMatchObject({ kind: 'private_tool', currentHref: href })
     expect(merge.currentHref).toBe(`/${workspace}/providers/${githubProvider}/tools/pulls.merge`)
-    expect(loaded(calls, 'listSavedFunctions')).toBe(reads)
+    expect(loaded(calls, 'listPrivateTools')).toBe(reads)
   })
   it('links a historical description to the current tool', async () => {
     const { api } = coral(
@@ -1394,7 +1522,7 @@ describe('hierarchical activity through the private server interface', () => {
     for (const record of shown)
       expect(record).toMatchObject({
         sourceLocation: {
-          document: { kind: 'saved_function', savedFunction: linkedSnapshot },
+          document: { kind: 'private_tool', privateTool: linkedSnapshot },
           line: 2,
           column: 11,
         },
@@ -1423,6 +1551,47 @@ describe('hierarchical activity through the private server interface', () => {
     expect(page.selectedRow?.kind === 'invocation' && page.selectedRow.sourceLocation).toEqual(
       expected,
     )
+  })
+  // Catches: a call a tool's body made that reads as the program's own, or a revision shown
+  // for a tool that has none.
+  it.each<[string, ActivityParent | undefined, unknown]>([
+    [
+      'a private tool',
+      {
+        callPath: 'coral.private.mail.remind',
+        toolKind: ActivityToolKind.PRIVATE,
+        sharedToolRevision: 0n,
+      },
+      { invocation: callerInvocation, callPath: 'coral.private.mail.remind', toolKind: 'private' },
+    ],
+    [
+      'a shared tool',
+      {
+        callPath: 'coral.shared.mail.remind',
+        toolKind: ActivityToolKind.SHARED,
+        sharedToolRevision: 3n,
+      },
+      {
+        invocation: callerInvocation,
+        callPath: 'coral.shared.mail.remind',
+        toolKind: 'shared',
+        sharedToolRevision: '3',
+      },
+    ],
+    [
+      'a tool kind this client does not know',
+      { callPath: 'coral.later.remind', toolKind: 99 as ActivityToolKind, sharedToolRevision: 3n },
+      { invocation: callerInvocation, callPath: 'coral.later.remind', toolKind: 'unknown' },
+    ],
+    ['the program itself', undefined, undefined],
+  ])('reads a tool called from %s', async (_, parent, expected) => {
+    const { api } = coral(
+      list(),
+      invocationDetail({ resolved: true, ordinary: true, parent }),
+      runDetail(),
+    )
+    const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
+    expect(page.selectedRow?.kind === 'invocation' && page.selectedRow.parent).toEqual(expected)
   })
   // Catches: an optional Run read that takes the selected record down on a passing fault, or
   // that hides an expired session, a refused request or a cancelled load behind the record.
@@ -1594,7 +1763,8 @@ describe('hierarchical activity through the private server interface', () => {
     expect(present.detail).toMatchObject({
       kind: 'run',
       terminal: { kind: 'succeeded', finalValue: 'null' },
-      linkedFunctions: [{ source: 'export default () => 41' }],
+      linkedSharedTools: [],
+      linkedPrivateTools: [{ source: 'export default () => 41' }],
     })
     expect(present.selected).toBe(run)
     expect(present.selectedRow).toMatchObject({ kind: 'run', name: run })
@@ -1862,7 +2032,7 @@ describe('hierarchical activity through the private server interface', () => {
   it.each([
     { record: 'bad' },
     { anchor: invocation },
-    { expand: invocation },
+    { expand: `${run}/events/3` },
     { expand: [task, run], [`cursor.${run}`]: '-1' },
     { expand: [task, run], [`cursor.${run}`]: '18446744073709551616' },
     { expand: Array.from({ length: 21 }, (_, i) => `${workspace}/tasks/${i}`) },
@@ -2954,7 +3124,8 @@ function pagedRun(
             actionPage: { actions: page.actions, total, nextAction: page.next },
           },
           submittedSource: 'return null;',
-          linkedFunctions: [],
+          linkedSharedTools: [],
+          linkedPrivateTools: [],
           events: [],
         }
       },

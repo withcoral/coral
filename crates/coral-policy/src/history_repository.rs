@@ -38,7 +38,10 @@ pub fn approval_required(
             generation.clone(),
             tool.clone(),
         ),
-        default(ToolPolicyFacts::new(undeclared, None).declaring_enabled_by_default(true)),
+        default(
+            ToolPolicyFacts::new(undeclared, None)
+                .declaring_default(Some(ToolAccessState::Enabled)),
+        ),
     )
     .case(
         coral_catalog::history_repository::declares_read_only(generation.clone(), tool.clone()),

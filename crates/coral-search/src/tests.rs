@@ -5,6 +5,7 @@ mod discover;
 mod index;
 mod ranking;
 mod retrieval;
+mod shared_tools;
 mod storage;
 
 use coral_outbound::DestinationPolicy;
@@ -12,11 +13,6 @@ use coral_test_support::{change, trace};
 use std::fmt::Write as _;
 
 use coral_catalog::{OpenApiDocument, ToolHints, ToolKey};
-use coral_functions::test_fixtures_repository as function_faults;
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
-    SavedFunctionSave, SavedFunctionSource,
-};
 use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::test_fixtures_repository as provider_faults;
@@ -25,6 +21,11 @@ use coral_provider::{
     ProviderRegenerationRequest, WorkspaceProviderPublicationRequest,
 };
 use coral_test_support::TestDatabase;
+use coral_tools::test_fixtures_repository as tool_faults;
+use coral_tools::{
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
+};
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationRole, UserId, WorkspaceDisplayName, WorkspaceId,
@@ -45,19 +46,19 @@ const RAW_SCHEMA_CANARY: &str = "private-raw-schema-canary";
 const EXECUTION_BINDING_CANARY: &str = "private-execution-binding-canary";
 const SAVED_SOURCE_CANARY: &str = "private-saved-source-canary";
 
-/// One User's Workspace with the tracer Tool and the tracer Saved Function.
+/// One User's Workspace with the tracer Tool and the tracer Private Tool.
 struct TracerScope {
     upstream: MockServer,
     user: AuthenticatedUser,
     principal: AuthenticatedPrincipal,
     workspace_id: WorkspaceId,
     published: PublishedTracer,
-    saved: coral_functions::SavedFunction,
+    saved: coral_tools::PrivateTool,
 }
 
 impl TracerScope {
     const TOOL: &str = "coral.providers.weather.getForecast";
-    const FUNCTION: &str = "coral.functions.internal.formatForecast";
+    const FUNCTION: &str = "coral.private.internal.formatForecast";
 
     async fn new(fixture: &TestModules) -> Self {
         let upstream = MockServer::start().await;
@@ -137,10 +138,10 @@ async fn listing_orders_hits_by_call_path() {
             .iter()
             .map(crate::SearchHit::kind)
             .collect::<Vec<_>>(),
-        [EntityKind::SavedFunction, EntityKind::ProviderTool]
+        [EntityKind::PrivateTool, EntityKind::ProviderTool]
     );
 
-    let saved_hit = listed.first().expect("Saved Function hit");
+    let saved_hit = listed.first().expect("Private Tool hit");
     assert_eq!(
         saved_hit.description_snippet(),
         "Format one weather forecast"
@@ -153,7 +154,7 @@ async fn listing_orders_hits_by_call_path() {
     assert!(saved_hit.complete(), "the line shows every type it names");
     assert!(
         saved_hit.tool().is_none(),
-        "a Saved Function hit has no Provider display name and no hints"
+        "a Private Tool hit has no Provider display name and no hints"
     );
 
     let tool_hit = listed.get(1).expect("Tool hit");
@@ -184,7 +185,7 @@ async fn listing_orders_hits_by_call_path() {
 }
 
 #[tokio::test]
-async fn saved_function_signature_lines_show_the_inferred_result_fields() {
+async fn private_tool_signature_lines_show_the_inferred_result_fields() {
     let fixture = TestModules::new().await;
     let user = organization_user(fixture.search.database.clone(), "user:saved-result").await;
     let principal = AuthenticatedPrincipal::user(user.clone());
@@ -207,10 +208,10 @@ async fn saved_function_signature_lines_show_the_inferred_result_fields() {
         .search
         .search(&principal, &workspace_id, &SearchRequest::list())
         .await
-        .expect("list Saved Functions");
+        .expect("list Private Tools");
 
     let [hit] = page.hits() else {
-        panic!("one Saved Function hit: {:?}", page.hits());
+        panic!("one Private Tool hit: {:?}", page.hits());
     };
     let line = hit.signature_line();
     for field in ["title:", "merged_at:", "base:", "linked:"] {
@@ -286,7 +287,7 @@ async fn tool_signature_lines_follow_the_published_declaration() {
 }
 
 #[tokio::test]
-async fn queries_match_safe_tool_fields_and_function_declarations() {
+async fn queries_match_safe_tool_fields_and_private_tool_declarations() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     for query in [
@@ -336,9 +337,9 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
             "query {query:?}: guidance and tags appear only where a term matched"
         );
     }
-    let function_results = scope.query(&fixture, "formatForecast").await;
+    let authored_tool_results = scope.query(&fixture, "formatForecast").await;
     assert_eq!(
-        function_results
+        authored_tool_results
             .hits()
             .first()
             .map(|result| result.call_path().as_str()),
@@ -348,12 +349,128 @@ async fn queries_match_safe_tool_fields_and_function_declarations() {
     let saved_declaration_match = declaration_results
         .hits()
         .iter()
-        .find(|result| result.kind() == EntityKind::SavedFunction)
-        .expect("Saved Function declaration match");
+        .find(|result| result.kind() == EntityKind::PrivateTool)
+        .expect("Private Tool declaration match");
     assert_eq!(
         saved_declaration_match.evidence().paths(),
-        ["input.value.temperatureC"],
-        "Saved Function evidence must use callable-rooted compiler-projected declaration fields"
+        ["input.temperatureC"],
+        "Private Tool evidence must use callable-rooted compiler-projected declaration fields"
+    );
+}
+
+/// The Private Provider of `scope`'s Workspace.
+async fn private_provider(fixture: &TestModules, scope: &TracerScope) -> coral_provider::Provider {
+    let mut transaction = fixture.search.database.begin_read_snapshot().await.unwrap();
+    let provider = coral_provider::authored_tool_provider_in_transaction(
+        &mut transaction,
+        &scope.workspace_id,
+        coral_catalog::AuthoredToolKind::Private,
+    )
+    .await
+    .unwrap()
+    .expect("the Workspace's Private Provider");
+    transaction.rollback().await.unwrap();
+    provider
+}
+
+// Catches: a Private Tool's description that ignores an Owner's rule over
+// its declared default, or a search or describe that shows a Private Tool a rule or
+// a disabled Private Provider stops.
+#[tokio::test]
+async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state() {
+    let fixture = TestModules::new().await;
+    let scope = TracerScope::new(&fixture).await;
+    let provider = private_provider(&fixture, &scope).await;
+    let target = ToolPolicyTarget::new(
+        scope.workspace_id.clone(),
+        provider.id().clone(),
+        scope.saved.id().tool_key(),
+    );
+    let found = || async {
+        scope
+            .query(&fixture, "formatForecast")
+            .await
+            .hits()
+            .iter()
+            .any(|hit| hit.call_path().as_str() == TracerScope::FUNCTION)
+    };
+    let approval = || async {
+        match scope.describe(&fixture, TracerScope::FUNCTION).await {
+            Ok(described) => match described.authoring() {
+                AuthoringDescription::AuthoredTool(private) => Some(private.approval_requirement()),
+                AuthoringDescription::Tool(_) => panic!("the tracer function is a Private Tool"),
+            },
+            Err(Error::AuthoringDescriptionNotFound) => None,
+            Err(error) => panic!("describe failed: {error:?}"),
+        }
+    };
+    for (at, state, described) in [
+        (
+            40,
+            ToolAccessState::ApprovalRequired,
+            Some(ApprovalRequirement::Required),
+        ),
+        (41, ToolAccessState::Disabled, None),
+        (
+            42,
+            ToolAccessState::Enabled,
+            Some(ApprovalRequirement::NotRequired),
+        ),
+    ] {
+        fixture
+            .policies
+            .set_access_state(&change(scope.user.clone(), at, 'c'), target.clone(), state)
+            .await
+            .expect("set the Owner's rule");
+        assert_eq!(approval().await, described, "{state:?}");
+        assert_eq!(found().await, described.is_some(), "{state:?}");
+    }
+    fixture
+        .providers
+        .disable_provider(
+            &change(scope.user.clone(), 50, 'd')
+                .with_etag(&provider.etag())
+                .unwrap(),
+            &scope.workspace_id,
+            provider.id(),
+        )
+        .await
+        .expect("disable the Private Provider");
+    assert_eq!(approval().await, None, "a disabled Private Provider");
+    assert!(!found().await, "a disabled Private Provider");
+}
+
+// Catches: the Private Provider reported as having no Tool ready because its
+// own Generation holds none, whatever Private Tools exist, or its lifecycle
+// blocker lost with it.
+#[tokio::test]
+async fn the_private_provider_is_not_blocked_for_tools_its_generation_never_holds() {
+    let fixture = TestModules::new().await;
+    let scope = TracerScope::new(&fixture).await;
+    let provider = private_provider(&fixture, &scope).await;
+    let blockers = || async {
+        fixture
+            .search
+            .inspect_provider_readiness_for(&scope.user, &scope.workspace_id, provider.id())
+            .await
+            .expect("inspect the Private Provider")
+            .blockers
+    };
+    assert_eq!(blockers().await, vec![]);
+    fixture
+        .providers
+        .disable_provider(
+            &change(scope.user.clone(), 50, 'd')
+                .with_etag(&provider.etag())
+                .unwrap(),
+            &scope.workspace_id,
+            provider.id(),
+        )
+        .await
+        .expect("disable the Private Provider");
+    assert_eq!(
+        blockers().await,
+        vec![coral_provider::access::ProviderBlocker::ProviderDisabled]
     );
 }
 
@@ -386,13 +503,13 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
         )
     );
     assert!(declaration.ends_with(", 200, \"application/json\">>;"));
-    assert!(described_tool.saved_function_detail().is_none());
+    assert!(described_tool.authored_tool_detail().is_none());
 
-    let described_function = scope
+    let described_private_tool = scope
         .describe(&fixture, TracerScope::FUNCTION)
         .await
-        .expect("describe exact Saved Function");
-    let declaration = described_function.authoring().typescript_declaration();
+        .expect("describe exact Private Tool");
+    let declaration = described_private_tool.authoring().typescript_declaration();
     assert_eq!(
         declaration,
         scope.saved.declaration().as_str(),
@@ -400,14 +517,64 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     );
     assert!(declaration.contains("interface Forecast"));
     assert!(!declaration.contains(SAVED_SOURCE_CANARY));
-    let editable = described_function
-        .saved_function_detail()
-        .expect("owned Saved Function editable detail");
+    let editable = described_private_tool
+        .authored_tool_detail()
+        .expect("owned Private Tool editable detail");
     assert!(editable.source().as_str().contains(SAVED_SOURCE_CANARY));
     assert_eq!(editable.diagnostics(), scope.saved.diagnostics());
     assert_eq!(
         editable.diagnostics_truncated(),
         scope.saved.diagnostics_truncated()
+    );
+
+    // A Private Tool's description is a Tool Description of the
+    // Workspace's Private Provider.
+    let AuthoringDescription::AuthoredTool(private) = described_private_tool.authoring() else {
+        panic!("the tracer function is a Private Tool");
+    };
+    let provider = private_provider(&fixture, &scope).await;
+    assert_eq!(private.provider_id(), provider.id());
+    assert_eq!(private.provider_display_name(), "Private");
+    assert_eq!(
+        private.approval_requirement(),
+        ApprovalRequirement::NotRequired
+    );
+    assert_eq!(private.revision(), scope.saved.revision());
+    let projected = crate::projection::exact_description(&described_private_tool);
+    for (field, expected) in [
+        ("/kind", serde_json::json!("private_tool")),
+        ("/provider_id", serde_json::json!(provider.id().to_string())),
+        ("/provider_display_name", serde_json::json!("Private")),
+        ("/approval_required", serde_json::json!(false)),
+        ("/revision", serde_json::json!(scope.saved.revision())),
+    ] {
+        assert_eq!(projected.pointer(field), Some(&expected), "{field}");
+    }
+
+    // Another Principal of the Workspace describes nothing at that path.
+    let member = organization_user(fixture.search.database.clone(), "user:describe-member").await;
+    fixture
+        .workspaces
+        .set_membership(
+            &change(scope.user.clone(), 50, '5'),
+            &scope.workspace_id,
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let elsewhere = fixture
+        .search
+        .describe(
+            &AuthenticatedPrincipal::user(member),
+            &scope.workspace_id,
+            &CallPath::parse(TracerScope::FUNCTION).expect("Call Path"),
+            &[],
+        )
+        .await;
+    assert!(
+        matches!(elsewhere, Err(Error::AuthoringDescriptionNotFound)),
+        "{elsewhere:?}"
     );
 }
 
@@ -480,7 +647,7 @@ async fn disabled_tool_leaves_search_and_describe() {
 }
 
 #[tokio::test]
-async fn function_replacement_and_corrupt_relevance_keep_exact_descriptions() {
+async fn private_tool_replacement_and_corrupt_relevance_keep_exact_descriptions() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     let replaced = fixture
@@ -504,13 +671,13 @@ async fn function_replacement_and_corrupt_relevance_keep_exact_descriptions() {
         replaced.declaration().as_str()
     );
 
-    function_faults::corrupt_declaration_fields(
+    tool_faults::corrupt_declaration_fields(
         &fixture.search.database,
         &scope.workspace_id,
         replaced.id(),
     )
     .await;
-    // The Saved Function matched this declaration field before the fault.
+    // The Private Tool matched this declaration field before the fault.
     assert!(
         scope
             .query(&fixture, "temperatureC")
@@ -518,7 +685,7 @@ async fn function_replacement_and_corrupt_relevance_keep_exact_descriptions() {
             .hits()
             .iter()
             .all(|item| item.kind() == EntityKind::ProviderTool),
-        "a corrupt Saved Function declaration lane matches nothing"
+        "a corrupt Private Tool declaration lane matches nothing"
     );
     let listing_with_corrupt_relevance = fixture
         .search
@@ -1806,7 +1973,7 @@ async fn query_evidence_is_bounded() {
 }
 
 #[tokio::test]
-async fn ordinary_saved_function_search_never_loads_source() {
+async fn ordinary_private_tool_search_never_loads_source() {
     let fixture = TestModules::new().await;
     let user = organization_user(
         fixture.search.database.clone(),
@@ -1818,7 +1985,7 @@ async fn ordinary_saved_function_search_never_loads_source() {
     let saved = fixture
         .save_tracer(&principal, &workspace_id, "Source-free metadata", 20)
         .await;
-    function_faults::corrupt_source(&fixture.search.database, &workspace_id, saved.id()).await;
+    tool_faults::corrupt_source(&fixture.search.database, &workspace_id, saved.id()).await;
 
     fixture.converge().await;
     let page = fixture
@@ -1837,11 +2004,11 @@ async fn ordinary_saved_function_search_never_loads_source() {
             .describe(
                 &principal,
                 &workspace_id,
-                &CallPath::parse("coral.functions.internal.formatForecast").expect("Call Path"),
+                &CallPath::parse("coral.private.internal.formatForecast").expect("Call Path"),
                 &[],
             )
             .await,
-        Err(Error::Functions(coral_functions::Error::CorruptData(_)))
+        Err(Error::Tools(coral_tools::Error::CorruptData(_)))
     ));
 }
 
@@ -1850,11 +2017,11 @@ async fn ordinary_saved_function_search_never_loads_source() {
     clippy::indexing_slicing,
     reason = "the projection-bound fixture asserts one known metadata result"
 )]
-async fn saved_function_projection_bounds_do_not_become_authoring_limits() {
+async fn private_tool_projection_bounds_do_not_become_authoring_limits() {
     let fixture = TestModules::new().await;
     let user = organization_user(
         fixture.search.database.clone(),
-        "user:saved-function-projection-bound",
+        "user:private-tool-projection-bound",
     )
     .await;
     let principal = AuthenticatedPrincipal::user(user.clone());
@@ -1864,14 +2031,14 @@ async fn saved_function_projection_bounds_do_not_become_authoring_limits() {
         write!(fields, "a{index}:0;").expect("write field fixture");
     }
     let function = fixture
-        .saved_functions
+        .private_tools
         .save(
-            &SavedFunctionChangeContext::new(principal.clone(), 20, trace('2')),
+            &PrivateToolChangeContext::new(principal.clone(), 20, trace('2')),
             &workspace_id,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("largeProjection").expect("path"),
-                SavedFunctionDescription::parse("Large searchable metadata").expect("description"),
-                SavedFunctionSource::parse(&format!(
+            PrivateToolSave::new(
+                PrivateToolPath::parse("largeProjection").expect("path"),
+                AuthoredToolDescription::parse("Large searchable metadata").expect("description"),
+                AuthoredToolSource::parse(&format!(
                     "interface X{{{fields}}} export default function f(input:X):number{{return 1}}"
                 ))
                 .expect("bounded source"),
@@ -1881,7 +2048,7 @@ async fn saved_function_projection_bounds_do_not_become_authoring_limits() {
         .expect("private projection bound must not reject valid authoring");
     assert!(matches!(
         function.declaration_field_projection(),
-        coral_functions::SavedFunctionDeclarationFieldProjection::Failed(_)
+        coral_tools::AuthoredToolDeclarationFieldProjection::Failed(_)
     ));
 
     fixture.converge().await;
@@ -1897,7 +2064,7 @@ async fn saved_function_projection_bounds_do_not_become_authoring_limits() {
     assert_eq!(metadata.hits().len(), 1);
     assert_eq!(
         metadata.hits()[0].call_path().as_str(),
-        "coral.functions.largeProjection"
+        "coral.private.largeProjection"
     );
     let declaration = fixture
         .search
@@ -1919,7 +2086,7 @@ async fn a_page_of_fifty_hits_fits_the_budget_with_bounded_text() {
     let workspace_id = fixture.create_workspace(&user).await;
     for index in 0..50 {
         fixture
-            .save_large_function(&principal, &workspace_id, index)
+            .save_large_private_tool(&principal, &workspace_id, index)
             .await;
     }
     fixture.converge().await;
@@ -1976,15 +2143,15 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
     let mut expected = std::collections::BTreeSet::new();
     for index in 0..12 {
         fixture
-            .saved_functions
+            .private_tools
             .save(
-                &SavedFunctionChangeContext::new(principal.clone(), 100, trace('7')),
+                &PrivateToolChangeContext::new(principal.clone(), 100, trace('7')),
                 &workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(&format!("paged.function{index:02}"))
-                        .expect("Saved Function path"),
-                    SavedFunctionDescription::parse("Paged contract").expect("description"),
-                    SavedFunctionSource::parse(&format!(
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(&format!("paged.function{index:02}"))
+                        .expect("Private Tool path"),
+                    AuthoredToolDescription::parse("Paged contract").expect("description"),
+                    AuthoredToolSource::parse(&format!(
                         "interface Wide {{\n{fields}\n}}\nexport default function wide(input: Wide): number {{ return 1; }}"
                     ))
                     .expect("wide source"),
@@ -1992,7 +2159,7 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
             )
             .await
             .expect("save wide function");
-        expected.insert(format!("coral.functions.paged.function{index:02}"));
+        expected.insert(format!("coral.private.paged.function{index:02}"));
     }
     fixture.converge().await;
 
@@ -2032,7 +2199,7 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
 }
 
 #[tokio::test]
-async fn provider_filter_selects_one_provider_and_keeps_saved_functions() {
+async fn provider_filter_selects_one_provider_and_keeps_private_tools() {
     let fixture = TestModules::new().await;
     let user = organization_user(
         fixture.search.database.clone(),
@@ -2077,7 +2244,7 @@ async fn provider_filter_selects_one_provider_and_keeps_saved_functions() {
             .map(|item| item.call_path().as_str())
             .collect::<Vec<_>>(),
         [
-            "coral.functions.internal.formatForecast",
+            "coral.private.internal.formatForecast",
             "coral.providers.weather.getForecast",
         ]
     );
@@ -2135,7 +2302,7 @@ async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page()
     assert_eq!(
         paths(&filtered),
         [
-            "coral.functions.internal.formatForecast",
+            "coral.private.internal.formatForecast",
             "coral.providers.weather.getForecast",
         ]
     );
@@ -2193,20 +2360,26 @@ async fn any_offset_pages_and_an_offset_past_the_end_is_an_empty_final_page() {
 fn describe_requires_one_complete_safe_call_path() {
     for invalid in [
         "weather.getForecast",
-        "coral.weather",
-        "coral.functions",
+        "coral.weather.getForecast",
+        "coral.workspace.search",
+        "coral.functions.internal.formatForecast",
+        "coral.private",
         "coral.providers.weather",
         "coral.emit.value",
         "coral.providers.weather.bad-segment",
-        "coral.functions.internal.bad-segment",
+        "coral.private.internal.bad-segment",
+        "coral.shared",
+        "coral.shared.internal.bad-segment",
     ] {
         assert!(CallPath::parse(invalid).is_err(), "accepted {invalid:?}");
     }
     for valid in [
         "coral.providers.weather.getForecast",
-        "coral.workspace.addProvider",
-        "coral.functions.internal.formatForecast",
-        "coral.functions.天気.予報",
+        "coral.addProvider",
+        "coral.weather",
+        "coral.private.internal.formatForecast",
+        "coral.private.天気.予報",
+        "coral.shared.internal.formatForecast",
     ] {
         assert_eq!(
             CallPath::parse(valid).expect("valid Call Path").as_str(),
@@ -2812,7 +2985,7 @@ async fn user_caller_discovery_exposes_no_account_evidence_and_starts_no_connect
             &AuthenticatedPrincipal::user(route.owner.clone()),
             workspace,
             &[CallerRoute::CALL_PATH],
-            &["coral.functions.internal.formatForecast"],
+            &["coral.private.internal.formatForecast"],
         )
         .await;
 }
@@ -3141,7 +3314,11 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .await;
     }
     // Relevance health never controls exact description, even for a credentialed route.
-    let failing = fixture.failing_search(&[EntityKind::ProviderTool, EntityKind::SavedFunction]);
+    let failing = fixture.failing_search(&[
+        EntityKind::ProviderTool,
+        EntityKind::PrivateTool,
+        EntityKind::SharedTool,
+    ]);
     for actor in [&principal, &agent] {
         assert!(matches!(
             failing
@@ -3500,15 +3677,15 @@ async fn exact_provider_readiness_does_not_read_unrelated_providers() {
 }
 
 #[tokio::test]
-async fn readiness_inspection_does_not_require_saved_function_persistence() {
-    // Drop Functions' schema and the search index: any accidental
-    // repository read must fail, even when no Functions exist. Readiness
+async fn readiness_inspection_does_not_require_private_tool_persistence() {
+    // Drop the Private Tool schema and the search index: any accidental
+    // repository read must fail, even when no Private Tools exist. Readiness
     // depends only on Tool domains and reads no index.
     let fixture = TestModules::new().await;
     fixture
         .fixture
         .execute_fixture_sql(
-            "DROP TABLE search_entities; DROP TABLE search_index_states; DROP TABLE saved_function_records; DROP TABLE saved_function_lifecycle_events;",
+            "DROP TABLE search_entities; DROP TABLE search_index_states; DROP TABLE private_tool_records; DROP TABLE private_tool_lifecycle_events;",
         )
         .await
         .expect("drop Functions and the search index");
@@ -3523,7 +3700,7 @@ async fn readiness_inspection_does_not_require_saved_function_persistence() {
         .search
         .inspect_provider_readiness(&user, &workspace)
         .await
-        .expect("readiness never reads Saved Functions");
+        .expect("readiness never reads Private Tools");
     assert_eq!(inspections.len(), 1);
     assert!(inspections.first().unwrap().blockers.is_empty());
     let agent = fixture
@@ -3540,7 +3717,7 @@ async fn readiness_inspection_does_not_require_saved_function_persistence() {
         .search
         .inspect_agent_providers(&user, &workspace, agent.agent.principal().id())
         .await
-        .expect("Agent readiness never reads Saved Functions either");
+        .expect("Agent readiness never reads Private Tools either");
     assert_eq!(
         inspected
             .into_iter()
@@ -3551,7 +3728,7 @@ async fn readiness_inspection_does_not_require_saved_function_persistence() {
 }
 
 #[tokio::test]
-async fn readiness_ignores_unreadable_saved_functions_for_the_same_caller() {
+async fn readiness_ignores_unreadable_private_tools_for_the_same_caller() {
     let fixture = TestModules::new().await;
     let upstream = MockServer::start().await;
     let user = organization_user(
@@ -3564,18 +3741,18 @@ async fn readiness_ignores_unreadable_saved_functions_for_the_same_caller() {
     fixture
         .publish_tracer(&user, &workspace, &upstream.uri())
         .await;
-    let change = SavedFunctionChangeContext::new(principal.clone(), 40, trace('4'));
+    let change = PrivateToolChangeContext::new(principal.clone(), 40, trace('4'));
     let mut saved = Vec::new();
     for index in 0..32 {
         let function = fixture
-            .saved_functions
+            .private_tools
             .save(
                 &change,
                 &workspace,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(&format!("helpers.function{index}")).unwrap(),
-                    SavedFunctionDescription::parse("Return a number").unwrap(),
-                    SavedFunctionSource::parse(
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(&format!("helpers.function{index}")).unwrap(),
+                    AuthoredToolDescription::parse("Return a number").unwrap(),
+                    AuthoredToolSource::parse(
                         "export default function value(): number { return 1; }",
                     )
                     .unwrap(),
@@ -3591,8 +3768,7 @@ async fn readiness_ignores_unreadable_saved_functions_for_the_same_caller() {
         .await
         .unwrap();
     for function in &saved {
-        function_faults::corrupt_description(&fixture.search.database, &workspace, function.id())
-            .await;
+        tool_faults::corrupt_description(&fixture.search.database, &workspace, function.id()).await;
     }
     assert!(
         matches!(
@@ -3600,9 +3776,9 @@ async fn readiness_ignores_unreadable_saved_functions_for_the_same_caller() {
                 .search
                 .search(&principal, &workspace, &SearchRequest::list())
                 .await,
-            Err(Error::Functions(coral_functions::Error::CorruptData(_)))
+            Err(Error::Tools(coral_tools::Error::CorruptData(_)))
         ),
-        "the fault must affect real Saved Function repository reads"
+        "the fault must affect real Private Tool repository reads"
     );
     let after = fixture
         .search
@@ -3696,7 +3872,7 @@ struct TestModules {
     workspaces: WorkspaceModule,
     providers: ProviderModule,
     policies: ToolPolicyModule,
-    saved_functions: SavedFunctionModule,
+    private_tools: PrivateToolModule,
     search: UniversalSearchModule,
     index: crate::SearchIndex,
 }
@@ -3720,13 +3896,13 @@ impl TestModules {
             workspaces.clone(),
         );
         let policies = ToolPolicyModule::new(database.clone(), workspaces.clone());
-        let saved_functions = SavedFunctionModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
-        .expect("start Saved Function compiler");
+        .expect("start Private Tool compiler");
         let index = crate::SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
         let search = UniversalSearchModule::new(database, workspaces.clone());
         Self {
@@ -3734,7 +3910,7 @@ impl TestModules {
             workspaces,
             providers,
             policies,
-            saved_functions,
+            private_tools,
             search,
             index,
         }
@@ -3745,15 +3921,15 @@ impl TestModules {
         self.index.reconcile().await;
     }
 
-    /// Saves one small Saved Function at `path` with `description`.
-    async fn save_function(
+    /// Saves one small Private Tool at `path` with `description`.
+    async fn save_private_tool(
         &self,
         principal: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         path: &str,
         description: &str,
         occurred_at_unix_nanos: i64,
-    ) -> coral_functions::SavedFunction {
+    ) -> coral_tools::PrivateTool {
         self.save_source(
             principal,
             workspace_id,
@@ -3765,7 +3941,7 @@ impl TestModules {
         .await
     }
 
-    /// Saves `source` as the Saved Function at `path` with `description`.
+    /// Saves `source` as the Private Tool at `path` with `description`.
     async fn save_source(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -3774,46 +3950,46 @@ impl TestModules {
         description: &str,
         source: &str,
         occurred_at_unix_nanos: i64,
-    ) -> coral_functions::SavedFunction {
-        self.saved_functions
+    ) -> coral_tools::PrivateTool {
+        self.private_tools
             .save(
-                &SavedFunctionChangeContext::new(
+                &PrivateToolChangeContext::new(
                     principal.clone(),
                     occurred_at_unix_nanos,
                     trace('5'),
                 ),
                 workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(path).expect("Saved Function path"),
-                    SavedFunctionDescription::parse(description).expect("description"),
-                    SavedFunctionSource::parse(source).expect("source"),
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("Private Tool path"),
+                    AuthoredToolDescription::parse(description).expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
                 ),
             )
             .await
-            .expect("save Saved Function")
+            .expect("save Private Tool")
     }
 
-    /// Deletes the Saved Function at `path`. Its row stays in the index, and
+    /// Deletes the Private Tool at `path`. Its row stays in the index, and
     /// no index write follows: a reconcile pass removes it.
-    async fn delete_function(
+    async fn delete_private_tool(
         &self,
         principal: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         path: &str,
         occurred_at_unix_nanos: i64,
     ) {
-        self.saved_functions
+        self.private_tools
             .delete(
-                &SavedFunctionChangeContext::new(
+                &PrivateToolChangeContext::new(
                     principal.clone(),
                     occurred_at_unix_nanos,
                     trace('5'),
                 ),
                 workspace_id,
-                &SavedFunctionPath::parse(path).expect("Saved Function path"),
+                &PrivateToolPath::parse(path).expect("Private Tool path"),
             )
             .await
-            .expect("delete Saved Function");
+            .expect("delete Private Tool");
     }
 
     async fn publish_configured(
@@ -3945,7 +4121,8 @@ impl TestModules {
             .provision_login(&change(user.clone(), 1, '1'))
             .await
             .unwrap();
-        self.workspaces
+        let workspace_id = self
+            .workspaces
             .create(
                 &change(user.clone(), 10, '1'),
                 WorkspaceDisplayName::parse("Search tracer").expect("display name"),
@@ -3953,7 +4130,26 @@ impl TestModules {
             .await
             .expect("create Workspace")
             .id()
-            .clone()
+            .clone();
+        // Every Workspace Coral serves has its Private and Shared Providers.
+        let mut transaction = self.search.database.begin().await.unwrap();
+        for provider in [
+            coral_provider::CoralDefinedProvider::Private,
+            coral_provider::CoralDefinedProvider::Shared,
+        ] {
+            self.providers
+                .install_coral_defined_in_transaction(
+                    &mut transaction,
+                    &change(user.clone(), 10, '1'),
+                    &workspace_id,
+                    provider,
+                )
+                .await
+                .expect("install a Provider Coral defines")
+                .skip_search();
+        }
+        transaction.commit().await.unwrap();
+        workspace_id
     }
 
     async fn publish_openapi(
@@ -4076,33 +4272,33 @@ impl TestModules {
         }
     }
 
-    async fn save_large_function(
+    async fn save_large_private_tool(
         &self,
         principal: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         index: usize,
-    ) -> coral_functions::SavedFunction {
+    ) -> coral_tools::PrivateTool {
         let fields = (0..1_800)
             .map(|field| format!("field{field:04}: string;"))
             .collect::<Vec<_>>()
             .join("\n");
-        self.saved_functions
+        self.private_tools
             .save(
-                &SavedFunctionChangeContext::new(
+                &PrivateToolChangeContext::new(
                     principal.clone(),
                     100,
                     trace('7'),
                 ),
                 workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse(&format!("large.function{index:02}"))
-                        .expect("Saved Function path"),
-                    SavedFunctionDescription::parse(&format!(
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(&format!("large.function{index:02}"))
+                        .expect("Private Tool path"),
+                    AuthoredToolDescription::parse(&format!(
                         "{}Large paging contract",
                         "Filler words before the match. ".repeat(100)
                     ))
                     .expect("description"),
-                    SavedFunctionSource::parse(&format!(
+                    AuthoredToolSource::parse(&format!(
                         "interface LargeType {{\n{fields}\n}}\nexport default function large(input: LargeType): LargeType {{ return input; }}"
                     ))
                     .expect("large source"),
@@ -4118,19 +4314,19 @@ impl TestModules {
         workspace_id: &WorkspaceId,
         description: &str,
         occurred_at_unix_nanos: i64,
-    ) -> coral_functions::SavedFunction {
-        self.saved_functions
+    ) -> coral_tools::PrivateTool {
+        self.private_tools
             .save(
-                &SavedFunctionChangeContext::new(
+                &PrivateToolChangeContext::new(
                     principal.clone(),
                     occurred_at_unix_nanos,
                     trace('4'),
                 ),
                 workspace_id,
-                SavedFunctionSave::new(
-                    SavedFunctionPath::parse("internal.formatForecast").expect("Saved path"),
-                    SavedFunctionDescription::parse(description).expect("description"),
-                    SavedFunctionSource::parse(&format!(
+                PrivateToolSave::new(
+                    PrivateToolPath::parse("internal.formatForecast").expect("Saved path"),
+                    AuthoredToolDescription::parse(description).expect("description"),
+                    AuthoredToolSource::parse(&format!(
                         r#"interface Forecast {{ temperatureC: number }}
 const sourceEvidence = "{SAVED_SOURCE_CANARY}";
 export default function formatForecast(value: Forecast): string {{
@@ -4142,7 +4338,7 @@ export default function formatForecast(value: Forecast): string {{
                 ),
             )
             .await
-            .expect("save tracer Saved Function")
+            .expect("save tracer Private Tool")
     }
 }
 

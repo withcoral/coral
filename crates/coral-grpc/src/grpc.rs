@@ -2,13 +2,15 @@
 mod accounts;
 mod activity;
 mod agents;
+mod authored_tools;
 mod memberships;
 mod organization_memberships;
 mod organization_workspaces;
 mod policies;
+mod private_tools;
 mod providers;
 mod releases;
-mod saved_functions;
+mod shared_tools;
 mod usage_data;
 mod workspaces;
 use std::sync::Arc;
@@ -42,10 +44,15 @@ pub struct Dependencies {
     pub runs: coral_run::RunModule,
     /// Task inspection.
     pub tasks: coral_task::TaskModule,
-    /// The caller's own current Saved Function inspection.
-    pub saved_functions: coral_functions::SavedFunctionInspection,
-    /// The caller's own current Saved Function deletion.
-    pub saved_function_deletion: coral_functions::SavedFunctionDeletion,
+    /// Current Private Tool inspection: the caller's own, and an Agent's for an Owner.
+    pub private_tools: coral_tools::PrivateToolInspection,
+    /// Private Tool deletion, the caller's own and an Agent's for an Owner,
+    /// which removes the Private Tool's exact rule and tells Universal Search.
+    pub private_tool_workflow: coral_administration::PrivateToolWorkflow,
+    /// The Workspace's Shared Tools: reads.
+    pub shared_tools: coral_tools::SharedToolModule,
+    /// Shared Tool publishing and removal, which tell Universal Search.
+    pub shared_tool_workflow: coral_administration::SharedToolWorkflow,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
@@ -85,8 +92,10 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         policies: dependencies.policies,
         accounts: dependencies.accounts,
         tasks: dependencies.tasks,
-        saved_functions: dependencies.saved_functions,
-        saved_function_deletion: dependencies.saved_function_deletion,
+        private_tools: dependencies.private_tools,
+        private_tool_workflow: dependencies.private_tool_workflow,
+        shared_tools: dependencies.shared_tools,
+        shared_tool_workflow: dependencies.shared_tool_workflow,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
@@ -141,9 +150,12 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             management::usage_data_service_server::UsageDataServiceServer::new(services.clone()),
         )
         .add_service(
-            management::saved_function_service_server::SavedFunctionServiceServer::new(
+            management::private_tool_service_server::PrivateToolServiceServer::new(
                 services.clone(),
             ),
+        )
+        .add_service(
+            management::shared_tool_service_server::SharedToolServiceServer::new(services.clone()),
         )
         .add_service(
             management::agent_registration_service_server::AgentRegistrationServiceServer::new(
@@ -175,8 +187,10 @@ struct GrpcServices {
     policies: coral_policy::ToolPolicyModule,
     accounts: Option<coral_provider::account::AccountModule>,
     tasks: coral_task::TaskModule,
-    saved_functions: coral_functions::SavedFunctionInspection,
-    saved_function_deletion: coral_functions::SavedFunctionDeletion,
+    private_tools: coral_tools::PrivateToolInspection,
+    private_tool_workflow: coral_administration::PrivateToolWorkflow,
+    shared_tools: coral_tools::SharedToolModule,
+    shared_tool_workflow: coral_administration::SharedToolWorkflow,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
@@ -213,7 +227,7 @@ impl GrpcServices {
                     coral_task::Error::TaskClosed => Status::failed_precondition("Task closed"),
                     coral_task::Error::SnapshotTooLarge
                     | coral_task::Error::Search(_)
-                    | coral_task::Error::Functions(_)
+                    | coral_task::Error::Tools(_)
                     | coral_task::Error::Run(_)
                     | coral_task::Error::Clock
                     | coral_task::Error::IdentifierIssuance(_)

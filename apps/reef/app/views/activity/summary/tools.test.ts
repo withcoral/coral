@@ -4,7 +4,7 @@ import { fixFor, toolRows } from './tools'
 const providers = [
   { callRoot: 'coral.providers.github', displayName: 'GitHub', path: '/p/github' },
   { callRoot: 'coral.providers.ghe', displayName: 'GitHub', path: '/p/ghe' },
-  { callRoot: 'coral.workspace', displayName: 'Coral', path: '/p/builtin' },
+  { callRoot: 'coral', displayName: 'Coral', path: '/p/builtin' },
 ]
 
 const github = 'workspaces/w/providers/github'
@@ -61,7 +61,9 @@ it('keeps two tools that held one Call Path apart', () => {
 it.each([
   ['coral.providers.github.issues.list', 'GitHub', 'github', 'issues.list', '/p/github'],
   ['coral.providers.ghe.issues.list', 'GitHub', 'ghe', 'issues.list', '/p/ghe'],
-  ['coral.workspace.addProvider', 'Coral', 'workspace', 'addProvider', '/p/builtin'],
+  ['coral.addProvider', 'Coral', 'coral', 'addProvider', '/p/builtin'],
+  // A retained Run keeps the Built-in Provider's old Call Root.
+  ['coral.workspace.addProvider', 'Coral', 'coral', 'addProvider', '/p/builtin'],
   ['coral.providers.slack.post', 'slack', 'slack', 'post', undefined],
 ])(
   'names %s as provider %s, namespace %s and tool %s',

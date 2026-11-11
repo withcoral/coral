@@ -16,10 +16,13 @@ pub mod access;
 pub mod account;
 #[cfg(test)]
 mod account_tests;
-mod builtin;
-#[cfg(test)]
-mod builtin_tests;
+mod coral_defined;
+pub use coral_defined::{CoralDefinedProvider, MissingCoralDefinedProvider};
 mod change;
+#[cfg(test)]
+mod coral_defined_tests;
+#[cfg(test)]
+mod private_tests;
 pub use change::{Committed, SearchChange};
 #[cfg(test)]
 mod credential_lifecycle_tests;
@@ -699,12 +702,14 @@ pub async fn tool_listings_in_transaction(
     Ok(tools)
 }
 
-/// Resolves the Provider under `coral.providers.<namespace>`, in any state,
-/// and the Tool-relative path of each Tool in its current catalog.
-/// Definitions and schemas stay lazy.
+/// Resolves the Provider at `call_root`, in any state, and the
+/// Tool-relative path of each Tool in its current catalog. Definitions and
+/// schemas stay lazy. Only an Owner-created Provider and the Built-in
+/// Provider keep a catalog: the Private and the Shared Provider's Tools are
+/// rows coral-tools keeps, so their catalog is empty.
 ///
 /// The caller owns authority and the coherent read transaction. `Ok(None)`
-/// means no Provider of the Workspace holds the namespace.
+/// means no Provider of the Workspace is at `call_root`.
 ///
 /// # Errors
 ///
@@ -712,12 +717,12 @@ pub async fn tool_listings_in_transaction(
 pub async fn provider_tool_paths_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
-    namespace: &ProviderNamespace,
+    call_root: &ProviderCallRoot,
 ) -> Result<Option<(ProviderId, Vec<coral_catalog::ToolPathAssignment>)>, Error> {
     let Some(active) = repository::current_provider(
         transaction,
         workspace_id,
-        repository::ProviderKey::CallRoot(&ProviderCallRoot::Owner(namespace.clone())),
+        repository::ProviderKey::CallRoot(call_root),
         repository::ProviderHold::None,
     )
     .await?
@@ -727,6 +732,85 @@ pub async fn provider_tool_paths_in_transaction(
     let paths =
         coral_catalog::tool_paths_in_transaction(transaction, &active.generation_id).await?;
     Ok(Some((active.provider.id().clone(), paths)))
+}
+
+/// The Call Root of the Workspace's Provider `provider_id`, in any state;
+/// `None` when the Workspace has no such Provider. A rule that depends on the
+/// kind of Provider matches on it. The caller owns authority and the
+/// coherent read transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider failure.
+pub async fn provider_call_root_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_id: &ProviderId,
+) -> Result<Option<ProviderCallRoot>, Error> {
+    Ok(repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::Id(provider_id),
+        repository::ProviderHold::None,
+    )
+    .await?
+    .map(|stored| stored.provider.call_root().clone()))
+}
+
+/// The Workspace's Provider for Tools of `kind`, the Private or the Shared
+/// Provider, in any state; `None` when the Workspace has none yet. Its Tools
+/// are rows coral-tools keeps, so the caller owns authority and decides
+/// which of them a Principal reaches.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider failure.
+pub async fn authored_tool_provider_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    kind: coral_catalog::AuthoredToolKind,
+) -> Result<Option<Provider>, Error> {
+    Ok(repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
+        repository::ProviderHold::None,
+    )
+    .await?
+    .map(|active| active.provider))
+}
+
+/// The relative paths of the Workspace's Built-in Tools, each a member of a
+/// Program's `coral`: the Tools of its Built-in Provider's current
+/// Generation, which a newer or older Coral may have written. They are the
+/// same for every caller, so they reveal nothing that discovery conceals; a
+/// Tool the caller cannot reach still fails when called. Empty when the
+/// Workspace has no Built-in Provider.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider-package failure.
+pub async fn builtin_tool_paths_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<String>, Error> {
+    let Some(active) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::Builtin),
+        repository::ProviderHold::None,
+    )
+    .await?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(
+        coral_catalog::tool_paths_in_transaction(transaction, &active.generation_id)
+            .await?
+            .into_iter()
+            .map(|path| path.relative_path().to_owned())
+            .collect(),
+    )
 }
 
 /// The Principal that asks Invocation admission to call a Tool.
@@ -818,6 +902,44 @@ pub async fn resolve_invocation_tool_in_transaction(
     resolved(transaction, reached).await
 }
 
+/// Resolves one Private or Shared Tool to the Tool its Invocation retains:
+/// the Tool of `kind` at `relative_path` under its Call Root that Coral
+/// performs by running the definition `binding` names, with the default
+/// Tool Access State of that revision, in the Workspace's Provider for the
+/// kind, which this holds shared as the Policy Enforcement Point does. The
+/// caller decides which Tools a Principal reaches: a Run links only its own
+/// Private Tools and the Workspace's Shared Tools, and binds each call to
+/// the definition it linked. `None` when that Provider is not active.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn resolve_authored_tool_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    kind: coral_catalog::AuthoredToolKind,
+    relative_path: &str,
+    binding: coral_catalog::CodeExecutionBinding,
+    declared_default: coral_catalog::ToolAccessState,
+) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let tool = coral_catalog::authored_tool(kind, relative_path, binding, declared_default)?;
+    let Some(stored) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
+        coral_db::RowLock::Shared.into(),
+    )
+    .await?
+    .and_then(repository::ProviderWithActiveGeneration::into_active) else {
+        return Ok(None);
+    };
+    resolved(
+        transaction,
+        Some((stored.provider.access().clone(), stored.generation_id, tool)),
+    )
+    .await
+}
+
 /// Whether [`resolve_invocation_tool_in_transaction`] would resolve
 /// `call_path` for `caller` now, read in a read snapshot without holding
 /// any row: Program Admission's check of the Call Paths a Program names
@@ -868,6 +990,10 @@ async fn reached_tool(
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
         },
+        // No Generation holds a Private or Shared Tool: coral-tools keeps
+        // them, and a Run reaches one with the definition it linked, through
+        // `resolve_authored_tool_in_transaction`.
+        ProviderCallRoot::Private | ProviderCallRoot::Shared => return Ok(None),
     };
     Ok(
         reached_tool_by_root(transaction, workspace_id, &call_root, relative_path, lock)
@@ -898,10 +1024,12 @@ pub async fn resolve_owner_tool_in_transaction(
     else {
         return Ok(None);
     };
-    assert!(
-        matches!(call_root, ProviderCallRoot::Owner(_)),
-        "{call_path} needs a caller"
-    );
+    match call_root {
+        ProviderCallRoot::Owner(_) => {}
+        ProviderCallRoot::Builtin => panic!("{call_path} needs a caller"),
+        // No Generation holds a Private or Shared Tool.
+        ProviderCallRoot::Private | ProviderCallRoot::Shared => return Ok(None),
+    }
     let reached = reached_tool_by_root(
         transaction,
         workspace_id,
@@ -1009,6 +1137,14 @@ pub async fn verify_invocation_tool_in_transaction(
             return Ok(InvocationToolVerification::CredentialRouteChanged);
         }
     }
+    // The Run pinned the definition it performs when it linked it, and the
+    // Private and Shared Providers' catalogs hold no Tool row to recheck.
+    if matches!(
+        retained.tool().execution_binding(),
+        coral_catalog::ExecutionBinding::Code(_)
+    ) {
+        return Ok(InvocationToolVerification::Current);
+    }
     Ok(
         if coral_catalog::tool_exists_in_transaction(
             transaction,
@@ -1064,13 +1200,51 @@ async fn inspected_provider_in_transaction(
     }
 }
 
+/// The Workspace's Providers, optionally narrowed to one identity, that
+/// Provider listings, readiness and search read. The Private and Shared
+/// Providers are left out: their Generations hold no Tool and they have no
+/// Accounts, and coral-tools keeps their Tools.
+pub(crate) async fn listed_providers(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<Vec<repository::ProviderWithActiveGeneration>, Error> {
+    Ok(
+        repository::management_providers(transaction, workspace_id, provider_filter)
+            .await?
+            .into_iter()
+            .filter(|stored| !stored.provider.call_root().performs_code())
+            .collect(),
+    )
+}
+
+/// The Providers that [`listed_providers`] reads, and also the Private or
+/// Shared Provider when `provider_filter` names it: inspection of one Provider by
+/// its identity, as when an Owner disables or restores it.
+pub(crate) async fn inspected_providers(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<Vec<repository::ProviderWithActiveGeneration>, Error> {
+    if provider_filter.is_none() {
+        return listed_providers(transaction, workspace_id, None).await;
+    }
+    repository::management_providers(transaction, workspace_id, provider_filter).await
+}
+
 /// Whether inspection under `evidence` shows `stored`: as in discovery, only
-/// when the User reaches one of its Tools.
+/// when the User reaches one of its Tools. Every User who inspects the
+/// Workspace inspects its Private and Shared Providers, which have no Tools
+/// or Accounts of their own: coral-tools decides which of their Tools each
+/// one sees.
 async fn inspects(
     transaction: &mut coral_db::Transaction<'_>,
     evidence: &WorkspaceEvidence,
     stored: &repository::ProviderWithActiveGeneration,
 ) -> Result<bool, Error> {
+    if stored.provider.call_root().performs_code() {
+        return Ok(true);
+    }
     reach::reaches_provider_in_transaction(
         transaction,
         stored.provider.call_root(),

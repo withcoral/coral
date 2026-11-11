@@ -1,4 +1,4 @@
-//! Saved Function save types the Call Paths a source names from what the
+//! Private Tool save types the Call Paths a source names from what the
 //! caller can discover. The compiler's typing rules are tested at
 //! `coral-v8` and the visibility rules at `coral-search`; these tests cover
 //! that the save command composes them with the caller's authority.
@@ -67,17 +67,17 @@ const UNKNOWN_TOOL: u64 = 100_001;
 /// `(code, line, column)` of each diagnostic.
 type Located = Vec<(u64, Option<u64>, Option<u64>)>;
 
-fn located(diagnostics: &[coral_functions::SavedFunctionDiagnostic]) -> Located {
+fn located(diagnostics: &[coral_tools::AuthoredToolDiagnostic]) -> Located {
     diagnostics
         .iter()
         .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
         .collect()
 }
 
-async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_functions::SavedFunction {
+async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_tools::PrivateTool {
     let goal = fixture.goal().await;
     fixture
-        .save_function(
+        .save_private_tool(
             &fixture.call(&goal, "Save a typed function"),
             path,
             "Typed",
@@ -91,7 +91,7 @@ async fn save(fixture: &Fixture, path: &str, source: &str) -> coral_functions::S
 async fn save_diagnostics(
     fixture: &Fixture,
     body: &str,
-) -> Vec<coral_functions::SavedFunctionDiagnostic> {
+) -> Vec<coral_tools::AuthoredToolDiagnostic> {
     save(
         fixture,
         "typed.check",
@@ -112,7 +112,7 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
     save(
         &fixture,
         "helpers.double",
-        "export default function double(value: number): number { return value * 2; }",
+        "export default function double({ value }: { value: number }): number { return value * 2; }",
     )
     .await;
     let cases: &[(&str, &str, Located)] = &[
@@ -122,9 +122,9 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
             vec![(2551, Some(2), Some(83))],
         ),
         (
-            "a Saved Function the caller owns",
-            "  return coral.functions.helpers.double(\"two\");",
-            vec![(2345, Some(2), Some(41))],
+            "a Private Tool the caller owns",
+            "  return coral.private.helpers.double({ value: \"two\" });",
+            vec![(2322, Some(2), Some(41))],
         ),
         (
             "a Tool the caller cannot discover",
@@ -143,18 +143,18 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
     let saved = save(
         &fixture,
         "github.repoName",
-        "export default async function repoName(owner: string, repo: string) {\n  return (await coral.providers.github.repos.get({ owner, repo })).data.full_name;\n}",
+        "export default async function repoName({ owner, repo }: { owner: string; repo: string }) {\n  return (await coral.providers.github.repos.get({ owner, repo })).data.full_name;\n}",
     )
     .await;
     assert!(saved.diagnostics().is_empty(), "{:?}", saved.diagnostics());
     assert_eq!(
         saved.declaration().as_str(),
-        "export default function repoName(owner: string, repo: string): Promise<string>;\n",
+        "export default function repoName({ owner, repo }: {\n    owner: string;\n    repo: string;\n}): Promise<string>;\n",
         "the declaration carries the Tool's result type"
     );
 }
 
-/// `coral.workspace.search` declares one overload per mode, so a typed
+/// `coral.search` declares one overload per mode, so a typed
 /// Program reads the result its own mode returns without narrowing, and a
 /// call that mixes the modes, or names types of several paths, does not
 /// type.
@@ -162,61 +162,71 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
 async fn search_types_each_mode_with_the_result_it_returns() {
     let fixture = Fixture::new().await;
     let database = fixture.test_database.database();
-    let (installed, _search) = coral_provider::ProviderModule::with_running_catalog(
+    let mut transaction = database.begin().await.unwrap();
+    coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         WorkspaceModule::new(database.clone()),
     )
-    .install_missing_builtin(&fixture.workspace, 20)
+    .install_coral_defined_in_transaction(
+        &mut transaction,
+        &coral_workspace::ChangeContext::new(
+            fixture.user.clone(),
+            20,
+            coral_test_support::trace('2'),
+        ),
+        &fixture.workspace,
+        coral_provider::CoralDefinedProvider::Builtin,
+    )
     .await
-    .unwrap()
-    .into_parts();
-    installed.expect("the Workspace has no Built-in Provider yet");
+    .expect("the Workspace has no Built-in Provider yet")
+    .skip_search();
+    transaction.commit().await.unwrap();
     let cases: &[(&str, &str, Located)] = &[
         (
             "a query reads its page",
-            "  const page = (await coral.workspace.search({ query: \"forecast\", limit: 3 })).data;\n  return [page.hits[0]?.signature_line, page.next_offset];",
+            "  const page = (await coral.search({ query: \"forecast\", limit: 3 })).data;\n  return [page.hits[0]?.signature_line, page.next_offset];",
             vec![],
         ),
         (
             "paths read their descriptions and missing",
-            "  const found = (await coral.workspace.search({ paths: [\"a\", \"b\"] })).data;\n  return [found.descriptions[0]?.typescript_declaration, found.missing[0]?.call_path];",
+            "  const found = (await coral.search({ paths: [\"a\", \"b\"] })).data;\n  return [found.descriptions[0]?.typescript_declaration, found.missing[0]?.call_path];",
             vec![],
         ),
         (
             "a missing path reads its suggestions",
-            "  const missing = (await coral.workspace.search({ paths: [\"a\"] })).data.missing[0];\n  const nearest: string | undefined = missing?.suggestions[0];\n  return nearest;",
+            "  const missing = (await coral.search({ paths: [\"a\"] })).data.missing[0];\n  const nearest: string | undefined = missing?.suggestions[0];\n  return nearest;",
             vec![],
         ),
         (
             "a missing path of a types call reads its suggestions",
-            "  const found = (await coral.workspace.search({ paths: [\"a\"], types: [\"T\"] })).data;\n  return found.missing.flatMap((missing) => missing.suggestions);",
+            "  const found = (await coral.search({ paths: [\"a\"], types: [\"T\"] })).data;\n  return found.missing.flatMap((missing) => missing.suggestions);",
             vec![],
         ),
         (
             "a suggestion read as a description",
-            "  return (await coral.workspace.search({ paths: [\"a\"] })).data.missing[0]?.suggestions[0]?.call_path;",
-            vec![(2339, Some(2), Some(92))],
+            "  return (await coral.search({ paths: [\"a\"] })).data.missing[0]?.suggestions[0]?.call_path;",
+            vec![(2339, Some(2), Some(82))],
         ),
         (
             "types read one path's descriptions",
-            "  return (await coral.workspace.search({ paths: [\"a\"], types: [\"T\"] })).data.descriptions;",
+            "  return (await coral.search({ paths: [\"a\"], types: [\"T\"] })).data.descriptions;",
             vec![],
         ),
         (
             "a query and paths together",
-            "  return coral.workspace.search({ query: \"forecast\", paths: [\"a\"] });",
-            vec![(2769, Some(2), Some(26))],
+            "  return coral.search({ query: \"forecast\", paths: [\"a\"] });",
+            vec![(2769, Some(2), Some(16))],
         ),
         (
             "types of several paths",
-            "  return coral.workspace.search({ paths: [\"a\", \"b\"], types: [\"T\"] });",
-            vec![(2769, Some(2), Some(26))],
+            "  return coral.search({ paths: [\"a\", \"b\"], types: [\"T\"] });",
+            vec![(2769, Some(2), Some(16))],
         ),
         (
             "a page read as descriptions",
-            "  return (await coral.workspace.search({ query: \"forecast\" })).data.descriptions;",
-            vec![(2339, Some(2), Some(69))],
+            "  return (await coral.search({ query: \"forecast\" })).data.descriptions;",
+            vec![(2339, Some(2), Some(59))],
         ),
     ];
     for (name, body, expected) in cases {

@@ -378,7 +378,7 @@ export const SearchResultsNarrow: Story = {
   },
 }
 export const SearchProviderFiltered = panel(
-  'Search · one provider, saved functions skipped',
+  'Search · one provider, private tools skipped',
   toolPage(searchCall, discovery({ ...searched, provider: 'github' }, providerFilteredSearch)),
   { evidence: ['github pulls', 'Results (5+)', 'skipped by the provider filter'] },
 )
@@ -399,7 +399,7 @@ export const SearchLaterPageEmpty = panel(
   { evidence: ['from result 21, up to 5 results', 'Results (0)', 'This page has no results.'] },
 )
 export const SearchMixedResults = panel(
-  'Search · tools and saved functions',
+  'Search · tools and private tools',
   toolPage(searchCall, discovery({ ...searched, query: 'github issues by label' }, stored.mixed)),
   { evidence: ['github issues by label', 'Results (6+)'] },
 )
@@ -442,9 +442,9 @@ const describedTool: Extract<DiscoveryContext, { kind: 'describe' }> = {
   callPath: 'coral.providers.github.issues.create',
   types: [],
 }
-const describedFunction: Extract<DiscoveryContext, { kind: 'describe' }> = {
+const describedPrivateTool: Extract<DiscoveryContext, { kind: 'describe' }> = {
   kind: 'describe',
-  callPath: 'coral.functions.github.openIssuesByLabel',
+  callPath: 'coral.private.github.openIssuesByLabel',
   types: ['Issue', 'Label'],
 }
 /** A panel's one list of facts: no heading, and the same gap between every pair of rows, so
@@ -528,12 +528,12 @@ export const DescribeTool = describeStory(
   ['Declaration', 'API method documentation'],
   { terms: ['Call path', 'Provider', 'Intent', 'Started', 'Completed'], carded: true },
 )
-export const DescribeSavedFunction = describeStory(
+export const DescribePrivateTool = describeStory(
   panel(
-    'Describe · saved function, with diagnostics',
+    'Describe · private tool, with diagnostics',
     toolPage(
       describeCall('openIssuesByLabel'),
-      discovery(describedFunction, stored.describeFunction),
+      discovery(describedPrivateTool, stored.describePrivateTool),
     ),
     { evidence: ['1 error', 'Issue', 'Label'] },
   ),
@@ -722,22 +722,22 @@ function execStory(
   }
 }
 const saveCall = (outcome: InteractionOutcome) =>
-  interaction('save_function', outcome, { intent: 'Save the reminder batch' })
+  interaction('save_private_tool', outcome, { intent: 'Save the reminder batch' })
 const deleteCall = (outcome: InteractionOutcome) =>
-  interaction('delete_function', outcome, { intent: 'Remove the old reminder batch' })
-/** A save or a delete retains only the function's identity, a Coral-generated ID. */
+  interaction('delete_private_tool', outcome, { intent: 'Remove the old reminder batch' })
+/** A save or a delete retains only the private tool's identity, a Coral-generated ID. */
 const savedId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
-const savedReference = `${workspace}/savedFunctions/${savedId}`
+const savedReference = `${workspace}/privateTools/${savedId}`
 const saveError = 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^'
-const deleteError = "Saved function 'billing.oldReminders' does not exist."
+const deleteError = "Private tool 'billing.oldReminders' does not exist."
 /**
- * A save or a delete states its intent, the function it changed (its ID, with no link: no route
- * opens a function by ID), then its times, in one evenly spaced list. Its outcome shows only in
+ * A save or a delete states its intent, the private tool it changed (its ID, with no link: no route
+ * opens a private tool by ID), then its times, in one evenly spaced list. Its outcome shows only in
  * the badge. A rejection shows the exact error in the card a search result uses; otherwise a
  * notice may follow. The call retained no source, declaration or diagnostics, so nothing folds
  * into Details, and no record path or workspace shows.
  */
-function functionStory(
+function privateToolStory(
   story: Story,
   expected: {
     times: string[]
@@ -823,10 +823,10 @@ const toolEvidence = {
     ),
     { times: ['Started', 'Completed'], outcome: 'succeeded' },
   ),
-  function: functionStory(
+  private_tool: privateToolStory(
     panel(
-      'Save function · saved',
-      toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+      'Save private tool · saved',
+      toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
       { evidence: 'Save the reminder batch' },
     ),
     { times: ['Started', 'Completed'], outcome: 'succeeded' },
@@ -903,41 +903,41 @@ export const ExecEvidenceUnavailable = execStory(
     notice: 'The submission evidence is unavailable.',
   },
 )
-export const SaveFunctionSaved = toolEvidence.function
+export const SavePrivateToolSaved = toolEvidence.private_tool
 /** A save on a phone: its intent and times, nothing wider than the screen. */
-export const SaveFunctionNarrow = functionStory(
+export const SavePrivateToolNarrow = privateToolStory(
   panel(
-    'Save function · saved, narrow screen',
-    toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+    'Save private tool · saved, narrow screen',
+    toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: 'Save the reminder batch', narrow: true },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', fits: true },
 )
-/** A save that retained no intent is titled by its tool. Its function ID opens no page, so it
+/** A save that retained no intent is titled by its tool. Its private tool ID opens no page, so it
  * shows nowhere, not even as the title. */
-const unnamedSave = functionStory(
+const unnamedSave = privateToolStory(
   panel(
-    'Save function · saved, no intent retained',
-    toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
-    { evidence: 'Save function' },
+    'Save private tool · saved, no intent retained',
+    toolPage(saveCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
+    { evidence: 'Save private tool' },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded' },
 )
-export const SaveFunctionWithoutIntent: Story = {
+export const SavePrivateToolWithoutIntent: Story = {
   ...unnamedSave,
   args: {
-    page: toolPage(interaction('save_function', 'succeeded', { intent: '' }), {
-      kind: 'function',
+    page: toolPage(interaction('save_private_tool', 'succeeded', { intent: '' }), {
+      kind: 'private_tool',
       reference: savedReference,
     }),
   },
 }
-export const SaveFunctionRejected = functionStory(
+export const SavePrivateToolRejected = privateToolStory(
   panel(
-    'Save function · rejected',
+    'Save private tool · rejected',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
-      code: 'saved_function_admission_failed',
+      code: 'private_tool_admission_failed',
       message: saveError,
     }),
     { evidence: 'Declaration or statement expected.' },
@@ -945,24 +945,24 @@ export const SaveFunctionRejected = functionStory(
   { times: ['Started', 'Completed'], outcome: 'rejected', error: saveError },
 )
 /** A long compiler report on a phone wraps inside its card and keeps its lines. */
-export const SaveFunctionRejectedNarrow = functionStory(
+export const SavePrivateToolRejectedNarrow = privateToolStory(
   panel(
-    'Save function · rejected, long diagnostic, narrow screen',
+    'Save private tool · rejected, long diagnostic, narrow screen',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
-      code: 'saved_function_admission_failed',
+      code: 'private_tool_admission_failed',
       message: longAdmissionError,
     }),
     { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
   ),
   { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
 )
-export const SaveFunctionRejectedWithoutMessage = functionStory(
+export const SavePrivateToolRejectedWithoutMessage = privateToolStory(
   panel(
-    'Save function · rejected, no message',
+    'Save private tool · rejected, no message',
     toolPage(saveCall('rejected'), {
       kind: 'rejection',
-      code: 'saved_function_admission_failed',
+      code: 'private_tool_admission_failed',
       message: '',
     }),
     { evidence: 'Save the reminder batch' },
@@ -970,42 +970,46 @@ export const SaveFunctionRejectedWithoutMessage = functionStory(
   {
     times: ['Started', 'Completed'],
     outcome: 'rejected',
-    silent: ['Rejected with no message', 'saved_function_admission_failed'],
+    silent: ['Rejected with no message', 'private_tool_admission_failed'],
   },
 )
-export const SaveFunctionCompletionUnknown = functionStory(
-  panel('Save function · completion unknown', toolPage(saveCall('unknown'), { kind: 'unknown' }), {
-    evidence: 'Save the reminder batch',
-  }),
+export const SavePrivateToolCompletionUnknown = privateToolStory(
+  panel(
+    'Save private tool · completion unknown',
+    toolPage(saveCall('unknown'), { kind: 'unknown' }),
+    {
+      evidence: 'Save the reminder batch',
+    },
+  ),
   { times: ['Started'], outcome: 'result unknown' },
 )
-export const SaveFunctionEvidenceUnavailable = functionStory(
+export const SavePrivateToolEvidenceUnavailable = privateToolStory(
   panel(
-    'Save function · evidence unavailable',
+    'Save private tool · evidence unavailable',
     toolPage(saveCall('succeeded'), { kind: 'unknown' }),
     { evidence: 'Save the reminder batch' },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', silent: ['evidence is unavailable'] },
 )
-export const DeleteFunctionDeleted = functionStory(
+export const DeletePrivateToolDeleted = privateToolStory(
   panel(
-    'Delete function · deleted',
-    toolPage(deleteCall('succeeded'), { kind: 'function', reference: savedReference }),
+    'Delete private tool · deleted',
+    toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted' },
 )
-export const DeleteFunctionNarrow = functionStory(
+export const DeletePrivateToolNarrow = privateToolStory(
   panel(
-    'Delete function · deleted, narrow screen',
-    toolPage(deleteCall('succeeded'), { kind: 'function', reference: savedReference }),
+    'Delete private tool · deleted, narrow screen',
+    toolPage(deleteCall('succeeded'), { kind: 'private_tool', reference: savedReference }),
     { evidence: savedId, narrow: true },
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted', fits: true },
 )
-export const DeleteFunctionRejected = functionStory(
+export const DeletePrivateToolRejected = privateToolStory(
   panel(
-    'Delete function · rejected',
+    'Delete private tool · rejected',
     toolPage(deleteCall('rejected'), {
       kind: 'rejection',
       code: 'not_found',
@@ -1015,9 +1019,9 @@ export const DeleteFunctionRejected = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'rejected', error: deleteError },
 )
-export const DeleteFunctionRejectedNarrow = functionStory(
+export const DeletePrivateToolRejectedNarrow = privateToolStory(
   panel(
-    'Delete function · rejected, long message, narrow screen',
+    'Delete private tool · rejected, long message, narrow screen',
     toolPage(deleteCall('rejected'), {
       kind: 'rejection',
       code: 'not_found',
@@ -1027,17 +1031,17 @@ export const DeleteFunctionRejectedNarrow = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
 )
-export const DeleteFunctionCompletionUnknown = functionStory(
+export const DeletePrivateToolCompletionUnknown = privateToolStory(
   panel(
-    'Delete function · completion unknown',
+    'Delete private tool · completion unknown',
     toolPage(deleteCall('unknown'), { kind: 'unknown' }),
     { evidence: 'Remove the old reminder batch' },
   ),
   { times: ['Started'], outcome: 'result unknown' },
 )
-export const DeleteFunctionEvidenceUnavailable = functionStory(
+export const DeletePrivateToolEvidenceUnavailable = privateToolStory(
   panel(
-    'Delete function · evidence unavailable',
+    'Delete private tool · evidence unavailable',
     toolPage(deleteCall('succeeded'), { kind: 'unknown' }),
     { evidence: 'The delete evidence is unavailable.' },
   ),
@@ -1956,7 +1960,7 @@ const exactAddProviderArguments =
   '"credentialRoute":"fixed","maxForecasts":9007199254740993,' +
   '"label":"first as sent","label":"second as sent"}'
 /** The program that makes this exact call, its arguments written out as sent. */
-const exactAddProviderProgram = `return await coral.workspace.addProvider(${exactAddProviderArguments})`
+const exactAddProviderProgram = `return await coral.addProvider(${exactAddProviderArguments})`
 /** Edge case: addProvider JSON that rows would change, a large integer and a duplicate key,
  * shows whole, exactly as sent, in one block. The ordinary arguments renderer does this for any
  * such JSON; nothing here is special to OpenAPI: no copy apart, no placeholder. */
@@ -1965,7 +1969,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     'Approval · addProvider with an inline OpenAPI document, exact-JSON fallback',
     approvalPage(
       approval({
-        callPath: 'coral.workspace.addProvider',
+        callPath: 'coral.addProvider',
         provider: `${workspace}/providers/coral`,
         providerLabel: 'Coral workspace',
         arguments: exactAddProviderArguments,
@@ -1978,7 +1982,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const review = within(dialog).getByRole('region', {
-      name: 'Review coral.workspace.addProvider',
+      name: 'Review coral.addProvider',
     })
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
@@ -2018,7 +2022,7 @@ const addProviderCall = {
 }
 /** A typical program that adds the provider with this call. */
 const addProviderProgram = `const call = ${JSON.stringify(addProviderCall, null, 2)}
-return await coral.workspace.addProvider(call)`
+return await coral.addProvider(call)`
 /** A typical addProvider call through the ordinary arguments: one row per field, and the
  * inline document whole inside `source`, as sent. The Arguments disclosure is the one way to
  * fold it; nothing is special to OpenAPI. */
@@ -2027,20 +2031,20 @@ export const ApprovalAddProviderOpenApi: Story = {
     'Approval · addProvider with an inline OpenAPI document',
     approvalPage(
       approval({
-        callPath: 'coral.workspace.addProvider',
+        callPath: 'coral.addProvider',
         provider: `${workspace}/providers/coral`,
         providerLabel: 'Coral workspace',
         arguments: JSON.stringify(addProviderCall),
       }),
       { source: addProviderProgram },
     ),
-    { evidence: 'coral.workspace.addProvider' },
+    { evidence: 'coral.addProvider' },
   ),
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const review = within(dialog).getByRole('region', {
-      name: 'Review coral.workspace.addProvider',
+      name: 'Review coral.addProvider',
     })
     const sent = within(review)
       .getByText('Arguments (4)', { selector: 'summary' })

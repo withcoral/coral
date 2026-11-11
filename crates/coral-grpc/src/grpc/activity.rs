@@ -37,7 +37,7 @@ fn error(error: coral_task::Error) -> Status {
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_task::Error::SnapshotTooLarge
         | coral_task::Error::Search(_)
-        | coral_task::Error::Functions(_)
+        | coral_task::Error::Tools(_)
         | coral_task::Error::Clock
         | coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::Workspace(_)
@@ -697,8 +697,8 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             AttemptEvidence::Run(id) => {
                 Evidence::Run(format!("workspaces/{}/runs/{id}", identity.workspace))
             }
-            AttemptEvidence::SavedFunction(id) => Evidence::SavedFunction(format!(
-                "workspaces/{}/savedFunctions/{id}",
+            AttemptEvidence::PrivateTool(id) => Evidence::PrivateTool(format!(
+                "workspaces/{}/privateTools/{id}",
                 identity.workspace
             )),
             AttemptEvidence::Rejected(failure) => Evidence::Rejection(wire::ActivityRejection {

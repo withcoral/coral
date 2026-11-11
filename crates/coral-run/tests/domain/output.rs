@@ -40,6 +40,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
                 &tool.workspace_id,
                 accepted.run_id(),
                 &window,
+                &crate::RunEntryLevel::Every,
                 1,
                 None,
             )
@@ -97,6 +98,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
                 anchor: None,
                 preceding: 0,
             },
+            &crate::RunEntryLevel::Every,
             2,
             None,
         )
@@ -118,6 +120,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
                 anchor: Some(crate::RunEntryAnchor::Invocation(invocation.id.clone())),
                 preceding: 1,
             },
+            &crate::RunEntryLevel::Every,
             3,
             None,
         )

@@ -1614,6 +1614,7 @@ async fn tool_reads_project_the_catalog_and_bound_their_pages() {
             hints: tool.hints,
             access_state: management::ToolAccessState::Enabled.into(),
             explicit: false,
+            agent: String::new(),
         }]
     );
     let oversized = f
@@ -1992,7 +1993,7 @@ async fn list_providers_projects_the_provider_that_get_returns() {
             .iter()
             .map(|builtin| (builtin.call_root.as_str(), builtin.namespace.as_str()))
             .collect::<Vec<_>>(),
-        [("coral.workspace", "")]
+        [("coral", "")]
     );
     assert_eq!(added, vec![provider]);
 }

@@ -1,7 +1,7 @@
 //! The Run Executor link, from both of its sides.
 //!
 //! On Coral's side it holds the compiler client that Program Admission and
-//! Saved Function save share. [`CompilerClient`] is the one interface.
+//! Private Tool save share. [`CompilerClient`] is the one interface.
 //! [`InProcessCompiler`] runs one warm Program Compiler on its own thread in
 //! this process. [`PullStreamCompiler`] sends each call down one held pull
 //! stream to a Run Executor.
@@ -29,6 +29,7 @@ pub use compiler::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left,
     tool_check_deadline,
 };
+pub use coral_v8::BuiltinTools;
 pub use in_process::InProcessCompiler;
 pub use link::{
     AddressError, CoralAddress, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, RunError, RunExecutorConfig,

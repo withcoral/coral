@@ -10,7 +10,7 @@ import { ApprovalReview } from './review'
 import { PanelFooter } from '../activity/panel'
 import { DetailHeader } from '../activity/detail-header'
 import { useActivityArchived, useActivityConnected, restoreFirst } from '../activity/live'
-import type { ActionPage, RequestDetail, RunDetail } from '../activity/types'
+import type { ActionPage, ParentInvocation, RequestDetail, RunDetail } from '../activity/types'
 import type { ConnectionState } from '../accounts/types'
 import * as styles from './actions.css'
 
@@ -28,6 +28,7 @@ const FIRST_ACTIONS = 5
 export function RunActions({
   context,
   callStartedAt,
+  calledFrom,
   connectionContext,
   page,
   request,
@@ -40,6 +41,8 @@ export function RunActions({
   context: RunDetail
   /** When the call an approval review decides started, if that call is loaded. */
   callStartedAt?: string
+  /** The tool call whose body made the call that `request` decides, if any. */
+  calledFrom?: ParentInvocation
   /** The Run, as context under a selected connection request's header. */
   connectionContext?: ReactNode
   page?: ActionPage
@@ -65,6 +68,7 @@ export function RunActions({
           detail={request}
           context={context}
           callStartedAt={callStartedAt}
+          calledFrom={calledFrom}
         />
       )}
       {request?.kind === 'account_connection' && (

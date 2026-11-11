@@ -37,9 +37,10 @@ impl ReadyDispatch {
                 ReadyMcpDispatch::plan(tool, arguments, provider, resources, limits)
                     .map(|ready| Self::Mcp(Box::new(ready)))
             }
-            // The Run domain performs built-in Tools itself and never plans
-            // one. Planning one anyway settles as a safe Coral Failure.
-            ExecutionBinding::Builtin(_) => Err(Error::ToolUnavailable),
+            // The Run domain performs built-in and Private Tools itself and
+            // never plans one. Planning one anyway settles as a safe Coral
+            // Failure.
+            ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => Err(Error::ToolUnavailable),
         }
     }
 }

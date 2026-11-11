@@ -188,6 +188,35 @@ impl TestDatabase {
         }
     }
 
+    /// Makes every row delete from `table` fail on either database when
+    /// `fail`, and lets deletes through again when not. A fault-injection
+    /// test uses it to prove that a write which deletes from `table` rolls
+    /// back whole.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection or the trigger statement fails.
+    pub async fn fail_deletes(&self, table: &str, fail: bool) -> Result<(), TestDatabaseError> {
+        let name = format!("fail_deletes_from_{table}");
+        let sql = match (&self.options, fail) {
+            (DatabaseOptions::Sqlite { .. }, true) => format!(
+                "CREATE TRIGGER {name} BEFORE DELETE ON {table} \
+                 BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END;"
+            ),
+            (DatabaseOptions::Sqlite { .. }, false) => format!("DROP TRIGGER {name};"),
+            (DatabaseOptions::Postgres { .. }, true) => format!(
+                "CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql \
+                 AS $$ BEGIN RAISE EXCEPTION 'injected delete failure'; END $$; \
+                 CREATE TRIGGER {name} BEFORE DELETE ON {table} \
+                 FOR EACH ROW EXECUTE FUNCTION {name}();"
+            ),
+            (DatabaseOptions::Postgres { .. }, false) => {
+                format!("DROP TRIGGER {name} ON {table}; DROP FUNCTION {name}();")
+            }
+        };
+        self.execute_fixture_sql(&sql).await.map(drop)
+    }
+
     async fn sqlite(plan: &MigrationPlan) -> Result<Self, TestDatabaseError> {
         let directory = tempfile::tempdir()?;
         let options = DatabaseOptions::Sqlite {

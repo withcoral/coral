@@ -35,6 +35,8 @@ enum ToolInvocations {
     ResultBytes,
     FailureCode,
     FailureMessage,
+    ParentInvocationId,
+    DeclaredDefaultAccessState,
 }
 
 impl InvocationState {
@@ -84,6 +86,8 @@ pub(super) async fn insert_admission(
                 ToolInvocations::ArgumentsJson,
                 ToolInvocations::State,
                 ToolInvocations::AdmittedAtUnixNanos,
+                ToolInvocations::ParentInvocationId,
+                ToolInvocations::DeclaredDefaultAccessState,
             ]
             .into_iter()
             .map(IntoIden::into_iden)
@@ -109,6 +113,16 @@ pub(super) async fn insert_admission(
                 Expr::val(&admitted.arguments_json),
                 Expr::val(InvocationState::Pending.as_storage_str()),
                 Expr::val(admitted.admitted_at_unix_nanos),
+                Expr::val(
+                    admitted
+                        .parent_invocation_id
+                        .as_ref()
+                        .map(ToString::to_string),
+                ),
+                Expr::val(
+                    authored_tool_default(admitted.target.tool())
+                        .map(coral_catalog::ToolAccessState::as_storage_str),
+                ),
             ]
             .into_iter()
             .chain(location_values),
@@ -116,6 +130,21 @@ pub(super) async fn insert_admission(
         .to_owned();
     transaction.execute(statement).await?;
     Ok(())
+}
+
+/// The default of the revision the Run linked, for a Private or Shared
+/// Tool: its author declared a Private Tool's, and its publishing Owner
+/// chose a Shared Tool's. `None` for every other Tool, whose catalog keeps
+/// its facts.
+fn authored_tool_default(
+    tool: &coral_catalog::MaterializedTool,
+) -> Option<coral_catalog::ToolAccessState> {
+    matches!(
+        tool.execution_binding(),
+        coral_catalog::ExecutionBinding::Code(_)
+    )
+    .then(|| tool.policy_facts().declared_default())
+    .flatten()
 }
 
 pub(super) async fn connection_requests_for_run(
@@ -424,6 +453,9 @@ pub(super) async fn end_pending_with_failure(
 
 pub(super) struct ApprovalTarget {
     pub generation: coral_catalog::ProviderGenerationId,
+    /// The default of the revision the Run linked, for a Private or Shared
+    /// Tool; `None` for any other Tool.
+    pub declared_default: Option<coral_catalog::ToolAccessState>,
     pub tool: coral_catalog::ToolKey,
     pub provider_id: coral_provider::ProviderId,
     pub provider_account_setting_version: i64,
@@ -449,6 +481,7 @@ pub(super) async fn approval_target(
         provider_account_id: Option<String>,
         call_path: String,
         arguments_json: String,
+        declared_default_access_state: Option<String>,
     }
     let row: Row = tx
         .fetch_optional(
@@ -462,6 +495,7 @@ pub(super) async fn approval_target(
                     ToolInvocations::ProviderAccountId,
                     ToolInvocations::CallPath,
                     ToolInvocations::ArgumentsJson,
+                    ToolInvocations::DeclaredDefaultAccessState,
                 ])
                 .from(ToolInvocations::Table)
                 .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
@@ -471,9 +505,18 @@ pub(super) async fn approval_target(
         )
         .await?
         .ok_or(Error::ApprovalNotFound)?;
+    let declared_default = row
+        .declared_default_access_state
+        .map(|state| {
+            coral_catalog::ToolAccessState::from_storage_str(&state).ok_or_else(|| {
+                Error::CorruptData("Invocation has an invalid declared default".to_owned())
+            })
+        })
+        .transpose()?;
     Ok(ApprovalTarget {
         generation: coral_catalog::ProviderGenerationId::parse(&row.provider_generation_id)
             .map_err(coral_provider::Error::from)?,
+        declared_default,
         tool: coral_catalog::ToolKey::parse(&row.tool_key).map_err(coral_provider::Error::from)?,
         provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
         provider_account_setting_version: row.provider_account_setting_version,
@@ -728,20 +771,34 @@ pub(super) async fn has_nonterminal_for_run(
     .await
 }
 
-/// Reports whether an upstream dispatch started and has not ended. Only these
-/// Invocations can still record a result once Run termination is requested.
-pub(super) async fn has_dispatching_for_run(
+/// The Generations whose Tools the run's dispatches that started and have
+/// not ended called, each once.
+pub(super) async fn dispatching_generations_for_run(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     run_id: &RunId,
-) -> Result<bool, Error> {
-    has_for_run(
-        transaction,
-        workspace_id,
-        run_id,
-        Expr::col(ToolInvocations::State).eq(InvocationState::Dispatching.as_storage_str()),
-    )
-    .await
+) -> Result<Vec<coral_catalog::ProviderGenerationId>, Error> {
+    let rows: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .distinct()
+                .column(ToolInvocations::ProviderGenerationId)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
+                .and_where(
+                    Expr::col(ToolInvocations::State)
+                        .eq(InvocationState::Dispatching.as_storage_str()),
+                )
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(generation,)| {
+            coral_catalog::ProviderGenerationId::parse(&generation)
+                .map_err(|error| coral_provider::Error::from(error).into())
+        })
+        .collect()
 }
 
 async fn has_for_run(

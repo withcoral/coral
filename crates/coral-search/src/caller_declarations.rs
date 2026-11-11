@@ -1,5 +1,5 @@
-//! The Tool declarations a Saved Function save is typed from, read as one
-//! caller discovers them.
+//! The Tool declarations a Private Tool save or a Shared Tool Publish is
+//! typed from, read as one caller discovers them.
 
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
@@ -31,12 +31,11 @@ impl<'a> CallerToolDeclarations<'a> {
 }
 
 #[async_trait::async_trait]
-impl coral_functions::ToolDeclarationReader for CallerToolDeclarations<'_> {
+impl coral_tools::ToolDeclarationReader for CallerToolDeclarations<'_> {
     async fn read(
         &self,
         call_paths: &[String],
-    ) -> Result<Vec<coral_functions::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>>
-    {
+    ) -> Result<Vec<coral_tools::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
         let call_paths = call_paths
             .iter()
             .filter_map(|call_path| CallPath::parse(call_path).ok())
@@ -47,7 +46,7 @@ impl coral_functions::ToolDeclarationReader for CallerToolDeclarations<'_> {
             .await?
             .into_iter()
             .map(|description| {
-                coral_functions::ToolDeclaration::new(
+                coral_tools::ToolDeclaration::new(
                     description.call_path().as_str().to_owned(),
                     description.typescript_declaration().to_owned(),
                 )

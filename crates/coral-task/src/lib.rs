@@ -2,7 +2,7 @@
 //!
 //! This private domain Module is the transport-neutral Interface for starting,
 //! ending, and inspecting Tasks and orchestrating attributed commands above the
-//! Task-free Functions, Search, and Run modules. It generates every Task identity, preserves
+//! Task-free Tools, Search, and Run modules. It generates every Task identity, preserves
 //! Workspace and Principal attribution, bounds declared intent, and owns the
 //! one-way transition to a terminal success or failure outcome.
 //!

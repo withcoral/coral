@@ -1,7 +1,8 @@
 //! The accepted Program package, its linked source snapshots, and `run.started`.
 
+use coral_catalog::AuthoredToolKind;
 use coral_db::Transaction;
-use coral_functions::SavedFunctionSelection;
+use coral_tools::LinkedToolSelection;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 use sqlx::FromRow;
@@ -73,7 +74,7 @@ pub(crate) async fn insert_acceptance(
     holder: &CoralInstanceId,
     source: &ProgramSource,
     package: &ProgramPackage,
-    linked: &[SavedFunctionSelection],
+    linked: &[LinkedToolSelection],
     compilation_timeout: std::time::Duration,
 ) -> Result<bool, Error> {
     let program_source_max_bytes = stored_usize(PROGRAM_SOURCE_MAX_BYTES)?;
@@ -125,7 +126,12 @@ pub(crate) async fn insert_acceptance(
         .to_owned();
     transaction.execute(statement).await?;
     for snapshot in linked {
-        insert_run_snapshot(transaction, run, snapshot).await?;
+        match snapshot.kind() {
+            AuthoredToolKind::Private => insert_run_snapshot(transaction, run, snapshot).await?,
+            AuthoredToolKind::Shared => {
+                insert_shared_run_snapshot(transaction, run, snapshot).await?;
+            }
+        }
     }
 
     // Acceptance creates the Run Ledger at head 0 with its first Event. There
@@ -230,12 +236,12 @@ fn stored_usize(value: usize) -> Result<i64, Error> {
         .map_err(|_error| Error::CorruptData("Program limit exceeds durable range".to_string()))
 }
 
-#[derive(Iden)]
-pub(super) enum ProgramRunSavedFunctionSnapshots {
+#[derive(Iden, Clone, Copy)]
+pub(super) enum ProgramRunPrivateToolSnapshots {
     Table,
     RunId,
     WorkspaceId,
-    SavedFunctionId,
+    PrivateToolId,
     Path,
     Source,
 }
@@ -243,22 +249,65 @@ pub(super) enum ProgramRunSavedFunctionSnapshots {
 async fn insert_run_snapshot(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
-    snapshot: &SavedFunctionSelection,
+    snapshot: &LinkedToolSelection,
 ) -> Result<(), Error> {
     let statement = Query::insert()
-        .into_table(ProgramRunSavedFunctionSnapshots::Table)
+        .into_table(ProgramRunPrivateToolSnapshots::Table)
         .columns([
-            ProgramRunSavedFunctionSnapshots::RunId,
-            ProgramRunSavedFunctionSnapshots::WorkspaceId,
-            ProgramRunSavedFunctionSnapshots::SavedFunctionId,
-            ProgramRunSavedFunctionSnapshots::Path,
-            ProgramRunSavedFunctionSnapshots::Source,
+            ProgramRunPrivateToolSnapshots::RunId,
+            ProgramRunPrivateToolSnapshots::WorkspaceId,
+            ProgramRunPrivateToolSnapshots::PrivateToolId,
+            ProgramRunPrivateToolSnapshots::Path,
+            ProgramRunPrivateToolSnapshots::Source,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),
             Expr::val(run.workspace_id.to_string()),
-            Expr::val(snapshot.id().to_string()),
-            Expr::val(snapshot.path().as_str()),
+            Expr::val(snapshot.tool_key().as_str()),
+            Expr::val(snapshot.path().relative_path()),
+            Expr::val(snapshot.source().as_str()),
+        ])
+        .to_owned();
+    transaction.execute(statement).await?;
+    Ok(())
+}
+
+#[derive(Iden, Clone, Copy)]
+pub(super) enum ProgramRunSharedToolSnapshots {
+    Table,
+    RunId,
+    WorkspaceId,
+    SharedToolId,
+    Path,
+    Revision,
+    Source,
+}
+
+/// Records the Shared Tool revision the Run linked, with the source it runs.
+async fn insert_shared_run_snapshot(
+    transaction: &mut Transaction<'_>,
+    run: &AcceptedRun,
+    snapshot: &LinkedToolSelection,
+) -> Result<(), Error> {
+    let revision = i64::try_from(snapshot.revision()).map_err(|_error| {
+        Error::CorruptData("Shared Tool revision exceeds durable range".to_string())
+    })?;
+    let statement = Query::insert()
+        .into_table(ProgramRunSharedToolSnapshots::Table)
+        .columns([
+            ProgramRunSharedToolSnapshots::RunId,
+            ProgramRunSharedToolSnapshots::WorkspaceId,
+            ProgramRunSharedToolSnapshots::SharedToolId,
+            ProgramRunSharedToolSnapshots::Path,
+            ProgramRunSharedToolSnapshots::Revision,
+            ProgramRunSharedToolSnapshots::Source,
+        ])
+        .values_panic([
+            Expr::val(run.id.to_string()),
+            Expr::val(run.workspace_id.to_string()),
+            Expr::val(snapshot.tool_key().as_str()),
+            Expr::val(snapshot.path().relative_path()),
+            Expr::val(revision),
             Expr::val(snapshot.source().as_str()),
         ])
         .to_owned();

@@ -34,8 +34,9 @@ const TIME_LEFT_MS: u32 = 2_000;
 fn call() -> Call {
     Call::Compile(wire::ProgramSource {
         source: "return 42;".to_owned(),
-        saved_functions: Vec::new(),
+        linked_tools: Vec::new(),
         callable: None,
+        builtin_tools: Vec::new(),
     })
 }
 
@@ -413,7 +414,12 @@ fn a_compile_past_the_link_bound_is_refused_alone() {
     let streams = PullStreams::default();
     let (outbound, mut sent) = mpsc::unbounded_channel();
     let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
-    let too_large = compile_call(&"x".repeat(MESSAGE_MAX_BYTES), &[], None);
+    let too_large = compile_call(
+        &"x".repeat(MESSAGE_MAX_BYTES),
+        &[],
+        &coral_v8::BuiltinTools::default(),
+        None,
+    );
 
     let refused = streams.compile(stream, TIME_LEFT_MS, too_large);
     assert_eq!(refused.err(), Some(Refused::TooLarge));

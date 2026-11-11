@@ -88,7 +88,7 @@ function forbiddenAmbientReference(program, sourceFile) {
   return found;
 }
 
-// Private compiler-binding checks and Saved Function analysis must agree about
+// Private compiler-binding checks and Private Tool analysis must agree about
 // which AST nodes can produce runtime references. Returning false stops the walk.
 function walkRuntimeNodes(root, inspectNode) {
   let stopped = false;
@@ -336,24 +336,34 @@ function coralAccess(node, checker, sourceFile) {
     if (complete[0] === 'coral') {
       return { root: 'global', segments: complete.slice(1) };
     }
-    if (complete[0] === undefined && complete.includes('functions')) {
+    if (complete[0] === undefined && complete.some((segment) => LINKED_TOOL_ROOTS.has(segment))) {
       return { root: 'computed_global', segments: complete };
     }
   }
   return undefined;
 }
 
-function propertyPath(node, checker, sourceFile) {
+// The members of `coral` whose Tools a Program links from their source:
+// `coral.private`, the caller's own Private Tools, and `coral.shared`, the
+// Workspace's Shared Tools.
+const LINKED_TOOL_ROOTS = new Set(['private', 'shared']);
+
+// The linked root and Tool path one literal access names, such as
+// `{ root: 'shared', path: ['mail', 'remind'] }` for `coral.shared.mail.remind`.
+function linkedToolPath(node, checker, sourceFile) {
   const access = coralAccess(node, checker, sourceFile);
   if (
     access?.root === 'lexical' &&
-    access.segments[0] === 'functions' &&
+    LINKED_TOOL_ROOTS.has(access.segments[0]) &&
     access.segments.every((segment) => segment !== undefined)
   ) {
-    return access.segments.slice(1);
+    return { root: access.segments[0], path: access.segments.slice(1) };
   }
   return undefined;
 }
+
+// How a source names each linked root, in messages.
+const LINKED_TOOL_KINDS = Object.freeze({ private: 'Private Tool', shared: 'Shared Tool' });
 
 // The outermost expression that wraps `node` in transparent syntax only:
 // parentheses, `as`, `satisfies`, angle-bracket and non-null assertions.
@@ -414,9 +424,15 @@ function identifierIsReference(node) {
   );
 }
 
-function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
+function referencesByPath(found) {
+  return [...found.values()].toSorted((left, right) => left.path.localeCompare(right.path));
+}
+
+// The Private and Shared Tools one source names directly, each sorted by
+// path, or the first way it names one that admission cannot link.
+function linkedToolPathAnalysis(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
-  const references = new Map();
+  const references = { private: new Map(), shared: new Map() };
   let validationError;
   function reject(message, node) {
     validationError = {
@@ -435,31 +451,45 @@ function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
     }
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       const access = coralAccess(node, checker, sourceFile);
+      if (access?.root === 'global' && LINKED_TOOL_ROOTS.has(access.segments[0])) {
+        const root = access.segments[0];
+        return reject(
+          `${LINKED_TOOL_KINDS[root]} paths must be directly named through coral.${root}`,
+          node,
+        );
+      }
       if (
         (access?.root === 'global' &&
-          (access.segments[0] === 'functions' ||
-            (access.segments.length > 0 && access.segments[0] === undefined))) ||
+          access.segments.length > 0 &&
+          access.segments[0] === undefined) ||
         access?.root === 'computed_global'
       ) {
-        return reject('Saved Function paths must be directly named through coral.functions', node);
+        return reject(
+          'Private and Shared Tool paths must be directly named through coral.private and coral.shared',
+          node,
+        );
       }
       if (
         ts.isElementAccessExpression(node) &&
         access?.root === 'lexical' &&
-        (access.segments[0] === 'functions' || access.segments[0] === undefined)
+        (LINKED_TOOL_ROOTS.has(access.segments[0]) || access.segments[0] === undefined)
       ) {
-        return reject('Saved Function paths must be directly named without computed access', node);
+        const kind = LINKED_TOOL_KINDS[access.segments[0]] ?? 'Private Tool';
+        return reject(`${kind} paths must be directly named without computed access`, node);
       }
     }
     if (ts.isPropertyAccessExpression(node)) {
-      const path = propertyPath(node, checker, sourceFile);
-      if (path !== undefined && !parentContinuesCoralPath(node)) {
-        if (path.length === 0) {
-          return reject('Saved Function namespace aliases are not supported', node);
+      const linked = linkedToolPath(node, checker, sourceFile);
+      if (linked !== undefined && !parentContinuesCoralPath(node)) {
+        if (linked.path.length === 0) {
+          return reject(
+            `${LINKED_TOOL_KINDS[linked.root]} namespace aliases are not supported`,
+            node,
+          );
         }
-        const joined = path.join('.');
-        if (!references.has(joined)) {
-          references.set(joined, {
+        const joined = linked.path.join('.');
+        if (!references[linked.root].has(joined)) {
+          references[linked.root].set(joined, {
             path: joined,
             ...authoredReferenceLocation(sourceFile, node, authoredMappings),
           });
@@ -469,9 +499,8 @@ function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
     return true;
   });
   return {
-    references: [...references.values()].toSorted((left, right) =>
-      left.path.localeCompare(right.path),
-    ),
+    references: referencesByPath(references.private),
+    sharedReferences: referencesByPath(references.shared),
     validationError,
   };
 }
@@ -484,7 +513,7 @@ function referenceAnalysisProgram(source, fileName, targetName) {
     types: [],
   };
   const { program, sourceFile } = virtualTypeScriptProgram(fileName, source, compilerOptions);
-  if (!sourceFile) throw new Error('Saved Function analysis source is missing');
+  if (!sourceFile) throw new Error('Tool analysis source is missing');
   return { program, sourceFile };
 }
 
@@ -502,8 +531,8 @@ function programToolChains({ wrapped, program, sourceFile }) {
   return calledPathChains(toolReferenceChains(sourceFile, program, wrapped.authoredMappings));
 }
 
-// The Saved Functions and Tools one Program body names, from one analysis:
-// what Program Admission links and checks.
+// The Private Tools, Shared Tools and Tools one Program body names, from one
+// analysis: what Program Admission links and checks.
 function analyzeProgram(body, fileName, targetName) {
   const analysis = programReferenceAnalysis(body, fileName, targetName);
   if (analysis === undefined) {
@@ -517,9 +546,9 @@ function analyzeProgram(body, fileName, targetName) {
     };
   }
   const { wrapped, program, sourceFile } = analysis;
-  const functions = savedFunctionPathAnalysis(sourceFile, program, wrapped.authoredMappings);
-  if (functions.validationError !== undefined) return functions;
-  return { ...functions, chains: programToolChains(analysis) };
+  const linked = linkedToolPathAnalysis(sourceFile, program, wrapped.authoredMappings);
+  if (linked.validationError !== undefined) return linked;
+  return { ...linked, chains: programToolChains(analysis) };
 }
 
 // The chains as the running Program calls them: it joins segments with
@@ -532,7 +561,7 @@ function calledPathChains(chains) {
   }));
 }
 
-function savedFunctionDependencyAnalysis(sourceFile, program) {
+function linkedToolDependencyAnalysis(sourceFile, program) {
   const syntaxError = sourceFile.parseDiagnostics.find(
     (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
   );
@@ -544,28 +573,38 @@ function savedFunctionDependencyAnalysis(sourceFile, program) {
     return {
       references: [],
       validationError: {
-        message: 'Saved Function source has syntax errors under the current TypeScript Profile',
+        message: 'Tool source has syntax errors under the current TypeScript Profile',
         line: position.line + 1,
         column: position.character + 1,
       },
     };
   }
-  return savedFunctionPathAnalysis(sourceFile, program);
+  return linkedToolPathAnalysis(sourceFile, program);
 }
+
+// The members of `coral` that name no Tool: the linked Tools' roots and the
+// Program host's own members.
+const NON_TOOL_MEMBERS = new Set([...LINKED_TOOL_ROOTS, 'emit', 'ToolError']);
 
 // The number of segments under `coral` that name a Tool's Call Root:
-// `providers.<namespace>` for an Owner's Provider, `workspace` for the
-// Built-in Provider. Undefined for any other root.
+// `providers.<namespace>` for an Owner's Provider, none for the Built-in
+// Provider, whose Tools sit on `coral` itself. Undefined for a member of
+// `coral` that names no Tool.
 function toolCallRootLength(segments) {
-  if (segments[0] === 'providers') return 2;
-  if (segments[0] === 'workspace') return 1;
-  return undefined;
+  if (NON_TOOL_MEMBERS.has(segments[0])) return undefined;
+  return segments[0] === 'providers' ? 2 : 0;
 }
 
-// Each maximal literal `coral.providers` or `coral.workspace` chain, relative
-// to `coral` and cut before its first computed segment, where it starts, and
-// whether it is called. A cut chain is not called: its computed segment may
-// name the Tool. Aliased roots are not followed.
+// The fewest segments a chain under a Call Root of `rootLength` segments
+// has: a Built-in Tool, or an Owner's Provider namespace.
+function shortestToolChain(rootLength) {
+  return Math.max(rootLength, 1);
+}
+
+// Each maximal literal Tool chain, relative to `coral` and cut before its
+// first computed segment, where it starts, whether it is called, and whether
+// it was cut. A cut chain is not called: its computed segment may name the
+// Tool. Aliased roots are not followed.
 function toolReferenceChains(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
   const chains = [];
@@ -575,16 +614,22 @@ function toolReferenceChains(sourceFile, program, authoredMappings) {
       !parentContinuesCoralPath(node)
     ) {
       const access = coralAccess(node, checker, sourceFile);
-      if (access?.root === 'lexical' && toolCallRootLength(access.segments) !== undefined) {
+      const rootLength =
+        access?.root === 'lexical' ? toolCallRootLength(access.segments) : undefined;
+      if (rootLength !== undefined) {
         const computed = access.segments.indexOf(undefined);
         const segments = access.segments.slice(0, computed === -1 ? undefined : computed);
         const called =
           computed === -1 && ts.isCallExpression(node.parent) && node.parent.expression === node;
-        if (segments.length > 1) {
+        // A chain cut inside its Call Root, as in `coral.providers[name]`,
+        // names no candidate path, and is kept so that a reader learns the
+        // source builds a Tool path at runtime.
+        if (computed !== -1 || segments.length >= shortestToolChain(rootLength)) {
           chains.push({
             segments,
             start: node.getStart(sourceFile),
             called,
+            computed: computed !== -1,
             ...authoredReferenceLocation(sourceFile, node, authoredMappings),
           });
         }
@@ -601,7 +646,7 @@ function candidateToolPaths(chains) {
   const paths = new Set();
   for (const { segments } of chains) {
     const rootLength = toolCallRootLength(segments);
-    for (let length = 2; length <= segments.length; length += 1) {
+    for (let length = 1; length <= segments.length; length += 1) {
       if (!ts.isIdentifierText(segments[length - 1], ts.ScriptTarget.ES2025)) break;
       if (length > rootLength) {
         paths.add(`coral.${segments.slice(0, length).join('.')}`);
@@ -611,18 +656,27 @@ function candidateToolPaths(chains) {
   return [...paths].toSorted();
 }
 
-// The Tool chains one Saved Function module names.
-function savedFunctionToolChains(source, fileName, targetName) {
+// The Tool chains one Authored Tool module names.
+function authoredToolChains(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
   return toolReferenceChains(sourceFile, program);
 }
 
-// The Saved Functions and Tools one Saved Function module names, from
-// one analysis: what Program Admission links and its typed preparation
-// needs.
-function analyzeSavedFunction(source, fileName, targetName) {
+// The Tool chains one source calls: a Program body's as the running Program
+// calls them, or an Authored Tool module's. A Program body that is not one
+// async-function body names none.
+function sourceToolChains(kind, source, fileName, targetName) {
+  if (kind === 'authoredTool') return authoredToolChains(source, fileName, targetName);
+  const analysis = programReferenceAnalysis(source, fileName, targetName);
+  return analysis === undefined ? [] : programToolChains(analysis);
+}
+
+// The Private Tools, Shared Tools and Tools one Authored Tool module names,
+// from one analysis: what Program Admission links and checks, and what its
+// typed preparation needs.
+function analyzeAuthoredTool(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
-  const dependencies = savedFunctionDependencyAnalysis(sourceFile, program);
+  const dependencies = linkedToolDependencyAnalysis(sourceFile, program);
   if (dependencies.validationError !== undefined) return dependencies;
   return { ...dependencies, chains: toolReferenceChains(sourceFile, program) };
 }

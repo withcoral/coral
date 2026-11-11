@@ -29,13 +29,26 @@ impl Default for RunInspection {
     }
 }
 
-/// Exact accepted linked source; never today's Saved Function definition.
+/// Exact accepted linked source; never today's Private Tool definition.
 #[derive(Debug)]
 pub struct SourceSnapshot {
-    /// Retained Saved Function identity.
-    pub saved_function_id: String,
+    /// Retained Private Tool identity.
+    pub private_tool_id: String,
     /// Retained callable path.
     pub path: String,
+    /// Exact accepted TypeScript source.
+    pub source: String,
+}
+/// The Shared Tool Revision a Run linked, with the exact source it ran;
+/// never today's current revision.
+#[derive(Debug)]
+pub struct SharedSourceSnapshot {
+    /// Retained Shared Tool identity.
+    pub shared_tool_id: String,
+    /// Retained path relative to `coral.shared`.
+    pub path: String,
+    /// The revision that was current when the Run was accepted.
+    pub revision: u64,
     /// Exact accepted TypeScript source.
     pub source: String,
 }
@@ -61,7 +74,9 @@ pub struct RunDetail {
     /// Exact submitted TypeScript body.
     pub submitted_source: String,
     /// Admission-bounded linked snapshots.
-    pub linked_functions: Vec<SourceSnapshot>,
+    pub linked_private_tools: Vec<SourceSnapshot>,
+    /// The Shared Tool Revisions the Run linked, in path order.
+    pub linked_shared_tools: Vec<SharedSourceSnapshot>,
     /// One bounded chronological Event page.
     pub events: Vec<RunEvent>,
     /// More Events exist after this page.
@@ -82,7 +97,7 @@ pub struct RunEventDetail {
     pub event: RunEvent,
 }
 /// Retained Invocation outcome, preserving upstream facts without success inference.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InvocationOutcome {
     /// Complete upstream-native Tool Result.
     UpstreamOutcome(serde_json::Value),
@@ -242,8 +257,10 @@ impl RunModule {
             }
             None => None,
         };
-        let (submitted_source, linked_functions) =
+        let (submitted_source, linked_private_tools) =
             crate::inspection_repository::sources(tx, workspace, id).await?;
+        let linked_shared_tools =
+            crate::inspection_repository::shared_sources(tx, workspace, id).await?;
         let (events, has_more_events) = crate::run_repository::event_page_in_transaction(
             tx,
             workspace,
@@ -258,7 +275,8 @@ impl RunModule {
             summary,
             context_impact,
             submitted_source,
-            linked_functions,
+            linked_private_tools,
+            linked_shared_tools,
             events,
             has_more_events,
             trace_id: run.diagnostic_trace_id(),

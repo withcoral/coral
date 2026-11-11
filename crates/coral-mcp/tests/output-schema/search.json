@@ -20,7 +20,7 @@
           "items": {
             "$ref": "#/$defs/SearchHit"
           },
-          "description": "The hits, best first. Without a query, in Call Path order."
+          "description": "The hits, best first. Without a query, in call path order."
         },
         "next_offset": {
           "type": "integer",
@@ -45,11 +45,11 @@
       "properties": {
         "call_path": {
           "type": "string",
-          "description": "`coral.providers.<namespace>.…` for a provider tool, `coral.workspace.…` for one of Coral's own, `coral.functions.…` for a Saved Function."
+          "description": "`coral.providers.<namespace>.…` for a provider tool, `coral.…` for one of Coral's own, `coral.shared.…` for one of your workspace's shared tools, `coral.private.…` for one of your private tools."
         },
         "signature_line": {
           "type": "string",
-          "description": "The callable's input members one level deep, required ones first, then its result, which the line always keeps: a provider tool's result data as its top-level field names when they fit, or by type name; for an MCP tool that declares no output, a note that the result is text, usually JSON, in `data.content[0].text`; and a Saved Function's result members one level deep. `{…}` marks an object the line does not show, a bare `…` a type it cannot read, and a last `…` member or final `…` what it cut to fit. At most 512 UTF-8 bytes."
+          "description": "The callable's input members one level deep, required ones first, then its result, which the line always keeps: a provider tool's result data as its top-level field names when they fit, or by type name; for an MCP tool that declares no output, a note that the result is text, usually JSON, in `data.content[0].text`; and a shared or private tool's result members one level deep. `{…}` marks an object the line does not show, a bare `…` a type it cannot read, and a last `…` member or final `…` what it cut to fit. At most 512 UTF-8 bytes."
         },
         "complete": {
           "type": "boolean",
@@ -98,7 +98,7 @@
         "complete",
         "description_snippet"
       ],
-      "description": "One Search Hit. Call a read from it when it is complete. Read its exact description first otherwise, and before a write."
+      "description": "One search hit. Call a read from it when it is complete. Read its exact description first otherwise, and before a write."
     },
     "Hints": {
       "type": "object",
@@ -117,7 +117,7 @@
           "type": "boolean"
         }
       },
-      "description": "Effect hints the Provider declared. An absent field is undeclared, not a protocol default."
+      "description": "Effect hints the provider declared. An absent field is undeclared, not a protocol default."
     },
     "RetrieverStatus": {
       "type": "object",
@@ -143,7 +143,8 @@
       "type": "string",
       "enum": [
         "provider_tool",
-        "saved_function"
+        "private_tool",
+        "shared_tool"
       ]
     },
     "RetrieverState": {
@@ -152,7 +153,7 @@
         "partial",
         "error"
       ],
-      "description": "- `partial`: some Providers or Saved Functions are not indexed yet, or failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
+      "description": "- `partial`: some providers, shared tools or private tools are not indexed yet, or failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
     },
     "RetrieverCoverage": {
       "type": "object",

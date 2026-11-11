@@ -50,7 +50,7 @@ function credentialFree(tools: Record<string, object>, server?: string) {
 async function builtinCall(runner: ReturnType<typeof programRunner>, tool: string, call: unknown) {
   const { update } = await observeRun(
     runner,
-    await runner.exec(`return await coral.workspace.${tool}(${JSON.stringify(call)});`),
+    await runner.exec(`return await coral.${tool}(${JSON.stringify(call)});`),
   )
   expect(update.required_actions).toEqual([])
   return (update.final_value as { value: { data: { status: string; url: string } } }).value.data
@@ -570,7 +570,7 @@ test("A workspace owner's Program asks for a shared API key in a header, and you
   })
 })
 
-test("A workspace owner declines their Program's rename, then approves it, and the providers page shows the new name", async (context) => {
+test("A workspace owner declines their Program's rename, then approves it, and the tools page shows the new name", async (context) => {
   await withOwnerSession(context, async (session) => {
     const { page, step } = session
     // Only addProvider runs without approval, so each updateProvider call waits for you.
@@ -579,7 +579,7 @@ test("A workspace owner declines their Program's rename, then approves it, and t
       credentialFree({ getForecast: {} }),
       { unattended: ['addProvider'] },
     )
-    const rename = `try { return await coral.workspace.updateProvider(${JSON.stringify({
+    const rename = `try { return await coral.updateProvider(${JSON.stringify({
       namespace: 'weather',
       displayName: 'Forecasts',
     })}); } catch (error) { return error.code; }`
@@ -603,8 +603,8 @@ test("A workspace owner declines their Program's rename, then approves it, and t
         value: { data: { status: 'published' } },
       })
     })
-    await step('Show the new name on the providers page', async () => {
-      await page.goto(`/workspaces/${workspace.name.split('/')[1]}/providers`)
+    await step('Show the new name on the tools page', async () => {
+      await page.goto(`/workspaces/${workspace.name.split('/')[1]}/tools`)
       await page
         .getByRole('navigation', { name: 'installed providers', exact: true })
         .getByRole('link', { name: 'Forecasts settings', exact: true })

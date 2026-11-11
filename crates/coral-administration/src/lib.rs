@@ -7,16 +7,28 @@
 //! # Interface
 //!
 //! [`ProviderWorkflow`] runs each Provider change that search indexes:
-//! publication, regeneration, removal, rename, and the Built-in Provider's
-//! install and catalog update at boot. Provider owns each change's transaction
-//! and returns the [`coral_provider::SearchChange`] it committed. The workflow
+//! publication, regeneration, removal, rename, and at boot the install of
+//! each Provider Coral defines and the Built-in Provider's catalog update.
+//! Provider owns each change's transaction and returns the
+//! [`coral_provider::SearchChange`] it committed. The workflow
 //! hands it to search after the commit, through the one mapping every
 //! workflow here shares.
 //!
 //! [`WorkspaceWorkflow`] owns the transaction that creates a Workspace together
-//! with its Built-in Provider. It is the only production Workspace creation path.
-//! Provider joins that transaction and returns its search change, which the
+//! with the Providers Coral defines in it: the Built-in, Private and Shared
+//! Providers. It is the only production Workspace creation path. Provider
+//! joins that transaction and returns each one's search change, which the
 //! workflow hands on after the commit.
+//!
+//! [`SharedToolWorkflow`] publishes and removes Shared Tools. Tools owns a
+//! publish's transaction. The workflow types a publish from the Tools its
+//! publishing Owner can discover, owns the transaction that removes a Shared
+//! Tool together with its exact rule, and hands search the Shared Tool's id
+//! after each commit.
+//!
+//! [`PrivateToolWorkflow`] deletes a Private Tool for a management surface.
+//! It owns the transaction that deletes the Private Tool together with its
+//! exact rule, and hands search the Private Tool's id after the commit.
 //!
 //! [`AccessLifecycleModule`] removes Workspace Membership (including self-service
 //! leave), Organization Membership, or an exact Workspace-owned Agent. Callers
@@ -24,7 +36,8 @@
 //!
 //! Workspace authorizes and locks the mutation and prepares transaction-bound
 //! lost-access evidence. Provider retires credentials and pending workflows;
-//! Functions removes current definitions and writes private deletion evidence;
+//! Tools removes current Private Tools and writes private deletion evidence;
+//! Policy removes the exact rules that name those Private Tools;
 //! Auth retires the Refresh Grants for the access being removed.
 //! Workspace then removes authority in the caller's transaction. Standalone
 //! commands open and commit that transaction; [`AccessLifecycleModule::apply_in_transaction`]
@@ -33,15 +46,20 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
-//! This Module depends on Workspace, Provider, Functions, Auth, and the private database
+//! This Module depends on Workspace, Provider, Tools, Policy, Auth, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
 //! sufficient to block later dispatch at the Policy Enforcement Point; no
 //! post-commit cleanup is required.
+mod private_tools;
 mod providers;
+mod shared_tools;
+mod tool_rules;
 mod workspaces;
 
+pub use private_tools::PrivateToolWorkflow;
 pub use providers::ProviderWorkflow;
+pub use shared_tools::SharedToolWorkflow;
 pub use workspaces::WorkspaceWorkflow;
 
 use coral_db::{Database, Transaction};
@@ -156,8 +174,22 @@ impl AccessLifecycleModule {
         }
         coral_provider::account::retire_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
-        coral_functions::delete_current_for_access_removal_in_transaction(tx, context, &prepared)
+        let deleted =
+            coral_tools::delete_current_for_access_removal_in_transaction(tx, context, &prepared)
+                .await?;
+        for (workspace, tools) in deleted {
+            let keys: Vec<_> = tools
+                .iter()
+                .map(coral_tools::PrivateToolId::tool_key)
+                .collect();
+            coral_policy::remove_authored_tool_rules_in_transaction(
+                tx,
+                &workspace,
+                coral_catalog::AuthoredToolKind::Private,
+                &keys,
+            )
             .await?;
+        }
         coral_auth::user_tokens::retire_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
         self.workspaces
@@ -178,9 +210,12 @@ pub enum Error {
     /// Credential cleanup failed.
     #[error(transparent)]
     Provider(#[from] coral_provider::Error),
-    /// Current function cleanup failed.
+    /// Current Private Tool cleanup failed.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Tools(#[from] coral_tools::Error),
+    /// Removing the exact rules of the removed Private Tools failed.
+    #[error(transparent)]
+    Policy(#[from] coral_policy::Error),
     /// Refresh Grant retirement failed.
     #[error(transparent)]
     Auth(#[from] coral_auth::Error),

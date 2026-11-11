@@ -464,7 +464,12 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
     let database = db.database();
     let mut transaction = database.begin().await.unwrap();
     providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();
@@ -545,7 +550,7 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
         )
     };
     let forecasts = ProviderNamespace::parse("forecasts").unwrap();
-    // The Built-in Provider's Tools are under coral.workspace.
+    // The Built-in Provider's Tools are directly on coral.
     let builtin = ProviderNamespace::parse("workspace").unwrap();
     for (actor, workspace, namespace, expected, denial) in [
         (
@@ -608,7 +613,12 @@ async fn active_provider_names_cover_only_inspectable_workspaces() {
     let database = db.database();
     let mut transaction = database.begin().await.unwrap();
     providers
-        .install_builtin_in_transaction(&mut transaction, &context, used.id())
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &context,
+            used.id(),
+            crate::CoralDefinedProvider::Builtin,
+        )
         .await
         .unwrap()
         .skip_search();

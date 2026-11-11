@@ -613,12 +613,13 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
- "coral-functions",
  "coral-outbound",
+ "coral-policy",
  "coral-provider",
  "coral-search",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-workspace",
  "sea-query",
  "serde",
@@ -644,7 +645,6 @@ dependencies = [
  "coral-credentials",
  "coral-db",
  "coral-edition",
- "coral-functions",
  "coral-grpc",
  "coral-mcp",
  "coral-outbound",
@@ -657,6 +657,7 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-usage",
  "coral-v8",
  "coral-workspace",
@@ -785,29 +786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "coral-functions"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "coral-catalog",
- "coral-db",
- "coral-run-executor",
- "coral-telemetry",
- "coral-test-support",
- "coral-v8",
- "coral-workspace",
- "sea-query",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "unicode-id-start",
- "uuid",
-]
-
-[[package]]
 name = "coral-grpc"
 version = "1.6.0"
 dependencies = [
@@ -818,7 +796,6 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
- "coral-functions",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -828,6 +805,7 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-usage",
  "coral-workspace",
  "prost",
@@ -867,7 +845,6 @@ dependencies = [
  "coral-auth",
  "coral-catalog",
  "coral-db",
- "coral-functions",
  "coral-identifier",
  "coral-outbound",
  "coral-policy",
@@ -877,6 +854,7 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-workspace",
  "jsonschema",
  "opentelemetry",
@@ -915,6 +893,7 @@ dependencies = [
  "coral-provider",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-workspace",
  "sea-query",
  "serde_json",
@@ -986,7 +965,6 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
- "coral-functions",
  "coral-identifier",
  "coral-outbound",
  "coral-policy",
@@ -995,6 +973,7 @@ dependencies = [
  "coral-search",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-upstream",
  "coral-v8",
  "coral-value",
@@ -1051,12 +1030,12 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
- "coral-functions",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-workspace",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1084,7 +1063,6 @@ dependencies = [
  "coral-administration",
  "coral-catalog",
  "coral-db",
- "coral-functions",
  "coral-identifier",
  "coral-outbound",
  "coral-policy",
@@ -1093,6 +1071,7 @@ dependencies = [
  "coral-search",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-workspace",
  "sea-query",
  "serde",
@@ -1141,6 +1120,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-tools"
+version = "1.6.0"
+dependencies = [
+ "async-trait",
+ "coral-catalog",
+ "coral-db",
+ "coral-run-executor",
+ "coral-telemetry",
+ "coral-test-support",
+ "coral-v8",
+ "coral-workspace",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "unicode-id-start",
+ "uuid",
+]
+
+[[package]]
 name = "coral-upstream"
 version = "1.6.0"
 dependencies = [
@@ -1176,13 +1179,13 @@ version = "1.6.0"
 dependencies = [
  "chrono",
  "coral-db",
- "coral-functions",
  "coral-outbound",
  "coral-provider",
  "coral-run",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-tools",
  "coral-workspace",
  "reqwest",
  "sea-query",

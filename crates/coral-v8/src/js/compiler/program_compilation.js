@@ -40,8 +40,9 @@ function hasSyntaxErrors(sourceFile) {
 }
 
 // The Program body runs in an inner function, so no authored declaration
-// shadows a name the private source before it reads.
-function compileProgram(body, fileName, targetName) {
+// shadows a name the private source before it reads. `builtinTools` are the
+// keys of the Built-in Tools the Program calls on `coral`.
+function compileProgram(body, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   const wrapped = wrapProgramBody(body);
   const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
@@ -61,26 +62,53 @@ function compileProgram(body, fileName, targetName) {
       validationError,
     );
   }
-  const carrier = savedFunctionCarrierName([sourceFile]);
+  const carrier = privateToolCarrierName([sourceFile]);
   const extraction =
     validationError === undefined && !hasSyntaxErrors(sourceFile)
       ? programExtraction(sourceFile, program, wrapped.authoredMappings, carrier)
       : { edits: [] };
   const compiled = compiledProgramBody(body, extraction.edits ?? []);
+  const prefix = `(async () => { ${privateToolCarrierDeclaration(carrier)}\n${coralRootPrelude(builtinTools, [])}\nreturn await (async () => {\n`;
+  const bodyLine = sourceLineCount(prefix) - 1;
   return compileProgramSource(
-    `(async () => { ${savedFunctionCarrierDeclaration(carrier)} return await (async () => {\n${compiled.text}\n})(); })();\n`,
+    `${prefix}${compiled.text}\n})(); })();\n`,
     fileName,
     compilerOptions,
-    compiled.mappings.map((mapping) => ({ ...mapping, generatedLine: mapping.generatedLine + 1 })),
+    compiled.mappings.map((mapping) => ({
+      ...mapping,
+      generatedLine: mapping.generatedLine + bodyLine,
+    })),
     validationError,
     extraction.refusal,
   );
 }
 
-function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
+// Why a stored source the Program links cannot be called, or undefined:
+// one saved before every Tool took one object (ADR 0034). Coral never
+// rewrites a stored source, so its author saves or publishes it again.
+function linkedToolInputRefusal({ program, sourceFile, pathSegments, root }) {
+  if (hasSyntaxErrors(sourceFile) || !Array.isArray(pathSegments)) return undefined;
+  let shape;
+  try {
+    const checker = program.getTypeChecker();
+    shape = toolInputShapeError(checker, defaultExportSignatures(checker, sourceFile));
+  } catch {
+    // A source without one default callable fails where it is compiled.
+    return undefined;
+  }
+  if (shape?.node === undefined) return undefined;
+  const at = sourceFile.getLineAndCharacterOfPosition(shape.node.getStart(sourceFile));
+  const shared = root === 'shared';
+  const fix = shared
+    ? 'A Workspace Owner must publish a new revision.'
+    : 'Save it again with coral.updateCustomTool.';
+  return `${shared ? 'Shared' : 'Private'} Tool coral.${shared ? 'shared' : 'private'}.${pathSegments.join('.')}:${at.line + 1}:${at.character + 1}: ${shape.reason}. ${fix}`;
+}
+
+function compileLinkedProgram(body, linkedTools, builtinTools, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
-  if (!Array.isArray(savedFunctions)) {
-    throw new Error('Saved Function closure must be an array');
+  if (!Array.isArray(linkedTools)) {
+    throw new Error('Linked Tool closure must be an array');
   }
   const wrapped = wrapProgramBody(body);
   const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
@@ -100,19 +128,24 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
       diagnostics: [],
     };
   }
-  const modules = savedFunctions.map((savedFunction, index) => {
-    if (typeof savedFunction?.source !== 'string') {
-      throw new Error('Saved Function closure contains an invalid source entry');
+  const modules = linkedTools.map((linkedTool, index) => {
+    if (typeof linkedTool?.source !== 'string') {
+      throw new Error('Linked Tool closure contains an invalid source entry');
     }
     const { program: moduleProgram, sourceFile } = virtualTypeScriptProgram(
-      `saved_function_${index}.ts`,
-      savedFunction.source,
+      `private_tool_${index}.ts`,
+      linkedTool.source,
       compilerOptions,
     );
     if (!sourceFile) {
-      throw new Error('Saved Function virtual source is missing');
+      throw new Error('Linked Tool virtual source is missing');
     }
-    return { program: moduleProgram, sourceFile, pathSegments: savedFunction.pathSegments };
+    return {
+      program: moduleProgram,
+      sourceFile,
+      pathSegments: linkedTool.pathSegments,
+      root: linkedTool.root,
+    };
   });
   let validationError = forbiddenCapabilityError(
     ordinaryProgram,
@@ -126,7 +159,22 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
       modules[index].program,
     );
   }
-  const carrier = savedFunctionCarrierName([
+  const linkedToolRefusal =
+    validationError === undefined
+      ? modules.map(linkedToolInputRefusal).find((refusal) => refusal !== undefined)
+      : undefined;
+  if (linkedToolRefusal !== undefined) {
+    return {
+      outputText: '',
+      sourceMapText: null,
+      authoredMappings: [],
+      wrapperValid: true,
+      validationError: null,
+      linkedToolRefusal,
+      diagnostics: [],
+    };
+  }
+  const carrier = privateToolCarrierName([
     ordinaryProgram,
     ...modules.map((module) => module.sourceFile),
   ]);
@@ -142,13 +190,14 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
     saveRefusal = extraction.refusal;
     saves.programEdits = extraction.edits ?? [];
     for (let index = 0; saveRefusal === undefined && index < modules.length; index += 1) {
-      const { sourceFile, program: moduleProgram, pathSegments } = modules[index];
+      const { sourceFile, program: moduleProgram, pathSegments, root } = modules[index];
       if (hasSyntaxErrors(sourceFile) || !Array.isArray(pathSegments)) continue;
-      const moduleExtraction = savedFunctionModuleExtraction(
+      const moduleExtraction = privateToolModuleExtraction(
         sourceFile,
         moduleProgram,
         pathSegments,
         carrier,
+        root,
       );
       saveRefusal = moduleExtraction.refusal;
       saves.moduleEdits[index] = moduleExtraction.edits ?? [];
@@ -165,7 +214,7 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
       diagnostics: [],
     };
   }
-  const linked = linkedProgramSource(body, savedFunctions, target, saves);
+  const linked = linkedProgramSource(body, linkedTools, builtinTools, target, saves);
   return compileProgramSource(
     linked.source,
     fileName,

@@ -1,8 +1,8 @@
 {
-  "v": 1,
+  "v": 2,
   "install": "3f9c8d2e-5b41-4c7a-9e06-1d7b2c4fa21e",
   "coral": {
-    "version": "1.5.0",
+    "version": "1.6.0",
     "os": "macos",
     "arch": "arm64",
     "kind": "desktop",
@@ -12,8 +12,8 @@
   "build": "release",
   "milestones": {
     "first_successful_run": "2026-11-04",
-    "first_saved_function": "2026-11-05",
-    "function_reused_in_later_task": null
+    "first_private_tool": "2026-11-05",
+    "private_tool_reused_in_later_task": null
   },
   "day": {
     "date": "2026-11-06",
@@ -27,7 +27,8 @@
     },
     "tool_invocations": { "succeeded": 212, "failed": 9, "approval_required": 4 },
     "approvals": { "approved": 3, "denied": 1, "expired": 0 },
-    "saved_functions": { "saved": 2, "called": 17, "tasks_reusing_one": 3 },
+    "private_tools": { "saved": 2, "called": 17, "tasks_reusing_one": 3 },
+    "shared_tools": { "published": 1, "removed": 0, "called": 8 },
     "tasks": { "started": 9 },
     "clients": {
       "claude-code": 20,
@@ -42,7 +43,8 @@
     "workspaces": 2,
     "users": 1,
     "agents": 1,
-    "saved_functions": 5,
+    "private_tools": 5,
+    "shared_tools": 2,
     "providers": {
       "recipe": { "github": 1, "linear": 1, "google_ads_mcp": 1 },
       "custom_openapi": 1,

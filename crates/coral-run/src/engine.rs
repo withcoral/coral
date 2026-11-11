@@ -29,9 +29,10 @@ pub(crate) use host::execute;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
+use coral_catalog::AuthoredToolKind;
 use coral_run_executor::{AnalysisError, CompileError, CompilerClient, Diagnostics, time_left};
-use coral_v8::CompileFailure;
+use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
+use coral_v8::{BuiltinTools, CompileFailure};
 
 use crate::execution::ExecutionStop;
 use crate::{
@@ -39,21 +40,14 @@ use crate::{
     SOURCE_MAP_MAX_BYTES,
 };
 
-#[derive(Clone, Debug)]
-pub(crate) struct SavedFunctionReference {
-    pub(crate) path: SavedFunctionPath,
-    pub(crate) line: u64,
-    pub(crate) column: u64,
-}
-
 /// One source admission analyzes.
 #[derive(Clone, Debug)]
 pub(crate) enum AdmissionSource {
     /// The submitted Program body.
     Program(String),
-    /// One Saved Function module of the closure.
-    SavedFunction {
-        path: SavedFunctionPath,
+    /// One Private or Shared Tool module of the closure.
+    Linked {
+        path: AuthoredToolPath,
         source: String,
     },
 }
@@ -61,34 +55,43 @@ pub(crate) enum AdmissionSource {
 impl AdmissionSource {
     /// How a rejection names the source.
     fn name(&self) -> String {
-        source_name(match self {
-            Self::Program(_) => None,
-            Self::SavedFunction { path, .. } => Some(path),
-        })
+        match self {
+            Self::Program(_) => "Program".to_string(),
+            Self::Linked { path, .. } => path.source_name(),
+        }
     }
 }
 
-/// How a rejection names the Program, or the Saved Function at `path`.
-pub(crate) fn source_name(path: Option<&SavedFunctionPath>) -> String {
-    path.map_or_else(
-        || "Program".to_string(),
-        |path| format!("Saved Function coral.functions.{}", path.as_str()),
-    )
-}
-
-/// What one source names: the Saved Functions admission links and the
-/// Tool Call Paths it checks.
+/// What one source names: the Private and Shared Tools admission links and
+/// the Tool Call Paths it checks.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AdmissionReferences {
-    pub(crate) functions: Vec<SavedFunctionReference>,
+    pub(crate) linked: Vec<LinkedToolReference>,
     pub(crate) tool_call_paths: Vec<String>,
+}
+
+impl AdmissionReferences {
+    /// The references of an engine that finds no Tool Call Paths: it names
+    /// its linked Tools alone, and admission checks no Call Path.
+    #[cfg(test)]
+    pub(crate) const fn linking(linked: Vec<LinkedToolReference>) -> Self {
+        Self {
+            linked,
+            tool_call_paths: Vec::new(),
+        }
+    }
 }
 
 /// Why an engine compiled no package.
 #[derive(Debug)]
 pub(crate) enum PackageFailure {
-    /// The Program calls these Tools, which name nothing the caller can call.
-    UnknownTools(Vec<coral_v8::UnknownToolCall>),
+    /// One source calls these Tools, which name nothing the caller can
+    /// call: the Program body, or the linked Tool at index `linked` of
+    /// those compiled with it.
+    UnknownTools {
+        linked: Option<usize>,
+        calls: Vec<coral_v8::UnknownToolCall>,
+    },
     /// Any other failure.
     Compile(CompileFailure),
 }
@@ -112,13 +115,16 @@ pub(crate) trait ProgramEngine: Send + Sync {
         Ok(vec![AdmissionReferences::default(); sources.len()])
     }
 
-    /// `source` lowered with the Saved Functions it links, checked first
-    /// against the `callable` Call Paths when there are any.
+    /// `source` lowered with the Private and Shared Tools it links, in
+    /// initialization order, and with `builtin_tools`, the Workspace's
+    /// Built-in Tools, on `coral`, checked first against the `callable`
+    /// Call Paths when there are any.
     fn compile(
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[LinkedToolSelection],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure>;
 
@@ -183,8 +189,8 @@ impl ProgramEngine for V8ProgramEngine {
             .iter()
             .map(|source| match source {
                 AdmissionSource::Program(body) => coral_v8::AnalyzedSource::Program(body.clone()),
-                AdmissionSource::SavedFunction { source, .. } => {
-                    coral_v8::AnalyzedSource::SavedFunction(source.clone())
+                AdmissionSource::Linked { source, .. } => {
+                    coral_v8::AnalyzedSource::AuthoredTool(source.clone())
                 }
             })
             .collect::<Vec<_>>();
@@ -201,15 +207,7 @@ impl ProgramEngine for V8ProgramEngine {
         sources
             .iter()
             .zip(references)
-            .map(|(source, references)| {
-                Ok(AdmissionReferences {
-                    functions: parse_saved_function_references(
-                        references.functions().to_vec(),
-                        &source.name(),
-                    )?,
-                    tool_call_paths: references.tool_call_paths().to_vec(),
-                })
-            })
+            .map(|(source, references)| admission_references(&references, &source.name()))
             .collect()
     }
 
@@ -217,24 +215,35 @@ impl ProgramEngine for V8ProgramEngine {
         &self,
         deadline: Instant,
         source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[LinkedToolSelection],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         let sources = linked
             .iter()
-            .map(|snapshot| {
-                coral_v8::LinkedSavedFunctionSource::new(
-                    snapshot.path().segments(),
-                    snapshot.source().as_str().to_string(),
+            .map(|linked| {
+                let source = match linked.kind() {
+                    AuthoredToolKind::Private => coral_v8::LinkedToolSource::private,
+                    AuthoredToolKind::Shared => coral_v8::LinkedToolSource::shared,
+                };
+                source(
+                    linked.path().segments(),
+                    linked.source().as_str().to_string(),
                 )
             })
             .collect::<Vec<_>>();
         let compiled = self
             .compiler
-            .compile(time_left(deadline), source, &sources, callable)
+            .compile(
+                time_left(deadline),
+                source,
+                &sources,
+                builtin_tools,
+                callable,
+            )
             .map_err(|error| match error {
-                CompileError::Diagnostics(Diagnostics::UnknownTools(calls)) => {
-                    PackageFailure::UnknownTools(calls)
+                CompileError::Diagnostics(Diagnostics::UnknownTools { linked, calls }) => {
+                    PackageFailure::UnknownTools { linked, calls }
                 }
                 other => PackageFailure::Compile(other.into()),
             })?;
@@ -290,6 +299,12 @@ impl ProgramEngine for V8ProgramEngine {
             Err(coral_v8::Error::InvalidProgramValue(message)) => ExecutionCompletion::Failed(
                 RunFailure::new(RunFailureCode::InvalidProgramValue, message),
             ),
+            // Nothing is left that could settle what the Program awaits: no
+            // Tool call is in flight, and no other event source exists.
+            Err(coral_v8::Error::PendingProgram) => ExecutionCompletion::Failed(RunFailure::new(
+                RunFailureCode::ProgramExecutionFailed,
+                "Program awaited a Promise that nothing can settle".to_string(),
+            )),
             Err(_private_diagnostic) => ExecutionCompletion::Failed(RunFailure::new(
                 RunFailureCode::ProgramExecutionFailed,
                 "Program execution failed".to_string(),
@@ -298,27 +313,22 @@ impl ProgramEngine for V8ProgramEngine {
     }
 }
 
-fn parse_saved_function_references(
-    references: Vec<coral_v8::SavedFunctionReference>,
+/// What the compiler found `source_name` to name, with each path parsed.
+fn admission_references(
+    named: &coral_v8::SourceReferences,
     source_name: &str,
-) -> Result<Vec<SavedFunctionReference>, String> {
-    references
-        .into_iter()
-        .map(|reference| {
-            let path = SavedFunctionPath::parse(reference.path()).map_err(|error| {
-                format!(
-                    "{source_name}:{}:{}: {error}",
-                    reference.line(),
-                    reference.column()
-                )
-            })?;
-            Ok(SavedFunctionReference {
-                path,
-                line: reference.line(),
-                column: reference.column(),
-            })
-        })
-        .collect()
+) -> Result<AdmissionReferences, CompileFailure> {
+    let linked = LinkedToolReference::from_compiler(named.private_tools(), named.shared_tools())
+        .map_err(|invalid| {
+            format!(
+                "{source_name}:{}:{}: {}",
+                invalid.line, invalid.column, invalid.error
+            )
+        })?;
+    Ok(AdmissionReferences {
+        linked,
+        tool_call_paths: named.tool_call_paths().to_vec(),
+    })
 }
 
 fn compile_failure_for_source(error: CompileError, source_name: &str) -> CompileFailure {

@@ -110,8 +110,8 @@ export function UserAccountsPage({
               title="No accounts yet"
               description="Your accounts show here when a provider uses individual accounts."
               action={
-                <Button.InternalLink to={`${v.workspace.path}/providers`} variant="secondary">
-                  View providers
+                <Button.InternalLink to={`${v.workspace.path}/tools`} variant="secondary">
+                  View tools
                 </Button.InternalLink>
               }
             />

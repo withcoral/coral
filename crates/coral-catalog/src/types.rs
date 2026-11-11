@@ -864,15 +864,52 @@ impl ToolHints {
     }
 }
 
+/// The Workspace decision for one Tool: `enabled`, `approval_required` or
+/// `disabled`. Programs, storage and every Interface spell it the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAccessState {
+    /// A call runs without approval.
+    Enabled,
+    /// A call waits for a person to approve it.
+    ApprovalRequired,
+    /// A call is refused.
+    Disabled,
+}
+
+impl ToolAccessState {
+    /// The word that stores and spells the state.
+    #[must_use]
+    pub const fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::ApprovalRequired => "approval_required",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// The state `value` stores; `None` for any other word.
+    #[must_use]
+    pub fn from_storage_str(value: &str) -> Option<Self> {
+        match value {
+            "enabled" => Some(Self::Enabled),
+            "approval_required" => Some(Self::ApprovalRequired),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
 /// What a Tool's catalog fixes about its default Tool Access State: its
-/// declared hints, the method of an HTTP Tool, and whether the catalog
-/// declares it `enabled` when no exact rule matches. Policy owns the rule
-/// that turns these into a default; each retained Generation keeps its own.
+/// declared hints, the method of an HTTP Tool, and the state, if any, its
+/// catalog or author declares for when no exact rule matches. Policy owns
+/// the rule that turns these into a default; each retained Generation, and
+/// each revision of a Private Tool, keeps its own.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ToolPolicyFacts {
     hints: ToolHints,
     http_method: Option<crate::HttpMethod>,
-    enabled_by_default: bool,
+    declared_default: Option<ToolAccessState>,
 }
 
 impl ToolPolicyFacts {
@@ -882,17 +919,17 @@ impl ToolPolicyFacts {
         Self {
             hints,
             http_method,
-            enabled_by_default: false,
+            declared_default: None,
         }
     }
 
-    /// The same facts, with the catalog declaring, or not, that the Tool is
-    /// `enabled` when no exact rule matches. Only Coral's own catalog
-    /// declares it.
+    /// The same facts, with the state, if any, declared for when no exact
+    /// rule matches. Coral's own catalog declares `enabled` for some Tools,
+    /// and a Private Tool's author declares any state.
     #[must_use]
-    pub const fn declaring_enabled_by_default(self, enabled: bool) -> Self {
+    pub const fn declaring_default(self, declared: Option<ToolAccessState>) -> Self {
         Self {
-            enabled_by_default: enabled,
+            declared_default: declared,
             ..self
         }
     }
@@ -913,7 +950,13 @@ impl ToolPolicyFacts {
     /// rule matches.
     #[must_use]
     pub const fn declares_enabled_by_default(&self) -> bool {
-        self.enabled_by_default
+        matches!(self.declared_default, Some(ToolAccessState::Enabled))
+    }
+
+    /// Returns the state declared for when no exact rule matches, if any.
+    #[must_use]
+    pub const fn declared_default(&self) -> Option<ToolAccessState> {
+        self.declared_default
     }
 }
 
@@ -1151,7 +1194,7 @@ pub struct MaterializedTool {
     availability: ToolAvailability,
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostics_json: String,
-    enabled_by_default: bool,
+    declared_default: Option<ToolAccessState>,
 }
 
 impl MaterializedTool {
@@ -1182,7 +1225,9 @@ impl MaterializedTool {
         };
         let hints = match execution_binding {
             ExecutionBinding::Http(_) => ToolHints::default(),
-            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => hints,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {
+                hints
+            }
         };
         Self {
             key,
@@ -1200,15 +1245,16 @@ impl MaterializedTool {
             availability,
             diagnostics,
             diagnostics_json,
-            enabled_by_default: false,
+            declared_default: None,
         }
     }
 
-    /// The same Tool, with its catalog declaring, or not, that it is
-    /// `enabled` when no exact rule matches. Only Coral's own catalog
-    /// declares it, and storage refuses it for any other Tool.
-    pub(crate) const fn declaring_enabled_by_default(mut self, enabled: bool) -> Self {
-        self.enabled_by_default = enabled;
+    /// The same Tool, with the state, if any, declared for when no exact
+    /// rule matches. Coral's own catalog declares `enabled`, which storage
+    /// refuses for any other catalog. A Private Tool's author declares any
+    /// state, and no catalog stores a Private Tool.
+    pub(crate) const fn declaring_default(mut self, declared: Option<ToolAccessState>) -> Self {
+        self.declared_default = declared;
         self
     }
 
@@ -1253,7 +1299,9 @@ impl MaterializedTool {
     pub const fn http_method(&self) -> Option<crate::HttpMethod> {
         match &self.execution_binding {
             ExecutionBinding::Http(binding) => Some(binding.method()),
-            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => None,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {
+                None
+            }
         }
     }
 
@@ -1261,7 +1309,7 @@ impl MaterializedTool {
     #[must_use]
     pub const fn policy_facts(&self) -> ToolPolicyFacts {
         ToolPolicyFacts::new(self.hints, self.http_method())
-            .declaring_enabled_by_default(self.enabled_by_default)
+            .declaring_default(self.declared_default)
     }
 
     pub(crate) fn binding_json(&self) -> &str {
@@ -1300,7 +1348,7 @@ impl MaterializedTool {
                 binding.set_credential_contract(contract);
                 self.binding_json = binding.to_storage_json()?;
             }
-            ExecutionBinding::Builtin(_) => {}
+            ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {}
         }
         Ok(self)
     }
@@ -1466,7 +1514,7 @@ impl ProviderGenerationFingerprint {
             // package keeps the fingerprint it had before the declaration.
             // No text frame starts with this length, so the marker cannot be
             // read as the next Tool's tag.
-            if tool.enabled_by_default {
+            if tool.policy_facts().declares_enabled_by_default() {
                 hasher.update(usize::MAX.to_be_bytes());
             }
         }
@@ -1566,6 +1614,25 @@ impl PreparedProviderCatalog {
         }
     }
 
+    /// A catalog that declares no Tool, with the TypeScript view that
+    /// stands for an empty one.
+    pub(crate) fn without_tools(
+        display_name: String,
+        schema_graph: SchemaGraph,
+        schema_graph_json: String,
+        typescript_view: String,
+    ) -> Self {
+        Self {
+            display_name,
+            schema_graph,
+            schema_graph_json,
+            typescript_view,
+            tools: Vec::new(),
+            shared_types: SharedTypes::default(),
+            configuration_json: None,
+        }
+    }
+
     /// Binds credentials only after structural and authoring availability is final.
     /// Every recipe retains the same contract, even an unavailable first Tool.
     pub(crate) fn bind_http_credential_destinations(mut self) -> Result<Self, Error> {
@@ -1658,7 +1725,7 @@ impl PreparedProviderCatalog {
                     .first()
                     .map(|slot| slot.contract().clone()),
                 ExecutionBinding::Mcp(binding) => Some(binding.credential_contract().clone()),
-                ExecutionBinding::Builtin(_) => None,
+                ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => None,
             })
             .unwrap_or(crate::ProviderCredentialContract::NONE)
     }

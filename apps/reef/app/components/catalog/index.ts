@@ -3,6 +3,7 @@ export {
   CatalogLayout,
   CatalogRail,
   CatalogRailItem,
+  CatalogRailSection,
   CatalogToolbar,
   FilterField,
   railItem,

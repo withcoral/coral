@@ -34,7 +34,7 @@ pub const PROTOCOL_LEVEL: u32 = 1;
 /// package well past the 1 MiB script and 2 MiB source map Coral accepts, so
 /// Coral, not the link, refuses an oversized package. A typed prepare carries
 /// at most 1 MiB of Tool declarations, but one declaration of up to 256 KiB
-/// for each Saved Function it calls, with no total bound: Coral sends no
+/// for each Private or Shared Tool it calls, with no total bound: Coral sends no
 /// `Compile` past this one, and that call alone fails.
 pub const MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 

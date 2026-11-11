@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.updateProvider`, and settles one whose worker was
+//! Performs `coral.updateProvider`, and settles one whose worker was
 //! lost after the Policy Enforcement Point.
 //!
 //! The call takes the path of Reef's update page: an Update Setup of the

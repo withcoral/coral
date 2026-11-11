@@ -53,7 +53,8 @@ function pageFor(record: string | null): ActivityPage {
               request: approvalRequest,
               // The program that makes the call this review decides.
               source: approvalContext.source,
-              linkedFunctions: [],
+              linkedSharedTools: [],
+              linkedPrivateTools: [],
               terminal: { kind: 'unavailable' },
             }
           : null,

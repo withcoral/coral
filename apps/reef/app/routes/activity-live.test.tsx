@@ -134,7 +134,7 @@ function coral() {
   })
   const api = fakeManagement({
     workspaces: { getWorkspace: ({ name }) => ({ name, state: WorkspaceState.ACTIVE }) },
-    savedFunctions: { listSavedFunctions: () => ({ savedFunctions: [] }) },
+    privateTools: { listPrivateTools: () => ({ privateTools: [] }) },
     activity: {
       watchActivity: changes.watch,
       browseRequiredActions: () => ({ actions: [], actionCount: 0n }),

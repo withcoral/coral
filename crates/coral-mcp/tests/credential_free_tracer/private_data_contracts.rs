@@ -274,14 +274,14 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         )
         .await;
     assert_eq!(
-        saved["call_path"], "coral.functions.diagnostics.fail",
+        saved["call_path"], "coral.private.diagnostics.fail",
         "{saved}"
     );
     // Coral's reason for a path it refuses never repeats the path.
     let refused = session
         .authoring_value(
             task_id,
-            "deleteFunction",
+            "removeCustomTool",
             &json!({ "path": format!("weather.{CANARY}") }),
         )
         .await;
@@ -296,8 +296,8 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .tool(
             "exec",
             json!({
-                "task_id": task, "intent": "Fail in a Saved Function", "wait_ms": 5000,
-                "program": "return coral.functions.diagnostics.fail();",
+                "task_id": task, "intent": "Fail in a Private Tool", "wait_ms": 5000,
+                "program": "return coral.private.diagnostics.fail();",
             }),
         )
         .await;
@@ -307,7 +307,9 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     session
         .program_value(
             task.as_str().expect("Task id"),
-            &format!(r#"return (await coral.workspace.search({{ query: "query-{CANARY}" }})).data.hits.length;"#),
+            &format!(
+                r#"return (await coral.search({{ query: "query-{CANARY}" }})).data.hits.length;"#
+            ),
         )
         .await;
 
@@ -334,10 +336,10 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
 
     let owner = AuthenticatedPrincipal::user(tracer.local_user.clone());
     let functions = tracer
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&owner, &tracer.workspace_a)
         .await
-        .expect("Saved Function lifecycle events");
+        .expect("Private Tool lifecycle events");
     let decisions = tracer
         .approvals
         .list_lifecycle_events(&owner, &tracer.workspace_a, &decided)

@@ -13,7 +13,7 @@ const TOOL_BODY_BYTES: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgramErrorFrame {
-    /// Authored Program or Saved Function label.
+    /// Authored Program or Private Tool label.
     pub source: String,
     /// One-based authored line.
     pub line: u32,

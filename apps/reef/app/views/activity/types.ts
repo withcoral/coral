@@ -89,18 +89,39 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
   tool: string
   callPath: string
   outcome: InvocationOutcome
+  /** Which kind of tool the call called. A private or shared tool's call holds the calls its
+   * body made. */
+  toolKind: ToolKind
   dispatchedAt: string | null
   waitingNanos: string
   /** Where the author's code made this call; absent when Coral stored none. */
   sourceLocation?: RecordSourceLocation
+  /** The tool call whose body made this call. Absent for the program's own calls and for
+   * calls a module's top-level code made. */
+  parent?: ParentInvocation
+}
+export type ToolKind = 'provider' | 'private' | 'shared' | 'unknown'
+/** A private or shared tool call whose body made another call. */
+export interface ParentInvocation {
+  invocation: string
+  callPath: string
+  toolKind: ToolKind
+  /** The shared tool revision it ran; absent for every other kind. */
+  sharedToolRevision?: string
 }
 /**
  * Where in its Run's accepted source the author's code made a record. Line and
  * column start at 1; the column counts UTF-16 code units.
  */
 export interface RecordSourceLocation {
-  /** The accepted program, or the linked snapshot of this Saved Function resource. */
-  document: { kind: 'program' } | { kind: 'saved_function'; savedFunction: string }
+  /**
+   * The accepted program, or the linked snapshot of this Private Tool or Shared
+   * Tool resource.
+   */
+  document:
+    | { kind: 'program' }
+    | { kind: 'private_tool'; privateTool: string }
+    | { kind: 'shared_tool'; sharedTool: string }
   line: number
   column: number
 }
@@ -164,7 +185,9 @@ export interface RunDetail {
   run: ExecutionRow
   submission?: InteractionRow
   source: string
-  linkedFunctions: { savedFunction: string; path: string; source: string }[]
+  linkedPrivateTools: { privateTool: string; path: string; source: string }[]
+  /** Each Shared Tool Revision the Run linked, with its source as accepted. */
+  linkedSharedTools: { sharedTool: string; path: string; revision: string; source: string }[]
   terminal: RunTerminal
   /** The parts of the Run's context impact, in exact bytes. Absent while the total is. */
   contextImpact?: RunContextImpact
@@ -356,6 +379,9 @@ export interface LiveAction {
   run: string
   record: string
   request: string
+  /** The tool calls whose bodies made `record`, outermost first. Absent for a call the
+   * program made. */
+  calls?: string[]
 }
 
 export type RunRow = Extract<ActivityRow, { kind: 'run' }>
@@ -454,7 +480,7 @@ export type DiscoveryContext =
   | { kind: 'describe'; callPath: string; types: string[] }
   | { kind: 'unknown' }
 /** A kind of Search Entity, as Coral stores it. */
-export type DiscoveryEntityKind = 'provider_tool' | 'saved_function'
+export type DiscoveryEntityKind = 'provider_tool' | 'private_tool' | 'shared_tool'
 /** What a Tool's provider and Workspace policy state about a call. */
 export interface ToolFlags {
   approvalRequired: boolean
@@ -509,7 +535,8 @@ export interface Description {
   description: string
   declaration: string
   tool: (ToolFacts & { tags: string[]; guidance: string | null }) | null
-  savedFunction: {
+  /** The source of a private tool or a shared tool, with its diagnostics. */
+  authoredTool: {
     source: string
     diagnostics: DescriptionDiagnostic[]
     diagnosticsTruncated: boolean
@@ -523,6 +550,6 @@ export type DiscoveryView =
   | { kind: 'raw' }
 export type InteractionEvidence =
   | { kind: 'discovery'; context: DiscoveryContext; response: string; view: DiscoveryView }
-  | { kind: 'run' | 'function'; reference: string }
+  | { kind: 'run' | 'private_tool'; reference: string }
   | { kind: 'rejection'; code: string; message: string }
   | { kind: 'unknown' }

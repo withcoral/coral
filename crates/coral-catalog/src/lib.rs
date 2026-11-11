@@ -16,18 +16,18 @@ mod binding;
 mod builtin;
 pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
-    BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
-    BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices,
-    ConfigurationOutput, ConfigurationPatch, DeclaredHints, DeleteFunctionArguments,
-    DeleteFunctionResult, Description, DescriptionAuthoring, GetPolicyArguments, GetPolicyResult,
-    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
-    ListedProviderState, ListedSetup, ListedSetupState, MissingPath, PathsResult, ProviderArgument,
-    ProviderFacts, ProviderSourceArgument, ProviderSourceOutput, SEARCH_PATH_MAX_BYTES,
-    SEARCH_PATHS_MAX, SEARCH_PROVIDERS_MAX, SaveFunctionArguments, SaveFunctionResult, SavedDetail,
-    SavedDiagnostic, SavedDiagnosticCategory, SearchArguments, SearchHit, SearchOutput,
-    SearchResult, SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState,
-    SearchRetrieverStatus, SourceChange, UpdatePolicyArguments, UpdatePolicyResult,
-    UpdateProviderArguments, UpdateProviderResult,
+    BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
+    BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices, ConfigurationOutput,
+    ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring, GetPolicyArguments,
+    GetPolicyResult, GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
+    ListedProviderState, ListedSetup, ListedSetupState, MissingPath, NON_TOOL_ROOT_MEMBERS,
+    PathsResult, ProviderArgument, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
+    RemoveToolArguments, RemovedToolResult, SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX,
+    SEARCH_PROVIDERS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory, SavedToolResult,
+    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
+    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, SourceChange,
+    ToolSaveArguments, UpdatePolicyArguments, UpdatePolicyResult, UpdateProviderArguments,
+    UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{
@@ -35,12 +35,14 @@ pub use configuration::{
     ProviderConfigurationReview, ServerGroup, ServerOption, ServerSelection, ServerVariable,
     normalize_display_name, normalize_request_headers,
 };
+mod authored;
 mod declaration_path;
 mod error;
 mod inspection;
 mod mcp;
 mod openapi;
 mod paths;
+pub use authored::{AuthoredToolKind, CodeExecutionBinding, authored_tool};
 /// Reads one retained Generation's normalized, secret-free credential contract.
 /// # Errors
 /// Returns a persistence or corrupt-evidence error.
@@ -129,15 +131,18 @@ pub use openapi::{
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
     OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, SuccessSelection, validate_openapi_configuration,
 };
-pub use paths::{ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid};
+pub use paths::{
+    ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid,
+    unknown_call_path_message,
+};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,
     MaterializationOutcome, MaterializedTool, PreparedProviderCatalog,
     ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
-    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability, ToolHints, ToolKey,
-    ToolPolicyFacts, ToolPresentation,
+    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAccessState, ToolAvailability,
+    ToolHints, ToolKey, ToolPolicyFacts, ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
@@ -162,7 +167,7 @@ pub fn materialize(
                 .filter_map(|tool| match tool.execution_binding() {
                     ExecutionBinding::Http(binding) => binding.server_url(),
                     ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
-                    ExecutionBinding::Builtin(_) => None,
+                    ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => None,
                 });
         if let Err(diagnostic) =
             validate_provider_destinations(policy, destinations, &catalog.credential_contract())
@@ -266,6 +271,31 @@ pub async fn publish_builtin_generation_in_transaction(
         &ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes()),
         catalog.prepared(),
         builtin::MATERIALIZER_VERSION,
+        created_at_unix_nanos,
+    )
+    .await
+}
+
+/// Publishes one Workspace's Generation of the Provider for Tools of `kind`,
+/// the Private or the Shared Provider. It declares no Tool: each Private
+/// Tool and each Shared Tool is a row coral-tools keeps. The caller owns the
+/// transaction and commits the Provider that selects it atomically with this
+/// facet.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn publish_authored_generation_in_transaction(
+    transaction: &mut Transaction<'_>,
+    kind: AuthoredToolKind,
+    created_at_unix_nanos: i64,
+) -> Result<ProviderGenerationId, Error> {
+    repository::publish_generation(
+        transaction,
+        repository::GenerationInput::Code(kind),
+        &ProviderSetupInputDigest::of_bytes(kind.call_root().as_bytes()),
+        authored::prepared(kind)?,
+        kind.materializer_version(),
         created_at_unix_nanos,
     )
     .await
@@ -404,6 +434,21 @@ pub async fn tool_exists_in_transaction(
     tool_key: &ToolKey,
 ) -> Result<bool, Error> {
     repository::tool_exists(transaction, generation_id, tool_key).await
+}
+
+/// Reports whether a Generation's Tools have code Execution Bindings, as
+/// the Private Provider's do: Coral performs each one by running the
+/// definition its Invocation retains in the Run, so no catalog stores them.
+///
+/// # Errors
+///
+/// Returns a persistence failure, or corrupt data for a Generation that is
+/// not stored.
+pub async fn generation_binds_code_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    repository::generation_binds_code(transaction, generation_id).await
 }
 
 /// Loads one Tool from an exact private Generation package.

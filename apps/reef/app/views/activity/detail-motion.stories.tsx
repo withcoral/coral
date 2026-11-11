@@ -110,7 +110,8 @@ function runDetail(run: Extract<ActivityRow, { kind: 'run' }>): RunDetail {
     request: null,
     requestUnavailable: false,
     source: programSource,
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
   }
 }

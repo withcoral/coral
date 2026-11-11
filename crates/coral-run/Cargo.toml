@@ -15,7 +15,7 @@ async-trait.workspace = true
 base64.workspace = true
 coral-db.workspace = true
 coral-catalog.workspace = true
-coral-functions.workspace = true
+coral-tools.workspace = true
 coral-identifier.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
@@ -36,13 +36,14 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-tools = { workspace = true, features = ["test-fixtures"] }
 tracing-subscriber.workspace = true
 coral-credentials.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 axum = { workspace = true, features = ["http1", "tokio"] }
-coral-administration.workspace = true
+coral-administration = { workspace = true, features = ["test-fixtures"] }
 tempfile.workspace = true
 coral-test-support.workspace = true
 coral-run-executor = { workspace = true, features = ["test-support"] }

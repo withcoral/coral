@@ -86,7 +86,8 @@ pub(crate) async fn delete_retained_history(
         "program_run_events",
         "invocation_approvals",
         "tool_invocations",
-        "program_run_saved_function_snapshots",
+        "program_run_private_tool_snapshots",
+        "program_run_shared_tool_snapshots",
         "program_run_packages",
     ] {
         transaction

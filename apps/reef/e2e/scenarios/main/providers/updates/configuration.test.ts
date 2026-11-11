@@ -70,7 +70,7 @@ test('Change account settings without reading a source or editing configuration'
       await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
       await page.getByLabel('Display name', { exact: true }).fill('Unsaved records')
       const discard = page.getByRole('dialog', { name: 'Discard your changes?' })
-      await page.getByRole('link', { name: 'Providers', exact: true }).first().click()
+      await page.getByRole('link', { name: 'Tools', exact: true }).first().click()
       await discard.getByRole('button', { name: 'Keep editing', exact: true }).click()
       expect(await page.getByLabel('Display name', { exact: true }).inputValue()).toBe(
         'Unsaved records',

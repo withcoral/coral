@@ -32,7 +32,9 @@ impl UnfinishedInvocation {
     /// How the Invocation ends with its Run, and the Tool Result recovery
     /// can still establish. A lost send is indeterminate. A lost Built-in
     /// Tool may not be: an `addProvider`'s own Publication shows what
-    /// happened.
+    /// happened. A Tool whose body ran in the Program ends with it, before
+    /// its body returned: the calls the body made are Invocations of their
+    /// own, which end with their own outcomes.
     async fn settle_for_termination(
         &self,
         transaction: &mut Transaction<'_>,
@@ -40,6 +42,11 @@ impl UnfinishedInvocation {
     ) -> Result<(InvocationResultKind, Option<String>), Error> {
         match self.state {
             InvocationState::Pending => Ok((InvocationResultKind::RunTerminated, None)),
+            InvocationState::Dispatching
+                if generation_runs_in_program(transaction, &self.generation).await? =>
+            {
+                Ok((InvocationResultKind::RunTerminated, None))
+            }
             InvocationState::Dispatching => Ok(crate::builtin::recover(
                 transaction,
                 run,
@@ -54,6 +61,40 @@ impl UnfinishedInvocation {
             )),
         }
     }
+}
+
+/// Whether Coral performs the Tools of `generation` by running their bodies
+/// in the Program: such a dispatch ends when the Program does, and never
+/// records a result once its Run is ending.
+async fn generation_runs_in_program(
+    transaction: &mut Transaction<'_>,
+    generation: &coral_catalog::ProviderGenerationId,
+) -> Result<bool, Error> {
+    Ok(
+        coral_catalog::generation_binds_code_in_transaction(transaction, generation)
+            .await
+            .map_err(coral_provider::Error::from)?,
+    )
+}
+
+/// Reports whether a dispatch of `run_id` is in flight that may still
+/// record its result: an upstream send or a Built-in Tool that started and
+/// has not ended. A Tool whose body runs in the Program never does once
+/// the Run is ending, so the settle of a termination never waits for one.
+pub(crate) async fn has_dispatch_in_flight(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &coral_workspace::WorkspaceId,
+    run_id: &crate::RunId,
+) -> Result<bool, Error> {
+    for generation in
+        invocation_repository::dispatching_generations_for_run(transaction, workspace_id, run_id)
+            .await?
+    {
+        if !generation_runs_in_program(transaction, &generation).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// What ending an Invocation found.
@@ -150,7 +191,8 @@ pub(crate) async fn finish_approval_failure(
 
 /// Ends every nonterminal Invocation of `run` for its termination `kind`:
 /// pending ones as `run_terminated`, dispatching ones as `indeterminate` (or
-/// with the Tool Result Coral's own records establish), their pending
+/// with the Tool Result Coral's own records establish, or as
+/// `run_terminated` for a Tool whose body ran in the Program), their pending
 /// Approval Requests closed. A timeout instead expires a pending request,
 /// whose deadline the Run's bounds, and fails its Invocation
 /// `approval_expired`. Returns their `invocation.ended` Events for the

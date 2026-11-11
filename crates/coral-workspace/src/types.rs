@@ -437,7 +437,7 @@ impl AuthoritySource {
 /// Current evidence returned by the Workspace authority Interface.
 ///
 /// This evidence authorizes only the requested Workspace-sensitive action. It
-/// is not authority to inspect another User's Runs, Tasks, Saved Functions,
+/// is not authority to inspect another User's Runs, Tasks, Private Tools,
 /// identity-connection details, or Invocation arguments; those owning Modules
 /// apply their Principal-specific visibility rules separately.
 #[derive(Debug, Clone, PartialEq, Eq)]

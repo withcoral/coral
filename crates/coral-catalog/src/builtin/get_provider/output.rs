@@ -31,7 +31,7 @@ const RESOURCE_DESCRIPTION: &str = "The MCP server's resource indicator, which C
 #[schemars(
     rename = "PublishedProviderSource",
     deny_unknown_fields,
-    description = "Where Coral last read the Provider from."
+    description = "Where Coral last read the provider from."
 )]
 pub enum ProviderSourceOutput {
     /// An uploaded OpenAPI document.

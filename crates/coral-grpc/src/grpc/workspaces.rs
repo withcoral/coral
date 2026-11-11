@@ -125,7 +125,8 @@ pub(super) fn mask(
     Ok(paths)
 }
 
-// Standard google.rpc.Status / ErrorInfo wire layout. No domain error text is exported.
+// Standard google.rpc.Status / ErrorInfo wire layout. The one domain error
+// text exported is the bounded text of a definite refusal, as metadata.
 #[derive(Clone, PartialEq, prost::Message)]
 struct RpcStatus {
     #[prost(int32, tag = "1")]
@@ -185,7 +186,7 @@ pub(super) fn administration_error(error: coral_administration::Error) -> Status
     use coral_administration::Error as E;
     match error {
         E::Workspace(error) => self::error(error),
-        E::Database(_) | E::Provider(_) | E::Functions(_) | E::Auth(_) => {
+        E::Database(_) | E::Provider(_) | E::Tools(_) | E::Policy(_) | E::Auth(_) => {
             safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
         }
     }
@@ -217,14 +218,28 @@ pub(super) fn annotate(status: Status) -> Status {
 }
 
 pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
+    safe_status_with(code, reason, [])
+}
+
+/// A status whose `ErrorInfo` also carries `metadata`: safe values that the
+/// client acts on or shows. An error's text is not one, except the bounded
+/// text its domain returns for a definite refusal.
+pub(super) fn safe_status_with(
+    code: tonic::Code,
+    reason: &str,
+    metadata: impl IntoIterator<Item = (&'static str, String)>,
+) -> Status {
     let detail = ErrorInfo {
         reason: reason.into(),
         domain: "coral.management".into(),
-        metadata: [(
-            "trace_id".into(),
-            TraceId::current_or_new().as_str().to_owned(),
-        )]
-        .into(),
+        metadata: metadata
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .chain([(
+                "trace_id".to_owned(),
+                TraceId::current_or_new().as_str().to_owned(),
+            )])
+            .collect(),
     };
     let status = RpcStatus {
         code: code as i32,

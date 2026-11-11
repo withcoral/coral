@@ -327,7 +327,7 @@ async fn records_carry_the_run_trace_that_links_their_request() {
 
     let spans = capture.spans.finished();
     let events = tracer
-        .saved_functions
+        .private_tools
         .list_lifecycle_events(&owner, &tracer.workspace_a)
         .await
         .expect("lifecycle events");
