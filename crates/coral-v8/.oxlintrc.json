@@ -12,9 +12,8 @@
       "error",
       {
         "allow": [
-          "__coralAnalyzeSavedFunctionCallPaths",
-          "__coralAnalyzeSavedFunctionDependencies",
-          "__coralAnalyzeSavedFunctionPaths",
+          "__coralAnalyzeProgram",
+          "__coralAnalyzeSavedFunction",
           "__coralCompile",
           "__coralCompileLinkedProgram",
           "__coralConfigureCompiler",

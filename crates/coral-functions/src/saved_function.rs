@@ -10,7 +10,9 @@ use coral_workspace::{
 use tokio::time::timeout_at;
 
 use coral_run_executor::{CompilerClient, time_left};
-use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, SavedFunctionCallPaths};
+use coral_v8::{
+    AnalyzedSource, CallableDeclaration, CompileFailure, CoralDeclarations, SourceReferences,
+};
 
 use crate::repository;
 use crate::tool_typing::{self, ToolDeclarationReader};
@@ -48,7 +50,7 @@ pub(crate) trait SavedFunctionCompiler: Send + Sync {
     /// Finds the Call Paths to type by `deadline`. `None` leaves the source
     /// untyped, so `prepare` reports any failure of a source this cannot
     /// analyze.
-    fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths>;
+    fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences>;
 
     /// Prepares `source`, typed by `declarations` when there are any.
     fn prepare(
@@ -64,16 +66,20 @@ struct V8SavedFunctionCompiler {
 }
 
 impl SavedFunctionCompiler for V8SavedFunctionCompiler {
-    fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths> {
+    fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences> {
         self.compiler
-            .call_paths(time_left(deadline), source)
-            .inspect_err(|error| {
+            .analyze(
+                time_left(deadline),
+                &[AnalyzedSource::SavedFunction(source.to_string())],
+            )
+            .inspect_err(|failure| {
                 tracing::debug!(
-                    error.type = safe::kind(error.code()),
+                    error.type = safe::kind(failure.error.code()),
                     "Call Path analysis failed; the source is checked untyped"
                 );
             })
-            .ok()
+            .ok()?
+            .pop()
     }
 
     fn prepare(
@@ -668,11 +674,10 @@ impl SavedFunctionModule {
         let typing = async {
             let compiler = self.compiler.clone();
             let analyzed = source.to_string();
-            let Some(named) = tokio::task::spawn_blocking(move || {
-                compiler.call_paths(typing_deadline, &analyzed)
-            })
-            .await
-            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            let Some(named) =
+                tokio::task::spawn_blocking(move || compiler.analyze(typing_deadline, &analyzed))
+                    .await
+                    .map_err(|_join_error| Error::CompilerWorkerStopped)?
             else {
                 return Ok(None);
             };
@@ -699,7 +704,7 @@ impl SavedFunctionModule {
             };
             let tools = match tools {
                 Some(reader) => {
-                    tool_typing::tool_declarations(reader, named.tools().call_paths()).await
+                    tool_typing::tool_declarations(reader, named.tool_call_paths()).await
                 }
                 None => None,
             };
@@ -711,7 +716,7 @@ impl SavedFunctionModule {
                 declarations = declarations.with_functions(functions);
             }
             if let Some(tools) = tools {
-                declarations = declarations.with_tools(named.tools(), tools);
+                declarations = declarations.with_tools(tools);
             }
             Ok(Some(declarations))
         };

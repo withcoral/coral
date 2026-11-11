@@ -50,3 +50,6 @@ export const filename = style({
   ...theme.typography.bodySmallStrong,
   selectors: { '&:empty': { display: 'none' }, ...dimmed },
 })
+
+// Holds the hidden picker beside the button that opens it.
+export const buttonPicker = style({ display: 'inline-flex', position: 'relative' })

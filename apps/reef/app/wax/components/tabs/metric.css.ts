@@ -8,27 +8,36 @@ export const metricList = style({
   borderBottom: `1px solid ${theme.stroke.secondary}`,
 })
 
-export const metricTab = style({
+// A tile's box, shared by a tab and the placeholder that stands in for it while it loads.
+export const metricPlaceholder = style({
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'flex-start',
   gap: 4,
   minWidth: 0,
   padding: '14px 16px 12px',
-  border: 0,
-  background: 'transparent',
-  color: 'inherit',
-  font: 'inherit',
-  textAlign: 'left',
-  cursor: 'pointer',
-  boxShadow: 'inset 0 -2px 0 transparent',
-  ':hover': { background: theme.button.bare.hover },
-  ':focus-visible': { outline: `2px solid ${theme.input.stroke.focus}`, outlineOffset: -2 },
   selectors: {
-    '&[aria-selected="true"]': { boxShadow: `inset 0 -2px 0 ${theme.content.primary}` },
     '& + &': { borderLeft: `1px solid ${theme.stroke.secondary}` },
   },
 })
+
+export const metricTab = style([
+  metricPlaceholder,
+  {
+    border: 0,
+    background: 'transparent',
+    color: 'inherit',
+    font: 'inherit',
+    textAlign: 'left',
+    cursor: 'pointer',
+    boxShadow: 'inset 0 -2px 0 transparent',
+    ':hover': { background: theme.button.bare.hover },
+    ':focus-visible': { outline: `2px solid ${theme.input.stroke.focus}`, outlineOffset: -2 },
+    selectors: {
+      '&[aria-selected="true"]': { boxShadow: `inset 0 -2px 0 ${theme.content.primary}` },
+    },
+  },
+])
 
 export const metricLabel = style({ display: 'inline-flex', alignItems: 'center', gap: 4 })
 

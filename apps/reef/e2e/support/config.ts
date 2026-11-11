@@ -255,7 +255,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
     ffmpegBinary: env.E2E_FFMPEG_BINARY || 'ffmpeg',
     probes,
     runDir: resolve(runsRoot, runId),
-    coralBinary: resolve(repoRoot, env.E2E_CORAL_BINARY || 'target/debug/coral'),
+    coralBinary: resolve(repoRoot, env.E2E_CORAL_BINARY || 'target/debug/coral-ee'),
     // Deliberately do not forward developer Coral, database, auth or telemetry settings.
     childEnv: {
       PATH: env.PATH,

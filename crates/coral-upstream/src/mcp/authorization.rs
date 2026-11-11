@@ -21,6 +21,11 @@ pub enum AuthorizationDiscoveryError {
     DestinationRejected,
     /// Every protected-resource location explicitly reported no metadata.
     ResourceMetadataMissing,
+    /// No well-known protected-resource location published metadata and at
+    /// least one answered 401; the challenge named no location. Whether that
+    /// means the server has no OAuth is the caller's reading: it holds for a
+    /// server that refused the MCP request the same way.
+    ResourceMetadataUnauthorized,
     /// Protected-resource metadata was absent, malformed, redirected, or oversized.
     ResourceMetadataUnavailable,
     /// The protected resource is neither the MCP server URL nor an ancestor of it.
@@ -44,7 +49,11 @@ impl AuthorizationDiscoveryError {
         match self {
             Self::DestinationRejected => "outbound_destination_rejected",
             Self::ResourceMetadataMissing => "resource_metadata_missing",
-            Self::ResourceMetadataUnavailable => "resource_metadata_unavailable",
+            // The same code as unavailable metadata: the variant exists so
+            // that setup can read a refusal as a server without OAuth.
+            Self::ResourceMetadataUnauthorized | Self::ResourceMetadataUnavailable => {
+                "resource_metadata_unavailable"
+            }
             Self::ResourceMismatch => "resource_mismatch",
             Self::AuthorizationServerUnavailable => "authorization_server_unavailable",
             Self::IssuerMismatch => "issuer_mismatch",
@@ -320,17 +329,26 @@ impl Fetcher {
         })
     }
 
-    /// Fetches one JSON document; `None` means the location answered without one.
+    /// Fetches one JSON document from a location that must answer: `None` is
+    /// a 404 or 410 alone, and a 401 is unavailable metadata.
     async fn json(&self, location: &str) -> Result<Option<Value>, AuthorizationDiscoveryError> {
-        self.json_with_headers(location, &std::collections::BTreeMap::new())
-            .await
+        match self
+            .answer(location, &std::collections::BTreeMap::new())
+            .await?
+        {
+            MetadataAnswer::Document(document) => Ok(Some(document)),
+            MetadataAnswer::Missing => Ok(None),
+            MetadataAnswer::Unauthorized => {
+                Err(AuthorizationDiscoveryError::ResourceMetadataUnavailable)
+            }
+        }
     }
 
-    async fn json_with_headers(
+    async fn answer(
         &self,
         location: &str,
         headers: &std::collections::BTreeMap<String, String>,
-    ) -> Result<Option<Value>, AuthorizationDiscoveryError> {
+    ) -> Result<MetadataAnswer, AuthorizationDiscoveryError> {
         let endpoint = validated_endpoint(location)?;
         if self
             .remaining
@@ -360,8 +378,10 @@ impl Fetcher {
                 ));
             }
         };
-        if matches!(response.status().as_u16(), 404 | 410) {
-            return Ok(None);
+        match response.status().as_u16() {
+            404 | 410 => return Ok(MetadataAnswer::Missing),
+            401 => return Ok(MetadataAnswer::Unauthorized),
+            _ => {}
         }
         if !response.status().is_success() {
             return Err(AuthorizationDiscoveryError::ResourceMetadataUnavailable);
@@ -370,9 +390,18 @@ impl Fetcher {
             .await
             .map_err(|_invalid| AuthorizationDiscoveryError::ResourceMetadataUnavailable)?;
         serde_json::from_slice(&body)
-            .map(Some)
+            .map(MetadataAnswer::Document)
             .map_err(|_invalid| AuthorizationDiscoveryError::ResourceMetadataUnavailable)
     }
+}
+
+/// What one metadata location answered.
+enum MetadataAnswer {
+    Document(Value),
+    /// 404 or 410: the location holds no metadata.
+    Missing,
+    /// 401: the location refuses the request.
+    Unauthorized,
 }
 
 #[derive(Deserialize)]
@@ -416,7 +445,8 @@ async fn fetch_protected_resource(
         Some(port) => format!("{origin}:{port}"),
         None => origin,
     };
-    let locations: Vec<String> = if let Some(location) = challenge.resource_metadata() {
+    let named = challenge.resource_metadata();
+    let locations: Vec<String> = if let Some(location) = named {
         vec![location.to_owned()]
     } else {
         let path = base.path().trim_end_matches('/');
@@ -429,22 +459,38 @@ async fn fetch_protected_resource(
         locations.push(format!("{origin}/.well-known/oauth-protected-resource"));
         locations
     };
+    let no_headers = std::collections::BTreeMap::new();
+    let mut unauthorized = false;
     for location in locations {
         // A challenge can name metadata on another origin. Service headers belong
         // only to this resource, never to an external metadata host or its issuer.
         let same_origin =
             url::Url::parse(&location).is_ok_and(|endpoint| endpoint.origin() == base.origin());
-        let document = if same_origin {
-            client.json_with_headers(&location, request_headers).await?
+        let headers = if same_origin {
+            request_headers
         } else {
-            client.json(&location).await?
+            &no_headers
         };
-        if let Some(document) = document {
-            return serde_json::from_value(document)
-                .map_err(|_error| AuthorizationDiscoveryError::ResourceMetadataUnavailable);
+        match client.answer(&location, headers).await? {
+            MetadataAnswer::Document(document) => {
+                return serde_json::from_value(document)
+                    .map_err(|_error| AuthorizationDiscoveryError::ResourceMetadataUnavailable);
+            }
+            MetadataAnswer::Missing => {}
+            // A location the challenge names must answer. A well-known one
+            // is a guess, and a server that asks for a credential on every
+            // path refuses it like any other request.
+            MetadataAnswer::Unauthorized if named.is_some() => {
+                return Err(AuthorizationDiscoveryError::ResourceMetadataUnavailable);
+            }
+            MetadataAnswer::Unauthorized => unauthorized = true,
         }
     }
-    Err(AuthorizationDiscoveryError::ResourceMetadataMissing)
+    Err(if unauthorized {
+        AuthorizationDiscoveryError::ResourceMetadataUnauthorized
+    } else {
+        AuthorizationDiscoveryError::ResourceMetadataMissing
+    })
 }
 
 enum IssuerAnswer {

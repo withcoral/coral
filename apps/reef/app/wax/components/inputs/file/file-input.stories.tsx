@@ -80,6 +80,44 @@ export const Disabled: Story = {
   },
 }
 
+// A button alone stands in for the picker, and the keyboard reaches only the button.
+export const ButtonOnly: Story = {
+  args: { buttonLabel: 'Upload document', ariaDescribedBy: 'document-help' },
+  play: async ({ args, canvas, canvasElement }) => {
+    const input = picker(canvasElement)
+    const button = canvas.getByRole('button', { name: 'Upload document' })
+    const clicked = fn((event: Event) => event.preventDefault())
+    input.addEventListener('click', clicked)
+    // The description reaches the button, the one control a reader can focus.
+    await expect(button).toHaveAttribute('aria-describedby', 'document-help')
+    await expect(input).not.toHaveAttribute('aria-describedby')
+    await userEvent.tab()
+    await expect(button).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    await userEvent.keyboard(' ')
+    input.removeEventListener('click', clicked)
+    await expect(clicked).toHaveBeenCalledTimes(2)
+    await userEvent.tab()
+    await expect(input).not.toHaveFocus()
+
+    const file = firstFile()
+    await selectFile(input, file)
+    await expectFormFile(input, file)
+    await expect(args.onChange).toHaveBeenLastCalledWith(file)
+  },
+}
+// A busy picker refuses a second selection until the work on the first ends.
+export const ButtonBusy: Story = {
+  args: { buttonLabel: 'Upload document', busy: true },
+  play: async ({ canvas, canvasElement }) => {
+    await expect(picker(canvasElement)).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: 'Upload document' })).toHaveAttribute(
+      'aria-busy',
+      'true',
+    )
+  },
+}
+
 export const DropArea: Story = { args: { dropLabel } }
 export const Dragging: Story = {
   args: { dropLabel },

@@ -8,8 +8,14 @@ import * as styles from './file-input.css'
 
 export interface FileInputProps {
   ariaLabel?: string
+  /** Describes the control that takes focus: the button when one stands in for the picker. */
+  ariaDescribedBy?: string
   /** Comma-separated accept list, such as ".json,.yaml". */
   accept?: string
+  /** Shows only a button with this label that opens the picker. */
+  buttonLabel?: string
+  /** Marks the button busy and disables the picker while the caller works on a selection. */
+  busy?: boolean
   className?: string
   disabled?: boolean
   /** Enables the drop area. The caller supplies format and limit instructions. */
@@ -26,7 +32,10 @@ export interface FileInputProps {
 /** An uncontrolled single-file picker. Drops become the native form's file value. */
 export function FileInput({
   ariaLabel,
+  ariaDescribedBy,
   accept,
+  buttonLabel,
+  busy,
   className,
   disabled,
   dropLabel,
@@ -42,6 +51,8 @@ export function FileInput({
   const [dropping, setDropping] = useState(false)
   const [filename, setFilename] = useState('')
   const descriptionId = useId()
+  // Both the drop area and the button stand in for the native picker.
+  const hidden = Boolean(dropLabel || buttonLabel)
   useImperativeHandle(ref, () => inputRef.current!)
 
   useEffect(() => {
@@ -66,12 +77,13 @@ export function FileInput({
   const input = (
     <input
       aria-label={ariaLabel}
-      aria-describedby={dropLabel ? descriptionId : undefined}
+      aria-describedby={dropLabel ? descriptionId : hidden ? undefined : ariaDescribedBy}
       aria-invalid={invalid || undefined}
       data-invalid={invalid || undefined}
       accept={accept}
-      className={dropLabel ? visuallyHidden : classNames(inputStyles.input, className)}
-      disabled={disabled}
+      className={hidden ? visuallyHidden : classNames(inputStyles.input, className)}
+      // A busy picker takes no new selection, even through assistive technology.
+      disabled={disabled || busy}
       id={id}
       name={name}
       onChange={(event) => {
@@ -81,11 +93,31 @@ export function FileInput({
       }}
       ref={inputRef}
       required={required}
-      tabIndex={dropLabel ? -1 : undefined}
+      tabIndex={hidden ? -1 : undefined}
       type="file"
     />
   )
-  if (!dropLabel) return input
+  const button = (
+    <TextButton
+      aria-describedby={ariaDescribedBy}
+      type="button"
+      variant="secondary"
+      size={dropLabel ? '22' : '32'}
+      busy={busy}
+      disabled={disabled}
+      onClick={() => inputRef.current?.click()}
+    >
+      {buttonLabel ?? 'Choose a file'}
+    </TextButton>
+  )
+  if (!hidden) return input
+  if (!dropLabel)
+    return (
+      <span className={classNames(styles.buttonPicker, className)}>
+        {input}
+        {button}
+      </span>
+    )
 
   return (
     <div
@@ -133,15 +165,7 @@ export function FileInput({
         {filename}
       </p>
       {input}
-      <TextButton
-        type="button"
-        variant="secondary"
-        size="22"
-        disabled={disabled}
-        onClick={() => inputRef.current?.click()}
-      >
-        Choose a file
-      </TextButton>
+      {button}
     </div>
   )
 }
