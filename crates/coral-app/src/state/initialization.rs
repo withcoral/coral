@@ -3,16 +3,19 @@
 //! The [`initialize`] Interface is the only production path from a discovered
 //! state layout to a migration-ready database. It first performs every
 //! filesystem and database inspection without mutation. Only after both stores
-//! are accepted does it publish the filesystem marker, create the layout, run
-//! the embedded database migration, and prepare Universal Search's
-//! backend-specific storage on top of it. Rejected state is therefore unchanged.
+//! are accepted does it publish the filesystem marker, create the layout, check
+//! Universal Search's database features, run the embedded database migration,
+//! and prepare Universal Search's vector table on top of it. Rejected state is
+//! therefore unchanged.
 //!
 //! Bootstrap supplies one captured configuration document. Database
 //! configuration resolution is injected because process bootstrap owns
 //! environment access. The resolver is called only after the filesystem
 //! fence accepts the state root. Configuration validation is injected too and
 //! runs after both inspections and before the first write, so retired state is
-//! reported first and invalid configuration leaves a fresh root unchanged.
+//! reported first and invalid configuration leaves a fresh root unchanged. It
+//! returns the one setting storage preparation reads: Universal Search's
+//! vector side.
 //!
 //! The Module also makes one runtime the state root's only user. Once the
 //! filesystem root is accepted, it locks the root's existing lock file, so a
@@ -70,13 +73,13 @@ pub(crate) async fn initialize<F, V>(
 ) -> Result<InitializedState, AppError>
 where
     F: FnOnce(&AppStateLayout, &str) -> Result<DatabaseOptions, AppError>,
-    V: FnOnce() -> Result<(), AppError>,
+    V: FnOnce() -> Result<coral_search::VectorStorage, AppError>,
 {
     validate_state_root(&layout, config)?;
     let held = StateLock::acquire_existing(&layout)?;
     let database_config = resolve_database(&layout, config)?;
     validate_database_state(&database_config).await?;
-    validate_config()?;
+    let vectors = validate_config()?;
 
     let lock = if let Some(lock) = held {
         lock
@@ -91,8 +94,11 @@ where
     layout.ensure()?;
     let database = Database::connect(database_config).await?;
     // The chain's search steps need the features this checks.
-    coral_search::prepare_storage(&database).await?;
+    coral_search::prepare_storage(&database, vectors).await?;
     super::migrations::migrate_current(&database).await?;
+    // After the chain: a table in a schema without the state marker reads
+    // as pre-v1 state at the next boot.
+    coral_search::prepare_vector_table(&database, vectors).await?;
 
     Ok(InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),
@@ -135,6 +141,68 @@ mod tests {
         }
         entries.sort();
         entries
+    }
+
+    #[tokio::test]
+    async fn a_fresh_postgres_boots_with_a_vector_table_only_while_the_setting_is_on() {
+        coral_test_support::database_only!(Postgres);
+        let url = crate::bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read Postgres test URL")
+            .expect("the Postgres test selector requires CORAL_TEST_POSTGRES_URL");
+        // A fixture puts the extensions the boot checks need in `public`, as
+        // in a default deployment. Created by this boot, they would land in
+        // its own schema, off every other test's search path.
+        let _extensions = coral_test_support::TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("install the shared extensions");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("open Postgres");
+
+        for (vectors, expected) in [
+            (
+                coral_search::VectorStorage::On { dimension: 3 },
+                Some("halfvec(3)"),
+            ),
+            (coral_search::VectorStorage::Off, None),
+        ] {
+            let schema = format!("coral_boot_{}", uuid::Uuid::new_v4().simple());
+            sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+                .execute(&pool)
+                .await
+                .expect("create the boot schema");
+            let mut scoped = url::Url::parse(&url).expect("parse Postgres test URL");
+            scoped
+                .query_pairs_mut()
+                .append_pair("options[search_path]", &format!("{schema},public"));
+            let options = coral_db::DatabaseOptions::Postgres { url: scoped.into() };
+            let temp = TempDir::new().unwrap();
+            let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
+
+            let state = super::initialize(layout, "", |_, _| Ok(options), || Ok(vectors))
+                .await
+                .unwrap_or_else(|error| panic!("{vectors:?}: boot: {error}"));
+
+            let vector_type: Option<String> = sqlx::query_scalar(
+                "SELECT format_type(a.atttypid, a.atttypmod) \
+                 FROM pg_catalog.pg_attribute a \
+                 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 \
+                 AND c.relname = 'search_entity_embeddings' \
+                 AND a.attname = 'embedding'",
+            )
+            .bind(&schema)
+            .fetch_optional(&pool)
+            .await
+            .expect("read the vector column");
+            let (database, _lock) = state.into_parts();
+            database.close().await;
+            assert_eq!(vector_type.as_deref(), expected, "{vectors:?}");
+        }
+        pool.close().await;
     }
 
     #[tokio::test]

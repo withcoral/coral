@@ -667,6 +667,7 @@ dependencies = [
  "coral-credentials",
  "coral-db",
  "coral-edition",
+ "coral-embed",
  "coral-grpc",
  "coral-mcp",
  "coral-outbound",

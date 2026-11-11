@@ -7,6 +7,7 @@ mod ranking;
 mod retrieval;
 mod shared_tools;
 mod storage;
+mod vector_storage;
 
 use coral_outbound::DestinationPolicy;
 use coral_test_support::{change, trace};

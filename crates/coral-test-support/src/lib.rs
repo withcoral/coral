@@ -308,21 +308,23 @@ async fn connect_virtual_tables(
 async fn install_shared_extensions(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const UNIQUE_VIOLATION: &str = "23505";
     const DUPLICATE_OBJECT: &str = "42710";
-    match sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public")
-        .execute(pool)
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(sqlx::Error::Database(error))
-            if matches!(
-                error.code().as_deref(),
-                Some(UNIQUE_VIOLATION | DUPLICATE_OBJECT)
-            ) =>
-        {
-            Ok(())
+    for statement in [
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public",
+        // Universal Search's vector side, on by default. The test Postgres
+        // image ships pgvector.
+        "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public",
+    ] {
+        match sqlx::query(statement).execute(pool).await {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(error))
+                if matches!(
+                    error.code().as_deref(),
+                    Some(UNIQUE_VIOLATION | DUPLICATE_OBJECT)
+                ) => {}
+            Err(error) => return Err(error),
         }
-        Err(error) => Err(error),
     }
+    Ok(())
 }
 
 /// Returns the database system selected for backend-neutral tests.

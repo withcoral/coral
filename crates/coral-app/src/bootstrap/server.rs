@@ -275,7 +275,10 @@ impl ServerBuilder {
             layout,
             deployment_config.raw(),
             resolve_database_config,
-            || deployment_config.validate(),
+            || {
+                deployment_config.validate()?;
+                deployment_config.vector_storage()
+            },
         )
         .await?;
         Ok(PreparedServerBuilder {

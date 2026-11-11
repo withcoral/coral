@@ -48,6 +48,13 @@ const changes = {
   'adds a migration to another crate': (repo) => repo.write('crates/coral-run/migrations/0010_runs.sql', runs),
   'adds a migration to a coral-db subfolder the plan skips': (repo) =>
     repo.write('crates/coral-db/migrations/postgress/0010_runs.sql', runs),
+  'adds a migration with a pgvector column': (repo) =>
+    repo.write(
+      'crates/coral-db/migrations/postgres/0010_embeddings.sql',
+      'ALTER TABLE runs ADD COLUMN embedding halfvec(384);\n',
+    ),
+  'adds a migration that creates pgvector': (repo) =>
+    repo.write('crates/coral-db/migrations/postgres/0010_vector.sql', 'CREATE EXTENSION IF NOT EXISTS vector;\n'),
 }
 
 for (const [name, change] of Object.entries(changes)) {
@@ -56,7 +63,7 @@ for (const [name, change] of Object.entries(changes)) {
     await change(repo)
     const result = repo.check()
     assert.equal(result.status, 1, result.stderr)
-    assert.match(result.stderr, /check-migrations: .*(must not change|must use a version above 9|never run)/)
+    assert.match(result.stderr, /check-migrations: .*(must not change|must use a version above 9|never run|name pgvector)/)
   })
 
   // The swap replaces Coral 0.x's whole tree, migrations included.
@@ -71,6 +78,11 @@ for (const [name, change] of Object.entries(changes)) {
 
 const accepted = {
   'adds the next migration': (repo) => repo.write('crates/coral-db/migrations/0010_runs.sql', runs),
+  'adds the next migration with a text vector': (repo) =>
+    repo.write(
+      'crates/coral-db/migrations/postgres/0010_runs.sql',
+      "ALTER TABLE runs ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', id)) STORED;\n",
+    ),
   'adds the next migration for each database': async (repo) => {
     await repo.write('crates/coral-db/migrations/postgres/0010_runs.sql', runs)
     await repo.write('crates/coral-db/migrations/sqlite/0010_runs.sql', runs)
