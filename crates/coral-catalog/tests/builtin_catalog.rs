@@ -112,7 +112,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Read-only, so the default Tool Access State is enabled.
             ToolHints::new(Some(true), None, Some(true), None),
             &[
-                r#"export default function (input: { "namespace": string })"#,
+                r#"export default function (input: { "under"?: string })"#,
                 r#""rules": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
@@ -122,7 +122,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Not read-only, so the default Tool Access State is approval_required.
             ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
             &[
-                r#""namespace": string"#,
+                r#"export default function (input: { "tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">) })"#,
                 r#""tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],

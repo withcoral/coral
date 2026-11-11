@@ -52,6 +52,12 @@ a call.
 - **Private Tool policy.** Each Principal sees only their own part of the Private Provider. A Workspace Owner can
   disable the whole Private Provider. An Owner can also set exact rules on the Private Tools they can read: their own and
   every Agent's. A Member's Private Tool uses its declared default, because Owners cannot read Members' private work.
+- **Programs read and set policy by complete Call Path.** One read returns every rule that applies to a Tool in
+  every root: every Provider's Tools, the Built-in and Shared Tools, and the caller's own Private Tools. An Owner's
+  Program can set rules on any Provider's Tools, the Shared Tools and the Owner's own Private Tools, in one batch. It
+  never sets a Built-in Tool's rule, so a Program cannot loosen the approval on the Tools that change the Workspace.
+  An Owner reads and sets the rules on an Agent's Private Tools only in Reef, where the Owner can name whose tool it
+  is.
 - **Shared Tools.**
   - **Publishing:** only a Workspace Owner publishes, and only in Reef. The Owner can publish their own Private Tool or
     an Agent's, never a Member's. Publishing copies the tool; the Private Tool stays as it was.

@@ -10,14 +10,16 @@
 //!
 //! - [`ToolPolicyModule::decision`] returns the current exact decision.
 //! - [`ToolPolicyModule::decisions`] reads a Provider's bounded selection in one snapshot.
-//! - [`ToolPolicyModule::provider_rules`] reads one Provider's exact rules
-//!   by Call Path for any Principal that inspects the Workspace.
+//! - [`ToolPolicyModule::rules`] reads every exact rule that applies to a
+//!   Provider's, a Built-in, a Shared or the reader's own Private Tool, by
+//!   complete Call Path, for any Principal that inspects the Workspace.
 //! - [`ToolPolicyModule::set_access_state`] creates or changes one exact
 //!   rule for a Workspace Owner.
 //! - [`ToolPolicyModule::set_access_states`] atomically changes 1–100 distinct
 //!   exact decisions in one Workspace with their lifecycle evidence.
-//! - [`ToolPolicyModule::set_provider_access_states`] atomically changes
-//!   1–100 exact decisions of one Provider, each named by its Call Path.
+//! - [`ToolPolicyModule::set_access_states_by_call_path`] atomically
+//!   changes 1–100 exact decisions, each named by its complete Call Path,
+//!   for a Program: never a Built-in Tool's.
 //! - [`discovery_decision_in_transaction`] reads one exact current decision
 //!   without a lock or a policy write, as when Run inspects an approval.
 //! - [`exact_tool_rules_in_transaction`] reads every exact rule of one
@@ -56,7 +58,7 @@ use std::sync::Arc;
 
 use coral_catalog::{HttpMethod, ToolKey, ToolPolicyFacts};
 use coral_db::Database;
-use coral_provider::{ProviderCallRoot, ProviderNamespace};
+use coral_provider::ProviderCallRoot;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceEvidence,
     WorkspaceId, WorkspaceModule, WorkspaceRole,
@@ -243,24 +245,30 @@ impl ToolPolicyModule {
             .collect())
     }
 
-    /// Returns the exact rules a Workspace Owner set for the Provider under
-    /// `coral.providers.<namespace>`, in any state, keyed by each Tool's
-    /// Call Path relative to that Call Root. A Tool without a rule takes
-    /// its default and is left out, and so is a rule whose Tool left the
-    /// current catalog. Every Principal that inspects the Workspace reads them.
+    /// Returns every exact rule a Workspace Owner set that applies to one
+    /// of these Tools, in any state, keyed by the Tool's complete Call
+    /// Path: the Tools of every Provider, the Built-in Provider's
+    /// included, the Workspace's live Shared Tools, and `actor`'s own
+    /// Private Tools while a rule applies to them, an Owner's or an Agent's
+    /// and never a Member's (ADR 0033). `under`, a Call Path prefix that
+    /// ends at a segment, such as `coral.providers.github`, keeps only the
+    /// Tools under it. A Tool without a rule takes its default and is left
+    /// out, and so is a rule whose Tool left its current catalog. Every
+    /// Principal that inspects the Workspace reads them.
     ///
     /// # Errors
     ///
-    /// Returns lost authority, an absent Provider, or a persistence failure.
-    pub async fn provider_rules(
+    /// Returns lost authority or a persistence failure.
+    pub async fn rules(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        namespace: &ProviderNamespace,
+        under: Option<&str>,
         now_unix_nanos: i64,
     ) -> Result<BTreeMap<String, ToolAccessState>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.workspaces
+        let evidence = self
+            .workspaces
             .check_principal_inspection_in_snapshot(
                 &mut transaction,
                 actor,
@@ -268,25 +276,65 @@ impl ToolPolicyModule {
                 now_unix_nanos,
             )
             .await?;
-        let (provider, paths) = coral_provider::provider_tool_paths_in_transaction(
-            &mut transaction,
-            workspace_id,
-            namespace,
-        )
-        .await?
-        .ok_or(coral_provider::Error::ProviderNotFound)?;
-        let mut rules =
-            repository::provider_rules_in_transaction(&mut transaction, workspace_id, &provider)
-                .await?;
+        let owner = PrivateToolOwner::of(actor.principal().kind(), evidence.effective_user_role());
+        let exact = repository::exact_rules_in_transaction(&mut transaction, workspace_id).await?;
+        let mut rules = BTreeMap::new();
+        for (provider, by_key) in exact.by_provider() {
+            let Some(root) = coral_provider::provider_call_root_in_transaction(
+                &mut transaction,
+                workspace_id,
+                provider,
+            )
+            .await?
+            else {
+                continue;
+            };
+            if under.is_some_and(|under| !overlaps(root.as_str(), under)) {
+                continue;
+            }
+            let paths = match &root {
+                ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin => {
+                    coral_provider::provider_tool_paths_in_transaction(
+                        &mut transaction,
+                        workspace_id,
+                        &root,
+                    )
+                    .await?
+                    .map(|(_provider, paths)| {
+                        paths
+                            .into_iter()
+                            .map(|path| (path.key().clone(), path.relative_path().to_owned()))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+                }
+                ProviderCallRoot::Shared => {
+                    shared_tool_paths_in_transaction(&mut transaction, workspace_id).await?
+                }
+                ProviderCallRoot::Private
+                    if owner.takes_rule_on(coral_catalog::AuthoredToolKind::Private) =>
+                {
+                    own_private_tool_paths_in_transaction(
+                        &mut transaction,
+                        workspace_id,
+                        actor.principal(),
+                    )
+                    .await?
+                }
+                ProviderCallRoot::Private => BTreeMap::new(),
+            };
+            for (key, state) in by_key {
+                let Some(relative) = paths.get(key) else {
+                    continue;
+                };
+                let call_path = format!("{}.{relative}", root.as_str());
+                if under.is_none_or(|under| within(&call_path, under)) {
+                    rules.insert(call_path, *state);
+                }
+            }
+        }
         transaction.rollback().await?;
-        Ok(paths
-            .iter()
-            .filter_map(|path| {
-                rules
-                    .remove(path.key())
-                    .map(|state| (path.relative_path().to_owned(), state))
-            })
-            .collect())
+        Ok(rules)
     }
 
     /// Creates or changes one exact Tool Access State.
@@ -352,24 +400,25 @@ impl ToolPolicyModule {
         Ok(decisions)
     }
 
-    /// Atomically sets the exact state of 1–100 Tools of the Provider
-    /// under `coral.providers.<namespace>`, in any state, each named by its
-    /// Call Path relative to that Call Root. Each path resolves to its
-    /// Tool in the transaction that writes its rule, so an update cannot
-    /// give the state to another Tool. A rejected path leaves every
-    /// decision and lifecycle Event unchanged, and a repeated state writes
-    /// nothing. Returns each path's state.
+    /// Atomically sets the exact state of 1–100 Tools, each named by its
+    /// Tool Call Path, in any state: a Tool of an Owner-created Provider, a
+    /// live Shared Tool, or one of the Owner's own Private Tools. This is
+    /// how a Program changes policy, so it never reaches a Built-in Tool: a
+    /// Program cannot loosen the approval on the Tools that change the
+    /// Workspace. Each path resolves to its Tool in the transaction that
+    /// writes its rule, so an update cannot give the state to another Tool.
+    /// A rejected path leaves every decision and lifecycle Event unchanged,
+    /// and a repeated state writes nothing. Returns each path's state.
     ///
     /// # Errors
     ///
-    /// Rejects an empty or oversized batch, lost Owner authority, an absent
-    /// Provider, and every path that names no Tool of its current
-    /// catalog.
-    pub async fn set_provider_access_states(
+    /// Rejects an empty or oversized batch, lost Owner authority, and, all
+    /// in one [`Error::RefusedToolPaths`], every path that names a Built-in
+    /// Tool and every path that names no Tool the Owner can set.
+    pub async fn set_access_states_by_call_path(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
-        namespace: &ProviderNamespace,
         states: &BTreeMap<String, ToolAccessState>,
     ) -> Result<BTreeMap<String, ToolAccessState>, Error> {
         if states.is_empty() || states.len() > 100 {
@@ -383,34 +432,78 @@ impl ToolPolicyModule {
             .workspaces
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
             .await?;
-        let (provider, paths) = coral_provider::provider_tool_paths_in_transaction(
-            &mut transaction,
-            workspace_id,
-            namespace,
-        )
-        .await?
-        .ok_or(coral_provider::Error::ProviderNotFound)?;
-        let keys: BTreeMap<&str, &ToolKey> = paths
-            .iter()
-            .map(|path| (path.relative_path(), path.key()))
-            .collect();
-        let mut updates = Vec::with_capacity(states.len());
-        let mut missing = Vec::new();
-        for (path, access_state) in states {
-            match keys.get(path.as_str()) {
-                Some(key) => updates.push((
-                    path,
-                    ToolPolicyTarget::new(workspace_id.clone(), provider.clone(), (*key).clone()),
-                    *access_state,
-                )),
-                None => missing.push(path.clone()),
+        let actor = AuthenticatedPrincipal::user(context.actor().clone());
+        let mut catalogs = BTreeMap::new();
+        let mut targets = Vec::with_capacity(states.len());
+        let (mut builtin, mut missing) = (Vec::new(), Vec::new());
+        for (call_path, access_state) in states {
+            let Some((root, relative)) = ProviderCallRoot::split_call_path(call_path) else {
+                missing.push(call_path.clone());
+                continue;
+            };
+            let target = match &root {
+                ProviderCallRoot::Owner(_) | ProviderCallRoot::Builtin => {
+                    if !catalogs.contains_key(root.as_str()) {
+                        let catalog = coral_provider::provider_tool_paths_in_transaction(
+                            &mut transaction,
+                            workspace_id,
+                            &root,
+                        )
+                        .await?
+                        .map(|(provider, paths)| {
+                            let keys = paths
+                                .into_iter()
+                                .map(|path| (path.relative_path().to_owned(), path.key().clone()))
+                                .collect::<BTreeMap<_, _>>();
+                            (provider, keys)
+                        });
+                        catalogs.insert(root.as_str().to_owned(), catalog);
+                    }
+                    catalogs
+                        .get(root.as_str())
+                        .and_then(Option::as_ref)
+                        .and_then(|(provider, keys)| {
+                            keys.get(relative).map(|key| {
+                                ToolPolicyTarget::new(
+                                    workspace_id.clone(),
+                                    provider.clone(),
+                                    key.clone(),
+                                )
+                            })
+                        })
+                }
+                ProviderCallRoot::Private | ProviderCallRoot::Shared => {
+                    let kind = if matches!(root, ProviderCallRoot::Private) {
+                        coral_catalog::AuthoredToolKind::Private
+                    } else {
+                        coral_catalog::AuthoredToolKind::Shared
+                    };
+                    authored_tool_target_in_transaction(
+                        &mut transaction,
+                        workspace_id,
+                        actor.principal(),
+                        kind,
+                        relative,
+                    )
+                    .await?
+                }
+            };
+            match target {
+                // A Built-in Tool exists, so its path is refused as one.
+                Some(_) if matches!(root, ProviderCallRoot::Builtin) => {
+                    builtin.push(call_path.clone());
+                }
+                Some(target) => targets.push((call_path, target, *access_state)),
+                None => missing.push(call_path.clone()),
             }
         }
-        if !missing.is_empty() {
-            return Err(Error::ToolPathsNotFound(missing));
+        if !builtin.is_empty() || !missing.is_empty() {
+            return Err(Error::RefusedToolPaths { missing, builtin });
         }
+        // Each target resolved in this transaction, which holds the
+        // Workspace, so each still names its Tool.
         let mut applied = BTreeMap::new();
-        for (path, target, access_state) in updates {
+        for (call_path, target, access_state) in targets {
             let decision = write_access_state_in_transaction(
                 &mut transaction,
                 context,
@@ -419,7 +512,7 @@ impl ToolPolicyModule {
                 access_state,
             )
             .await?;
-            applied.insert(path.clone(), decision.access_state());
+            applied.insert(call_path.clone(), decision.access_state());
         }
         transaction.commit().await?;
         Ok(applied)
@@ -594,6 +687,116 @@ fn tools_error(error: coral_tools::Error) -> Error {
         coral_tools::Error::Database(error) => Error::Database(error),
         other => Error::CorruptData(other.to_string()),
     }
+}
+
+/// Whether `call_path` is `under` or a Call Path beneath it, by whole
+/// segments.
+fn within(call_path: &str, under: &str) -> bool {
+    call_path
+        .strip_prefix(under)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// Whether a Tool under `root` can be `under` or beneath it: `under` lies
+/// under `root`, or `root` under `under`.
+fn overlaps(root: &str, under: &str) -> bool {
+    within(root, under) || within(under, root)
+}
+
+/// How many authored Tools one page of a path read holds.
+const AUTHORED_TOOL_PATH_PAGE: u32 = 100;
+
+/// The path relative to `coral.shared` of each live Shared Tool of the
+/// Workspace, by Tool Key.
+async fn shared_tool_paths_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<BTreeMap<ToolKey, String>, Error> {
+    let mut paths = BTreeMap::new();
+    let mut after = None;
+    loop {
+        let page = coral_tools::shared_tool_default_page_in_transaction(
+            transaction,
+            workspace_id,
+            after.as_ref(),
+            AUTHORED_TOOL_PATH_PAGE,
+        )
+        .await
+        .map_err(tools_error)?;
+        let more = page.len() > AUTHORED_TOOL_PATH_PAGE as usize;
+        for tool in page.into_iter().take(AUTHORED_TOOL_PATH_PAGE as usize) {
+            after = Some(tool.key().clone());
+            paths.insert(tool.key().clone(), tool.path().as_str().to_owned());
+        }
+        if !more {
+            return Ok(paths);
+        }
+    }
+}
+
+/// The path relative to `coral.private` of each of `principal`'s own
+/// current Private Tools, by Tool Key.
+async fn own_private_tool_paths_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &coral_workspace::Principal,
+) -> Result<BTreeMap<ToolKey, String>, Error> {
+    let mut paths = BTreeMap::new();
+    let mut after = None;
+    loop {
+        let page = coral_tools::readable_page_in_transaction(
+            transaction,
+            workspace_id,
+            principal,
+            coral_tools::PrivateToolScope::Own,
+            after.as_ref(),
+            AUTHORED_TOOL_PATH_PAGE,
+        )
+        .await
+        .map_err(tools_error)?;
+        let more = page.len() > AUTHORED_TOOL_PATH_PAGE as usize;
+        for tool in page.into_iter().take(AUTHORED_TOOL_PATH_PAGE as usize) {
+            after = Some(tool.key().clone());
+            paths.insert(tool.key().clone(), tool.path().as_str().to_owned());
+        }
+        if !more {
+            return Ok(paths);
+        }
+    }
+}
+
+/// The policy target of the authored Tool of `kind` at `relative`, as a
+/// Program names it: `principal`'s own Private Tool, or the Workspace's
+/// live Shared Tool. `None` when no such Tool is there.
+async fn authored_tool_target_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &coral_workspace::Principal,
+    kind: coral_catalog::AuthoredToolKind,
+    relative: &str,
+) -> Result<Option<ToolPolicyTarget>, Error> {
+    let Ok(path) = coral_tools::AuthoredToolPath::parse(kind, relative) else {
+        return Ok(None);
+    };
+    let Some(selection) =
+        coral_tools::select_linked_tool_in_transaction(transaction, workspace_id, principal, &path)
+            .await
+            .map_err(tools_error)?
+    else {
+        return Ok(None);
+    };
+    let Some(provider) =
+        coral_provider::authored_tool_provider_in_transaction(transaction, workspace_id, kind)
+            .await
+            .map_err(provider_read_error)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ToolPolicyTarget::new(
+        workspace_id.clone(),
+        provider.id().clone(),
+        selection.tool_key().clone(),
+    )))
 }
 
 /// Writes one exact rule and its lifecycle Event, unless the rule already

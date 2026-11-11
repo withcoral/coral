@@ -11,7 +11,9 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         coral_policy::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_policy::Error::Provider(inner) => super::providers::error(inner),
         coral_policy::Error::InvalidBatch => invalid("invalid policy batch"),
-        coral_policy::Error::ToolNotFound | coral_policy::Error::ToolPathsNotFound(_) => {
+        // Only a Program sets policy by Tool Call Path, so the service never
+        // meets a refused path; it reads as a Tool not found.
+        coral_policy::Error::ToolNotFound | coral_policy::Error::RefusedToolPaths { .. } => {
             super::workspaces::safe_status(tonic::Code::NotFound, "NOT_FOUND")
         }
         coral_policy::Error::CorruptData(_)
@@ -204,7 +206,10 @@ mod tests {
             (E::InvalidBatch, Code::InvalidArgument, "INVALID_ARGUMENT"),
             (E::ToolNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::ToolPathsNotFound(vec!["repos.nope".to_owned()]),
+                E::RefusedToolPaths {
+                    missing: vec!["coral.providers.repos.nope".to_owned()],
+                    builtin: Vec::new(),
+                },
                 Code::NotFound,
                 "NOT_FOUND",
             ),

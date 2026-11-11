@@ -1,9 +1,9 @@
 //! `coral.updatePolicy`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. The call sets the exact Tool Access State
-//! of 1–100 Tools of one Provider, each named by its Call Path relative
-//! to the Provider's Call Root. It names a Provider under `coral.providers`,
-//! so it never reaches a Built-in Tool.
+//! of 1–100 Tools, each named by its complete Call Path: a Provider's, a
+//! Shared Tool or one of the caller's own Private Tools. It never reaches a
+//! Built-in Tool.
 
 use std::collections::BTreeMap;
 
@@ -13,13 +13,10 @@ use schemars::generate::Contract;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    ArgumentProblem, BuiltinTool, Declared, Definition, NAMESPACE_REASON, derived_schema,
-    tool_result,
-};
+use super::{ArgumentProblem, BuiltinTool, Declared, Definition, derived_schema, tool_result};
 use crate::{ToolHints, ToolPresentation};
 
-/// A Provider's policy is what only an Owner changes.
+/// Tool policy is what only an Owner changes.
 pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 /// The most Tools one call sets.
@@ -28,22 +25,22 @@ const MAX_TOOLS: usize = 100;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::UpdatePolicy.key(),
-        summary: "Change a Provider's Tool policy",
+        summary: "Change the Tool policy of this Workspace",
         presentation: ToolPresentation::new(
             Some("Update policy".to_string()),
-            "Enable, require approval for, or disable Tools of one Provider in this \
-             Workspace."
+            "Enable, require approval for, or disable Tools in this Workspace: a \
+             Provider's Tools, Shared Tools and your own Private Tools."
                 .to_string(),
             false,
             vec!["policy".to_string()],
             Some(
-                "Pass the namespace of a Provider whose Tools are called under \
-                 coral.providers.<namespace>, and 1 to 100 of its Tools, each by its path \
-                 under that root. A Tool you do not name keeps its state. All the states \
-                 change, or none does: a namespace that no Provider holds fails with \
-                 provider_not_found, and a path that names no Tool fails with \
-                 tool_not_found. Read the current rules with getPolicy. This Tool \
-                 cannot change the policy of the Built-in Provider's Tools."
+                "Pass 1 to 100 Tools, each by its complete Call Path, such as \
+                 coral.providers.github.repos.delete or coral.shared.mail.remind. A Tool you \
+                 do not name keeps its state. All the states change, or none does, and the \
+                 failure names each refused path: a path that names no Tool fails with \
+                 tool_not_found, and one that names a Built-in Tool, such as coral.search, \
+                 fails with invalid_input. Set a Built-in Tool's policy in the Coral UI. Read \
+                 the current rules with getPolicy."
                     .to_string(),
             ),
         ),
@@ -64,13 +61,8 @@ pub(super) fn definition() -> Definition {
 #[schemars(description = "")]
 struct Arguments {
     #[schemars(
-        description = "The Provider Namespace, such as github. The Provider's Tools are \
-                       called under coral.providers.<namespace>."
-    )]
-    namespace: String,
-    #[schemars(
-        description = "The Tool Access State to set for each Tool, keyed by its path \
-                       under coral.providers.<namespace>, such as repos.get. enabled runs a call \
+        description = "The Tool Access State to set for each Tool, keyed by its complete \
+                       Call Path, such as coral.providers.github.repos.get. enabled runs a call \
                        at once, approval_required waits for a person to approve it, and \
                        disabled refuses it.",
         extend("minProperties" = 1, "maxProperties" = MAX_TOOLS)
@@ -82,46 +74,30 @@ struct Arguments {
 /// state.
 #[derive(Debug, Clone)]
 pub struct UpdatePolicyArguments {
-    namespace: String,
     tools: BTreeMap<String, crate::ToolAccessState>,
 }
 
 impl UpdatePolicyArguments {
-    /// A valid Provider Namespace.
-    #[must_use]
-    pub fn namespace(&self) -> &str {
-        &self.namespace
-    }
-
-    /// 1–100 states, keyed by Call Path relative to the Provider's Call Root.
+    /// 1–100 states, keyed by complete Call Path.
     #[must_use]
     pub const fn tools(&self) -> &BTreeMap<String, crate::ToolAccessState> {
         &self.tools
     }
 
-    /// Reads the arguments: the shape first, then the namespace syntax and
-    /// how many Tools they name.
+    /// Reads the arguments: the shape first, then how many Tools they name.
     ///
     /// # Errors
     ///
     /// Returns every argument to correct.
     pub fn parse(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
         let arguments: Arguments = super::read(arguments).map_err(|problem| vec![problem])?;
-        let mut problems = Vec::new();
-        if !crate::provider_namespace_is_valid(&arguments.namespace) {
-            problems.push(ArgumentProblem::new("namespace", NAMESPACE_REASON));
-        }
         if !(1..=MAX_TOOLS).contains(&arguments.tools.len()) {
-            problems.push(ArgumentProblem::new(
+            return Err(vec![ArgumentProblem::new(
                 "tools",
                 format!("name 1 to {MAX_TOOLS} Tools"),
-            ));
-        }
-        if !problems.is_empty() {
-            return Err(problems);
+            )]);
         }
         Ok(Self {
-            namespace: arguments.namespace,
             tools: arguments.tools,
         })
     }
@@ -131,11 +107,10 @@ impl UpdatePolicyArguments {
 #[cfg(test)]
 pub(super) fn valid_arguments() -> Vec<Value> {
     vec![serde_json::json!({
-        "namespace": "github",
         "tools": {
-            "repos.get": "enabled",
-            "issues.create": "approval_required",
-            "repos.delete": "disabled",
+            "coral.providers.github.repos.get": "enabled",
+            "coral.shared.mail.remind": "approval_required",
+            "coral.private.people.greet": "disabled",
         },
     })]
 }
@@ -144,14 +119,10 @@ pub(super) fn valid_arguments() -> Vec<Value> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields, description = "")]
 pub struct UpdatePolicyResult {
-    /// The Provider Namespace.
-    #[schemars(description = "The Provider Namespace. Its Tools are called under \
-                       coral.providers.<namespace>.")]
-    pub namespace: String,
     /// Each sent path's state after the call.
     #[schemars(
         description = "The Tool Access State of each Tool the call named, keyed by its \
-                       path under coral.providers.<namespace>."
+                       complete Call Path."
     )]
     pub tools: BTreeMap<String, crate::ToolAccessState>,
 }
@@ -183,13 +154,12 @@ mod tests {
                 "name 1 to 100 Tools",
             ),
             (
-                serde_json::json!({ "repos.get": "open" }),
-                "tools.repos.get",
+                serde_json::json!({ "coral.search": "open" }),
+                "tools.coral.search",
                 "expected one of `enabled`, `approval_required`, `disabled`",
             ),
         ] {
             let problems = UpdatePolicyArguments::parse(&serde_json::json!({
-                "namespace": "github",
                 "tools": tools,
             }))
             .expect_err("a problem");

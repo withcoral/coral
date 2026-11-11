@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use coral_catalog::{UpdatePolicyArguments, UpdatePolicyResult};
 use coral_policy::ToolAccessState;
-use coral_provider::access::ProviderNamespace;
 
 use super::BuiltinHost;
 use crate::error::InputProblem;
@@ -13,21 +12,15 @@ use crate::{CoralFailure, Error, Rejection};
 /// `updatePolicy`'s arguments in Coral's domain types.
 #[derive(Clone)]
 pub(crate) struct UpdatePolicy {
-    namespace: ProviderNamespace,
     tools: BTreeMap<String, ToolAccessState>,
 }
 
 impl UpdatePolicy {
     /// The call for arguments the contract accepted.
-    pub(super) fn new(arguments: &UpdatePolicyArguments) -> Result<Self, Rejection> {
-        // The contract checks the namespace with the same rule, so this does
-        // not fail.
-        let namespace = ProviderNamespace::parse(arguments.namespace())
-            .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
-        Ok(Self {
-            namespace,
+    pub(super) fn new(arguments: &UpdatePolicyArguments) -> Self {
+        Self {
             tools: arguments.tools().clone(),
-        })
+        }
     }
 
     /// Sets every sent state as the invoking Owner, or none.
@@ -40,25 +33,11 @@ impl UpdatePolicy {
         };
         let states = host
             .policies
-            .set_provider_access_states(context, host.workspace_id, &self.namespace, &self.tools)
+            .set_access_states_by_call_path(context, host.workspace_id, &self.tools)
             .await
             .map_err(|error| match error {
-                coral_policy::Error::Provider(coral_provider::Error::ProviderNotFound) => {
-                    Error::InvocationRejected(CoralFailure::ProviderNotFound.into())
-                }
-                coral_policy::Error::ToolPathsNotFound(paths) => {
-                    Error::InvocationRejected(Rejection::naming(
-                        CoralFailure::ToolNotFound,
-                        paths
-                            .into_iter()
-                            .map(|path| {
-                                InputProblem::new(
-                                    format!("tools.{path}"),
-                                    format!("no Tool of {} has this path", self.namespace.as_str()),
-                                )
-                            })
-                            .collect(),
-                    ))
+                coral_policy::Error::RefusedToolPaths { missing, builtin } => {
+                    Error::InvocationRejected(refused_paths(missing, builtin))
                 }
                 coral_policy::Error::Workspace(error)
                     if crate::enforcement::loses_authority(&error) =>
@@ -67,10 +46,34 @@ impl UpdatePolicy {
                 }
                 other => other.into(),
             })?;
-        Ok(UpdatePolicyResult {
-            namespace: self.namespace.as_str().to_owned(),
-            tools: states,
-        }
-        .into_tool_result())
+        Ok(UpdatePolicyResult { tools: states }.into_tool_result())
     }
+}
+
+/// The rejection that names every refused path, in path order, each with
+/// its own reason. A path that names no Tool makes it `tool_not_found`;
+/// only Built-in paths make it `invalid_input`.
+fn refused_paths(missing: Vec<String>, builtin: Vec<String>) -> Rejection {
+    let failure = if missing.is_empty() {
+        CoralFailure::InvalidInput
+    } else {
+        CoralFailure::ToolNotFound
+    };
+    let mut problems = missing
+        .into_iter()
+        .map(|path| (path, "no Tool you can set has this Call Path"))
+        .chain(
+            builtin
+                .into_iter()
+                .map(|path| (path, "set a Built-in Tool's policy in the Coral UI")),
+        )
+        .collect::<Vec<_>>();
+    problems.sort_unstable();
+    Rejection::naming(
+        failure,
+        problems
+            .into_iter()
+            .map(|(path, reason)| InputProblem::new(format!("tools.{path}"), reason))
+            .collect(),
+    )
 }

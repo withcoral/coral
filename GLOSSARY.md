@@ -286,13 +286,13 @@ Owner can disable and enable it and set its Tool policy, but nobody can rename, 
 has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Workspace's Providers
 (`listProviders`), read one Owner-created Provider's Provider Configuration in the shapes `addProvider` takes
 (`getProvider`), change one Owner-created Provider's configuration or source (`updateProvider`), read the exact
-Tool rules a Workspace Owner set for one Owner-created Provider, keyed by each Tool's Call Path relative to
-its Call Root (`getPolicy`), set the exact Tool Access State of 1–100 of its Tools by those paths, all or
-none (`updatePolicy`), and add, update or remove one of the caller's own Private Tools (`addTool`, `updateTool`,
-`removeTool`). They never touch another Principal's Private Tools or any Shared Tool: an Owner removes an Agent's
-Private Tool, and publishes a Shared Tool, in Reef only.
-`updatePolicy` names a Provider under `coral.providers`, so it never reaches a Built-in
-Tool, and a Program cannot loosen the approval on the Tools that change the Workspace. When Coral boots, it
+Tool rules a Workspace Owner set that apply to these Tools, keyed by each Tool's complete Call
+Path: every Provider's, the Built-in Tools, the Shared Tools and the caller's own Private Tools (`getPolicy`), set
+the exact Tool Access State of 1–100 Tools by complete Call Path, all or none (`updatePolicy`), and add, update or
+remove one of the caller's own Private Tools (`addTool`, `updateTool`, `removeTool`). They never change the content of another Principal's Private Tool or of any Shared Tool: an Owner removes an
+Agent's Private Tool, and publishes a Shared Tool, in Reef only.
+`updatePolicy` reaches an Owner-created Provider's Tools, the Shared Tools and the Owner's own Private Tools, and
+refuses a Built-in Tool's path, so a Program cannot loosen the approval on the Tools that change the Workspace. When Coral boots, it
 updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails keeps its catalog
 until the next boot. Coral itself never publishes a Setup that a Program prepares, for a new Provider or an update,
 on any Credential Route: a person previews it and publishes it. A credential-requiring Setup, on the `fixed` or the

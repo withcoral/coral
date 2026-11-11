@@ -288,29 +288,28 @@ fn setup_tool_results() -> Vec<(BuiltinTool, serde_json::Value)> {
 /// rule of each state, and what `updatePolicy` returns when it sets them.
 fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
     let states = BTreeMap::from([
-        ("repos.get".to_owned(), crate::ToolAccessState::Disabled),
-        ("issues.create".to_owned(), crate::ToolAccessState::Enabled),
         (
-            "issues.close".to_owned(),
+            "coral.providers.github.repos.get".to_owned(),
+            crate::ToolAccessState::Disabled,
+        ),
+        (
+            "coral.shared.mail.remind".to_owned(),
+            crate::ToolAccessState::Enabled,
+        ),
+        (
+            "coral.addProvider".to_owned(),
             crate::ToolAccessState::ApprovalRequired,
         ),
     ]);
     [BTreeMap::new(), states.clone()]
         .into_iter()
         .map(|rules| {
-            let read = GetPolicyResult {
-                namespace: "github".to_owned(),
-                rules,
-            };
+            let read = GetPolicyResult { rules };
             (BuiltinTool::GetPolicy, read.into_tool_result())
         })
         .chain([(
             BuiltinTool::UpdatePolicy,
-            UpdatePolicyResult {
-                namespace: "github".to_owned(),
-                tools: states,
-            }
-            .into_tool_result(),
+            UpdatePolicyResult { tools: states }.into_tool_result(),
         )])
 }
 

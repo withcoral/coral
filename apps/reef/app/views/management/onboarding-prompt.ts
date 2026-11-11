@@ -24,7 +24,7 @@ function recommendedServerName(displayName: string) {
  * rule; the others keep the default state that tool search shows.
  */
 const policyReview =
-  "If I agree, read the provider's tool policy with coral.getPolicy. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
+  "If I agree, read the provider's tool policy with coral.getPolicy, passing its call root as under, such as coral.providers.github. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
 
 /**
  * What a person gives their own MCP client to connect to the workspace. The client acts as

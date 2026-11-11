@@ -433,7 +433,7 @@ const promptCopy = (opener: string, connect: string[], steps: string[], data: st
   ].join('\n')
 /** How the client reads a tool policy, which lists only the tools with a rule. */
 const policyReview =
-  "If I agree, read the provider's tool policy with coral.getPolicy. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
+  "If I agree, read the provider's tool policy with coral.getPolicy, passing its call root as under, such as coral.providers.github. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
 /** An owner's prompt, which adds a provider. */
 const onboardingCopy = (connect: string[], data = dataRule) =>
   promptCopy(

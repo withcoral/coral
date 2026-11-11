@@ -126,6 +126,13 @@ impl ExactToolRules {
         Self { rules }
     }
 
+    /// Returns every exact rule, by Provider and Tool Key.
+    pub(crate) const fn by_provider(
+        &self,
+    ) -> &BTreeMap<ProviderId, BTreeMap<ToolKey, ToolAccessState>> {
+        &self.rules
+    }
+
     /// Returns the Workspace decision for one Tool: its exact rule, else
     /// the default that its policy facts give.
     #[must_use]

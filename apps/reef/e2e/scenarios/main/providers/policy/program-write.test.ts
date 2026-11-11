@@ -39,7 +39,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
     let paused!: RunUpdate
     await step('The Run waits for the owner to approve updatePolicy', async () => {
       const started = await runner.exec(
-        'return (await coral.updatePolicy({ namespace: "alpha", tools: { lookup: "disabled", remove: "enabled" } })).data;',
+        'return (await coral.updatePolicy({ tools: { "coral.providers.alpha.lookup": "disabled", "coral.providers.alpha.remove": "enabled" } })).data;',
       )
       expect(started.isError).not.toBe(true)
       paused = started.structuredContent
@@ -56,7 +56,12 @@ test("An owner's Program changes an added provider's policy once the owner appro
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({
         kind: 'value',
-        value: { namespace: 'alpha', tools: { lookup: 'disabled', remove: 'enabled' } },
+        value: {
+          tools: {
+            'coral.providers.alpha.lookup': 'disabled',
+            'coral.providers.alpha.remove': 'enabled',
+          },
+        },
       })
     })
     await step('The provider page shows the policy the Program set', async () => {
@@ -85,15 +90,14 @@ test("An owner's Program cannot change the policy of the built-in provider's too
       await setToolPolicy(page, 'updatePolicy', 'Allow')
       await expectPolicy(page, 'addProvider', 'Ask')
     })
-    await step('No namespace reaches Coral, so the Program gets provider_not_found', async () => {
-      // The Built-in Provider's tools are called directly on coral.
+    await step('A built-in tool path is refused, so the Program gets invalid_input', async () => {
       const { update } = await observeRun(
         runner,
         await runner.exec(
-          'try { return await coral.updatePolicy({ namespace: "workspace", tools: { updatePolicy: "disabled", addProvider: "enabled" } }); } catch (error) { return error.code; }',
+          'try { return await coral.updatePolicy({ tools: { "coral.updatePolicy": "disabled", "coral.addProvider": "enabled" } }); } catch (error) { return error.code; }',
         ),
       )
-      expect(update.final_value).toEqual({ kind: 'value', value: 'provider_not_found' })
+      expect(update.final_value).toEqual({ kind: 'value', value: 'invalid_input' })
     })
     await step("Coral's policy stays as the owner set it", async () => {
       await page.reload()

@@ -79,11 +79,11 @@ impl BuiltinCall {
                         get_provider::GetProvider::new(&arguments).map(Self::GetProvider)
                     }
                     BuiltinArguments::GetPolicy(arguments) => {
-                        get_policy::GetPolicy::new(&arguments).map(Self::GetPolicy)
+                        Ok(Self::GetPolicy(get_policy::GetPolicy::new(&arguments)))
                     }
-                    BuiltinArguments::UpdatePolicy(arguments) => {
-                        update_policy::UpdatePolicy::new(&arguments).map(Self::UpdatePolicy)
-                    }
+                    BuiltinArguments::UpdatePolicy(arguments) => Ok(Self::UpdatePolicy(
+                        update_policy::UpdatePolicy::new(&arguments),
+                    )),
                     BuiltinArguments::UpdateProvider(arguments) => {
                         update_provider::UpdateProvider::new(*arguments)
                             .map(|call| Self::UpdateProvider(Box::new(call)))

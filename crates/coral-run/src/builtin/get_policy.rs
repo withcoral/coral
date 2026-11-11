@@ -1,42 +1,37 @@
 //! Performs `coral.getPolicy`.
 
 use coral_catalog::{GetPolicyArguments, GetPolicyResult};
-use coral_provider::access::ProviderNamespace;
 
 use super::BuiltinHost;
-use crate::{CoralFailure, Error, Rejection};
+use crate::{CoralFailure, Error};
 
 /// `getPolicy`'s arguments in Coral's domain types.
 #[derive(Clone)]
 pub(crate) struct GetPolicy {
-    namespace: ProviderNamespace,
+    under: Option<String>,
 }
 
 impl GetPolicy {
     /// The call for arguments the contract accepted.
-    pub(super) fn new(arguments: &GetPolicyArguments) -> Result<Self, Rejection> {
-        // The contract checks the namespace with the same rule, so this does
-        // not fail.
-        let namespace = ProviderNamespace::parse(arguments.namespace())
-            .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
-        Ok(Self { namespace })
+    pub(super) fn new(arguments: &GetPolicyArguments) -> Self {
+        Self {
+            under: arguments.under().map(ToOwned::to_owned),
+        }
     }
 
-    /// Reads the Provider's exact rules as the invoking Principal.
+    /// Reads the exact rules that apply to the Tools the invoking Principal
+    /// can read, by complete Call Path.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         let rules = host
             .policies
-            .provider_rules(
+            .rules(
                 host.actor,
                 host.workspace_id,
-                &self.namespace,
+                self.under.as_deref(),
                 host.run.now()?,
             )
             .await
             .map_err(|error| match error {
-                coral_policy::Error::Provider(coral_provider::Error::ProviderNotFound) => {
-                    Error::InvocationRejected(CoralFailure::ProviderNotFound.into())
-                }
                 coral_policy::Error::Workspace(error)
                     if crate::enforcement::loses_authority(&error) =>
                 {
@@ -44,10 +39,6 @@ impl GetPolicy {
                 }
                 other => other.into(),
             })?;
-        Ok(GetPolicyResult {
-            namespace: self.namespace.as_str().to_owned(),
-            rules,
-        }
-        .into_tool_result())
+        Ok(GetPolicyResult { rules }.into_tool_result())
     }
 }

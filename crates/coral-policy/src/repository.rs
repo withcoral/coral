@@ -147,30 +147,6 @@ pub(super) async fn access_states_in_transaction(
         .collect()
 }
 
-pub(super) async fn provider_rules_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    provider: &ProviderId,
-) -> Result<BTreeMap<ToolKey, ToolAccessState>, Error> {
-    let rows: Vec<(String, String)> = transaction
-        .fetch_all(
-            Query::select()
-                .columns([ToolAccessRules::ToolKey, ToolAccessRules::AccessState])
-                .from(ToolAccessRules::Table)
-                .and_where(Expr::col(ToolAccessRules::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(ToolAccessRules::ProviderId).eq(provider.to_string()))
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter()
-        .map(|(key, state)| {
-            let key = ToolKey::parse(&key)
-                .map_err(|_error| Error::CorruptData("Tool rule has invalid Tool Key".into()))?;
-            Ok((key, access_state_from_storage(&state)?))
-        })
-        .collect()
-}
-
 pub(super) async fn exact_rules_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,

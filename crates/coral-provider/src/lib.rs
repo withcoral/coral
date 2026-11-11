@@ -702,12 +702,14 @@ pub async fn tool_listings_in_transaction(
     Ok(tools)
 }
 
-/// Resolves the Provider under `coral.providers.<namespace>`, in any state,
-/// and the Tool-relative path of each Tool in its current catalog.
-/// Definitions and schemas stay lazy.
+/// Resolves the Provider at `call_root`, in any state, and the
+/// Tool-relative path of each Tool in its current catalog. Definitions and
+/// schemas stay lazy. Only an Owner-created Provider and the Built-in
+/// Provider keep a catalog: the Private and the Shared Provider's Tools are
+/// rows coral-tools keeps, so their catalog is empty.
 ///
 /// The caller owns authority and the coherent read transaction. `Ok(None)`
-/// means no Provider of the Workspace holds the namespace.
+/// means no Provider of the Workspace is at `call_root`.
 ///
 /// # Errors
 ///
@@ -715,12 +717,12 @@ pub async fn tool_listings_in_transaction(
 pub async fn provider_tool_paths_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
-    namespace: &ProviderNamespace,
+    call_root: &ProviderCallRoot,
 ) -> Result<Option<(ProviderId, Vec<coral_catalog::ToolPathAssignment>)>, Error> {
     let Some(active) = repository::current_provider(
         transaction,
         workspace_id,
-        repository::ProviderKey::CallRoot(&ProviderCallRoot::Owner(namespace.clone())),
+        repository::ProviderKey::CallRoot(call_root),
         repository::ProviderHold::None,
     )
     .await?

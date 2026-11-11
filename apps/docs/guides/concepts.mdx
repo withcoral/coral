@@ -88,7 +88,15 @@ You can add the same provider multiple times, with different account settings. F
 
 Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addTool`, `coral.updateTool` and `coral.removeTool` are Allow too, because they change only the caller's own private tools. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
 
-A program can read an added provider's policy with `coral.getPolicy`. A workspace owner's program can change it with `coral.updatePolicy`, which needs approval until you set another policy for it. `updatePolicy` cannot change the policy of the built-in provider's tools.
+A program reads the policy rules with `coral.getPolicy`, keyed by each tool's call path, such as `coral.providers.github.repos.get`. It reads every provider's tools, the built-in tools, the shared tools and its own private tools. Pass `under`, such as `coral.providers.github`, to read only part of them. A workspace owner's program can change a rule with `coral.updatePolicy`, which needs approval until you set another policy for it:
+
+```ts
+await coral.updatePolicy({
+  tools: { "coral.providers.alpha.lookup": "disabled", "coral.providers.alpha.remove": "enabled" },
+});
+```
+
+`updatePolicy` changes a provider's tools, shared tools and the owner's own private tools. It cannot change the policy of the built-in tools: set those in the Coral UI.
 
 ## Principals
 
