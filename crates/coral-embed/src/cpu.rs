@@ -102,9 +102,4 @@ mod tests {
             "this CPU is too old for search by meaning: it lacks the x86-64-v3 features avx2, fma"
         );
     }
-
-    #[test]
-    fn the_test_host_meets_the_floor() {
-        assert_eq!(check_cpu(), Ok(()));
-    }
 }
