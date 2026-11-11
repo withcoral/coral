@@ -196,6 +196,30 @@ struct Link {
     freed: Arc<Notify>,
 }
 
+/// One unit of room a held Run takes, freed when its stream's task ends,
+/// even by a panic.
+struct HeldUnit {
+    held: Arc<AtomicU32>,
+    freed: Arc<Notify>,
+}
+
+impl HeldUnit {
+    fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
+        held.fetch_add(1, Ordering::SeqCst);
+        Self {
+            held: held.clone(),
+            freed: freed.clone(),
+        }
+    }
+}
+
+impl Drop for HeldUnit {
+    fn drop(&mut self) {
+        self.held.fetch_sub(1, Ordering::SeqCst);
+        self.freed.notify_one();
+    }
+}
+
 impl Link {
     fn new(config: RunExecutorConfig, linked: watch::Sender<bool>) -> Self {
         let endpoint = Endpoint::from(config.coral_address.0)
@@ -305,13 +329,11 @@ impl Link {
                 })) if welcomed => {
                     // Each Run's stream rides this connection.
                     for taken in taken.runs {
-                        self.held.fetch_add(1, Ordering::SeqCst);
-                        let (held, freed) = (self.held.clone(), self.freed.clone());
+                        let unit = HeldUnit::take(&self.held, &self.freed);
                         let stream = run::hold(client.clone(), taken, self.run_limits);
                         tokio::spawn(async move {
+                            let _unit = unit;
                             stream.await;
-                            held.fetch_sub(1, Ordering::SeqCst);
-                            freed.notify_one();
                         });
                     }
                 }

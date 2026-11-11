@@ -106,6 +106,7 @@ pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits)
     let Some((host, exited)) = load(package, outbound, limits) else {
         return;
     };
+    let host = StopsOnDrop(host);
     while let Ok(Some(RunResponse {
         message: Some(message),
     })) = inbound.message().await
@@ -115,8 +116,8 @@ pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits)
             run_response::Message::Committed(committed) => {
                 host.committed(committed.request_number);
             }
-            run_response::Message::ToolResult(result) => {
-                if !host.tool_result(result) {
+            run_response::Message::InvocationResult(result) => {
+                if !host.invocation_result(result) {
                     break;
                 }
             }
@@ -127,8 +128,26 @@ pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits)
     }
     // A Program still running ends with its stream; #2898 reopens it instead.
     // The unit frees once its isolate is gone.
-    host.stop();
+    drop(host);
     drop(exited.await);
+}
+
+/// Stops the Program when dropped, so one whose stream task ends without
+/// reaching its last line, even by a panic, never waits on the stream.
+struct StopsOnDrop(Arc<RunHost>);
+
+impl std::ops::Deref for StopsOnDrop {
+    type Target = RunHost;
+
+    fn deref(&self) -> &RunHost {
+        &self.0
+    }
+}
+
+impl Drop for StopsOnDrop {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
 }
 
 /// Checks `package` and starts its Program's thread, which loads it. `None`

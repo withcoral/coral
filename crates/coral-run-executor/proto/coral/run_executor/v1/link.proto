@@ -134,7 +134,7 @@ message RunResponse {
     // The highest request number committed.
     Committed committed = 3;
     // The answer to one Invoke.
-    ToolResult tool_result = 4;
+    InvocationResult invocation_result = 4;
     // A recorded termination: stop the Program.
     Terminate terminate = 5;
     // Coral's last message on the stream.
@@ -191,7 +191,10 @@ message LinkedSnapshot {
   string saved_function_id = 2;
 }
 
-// The package is loaded; the Run Executor waits for Started.
+// The package is loaded; the Run Executor waits for Started. A script the
+// isolate cannot load gets Finish as request 1 in place of Loaded, and a
+// Terminate before Started gets Finish as request 1: the Program never ran.
+// A package that breaks the protocol closes the stream instead.
 message Loaded {}
 
 // The Run started.
@@ -216,7 +219,7 @@ message Request {
   uint64 number = 1;
   // What the Program asks.
   oneof kind {
-    // A Tool Invocation, which ToolResult answers.
+    // A Tool Invocation, which InvocationResult answers.
     Invoke invoke = 2;
     // A Program Emission.
     Emit emit = 3;
@@ -292,7 +295,7 @@ message Finish {
   }
 }
 
-// A Program failure.
+// A Run failure.
 message Failure {
   // The Run failure code, such as `program_rejected`.
   string code = 1;
@@ -321,7 +324,7 @@ enum FinishEnd {
 }
 
 // The answer to one Invoke, at Applied.
-message ToolResult {
+message InvocationResult {
   // The Invoke's request number.
   uint64 number = 1;
   // The Run Output Budget bytes Coral counted for the result.
@@ -332,8 +335,8 @@ message ToolResult {
     string result_json = 3;
     // A Coral Failure.
     Rejection rejection = 4;
-    // A complete upstream outcome that is not a declared success.
-    UpstreamError upstream_error = 5;
+    // An Upstream Outcome that is not a Declared Success.
+    UpstreamOutcome upstream_outcome = 5;
     // A host failure: the Program stops without a catchable result.
     Fatal fatal = 6;
   }
@@ -351,8 +354,8 @@ message Rejection {
   repeated string suggestions = 4;
 }
 
-// An upstream outcome the Program catches as a `ToolError`.
-message UpstreamError {
+// An Upstream Outcome the Program catches as a `ToolError`.
+message UpstreamOutcome {
   // Its stable code.
   string code = 1;
   // Its safe message.

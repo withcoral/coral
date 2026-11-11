@@ -178,7 +178,7 @@ pub mod run_response {
         Committed(super::Committed),
         /// The answer to one Invoke.
         #[prost(message, tag = "4")]
-        ToolResult(super::ToolResult),
+        InvocationResult(super::InvocationResult),
         /// A recorded termination: stop the Program.
         #[prost(message, tag = "5")]
         Terminate(super::Terminate),
@@ -252,7 +252,10 @@ pub struct LinkedSnapshot {
     #[prost(string, tag = "2")]
     pub saved_function_id: ::prost::alloc::string::String,
 }
-/// The package is loaded; the Run Executor waits for Started.
+/// The package is loaded; the Run Executor waits for Started. A script the
+/// isolate cannot load gets Finish as request 1 in place of Loaded, and a
+/// Terminate before Started gets Finish as request 1: the Program never ran.
+/// A package that breaks the protocol closes the stream instead.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Loaded {}
 /// The Run started.
@@ -289,7 +292,7 @@ pub mod request {
     /// What the Program asks.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Kind {
-        /// A Tool Invocation, which ToolResult answers.
+        /// A Tool Invocation, which InvocationResult answers.
         #[prost(message, tag = "2")]
         Invoke(super::Invoke),
         /// A Program Emission.
@@ -375,7 +378,7 @@ pub mod finish {
         End(i32),
     }
 }
-/// A Program failure.
+/// A Run failure.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Failure {
     /// The Run failure code, such as `program_rejected`.
@@ -390,7 +393,7 @@ pub struct Failure {
 }
 /// The answer to one Invoke, at Applied.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ToolResult {
+pub struct InvocationResult {
     /// The Invoke's request number.
     #[prost(uint64, tag = "1")]
     pub number: u64,
@@ -398,11 +401,11 @@ pub struct ToolResult {
     #[prost(uint64, tag = "2")]
     pub bytes: u64,
     /// The outcome.
-    #[prost(oneof = "tool_result::Outcome", tags = "3, 4, 5, 6")]
-    pub outcome: ::core::option::Option<tool_result::Outcome>,
+    #[prost(oneof = "invocation_result::Outcome", tags = "3, 4, 5, 6")]
+    pub outcome: ::core::option::Option<invocation_result::Outcome>,
 }
-/// Nested message and enum types in `ToolResult`.
-pub mod tool_result {
+/// Nested message and enum types in `InvocationResult`.
+pub mod invocation_result {
     /// The outcome.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Outcome {
@@ -412,9 +415,9 @@ pub mod tool_result {
         /// A Coral Failure.
         #[prost(message, tag = "4")]
         Rejection(super::Rejection),
-        /// A complete upstream outcome that is not a declared success.
+        /// An Upstream Outcome that is not a Declared Success.
         #[prost(message, tag = "5")]
-        UpstreamError(super::UpstreamError),
+        UpstreamOutcome(super::UpstreamOutcome),
         /// A host failure: the Program stops without a catchable result.
         #[prost(message, tag = "6")]
         Fatal(super::Fatal),
@@ -436,9 +439,9 @@ pub struct Rejection {
     #[prost(string, repeated, tag = "4")]
     pub suggestions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// An upstream outcome the Program catches as a `ToolError`.
+/// An Upstream Outcome the Program catches as a `ToolError`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UpstreamError {
+pub struct UpstreamOutcome {
     /// Its stable code.
     #[prost(string, tag = "1")]
     pub code: ::prost::alloc::string::String,

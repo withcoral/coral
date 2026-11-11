@@ -6,8 +6,9 @@ use tokio::sync::oneshot;
 use super::*;
 use crate::testing::{Answer, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
-    Committed, Emit, Ended, Finish, FinishEnd, Invoke, Loaded, Location, Log, LogLevel, Rejection,
-    Request, RunEnd, Started, Terminate, TerminateReason, ToolResult, finish, request, tool_result,
+    Committed, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult, Invoke, Loaded, Location,
+    Log, LogLevel, Rejection, Request, RunEnd, Started, Terminate, TerminateReason,
+    UpstreamOutcome, finish, invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
@@ -32,19 +33,14 @@ fn compiled(source: &str) -> Package {
     package(program.javascript(), program.source_map())
 }
 
-/// Takes one Run, answers its Open with `package` and its Loaded with
-/// Started.
-async fn started(
-    coral: &mut ScriptedCoral,
-    package: Package,
-    cpu_budget_ms: Option<u64>,
-) -> RunCall {
-    coral.take("run-1", "claim-1");
+/// Takes Run `run_id` and answers its Open with `package`, which loads.
+async fn loaded(coral: &mut ScriptedCoral, run_id: &str, package: Package) -> RunCall {
+    coral.take(run_id, "claim-1");
     let mut run = coral.next_run().await;
     assert_eq!(
         run.open,
         Open {
-            run_id: "run-1".to_owned(),
+            run_id: run_id.to_owned(),
             claim_id: "claim-1".to_owned(),
             protocol_level: PROTOCOL_LEVEL,
         }
@@ -54,6 +50,17 @@ async fn started(
         run.next().await,
         Some(run_request::Message::Loaded(Loaded {}))
     );
+    run
+}
+
+/// Takes one Run, answers its Open with `package` and its Loaded with
+/// Started.
+async fn started(
+    coral: &mut ScriptedCoral,
+    package: Package,
+    cpu_budget_ms: Option<u64>,
+) -> RunCall {
+    let run = loaded(coral, "run-1", package).await;
     let started = Started {
         deadline_ms: 60_000,
         cpu_budget_ms,
@@ -93,16 +100,16 @@ fn emit(value_json: &str, line: u32) -> request::Kind {
     })
 }
 
-fn result(number: u64, bytes: u64, outcome: tool_result::Outcome) -> run_response::Message {
-    run_response::Message::ToolResult(ToolResult {
+fn result(number: u64, bytes: u64, outcome: invocation_result::Outcome) -> run_response::Message {
+    run_response::Message::InvocationResult(InvocationResult {
         number,
         bytes,
         outcome: Some(outcome),
     })
 }
 
-/// Catches: requests numbered out of the Program's order, a `ToolResult` that
-/// settles the wrong Invoke, or a unit that `Ended` never frees.
+/// Catches: requests numbered out of the Program's order, an `InvocationResult`
+/// that settles the wrong Invoke, or a unit that `Ended` never frees.
 #[tokio::test]
 async fn a_program_invokes_emits_logs_and_returns_in_numbered_order() {
     let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
@@ -146,10 +153,14 @@ return issue.id;"#;
         trace_id: String::new(),
         suggestions: Vec::new(),
     };
-    run.send(result(2, 0, tool_result::Outcome::Rejection(rejection)))
-        .await;
+    run.send(result(
+        2,
+        0,
+        invocation_result::Outcome::Rejection(rejection),
+    ))
+    .await;
     let issue = r#"{"id":7,"title":"Ship it"}"#.to_owned();
-    run.send(result(1, 26, tool_result::Outcome::ResultJson(issue)))
+    run.send(result(1, 26, invocation_result::Outcome::ResultJson(issue)))
         .await;
     assert_eq!(next_request(&mut run).await, (3, emit(r#""Ship it""#, 5)));
     let log = request::Kind::Log(Log {
@@ -175,6 +186,44 @@ return issue.id;"#;
     assert_eq!(coral.next_room().await, 2, "Ended frees the Run's unit");
 }
 
+/// Catches: an Upstream Outcome the Program cannot catch, or a host failure
+/// it can.
+#[tokio::test]
+async fn an_invocation_result_settles_its_invoke_by_its_outcome() {
+    let source = r"try { return await coral.providers.tracker.issues.get({ id: 7 }); }
+catch (error) { return error.code; }";
+    let upstream = UpstreamOutcome {
+        code: "upstream_not_found".to_owned(),
+        message: "The Tool's upstream answered 404".to_owned(),
+        outcome_json: r#"{"status":404,"data":{},"metadata":{}}"#.to_owned(),
+    };
+    let caught = finish(finish::Completion::ValueJson(
+        r#""upstream_not_found""#.to_owned(),
+    ));
+    for (case, outcome, end) in [
+        (
+            "an Upstream Outcome",
+            invocation_result::Outcome::UpstreamOutcome(upstream),
+            caught,
+        ),
+        (
+            "a host failure",
+            invocation_result::Outcome::Fatal(Fatal {}),
+            finish_end(FinishEnd::HostTerminated),
+        ),
+    ] {
+        let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+        let mut run = started(&mut coral, compiled(source), None).await;
+        let (number, kind) = next_request(&mut run).await;
+        assert!(
+            matches!((number, &kind), (1, request::Kind::Invoke(_))),
+            "{case}: {kind:?}"
+        );
+        run.send(result(1, 0, outcome)).await;
+        assert_eq!(next_request(&mut run).await, (2, end), "{case}");
+    }
+}
+
 /// Catches: an Emission or Log over the package's limits that reaches Coral,
 /// or one the Program cannot catch.
 #[tokio::test]
@@ -193,8 +242,8 @@ return caught;"#;
     assert_eq!(next_request(&mut run).await, (1, value));
 }
 
-/// Catches: an Output Budget that leaves out a `ToolResult`'s bytes, or an end
-/// the Program can catch.
+/// Catches: an Output Budget that leaves out an `InvocationResult`'s bytes,
+/// or an end the Program can catch.
 #[tokio::test]
 async fn output_over_the_run_output_budget_ends_the_run() {
     let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
@@ -209,7 +258,7 @@ return "kept";"#;
     run.send(result(
         1,
         5,
-        tool_result::Outcome::ResultJson("[]".to_owned()),
+        invocation_result::Outcome::ResultJson("[]".to_owned()),
     ))
     .await;
     // 5 + 7 bytes fit in 20; 12 more do not, but without the result's 5
@@ -240,8 +289,8 @@ async fn a_final_value_counts_against_the_run_output_budget() {
     }
 }
 
-/// Catches: an Applied cap that counts Invokes, a Program that sends past it,
-/// or one that a Committed never releases.
+/// Catches: an Applied cap that counts Invokes, a Program that sends past it
+/// (its Finish included), or one that a Committed never releases.
 #[tokio::test]
 async fn the_applied_cap_holds_the_next_request_until_committed() {
     let (mut coral, _retire) = linked(8).await;
@@ -249,6 +298,7 @@ async fn the_applied_cap_holds_the_next_request_until_committed() {
   coral.providers.tracker.issues.get({ id, note: "longer than the cap" })));
 await coral.emit("123456789");
 console.info("next");
+await coral.emit("123456789");
 return 1;"#;
     let mut run = started(&mut coral, compiled(source), None).await;
     // Each Invoke is longer than the cap of 8, but counts no output: none waits.
@@ -261,7 +311,7 @@ return 1;"#;
         run.send(result(
             number,
             0,
-            tool_result::Outcome::ResultJson("{}".to_owned()),
+            invocation_result::Outcome::ResultJson("{}".to_owned()),
         ))
         .await;
     }
@@ -278,8 +328,16 @@ return 1;"#;
         matches!((number, &kind), (5, request::Kind::Log(log)) if log.message == "next"),
         "{kind:?}"
     );
+    assert_eq!(next_request(&mut run).await, (6, emit(r#""123456789""#, 5)));
+    // Finish waits for the cap like any other request.
+    let held = tokio::time::timeout(Duration::from_millis(300), run.next()).await;
+    assert!(held.is_err(), "Finish waits, got {held:?}");
+    run.send(run_response::Message::Committed(Committed {
+        request_number: 6,
+    }))
+    .await;
     let value = finish(finish::Completion::ValueJson("1".to_owned()));
-    assert_eq!(next_request(&mut run).await, (6, value));
+    assert_eq!(next_request(&mut run).await, (7, value));
 }
 
 /// Catches: a Terminate that leaves a waiting Program blocked, or one that
@@ -308,6 +366,46 @@ try { console.info("held"); } finally { await coral.emit("finally"); }"#,
         let end = finish_end(FinishEnd::HostTerminated);
         assert_eq!(next_request(&mut run).await, (2, end), "{waits_on}");
     }
+}
+
+/// Catches: a `Loaded` for a package that did not load, or a Program that
+/// runs without `Started`.
+#[tokio::test]
+async fn a_run_that_never_starts_finishes_as_request_one() {
+    let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+
+    // A script the isolate cannot compile: Finish in place of Loaded.
+    let mut broken = compiled("return 1;");
+    broken.script = "return (".to_owned();
+    broken.sha256 = package_digest(&broken.script, &broken.source_map);
+    coral.take("run-1", "claim-1");
+    let mut run = coral.next_run().await;
+    run.send(run_response::Message::Package(broken)).await;
+    assert!(
+        matches!(
+            next_request(&mut run).await,
+            (
+                1,
+                request::Kind::Finish(Finish {
+                    completion: Some(finish::Completion::Failure(_))
+                })
+            )
+        ),
+        "the load failure is request 1, with no Loaded before it"
+    );
+
+    // A Terminate after Loaded: Finish in place of Started.
+    let mut run = loaded(&mut coral, "run-2", compiled(r#"await coral.emit("ran");"#)).await;
+    let terminate = Terminate {
+        reason: TerminateReason::Canceled.into(),
+    };
+    run.send(run_response::Message::Terminate(terminate)).await;
+    let end = finish_end(FinishEnd::HostTerminated);
+    assert_eq!(
+        next_request(&mut run).await,
+        (1, end),
+        "the Program never ran"
+    );
 }
 
 /// How a case breaks a loadable package.
@@ -344,6 +442,8 @@ async fn a_package_that_breaks_the_protocol_closes_the_stream() {
         assert_eq!(run.next().await, None, "{case}: nothing loads");
         assert_eq!(coral.next_room().await, 2, "{case}: the unit frees");
     }
+    // The package each case breaks loads as it is.
+    loaded(&mut coral, "run-loadable", loadable).await;
 }
 
 /// Catches: a Program over its Run CPU Budget that ends any other way.

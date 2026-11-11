@@ -1,6 +1,6 @@
 //! The Program's host on a Run Executor. It numbers the Program's requests
 //! and sends them on the Run stream. It settles Emissions and Logs itself,
-//! and holds each Invoke until its `ToolResult`.
+//! and holds each Invoke until its `InvocationResult`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
 use crate::wire::v1::{
-    Emit, Failure, Finish, FinishEnd, Invoke, Location, Log, LogLevel, Request, RunRequest,
-    Started, ToolResult, finish, request, run_request, tool_result,
+    Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, Location, Log, LogLevel, Request,
+    RunRequest, Started, finish, invocation_result, request, run_request,
 };
 
 type Answer = oneshot::Sender<Result<String, ToolHostError>>;
@@ -52,7 +52,7 @@ struct State {
     unconfirmed: BTreeMap<u64, usize>,
     /// The sum of `unconfirmed`'s weights.
     unconfirmed_bytes: usize,
-    /// Each Invoke that waits for its `ToolResult`.
+    /// Each Invoke that waits for its `InvocationResult`.
     invocations: HashMap<u64, Answer>,
 }
 
@@ -112,7 +112,7 @@ impl RunHost {
     /// Settles the Invoke `result` answers, and counts its bytes against the
     /// Run Output Budget. `false` when it breaks the protocol: no outcome, or
     /// no Invoke waits for it while the Program runs.
-    pub(super) fn tool_result(&self, result: ToolResult) -> bool {
+    pub(super) fn invocation_result(&self, result: InvocationResult) -> bool {
         let mut state = self.state();
         let Some(outcome) = result.outcome else {
             return false;
@@ -130,19 +130,19 @@ impl RunHost {
                 self.stop();
                 Err(ToolHostError::Fatal)
             }
-            tool_result::Outcome::ResultJson(json) => Ok(json),
-            tool_result::Outcome::Rejection(rejection) => Err(ToolHostError::Rejected {
+            invocation_result::Outcome::ResultJson(json) => Ok(json),
+            invocation_result::Outcome::Rejection(rejection) => Err(ToolHostError::Rejected {
                 code: rejection.code.into(),
                 message: rejection.message.into(),
                 trace_id: Some(rejection.trace_id).filter(|id| !id.is_empty()),
                 suggestions: rejection.suggestions,
             }),
-            tool_result::Outcome::UpstreamError(upstream) => Err(ToolHostError::Upstream {
+            invocation_result::Outcome::UpstreamOutcome(upstream) => Err(ToolHostError::Upstream {
                 code: upstream.code.into(),
                 message: upstream.message.into(),
                 outcome_json: upstream.outcome_json,
             }),
-            tool_result::Outcome::Fatal(_) => {
+            invocation_result::Outcome::Fatal(_) => {
                 // The Program may be running JavaScript that never polls
                 // this Tool.
                 self.stop();
@@ -185,13 +185,7 @@ impl RunHost {
     /// `bytes` against the Run Output Budget and the Applied cap. `false` when
     /// the Program must stop instead.
     fn send(&self, kind: request::Kind, bytes: usize, answer: Option<Answer>) -> bool {
-        let mut state = self.state();
-        while state.unconfirmed_bytes > self.applied_cap_bytes && !state.stopped {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
+        let mut state = self.below_applied_cap();
         if state.stopped {
             return false;
         }
@@ -213,16 +207,35 @@ impl RunHost {
         true
     }
 
+    /// The state once no more than the Applied cap is above the committed
+    /// watermark, or the Program stopped.
+    fn below_applied_cap(&self) -> MutexGuard<'_, State> {
+        self.wait_until(|state| state.unconfirmed_bytes <= self.applied_cap_bytes)
+    }
+
+    /// The state once `done` holds or the Program stopped.
+    fn wait_until(&self, done: impl Fn(&State) -> bool) -> MutexGuard<'_, State> {
+        let mut state = self.state();
+        while !done(&state) && !state.stopped {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state
+    }
+
     /// Whether `bytes` more output fit in the Run Output Budget.
     fn fits(&self, state: &State, bytes: usize) -> bool {
         state.output.saturating_add(bytes) <= self.value_limits.run_output_bytes()
     }
 
-    /// Numbers and sends `Finish`, which goes at once. A Final Value counts
-    /// against the Run Output Budget too: one that does not fit ends the Run
-    /// with the output-budget end. Nothing is counted after it.
+    /// Numbers and sends `Finish` once the Applied cap lets it go, or at once
+    /// when the Program stopped. A Final Value counts against the Run Output
+    /// Budget too: one that does not fit ends the Run with the output-budget
+    /// end. Nothing is counted after it.
     fn finish(&self, completion: finish::Completion) {
-        let mut state = self.state();
+        let mut state = self.below_applied_cap();
         let completion = match completion {
             finish::Completion::ValueJson(json) if !self.fits(&state, json.len()) => {
                 finish::Completion::End(FinishEnd::OutputBudget.into())
@@ -337,14 +350,7 @@ impl coral_v8::ProgramHost for RunHost {
         drop(self.outbound.send(RunRequest {
             message: Some(run_request::Message::Loaded(crate::wire::v1::Loaded {})),
         }));
-        let mut state = self.state();
-        while !state.started && !state.stopped {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-        !state.stopped
+        !self.wait_until(|state| state.started).stopped
     }
 
     fn invoke(
