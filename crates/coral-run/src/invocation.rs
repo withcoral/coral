@@ -380,7 +380,7 @@ impl ToolInvoker {
                 progress,
                 slot,
                 trace,
-                _open_in_parent: child,
+                open_in_parent: child,
             }),
             Err(error) => {
                 trace.end(Err(&error));
@@ -1628,7 +1628,7 @@ pub(crate) struct PerformedCall {
     trace: crate::trace::InvocationTrace,
     /// This call as a child of the body that made it: dropping it, once
     /// the call has ended, lets that body's call end.
-    _open_in_parent: Option<OpenChild>,
+    open_in_parent: Option<OpenChild>,
 }
 
 impl PerformedCall {
@@ -1646,8 +1646,8 @@ impl PerformedCall {
     ///
     /// The body ends on this call, so its leftover work starts no child
     /// from here on. The Invocation ends only after the children it
-    /// started, unless the Run stops first, which ends it as
-    /// `run_terminated`.
+    /// started, unless the Run stops or the Program ends first, which ends
+    /// it as `run_terminated`.
     pub(crate) fn complete(
         self,
         outcome: coral_v8::ToolBodyOutcome,
@@ -1655,10 +1655,16 @@ impl PerformedCall {
         self.body.end();
         async move {
             let stopped = tokio::select! {
-                () = self.body.children_ended() => false,
+                biased;
                 () = self.invoker.stop.requested() => true,
+                // A child the Program dropped uncompleted ended because the
+                // Program did, so this call ends with it.
+                abandoned = self.body.children_ended() => abandoned,
             };
-            if stopped {
+            // A stop ends the Program, which drops this call's children,
+            // before it wakes this wait. So the children can end first:
+            // read the request itself.
+            if stopped || self.invoker.stop.is_requested() {
                 self.abandon();
                 return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
             }
@@ -1725,6 +1731,9 @@ impl PerformedCall {
     /// chunk, which the Program's end reaches only after this. A Run that
     /// commits nothing more ends it with its termination instead.
     pub(crate) fn abandon(self) {
+        if let Some(parent) = &self.open_in_parent {
+            parent.0.abandon_child();
+        }
         // Inside the Invocation's span, so that its end marks this one.
         let span = self.admitted.span.clone();
         span.in_scope(|| {
@@ -1754,6 +1763,8 @@ pub(crate) struct ToolBody {
 struct BodyState {
     ended: bool,
     open_children: usize,
+    /// A child ended because the Program ended before its body did.
+    child_abandoned: bool,
 }
 
 impl ToolBody {
@@ -1782,11 +1793,18 @@ impl ToolBody {
         self.state.send_modify(|state| state.ended = true);
     }
 
-    async fn children_ended(&self) {
+    /// Waits for the last open child, and returns whether a child was
+    /// abandoned.
+    async fn children_ended(&self) -> bool {
         // The sender lives as long as `self`, so the wait ends only on the
         // last child.
         let mut state = self.state.subscribe();
-        let _ended = state.wait_for(|state| state.open_children == 0).await;
+        let ended = state.wait_for(|state| state.open_children == 0).await;
+        ended.is_ok_and(|state| state.child_abandoned)
+    }
+
+    fn abandon_child(&self) {
+        self.state.send_modify(|state| state.child_abandoned = true);
     }
 }
 
