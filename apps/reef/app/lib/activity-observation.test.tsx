@@ -373,6 +373,7 @@ const invocation = {
   outcome: 'unknown' as const,
   dispatchedAt: null,
   waitingNanos: '1',
+  toolKind: 'provider' as const,
 }
 const first = 'workspaces/w/approvals/first'
 const second = 'workspaces/w/approvals/second'

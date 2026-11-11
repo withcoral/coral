@@ -134,19 +134,19 @@ pub mod compile {
     /// result.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
-        /// Find the Saved Functions each source calls and the Tool Call Paths it
-        /// names, so Coral can load and check them before it compiles. Answered
-        /// with Analyzed.
+        /// Find the Private and Shared Tools each source calls and the Tool Call
+        /// Paths it names, so Coral can load and check them before it compiles.
+        /// Answered with Analyzed.
         #[prost(message, tag = "3")]
         Analyze(super::Analyze),
-        /// Compile a Program body, with the Saved Functions it calls, into the
-        /// JavaScript a Run executes. Answered with Package.
+        /// Compile a Program body, with the Private and Shared Tools it links,
+        /// into the JavaScript a Run executes. Answered with Package.
         #[prost(message, tag = "4")]
         Compile(super::ProgramSource),
-        /// Check a Saved Function's source when it is saved, and produce its type
-        /// declaration and diagnostics. Answered with Prepared.
+        /// Check an Authored Tool's source when it is saved or published, and
+        /// produce its type declaration and diagnostics. Answered with Prepared.
         #[prost(message, tag = "5")]
-        Prepare(super::SavedFunctionSource),
+        Prepare(super::AuthoredToolSource),
     }
 }
 /// The answer to one Compile.
@@ -191,21 +191,21 @@ pub struct Analyze {
 /// One source to analyze.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AnalyzedSource {
-    /// The source, and whether it is a Program body or a Saved Function.
+    /// The source, and whether it is a Program body or an Authored Tool.
     #[prost(oneof = "analyzed_source::Source", tags = "1, 2")]
     pub source: ::core::option::Option<analyzed_source::Source>,
 }
 /// Nested message and enum types in `AnalyzedSource`.
 pub mod analyzed_source {
-    /// The source, and whether it is a Program body or a Saved Function.
+    /// The source, and whether it is a Program body or an Authored Tool.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Source {
         /// A Program body.
         #[prost(string, tag = "1")]
         Program(::prost::alloc::string::String),
-        /// A Saved Function module.
+        /// An Authored Tool module: a Private or a Shared Tool.
         #[prost(string, tag = "2")]
-        SavedFunction(::prost::alloc::string::String),
+        AuthoredTool(::prost::alloc::string::String),
     }
 }
 /// What each source names, in the order of the sources.
@@ -215,17 +215,20 @@ pub struct Analyzed {
     #[prost(message, repeated, tag = "1")]
     pub sources: ::prost::alloc::vec::Vec<SourceReferences>,
 }
-/// The Saved Functions one source calls, and the Tool Call Paths it names.
-/// Analysis resolves no Tool.
+/// The Private and Shared Tools one source calls, and the Tool Call Paths it
+/// names. Analysis resolves no Tool.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SourceReferences {
-    /// The coral.functions references, in path order.
+    /// The coral.private references, in path order.
     #[prost(message, repeated, tag = "1")]
-    pub functions: ::prost::alloc::vec::Vec<Reference>,
-    /// Every prefix of a literal coral.providers or coral.workspace chain that
-    /// could be a Tool Call Path.
+    pub private_tools: ::prost::alloc::vec::Vec<Reference>,
+    /// Every prefix of a literal Tool chain under coral that could be a Tool
+    /// Call Path.
     #[prost(string, repeated, tag = "2")]
     pub tool_call_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The coral.shared references, in path order.
+    #[prost(message, repeated, tag = "3")]
+    pub shared_tools: ::prost::alloc::vec::Vec<Reference>,
 }
 /// Why analyze stopped.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -237,28 +240,35 @@ pub struct AnalysisFailure {
     #[prost(message, optional, tag = "2")]
     pub failure: ::core::option::Option<CompileFailure>,
 }
-/// A Program body, the Saved Functions it links, and the Tools it may call.
+/// A Program body, the Private and Shared Tools it links, and the Tools it may
+/// call.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProgramSource {
     /// The Program body.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
-    /// The linked Saved Functions, in the order they initialize.
+    /// The linked Private and Shared Tools, in the order they initialize.
     #[prost(message, repeated, tag = "2")]
-    pub saved_functions: ::prost::alloc::vec::Vec<LinkedSavedFunction>,
+    pub linked_tools: ::prost::alloc::vec::Vec<LinkedTool>,
     /// The Call Paths the caller can call. Unset: the calls are not checked.
     #[prost(message, optional, tag = "3")]
     pub callable: ::core::option::Option<Callable>,
+    /// The Tool Keys of the Built-in Tools the Program calls on coral.
+    #[prost(string, repeated, tag = "4")]
+    pub builtin_tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// One Saved Function source linked into a Program.
+/// One Private or Shared Tool source linked into a Program.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct LinkedSavedFunction {
-    /// Its path under coral.functions.
+pub struct LinkedTool {
+    /// Its path under its root.
     #[prost(string, repeated, tag = "1")]
     pub path_segments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Its module source.
     #[prost(string, tag = "2")]
     pub source: ::prost::alloc::string::String,
+    /// The member of coral that holds it.
+    #[prost(enumeration = "LinkedToolRoot", tag = "3")]
+    pub root: i32,
 }
 /// The complete Call Paths the caller can call.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -267,15 +277,18 @@ pub struct Callable {
     #[prost(string, repeated, tag = "1")]
     pub call_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// One Saved Function module to prepare.
+/// One Authored Tool module to prepare.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SavedFunctionSource {
+pub struct AuthoredToolSource {
     /// The module source.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
     /// What types the coral namespace. Unset: it stays untyped.
     #[prost(message, optional, tag = "2")]
     pub declarations: ::core::option::Option<Declarations>,
+    /// The Tool Keys of the Built-in Tools on coral.
+    #[prost(string, repeated, tag = "3")]
+    pub builtin_tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// The declarations that type the coral namespace for one save.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -283,12 +296,16 @@ pub struct Declarations {
     /// Above this size, a typed declaration is saved untyped.
     #[prost(uint64, tag = "1")]
     pub declaration_max_bytes: u64,
-    /// Types coral.providers and coral.workspace. Unset: they stay untyped.
+    /// Types coral.providers and the Built-in Tools on coral. Unset: they stay
+    /// untyped.
     #[prost(message, optional, tag = "2")]
     pub tools: ::core::option::Option<CallableDeclarations>,
-    /// Types coral.functions. Unset: it stays untyped.
+    /// Types coral.private. Unset: it stays untyped.
     #[prost(message, optional, tag = "3")]
-    pub functions: ::core::option::Option<CallableDeclarations>,
+    pub private_tools: ::core::option::Option<CallableDeclarations>,
+    /// Types coral.shared. Unset: it stays untyped.
+    #[prost(message, optional, tag = "4")]
+    pub shared_tools: ::core::option::Option<CallableDeclarations>,
 }
 /// The declarations that type one part of the coral namespace.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -300,18 +317,18 @@ pub struct CallableDeclarations {
 /// The declaration that types one Call Path.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CallableDeclaration {
-    /// The path, relative to coral for a Tool and to coral.functions for a
-    /// Saved Function.
+    /// The path, relative to coral for a Tool, to coral.private for a Private
+    /// Tool and to coral.shared for a Shared Tool.
     #[prost(string, repeated, tag = "1")]
     pub path_segments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Self-contained TypeScript with one default export.
     #[prost(string, tag = "2")]
     pub declaration: ::prost::alloc::string::String,
 }
-/// One statically named Saved Function reference.
+/// One statically named Private or Shared Tool reference.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Reference {
-    /// The dotted path relative to coral.functions.
+    /// The dotted path relative to its root.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
     /// The one-based authored line.
@@ -321,12 +338,16 @@ pub struct Reference {
     #[prost(uint64, tag = "3")]
     pub column: u64,
 }
-/// The called chains that name no Tool the caller can call.
+/// The called chains of one source that name no Tool the caller can call.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnknownToolCalls {
     /// The chains, in source order.
     #[prost(message, repeated, tag = "1")]
     pub calls: ::prost::alloc::vec::Vec<UnknownToolCall>,
+    /// The source: the index of the linked Tool among those compiled with the
+    /// Program. Unset: the Program body.
+    #[prost(uint64, optional, tag = "2")]
+    pub linked: ::core::option::Option<u64>,
 }
 /// One called chain that names no Tool the caller can call.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -359,7 +380,7 @@ pub struct Package {
     #[prost(message, repeated, tag = "4")]
     pub diagnostics: ::prost::alloc::vec::Vec<Diagnostic>,
 }
-/// One prepared Saved Function.
+/// One prepared Authored Tool.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Prepared {
     /// The self-contained emitted declaration.
@@ -368,9 +389,19 @@ pub struct Prepared {
     /// Advisory diagnostics.
     #[prost(message, repeated, tag = "4")]
     pub diagnostics: ::prost::alloc::vec::Vec<Diagnostic>,
-    /// The Saved Function references the module names, in path order.
+    /// The Private Tool references the module names, in path order.
     #[prost(message, repeated, tag = "5")]
     pub references: ::prost::alloc::vec::Vec<Reference>,
+    /// The Shared Tool references the module names, in path order.
+    #[prost(message, repeated, tag = "6")]
+    pub shared_references: ::prost::alloc::vec::Vec<Reference>,
+    /// The literal Tool chains under coral the module names.
+    #[prost(message, repeated, tag = "7")]
+    pub tool_chains: ::prost::alloc::vec::Vec<ToolChain>,
+    /// Where the declaration's arguments or result hold something other than
+    /// data. Unset: they are all data.
+    #[prost(string, optional, tag = "8")]
+    pub not_data: ::core::option::Option<::prost::alloc::string::String>,
     /// The callable-rooted fields of the declaration, or why there are none.
     #[prost(oneof = "prepared::Projection", tags = "2, 3")]
     pub projection: ::core::option::Option<prepared::Projection>,
@@ -387,6 +418,19 @@ pub mod prepared {
         #[prost(string, tag = "3")]
         Fault(::prost::alloc::string::String),
     }
+}
+/// One literal Tool chain under coral that a module names.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ToolChain {
+    /// The segments relative to coral.
+    #[prost(string, repeated, tag = "1")]
+    pub segments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Whether the module calls it.
+    #[prost(bool, tag = "2")]
+    pub called: bool,
+    /// Whether it was cut before a computed segment.
+    #[prost(bool, tag = "3")]
+    pub computed: bool,
 }
 /// The callable-rooted fields of one declaration.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -442,7 +486,7 @@ pub mod compile_failure {
         /// The compiler rejected the source.
         #[prost(message, tag = "2")]
         Rejected(super::Rejection),
-        /// A coral.functions access names no supported Saved Function path.
+        /// A coral.private or coral.shared access names no supported Tool path.
         #[prost(message, tag = "3")]
         Reference(super::ReferenceRejection),
         /// Compiling passed the compiler's heap limit.
@@ -475,7 +519,7 @@ pub struct Rejection {
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
 }
-/// A coral.functions access that names no supported Saved Function path.
+/// A coral.private or coral.shared access that names no supported Tool path.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReferenceRejection {
     /// The safe reason.
@@ -572,7 +616,7 @@ pub struct RunPackage {
     /// The Run's value limits.
     #[prost(message, optional, tag = "4")]
     pub value_limits: ::core::option::Option<ValueLimits>,
-    /// The Saved Function snapshots linked into the script.
+    /// The Private and Shared Tool snapshots linked into the script.
     #[prost(message, repeated, tag = "5")]
     pub linked_snapshots: ::prost::alloc::vec::Vec<LinkedSnapshot>,
     /// Coral's protocol level.
@@ -598,15 +642,18 @@ pub struct ValueLimits {
     #[prost(uint64, tag = "4")]
     pub run_output_bytes: u64,
 }
-/// One Saved Function snapshot linked into a package.
+/// One Private or Shared Tool snapshot linked into a package.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LinkedSnapshot {
-    /// Its path relative to `coral.functions`, such as `debug.fetch`.
+    /// Its path under its root, such as `debug.fetch`.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
-    /// The snapshot's id, which names it in a source location.
+    /// The Tool's id, which names it in a source location.
     #[prost(string, tag = "2")]
-    pub saved_function_id: ::prost::alloc::string::String,
+    pub tool_id: ::prost::alloc::string::String,
+    /// The member of coral that holds it.
+    #[prost(enumeration = "LinkedToolRoot", tag = "3")]
+    pub root: i32,
 }
 /// The package is loaded; the Run Executor waits for Started. A script the
 /// isolate cannot load gets Finish as request 1 in place of Loaded, and a
@@ -701,15 +748,19 @@ pub struct Log {
 /// An authored source location.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Location {
-    /// The Saved Function snapshot that holds it. Empty: the Program body.
+    /// The id of the linked Tool that holds it. Empty: the Program body.
     #[prost(string, tag = "1")]
-    pub saved_function_id: ::prost::alloc::string::String,
+    pub tool_id: ::prost::alloc::string::String,
     /// The one-based line.
     #[prost(uint32, tag = "2")]
     pub line: u32,
     /// The one-based column, in UTF-16 code units.
     #[prost(uint32, tag = "3")]
     pub column: u32,
+    /// The member of coral that holds the linked Tool. Unspecified: the Program
+    /// body.
+    #[prost(enumeration = "LinkedToolRoot", tag = "4")]
+    pub root: i32,
 }
 /// How the Program ended.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -824,6 +875,39 @@ pub struct Ended {
     /// The end.
     #[prost(enumeration = "RunEnd", tag = "1")]
     pub end: i32,
+}
+/// The member of coral that holds a linked Tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LinkedToolRoot {
+    /// Never sent.
+    Unspecified = 0,
+    /// coral.private: the caller's own Private Tools.
+    Private = 1,
+    /// coral.shared: the Workspace's Shared Tools.
+    Shared = 2,
+}
+impl LinkedToolRoot {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LINKED_TOOL_ROOT_UNSPECIFIED",
+            Self::Private => "LINKED_TOOL_ROOT_PRIVATE",
+            Self::Shared => "LINKED_TOOL_ROOT_SHARED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LINKED_TOOL_ROOT_UNSPECIFIED" => Some(Self::Unspecified),
+            "LINKED_TOOL_ROOT_PRIVATE" => Some(Self::Private),
+            "LINKED_TOOL_ROOT_SHARED" => Some(Self::Shared),
+            _ => None,
+        }
+    }
 }
 /// A TypeScript diagnostic category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

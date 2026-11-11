@@ -12,11 +12,11 @@
 //! responses: the top-level field names of an object, named or not, when
 //! they fit, and the types by name otherwise. An MCP-backed Tool without a
 //! declared output shows that its result is text, usually JSON, in
-//! `data.content[0].text`. A Saved Function's result is shown as its input
+//! `data.content[0].text`. An Authored Tool's result is shown as its input
 //! is: an object's members one level deep, named or not. The line looks
 //! inside the result's `Promise` and one level of array. The compiler infers
-//! most Saved Function results, so they have no name to show. A result
-//! object the line does not show is the marker `{…}`, and a Saved Function
+//! most Authored Tool results, so they have no name to show. A result
+//! object the line does not show is the marker `{…}`, and an Authored Tool
 //! result type the line cannot read is the marker `…`.
 //!
 //! The line is at most [`SIGNATURE_LINE_MAX_BYTES`]. The result keeps up to
@@ -83,15 +83,15 @@ pub(crate) enum Callable<'a> {
     /// one per declared success: `{ data; metadata }` objects, or
     /// `HttpResult` for an HTTP Tool.
     Tool { leaf: &'a str },
-    /// A Saved Function's compiler-emitted declaration with one default
-    /// callable export.
-    SavedFunction { leaf: &'a str },
+    /// An Authored Tool's compiler-emitted declaration with one default
+    /// callable export: a Private Tool's or a Shared Tool's.
+    AuthoredTool { leaf: &'a str },
 }
 
 impl Callable<'_> {
     const fn leaf(&self) -> &str {
         match self {
-            Self::Tool { leaf } | Self::SavedFunction { leaf } => leaf,
+            Self::Tool { leaf } | Self::AuthoredTool { leaf } => leaf,
         }
     }
 }

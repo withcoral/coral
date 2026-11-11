@@ -15,6 +15,11 @@ const TOOL_SCHEMA_NAMES: i64 = 45;
 /// The step that rewrote the stored values that named Operations.
 const TOOL_NAMES: i64 = 46;
 
+/// The first of the steps that make every callable a Tool (ADR 0034).
+/// Together they rename Saved Functions to Private Tools, in the schema and
+/// in the stored values that named them.
+const EVERY_CALLABLE_IS_A_TOOL: i64 = 63;
+
 /// A row in each table that the step renames or rebuilds, and an approval
 /// whose foreign key names a rebuilt table, as an earlier release wrote them.
 const ROWS_BEFORE_TOOL_SCHEMA_NAMES: &str = r#"
@@ -224,12 +229,22 @@ const ROWS_BEFORE_TOOL_NAMES: &str = r#"
            ('scope-limit', FALSE, 1, 'regenerate-scopes', 'workspace', 'provider', 'setup',
             'failed', 'credentials_not_supported',
             'the Provider''s Operations together request more OAuth scopes than one grant can hold', 2);
+    INSERT INTO saved_function_records
+        (id, workspace_id, principal_id, principal_kind, path, description, source, declaration,
+         declaration_fields_format, declaration_fields_status, declaration_fields_json,
+         diagnostics_json, diagnostics_truncated, saved_at_unix_nanos, definition_revision)
+    VALUES ('tool', 'workspace', 'user:upgrade', 'user', 'upgrade.code', 'Return a failure code',
+            'export default async function code() { try { await coral.providers.weather.getForecast({}); } catch (error) { return error instanceof coral.OperationError ? error.code : ''other''; } }',
+            'export default function code(): Promise<string>;',
+            'saved-function-declaration-fields-v1', 'ready', '[]', '[]', FALSE, 2, 1);
 "#;
 
 /// The data step rewrites what Coral wrote about Operations: a Coral failure
 /// a Run or an Invocation kept, a Tool Result's decode diagnostic, a Task's
-/// evidence and each Publication's diagnostic. A Run whose error holds no
-/// Coral failure keeps a Program's own `OperationError` as it was written.
+/// evidence, each Publication's diagnostic and the error class a Saved
+/// Function catches, which the later steps keep as its Private Tool's source.
+/// A Run whose error holds no Coral failure keeps a Program's own
+/// `OperationError` as it was written.
 #[tokio::test]
 async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program_wrote() {
     let before = coral_test_support::migration_plan_before(TOOL_NAMES);
@@ -317,6 +332,242 @@ async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program
                     "scope-limit",
                     "credentials_not_supported",
                     "the Provider's Tools together request more OAuth scopes than one grant can hold",
+                ],
+            ),
+            (
+                "SELECT id, path, source FROM private_tool_records",
+                [
+                    "tool",
+                    "upgrade.code",
+                    "export default async function code() { try { await coral.providers.weather.getForecast({}); } catch (error) { return error instanceof coral.ToolError ? error.code : 'other'; } }",
+                ],
+            ),
+        ],
+    )
+    .await;
+}
+
+/// Rows from the release before Private Tools, in each table that the steps
+/// rename, rebuild or rewrite, holding what Coral wrote about Saved Functions
+/// beside a Program's own text that names one.
+const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
+    INSERT INTO workspace_records
+        (id, display_name, state, lifecycle_version, created_at_unix_nanos, updated_at_unix_nanos)
+    VALUES ('workspace', 'Upgrade', 'active', 1, 1, 1);
+    INSERT INTO provider_generations
+        (id, input_kind, pinned_input, input_digest, credential_contract, schema_graph_json,
+         typescript_view, materializer_version, created_at_unix_nanos)
+    VALUES ('generation', 'openapi', '{}', '0000000000000000000000000000000000000000000000000000000000000000',
+            'none', '{}', 'declare', 'v1', 1);
+    INSERT INTO provider_records
+        (id, workspace_id, display_name, namespace, credential_route, active_generation_id,
+         created_at_unix_nanos)
+    VALUES ('provider', 'workspace', 'Weather', 'weather', 'none', 'generation', 1);
+    INSERT INTO saved_function_records
+        (id, workspace_id, principal_id, principal_kind, path, description, source, declaration,
+         declaration_fields_format, declaration_fields_status, declaration_fields_json,
+         diagnostics_json, diagnostics_truncated, saved_at_unix_nanos, definition_revision)
+    VALUES ('tool', 'workspace', 'user:upgrade', 'user', 'people.greet', 'Greet one person',
+            'export default async function greet() { return "hi"; }',
+            'export default function greet(): Promise<string>;',
+            'saved-function-declaration-fields-v1', 'ready', '[]', '[]', FALSE, 2, 3);
+    INSERT INTO saved_function_lifecycle_events
+        (id, workspace_id, actor_principal_id, actor_principal_kind, action,
+         target_saved_function_id, target_path, outcome, changed_field_paths,
+         occurred_at_unix_nanos, trace_id)
+    VALUES ('event', 'workspace', 'user:upgrade', 'user', 'saved_function.replaced', 'tool',
+            'people.greet', 'accepted', '["source"]', 2, '0123456789abcdef0123456789abcdef');
+    INSERT INTO program_run_records
+        (id, workspace_id, principal_id, principal_kind, state, accepted_at_unix_nanos,
+         deadline_at_unix_nanos, terminal_at_unix_nanos, failure_code, failure_message,
+         failure_error_json, next_event_sequence, accumulated_output_bytes,
+         shutdown_grace_nanos, value_limits_json)
+    VALUES
+        ('run', 'workspace', 'user:upgrade', 'user', 'failed', 1, 9, 5, 'program_failed',
+         'ToolError: Saved Function was not found',
+         '{"name":"ToolError","message":"Saved Function was not found","frames":[{"source":"Saved Function coral.functions.people.greet","line":2,"column":7},{"source":"Program","line":1,"column":1}],"tool":{"code":"saved_function_not_found"}}',
+         3, 0, 0, '{}'),
+        ('program-error', 'workspace', 'user:upgrade', 'user', 'failed', 1, 9, 5,
+         'program_failed', 'Error: Saved Function coral.functions.people.greet broke',
+         '{"name":"Error","message":"Saved Function coral.functions.people.greet broke","frames":[]}',
+         2, 0, 0, '{}');
+    INSERT INTO program_run_saved_function_snapshots
+        (run_id, workspace_id, saved_function_id, path, source)
+    VALUES ('run', 'workspace', 'tool', 'people.greet',
+            'export default async function greet() { return "hi"; }');
+    INSERT INTO tool_invocations
+        (id, workspace_id, run_id, provider_account_setting_version, credential_route, provider_id,
+         provider_generation_id, tool_key, call_path, arguments_json, state,
+         admitted_at_unix_nanos, ended_at_unix_nanos, result_kind, failure_code, failure_message,
+         source_document, source_saved_function_id, source_line, source_column)
+    VALUES ('invocation', 'workspace', 'run', 1, 'none', 'provider', 'generation', 'getForecast',
+            'coral.providers.weather.getForecast', '{}', 'ended', 2, 3, 'coral_failure',
+            'saved_function_not_found', 'Saved Function was not found', 'saved_function', 'tool',
+            2, 7);
+    INSERT INTO program_run_events
+        (workspace_id, run_id, sequence, event_type, occurred_at_unix_nanos, log_level,
+         log_message, output_bytes, source_document, source_saved_function_id, source_line,
+         source_column)
+    VALUES ('workspace', 'run', 1, 'program.logged', 2, 'info', 'saved_function says hi', 22,
+            'saved_function', 'tool', 2, 3);
+    INSERT INTO search_entities
+        (workspace_id, doc_id, kind, saved_function_id, principal_id, principal_kind, call_path,
+         qualified_name, title, description, provider_name, searchable_text, deprecated,
+         fingerprint, indexed_at_unix_nanos)
+    VALUES ('workspace', 'tool', 'saved_function', 'tool', 'user:upgrade', 'user',
+            'coral.functions.people.greet', 'people.greet', 'people.greet', 'Greet one person',
+            'private', 'greet person', FALSE, 'fingerprint', 3);
+    INSERT INTO search_index_states
+        (workspace_id, target_id, kind, saved_function_id, principal_id, principal_kind, state,
+         attempted_at_unix_nanos, error, failed_saved_function_revision)
+    VALUES ('workspace', 'tool', 'saved_function', 'tool', 'user:upgrade', 'user', 'failed', 3,
+            'index failed', 3);
+    INSERT INTO task_records
+        (id, workspace_id, principal_id, principal_kind, intent, started_at_unix_nanos,
+         last_activity_at_unix_nanos)
+    VALUES ('task', 'workspace', 'user:upgrade', 'user', 'Greet people', 1, 1);
+    INSERT INTO task_interactions
+        (id, workspace_id, task_id, principal_id, principal_kind, kind, intent,
+         started_at_unix_nanos, completed_at_unix_nanos, outcome, evidence_json, function_id)
+    VALUES
+        ('save', 'workspace', 'task', 'user:upgrade', 'user', 'save', 'save greet', 1, 2,
+         'succeeded', '{"kind":"saved_function","id":"tool"}', 'tool'),
+        ('search', 'workspace', 'task', 'user:upgrade', 'user', 'search', 'saved_function', 1, 2,
+         'succeeded',
+         '{"kind":"discovery","context":{"kind":"search","query":"saved_function","provider":null,"limit":5},"response":{"hits":[{"kind":"saved_function","call_path":"coral.functions.people.greet"}],"retrievers":[{"retriever":"saved_function","state":"ok"}]}}',
+         NULL),
+        ('rejected', 'workspace', 'task', 'user:upgrade', 'user', 'save', 'save broken', 1, 2,
+         'rejected',
+         '{"kind":"rejected","failure":{"code":"saved_function_admission_failed","message":"bad"}}',
+         NULL),
+        ('refused', 'workspace', 'task', 'user:upgrade', 'user', 'submit', 'run broken', 1, 2,
+         'rejected',
+         '{"kind":"rejected","failure":{"code":"invalid_saved_function_reference","message":"bad"}}',
+         NULL);
+"#;
+
+/// A database from before Saved Functions were Private Tools: the upgrade
+/// renames the tables, columns and stored values that named them, keeps every
+/// row, gives each Private Tool the default Tool Access State `enabled`, and
+/// rewrites what Coral wrote about them: a Coral failure a Run or an
+/// Invocation kept, a stack frame's source, a recorded location's document,
+/// a lifecycle action, a search kind and a Task's evidence. A Program's own
+/// message, log and query keep the old name as they were written.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table names every row the upgrade renames or keeps"
+)]
+async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote() {
+    let before = coral_test_support::migration_plan_before(EVERY_CALLABLE_IS_A_TOOL);
+    let fixture = TestDatabase::new(&before).await.unwrap();
+    fixture
+        .execute_fixture_sql(ROWS_BEFORE_PRIVATE_TOOL_NAMES)
+        .await
+        .unwrap();
+    let database = fixture.database();
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    assert_each_row(
+        &mut transaction,
+        [
+            (
+                "SELECT path, declaration_fields_format, default_access_state \
+                 FROM private_tool_records",
+                ["people.greet", "private-tool-declaration-fields-v1", "enabled"],
+            ),
+            (
+                "SELECT action, target_private_tool_id, trace_id FROM private_tool_lifecycle_events",
+                [
+                    "private_tool.replaced",
+                    "tool",
+                    "0123456789abcdef0123456789abcdef",
+                ],
+            ),
+            (
+                "SELECT run_id, private_tool_id, path FROM program_run_private_tool_snapshots",
+                ["run", "tool", "people.greet"],
+            ),
+            (
+                "SELECT id, failure_message, failure_error_json FROM program_run_records \
+                 WHERE id = 'run'",
+                [
+                    "run",
+                    "ToolError: Private Tool was not found",
+                    r#"{"name":"ToolError","message":"Private Tool was not found","frames":[{"source":"Private Tool coral.private.people.greet","line":2,"column":7},{"source":"Program","line":1,"column":1}],"tool":{"code":"private_tool_not_found"}}"#,
+                ],
+            ),
+            (
+                "SELECT id, failure_message, failure_error_json FROM program_run_records \
+                 WHERE id = 'program-error'",
+                [
+                    "program-error",
+                    "Error: Saved Function coral.functions.people.greet broke",
+                    r#"{"name":"Error","message":"Saved Function coral.functions.people.greet broke","frames":[]}"#,
+                ],
+            ),
+            (
+                "SELECT failure_code, failure_message, source_document FROM tool_invocations",
+                [
+                    "private_tool_not_found",
+                    "Private Tool was not found",
+                    "private_tool",
+                ],
+            ),
+            (
+                "SELECT source_private_tool_id, source_document, log_message \
+                 FROM program_run_events",
+                ["tool", "private_tool", "saved_function says hi"],
+            ),
+            (
+                "SELECT kind, authored_tool_id, fingerprint FROM search_entities",
+                ["private_tool", "tool", "fingerprint"],
+            ),
+            (
+                "SELECT call_path, call_path, call_path FROM search_entities",
+                [
+                    "coral.private.people.greet",
+                    "coral.private.people.greet",
+                    "coral.private.people.greet",
+                ],
+            ),
+            (
+                "SELECT kind, authored_tool_id, CAST(failed_authored_tool_revision AS TEXT) \
+                 FROM search_index_states",
+                ["private_tool", "tool", "3"],
+            ),
+            (
+                "SELECT id, private_tool_id, evidence_json FROM task_interactions \
+                 WHERE id = 'save'",
+                ["save", "tool", r#"{"kind":"private_tool","id":"tool"}"#],
+            ),
+            (
+                "SELECT id, intent, evidence_json FROM task_interactions WHERE id = 'search'",
+                [
+                    "search",
+                    "saved_function",
+                    r#"{"kind":"discovery","context":{"kind":"search","query":"saved_function","provider":null,"limit":5},"response":{"hits":[{"kind":"private_tool","call_path":"coral.functions.people.greet"}],"retrievers":[{"retriever":"private_tool","state":"ok"}]}}"#,
+                ],
+            ),
+            (
+                "SELECT id, kind, evidence_json FROM task_interactions WHERE id = 'rejected'",
+                [
+                    "rejected",
+                    "save",
+                    r#"{"kind":"rejected","failure":{"code":"private_tool_admission_failed","message":"bad"}}"#,
+                ],
+            ),
+            (
+                "SELECT id, kind, evidence_json FROM task_interactions WHERE id = 'refused'",
+                [
+                    "refused",
+                    "submit",
+                    r#"{"kind":"rejected","failure":{"code":"invalid_private_tool_reference","message":"bad"}}"#,
                 ],
             ),
         ],

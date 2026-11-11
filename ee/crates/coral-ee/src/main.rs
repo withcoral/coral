@@ -2,9 +2,6 @@
 
 //! The released Coral binary. It runs exactly like the `coral` binary until
 //! the Edition is Enterprise.
-//!
-//! No Enterprise Feature exists yet, and nothing sets the Edition, so it runs
-//! as the Community Edition.
 
 use std::process::ExitCode;
 

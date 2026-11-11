@@ -50,8 +50,12 @@ coral_failures! {
     ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
-    /// None of the caller's Saved Functions is at the requested path.
-    SavedFunctionNotFound => "saved_function_not_found",
+    /// One of the caller's Private Tools is already at the path.
+    PrivateToolExists => "private_tool_exists",
+    /// None of the caller's Private Tools is at the path.
+    PrivateToolNotFound => "private_tool_not_found",
+    /// The caller's Private Tool is not at the revision the call expected.
+    PrivateToolRevisionConflict => "private_tool_revision_conflict",
     /// Exact Tool policy disables this Invocation.
     ToolDisabled => "tool_disabled",
     /// The retained Credential Route changed.
@@ -81,6 +85,18 @@ coral_failures! {
     ResultTooLarge => "upstream_result_too_large",
     /// The upstream result would exceed the Run's remaining output budget.
     RunOutputTooLarge => "upstream_result_too_large",
+    /// The result of a Tool that Coral performs, a Built-in Tool or one in
+    /// the Program, exceeds its accepted bound. It has no upstream, so only
+    /// its message differs.
+    ToolResultTooLarge => "upstream_result_too_large",
+    /// The body of a Tool that Coral performs in the Program threw.
+    ToolFailed => "tool_failed",
+    /// The body of a Tool that Coral performs in the Program returned a
+    /// value that is not JSON.
+    InvalidToolResult => "invalid_tool_result",
+    /// A Tool body's leftover work called a Tool after the body's own call
+    /// ended.
+    ParentInvocationEnded => "parent_invocation_ended",
 }
 
 impl CoralFailure {
@@ -121,7 +137,9 @@ impl CoralFailure {
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not change the Provider",
-            Self::SavedFunctionNotFound => "Saved Function was not found",
+            Self::PrivateToolExists => "A Private Tool already exists",
+            Self::PrivateToolNotFound => "Private Tool was not found",
+            Self::PrivateToolRevisionConflict => "Private Tool changed since the expected revision",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",
@@ -138,6 +156,10 @@ impl CoralFailure {
             Self::UpstreamUnauthorized => "Upstream refused the request's credentials or access",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
+            Self::ToolResultTooLarge => "Tool result exceeds its limit",
+            Self::ToolFailed => "Tool failed",
+            Self::InvalidToolResult => "Tool result is not a JSON value",
+            Self::ParentInvocationEnded => "The Tool call that made this call has ended",
         }
     }
 }
@@ -199,6 +221,9 @@ pub struct Rejection {
     /// For `tool_not_found`, the Call Path the Program wrote and the nearest
     /// Discoverable Call Paths of its Call Root.
     not_found: Option<NotFound>,
+    /// For the body of a Tool that Coral performs, which threw: what it
+    /// threw, Program-written text, already bounded.
+    thrown: Option<String>,
 }
 
 /// A Call Path that names no Tool the caller can call, and what it can call
@@ -248,7 +273,30 @@ impl Rejection {
             failure,
             problems,
             not_found: None,
+            thrown: None,
         }
+    }
+
+    /// What the body of a Tool that Coral performs threw, `message`: text
+    /// the Program wrote, which reaches its caller again unchanged but
+    /// bounded (ADR 0034). A Tool Error that a call in the body gave it
+    /// keeps that call's code when it is a Coral Failure, so the record says
+    /// what the caller saw. Anything else is `tool_failed`, an upstream
+    /// rejection's code included, since no Coral Failure decodes it.
+    pub(crate) fn thrown(message: &str, tool_error: Option<&str>) -> Self {
+        let failure = tool_error
+            .and_then(CoralFailure::from_code)
+            .unwrap_or(CoralFailure::ToolFailed);
+        Self {
+            thrown: Some(coral_v8::bounded_diagnostic_message(message)),
+            ..Self::from(failure)
+        }
+    }
+
+    /// Whether a Tool's body threw this, so a call in it, not this call,
+    /// decided it.
+    pub(crate) const fn thrown_by_body(&self) -> bool {
+        self.thrown.is_some()
     }
 
     /// `tool_not_found` for the Call Path the Program wrote, with up to
@@ -262,6 +310,7 @@ impl Rejection {
                 call_path: call_path.to_owned(),
                 suggestions,
             }),
+            thrown: None,
         }
     }
 
@@ -289,15 +338,17 @@ impl Rejection {
     /// Safe, bounded message, naming each argument to correct when Coral knows it.
     #[must_use]
     pub fn message(&self) -> std::borrow::Cow<'static, str> {
+        if let Some(thrown) = &self.thrown {
+            return thrown.clone().into();
+        }
         if let Some(NotFound {
             call_path,
             suggestions,
         }) = &self.not_found
         {
-            return coral_v8::bounded_diagnostic_message(&unknown_call_path_message(
-                call_path,
-                suggestions,
-            ))
+            return coral_v8::bounded_diagnostic_message(
+                &coral_catalog::unknown_call_path_message(call_path, suggestions),
+            )
             .into();
         }
         let message = match self.problems.as_slice() {
@@ -330,35 +381,6 @@ impl From<CoralFailure> for Rejection {
     }
 }
 
-/// What a Program reads when `call_path` names no Tool it can call: the
-/// path, cut to the longest a lookup accepts, and what to call instead.
-///
-/// A Program can compute the path, or write a literal segment that holds
-/// any string, so each control character and line separator in it is
-/// escaped and the message stays one line.
-pub(crate) fn unknown_call_path_message(call_path: &str, suggestions: &[String]) -> String {
-    let mut end = call_path.len().min(coral_catalog::SEARCH_PATH_MAX_BYTES);
-    while !call_path.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut written = String::with_capacity(end);
-    for character in call_path.get(..end).unwrap_or_default().chars() {
-        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
-            written.extend(character.escape_default());
-        } else {
-            written.push(character);
-        }
-    }
-    if suggestions.is_empty() {
-        format!("{written} names no Tool that you can call. Find one with coral.workspace.search.")
-    } else {
-        format!(
-            "{written} names no Tool that you can call. Nearest: {}.",
-            suggestions.join(", ")
-        )
-    }
-}
-
 impl std::fmt::Display for Rejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.message())
@@ -380,9 +402,9 @@ pub enum Error {
     /// Program source could not be lowered into an accepted package.
     #[error("Program admission failed: {0}")]
     ProgramAdmission(String),
-    /// Current Saved Function selection or cleanup failed.
+    /// Current Private Tool selection or cleanup failed.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Tools(#[from] coral_tools::Error),
     /// Current Principal authority does not permit this staged operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
@@ -492,7 +514,7 @@ impl Error {
             Self::RunNotFound { .. } => "run_not_found",
             Self::ApprovalNotFound { .. } => "approval_not_found",
             Self::ProgramAdmission { .. } => "program_admission",
-            Self::Functions { .. } => "functions",
+            Self::Tools { .. } => "tools",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
@@ -536,7 +558,7 @@ impl Error {
 
     /// The database error behind this one, through the module errors that
     /// wrap it (a Provider's Catalog or Workspace error, a Policy's Provider
-    /// or Workspace error, a Saved Function's Workspace error).
+    /// or Workspace error, a Private Tool's Workspace error).
     #[must_use]
     pub(crate) fn database_error(&self) -> Option<&coral_db::Error> {
         fn workspace(error: &coral_workspace::Error) -> Option<&coral_db::Error> {
@@ -569,9 +591,9 @@ impl Error {
                 coral_policy::Error::Workspace(error) => workspace(error),
                 _ => None,
             },
-            Self::Functions(error) => match error {
-                coral_functions::Error::Database(error) => Some(error),
-                coral_functions::Error::Workspace(error) => workspace(error),
+            Self::Tools(error) => match error {
+                coral_tools::Error::Database(error) => Some(error),
+                coral_tools::Error::Workspace(error) => workspace(error),
                 _ => None,
             },
             _ => None,
@@ -599,7 +621,7 @@ impl Error {
             Self::CompilationTimedOut => PROGRAM_COMPILATION_TIMED_OUT,
             Self::CompilerBusy => "program_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
-            Self::Functions(error) => return error.safe_rejection(),
+            Self::Tools(error) => return error.safe_rejection(),
             Self::PermissionDenied(_) => "permission_denied",
             Self::ShuttingDown => "shutting_down",
             _ => return None,
@@ -660,11 +682,11 @@ mod tests {
             ),
             (
                 |error| {
-                    Error::Functions(coral_functions::Error::Workspace(
+                    Error::Tools(coral_tools::Error::Workspace(
                         coral_workspace::Error::Database(error),
                     ))
                 },
-                "functions workspace",
+                "tools workspace",
             ),
         ];
         for (wrap, label) in wrapped {
@@ -689,7 +711,8 @@ mod tests {
                 "upstream_result_too_large",
                 vec![
                     CoralFailure::ResultTooLarge,
-                    CoralFailure::RunOutputTooLarge
+                    CoralFailure::RunOutputTooLarge,
+                    CoralFailure::ToolResultTooLarge,
                 ]
             )])
         );
@@ -698,27 +721,6 @@ mod tests {
             Some(CoralFailure::ResultTooLarge)
         );
         assert_eq!(CoralFailure::from_code("unknown"), None);
-    }
-
-    // Catches: a Call Path a Program computed, or wrote as a literal
-    // segment, putting a line break or another control character into the
-    // durable ToolError message or an admission refusal.
-    #[test]
-    fn a_call_path_names_its_control_characters_escaped() {
-        let rejection = super::Rejection::tool_not_found(
-            "coral.providers.notion.retrieve\nPage\u{1b}[31m\u{2028}",
-            vec!["coral.providers.notion.retrieveAPage".to_owned()],
-        );
-        assert_eq!(
-            rejection.message(),
-            "coral.providers.notion.retrieve\\nPage\\u{1b}[31m\\u{2028} names no Tool \
-             that you can call. Nearest: coral.providers.notion.retrieveAPage."
-        );
-        assert_eq!(
-            super::Rejection::tool_not_found("coral.providers.a\tb", Vec::new()).message(),
-            "coral.providers.a\\tb names no Tool that you can call. Find one with \
-             coral.workspace.search."
-        );
     }
 
     #[test]

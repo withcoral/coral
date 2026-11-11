@@ -44,9 +44,9 @@ pub enum Error {
     /// Exact Tool policy could not be resolved.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
-    /// Saved Function authoring material could not be resolved.
+    /// Private or Shared Tool authoring material could not be resolved.
     #[error(transparent)]
-    Functions(#[from] coral_functions::Error),
+    Tools(#[from] coral_tools::Error),
     /// Workspace authority rejected discovery.
     #[error(transparent)]
     Workspace(#[from] coral_workspace::Error),

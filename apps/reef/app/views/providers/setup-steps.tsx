@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type ReactNode } from 'react'
 import { Form } from 'react-router'
 import { signInFormTarget } from '@/lib/device-sign-in'
+import { discovering } from '@/lib/provider-publication-attempt/model'
 
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import { EmptyPage } from '@/components/empty-page'
@@ -198,29 +199,49 @@ export function DiscoveryPrompt({
   const secretId = useId()
   const oauthForm = useRef<HTMLFormElement>(null)
   const [asking, setAsking] = useState(false)
-  if (setup.state === 'awaiting_discovery')
+  if (setup.state === 'awaiting_discovery') {
+    const retry = (
+      <div className={styles.emptyActions}>
+        {result?.error && <Banner variant="error">{result.error}</Banner>}
+        <Form method="post">
+          <Fields form={form} intent="oauth-retry" />
+          <SetupFields setup={setup} />
+          <Button.TextButton
+            type="submit"
+            size="36"
+            variant={discovering(setup) ? 'secondary' : 'primary'}
+            disabled={pending}
+            busy={pending}
+          >
+            Try again
+          </Button.TextButton>
+        </Form>
+      </div>
+    )
+    // Coral reads the tools right after the sign-in. Until that ends, no
+    // failure is recorded, and the route keeps refreshing. Try again stays
+    // for a listing that never ends.
+    if (discovering(setup))
+      return (
+        <EmptyPage
+          iconName="Loader"
+          title="Reading the tools…"
+          description={`You signed in to ${setup.serverName || 'the server'}.`}
+          action={retry}
+        />
+      )
     return (
       <EmptyPage
         iconName="TriangleAlert"
         title="Coral cannot read the tools"
-        description={`${setup.serverName || 'The server'} did not list its tools. ${setup.discoveryFailure || ''} You do not need to sign in again.`.replace(
+        description={`${setup.serverName || 'The server'} did not list its tools. ${setup.discoveryFailure} You do not need to sign in again.`.replace(
           '  ',
           ' ',
         )}
-        action={
-          <div className={styles.emptyActions}>
-            {result?.error && <Banner variant="error">{result.error}</Banner>}
-            <Form method="post">
-              <Fields form={form} intent="oauth-retry" />
-              <SetupFields setup={setup} />
-              <Button.TextButton type="submit" size="36" disabled={pending} busy={pending}>
-                Try again
-              </Button.TextButton>
-            </Form>
-          </div>
-        }
+        action={retry}
       />
     )
+  }
   const a = setup.authorization
   const bearer = setup.credentialMethod === 'bearer'
   const canStart = !a || a.state === 'failed' || a.state === 'expired' || a.state === 'canceled'
@@ -352,10 +373,14 @@ export function DiscoveryStep({
   if (setup.state === 'awaiting_discovery')
     return (
       <div className={styles.stack}>
-        <Banner variant="warning" title="Coral cannot read the tools">
-          {setup.serverName || 'The server'} did not list its tools. {setup.discoveryFailure || ''}{' '}
-          Select Try again to request the list. You do not need to sign in again.
-        </Banner>
+        {discovering(setup) ? (
+          <Typography.Body as="p">Reading the tools…</Typography.Body>
+        ) : (
+          <Banner variant="warning" title="Coral cannot read the tools">
+            {setup.serverName || 'The server'} did not list its tools. {setup.discoveryFailure}{' '}
+            Select Try again to request the list. You do not need to sign in again.
+          </Banner>
+        )}
         {result?.error && <Banner variant="error">{result.error}</Banner>}
         {expiry}
         <div className={styles.stepActions}>

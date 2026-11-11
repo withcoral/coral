@@ -97,7 +97,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Sho
             };
             match callable {
                 Callable::Tool { .. } => renderer.tool_results(result),
-                Callable::SavedFunction { .. } => renderer.saved_function_results(result),
+                Callable::AuthoredTool { .. } => renderer.authored_tool_results(result),
             }
         },
     );
@@ -207,7 +207,7 @@ impl Renderer<'_> {
         resolved
     }
 
-    /// The first parameter or a Saved Function's result: an object's members
+    /// The first parameter or an Authored Tool's result: an object's members
     /// inline one level deep.
     fn inline(&self, type_: &Type) -> String {
         match self.resolved(type_) {
@@ -238,9 +238,9 @@ impl Renderer<'_> {
         }
     }
 
-    /// A Saved Function's result forms: its members typed, then their names
+    /// An Authored Tool's result forms: its members typed, then their names
     /// alone, then the marker inside its `Promise`.
-    fn saved_function_results(&self, result: &Type) -> Vec<String> {
+    fn authored_tool_results(&self, result: &Type) -> Vec<String> {
         let stubs = Renderer {
             aliases: self.aliases,
             stubs: true,
@@ -249,8 +249,8 @@ impl Renderer<'_> {
         let promised = matches!(self.resolved(result), Type::Named { name, .. }
             if name == "Promise" && self.alias(name).is_none());
         forms([
-            self.saved_function_result(result, &mut HashSet::new()),
-            stubs.saved_function_result(result, &mut HashSet::new()),
+            self.authored_tool_result(result, &mut HashSet::new()),
+            stubs.authored_tool_result(result, &mut HashSet::new()),
             if promised {
                 format!("Promise<{CUT_MARKER}>")
             } else {
@@ -259,12 +259,12 @@ impl Renderer<'_> {
         ])
     }
 
-    /// A Saved Function's result: inside its `Promise`, an object's members
+    /// An Authored Tool's result: inside its `Promise`, an object's members
     /// inline one level deep, as in the input, or an array element's. What
     /// the tree cannot read is the marker, and so is a type that resolves to
     /// an alias `seen` already followed: its `Promise` would hold itself
     /// without end.
-    fn saved_function_result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
+    fn authored_tool_result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
         match self.resolved_past(type_, seen) {
             Type::Named { name, arguments }
                 if arguments.is_empty() && self.alias(name).is_some() =>
@@ -274,7 +274,7 @@ impl Renderer<'_> {
             Type::Named { name, arguments } if self.alias(name).is_none() => {
                 match (name.as_str(), arguments.as_slice()) {
                     ("Promise", [value]) => {
-                        return format!("Promise<{}>", self.saved_function_result(value, seen));
+                        return format!("Promise<{}>", self.authored_tool_result(value, seen));
                     }
                     ("Array" | "ReadonlyArray", [element]) if self.shows_members(element) => {
                         return format!("{name}<{}>", self.inline(element));

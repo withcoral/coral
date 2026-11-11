@@ -38,11 +38,13 @@ test("An agent's Program finds the tools an owner disabled in Reef", async (cont
     await step('getPolicy names lookup as disabled', async () => {
       const { update } = await observeRun(
         agent,
-        await agent.exec('return (await coral.workspace.getPolicy({ namespace: "alpha" })).data;'),
+        await agent.exec(
+          'return (await coral.getPolicy({ under: "coral.providers.alpha" })).data;',
+        ),
       )
       expect(update.final_value).toEqual({
         kind: 'value',
-        value: { namespace: 'alpha', rules: { lookup: 'disabled' } },
+        value: { rules: { 'coral.providers.alpha.lookup': 'disabled' } },
       })
     })
   })

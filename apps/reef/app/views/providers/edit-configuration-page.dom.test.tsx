@@ -97,7 +97,7 @@ function renderPage({
           source={source}
           basePath={`${providerPath}/update`}
           cancelPath={providerPath}
-          providersPath="/workspaces/demo/providers"
+          toolsPath="/workspaces/demo/tools"
           setup={page}
           attempt={{
             kind: 'update',
@@ -128,7 +128,7 @@ function renderPage({
       },
     },
     { path: providerPath, Component: () => <h1>Provider</h1> },
-    { path: '/workspaces/demo/providers', Component: () => <h1>Providers</h1> },
+    { path: '/workspaces/demo/tools', Component: () => <h1>Tools</h1> },
   ])
   render(
     <LocalDeploymentContext value={local}>
@@ -164,8 +164,8 @@ it.each([
   [
     'a link to another page',
     'configuration',
-    () => userEvent.click(screen.getByRole('link', { name: 'Providers' })),
-    'Providers',
+    () => userEvent.click(screen.getByRole('link', { name: 'Tools' })),
+    'Tools',
   ],
   ['Cancel in an account change', 'accounts', cancel, 'Provider'],
 ] as const)('asks before %s discards changes', async (_, task, leave, destination) => {

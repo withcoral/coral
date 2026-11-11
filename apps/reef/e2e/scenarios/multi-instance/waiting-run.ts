@@ -27,7 +27,7 @@ export function addProviderProgram() {
     source: { kind: 'openapi_document', document },
     credentialRoute: 'fixed',
   }
-  return `try { return await coral.workspace.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`
+  return `try { return await coral.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`
 }
 
 /**

@@ -1,5 +1,6 @@
 //! Scripted Program engines that gate or observe execution.
 use crate::tests::*;
+use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
 
 #[derive(Clone)]
 pub(crate) struct ClosureReadGateEngine {
@@ -28,18 +29,18 @@ impl ProgramEngine for ClosureReadGateEngine {
     ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
         analyze_each(sources, |source| match source {
             AdmissionSource::Program(_) => {
-                test_saved_function_reference("closure.root").map(|reference| vec![reference])
+                test_private_tool_reference("closure.root").map(|reference| vec![reference])
             }
-            AdmissionSource::SavedFunction { source, .. } if source.contains("root-v1") => {
+            AdmissionSource::Linked { source, .. } if source.contains("root-v1") => {
                 self.reading_root.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
                     .map_err(|error| error.to_string())?
                     .recv()
                     .map_err(|error| error.to_string())?;
-                test_saved_function_reference("closure.dependency").map(|reference| vec![reference])
+                test_private_tool_reference("closure.dependency").map(|reference| vec![reference])
             }
-            AdmissionSource::SavedFunction { .. } => Ok(Vec::new()),
+            AdmissionSource::Linked { .. } => Ok(Vec::new()),
         })
     }
 
@@ -47,7 +48,8 @@ impl ProgramEngine for ClosureReadGateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -90,9 +92,9 @@ impl ProgramEngine for SnapshotEngine {
     ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
         analyze_each(sources, |source| match source {
             AdmissionSource::Program(_) => {
-                test_saved_function_reference("snapshots.value").map(|reference| vec![reference])
+                test_private_tool_reference("snapshots.value").map(|reference| vec![reference])
             }
-            AdmissionSource::SavedFunction { .. } => Ok(Vec::new()),
+            AdmissionSource::Linked { .. } => Ok(Vec::new()),
         })
     }
 
@@ -100,7 +102,8 @@ impl ProgramEngine for SnapshotEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(
@@ -146,7 +149,8 @@ impl ProgramEngine for ImmediateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         if source == "compile-error" {
@@ -220,7 +224,8 @@ impl ProgramEngine for FailingCompileEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Self::fail_at("compile", source)?;
@@ -255,7 +260,8 @@ impl ProgramEngine for InvokingEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -322,7 +328,8 @@ impl ProgramEngine for StaleClaimEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -376,7 +383,8 @@ impl ProgramEngine for CompletionAttemptingEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -414,7 +422,8 @@ impl ProgramEngine for StopAwareEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -468,7 +477,8 @@ impl ProgramEngine for BlockingEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
@@ -519,7 +529,8 @@ impl ProgramEngine for CompileGateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         self.compiling.store(true, Ordering::SeqCst);
@@ -542,15 +553,15 @@ impl ProgramEngine for CompileGateEngine {
     }
 }
 
-/// Finds `coral.functions.<path>` references by scanning source text, so Saved
-/// Function closure rules run without TypeScript compilation time. A linked
-/// Program returns how many Saved Functions it linked.
+/// Finds `coral.private.<path>` references by scanning source text, so Private
+/// Tool closure rules run without TypeScript compilation time. A linked
+/// Program returns how many Private Tools it linked.
 #[derive(Clone, Default)]
 pub(crate) struct ReferenceScanningEngine;
 
 impl ReferenceScanningEngine {
-    fn references(source: &str) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        const PREFIX: &str = "coral.functions.";
+    fn references(source: &str) -> Result<AdmissionReferences, CompileFailure> {
+        const PREFIX: &str = "coral.private.";
         source
             .match_indices(PREFIX)
             .map(|(at, _)| {
@@ -562,9 +573,10 @@ impl ReferenceScanningEngine {
                     })
                     .next()
                     .unwrap_or_default();
-                test_saved_function_reference(path)
+                test_private_tool_reference(path)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()
+            .map(AdmissionReferences::linking)
     }
 }
 
@@ -574,18 +586,22 @@ impl ProgramEngine for ReferenceScanningEngine {
         _deadline: std::time::Instant,
         sources: &[AdmissionSource],
     ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
-        analyze_each(sources, |source| match source {
-            AdmissionSource::Program(source) | AdmissionSource::SavedFunction { source, .. } => {
-                Self::references(source)
-            }
-        })
+        sources
+            .iter()
+            .map(|source| match source {
+                AdmissionSource::Program(source) | AdmissionSource::Linked { source, .. } => {
+                    Self::references(source)
+                }
+            })
+            .collect()
     }
 
     fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        linked: &[SavedFunctionSelection],
+        linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(if linked.is_empty() {
@@ -608,31 +624,27 @@ impl ProgramEngine for ReferenceScanningEngine {
     }
 }
 
-/// Each source's Saved Functions from `references`, as an engine that
-/// finds no Tool chains names them.
+/// Each source's linked Tools from `references`, as an engine that finds no
+/// Tool Call Paths names them.
 pub(crate) fn analyze_each(
     sources: &[AdmissionSource],
-    mut references: impl FnMut(&AdmissionSource) -> Result<Vec<SavedFunctionReference>, CompileFailure>,
+    mut references: impl FnMut(&AdmissionSource) -> Result<Vec<LinkedToolReference>, CompileFailure>,
 ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
     sources
         .iter()
-        .map(|source| {
-            Ok(AdmissionReferences {
-                functions: references(source)?,
-                tool_call_paths: Vec::new(),
-            })
-        })
+        .map(|source| Ok(AdmissionReferences::linking(references(source)?)))
         .collect()
 }
 
-pub(crate) fn test_saved_function_reference(
+pub(crate) fn test_private_tool_reference(
     path: &str,
-) -> Result<SavedFunctionReference, CompileFailure> {
-    Ok(SavedFunctionReference {
-        path: SavedFunctionPath::parse(path).map_err(|error| error.to_string())?,
-        line: 1,
-        column: 1,
-    })
+) -> Result<LinkedToolReference, CompileFailure> {
+    let path = PrivateToolPath::parse(path).map_err(|error| error.to_string())?;
+    Ok(LinkedToolReference::new(
+        AuthoredToolPath::Private(path),
+        1,
+        1,
+    ))
 }
 
 /// What the test tells a [`ScriptedCallsEngine`] to do next.
@@ -688,7 +700,8 @@ impl ProgramEngine for ScriptedCallsEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-        _linked: &[SavedFunctionSelection],
+        _linked: &[LinkedToolSelection],
+        _builtin_tools: &coral_v8::BuiltinTools,
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))

@@ -1,10 +1,11 @@
 //! Organization Membership removal hands each Workspace the departing User
 //! solely owns to a transfer target, in the removal's own transaction.
 use super::*;
+use coral_catalog::AuthoredToolKind;
 use coral_workspace::{AuthoritySource, LifecycleAction, OrganizationModule, WorkspaceRole};
 
 /// One Workspace the departing User owns, with their connected Account, pending
-/// reconnect, and Saved Function there.
+/// reconnect, and Private Tool there.
 struct Owned {
     workspace: coral_workspace::Workspace,
     connected: accounts::ConnectedScope,
@@ -17,7 +18,7 @@ struct Departure {
     workspaces: WorkspaceModule,
     organization: OrganizationModule,
     lifecycle: AccessLifecycleModule,
-    functions: SavedFunctionModule,
+    private_tools: PrivateToolModule,
     administrator: AuthenticatedUser,
     departing: AuthenticatedUser,
     target: AuthenticatedUser,
@@ -47,10 +48,10 @@ impl Departure {
             .set_enabled(&change(&administrator), disabled.user_id(), 1, false)
             .await
             .unwrap();
-        let functions = SavedFunctionModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
@@ -74,7 +75,7 @@ impl Departure {
                     .await
                     .unwrap();
             }
-            save_answer(&functions, &author, workspace.id()).await;
+            save_answer(&private_tools, &author, workspace.id()).await;
             let connected = accounts::ConnectedScope::new(
                 database.clone(),
                 workspaces.clone(),
@@ -99,7 +100,7 @@ impl Departure {
             lifecycle: AccessLifecycleModule::new(database, workspaces.clone()),
             workspaces,
             organization,
-            functions,
+            private_tools,
             administrator,
             departing,
             target,
@@ -127,7 +128,7 @@ impl Departure {
     /// the departing User still owns every Workspace.
     async fn state(&self) -> impl PartialEq + std::fmt::Debug + use<> {
         let author = AuthenticatedPrincipal::user(self.departing.clone());
-        let path = SavedFunctionPath::parse("answer").unwrap();
+        let path = PrivateToolPath::parse("answer").unwrap();
         let mut scopes = Vec::new();
         for owned in self.owned() {
             let workspace = owned.workspace.id();
@@ -141,8 +142,11 @@ impl Departure {
                     .list_lifecycle_events(&self.departing, workspace)
                     .await
                     .unwrap(),
-                self.functions.get(&author, workspace, &path).await.unwrap(),
-                self.functions
+                self.private_tools
+                    .get(&author, workspace, &path)
+                    .await
+                    .unwrap(),
+                self.private_tools
                     .list_lifecycle_events(&author, workspace)
                     .await
                     .unwrap(),
@@ -229,7 +233,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
     // The last two faults fire after the new Owner Memberships are written.
     for attempt in RemovalAttempt::cases(&[
         EventFault::AccountDeleted,
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::MembershipRemoved,
         EventFault::OrganizationMembershipRemoved,
     ]) {
@@ -324,14 +328,14 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
             .await
             .unwrap();
         assert!(matches!(
-            f.functions
+            f.private_tools
                 .get(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace,
-                    &SavedFunctionPath::parse("answer").unwrap()
+                    &PrivateToolPath::parse("answer").unwrap()
                 )
                 .await,
-            Err(coral_functions::Error::SavedFunctionNotFound)
+            Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
         ));
         owned.connected.assert_retired(&returned).await;
     }

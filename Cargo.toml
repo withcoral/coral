@@ -131,7 +131,7 @@ coral-catalog = { path = "crates/coral-catalog" }
 coral-credentials = { path = "crates/coral-credentials" }
 coral-db = { path = "crates/coral-db" }
 coral-edition = { path = "crates/coral-edition" }
-coral-functions = { path = "crates/coral-functions" }
+coral-tools = { path = "crates/coral-tools" }
 coral-grpc = { path = "crates/coral-grpc" }
 coral-identifier = { path = "crates/coral-identifier" }
 coral-mcp = { path = "crates/coral-mcp" }

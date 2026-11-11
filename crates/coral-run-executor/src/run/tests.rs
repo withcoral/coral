@@ -31,7 +31,13 @@ async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, PullCall, oneshot::
 fn compiled(source: &str) -> RunPackage {
     let compiler = InProcessCompiler::new(coral_v8::IsolateLimits::defaults()).unwrap();
     let program = compiler
-        .compile(TEST_COMPILATION_TIMEOUT, source, &[], None)
+        .compile(
+            TEST_COMPILATION_TIMEOUT,
+            source,
+            &[],
+            &coral_v8::BuiltinTools::default(),
+            None,
+        )
         .unwrap();
     package(program.javascript(), program.source_map())
 }
@@ -96,9 +102,10 @@ fn emit(value_json: &str, line: u32) -> request::Kind {
     request::Kind::Emit(Emit {
         value_json: value_json.to_owned(),
         location: Some(Location {
-            saved_function_id: String::new(),
+            tool_id: String::new(),
             line,
             column: 13,
+            ..Location::default()
         }),
     })
 }
@@ -170,9 +177,10 @@ return issue.id;"#;
         level: LogLevel::Warn.into(),
         message: "seen tool_not_found".to_owned(),
         location: Some(Location {
-            saved_function_id: String::new(),
+            tool_id: String::new(),
             line: 6,
             column: 9,
+            ..Location::default()
         }),
     });
     assert_eq!(next_request(&mut run).await, (4, log));

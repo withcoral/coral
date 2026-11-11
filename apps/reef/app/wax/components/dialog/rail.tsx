@@ -1,6 +1,7 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import {
   createContext,
+  useContext,
   useLayoutEffect,
   useRef,
   useState,
@@ -22,6 +23,21 @@ interface RailState {
 
 /** Set inside a `Rail`: its `Portal`, `Backdrop` and `Popup` follow the rail's mode. */
 export const RailContext = createContext<RailState | null>(null)
+
+/**
+ * The mode of the rail whose popup holds this content; null outside a rail. A
+ * dialog opened from the content is a plain dialog, so its own content reads null.
+ */
+export const RailModeContext = createContext<RailMode | null>(null)
+
+/**
+ * How the rail that holds this content shows: a modal, beside the page, or
+ * docked in its layout. Null outside a rail. Content can leave out what the page
+ * beside a docked rail already shows.
+ */
+export function useRailMode() {
+  return useContext(RailModeContext)
+}
 
 /**
  * Set inside a rail beside the page. A nested dialog shares its parent's backdrop,

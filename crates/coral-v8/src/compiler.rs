@@ -12,10 +12,10 @@ use crate::profile::TYPESCRIPT_PROFILE;
 use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map};
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
-    AnalyzedSource, CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory,
-    Error, IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl,
-    SavedFunctionCompilation, SavedFunctionDeclarationField, SavedFunctionReference,
-    SourceReferences, UnknownToolCall,
+    AnalyzedSource, AuthoredToolCompilation, AuthoredToolDeclarationField, BuiltinTools,
+    CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
+    IsolateLimits, LinkedToolReference, LinkedToolSource, ProgramExecutionControl,
+    SourceReferences, ToolReferences, UnknownToolCall,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -31,11 +31,11 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n",
     include_str!("js/compiler/authored_source_policy.js"),
     "\n",
-    include_str!("js/compiler/saved_function_authoring.js"),
+    include_str!("js/compiler/tool_authoring.js"),
     "\n",
-    include_str!("js/compiler/saved_function_extraction.js"),
+    include_str!("js/compiler/private_tool_extraction.js"),
     "\n",
-    include_str!("js/compiler/saved_function_linking.js"),
+    include_str!("js/compiler/tool_linking.js"),
     "\n",
     include_str!("js/compiler/program_compilation.js"),
     "\n",
@@ -43,7 +43,7 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n})();\n",
 );
 const PROGRAM_FILE_NAME: &str = "program.ts";
-const SAVED_FUNCTION_FILE_NAME: &str = "saved_function.ts";
+const AUTHORED_TOOL_FILE_NAME: &str = "authored_tool.ts";
 
 // Leave headroom above the measured ~130 MiB transient authoring working set.
 const COMPILER_RECYCLE_HEAP_BYTES: usize = 256 * 1024 * 1024;
@@ -63,11 +63,16 @@ type CompilerJob = Box<
 /// the isolate overgrown, has the worker build a replacement after it answers,
 /// before the worker takes the next request. A request queued meanwhile waits
 /// for that build. A rejection leaves the isolate in place. Handles from
-/// [`Self::with_role`] share the thread and queue, which stop when the last
-/// handle drops.
+/// [`Self::with_role`] and [`Self::with_builtin_tools`] share the thread and
+/// queue, which stop when the last handle drops.
+///
+/// Each request compiles against the handle's [`BuiltinTools`]: a Program
+/// calls them on `coral`, and an Authored Tool is typed with them. A handle
+/// from [`Self::new`] has none.
 pub struct ProgramCompiler {
     worker: Arc<CompilerWorker>,
     role: CompilerRole,
+    builtin_tools: Arc<str>,
 }
 
 /// The compiler thread and its bounded queue.
@@ -139,6 +144,7 @@ impl ProgramCompiler {
                     limits: isolate_limits,
                 }),
                 role,
+                builtin_tools: BuiltinTools::default().json(),
             }),
             Ok(Err(error)) => {
                 if worker.join().is_err() {
@@ -162,6 +168,18 @@ impl ProgramCompiler {
         Self {
             worker: Arc::clone(&self.worker),
             role,
+            builtin_tools: Arc::clone(&self.builtin_tools),
+        }
+    }
+
+    /// Another handle on this compiler's thread and queue, whose requests
+    /// compile against `builtin_tools`.
+    #[must_use]
+    pub fn with_builtin_tools(&self, builtin_tools: &BuiltinTools) -> Self {
+        Self {
+            worker: Arc::clone(&self.worker),
+            role: self.role,
+            builtin_tools: builtin_tools.json(),
         }
     }
 
@@ -170,8 +188,8 @@ impl ProgramCompiler {
     /// JavaScript is valid input because it is valid TypeScript source. The
     /// official compiler applies syntax and Coral capability checks here;
     /// ordinary semantic diagnostics are not an execution gate. Each literal
-    /// `coral.workspace.saveFunction` call carries the module of the function
-    /// it names: that top-level declaration and every top-level declaration
+    /// `coral.addCustomTool` or `coral.updateCustomTool` call carries the module of the
+    /// function it names: that top-level declaration and every top-level declaration
     /// it reaches, as written. The retained source map contains authored
     /// locations only.
     ///
@@ -182,35 +200,36 @@ impl ProgramCompiler {
     /// compiler-isolate failure, or a compiler worker availability error.
     pub fn compile(&self, deadline: Instant, source: &str) -> Result<CompiledProgram, Error> {
         let source = source.to_string();
+        let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile(&source)
+            compiler.compile(&source, &builtin_tools)
         })
     }
 
-    /// Emits and validates the self-contained declaration for one Saved Function.
+    /// Emits and validates the self-contained declaration for one Authored Tool.
     ///
-    /// `coral.providers`, `coral.workspace` and `coral.functions` are `any`.
-    /// Strict semantic diagnostics are returned as advisory authoring evidence.
+    /// `coral.providers`, the Built-in Tools on `coral`, `coral.private` and
+    /// `coral.shared` are `any`. Strict semantic diagnostics are returned as
+    /// advisory authoring evidence.
     /// Syntax, imports, invalid export shape, declaration-emission failure, and
     /// unresolved names in the emitted public declaration are blocking.
     ///
     /// # Errors
     ///
     /// Returns a blocking authoring or compiler-isolate failure.
-    pub fn prepare_saved_function(
+    pub fn prepare_authored_tool(
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<SavedFunctionCompilation, Error> {
+    ) -> Result<AuthoredToolCompilation, Error> {
         let source = source.to_string();
-        self.request(
-            CompilerOperation::SavedFunction,
-            deadline,
-            move |compiler| compiler.prepare_saved_function(&source, "null"),
-        )
+        let builtin_tools = Arc::clone(&self.builtin_tools);
+        self.request(CompilerOperation::AuthoredTool, deadline, move |compiler| {
+            compiler.prepare_authored_tool(&source, &builtin_tools, "null")
+        })
     }
 
-    /// Prepares one Saved Function as [`Self::prepare_saved_function`] does,
+    /// Prepares one Authored Tool as [`Self::prepare_authored_tool`] does,
     /// with the Call Paths it names typed by `declarations`.
     ///
     /// A result type from `declarations` is inlined into the declaration. When
@@ -221,31 +240,30 @@ impl ProgramCompiler {
     /// # Errors
     ///
     /// Returns a blocking authoring or compiler-isolate failure.
-    pub fn prepare_typed_saved_function(
+    pub fn prepare_typed_authored_tool(
         &self,
         deadline: Instant,
         source: &str,
         declarations: &CoralDeclarations,
-    ) -> Result<SavedFunctionCompilation, Error> {
+    ) -> Result<AuthoredToolCompilation, Error> {
         let declarations_json = serde_json::to_string(declarations)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
-        self.request(
-            CompilerOperation::SavedFunction,
-            deadline,
-            move |compiler| compiler.prepare_saved_function(&source, &declarations_json),
-        )
+        let builtin_tools = Arc::clone(&self.builtin_tools);
+        self.request(CompilerOperation::AuthoredTool, deadline, move |compiler| {
+            compiler.prepare_authored_tool(&source, &builtin_tools, &declarations_json)
+        })
     }
 
-    /// Finds the Saved Functions and Tools one source names directly: what
-    /// Program Admission links and checks, and what typed Saved Function
-    /// preparation types.
+    /// Finds the Private Tools, Shared Tools and Tools one source names
+    /// directly: what Program Admission links and checks, and what typed
+    /// Authored Tool preparation types.
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.functions` access, a Program body
-    /// with malformed wrapper escapes, and a Saved Function module with
-    /// syntax errors.
+    /// Rejects computed or aliased `coral.private` or `coral.shared` access,
+    /// a Program body with malformed wrapper escapes, and an Authored Tool
+    /// module with syntax errors.
     pub fn analyze(
         &self,
         deadline: Instant,
@@ -253,9 +271,9 @@ impl ProgramCompiler {
     ) -> Result<SourceReferences, Error> {
         let (function, file_name, source) = match source {
             AnalyzedSource::Program(body) => ("__coralAnalyzeProgram", PROGRAM_FILE_NAME, body),
-            AnalyzedSource::SavedFunction(module) => (
-                "__coralAnalyzeSavedFunction",
-                SAVED_FUNCTION_FILE_NAME,
+            AnalyzedSource::AuthoredTool(module) => (
+                "__coralAnalyzeAuthoredTool",
+                AUTHORED_TOOL_FILE_NAME,
                 module,
             ),
         };
@@ -265,13 +283,14 @@ impl ProgramCompiler {
         })
     }
 
-    /// The called literal Tool chains of one Program body that name no Tool
-    /// among `callable`, the complete Call Paths the caller can call, by the
-    /// rule the unknown-Tool diagnostic of typed Saved Function preparation
+    /// The called literal Tool chains of one source that name no Tool among
+    /// `callable`, the complete Call Paths the caller can call, by the rule
+    /// the unknown-Tool diagnostic of typed Authored Tool preparation
     /// applies: a chain is known once a prefix of it is callable, and a
     /// prefix that is only a namespace of a callable path reads on. A called
     /// chain that ends at such a namespace is unknown too: calling it names
-    /// no Tool. A body that is not one async-function body names none.
+    /// no Tool. A Program body that is not one async-function body names
+    /// none.
     ///
     /// # Errors
     ///
@@ -279,19 +298,25 @@ impl ProgramCompiler {
     pub fn unknown_tool_calls(
         &self,
         deadline: Instant,
-        body: &str,
+        source: &AnalyzedSource,
         callable: &[String],
     ) -> Result<Vec<UnknownToolCall>, Error> {
         let callable = serde_json::to_string(callable)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
-        let body = body.to_string();
+        let (kind, file_name, source) = match source {
+            AnalyzedSource::Program(body) => ("program", PROGRAM_FILE_NAME, body.clone()),
+            AnalyzedSource::AuthoredTool(module) => {
+                ("authoredTool", AUTHORED_TOOL_FILE_NAME, module.clone())
+            }
+        };
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             let json = compiler.call(
                 "__coralUnknownToolCalls",
                 &[
-                    &body,
+                    kind,
+                    &source,
                     &callable,
-                    PROGRAM_FILE_NAME,
+                    file_name,
                     TYPESCRIPT_PROFILE.javascript_target(),
                 ],
             )?;
@@ -299,11 +324,11 @@ impl ProgramCompiler {
         })
     }
 
-    /// Lowers one Program body together with its exact Saved Function source closure.
+    /// Lowers one Program body together with the exact source closure of its linked Tools.
     ///
     /// Linked modules initialize once in the supplied dependency order before
     /// the submitted body. Their callables are installed under immutable
-    /// `coral.functions` paths inside the package. Saves in the body and in
+    /// `coral.private` paths inside the package. Saves in the body and in
     /// each module carry their modules as [`Self::compile`] describes, each
     /// from its own top level.
     ///
@@ -312,17 +337,18 @@ impl ProgramCompiler {
     /// Returns blocking compiler diagnostics, invalid linked source, a save
     /// whose source names no top-level function, or a compiler-isolate
     /// failure.
-    pub fn compile_with_saved_functions(
+    pub fn compile_linked(
         &self,
         deadline: Instant,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        linked_tools: &[LinkedToolSource],
     ) -> Result<CompiledProgram, Error> {
-        let saved_functions_json = serde_json::to_string(saved_functions)
+        let linked_tools_json = serde_json::to_string(linked_tools)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
+        let builtin_tools = Arc::clone(&self.builtin_tools);
         self.request(CompilerOperation::Program, deadline, move |compiler| {
-            compiler.compile_with_saved_functions(&source, &saved_functions_json)
+            compiler.compile_linked(&source, &linked_tools_json, &builtin_tools)
         })
     }
 
@@ -442,11 +468,11 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
         Err(
             Error::Compilation { .. }
             | Error::InvalidProgramBody
-            | Error::InvalidSavedFunction(_)
+            | Error::InvalidAuthoredTool(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. }
-            | Error::InvalidFunctionSave(_),
+            | Error::InvalidLinkedToolReference { .. }
+            | Error::InvalidPrivateToolSave(_),
         ) => CompilerOutcome::Rejected,
         Err(_) => CompilerOutcome::Failed,
     }
@@ -483,33 +509,42 @@ struct CompileOutput {
     wrapper_valid: bool,
     validation_error: Option<String>,
     save_refusal: Option<String>,
+    /// A linked stored source that does not take one object: its message
+    /// names the Tool and where.
+    linked_tool_refusal: Option<String>,
     diagnostics: Vec<CompilerDiagnostic>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionOutput {
+struct AuthoredToolOutput {
     declaration_text: Option<String>,
-    declaration_fields: Option<Vec<SavedFunctionDeclarationField>>,
+    declaration_fields: Option<Vec<AuthoredToolDeclarationField>>,
     declaration_projection_error: Option<String>,
     validation_error: Option<String>,
-    reference_error: Option<SavedFunctionReferenceError>,
+    reference_error: Option<LinkedToolReferenceError>,
     blocking_diagnostics: Vec<CompilerDiagnostic>,
     diagnostics: Vec<CompilerDiagnostic>,
-    references: Vec<SavedFunctionReference>,
+    references: Vec<LinkedToolReference>,
+    #[serde(default)]
+    shared_references: Vec<LinkedToolReference>,
+    tools: Option<ToolReferences>,
+    not_data: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnalysisOutput {
-    references: Vec<SavedFunctionReference>,
-    validation_error: Option<SavedFunctionReferenceError>,
+    references: Vec<LinkedToolReference>,
+    #[serde(default)]
+    shared_references: Vec<LinkedToolReference>,
+    validation_error: Option<LinkedToolReferenceError>,
     tool_call_paths: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedFunctionReferenceError {
+struct LinkedToolReferenceError {
     message: String,
     line: u64,
     column: u64,
@@ -567,11 +602,12 @@ impl CompilerIsolate {
             .map(drop)
     }
 
-    fn compile(&mut self, body: &str) -> Result<CompiledProgram, Error> {
+    fn compile(&mut self, body: &str, builtin_tools: &str) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompile",
             &[
                 body,
+                builtin_tools,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
@@ -579,21 +615,23 @@ impl CompilerIsolate {
         decode_compiled_program(&json)
     }
 
-    fn prepare_saved_function(
+    fn prepare_authored_tool(
         &mut self,
         source: &str,
+        builtin_tools: &str,
         declarations_json: &str,
-    ) -> Result<SavedFunctionCompilation, Error> {
+    ) -> Result<AuthoredToolCompilation, Error> {
         let json = self.call(
-            "__coralPrepareSavedFunction",
+            "__coralPrepareAuthoredTool",
             &[
                 source,
+                builtin_tools,
                 declarations_json,
-                SAVED_FUNCTION_FILE_NAME,
+                AUTHORED_TOOL_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
         )?;
-        let output: SavedFunctionOutput = serde_json::from_str(&json)
+        let output: AuthoredToolOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         if !output.blocking_diagnostics.is_empty() {
             return Err(Error::Compilation {
@@ -601,13 +639,13 @@ impl CompilerIsolate {
             });
         }
         if let Some(error) = output.reference_error {
-            return Err(invalid_saved_function_reference(error));
+            return Err(invalid_linked_tool_reference(error));
         }
         if let Some(message) = output.validation_error {
-            return Err(Error::InvalidSavedFunction(message));
+            return Err(Error::InvalidAuthoredTool(message));
         }
         let declaration = output.declaration_text.ok_or_else(|| {
-            Error::CompilerProtocol("compiler emitted no Saved Function declaration".to_string())
+            Error::CompilerProtocol("compiler emitted no Tool declaration".to_string())
         })?;
         let declaration_field_projection = match (
             output.declaration_fields,
@@ -621,11 +659,17 @@ impl CompilerIsolate {
                 ));
             }
         };
-        Ok(SavedFunctionCompilation::new(
+        let tools = output.tools.ok_or_else(|| {
+            Error::CompilerProtocol("compiler returned no Tool references".to_string())
+        })?;
+        Ok(AuthoredToolCompilation::new(
             declaration,
             declaration_field_projection,
             output.diagnostics,
             output.references,
+            output.shared_references,
+            tools,
+            output.not_data,
         ))
     }
 
@@ -642,9 +686,10 @@ impl CompilerIsolate {
         let output: AnalysisOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         match (output.validation_error, output.tool_call_paths) {
-            (Some(error), _) => Err(invalid_saved_function_reference(error)),
+            (Some(error), _) => Err(invalid_linked_tool_reference(error)),
             (None, Some(tool_call_paths)) => Ok(SourceReferences {
-                functions: output.references,
+                private_tools: output.references,
+                shared_tools: output.shared_references,
                 tool_call_paths,
             }),
             (None, None) => Err(Error::CompilerProtocol(
@@ -653,16 +698,18 @@ impl CompilerIsolate {
         }
     }
 
-    fn compile_with_saved_functions(
+    fn compile_linked(
         &mut self,
         source: &str,
-        saved_functions_json: &str,
+        linked_tools_json: &str,
+        builtin_tools: &str,
     ) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompileLinkedProgram",
             &[
                 source,
-                saved_functions_json,
+                linked_tools_json,
+                builtin_tools,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
@@ -730,8 +777,8 @@ impl CompilerIsolate {
 /// What V8 throws when the compiler's recursion over source overflows its stack.
 const STACK_OVERFLOW: &str = "RangeError: Maximum call stack size exceeded";
 
-fn invalid_saved_function_reference(error: SavedFunctionReferenceError) -> Error {
-    Error::InvalidSavedFunctionReference {
+fn invalid_linked_tool_reference(error: LinkedToolReferenceError) -> Error {
+    Error::InvalidLinkedToolReference {
         message: error.message,
         line: error.line,
         column: error.column,
@@ -754,7 +801,10 @@ fn decode_compiled_program(json: &str) -> Result<CompiledProgram, Error> {
         return Err(Error::ForbiddenCapability(message));
     }
     if let Some(message) = output.save_refusal {
-        return Err(Error::InvalidFunctionSave(message));
+        return Err(Error::InvalidPrivateToolSave(message));
+    }
+    if let Some(message) = output.linked_tool_refusal {
+        return Err(Error::InvalidAuthoredTool(message));
     }
     if !output.wrapper_valid {
         return Err(Error::InvalidProgramBody);
@@ -814,7 +864,7 @@ mod tests {
             let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
                 .expect("authoring compiler");
             authoring
-                .prepare_saved_function(deadline(), "export default () => 1;")
+                .prepare_authored_tool(deadline(), "export default () => 1;")
                 .expect("authoring queue remains available");
             let depths = metrics.named("coral.compiler.queue.depth");
             for (role, expected) in [("run", 32.0), ("authoring", 0.0)] {
@@ -827,7 +877,7 @@ mod tests {
                 assert!((point.value - expected).abs() < f64::EPSILON);
             }
             assert!(matches!(
-                compiler.prepare_saved_function(Instant::now(), "export default () => 1;"),
+                compiler.prepare_authored_tool(Instant::now(), "export default () => 1;"),
                 Err(Error::CompilerBusy)
             ));
             assert_eq!(
@@ -861,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_metrics_cover_programs_and_saved_function_authoring() {
+    fn compiler_metrics_cover_programs_and_tool_authoring() {
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
         let compiler =
@@ -870,18 +920,18 @@ mod tests {
         let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
             .expect("authoring compiler");
         authoring
-            .prepare_saved_function(
+            .prepare_authored_tool(
                 deadline(),
                 "export default function answer() { return 42; }",
             )
-            .expect("Saved Function");
+            .expect("Private Tool");
         for name in [
             "coral.compiler.request.duration",
             "coral.compiler.queue.duration",
             "coral.compiler.work.duration",
         ] {
             let points = metrics.named(name);
-            for (operation, role) in [("program", "run"), ("saved_function", "authoring")] {
+            for (operation, role) in [("program", "run"), ("authored_tool", "authoring")] {
                 let point = points
                     .iter()
                     .find(|point| {
@@ -1205,15 +1255,15 @@ mod tests {
                 diagnostics: Vec::new(),
             },
             Error::InvalidProgramBody,
-            Error::InvalidSavedFunction("no default export".into()),
+            Error::InvalidAuthoredTool("no default export".into()),
             Error::SourceTooDeeplyNested,
             Error::ForbiddenCapability("eval".into()),
-            Error::InvalidSavedFunctionReference {
+            Error::InvalidLinkedToolReference {
                 message: "computed access".into(),
                 line: 2,
                 column: 7,
             },
-            Error::InvalidFunctionSave("names no function".into()),
+            Error::InvalidPrivateToolSave("names no function".into()),
             Error::MemoryLimitExceeded,
         ];
         assert_eq!(authored.len(), Error::REJECTION_CODES.len());

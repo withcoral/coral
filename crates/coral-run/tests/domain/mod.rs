@@ -11,7 +11,6 @@ mod credentials;
 mod emissions;
 mod enforcement;
 mod fan_out;
-mod functions;
 mod history;
 mod invocations;
 mod ledger;
@@ -22,6 +21,7 @@ mod metrics;
 mod observation;
 mod output;
 mod owner;
+mod private_tools;
 mod provider_setup;
 mod provider_update;
 mod refresh;
@@ -30,8 +30,10 @@ mod resilience;
 mod run_inbox;
 mod scoping;
 mod search;
+mod shared_tools;
 mod summary;
 mod support;
+mod tool_bodies;
 mod trace;
 mod updates;
 mod upgrade;
@@ -64,7 +66,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::engine::{
     AdmissionReferences, AdmissionSource, Clock, ExecutionCompletion, PackageFailure,
-    ProgramEngine, ProgramPackage, SavedFunctionReference,
+    ProgramEngine, ProgramPackage,
 };
 use crate::execution::{ExecutionObserver, ExecutionStop, NoopExecutionObserver};
 use crate::invocation::{InvocationObserver, NoopInvocationObserver, UpstreamSender};
@@ -73,10 +75,9 @@ use crate::{
     RunFailureCode, RunModule, RunObservation, RunState, RunSubmission, RunTerminalOutcome,
     RunTimeout,
 };
-use coral_functions::{
-    Error as FunctionsError, SavedFunctionChangeContext, SavedFunctionDescription,
-    SavedFunctionModule, SavedFunctionPath, SavedFunctionSave, SavedFunctionSelection,
-    SavedFunctionSource,
+use coral_tools::{
+    AuthoredToolDescription, AuthoredToolSource, Error as ToolsError, PrivateToolChangeContext,
+    PrivateToolModule, PrivateToolPath, PrivateToolSave,
 };
 use support::*;
 

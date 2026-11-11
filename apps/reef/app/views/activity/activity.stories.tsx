@@ -8,13 +8,15 @@ import { Activity } from './activity'
 import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
-import { discoveryView, functionTarget } from './discovery/response'
+import { discoveryView } from './discovery/response'
 import { programAt } from './side-panel-fixtures'
-import { toolOwner } from '@/lib/call-root'
+import { privateToolPath, toolOwner } from '@/lib/call-root'
 import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
   ActivityRow,
+  ParentInvocation,
+  ToolKind,
   DiscoveryContext,
   InvocationDetail,
   RunDetail,
@@ -185,6 +187,7 @@ const call: ActivityRow & { kind: 'invocation' } = {
   requiresAction: true,
   dispatchedAt: null,
   waitingNanos: '221000000000',
+  toolKind: 'provider',
   sourceLocation: programAt('coral.providers.mail.send', program),
 }
 const emission: ActivityRow = {
@@ -232,7 +235,8 @@ const approvalContext: RunDetail = {
   run: execution,
   submission: execution.submission,
   source: program,
-  linkedFunctions: [],
+  linkedSharedTools: [],
+  linkedPrivateTools: [],
   terminal: { kind: 'unavailable' },
 }
 const detail: InvocationDetail = {
@@ -605,6 +609,77 @@ export const ProviderTools: Story = {
       within(table).getByRole('link', { name: 'coral.providers.retired.lookup' }),
     ).toBeVisible()
     await expect(within(table).getAllByRole('img', { name: 'tool' })).toHaveLength(1)
+  },
+}
+/** A private or shared tool's call holds the calls its body made, and opens and closes like a
+ * Run. A provider tool's call holds none. */
+const remind: ParentInvocation = {
+  invocation: `${workspace}/invocations/remind`,
+  callPath: 'coral.private.billing.remind',
+  toolKind: 'private',
+}
+const ownerLookup: ParentInvocation = {
+  invocation: `${workspace}/invocations/owner`,
+  callPath: 'coral.shared.crm.owner',
+  toolKind: 'shared',
+  sharedToolRevision: '4',
+}
+const nestedCall = (
+  name: string,
+  callPath: string,
+  toolKind: ToolKind,
+  parent?: ParentInvocation,
+): ActivityRow & { kind: 'invocation' } => ({
+  ...call,
+  name: `${workspace}/invocations/${name}`,
+  state: 'ended',
+  outcome: 'upstream_outcome',
+  requiresAction: false,
+  callPath,
+  toolKind,
+  parent,
+  // A list layout only; nothing opens it beside a program.
+  sourceLocation: undefined,
+})
+const holding = (rows: ActivityRow[]) => ({ rows, next: '', unavailable: false })
+export const NestedCalls: Story = {
+  args: {
+    page: {
+      ...StatusMarkers.args!.page!,
+      expanded: [...StatusMarkers.args!.page!.expanded, remind.invocation, ownerLookup.invocation],
+      branches: {
+        ...StatusMarkers.args!.page!.branches,
+        [run]: holding([
+          nestedCall('remind', remind.callPath, 'private'),
+          nestedCall('issues', 'coral.providers.linear.listIssues', 'provider'),
+          nestedCall('draft', 'coral.private.billing.draft', 'private'),
+        ]),
+        [remind.invocation]: holding([
+          nestedCall('send', 'coral.providers.mail.send', 'provider', remind),
+          nestedCall('owner', ownerLookup.callPath, 'shared', remind),
+        ]),
+        [ownerLookup.invocation]: holding([
+          nestedCall('lookup', 'coral.providers.crm.getOwner', 'provider', ownerLookup),
+        ]),
+      },
+    },
+  },
+  play: async ({ canvas }) => {
+    const table = canvas.getByRole('table', { name: 'Activity records' })
+    const row = (path: string) =>
+      within(table)
+        .getAllByRole('row')
+        .find((candidate) => within(candidate).queryByRole('link', { name: path }))!
+    // An open tool call can close; a closed one can open; a provider tool's call holds none.
+    for (const path of [remind.callPath, ownerLookup.callPath])
+      await expect(within(row(path)).getByRole('button', { name: 'Collapse record' })).toBeVisible()
+    await expect(
+      within(row('coral.private.billing.draft')).getByRole('button', { name: 'Expand record' }),
+    ).toBeVisible()
+    await expect(within(row('coral.providers.linear.listIssues')).queryByRole('button')).toBeNull()
+    // The calls inside the open ones show.
+    for (const path of ['coral.providers.mail.send', 'coral.providers.crm.getOwner'])
+      await expect(within(table).getByRole('link', { name: path })).toBeVisible()
   },
 }
 export const Collapsed: Story = {
@@ -1022,7 +1097,8 @@ export const StandaloneExecution: Story = {
         kind: 'run',
         run: standalone,
         source: 'return await coral.providers.billing.listInvoices({});',
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: {
           kind: 'failed',
           code: 'program_rejected',
@@ -1047,7 +1123,8 @@ export const UpstreamToolError: Story = {
         kind: 'run',
         run: standalone,
         source: 'return await coral.providers.billing.listInvoices({});',
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: {
           kind: 'failed',
           code: 'program_rejected',
@@ -1091,10 +1168,11 @@ export const RetainedSource: Story = {
       detail: {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
-        source: 'return coral.functions.billing.calculate();',
-        linkedFunctions: [
+        source: 'return coral.private.billing.calculate();',
+        linkedSharedTools: [],
+        linkedPrivateTools: [
           {
-            savedFunction: 'old-function-id',
+            privateTool: 'old-private-tool-id',
             path: 'billing.calculate',
             source: 'export default () => 41;',
           },
@@ -1140,7 +1218,8 @@ export const FinalValueOnExec: Story = {
         contextImpact: { finalValueBytes: '15', outputBytes: '4', toolResultBytes: '2000' },
         // The program that made the emission listed above and returned this value.
         source: program,
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'succeeded', finalValue: '{"invoices":24}' },
       },
     },
@@ -1181,7 +1260,8 @@ export const NoFinalValue: Story = {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
         source: 'console.info("done");',
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'succeeded', finalValue: null },
       },
     },
@@ -1214,6 +1294,7 @@ export const ExactNativeInteger: Story = {
           endedAt: at,
           dispatchedAt: at,
           waitingNanos: '0',
+          toolKind: 'provider',
           requiresAction: false,
         },
         requests: [],
@@ -1261,6 +1342,7 @@ export const Indeterminate: Story = {
           outcome: 'indeterminate',
           dispatchedAt: at,
           waitingNanos: '0',
+          toolKind: 'provider',
           requiresAction: false,
         },
         result: { kind: 'indeterminate' },
@@ -1317,11 +1399,11 @@ function discovery(context: DiscoveryContext, response: string): Story['args'] {
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   for (const target of targets) {
     const owner = toolOwner(target.callPath, [{ id: 'github', callRoot: 'coral.providers.github' }])
-    const path = functionTarget(target.callPath)
+    const path = privateToolPath(target.callPath)
     if (owner && target.title === target.callPath) target.title = owner.relativePath
     target.currentHref = owner
       ? `/${workspace}/providers/${owner.provider.id}/tools/${owner.relativePath}`
-      : `/${workspace}/functions/${path}`
+      : `/${workspace}/tools/private/${path}`
   }
   const name = context.kind === 'describe' ? 'describe' : 'search'
   const row = tool(name, name, 'succeeded', 'Find the tool that merges a pull request')
@@ -1434,23 +1516,23 @@ export const HistoricalSearchMixedResults: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     const results = opened.getByRole('list', { name: 'Results in rank order' })
-    const [savedFunction, merge] = within(results).getAllByRole('listitem')
-    await expect(within(savedFunction).getByText('saved function')).toBeVisible()
-    // An icon beside the call path opens today's function, named with its path.
-    const current = within(savedFunction).getByRole('link', {
-      name: /^Open current function coral\.functions\./,
+    const [privateTool, merge] = within(results).getAllByRole('listitem')
+    await expect(within(privateTool).getByText('private tool')).toBeVisible()
+    // An icon beside the call path opens today's private tool, named with its path.
+    const current = within(privateTool).getByRole('link', {
+      name: /^Open current private tool coral\.private\./,
     })
     await expect(current).toBeVisible()
-    await expect(current.getAttribute('href')).toMatch(/\/functions\//)
-    // Approval shows as the Providers page's named hand; other flags keep their text.
+    await expect(current.getAttribute('href')).toMatch(/\/tools\/private\//)
+    // Approval shows as the Tools page's named hand; other flags keep their text.
     await expect(within(merge).getByRole('img', { name: /^Ask/ })).toBeVisible()
-    for (const flag of ['destructive', 'not idempotent', 'tag: pulls'])
+    for (const flag of ['destructive', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
     await expect(within(results).queryByText(/Matched declaration paths/)).toBeNull()
     // Each card folds its own retained guidance, description and signature into Details.
     const detailsIn = (row: HTMLElement) =>
       within(row).getByText('Details', { selector: 'summary' }).closest('details')!
-    const [functionDetails, mergeDetails] = [detailsIn(savedFunction), detailsIn(merge)]
+    const [privateToolDetails, mergeDetails] = [detailsIn(privateTool), detailsIn(merge)]
     const signature = within(mergeDetails).getByText(codeContaining('merge(input: { body?'), {
       selector: 'pre',
     })
@@ -1463,25 +1545,25 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(guidance).toBeVisible()
     await expect(within(mergeDetails).getByText(/^> \[!NOTE\]/)).toBeVisible()
     // Opening one card leaves the others closed.
-    await expect(functionDetails).not.toHaveAttribute('open')
+    await expect(privateToolDetails).not.toHaveAttribute('open')
     await expect(
-      within(functionDetails).getByText(/^Lists the open issues of one repository/),
+      within(privateToolDetails).getByText(/^Lists the open issues of one repository/),
     ).not.toBeVisible()
-    await userEvent.click(within(savedFunction).getByText('Details'))
-    await waitFor(() => expect(functionDetails).toHaveAttribute('open'))
+    await userEvent.click(within(privateTool).getByText('Details'))
+    await waitFor(() => expect(privateToolDetails).toHaveAttribute('open'))
     await expect(mergeDetails).toHaveAttribute('open')
     await userEvent.click(within(merge).getByText('Details'))
     await waitFor(() => expect(mergeDetails).not.toHaveAttribute('open'))
-    await expect(functionDetails).toHaveAttribute('open')
+    await expect(privateToolDetails).toHaveAttribute('open')
     await expect(signature).not.toBeVisible()
     // The link and the approval hand stay in the summary, outside Details.
     await expect(mergeDetails).not.toContainElement(
       within(merge).getByRole('img', { name: /^Ask/ }),
     )
-    await expect(functionDetails).not.toContainElement(current)
+    await expect(privateToolDetails).not.toContainElement(current)
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.
     await expect(opened.getByRole('region', { name: 'Results (6+)' })).not.toHaveTextContent(
-      /retriever|saved_function|results_found/,
+      /retriever|private_tool|results_found/,
     )
   },
 }
@@ -1527,20 +1609,20 @@ export const HistoricalDescribeTool: Story = {
     await expect(declaration).not.toBeVisible()
   },
 }
-export const HistoricalDescribeSavedFunction: Story = {
+export const HistoricalDescribePrivateTool: Story = {
   args: discovery(
     {
       kind: 'describe',
-      callPath: 'coral.functions.github.openIssuesByLabel',
+      callPath: 'coral.private.github.openIssuesByLabel',
       types: ['Issue', 'Label'],
     },
-    stored.describeFunction,
+    stored.describePrivateTool,
   ),
   play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     // The request states the Call Path, under its label, as the search states its query.
     await expect(opened.getByText('Call path').nextElementSibling).toHaveTextContent(
-      'coral.functions.github.openIssuesByLabel',
+      'coral.private.github.openIssuesByLabel',
     )
     // The types the agent asked for, when it named any.
     await expect(opened.getByText('Types').nextElementSibling).toHaveTextContent('IssueLabel')
@@ -1663,6 +1745,45 @@ export const PendingApproval: Story = {
     await expect(header).toContainElement(close)
   },
 }
+/** An approval for a call a shared tool's body made names that tool and its revision. */
+export const PendingApprovalCalledFromSharedTool: Story = {
+  args: {
+    page: (() => {
+      const review = pendingApproval({ recipient: 'owner@example.com' })
+      const selected = review.detail as InvocationDetail
+      return {
+        ...review,
+        detail: {
+          ...selected,
+          invocation: {
+            ...selected.invocation,
+            parent: {
+              invocation: `${workspace}/invocations/remind`,
+              callPath: 'coral.shared.billing.remind',
+              toolKind: 'shared',
+              sharedToolRevision: '3',
+            },
+          },
+        },
+      }
+    })(),
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    const list = within(dialog).getByText('Requested by', { selector: 'dt' }).closest('dl')!
+    await expect(
+      within(list)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['Task intent', 'Run intent', 'Requested by', 'Called from', 'Call started'])
+    const called = within(list)
+      .getAllByRole('term')
+      .findIndex((term) => term.textContent === 'Called from')
+    await expect(within(list).getAllByRole('definition')[called]).toHaveTextContent(
+      'coral.shared.billing.remind, revision 3',
+    )
+  },
+}
 /** Evidence that fits its pane leaves no fade, and the decision shows whole. */
 export const ShortPendingApproval: Story = {
   args: { page: pendingApproval('owner@example.com') },
@@ -1743,7 +1864,8 @@ export const PendingConnectionFooter: Story = {
         },
         // The program whose call waits on this connection.
         source: "return await coral.providers.linear.listIssues({ assignee: 'me' })",
-        linkedFunctions: [],
+        linkedSharedTools: [],
+        linkedPrivateTools: [],
         terminal: { kind: 'unavailable' },
       },
     },
@@ -1777,6 +1899,7 @@ export const InvocationWithRunEvidence: Story = {
           endedAt: at,
           dispatchedAt: at,
           waitingNanos: '0',
+          toolKind: 'provider',
           requiresAction: false,
         },
         requests: [],
@@ -1784,9 +1907,10 @@ export const InvocationWithRunEvidence: Story = {
         context: {
           ...approvalContext,
           run: { ...execution, state: 'failed', endedAt: at, requiresAction: false },
-          linkedFunctions: [
+          linkedSharedTools: [],
+          linkedPrivateTools: [
             {
-              savedFunction: 'old-function-id',
+              privateTool: 'old-private-tool-id',
               path: 'billing.remind',
               source: 'export default () => "snapshot"',
             },

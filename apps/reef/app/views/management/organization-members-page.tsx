@@ -110,7 +110,7 @@ function OrganizationMembershipActions({
         title="Remove from organization"
         submit="Remove from organization"
         destructive
-        description={`Remove ${label} from every workspace. This removes their accounts and current saved functions. Historical runs remain.`}
+        description={`Remove ${label} from every workspace. This removes their accounts and current private tools. Historical runs remain.`}
         intent="removeOrganizationMember"
         name={m.name}
         etag={m.etag}

@@ -15,8 +15,8 @@ use tokio::sync::{mpsc, oneshot};
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
 use crate::link::HeldUnit;
 use crate::wire::v1::{
-    Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, Location, Log, LogLevel, Request,
-    RunRequest, Started, finish, invocation_result, request, run_request,
+    Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location, Log,
+    LogLevel, Request, RunRequest, Started, finish, invocation_result, request, run_request,
 };
 
 type Answer = oneshot::Sender<Result<String, ToolHostError>>;
@@ -29,8 +29,8 @@ pub(super) struct RunHost {
     control: ProgramExecutionControl,
     value_limits: coral_value::ValueLimits,
     applied_cap_bytes: usize,
-    /// Linked Saved Function path to its snapshot's id.
-    linked: HashMap<String, String>,
+    /// Each linked Tool's root and path, to its id.
+    linked: HashMap<(LinkedToolRoot, String), String>,
     trace_id: Option<String>,
 }
 
@@ -62,7 +62,7 @@ impl RunHost {
         outbound: mpsc::UnboundedSender<RunRequest>,
         value_limits: coral_value::ValueLimits,
         applied_cap_bytes: usize,
-        linked: HashMap<String, String>,
+        linked: HashMap<(LinkedToolRoot, String), String>,
         trace_id: Option<String>,
     ) -> Self {
         Self {
@@ -266,18 +266,24 @@ impl RunHost {
         drop(self.outbound.send(request));
     }
 
-    /// Names the snapshot of a Saved Function call site, as Coral does. A
+    /// Names the snapshot of a linked Tool's call site, as Coral does. A
     /// path with no linked snapshot gives no location rather than a guess.
     fn location(&self, location: Option<AuthoredLocation>) -> Option<Location> {
         let location = location?;
-        let saved_function_id = match location.source {
-            AuthoredSource::Program => String::new(),
-            AuthoredSource::SavedFunction { path } => self.linked.get(&path)?.clone(),
+        let linked = match location.source {
+            AuthoredSource::Program => None,
+            AuthoredSource::PrivateTool { path } => Some((LinkedToolRoot::Private, path)),
+            AuthoredSource::SharedTool { path } => Some((LinkedToolRoot::Shared, path)),
+        };
+        let (root, tool_id) = match linked {
+            None => (LinkedToolRoot::Unspecified, String::new()),
+            Some(key) => (key.0, self.linked.get(&key)?.clone()),
         };
         Some(Location {
-            saved_function_id,
+            tool_id,
             line: location.line,
             column: location.column,
+            root: root.into(),
         })
     }
 

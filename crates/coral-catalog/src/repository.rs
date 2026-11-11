@@ -1,3 +1,4 @@
+use crate::authored::AuthoredToolKind;
 use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
@@ -62,12 +63,14 @@ enum MaterializedTools {
 
 const BUILTIN_INPUT_KIND: &str = "builtin";
 
-/// The exact input one Generation pins: a Setup's input, or the identity of
-/// the Built-in Provider's Coral-defined catalog.
+/// The exact input one Generation pins: a Setup's input, the identity of
+/// the Built-in Provider's Coral-defined catalog, or the Private Provider's
+/// catalog, which declares no Tool.
 #[derive(Clone, Copy)]
 pub(super) enum GenerationInput<'a> {
     Setup(&'a ProviderSetupInput),
     Builtin(&'a BuiltinCatalogIdentity),
+    Code(AuthoredToolKind),
 }
 
 impl<'a> GenerationInput<'a> {
@@ -75,6 +78,7 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.kind().as_str(),
             Self::Builtin(_) => BUILTIN_INPUT_KIND,
+            Self::Code(catalog) => catalog.input_kind(),
         }
     }
 
@@ -82,13 +86,14 @@ impl<'a> GenerationInput<'a> {
         match self {
             Self::Setup(input) => input.as_str(),
             Self::Builtin(identity) => identity.as_str(),
+            Self::Code(catalog) => catalog.call_root(),
         }
     }
 
     fn configuration(self) -> Option<&'a crate::ProviderConfiguration> {
         match self {
             Self::Setup(input) => input.configuration(),
-            Self::Builtin(_) => None,
+            Self::Builtin(_) | Self::Code(_) => None,
         }
     }
 }
@@ -97,10 +102,20 @@ impl<'a> GenerationInput<'a> {
 enum StoredGenerationInput {
     Setup(ProviderSetupInput),
     Builtin(BuiltinCatalogIdentity),
+    Code(AuthoredToolKind),
 }
 
 impl StoredGenerationInput {
     fn from_storage(kind: &str, pinned: &str) -> Result<Self, Error> {
+        if let Some(catalog) = AuthoredToolKind::from_input_kind(kind) {
+            return if pinned == catalog.call_root() {
+                Ok(Self::Code(catalog))
+            } else {
+                Err(Error::CorruptData(format!(
+                    "{kind} Generation pins an unknown catalog"
+                )))
+            };
+        }
         if kind == BUILTIN_INPUT_KIND {
             return BuiltinCatalogIdentity::parse(pinned)
                 .map(Self::Builtin)
@@ -119,6 +134,9 @@ impl StoredGenerationInput {
             Self::Setup(input) => ProviderSetupInputDigest::of_setup_input(input),
             Self::Builtin(identity) => {
                 ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes())
+            }
+            Self::Code(catalog) => {
+                ProviderSetupInputDigest::of_bytes(catalog.call_root().as_bytes())
             }
         }
     }
@@ -226,7 +244,10 @@ impl PolicyColumns {
             self.hints.decode(),
             decode_http_method(self.method.as_deref())?,
         )
-        .declaring_enabled_by_default(self.enabled_by_default))
+        .declaring_default(
+            self.enabled_by_default
+                .then_some(crate::ToolAccessState::Enabled),
+        ))
     }
 }
 
@@ -287,6 +308,9 @@ fn verify_schema_index(
                 "built-in Tool binding disagrees with its index".to_string(),
             ))
         }
+        ExecutionBinding::Code(_) => Err(Error::CorruptData(
+            "a stored Tool has a code binding, which no catalog stores".to_string(),
+        )),
         ExecutionBinding::Http(_) | ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => {
             Ok(())
         }
@@ -598,6 +622,12 @@ impl ToolRow {
                 }
                 self.definition_json
             }
+            // `verify_schema_index` refused it above.
+            ExecutionBinding::Code(_) => {
+                return Err(Error::CorruptData(
+                    "a stored Tool has a code binding, which no catalog stores".to_string(),
+                ));
+            }
         };
         Ok(MaterializedTool::new(
             key,
@@ -615,7 +645,10 @@ impl ToolRow {
             diagnostics,
             diagnostics_json,
         )
-        .declaring_enabled_by_default(self.enabled_by_default))
+        .declaring_default(
+            self.enabled_by_default
+                .then_some(crate::ToolAccessState::Enabled),
+        ))
     }
 }
 
@@ -911,6 +944,27 @@ pub(super) async fn load_setup_input(
     Ok(Some(input))
 }
 
+/// Reports whether a Generation's Tools have code Execution Bindings: it
+/// pins the Private or the Shared Provider's catalog, whose Tools Coral
+/// performs from their source.
+pub(super) async fn generation_binds_code(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    let row: Option<(String,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(ProviderGenerations::InputKind)
+                .from(ProviderGenerations::Table)
+                .and_where(Expr::col(ProviderGenerations::Id).eq(generation_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    let (kind,) =
+        row.ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))?;
+    Ok(AuthoredToolKind::from_input_kind(&kind).is_some())
+}
+
 /// Reads the catalog identity a built-in Generation pins, checked against
 /// the Generation's input digest.
 pub(super) async fn load_builtin_identity(
@@ -940,9 +994,9 @@ pub(super) async fn load_builtin_identity(
     }
     match pinned {
         StoredGenerationInput::Builtin(identity) => Ok(identity),
-        StoredGenerationInput::Setup(_) => Err(Error::CorruptData(
-            "the Built-in Provider's Generation pins a Setup input".to_string(),
-        )),
+        StoredGenerationInput::Setup(_) | StoredGenerationInput::Code(_) => Err(
+            Error::CorruptData("the Built-in Provider's Generation pins another input".to_string()),
+        ),
     }
 }
 

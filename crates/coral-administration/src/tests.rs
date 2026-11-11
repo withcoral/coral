@@ -7,14 +7,17 @@ mod provisional;
 mod repository;
 mod search_eval;
 mod setup;
+mod shared_tools;
+mod tool_removal;
 mod workspaces;
 
 use super::*;
-use coral_functions::{
-    SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
-    SavedFunctionSave, SavedFunctionSource,
-};
+use coral_catalog::AuthoredToolKind;
 use coral_test_support::provision_user;
+use coral_tools::{
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
+    PrivateToolPath, PrivateToolSave,
+};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, TraceId, WorkspaceDisplayName,
 };
@@ -93,6 +96,53 @@ impl RemovalAttempt {
     }
 }
 
+/// Creates `owner`'s Workspace as production does, with the Providers Coral
+/// defines, and tells `index` of them.
+async fn workspace_with_coral_defined_providers(
+    database: &Arc<Database>,
+    workspaces: &WorkspaceModule,
+    index: &coral_search::SearchIndex,
+    owner: &AuthenticatedUser,
+) -> WorkspaceId {
+    WorkspaceWorkflow::new(
+        database.clone(),
+        workspaces.clone(),
+        coral_provider::ProviderModule::with_running_catalog(
+            coral_outbound::DestinationPolicy::default(),
+            database.clone(),
+            workspaces.clone(),
+        ),
+        index.clone(),
+    )
+    .create_workspace(
+        &coral_test_support::change(owner.clone(), 10, '1'),
+        WorkspaceDisplayName::parse("Ops").unwrap(),
+    )
+    .await
+    .expect("create the Workspace")
+    .id()
+    .clone()
+}
+
+/// How many rows of `kind` the search index holds in the Workspace. Search
+/// hydrates a hit from the Tool itself, so only the row shows a change that
+/// search was not told of.
+async fn indexed_rows(database: &Database, workspace: &WorkspaceId, kind: &str) -> usize {
+    use sea_query::{Alias, Expr, ExprTrait as _, Query};
+    let rows: Vec<(String,)> = database
+        .fetch_all(
+            Query::select()
+                .column(Alias::new("doc_id"))
+                .from(Alias::new("search_entities"))
+                .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.to_string()))
+                .and_where(Expr::col(Alias::new("kind")).eq(kind))
+                .to_owned(),
+        )
+        .await
+        .expect("read the index rows");
+    rows.len()
+}
+
 fn change(user: &AuthenticatedUser) -> ChangeContext {
     coral_test_support::change(user.clone(), 100, '1')
 }
@@ -115,7 +165,7 @@ const BEARER_OPENAPI: &str = r#"{"openapi":"3.0.3","info":{"title":"Private","ve
 /// An Organization Owner keeps nothing when their Workspace Membership ends, and
 /// the sole designated Owner cannot leave until another Owner exists.
 #[tokio::test]
-async fn organization_owner_leaving_loses_current_functions_once_another_owner_exists() {
+async fn organization_owner_leaving_loses_current_private_tools_once_another_owner_exists() {
     let db = fixture().await;
     let database = db.database();
     let workspaces = WorkspaceModule::new(database.clone());
@@ -127,14 +177,14 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
         )
         .await
         .unwrap();
-    let functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    let path = SavedFunctionPath::parse("answer").unwrap();
+    let path = PrivateToolPath::parse("answer").unwrap();
     let administrator = provision_user(
         database.clone(),
         "user:administrator",
@@ -153,7 +203,7 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
     let owner =
         AuthenticatedUser::organization_member(owner.user_id().clone(), OrganizationRole::Owner);
     let author = AuthenticatedPrincipal::user(owner.clone());
-    save_answer(&functions, &author, workspace.id()).await;
+    save_answer(&private_tools, &author, workspace.id()).await;
     let state = async || {
         (
             workspaces
@@ -164,8 +214,11 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
                 .list_lifecycle_events(&owner, workspace.id())
                 .await
                 .unwrap(),
-            functions.get(&author, workspace.id(), &path).await.unwrap(),
-            functions
+            private_tools
+                .get(&author, workspace.id(), &path)
+                .await
+                .unwrap(),
+            private_tools
                 .list_lifecycle_events(&author, workspace.id())
                 .await
                 .unwrap(),
@@ -207,21 +260,21 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
     // A new Membership cannot restore the deleted definition.
     join_as_owner(&workspaces, &owner, workspace.id()).await;
     assert!(matches!(
-        functions.get(&author, workspace.id(), &path).await,
-        Err(coral_functions::Error::SavedFunctionNotFound)
+        private_tools.get(&author, workspace.id(), &path).await,
+        Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
     ));
 }
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
 
 /// A Workspace Member with a connected personal Account, a pending reconnect, and one
-/// current Saved Function, in a Workspace an Organization Owner created. The Member's
+/// current Private Tool, in a Workspace an Organization Owner created. The Member's
 /// Organization role must not change what removal cleans up.
 struct MemberRemoval {
     db: coral_test_support::TestDatabase,
     workspaces: WorkspaceModule,
     lifecycle: AccessLifecycleModule,
-    functions: SavedFunctionModule,
+    private_tools: PrivateToolModule,
     owner: AuthenticatedUser,
     member: AuthenticatedUser,
     author: AuthenticatedPrincipal,
@@ -264,20 +317,20 @@ impl MemberRemoval {
             workspace.id(),
         )
         .await;
-        let functions = SavedFunctionModule::new(
+        let private_tools = PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
+            coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
         let author = AuthenticatedPrincipal::user(member.clone());
-        save_answer(&functions, &author, workspace.id()).await;
+        save_answer(&private_tools, &author, workspace.id()).await;
         Self {
             db,
             lifecycle: AccessLifecycleModule::new(database, workspaces.clone()),
             workspaces,
-            functions,
+            private_tools,
             owner,
             member,
             author,
@@ -311,16 +364,16 @@ impl MemberRemoval {
 }
 
 #[tokio::test]
-async fn failed_member_removal_changes_no_credentials_functions_or_events() {
+async fn failed_member_removal_changes_no_credentials_private_tools_or_events() {
     let f = MemberRemoval::new().await;
-    let path = SavedFunctionPath::parse("answer").unwrap();
+    let path = PrivateToolPath::parse("answer").unwrap();
     let saved = f
-        .functions
+        .private_tools
         .get(&f.author, f.workspace.id(), &path)
         .await
         .unwrap();
-    let function_events = f
-        .functions
+    let private_tool_events = f
+        .private_tools
         .list_lifecycle_events(&f.author, f.workspace.id())
         .await
         .unwrap();
@@ -337,7 +390,7 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
     let attempts = RemovalAttempt::cases(&[
         EventFault::AuthorizationCompleted,
         EventFault::AccountDeleted,
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::MembershipRemoved,
     ]);
     for attempt in attempts {
@@ -358,18 +411,18 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
         );
         f.connected.assert_unchanged(&f.member).await;
         assert_eq!(
-            f.functions
+            f.private_tools
                 .get(&f.author, f.workspace.id(), &path)
                 .await
                 .unwrap(),
             saved
         );
         assert_eq!(
-            f.functions
+            f.private_tools
                 .list_lifecycle_events(&f.author, f.workspace.id())
                 .await
                 .unwrap(),
-            function_events
+            private_tool_events
         );
         assert_eq!(
             f.workspaces
@@ -384,7 +437,7 @@ async fn failed_member_removal_changes_no_credentials_functions_or_events() {
 /// Removal always ends access there: an Organization Owner keeps no more of
 /// their private work than an ordinary Member does.
 #[tokio::test]
-async fn member_removal_retires_credentials_pending_connections_and_functions() {
+async fn member_removal_retires_credentials_pending_connections_and_private_tools() {
     for role in [OrganizationRole::Member, OrganizationRole::Owner] {
         member_removal_retires_current_work(role).await;
     }
@@ -396,26 +449,19 @@ async fn member_removal_retires_current_work(role: OrganizationRole) {
     f.remove().await;
     f.rejoin().await;
     f.connected.assert_retired(&f.member).await;
-    assert!(matches!(
-        f.functions
-            .get(
-                &f.author,
-                f.workspace.id(),
-                &SavedFunctionPath::parse("answer").unwrap()
-            )
-            .await,
-        Err(coral_functions::Error::SavedFunctionNotFound)
-    ));
+    // `losing_a_workspace_removes_only_that_principals_private_tools`
+    // covers which Private Tools go; this checks who the deletion names.
     let deletions = f
-        .functions
+        .private_tools
         .list_lifecycle_events(&f.author, f.workspace.id())
         .await
         .unwrap();
-    assert!(deletions.iter().any(|event| event.action()
-        == coral_functions::LifecycleAction::Deleted
-        && event.actor().id().as_str() == f.owner.user_id().as_str()));
+    assert!(deletions.iter().any(
+        |event| event.action() == coral_tools::LifecycleAction::Deleted
+            && event.actor().id().as_str() == f.owner.user_id().as_str()
+    ));
     assert!(
-        f.functions
+        f.private_tools
             .list_lifecycle_events(
                 &AuthenticatedPrincipal::user(f.owner.clone()),
                 f.workspace.id()
@@ -573,23 +619,334 @@ async fn member_removal_keeps_the_agents_they_provisioned() {
         .unwrap();
 }
 
+#[derive(Debug, Clone, Copy)]
+enum AccessLoss {
+    /// The Owner removes the User's Workspace Membership. An Organization
+    /// Owner keeps no more of their Private Tools than a Member does.
+    WorkspaceMembership(OrganizationRole),
+    OrganizationMembership,
+    AgentDeletion,
+}
+
+/// Each way a Principal loses a Workspace removes that Principal's Private
+/// Tools there, and nobody else's.
+// Catches: a removal that keeps the departed Principal's Private Tools, or
+// one that removes another Principal's.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers every way a Principal loses a Workspace"
+)]
+async fn losing_a_workspace_removes_only_that_principals_private_tools() {
+    let path = PrivateToolPath::parse("answer").unwrap();
+    for loss in [
+        AccessLoss::WorkspaceMembership(OrganizationRole::Member),
+        AccessLoss::WorkspaceMembership(OrganizationRole::Owner),
+        AccessLoss::OrganizationMembership,
+        AccessLoss::AgentDeletion,
+    ] {
+        let db = fixture().await;
+        let database = db.database();
+        let workspaces = WorkspaceModule::new(database.clone());
+        let private_tools = PrivateToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
+        let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Owner).await;
+        let member_role = match loss {
+            AccessLoss::WorkspaceMembership(role) => role,
+            AccessLoss::OrganizationMembership | AccessLoss::AgentDeletion => {
+                OrganizationRole::Member
+            }
+        };
+        let member = provision_user(database.clone(), "user:member", member_role).await;
+        let workspace = workspaces
+            .create(
+                &change(&owner),
+                WorkspaceDisplayName::parse("Workspace").unwrap(),
+            )
+            .await
+            .unwrap();
+        workspaces
+            .set_membership(
+                &change(&owner),
+                workspace.id(),
+                &member,
+                coral_workspace::WorkspaceRole::Member,
+            )
+            .await
+            .unwrap();
+        let issued = workspaces
+            .create_agent(
+                &change(&owner),
+                workspace.id(),
+                coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let agent = workspaces
+            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .await
+            .unwrap();
+        let owner_principal = AuthenticatedPrincipal::user(owner.clone());
+        let member_principal = AuthenticatedPrincipal::user(member.clone());
+        for author in [&owner_principal, &member_principal, &agent] {
+            save_answer(&private_tools, author, workspace.id()).await;
+        }
+        let tool = async |author: &AuthenticatedPrincipal| {
+            private_tools
+                .get(author, workspace.id(), &path)
+                .await
+                .unwrap()
+        };
+        let (owner_tool, member_tool, agent_tool) = (
+            tool(&owner_principal).await,
+            tool(&member_principal).await,
+            tool(&agent).await,
+        );
+        let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());
+
+        match loss {
+            AccessLoss::WorkspaceMembership(_) => lifecycle
+                .remove_workspace_member(&change(&owner), workspace.id(), member.user_id())
+                .await
+                .unwrap(),
+            AccessLoss::OrganizationMembership => lifecycle
+                .remove_organization_member(&change(&owner), member.user_id(), 1, None)
+                .await
+                .unwrap(),
+            AccessLoss::AgentDeletion => lifecycle
+                .delete_agent(&change(&owner), workspace.id(), agent.principal().id())
+                .await
+                .unwrap(),
+        }
+
+        assert_eq!(tool(&owner_principal).await, owner_tool, "{loss:?}");
+        match loss {
+            AccessLoss::WorkspaceMembership(_) | AccessLoss::OrganizationMembership => {
+                assert_eq!(tool(&agent).await, agent_tool, "{loss:?}");
+                // A fresh Membership finds nothing at the departed path.
+                let returned = match loss {
+                    AccessLoss::OrganizationMembership => {
+                        provision_user(database.clone(), "user:member", OrganizationRole::Member)
+                            .await
+                    }
+                    _ => member.clone(),
+                };
+                workspaces
+                    .set_membership(
+                        &change(&owner),
+                        workspace.id(),
+                        &returned,
+                        coral_workspace::WorkspaceRole::Member,
+                    )
+                    .await
+                    .unwrap();
+                let gone = private_tools
+                    .get(
+                        &AuthenticatedPrincipal::user(returned),
+                        workspace.id(),
+                        &path,
+                    )
+                    .await;
+                assert!(
+                    matches!(
+                        gone,
+                        Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
+                    ),
+                    "{loss:?}: {gone:?}"
+                );
+            }
+            AccessLoss::AgentDeletion => {
+                assert_eq!(tool(&member_principal).await, member_tool, "{loss:?}");
+                // The Owner reads the deletion of the Agent's Private Tool.
+                let deleted = private_tools
+                    .list_lifecycle_events(&owner_principal, workspace.id())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| event.action() == coral_tools::LifecycleAction::Deleted)
+                    .map(|event| event.target_id().clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(deleted, [agent_tool.id().clone()], "{loss:?}");
+            }
+        }
+    }
+}
+
+/// How a Shared Tool's author loses the Workspace or stops existing.
+#[derive(Debug, Clone, Copy)]
+enum AuthorLoss {
+    WorkspaceMembership,
+    OrganizationMembership,
+    UserDisablement,
+    AgentDeletion,
+}
+
+/// A Shared Tool is the Workspace's: its author is attribution only.
+// Catches: a removal, a disablement or an Agent deletion that removes,
+// changes or hides a Shared Tool the departed Principal wrote or published.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers every way a Shared Tool's author is lost"
+)]
+async fn a_shared_tool_survives_the_loss_of_its_author() {
+    for loss in [
+        AuthorLoss::WorkspaceMembership,
+        AuthorLoss::OrganizationMembership,
+        AuthorLoss::UserDisablement,
+        AuthorLoss::AgentDeletion,
+    ] {
+        let db = fixture().await;
+        let database = db.database();
+        let workspaces = WorkspaceModule::new(database.clone());
+        let private_tools = PrivateToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
+        let shared_tools = coral_tools::SharedToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .unwrap();
+        let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Owner).await;
+        let author =
+            provision_user(database.clone(), "user:author", OrganizationRole::Member).await;
+        let workspace = workspaces
+            .create(
+                &change(&owner),
+                WorkspaceDisplayName::parse("Workspace").unwrap(),
+            )
+            .await
+            .unwrap();
+        // The author is a second Owner, so they publish their own tool.
+        workspaces
+            .set_membership(
+                &change(&owner),
+                workspace.id(),
+                &author,
+                coral_workspace::WorkspaceRole::Owner,
+            )
+            .await
+            .unwrap();
+        let issued = workspaces
+            .create_agent(
+                &change(&owner),
+                workspace.id(),
+                coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let agent = workspaces
+            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .await
+            .unwrap();
+        // The publisher and the Principal whose Private Tool it copies: the
+        // author's own, or the Agent's, which the Owner publishes.
+        let (publisher, source_owner) = match loss {
+            AuthorLoss::AgentDeletion => (&owner, agent.clone()),
+            _ => (&author, AuthenticatedPrincipal::user(author.clone())),
+        };
+        save_answer(&private_tools, &source_owner, workspace.id()).await;
+        let path = coral_tools::SharedToolPath::parse("team.answer").unwrap();
+        shared_tools
+            .publish_as_reviewed(
+                &change(publisher),
+                workspace.id(),
+                coral_tools::SharedToolPublish::review(
+                    path.clone(),
+                    coral_tools::SharedToolOrigin::PrivateTool {
+                        owner: source_owner.principal().clone(),
+                        path: PrivateToolPath::parse("answer").unwrap(),
+                    },
+                    AuthoredToolDescription::parse("Answer").unwrap(),
+                    AuthoredToolSource::parse("export default () => 42;").unwrap(),
+                    coral_catalog::ToolAccessState::Enabled,
+                    0,
+                ),
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+        let reader = AuthenticatedPrincipal::user(owner.clone());
+        // The Shared Tool, its revisions and its history.
+        let read = async || {
+            let tool = shared_tools
+                .get(&reader, workspace.id(), &path)
+                .await
+                .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+            let revisions = shared_tools
+                .list_revisions(&reader, workspace.id(), tool.id())
+                .await
+                .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+            let events = shared_tools
+                .list_lifecycle_events(&reader, workspace.id(), Some(tool.id()), None, 100)
+                .await
+                .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
+            (tool, revisions, events)
+        };
+        let before = read().await;
+        let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());
+
+        match loss {
+            AuthorLoss::WorkspaceMembership => lifecycle
+                .remove_workspace_member(&change(&owner), workspace.id(), author.user_id())
+                .await
+                .unwrap(),
+            AuthorLoss::OrganizationMembership => lifecycle
+                .remove_organization_member(&change(&owner), author.user_id(), 1, None)
+                .await
+                .unwrap(),
+            AuthorLoss::UserDisablement => {
+                coral_workspace::OrganizationModule::new(database.clone())
+                    .set_enabled(&change(&owner), author.user_id(), 1, false)
+                    .await
+                    .unwrap();
+            }
+            AuthorLoss::AgentDeletion => lifecycle
+                .delete_agent(&change(&owner), workspace.id(), agent.principal().id())
+                .await
+                .unwrap(),
+        }
+
+        let after = read().await;
+        assert_eq!(after, before, "{loss:?}");
+        assert_eq!(
+            after.0.current().published_by(),
+            publisher.user_id(),
+            "{loss:?}"
+        );
+    }
+}
+
 async fn save_answer(
-    functions: &SavedFunctionModule,
+    private_tools: &PrivateToolModule,
     actor: &AuthenticatedPrincipal,
     workspace: &WorkspaceId,
 ) {
-    functions
+    private_tools
         .save(
-            &SavedFunctionChangeContext::new(
+            &PrivateToolChangeContext::new(
                 actor.clone(),
                 100,
                 TraceId::parse("11111111111111111111111111111111").unwrap(),
             ),
             workspace,
-            SavedFunctionSave::new(
-                SavedFunctionPath::parse("answer").unwrap(),
-                SavedFunctionDescription::parse("Answer").unwrap(),
-                SavedFunctionSource::parse("export default () => 42;").unwrap(),
+            PrivateToolSave::new(
+                PrivateToolPath::parse("answer").unwrap(),
+                AuthoredToolDescription::parse("Answer").unwrap(),
+                AuthoredToolSource::parse("export default () => 42;").unwrap(),
             ),
         )
         .await
@@ -609,10 +966,10 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Owner).await;
     let member = provision_user(database.clone(), "user:member", OrganizationRole::Member).await;
     let author = AuthenticatedPrincipal::user(member.clone());
-    let functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
@@ -625,7 +982,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             .unwrap();
         // A second designated Owner: removal needs no transfer target.
         join_as_owner(&workspaces, &owner, workspace.id()).await;
-        save_answer(&functions, &author, workspace.id()).await;
+        save_answer(&private_tools, &author, workspace.id()).await;
         account_scopes.push(
             accounts::ConnectedScope::new(
                 database.clone(),
@@ -661,7 +1018,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         ))
     ));
     let attempts = RemovalAttempt::cases(&[
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::MembershipRemoved,
         EventFault::OrganizationMembershipRemoved,
     ]);
@@ -680,15 +1037,15 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 .list_lifecycle_events(&owner, workspace.id())
                 .await
                 .unwrap(),
-            functions
+            private_tools
                 .get(
                     &author,
                     workspace.id(),
-                    &SavedFunctionPath::parse("answer").unwrap(),
+                    &PrivateToolPath::parse("answer").unwrap(),
                 )
                 .await
                 .unwrap(),
-            functions
+            private_tools
                 .list_lifecycle_events(&author, workspace.id())
                 .await
                 .unwrap(),
@@ -733,25 +1090,25 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 before.1
             );
             assert_eq!(
-                functions
+                private_tools
                     .get(
                         &author,
                         workspace.id(),
-                        &SavedFunctionPath::parse("answer").unwrap()
+                        &PrivateToolPath::parse("answer").unwrap()
                     )
                     .await
                     .unwrap(),
                 before.2
             );
             assert_eq!(
-                functions
+                private_tools
                     .list_lifecycle_events(&author, workspace.id())
                     .await
                     .unwrap(),
                 before.3
             );
             assert!(
-                functions
+                private_tools
                     .list_lifecycle_events(
                         &AuthenticatedPrincipal::user(owner.clone()),
                         workspace.id()
@@ -779,7 +1136,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         lifecycle
             .remove_organization_member(&fault, member.user_id(), 1, None)
             .await,
-        Err(Error::Functions(_))
+        Err(Error::Tools(_))
     ));
     for account in &account_scopes {
         account.assert_unchanged(&member).await;
@@ -789,16 +1146,16 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         .await
         .unwrap();
     for workspace in &scopes {
-        functions
+        private_tools
             .get(
                 &author,
                 workspace.id(),
-                &SavedFunctionPath::parse("answer").unwrap(),
+                &PrivateToolPath::parse("answer").unwrap(),
             )
             .await
             .unwrap();
         assert!(
-            functions
+            private_tools
                 .list_lifecycle_events(&AuthenticatedPrincipal::user(owner.clone()), workspace.id())
                 .await
                 .unwrap()
@@ -839,17 +1196,17 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             .await
             .unwrap();
         assert!(matches!(
-            functions
+            private_tools
                 .get(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace.id(),
-                    &SavedFunctionPath::parse("answer").unwrap()
+                    &PrivateToolPath::parse("answer").unwrap()
                 )
                 .await,
-            Err(coral_functions::Error::SavedFunctionNotFound)
+            Err(coral_tools::Error::NotFound(AuthoredToolKind::Private))
         ));
         assert_eq!(
-            functions
+            private_tools
                 .list_lifecycle_events(
                     &AuthenticatedPrincipal::user(returned.clone()),
                     workspace.id()
@@ -878,7 +1235,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     clippy::too_many_lines,
     reason = "one offboarding fixture proves credentials, authorizations, functions, authority and events roll back together"
 )]
-async fn agent_removal_rolls_back_registration_functions_and_events_together() {
+async fn agent_removal_rolls_back_registration_private_tools_and_events_together() {
     let db = fixture().await;
     let database = db.database();
     let workspaces = WorkspaceModule::new(database.clone());
@@ -977,14 +1334,14 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
         .list_lifecycle_events(&owner, workspace.id())
         .await
         .unwrap();
-    let functions = SavedFunctionModule::new(
+    let private_tools = PrivateToolModule::new(
         database.clone(),
         workspaces.clone(),
-        coral_functions::IsolateLimits::default(),
+        coral_tools::IsolateLimits::default(),
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
-    save_answer(&functions, &agent, workspace.id()).await;
+    save_answer(&private_tools, &agent, workspace.id()).await;
     let before = workspaces
         .list_lifecycle_events(&owner, workspace.id())
         .await
@@ -993,10 +1350,13 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
         .get_agent_registration(&owner, workspace.id(), agent.principal().id())
         .await
         .unwrap();
-    let path = SavedFunctionPath::parse("answer").unwrap();
-    let saved = functions.get(&agent, workspace.id(), &path).await.unwrap();
+    let path = PrivateToolPath::parse("answer").unwrap();
+    let saved = private_tools
+        .get(&agent, workspace.id(), &path)
+        .await
+        .unwrap();
     let inspector = AuthenticatedPrincipal::user(owner.clone());
-    let function_events = functions
+    let private_tool_events = private_tools
         .list_lifecycle_events(&inspector, workspace.id())
         .await
         .unwrap();
@@ -1004,7 +1364,7 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
     let attempts = RemovalAttempt::cases(&[
         EventFault::AuthorizationCompleted,
         EventFault::AccountDeleted,
-        EventFault::FunctionDeleted,
+        EventFault::PrivateToolDeleted,
         EventFault::AgentDeleted,
     ]);
     for attempt in attempts {
@@ -1058,15 +1418,18 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
             provider_events
         );
         assert_eq!(
-            functions.get(&agent, workspace.id(), &path).await.unwrap(),
+            private_tools
+                .get(&agent, workspace.id(), &path)
+                .await
+                .unwrap(),
             saved
         );
         assert_eq!(
-            functions
+            private_tools
                 .list_lifecycle_events(&inspector, workspace.id())
                 .await
                 .unwrap(),
-            function_events
+            private_tool_events
         );
         assert_eq!(
             workspaces
@@ -1116,15 +1479,6 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
             .unwrap()
             .is_empty()
     );
-    let events = functions
-        .list_lifecycle_events(&AuthenticatedPrincipal::user(owner), workspace.id())
-        .await
-        .unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(
-        events.first().unwrap().action(),
-        coral_functions::LifecycleAction::Deleted
-    );
 }
 
 #[tokio::test]
@@ -1158,24 +1512,24 @@ async fn prepared_removal_cannot_be_reattributed_or_reused_after_rollback() {
         .await
         .unwrap();
     assert!(matches!(
-        coral_functions::delete_current_for_access_removal_in_transaction(
+        coral_tools::delete_current_for_access_removal_in_transaction(
             &mut tx,
             &change(&member),
             &prepared
         )
         .await,
-        Err(coral_functions::Error::Workspace(
+        Err(coral_tools::Error::Workspace(
             coral_workspace::Error::PermissionDenied(FOREIGN)
         ))
     ));
     tx.rollback().await.unwrap();
     let mut other = database.begin().await.unwrap();
     assert!(matches!(
-        coral_functions::delete_current_for_access_removal_in_transaction(
+        coral_tools::delete_current_for_access_removal_in_transaction(
             &mut other, &context, &prepared
         )
         .await,
-        Err(coral_functions::Error::Workspace(
+        Err(coral_tools::Error::Workspace(
             coral_workspace::Error::PermissionDenied(FOREIGN)
         ))
     ));

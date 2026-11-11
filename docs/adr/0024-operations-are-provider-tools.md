@@ -16,7 +16,7 @@ of MCP tools, which the glossary keeps apart from Provider Tools. Saved Function
 ## What changes for callers
 
 - A Program still calls a Provider Tool at `coral.providers.<namespace>.<tool>(...)`, or a Built-in Provider's Tool at
-  `coral.workspace.<tool>(...)`. `coral.ToolError` replaces `coral.OperationError`.
+  `coral.<tool>(...)`. `coral.ToolError` replaces `coral.OperationError`.
 - Coral Failure codes and catalog diagnostics name tools, such as `tool_not_found` and `tool_disabled`.
 - Search and describe name the kind `provider_tool`. The bare word would read as an MCP tool beside `search` and
   `exec`, so the wire value keeps the qualifier.

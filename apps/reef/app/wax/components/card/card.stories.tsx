@@ -104,7 +104,7 @@ export const AsReactRouterLink: Story = {
   render: (args) => (
     <MemoryRouter>
       <div style={{ width: 320 }}>
-        <Card {...args} as={Link} prefetch="intent" to="/workspaces/default/functions" />
+        <Card {...args} as={Link} prefetch="intent" to="/workspaces/default/tools" />
       </div>
     </MemoryRouter>
   ),

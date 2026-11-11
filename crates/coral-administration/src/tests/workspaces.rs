@@ -49,7 +49,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_actor() {
+async fn creating_a_workspace_creates_its_coral_defined_providers_with_the_creator_as_actor() {
     let f = Fixture::new().await;
     let context = change(&f.creator);
     let workspace = f
@@ -64,36 +64,51 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         .list_lifecycle_events(&f.creator, workspace.id())
         .await
         .unwrap();
-    let [event] = events.as_slice() else {
-        panic!("one Provider event records the Built-in Provider: {events:?}");
-    };
-    assert_eq!(event.action(), LifecycleAction::BuiltinProviderInstalled);
-    for installed in ["provider.active_generation", "catalog"] {
-        assert!(
-            event
-                .changed_field_paths()
-                .iter()
-                .any(|path| path == installed),
-            "the install event records {installed}: {event:?}"
+    for event in &events {
+        for field in ["provider.active_generation", "catalog"] {
+            assert!(
+                event.changed_field_paths().iter().any(|path| path == field),
+                "the install event records {field}: {event:?}"
+            );
+        }
+        assert_eq!(
+            event.actor(),
+            &LifecycleActor::User {
+                user_id: f.creator.user_id().clone(),
+                authority_source: AuthoritySource::WorkspaceMembership,
+            }
         );
     }
+    let installs = [
+        LifecycleAction::BuiltinProviderInstalled,
+        LifecycleAction::PrivateProviderInstalled,
+        LifecycleAction::SharedProviderInstalled,
+    ];
     assert_eq!(
-        event.actor(),
-        &LifecycleActor::User {
-            user_id: f.creator.user_id().clone(),
-            authority_source: AuthoritySource::WorkspaceMembership,
-        }
+        events.len(),
+        installs.len(),
+        "one Provider event records each install"
     );
+    for installed in installs {
+        assert!(
+            events.iter().any(|event| event.action() == installed),
+            "{installed:?}: {events:?}"
+        );
+    }
+    let builtin = events
+        .iter()
+        .find(|event| event.action() == LifecycleAction::BuiltinProviderInstalled)
+        .unwrap();
     let provider = f
         .providers
         .inspect_provider(
             &f.creator,
             workspace.id(),
-            &ProviderId::parse(event.target_id()).unwrap(),
+            &ProviderId::parse(builtin.target_id()).unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(provider.call_root().as_str(), "coral.workspace");
+    assert_eq!(provider.call_root().as_str(), "coral");
 
     // The commit notified search of every Built-in Tool; no reconcile pass ran.
     let catalog = f
@@ -112,8 +127,8 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         .iter()
         .map(|tool| {
             (
-                format!("coral.workspace.{}", tool.key.as_str()),
-                "workspace Coral".to_string(),
+                format!("coral.{}", tool.key.as_str()),
+                "coral Coral".to_string(),
             )
         })
         .collect::<Vec<_>>();

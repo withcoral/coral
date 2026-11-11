@@ -22,7 +22,7 @@ function mark(page: Page, provider: string) {
   return rail(page).locator(`a[href="/${provider}"] img`).filter({ visible: true })
 }
 
-test('Coral leads the providers page, offers nothing to change, stops calls while disabled, and shows members only the tools they can call', async (context) => {
+test('Coral leads the tools page, offers nothing to change, stops calls while disabled, and shows members only the tools they can call', async (context) => {
   const { alice, bob } = await createActors(context)
   const api = managementClients(alice.accessToken)
   const workspace = await api.workspaces.createWorkspace({
@@ -45,12 +45,12 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
   const coral = (await api.providers.listProviders({ parent: workspace.name })).providers.find(
     (provider) => provider.builtin,
   )!
-  const providersPage = `/${workspace.name}/providers`
+  const toolsPage = `/${workspace.name}/tools`
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
       await step('List Coral first, with its mark and no settings', async () => {
-        await page.goto(providersPage)
+        await page.goto(toolsPage)
         const gears = rail(page).getByRole('link', { name: / settings$/ })
         await gears.first().waitFor()
         // Coral has no settings: only the added provider has a gear.
@@ -71,7 +71,7 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
         taskIntent: 'List the providers',
       })
       const listing =
-        'try { await coral.workspace.listProviders({}); return "listed"; } catch (error) { return error.code; }'
+        'try { await coral.listProviders({}); return "listed"; } catch (error) { return error.code; }'
       const listProviders = async () =>
         (await observeRun(runner, await runner.exec(listing))).update.final_value
       await step('A Program cannot call Coral while it is disabled', async () => {
@@ -96,14 +96,15 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
     context,
     async ({ page, step }) => {
       await step('A member sees Coral with only the tools any member can call', async () => {
-        await page.goto(providersPage)
+        await page.goto(toolsPage)
         await waitForProviderStatus(page, 'Coral', 'Ready')
         for (const shown of [
           'listProviders',
           'getPolicy',
           'search',
-          'saveFunction',
-          'deleteFunction',
+          'addCustomTool',
+          'updateCustomTool',
+          'removeCustomTool',
         ]) {
           await page.getByRole('link', { name: shown, exact: true }).waitFor()
         }

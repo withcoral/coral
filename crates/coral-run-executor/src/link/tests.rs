@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
 use coral_v8::{
-    AnalyzedSource, CallableDeclaration, CompiledProgram, CoralDeclarations,
-    LinkedSavedFunctionSource, SavedFunctionCompilation, SourceReferences,
+    AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CallableDeclaration, CompiledProgram,
+    CoralDeclarations, LinkedToolSource, SourceReferences,
 };
 use tokio::sync::oneshot;
 use tonic::Code;
@@ -181,13 +181,18 @@ async fn wait_for(health: &mut HealthClient<tonic::transport::Channel>, status: 
     }
 }
 
-const PROGRAM: &str = "const team = await coral.functions.team.lookup({});\n\
-    return await coral.providers.github.repos.get({ owner: team, repo: \"coral\" })\n\
+const PROGRAM: &str = "const team = await coral.private.team.lookup({});\n\
+    const org = await coral.shared.team.org({});\n\
+    return await coral.providers.github.repos.get({ owner: team, repo: org })\n\
     + await coral.providers.notion.search({});";
 const LOOKUP: &str = "export default async function lookup() { return \"withcoral\"; }";
+const ORG: &str = "export default async function org() { return \"coral\"; }";
 const SAVED: &str = "export default async function repo(input: { owner: string }) {\n\
     return coral.providers.github.repos.get({ owner: input.owner, repo: 1 })\n\
-    ?? coral.functions.team.lookup({});\n}";
+    ?? coral.private.team.lookup({}) ?? coral.shared.team.org({})\n\
+    ?? coral.providers.github[input.owner]({});\n}";
+const NOT_DATA: &str = "export default async function run(input: { callback: () => void }) {\n\
+    return coral.search({ query: \"repos\" });\n}";
 const REPOS_GET: &str = "export default function (input: { \"owner\": string; \"repo\": string }): Promise<{ status: 200; data: { \"id\": number } }>;";
 
 /// The Tool the callable checks below allow.
@@ -215,48 +220,122 @@ fn analyzed<T: std::fmt::Debug>(result: &Result<T, AnalysisError>) -> Called {
 }
 
 /// One call of each kind, on success and on a typed error.
-const CALLS: [NamedCall; 10] = [
+const CALLS: [NamedCall; 12] = [
     ("an analysis", None, |client| {
         let sources = [
             AnalyzedSource::Program(PROGRAM.to_owned()),
-            AnalyzedSource::SavedFunction(SAVED.to_owned()),
+            AnalyzedSource::AuthoredTool(SAVED.to_owned()),
         ];
         analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources))
     }),
     (
         "an invalid reference in the second source",
-        Some("invalid_saved_function_reference"),
+        Some("invalid_linked_tool_reference"),
         |client| {
             let sources = [
                 AnalyzedSource::Program(PROGRAM.to_owned()),
-                AnalyzedSource::Program("return await coral.functions[name]();".to_owned()),
+                AnalyzedSource::Program("return await coral.private[name]();".to_owned()),
             ];
             analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources))
         },
     ),
     ("a compile", None, |client| {
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None))
+        let none = BuiltinTools::default();
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], &none, None))
     }),
-    ("a linked compile", None, |client| {
-        let source = "return await coral.functions.team.lookup({});";
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, source, &[lookup()], None))
+    ("a linked compile with Built-in Tools", None, |client| {
+        let source = "return [await coral.private.team.lookup({}), \
+            await coral.shared.team.org({}), await coral.search({ query: \"x\" })];";
+        let linked = [lookup(), org()];
+        let search = BuiltinTools::new(["search"]);
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, source, &linked, &search, None))
     }),
     ("a checked compile", None, |client| {
         let source = "return await coral.providers.github.repos.get({});";
         let callable = [REPOS_GET_PATH.to_owned()];
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, source, &[], Some(&callable)))
+        let none = BuiltinTools::default();
+        called(&client.compile(
+            TEST_COMPILATION_TIMEOUT,
+            source,
+            &[],
+            &none,
+            Some(&callable),
+        ))
     }),
     ("unknown Tool calls", Some("unknown_tool_calls"), |client| {
         let callable = [REPOS_GET_PATH.to_owned()];
-        let linked = [lookup()];
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, PROGRAM, &linked, Some(&callable)))
+        let linked = [lookup(), org()];
+        let none = BuiltinTools::default();
+        called(&client.compile(
+            TEST_COMPILATION_TIMEOUT,
+            PROGRAM,
+            &linked,
+            &none,
+            Some(&callable),
+        ))
     }),
+    (
+        "unknown Tool calls in a linked Tool",
+        Some("unknown_tool_calls"),
+        |client| {
+            let callable = [REPOS_GET_PATH.to_owned()];
+            let linked = [LinkedToolSource::shared(
+                vec!["team".to_owned(), "org".to_owned()],
+                "export default async function org() { \
+                    return coral.providers.notion.search({}); }"
+                    .to_owned(),
+            )];
+            let source = "return await coral.shared.team.org({});";
+            let none = BuiltinTools::default();
+            called(&client.compile(
+                TEST_COMPILATION_TIMEOUT,
+                source,
+                &linked,
+                &none,
+                Some(&callable),
+            ))
+        },
+    ),
     ("a rejected compile", Some("compilation"), |client| {
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return (", &[], None))
+        let none = BuiltinTools::default();
+        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return (", &[], &none, None))
     }),
     ("an untyped prepare", None, |client| {
-        called(&client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, None))
+        let none = BuiltinTools::default();
+        let prepared = client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, &none, None);
+        // The case carries every reference kind, so a field the wire drops
+        // shows as a difference.
+        let found = prepared.as_ref().map(|prepared| {
+            let tools = prepared.tools();
+            (
+                prepared.references().len(),
+                prepared.shared_references().len(),
+                tools.called_paths(),
+                tools.runtime_built_paths(),
+            )
+        });
+        let expected = (
+            1,
+            1,
+            vec![REPOS_GET_PATH.to_owned()],
+            vec!["coral.providers.github".to_owned()],
+        );
+        assert_eq!(found.ok(), Some(expected));
+        called(&prepared)
     }),
+    (
+        "a prepare that takes something other than data",
+        None,
+        |client| {
+            let search = BuiltinTools::new(["search"]);
+            let prepared = client.prepare(TEST_COMPILATION_TIMEOUT, NOT_DATA, &search, None);
+            let not_data = prepared
+                .as_ref()
+                .map(|prepared| prepared.not_data().is_some());
+            assert_eq!(not_data.ok(), Some(true));
+            called(&prepared)
+        },
+    ),
     ("a typed prepare", None, |client| {
         let declaration = |path: &str, text: &str| {
             CallableDeclaration::new(
@@ -266,24 +345,37 @@ const CALLS: [NamedCall; 10] = [
         };
         let declarations = CoralDeclarations::new(256 * 1024)
             .with_tools(vec![declaration("providers.github.repos.get", REPOS_GET)])
-            .with_functions(vec![declaration(
+            .with_private_tools(vec![declaration(
                 "team.lookup",
                 "export default function lookup(): Promise<string>;",
+            )])
+            .with_shared_tools(vec![declaration(
+                "team.org",
+                "export default function org(): Promise<string>;",
             )]);
-        called(&client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, Some(&declarations)))
+        let none = BuiltinTools::default();
+        called(&client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, &none, Some(&declarations)))
     }),
     (
         "a rejected prepare",
-        Some("invalid_saved_function"),
-        |client| called(&client.prepare(TEST_COMPILATION_TIMEOUT, "import x from \"y\";", None)),
+        Some("invalid_authored_tool"),
+        |client| {
+            let none = BuiltinTools::default();
+            let source = "import x from \"y\";";
+            called(&client.prepare(TEST_COMPILATION_TIMEOUT, source, &none, None))
+        },
     ),
 ];
 
-fn lookup() -> LinkedSavedFunctionSource {
-    LinkedSavedFunctionSource::new(
+fn lookup() -> LinkedToolSource {
+    LinkedToolSource::private(
         vec!["team".to_owned(), "lookup".to_owned()],
         LOOKUP.to_owned(),
     )
+}
+
+fn org() -> LinkedToolSource {
+    LinkedToolSource::shared(vec!["team".to_owned(), "org".to_owned()], ORG.to_owned())
 }
 
 #[tokio::test]
@@ -319,7 +411,8 @@ async fn a_held_run_and_a_compile_share_the_room() {
     let run = coral.next_run().await;
     let remote = Arc::clone(&call.compiler);
     let compiled = tokio::task::spawn_blocking(move || {
-        remote.compile(TEST_COMPILATION_TIMEOUT, "return 1;", &[], None)
+        let none = BuiltinTools::default();
+        remote.compile(TEST_COMPILATION_TIMEOUT, "return 1;", &[], &none, None)
     })
     .await
     .unwrap();
@@ -350,7 +443,8 @@ impl CompilerClient for Gated {
         &self,
         time_left: Duration,
         source: &str,
-        saved_functions: &[LinkedSavedFunctionSource],
+        linked_tools: &[LinkedToolSource],
+        builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let stopped = || CompileError::Unavailable(crate::Unavailable::Stopped);
@@ -358,16 +452,18 @@ impl CompilerClient for Gated {
         let released = self.released.lock().map_err(|_poisoned| stopped())?;
         released.recv().map_err(|_gone| stopped())?;
         self.compiler
-            .compile(time_left, source, saved_functions, callable)
+            .compile(time_left, source, linked_tools, builtin_tools, callable)
     }
 
     fn prepare(
         &self,
         time_left: Duration,
         source: &str,
+        builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<SavedFunctionCompilation, CompileError> {
-        self.compiler.prepare(time_left, source, declarations)
+    ) -> Result<AuthoredToolCompilation, CompileError> {
+        self.compiler
+            .prepare(time_left, source, builtin_tools, declarations)
     }
 }
 
@@ -397,7 +493,7 @@ async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
         let compiler = Arc::clone(compiler);
         std::thread::spawn(move || {
             compiler
-                .compile(time_left, "return 42;", &[], None)
+                .compile(time_left, "return 42;", &[], &BuiltinTools::default(), None)
                 .map(drop)
         })
     };

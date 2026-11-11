@@ -3,7 +3,7 @@ import { expect, it } from 'vitest'
 import { ActivityService, ActivityRunState } from '@/generated/coral/management/v1/activity_pb'
 import { ProviderAccountService } from '@/generated/coral/management/v1/account_pb'
 import { ProviderService } from '@/generated/coral/management/v1/provider_pb'
-import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
+import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
 import { observeActivity } from './activity-observation.server'
 import { activityChanges } from './activity-stream.test-support'
 
@@ -92,7 +92,7 @@ function fixture(children = 0) {
       activity: createClient(ActivityService, transport),
       accounts: createClient(ProviderAccountService, transport),
       providers: createClient(ProviderService, transport),
-      savedFunctions: createClient(SavedFunctionService, transport),
+      privateTools: createClient(PrivateToolService, transport),
     },
     revoke: () => {
       authorized = false

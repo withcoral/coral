@@ -32,6 +32,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
             &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             1,
             Some(&scope),
         )
@@ -56,6 +57,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
             &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Event(page.next_after),
+            &crate::RunEntryLevel::Every,
             1,
             None,
         )
@@ -85,6 +87,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
             &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Invocation(id.clone()),
+            &crate::RunEntryLevel::Every,
             1,
             None,
         )
@@ -118,6 +121,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
             &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             1,
             Some(&HistoryScope::Personal(Some(other_workspace))),
         )
@@ -161,6 +165,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
             &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             1,
             None,
         )
@@ -234,6 +239,7 @@ async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() 
             &workspace,
             accepted.run_id(),
             &RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             10,
             Some(&scope),
         )
@@ -266,6 +272,7 @@ async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() 
             &workspace,
             accepted.run_id(),
             &RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             10,
             Some(&HistoryScope::Personal(None)),
         )
@@ -328,6 +335,7 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
             &workspace,
             accepted.run_id(),
             &RunEntryWindow::Start,
+            &crate::RunEntryLevel::Every,
             1,
             None,
         )
@@ -357,6 +365,7 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
             &workspace,
             accepted.run_id(),
             &RunEntryWindow::After(first.next_after),
+            &crate::RunEntryLevel::Every,
             10,
             None,
         )
@@ -398,6 +407,7 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
                 &workspace,
                 accepted.run_id(),
                 &RunEntryWindow::Start,
+                &crate::RunEntryLevel::Every,
                 10,
                 None
             )

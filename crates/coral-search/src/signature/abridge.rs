@@ -269,8 +269,8 @@ struct ResultData<'d> {
 }
 
 impl<'d> ResultData<'d> {
-    /// A Tool's result is a union of envelopes, each a wrapper around
-    /// one response's data (see `signature::envelope`). A Saved Function's
+    /// A Provider Tool's result is a union of envelopes, each a wrapper around
+    /// one response's data (see `signature::envelope`). An Authored Tool's
     /// whole result is success data.
     fn of(callable: &'d Signature, kind: EntityKind) -> Self {
         let mut data = Self {
@@ -279,7 +279,7 @@ impl<'d> ResultData<'d> {
         };
         let envelopes = match kind {
             EntityKind::ProviderTool => callable.result.as_ref().and_then(envelopes),
-            EntityKind::SavedFunction => None,
+            EntityKind::PrivateTool | EntityKind::SharedTool => None,
         };
         let Some(envelopes) = envelopes else {
             data.success.extend(callable.result.as_ref());

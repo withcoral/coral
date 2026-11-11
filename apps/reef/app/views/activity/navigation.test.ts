@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { activityPage, approvalRequest, invocationRow, runRow, taskRow, toolRow } from './fixtures'
+import {
+  activityPage,
+  approvalRequest,
+  invocationRow,
+  runRow,
+  taskRow,
+  toolRow,
+  workspace,
+} from './fixtures'
 import {
   leavesActivityReview,
   activityNavigation,
@@ -510,7 +518,8 @@ describe('live mode', () => {
                 kind: 'run',
                 run: ended,
                 source: '',
-                linkedFunctions: [],
+                linkedSharedTools: [],
+                linkedPrivateTools: [],
                 terminal: { kind: 'unavailable' },
               },
             }),
@@ -728,7 +737,8 @@ describe('live scopes', () => {
     kind: 'run',
     run: { ...running, state, endedAt: state === 'running' ? null : first.endedAt },
     source: '',
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' },
   })
   const invocationDetail = (state: 'running' | 'succeeded' | 'failed'): ActivityPage['detail'] => ({
@@ -1515,4 +1525,88 @@ it.each([
   ],
 ])('moving from %s leaves the review: %s', (_, leaves, from, to) => {
   expect(leavesActivityReview(approvalRequest)(reviewAt(from), reviewAt(to))).toBe(leaves)
+})
+
+const holding = (rows: ActivityRow[]) => ({ rows, next: '', unavailable: false })
+describe('tool calls inside tool calls', () => {
+  const owner = runRow('nested', '', { state: 'running' })
+  const call = (id: string, parent?: string, toolKind: 'private' | 'provider' = 'private') =>
+    invocationRow(owner.name, id, {
+      callPath: `coral.private.${id}`,
+      toolKind,
+      parent: parent
+        ? {
+            invocation: `${workspace}/invocations/${parent}`,
+            callPath: `coral.private.${parent}`,
+            toolKind: 'private',
+          }
+        : undefined,
+    })
+  const [outer, inner, leaf] = [call('outer'), call('inner', 'outer'), call('leaf', 'inner')]
+  const tree = activityPage({
+    rows: [owner],
+    expanded: [owner.name, outer.name, inner.name],
+    branches: {
+      [owner.name]: holding([outer]),
+      [outer.name]: holding([inner]),
+      [inner.name]: holding([leaf]),
+    },
+  })
+
+  // Catches: the keys skipping the calls inside an expanded tool call, or a key on one of them
+  // collapsing the Run instead of the call that holds it.
+  it('steps through each call inside the expanded tool call that holds it', () => {
+    const stops = activityStops(tree, tree.rows).flatMap((stop) =>
+      stop.kind === 'record' ? [[stop.row.name, stop.parents]] : [],
+    )
+    expect(stops).toEqual([
+      [owner.name, []],
+      [outer.name, [owner.name]],
+      [inner.name, [outer.name, owner.name]],
+      [leaf.name, [inner.name, outer.name, owner.name]],
+    ])
+  })
+  // Catches: a provider tool's call, which holds no calls, opening as if it did.
+  it('never opens a provider tool’s call', () => {
+    const provider = call('send', undefined, 'provider')
+    const flat = activityPage({
+      rows: [owner],
+      expanded: [owner.name, provider.name],
+      branches: { [owner.name]: holding([provider]), [provider.name]: holding([leaf]) },
+    })
+    expect(
+      activityStops(flat, flat.rows).flatMap((stop) =>
+        stop.kind === 'record' ? [stop.row.name] : [],
+      ),
+    ).toEqual([owner.name, provider.name])
+  })
+  // Catches: live mode following an approval of a nested call without opening the calls that
+  // hold it, or looking for that call in the Run's own window.
+  it('follows a nested call’s approval inside the calls that hold it', () => {
+    const action = {
+      run: owner.name,
+      record: leaf.name,
+      request: `${workspace}/approvals/leaf`,
+      calls: [outer.name, inner.name],
+    }
+    const current = { ...tree, liveLatest: { action: { task: '', action } } }
+    expect(liveTarget(current, 'latest', Date.parse(owner.startedAt))).toMatchObject({
+      kind: 'run',
+      chain: [owner.name, outer.name, inner.name],
+    })
+    const waiting = (requiresAction: boolean) => ({
+      ...tree,
+      branches: { ...tree.branches, [inner.name]: holding([{ ...leaf, requiresAction }]) },
+    })
+    expect(liveStep(waiting(true), owner.name, true, action)).toMatchObject({ kind: 'select' })
+    // The call stopped waiting, as its own window says.
+    expect(liveStep(waiting(false), owner.name, true, action)).toEqual({ kind: 'wait' })
+  })
+  // Catches: a link to a nested call that opens only its Run, where the call does not show.
+  it('links a nested call without naming the windows the page opens for it', () => {
+    const nav = activityNavigation(tree, `/${workspace}/activity`, '')
+    const query = target(nav.revealHref(leaf))
+    expect(query.get('record')).toBe(leaf.name)
+    expect(query.has('tree') || query.has('expand')).toBe(false)
+  })
 })

@@ -1,5 +1,6 @@
 import { data, useNavigation } from 'react-router'
 import { useAuthorizationProgress } from '@/lib/use-authorization-progress'
+import { inProgress } from '@/lib/provider-publication-attempt/model'
 import type { Route } from './+types/provider-new'
 import {
   field,
@@ -48,7 +49,7 @@ async function resolveScope(
     workspace: w,
     parent: w.name,
     basePath: `${w.path}/providers/new`,
-    cancelPath: `${w.path}/providers`,
+    cancelPath: `${w.path}/tools`,
   }
 }
 
@@ -121,10 +122,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 }
 
 export default function ProviderNewRoute({ loaderData, actionData }: Route.ComponentProps) {
-  const authorization = loaderData.setup?.authorization
   useAuthorizationProgress(
-    !(actionData && 'configurationErrors' in actionData) &&
-      (authorization?.state === 'pending' || authorization?.state === 'exchanging'),
+    !(actionData && 'configurationErrors' in actionData) && inProgress(loaderData.setup),
   )
   return (
     <StepperPage

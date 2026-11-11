@@ -2,10 +2,10 @@
 //! own storage decoders.
 
 use coral_db::Transaction;
-use sea_query::{Asterisk, Expr, ExprTrait as _, JoinType, Order, Query};
+use sea_query::{Asterisk, Expr, ExprTrait as _, Iden, JoinType, Order, Query};
 
 use super::ProgramRunRecords;
-use super::acceptance::ProgramRunSavedFunctionSnapshots;
+use super::acceptance::{ProgramRunPrivateToolSnapshots, ProgramRunSharedToolSnapshots};
 use super::run_row::decode_program_error;
 use crate::usage_repository::RunEndings;
 use crate::{Error, RunFailureCode, RunState};
@@ -89,10 +89,53 @@ pub(crate) async fn run_endings(
     Ok(endings)
 }
 
-/// Counts the Saved Function snapshots of the Runs accepted in
-/// `[start, end)`, across every Workspace: one per function a Run used.
-pub(crate) async fn saved_function_calls(
+/// Counts the Private Tool snapshots of the Runs accepted in
+/// `[start, end)`, across every Workspace: one per Private Tool a Run used.
+pub(crate) async fn private_tool_calls(
     tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    use ProgramRunPrivateToolSnapshots::{RunId, Table, WorkspaceId};
+    let snapshots = SnapshotTable {
+        table: Table,
+        workspace_id: WorkspaceId,
+        run_id: RunId,
+    };
+    snapshots_of_runs_accepted_in(tx, snapshots, start, end).await
+}
+
+/// Counts the Shared Tool snapshots of the Runs accepted in `[start, end)`,
+/// across every Workspace: one per Shared Tool a Run used.
+pub(crate) async fn shared_tool_calls(
+    tx: &mut Transaction<'_>,
+    start: i64,
+    end: i64,
+) -> Result<u64, Error> {
+    use ProgramRunSharedToolSnapshots::{RunId, Table, WorkspaceId};
+    let snapshots = SnapshotTable {
+        table: Table,
+        workspace_id: WorkspaceId,
+        run_id: RunId,
+    };
+    snapshots_of_runs_accepted_in(tx, snapshots, start, end).await
+}
+
+/// The identifiers of one table of Run snapshots.
+struct SnapshotTable<T> {
+    table: T,
+    workspace_id: T,
+    run_id: T,
+}
+
+/// Counts the rows of `snapshots` whose Run was accepted in `[start, end)`.
+async fn snapshots_of_runs_accepted_in<T: Iden + Copy + 'static>(
+    tx: &mut Transaction<'_>,
+    SnapshotTable {
+        table,
+        workspace_id,
+        run_id,
+    }: SnapshotTable<T>,
     start: i64,
     end: i64,
 ) -> Result<u64, Error> {
@@ -106,20 +149,15 @@ pub(crate) async fn saved_function_calls(
         .fetch_optional(
             Query::select()
                 .expr(Expr::col(Asterisk).count())
-                .from(ProgramRunSavedFunctionSnapshots::Table)
+                .from(table)
                 .join(
                     JoinType::InnerJoin,
                     ProgramRunRecords::Table,
                     Expr::col((ProgramRunRecords::Table, ProgramRunRecords::WorkspaceId))
-                        .equals((
-                            ProgramRunSavedFunctionSnapshots::Table,
-                            ProgramRunSavedFunctionSnapshots::WorkspaceId,
-                        ))
+                        .equals((table, workspace_id))
                         .and(
-                            Expr::col((ProgramRunRecords::Table, ProgramRunRecords::Id)).equals((
-                                ProgramRunSavedFunctionSnapshots::Table,
-                                ProgramRunSavedFunctionSnapshots::RunId,
-                            )),
+                            Expr::col((ProgramRunRecords::Table, ProgramRunRecords::Id))
+                                .equals((table, run_id)),
                         ),
                 )
                 .and_where(accepted().gte(start))

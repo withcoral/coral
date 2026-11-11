@@ -445,6 +445,7 @@ scenarios/
     organization/
     providers/
     shell/
+    tools/
     topology/
     workspaces/
   local-mode/
@@ -465,6 +466,7 @@ Group `scenarios/main/` by the product behavior being proved:
 - `accounts/`: scoped Account lifecycle, authority, renewal, and connection requests.
 - `activity/`: execution history and its navigation.
 - `approvals/`: the Approvals page and its live updates.
+- `tools/`: Private and Shared Tools, from authoring to the Run that calls them.
 - `topology/`: what a composed deployment does not expose.
 
 Keep authority tests beside their feature. Place OAuth and MCP scenarios by the
@@ -622,6 +624,13 @@ Maintained management recordings:
 - `agents/lifecycle`: one-time issuance, credential rotation in the key dialog
   with a client setup that authenticates, no credential recovery on reload, Agent and Registration disablement, expiration,
   and destructive cleanup, checked against real MCP authentication.
+- `tools/shared-tool-journey`: on SQLite and Postgres, an Owner publishes a Private
+  Tool in Reef twice. A Member's MCP agent finds `coral.shared.accounts.owner`
+  through `coral.search` and calls it. The Run page shows the provider call that
+  the tool's body made, called from revision 2. The Owner restores revision 1 as
+  revision 3, and the Member's next Run links revision 3 and runs revision 1's
+  code. After the Owner removes the tool, the Member's next Program fails at
+  admission.
 - `providers/lifecycle-journey`: the same credential-free Provider journey on
   authenticated SQLite and Postgres. Add through Reef, discover and execute through
   MCP, distinguish independent Providers, change exact policy, rename and Update,

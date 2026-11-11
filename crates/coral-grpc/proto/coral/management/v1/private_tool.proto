@@ -1,0 +1,99 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "coral/management/v1/authored_tool.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Inspection and deletion of current Private Tools: the calling User's own,
+// and for a Workspace Owner each Agent's.
+//
+// A Private Tool Path names a definition only for its owning Principal in
+// one Workspace, so requests carry the Workspace and path rather than a
+// resource name, and name an Agent to select that Agent's Private Tool.
+// Another User's Private Tool cannot be named. An absent path, and an Agent's
+// Private Tool for a caller who is not a Workspace Owner, return the same
+// NOT_FOUND. ToolPolicyService.ListToolAccess on the Private Provider lists
+// each Agent's Private Tools to a Workspace Owner.
+service PrivateToolService {
+  // Lists one page of the caller's own Private Tools in path order, without source or diagnostics.
+  rpc ListPrivateTools(ListPrivateToolsRequest) returns (ListPrivateToolsResponse);
+  // Returns one Private Tool with its source and saved diagnostics: the
+  // caller's own, or an Agent's for a Workspace Owner.
+  rpc GetPrivateTool(GetPrivateToolRequest) returns (PrivateTool);
+  // Deletes one Private Tool and records its lifecycle Event with the caller
+  // as its actor: the caller's own, or an Agent's for a Workspace Owner.
+  // Coral keeps no reverse references: Programs that call the path fail at admission.
+  rpc DeletePrivateTool(DeletePrivateToolRequest) returns (google.protobuf.Empty);
+}
+
+// Lists the caller's own current Private Tools in one Workspace.
+message ListPrivateToolsRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Maximum results, bounded to 100; zero selects the default.
+  int32 page_size = 2;
+  // Opaque continuation from the preceding page in this scope.
+  string page_token = 3;
+}
+
+// One scoped page of source-free Private Tool summaries in path order.
+message ListPrivateToolsResponse {
+  // The caller's own Private Tools on this page.
+  repeated PrivateToolSummary private_tools = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
+  // The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
+  // ToolPolicyService lists and sets the policy of these Private Tools under it.
+  string private_provider = 3;
+}
+
+// Source-free summary of one current Private Tool.
+message PrivateToolSummary {
+  // Private Tool Path relative to coral.private.
+  string path = 1;
+  // Exact authored description.
+  string description = 2;
+  // Occurrence time of the latest accepted save.
+  google.protobuf.Timestamp update_time = 3;
+}
+
+// Reads one current Private Tool: the caller's own, or an Agent's.
+message GetPrivateToolRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Private Tool Path relative to coral.private.
+  string path = 2;
+  // workspaces/{workspace}/agents/{agent} for an Agent's Private Tool, in the
+  // Workspace of parent. Empty for the caller's own.
+  string agent = 3;
+}
+
+// Deletes one current Private Tool: the caller's own, or an Agent's.
+message DeletePrivateToolRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Private Tool Path relative to coral.private.
+  string path = 2;
+  // workspaces/{workspace}/agents/{agent} for an Agent's Private Tool, in the
+  // Workspace of parent. Empty for the caller's own.
+  string agent = 3;
+}
+
+// One current Private Tool with its authoring material.
+message PrivateTool {
+  // Private Tool Path relative to coral.private.
+  string path = 1;
+  // Exact authored description.
+  string description = 2;
+  // Self-contained TypeScript declaration emitted from the source.
+  string declaration = 3;
+  // Exact authored TypeScript source.
+  string source = 4;
+  // Advisory diagnostics retained from the latest accepted save.
+  repeated AuthoredToolDiagnostic diagnostics = 5;
+  // True when Coral omitted diagnostics beyond its retention bound.
+  bool diagnostics_truncated = 6;
+  // Occurrence time of the latest accepted save.
+  google.protobuf.Timestamp update_time = 7;
+}

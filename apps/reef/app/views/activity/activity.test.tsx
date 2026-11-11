@@ -44,6 +44,7 @@ const invocation: ActivityRow & { kind: 'invocation' } = {
   outcome: 'upstream_outcome',
   dispatchedAt: startedAt,
   waitingNanos: '0',
+  toolKind: 'provider',
   provider: `${workspace}/providers/linear`,
   tool: 'listIssues',
   callPath: 'coral.providers.linear.listIssues',
@@ -169,7 +170,8 @@ it('retains the selected review and draft across a live refresh, but conceals ac
       run: waiting,
       request: approvalRequest,
       source: 'return null;',
-      linkedFunctions: [],
+      linkedSharedTools: [],
+      linkedPrivateTools: [],
       terminal: { kind: 'unavailable' },
     },
   })
@@ -337,7 +339,7 @@ it.each<[string, ActivityViewProps['more'], string]>([
 })
 
 // An expanded record with no children says why, in terms of its own lifecycle.
-// A Run in a state Reef does not know may still be running, so its copy claims neither.
+// A Run or a tool call in a state Reef does not know may still be running, so its copy claims neither.
 it.each<[string, ActivityRow, string]>([
   ['ended Run', run, 'This execution called no tools.'],
   [
@@ -352,6 +354,11 @@ it.each<[string, ActivityRow, string]>([
   ],
   ['ended Task', goal, 'This task made no calls.'],
   ['open Task', { ...goal, outcome: 'open', endedAt: null }, 'This task has not made a call yet.'],
+  [
+    'private tool call in an unknown state',
+    { ...invocation, toolKind: 'private', state: 'unknown', endedAt: null },
+    'This tool has no recorded calls.',
+  ],
 ])('an expanded %s with no children explains why', (_name, row, copy) => {
   renderRoute(
     <Activity
@@ -537,7 +544,8 @@ it('keeps one accepted-source split while the selection moves within its Run', a
     kind: 'run' as const,
     run,
     source,
-    linkedFunctions: [],
+    linkedSharedTools: [],
+    linkedPrivateTools: [],
     terminal: { kind: 'unavailable' as const },
     request: null,
     requestUnavailable: false,
@@ -589,7 +597,8 @@ const splitContext = {
   kind: 'run' as const,
   run: { ...run, intent: 'Send invoice reminders' },
   source: 'coral.emit(1)',
-  linkedFunctions: [],
+  linkedSharedTools: [],
+  linkedPrivateTools: [],
   terminal: { kind: 'unavailable' as const },
   request: null,
   requestUnavailable: false,

@@ -311,7 +311,9 @@ impl ActiveGeneration {
 /// Workspace, for the search index's reconcile task.
 ///
 /// Disabled Providers are included: disabling changes what a caller sees at
-/// query time, not what the index holds. This facet reads no Tool catalog.
+/// query time, not what the index holds. The Private and Shared Providers
+/// are left out: their Generations hold no Tool, and search finds their
+/// Tools through coral-tools. This facet reads no Tool catalog.
 ///
 /// # Errors
 ///
@@ -319,14 +321,15 @@ impl ActiveGeneration {
 pub async fn active_generations_in_transaction(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<ActiveGeneration>, Error> {
-    repository::active_generations(transaction).await
+    repository::catalog_active_generations(transaction).await
 }
 
 /// Reads the active Generation of each of a Workspace's Providers, or of the
 /// one Provider the filter names, for the search index's state read.
 ///
-/// Disabled Providers are included, as in [`active_generations_in_transaction`].
-/// The caller checks Workspace authority. This facet reads no Tool catalog.
+/// Disabled Providers are included and the Private Provider is left out, as
+/// in [`active_generations_in_transaction`]. The caller checks Workspace
+/// authority. This facet reads no Tool catalog.
 ///
 /// # Errors
 ///
@@ -337,7 +340,7 @@ pub async fn workspace_active_generations_in_transaction(
     provider_filter: Option<&ProviderId>,
 ) -> Result<Vec<ActiveGeneration>, Error> {
     Ok(
-        repository::management_providers(transaction, workspace_id, provider_filter)
+        crate::listed_providers(transaction, workspace_id, provider_filter)
             .await?
             .into_iter()
             .map(|stored| {
@@ -355,7 +358,8 @@ pub async fn workspace_active_generations_in_transaction(
 /// Reads a Workspace's Active Providers with their active Generations.
 ///
 /// This facet reads no Tool catalog, so it stays cheap for a Workspace
-/// with large catalogs. Disabled Providers are left out.
+/// with large catalogs. Disabled Providers are left out, and so is the
+/// Private Provider, as in [`active_generations_in_transaction`].
 ///
 /// # Errors
 ///
@@ -373,7 +377,7 @@ pub(crate) async fn active_providers(
     provider_filter: Option<&ProviderId>,
 ) -> Result<Vec<ActiveProvider>, Error> {
     Ok(
-        repository::management_providers(transaction, workspace_id, provider_filter)
+        crate::listed_providers(transaction, workspace_id, provider_filter)
             .await?
             .into_iter()
             .filter_map(repository::ProviderWithActiveGeneration::into_active)

@@ -68,10 +68,22 @@ export interface ToolView extends Omit<ToolNodeView, 'summary' | 'path'> {
   key: string
   hints: ToolHintsView
   policy: PolicyState
+  /**
+   * The name a row shows under its group heading, when the heading already
+   * says the rest of the path: `teamIssues` under `linear`. Absent when the
+   * row shows the relative path.
+   */
+  nameInGroup?: string
+  /**
+   * The agent that owns a private tool, with its identifier and its page.
+   * Absent for your own private tools and for every other tool.
+   */
+  agent?: { id: string; label: string; path: string }
 }
 
-/** The prose of the one Tool the drawer shows. */
-export interface ToolDetailView {
+/** The prose of the one provider tool the drawer shows. */
+export interface ProviderToolDetailView {
+  kind: 'provider'
   relativePath: string
   /** Provider-authored summary; empty when the Provider gave none. */
   summary: string
@@ -103,8 +115,11 @@ export interface ProviderView {
   namespace: string
   /** The provider's complete Call Root, such as `coral.providers.github`. */
   callRoot: string
-  /** Coral defines and manages this provider. */
-  builtin: boolean
+  /**
+   * Which group of the Tools page this is: Coral's own tools, the workspace's
+   * shared tools, a provider an owner added, or each person's private tools.
+   */
+  kind: 'coral' | 'shared' | 'added' | 'private'
   account: AccountLabel
   /** Coral's provider blockers: provider health, not your own account. */
   blockers: string[]
@@ -181,21 +196,6 @@ export interface ToolCallCounts {
   days: number
   /** Usage by provider and Tool Key. A tool with no entry has no calls. */
   tools: Readonly<Record<SelectionKey, ToolUsage>>
-}
-
-export interface WorkspaceProvidersPageProps {
-  workspace: WorkspaceView
-  recipes?: readonly SourceChoice[]
-  providers: ProviderView[]
-  selectedProvider: string | null
-  selectedTool: string | null
-  /** The prose of `selectedTool`, which `providers` leaves out. */
-  selectedToolDetail?: ToolDetailView | null
-  /** Absent when Coral cannot count calls now; the page then shows no counts. */
-  toolCalls?: ToolCallCounts | null
-  form: FormContext
-  result?: ActionResult
-  pending?: boolean
 }
 
 /** Safe progress of one Add or Update attempt; never a navigation URL, secret, or code. */
@@ -476,7 +476,7 @@ export interface UpdatePageProps {
   settingsPath?: string
   /** The live provider's tools; a refresh groups the new and removed ones. */
   currentTools?: readonly LiveToolView[]
-  providersPath: string
+  toolsPath: string
   setup: SetupView | null
   attempt: UpdateAttempt
   form: FormContext

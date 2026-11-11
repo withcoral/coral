@@ -102,11 +102,16 @@ fn wire_version(version: &str) -> &str {
         .map_or(version, |(version, _)| version)
 }
 
+/// The version of the report below. The collector accepts each version
+/// that a release sent, and a report stored before an upgrade is sent as
+/// stored.
+pub(crate) const VERSION: u8 = 2;
+
 #[derive(Serialize)]
 pub(crate) struct Milestones {
     pub first_successful_run: Option<String>,
-    pub first_saved_function: Option<String>,
-    pub function_reused_in_later_task: Option<String>,
+    pub first_private_tool: Option<String>,
+    pub private_tool_reused_in_later_task: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -116,7 +121,8 @@ pub(crate) struct Day {
     pub run_failures: RunFailures,
     pub tool_invocations: ToolInvocationCounts,
     pub approvals: ApprovalCounts,
-    pub saved_functions: SavedFunctionCounts,
+    pub private_tools: PrivateToolCounts,
+    pub shared_tools: SharedToolCounts,
     pub tasks: TaskCounts,
     pub clients: Clients,
 }
@@ -152,11 +158,21 @@ pub(crate) struct ApprovalCounts {
     pub expired: u64,
 }
 
+/// Private Tools created, used by Runs, and reused in a later Task.
 #[derive(Serialize, Default)]
-pub(crate) struct SavedFunctionCounts {
+pub(crate) struct PrivateToolCounts {
     pub saved: u64,
     pub called: u64,
     pub tasks_reusing_one: u64,
+}
+
+/// Shared Tools published for the first time, removed, and used by Runs. A
+/// new revision is not a new Shared Tool.
+#[derive(Serialize, Default)]
+pub(crate) struct SharedToolCounts {
+    pub published: u64,
+    pub removed: u64,
+    pub called: u64,
 }
 
 #[derive(Serialize, Default)]
@@ -174,7 +190,9 @@ pub(crate) struct Totals {
     pub workspaces: u64,
     pub users: u64,
     pub agents: u64,
-    pub saved_functions: u64,
+    pub private_tools: u64,
+    /// Live Shared Tools: a removed one does not count.
+    pub shared_tools: u64,
     pub providers: Providers,
     pub accounts: Accounts,
 }

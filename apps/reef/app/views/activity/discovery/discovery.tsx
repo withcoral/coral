@@ -254,14 +254,17 @@ function HitDetails({ hit }: { hit: SearchHit }) {
   )
 }
 
+/** How Reef names each kind. The text tells the kinds apart; the color only adds to it. */
+const kinds = {
+  provider_tool: { label: 'tool', color: 'blue' },
+  private_tool: { label: 'private tool', color: 'purple' },
+  shared_tool: { label: 'shared tool', color: 'green' },
+} as const
+
 function KindPill({ kind }: { kind: DiscoveryEntityKind }) {
-  return kind === 'provider_tool' ? (
-    <Pill color="blue" size="small" variant="outline">
-      tool
-    </Pill>
-  ) : (
-    <Pill color="purple" size="small" variant="outline">
-      saved function
+  return (
+    <Pill color={kinds[kind].color} size="small" variant="outline">
+      {kinds[kind].label}
     </Pill>
   )
 }
@@ -272,13 +275,13 @@ const hintLabels: [keyof ToolHintsView, string][] = [
   ['idempotent', 'idempotent'],
   ['openWorld', 'open world'],
 ]
-/** A hint shows only when the provider declared it; a declared false reads "not". */
+/** A hint shows only when the provider declared it true. */
 function Flags({
   tool,
   approval = 'pill',
 }: {
   tool: ToolFlags
-  /** A compact search result shows approval as the policy hand the Providers page uses. */
+  /** A compact search result shows approval as the policy hand the Tools page uses. */
   approval?: 'pill' | 'icon'
 }) {
   return (
@@ -296,20 +299,19 @@ function Flags({
           deprecated
         </Pill>
       )}
-      {hintLabels.map(([hint, label]) => {
-        const declared = tool.hints[hint]
-        return declared === undefined ? null : (
-          <Pill key={hint} color={declared ? 'gray' : 'graySubtle'} size="small" variant="outline">
-            {declared ? label : `not ${label}`}
+      {hintLabels.map(([hint, label]) =>
+        tool.hints[hint] === true ? (
+          <Pill key={hint} color="gray" size="small" variant="outline">
+            {label}
           </Pill>
-        )
-      })}
+        ) : null,
+      )}
     </>
   )
 }
 
 const needsApproval = policyOptions.find((option) => option.value === 'approval_required')!
-/** The policy hand, named and explained as the Providers page's policy control does. */
+/** The policy hand, named and explained as the Tools page's policy control does. */
 function NeedsApproval() {
   const { label, icon, description } = needsApproval
   return (
@@ -376,7 +378,7 @@ function CurrentIconLink({
   target: Pick<SearchHit, 'kind' | 'callPath' | 'currentHref'>
 }) {
   if (target.currentHref === null) return null
-  const subject = target.kind === 'provider_tool' ? 'tool' : 'function'
+  const subject = kinds[target.kind].label
   return (
     <Button.IconLink
       name="ExternalLink"
@@ -403,11 +405,11 @@ function DescriptionResult({
   record?: string | null
 }) {
   const id = useId()
-  const { tool, savedFunction } = description
+  const { tool, authoredTool } = description
   const problems = (['error', 'warning'] as const)
     .map((category) => ({
       category,
-      count: savedFunction?.diagnostics.filter((item) => item.category === category).length ?? 0,
+      count: authoredTool?.diagnostics.filter((item) => item.category === category).length ?? 0,
     }))
     .filter(({ count }) => count > 0)
   return (
@@ -437,7 +439,7 @@ function DescriptionResult({
                 <Pill key={category} color={diagnosticColors[category]} size="small">
                   {count} {category}
                   {count === 1 ? '' : 's'}
-                  {savedFunction?.diagnosticsTruncated ? '+' : ''}
+                  {authoredTool?.diagnosticsTruncated ? '+' : ''}
                 </Pill>
               ))}
             </div>
@@ -457,7 +459,7 @@ function DescribeDetails({
   description: Description
   record?: string | null
 }) {
-  const savedFunction = description.savedFunction
+  const authoredTool = description.authoredTool
   return (
     <Disclosure title="Details">
       {description.tool?.guidance && (
@@ -473,20 +475,20 @@ function DescribeDetails({
         framed
         maxLines={DECLARATION_LINES}
       />
-      {savedFunction && (
+      {authoredTool && (
         <>
           <Typography.HeadingXSmall as="h4">Source</Typography.HeadingXSmall>
           <CodeBlock
-            value={savedFunction.source}
+            value={authoredTool.source}
             format="typescript"
             framed
             maxLines={DECLARATION_LINES}
           />
-          {(savedFunction.diagnostics.length > 0 || savedFunction.diagnosticsTruncated) && (
+          {(authoredTool.diagnostics.length > 0 || authoredTool.diagnosticsTruncated) && (
             <>
               <Typography.HeadingXSmall as="h4">Diagnostics</Typography.HeadingXSmall>
               <ul className={styles.diagnostics}>
-                {savedFunction.diagnostics.map((diagnostic, index) => (
+                {authoredTool.diagnostics.map((diagnostic, index) => (
                   <li key={index} className={styles.row}>
                     <Pill color={diagnosticColors[diagnostic.category]} size="small">
                       {diagnostic.category} TS{diagnostic.code}
@@ -501,7 +503,7 @@ function DescribeDetails({
                   </li>
                 ))}
               </ul>
-              {savedFunction.diagnosticsTruncated && (
+              {authoredTool.diagnosticsTruncated && (
                 <Typography.BodySmall variant="tertiary">
                   Coral kept only the first diagnostics.
                 </Typography.BodySmall>

@@ -23,6 +23,7 @@ import { BreadcrumbRoot } from '@/wax/components/breadcrumbs/breadcrumbs'
 import { NavigationRoot } from '@/wax/components/navigation-frame/navigation-frame'
 import { formContext, management, managementFailure, privateHeaders } from '@/lib/management.server'
 import { sidebarWorkspaceView } from '@/lib/management-views.server'
+import { toolGroupAddress } from '@/views/tools/addresses'
 import type { SidebarWorkspace } from '@/components/sidebar/sidebar'
 import * as styles from './app-shell.css'
 
@@ -58,8 +59,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     managementFailure(error)
   }
 }
-// Drawer selection is URL state inside one Provider. It must not reload the
-// sidebar/workspace discovery; the nested route still checks Workspace access.
+// A tool's drawer is URL state inside one group of the Tools page: a provider,
+// the shared tools, or the private tools. It must not reload the sidebar/workspace discovery; the
+// nested route still checks Workspace access.
 export function shouldRevalidate({
   currentUrl,
   nextUrl,
@@ -68,10 +70,8 @@ export function shouldRevalidate({
   defaultShouldRevalidate,
 }: ShouldRevalidateFunctionArgs) {
   if ((formMethod && formMethod.toUpperCase() !== 'GET') || actionStatus !== undefined) return true
-  const providerPath = /^(\/workspaces\/[^/]+\/providers\/[^/]+)(?:\/tools\/[^/]+)?$/
-  const current = providerPath.exec(currentUrl.pathname)
-  const next = providerPath.exec(nextUrl.pathname)
-  if (current && next && current[1] === next[1] && currentUrl.search === nextUrl.search)
+  const group = toolGroupAddress(currentUrl.pathname)
+  if (group && group === toolGroupAddress(nextUrl.pathname) && currentUrl.search === nextUrl.search)
     return false
   // The Approvals page's selection is URL state too; its own loader reads the review.
   if (

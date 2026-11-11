@@ -65,7 +65,7 @@ fn compiler_memory_failure_allows_the_next_request_to_succeed() {
         "export default function values() {{ return 1; }}\n{}",
         ";".repeat(limits.compiler_heap_bytes()),
     );
-    let result = compiler.prepare_saved_function(deadline(), &source);
+    let result = compiler.prepare_authored_tool(deadline(), &source);
     assert!(
         matches!(result, Err(Error::MemoryLimitExceeded)),
         "{result:?}"

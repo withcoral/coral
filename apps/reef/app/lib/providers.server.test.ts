@@ -177,7 +177,7 @@ it('marks each provider with the logo that stands for it', async () => {
   const marks = await marksOf(() => ({
     providers: [
       {
-        callRoot: 'coral.workspace',
+        callRoot: 'coral',
         displayName: 'Workspace',
         builtin: true,
         namespace: 'workspace',
@@ -187,7 +187,7 @@ it('marks each provider with the logo that stands for it', async () => {
     ],
   }))
   expect(marks).toEqual([
-    { callRoot: 'coral.workspace', displayName: 'Workspace', icons: CORAL_ICONS },
+    { callRoot: 'coral', displayName: 'Workspace', icons: CORAL_ICONS },
     { callRoot: `coral.providers.${withIcons.id}`, displayName: 'Ours', icons: withIcons.icons },
     { callRoot: 'coral.providers.handmade', displayName: 'Handmade' },
   ])

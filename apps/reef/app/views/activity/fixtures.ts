@@ -61,7 +61,8 @@ export const approvalContext: RunDetail = {
   kind: 'run',
   run,
   source: 'return await coral.providers.mail.send({ to: "exact-recipient" })',
-  linkedFunctions: [],
+  linkedSharedTools: [],
+  linkedPrivateTools: [],
   terminal: { kind: 'unavailable' },
 }
 
@@ -161,6 +162,7 @@ export function invocationRow(
     tool: 'send',
     callPath: 'mail.send',
     outcome: 'upstream_outcome',
+    toolKind: 'provider',
     dispatchedAt: at,
     waitingNanos: '0',
     ...overrides,

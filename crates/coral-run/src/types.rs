@@ -13,8 +13,8 @@ use crate::Error;
 
 /// Maximum UTF-8 byte length of one submitted Program body.
 pub const PROGRAM_SOURCE_MAX_BYTES: usize = 64 * 1024;
-/// Maximum number of distinct Saved Functions in one linked source closure.
-pub const LINKED_SAVED_FUNCTION_MAX_COUNT: usize = 64;
+/// Maximum number of distinct Private and Shared Tools in one linked source closure.
+pub const LINKED_TOOL_MAX_COUNT: usize = 64;
 /// Maximum combined UTF-8 bytes in submitted and linked TypeScript source.
 pub const COMBINED_TYPESCRIPT_MAX_BYTES: usize = 512 * 1024;
 /// Maximum UTF-8 byte length of emitted JavaScript in one accepted package.
@@ -22,7 +22,7 @@ pub const EMITTED_JAVASCRIPT_MAX_BYTES: usize = 1024 * 1024;
 /// Maximum UTF-8 byte length of one accepted source map.
 pub const SOURCE_MAP_MAX_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum wall-clock duration of one Program compilation in production.
-pub const COMPILATION_TIMEOUT: Duration = coral_functions::COMPILATION_TIMEOUT;
+pub const COMPILATION_TIMEOUT: Duration = coral_tools::COMPILATION_TIMEOUT;
 /// Fixed v1 maximum Run timeout, bounding how long one Program can occupy a worker.
 pub const RUN_TIMEOUT_MAX_MS: u64 = 900_000;
 /// Maximum number of authored Emissions/Logs returned by one observation.
@@ -517,10 +517,15 @@ impl InvocationResultKind {
 pub enum SourceDocument {
     /// The Run's exact submitted Program source.
     Program,
-    /// The Run's retained snapshot of one linked Saved Function.
-    SavedFunction {
-        /// Saved Function identity of the snapshot, unique within the Run.
-        saved_function_id: String,
+    /// The Run's retained snapshot of one linked Private Tool.
+    PrivateTool {
+        /// Private Tool identity of the snapshot, unique within the Run.
+        private_tool_id: String,
+    },
+    /// The Run's retained snapshot of one linked Shared Tool Revision.
+    SharedTool {
+        /// Shared Tool identity of the snapshot, unique within the Run.
+        shared_tool_id: String,
     },
 }
 
@@ -1069,12 +1074,35 @@ pub(crate) struct AcceptedRun {
     pub(crate) claim_id: String,
     /// The first lease, which the owner renews with every chunk it commits.
     pub(crate) worker_claim_expires_at_unix_nanos: i64,
-    /// Linked Saved Function path to the identity of the snapshot that
-    /// acceptance retained for it.
-    pub(crate) linked_snapshots: HashMap<String, String>,
+    /// Each linked Private or Shared Tool's complete Call Path, such as
+    /// `coral.shared.mail.remind`, to the revision that acceptance retained
+    /// for it, which a call performs.
+    pub(crate) linked_snapshots: HashMap<String, LinkedTool>,
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+}
+
+/// One Private Tool definition or Shared Tool revision a Run linked: which
+/// kind it is, the definition each call to it performs, and the default
+/// Tool Access State that its author declared, or its publishing Owner
+/// chose, for that revision, which applies when no exact rule matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkedTool {
+    pub(crate) kind: coral_catalog::AuthoredToolKind,
+    pub(crate) binding: coral_catalog::CodeExecutionBinding,
+    pub(crate) declared_default: coral_catalog::ToolAccessState,
+}
+
+impl LinkedTool {
+    /// The definition a Run that linked `selection` performs.
+    pub(crate) fn of(selection: &coral_tools::LinkedToolSelection) -> Self {
+        Self {
+            kind: selection.kind(),
+            binding: selection.execution_binding(),
+            declared_default: selection.default_access_state(),
+        }
+    }
 }
 
 impl AcceptedRun {
@@ -1335,7 +1363,7 @@ impl RuntimeLimits {
         self
     }
 
-    /// The deadline for one Program compilation or Saved Function save.
+    /// The deadline for one Program compilation or Private Tool save.
     #[must_use]
     pub const fn compilation_timeout(&self) -> Duration {
         self.compilation_timeout

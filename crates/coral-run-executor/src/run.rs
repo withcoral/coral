@@ -172,7 +172,7 @@ fn load(
     let linked = package
         .linked_snapshots
         .into_iter()
-        .map(|snapshot| (snapshot.path, snapshot.saved_function_id))
+        .map(|snapshot| ((snapshot.root(), snapshot.path), snapshot.tool_id))
         .collect();
     let trace_id = coral_telemetry::RunTrace::parse(&package.traceparent)
         .ok()

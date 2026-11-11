@@ -115,7 +115,7 @@ pub(super) async fn access_state_in_transaction(
             lock,
         )
         .await?;
-    row.map(|(value,)| ToolAccessState::from_storage_str(&value))
+    row.map(|(value,)| access_state_from_storage(&value))
         .transpose()
 }
 
@@ -142,31 +142,7 @@ pub(super) async fn access_states_in_transaction(
         .map(|(key, state)| {
             let key = ToolKey::parse(&key)
                 .map_err(|_error| Error::CorruptData("Tool rule has invalid Tool Key".into()))?;
-            Ok((key, ToolAccessState::from_storage_str(&state)?))
-        })
-        .collect()
-}
-
-pub(super) async fn provider_rules_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    provider: &ProviderId,
-) -> Result<BTreeMap<ToolKey, ToolAccessState>, Error> {
-    let rows: Vec<(String, String)> = transaction
-        .fetch_all(
-            Query::select()
-                .columns([ToolAccessRules::ToolKey, ToolAccessRules::AccessState])
-                .from(ToolAccessRules::Table)
-                .and_where(Expr::col(ToolAccessRules::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(ToolAccessRules::ProviderId).eq(provider.to_string()))
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter()
-        .map(|(key, state)| {
-            let key = ToolKey::parse(&key)
-                .map_err(|_error| Error::CorruptData("Tool rule has invalid Tool Key".into()))?;
-            Ok((key, ToolAccessState::from_storage_str(&state)?))
+            Ok((key, access_state_from_storage(&state)?))
         })
         .collect()
 }
@@ -198,7 +174,7 @@ pub(super) async fn exact_rules_in_transaction(
         rules
             .entry(provider_id)
             .or_default()
-            .insert(tool_key, ToolAccessState::from_storage_str(&access_state)?);
+            .insert(tool_key, access_state_from_storage(&access_state)?);
     }
     Ok(ExactToolRules::new(rules))
 }
@@ -241,6 +217,24 @@ pub(super) async fn upsert_access_state(
         )
         .to_owned();
     transaction.execute(statement).await?;
+    Ok(())
+}
+
+/// Deletes the exact rules of `keys` on one Provider. A decision that holds
+/// one of them shared makes the delete wait, as it does a change.
+pub(super) async fn delete_access_states(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    provider: &ProviderId,
+    keys: &[ToolKey],
+) -> Result<(), Error> {
+    let statement = Query::delete()
+        .from_table(ToolAccessRules::Table)
+        .and_where(Expr::col(ToolAccessRules::WorkspaceId).eq(workspace.to_string()))
+        .and_where(Expr::col(ToolAccessRules::ProviderId).eq(provider.to_string()))
+        .and_where(Expr::col(ToolAccessRules::ToolKey).is_in(keys.iter().map(ToolKey::as_str)))
+        .to_owned();
+    transaction.execute_change(statement).await?;
     Ok(())
 }
 
@@ -320,4 +314,12 @@ pub(super) async fn list_lifecycle_events_in_transaction(
         )
         .await?;
     rows.into_iter().map(LifecycleEventRow::decode).collect()
+}
+
+fn access_state_from_storage(value: &str) -> Result<ToolAccessState, Error> {
+    ToolAccessState::from_storage_str(value).ok_or_else(|| {
+        Error::CorruptData(format!(
+            "Tool policy has unrecognized access state '{value}'"
+        ))
+    })
 }

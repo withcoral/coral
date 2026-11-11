@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::schema::{
     Direction, ProjectionOptions, SchemaGraphAccumulator, SharedTypes, TypeScriptNames,
-    TypeScriptProjector, canonicalize, render_callable_declaration,
+    TypeScriptProjector, canonicalize, input_parameter, render_callable_declaration,
 };
 use crate::{
     AuthenticationKind, CatalogDiagnostic, Error, ExecutionBinding, MaterializedTool,
@@ -33,18 +33,16 @@ use crate::{
 };
 
 mod add_provider;
-mod delete_function;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod private_tools;
 mod provider_input;
-mod save_function;
 mod search;
 mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
-pub use delete_function::{DeleteFunctionArguments, DeleteFunctionResult};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
@@ -52,8 +50,10 @@ pub use get_provider::{
 pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
 };
+pub use private_tools::{
+    RemoveToolArguments, RemovedToolResult, SavedToolResult, ToolSaveArguments,
+};
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
-pub use save_function::{SaveFunctionArguments, SaveFunctionResult};
 pub use search::{
     DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, ProviderArgument,
     SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SEARCH_PROVIDERS_MAX, SavedDetail, SavedDiagnostic,
@@ -67,14 +67,21 @@ pub use update_provider::{
 
 /// Safe display name of the Built-in Provider.
 pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
+
+/// The members of a Program's `coral` that are not Built-in Tools: the other
+/// Call Roots, and `emit` and `ToolError`. No Built-in Tool takes one of these
+/// keys, so the Built-in Call Root `coral` never owns a path under another
+/// root.
+pub const NON_TOOL_ROOT_MEMBERS: [&str; 5] =
+    ["providers", "private", "shared", "emit", "ToolError"];
 /// Starts the catalog identity a built-in Generation pins as its input.
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";
 
 /// The TypeScript type of each opaque value a Built-in Tool takes.
 pub(crate) const OPAQUE_TYPES: [(&str, &str); 1] = [(
-    save_function::SOURCE_OPAQUE_TYPE,
-    save_function::SOURCE_TYPESCRIPT_TYPE,
+    private_tools::SOURCE_OPAQUE_TYPE,
+    private_tools::SOURCE_TYPESCRIPT_TYPE,
 )];
 
 /// The identity a built-in Generation pins: the prefix and the catalog's
@@ -134,17 +141,21 @@ pub enum BuiltinTool {
     /// Changes one Owner-created Provider's configuration or source. A person
     /// reviews and publishes the change in Reef, except a rename alone.
     UpdateProvider,
-    /// Finds the Tools and Saved Functions the caller can call, ranked by a
+    /// Finds the Tools and Private Tools the caller can call, ranked by a
     /// query, or reads the exact descriptions of named Call Paths.
     Search,
-    /// Creates or replaces one of the caller's own Saved Functions.
-    SaveFunction,
-    /// Deletes one of the caller's own Saved Functions.
-    DeleteFunction,
+    /// Creates one of the caller's own Private Tools; fails when one is
+    /// at the path.
+    AddCustomTool,
+    /// Replaces one of the caller's own Private Tools; fails when none is
+    /// at the path, or when its revision is not the one expected.
+    UpdateCustomTool,
+    /// Removes one of the caller's own Private Tools.
+    RemoveCustomTool,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -152,8 +163,9 @@ impl BuiltinTool {
         Self::UpdatePolicy,
         Self::UpdateProvider,
         Self::Search,
-        Self::SaveFunction,
-        Self::DeleteFunction,
+        Self::AddCustomTool,
+        Self::UpdateCustomTool,
+        Self::RemoveCustomTool,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -167,9 +179,16 @@ impl BuiltinTool {
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
             Self::Search => "search",
-            Self::SaveFunction => "saveFunction",
-            Self::DeleteFunction => "deleteFunction",
+            Self::AddCustomTool => "addCustomTool",
+            Self::UpdateCustomTool => "updateCustomTool",
+            Self::RemoveCustomTool => "removeCustomTool",
         }
+    }
+
+    /// Returns the Tool Key of every Built-in Tool this Coral version
+    /// performs, each a member of a Program's `coral`.
+    pub fn keys() -> impl Iterator<Item = &'static str> {
+        Self::ALL.into_iter().map(Self::key)
     }
 
     /// Returns the Built-in Tool under `key`, or `None` for one that
@@ -191,8 +210,9 @@ impl BuiltinTool {
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
             Self::Search => search::NEEDS,
-            Self::SaveFunction => save_function::NEEDS,
-            Self::DeleteFunction => delete_function::NEEDS,
+            Self::AddCustomTool | Self::UpdateCustomTool | Self::RemoveCustomTool => {
+                private_tools::NEEDS
+            }
         }
     }
 }
@@ -343,10 +363,12 @@ pub enum BuiltinArguments {
     UpdateProvider(Box<UpdateProviderArguments>),
     /// `search`'s arguments.
     Search(SearchArguments),
-    /// `saveFunction`'s arguments.
-    SaveFunction(SaveFunctionArguments),
-    /// `deleteFunction`'s arguments.
-    DeleteFunction(DeleteFunctionArguments),
+    /// `addCustomTool`'s arguments.
+    AddCustomTool(ToolSaveArguments),
+    /// `updateCustomTool`'s arguments.
+    UpdateCustomTool(ToolSaveArguments),
+    /// `removeCustomTool`'s arguments.
+    RemoveCustomTool(RemoveToolArguments),
 }
 
 impl BuiltinArguments {
@@ -373,11 +395,14 @@ impl BuiltinArguments {
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
             BuiltinTool::Search => SearchArguments::parse(arguments).map(Self::Search),
-            BuiltinTool::SaveFunction => {
-                SaveFunctionArguments::parse(arguments).map(Self::SaveFunction)
+            BuiltinTool::AddCustomTool => {
+                ToolSaveArguments::parse_add(arguments).map(Self::AddCustomTool)
             }
-            BuiltinTool::DeleteFunction => {
-                DeleteFunctionArguments::parse(arguments).map(Self::DeleteFunction)
+            BuiltinTool::UpdateCustomTool => {
+                ToolSaveArguments::parse_update(arguments).map(Self::UpdateCustomTool)
+            }
+            BuiltinTool::RemoveCustomTool => {
+                RemoveToolArguments::parse(arguments).map(Self::RemoveCustomTool)
             }
         }
     }
@@ -557,19 +582,8 @@ const fn authentication_name(kind: AuthenticationKind) -> &'static str {
     }
 }
 
-/// A Tool Access State, as Built-in Tools spell it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuiltinAccessState {
-    /// A call runs without approval.
-    Enabled,
-    /// A call waits for a person to approve it.
-    ApprovalRequired,
-    /// A call is refused.
-    Disabled,
-}
-
-impl JsonSchema for BuiltinAccessState {
+/// A Tool Access State as a Program writes it, one of its storage words.
+impl JsonSchema for crate::ToolAccessState {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "ToolAccessState".into()
     }
@@ -670,8 +684,9 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
         BuiltinTool::Search => search::definition(),
-        BuiltinTool::SaveFunction => save_function::definition(),
-        BuiltinTool::DeleteFunction => delete_function::definition(),
+        BuiltinTool::AddCustomTool => private_tools::add_definition(),
+        BuiltinTool::UpdateCustomTool => private_tools::update_definition(),
+        BuiltinTool::RemoveCustomTool => private_tools::remove_definition(),
     }
 }
 
@@ -741,7 +756,11 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
                 Vec::new(),
                 "[]".to_string(),
             )
-            .declaring_enabled_by_default(definition.enabled_by_default),
+            .declaring_default(
+                definition
+                    .enabled_by_default
+                    .then_some(crate::ToolAccessState::Enabled),
+            ),
         );
     }
     Ok(PreparedProviderCatalog::new(
@@ -804,7 +823,7 @@ fn project(
         .iter()
         .map(|(input, output)| {
             render_callable_declaration(
-                &format!("input: {input}"),
+                &input_parameter(input),
                 &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
             )
         })

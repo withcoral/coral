@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.search`: Universal Search's one discovery
+//! Performs `coral.search`: Universal Search's one discovery
 //! operation as the invoking Principal, and the only way an agent discovers.
 //! The search is this Invocation of this Run, recorded like any other, and
 //! nothing else.
@@ -178,7 +178,7 @@ fn failure(error: coral_search::Error, provider: Option<&ProviderArgument>) -> E
         coral_search::Error::Workspace(error) => error.into(),
         coral_search::Error::Provider(error) => error.into(),
         coral_search::Error::Policy(error) => error.into(),
-        coral_search::Error::Functions(error) => error.into(),
+        coral_search::Error::Tools(error) => error.into(),
         coral_search::Error::Database(error) => error.into(),
         // Neither reaches here: the call checked its input, and a lookup
         // reports an absent path in `missing`.

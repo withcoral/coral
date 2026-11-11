@@ -6,14 +6,14 @@
  * Search Hits:
  * - `untrimmed`: the page for the query "github pulls", limit 5, no provider filter.
  * - `describeTool`: the describe answer for `issues.create`.
- * - `describeFunction`: the describe answer for a function saved for the
+ * - `describePrivateTool`: the describe answer for a private tool saved for the
  *   purpose. Its diagnostic is real.
  *
  * Built from those captures, to show each branch:
  * - `complete`: the captured page as Coral writes it now.
- * - `mixed`: a Saved Function hit, a guidance match, a matched input, and flags.
+ * - `mixed`: a Private Tool hit, a guidance match, a matched input, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
- * - `sparse`: a Saved Function hit, then a hit whose signature and description are empty.
+ * - `sparse`: a Private Tool hit, then a hit whose signature and description are empty.
  * - `earlierShape`: the response before Search Hits. The parser rejects it.
  */
 const githubHits = [
@@ -148,9 +148,9 @@ const subIssuesHit = {
   matched_tags: ['issues'],
 }
 
-const functionHit = {
-  kind: 'saved_function',
-  call_path: 'coral.functions.github.openIssuesByLabel',
+const privateToolHit = {
+  kind: 'private_tool',
+  call_path: 'coral.private.github.openIssuesByLabel',
   signature_line:
     'openIssuesByLabel(input: { owner: string; repo: string; label: string; limit?: number }): Promise<Array<{ number: number; title: string; url: string }>>',
   description_snippet:
@@ -194,7 +194,7 @@ const untrimmed = {
   has_more: true,
   retriever_statuses: [
     {
-      retriever: 'saved_function',
+      retriever: 'private_tool',
       state: 'empty',
       coverage: {
         eligible_units: 0,
@@ -233,7 +233,7 @@ const withCursor = {
 
 const mixed = {
   hits: [
-    functionHit,
+    privateToolHit,
     {
       ...githubHits[2],
       guidance_snippet: 'API method documentation',
@@ -250,7 +250,7 @@ const mixed = {
 
 const sparse = {
   hits: [
-    trimmed(functionHit),
+    trimmed(privateToolHit),
     { call_path: 'coral.providers.github.pulls.get', signature_line: '', description_snippet: '' },
   ],
 }
@@ -273,7 +273,7 @@ const partial = {
 }
 
 const error = {
-  hits: [trimmed(functionHit)],
+  hits: [trimmed(privateToolHit)],
   retriever_statuses: [
     {
       retriever: 'provider_tool',
@@ -309,9 +309,9 @@ const describeTool = {
   approval_required: false,
 }
 
-const describeFunction = {
-  kind: 'saved_function',
-  call_path: 'coral.functions.github.openIssuesByLabel',
+const describePrivateTool = {
+  kind: 'private_tool',
+  call_path: 'coral.private.github.openIssuesByLabel',
   description:
     'Lists the open issues of one repository that carry a label, newest first, with number, title and URL. Use it before triage to see what waits under a label.',
   typescript_declaration:
@@ -334,7 +334,7 @@ export const stored = {
   partial: JSON.stringify(partial),
   error: JSON.stringify(error),
   describeTool: JSON.stringify(describeTool),
-  describeFunction: JSON.stringify(describeFunction),
+  describePrivateTool: JSON.stringify(describePrivateTool),
   earlierShape: JSON.stringify({
     items: [{ call_path: 'coral.providers.github.pulls.merge', typescript_declaration: '…' }],
     next_cursor: null,

@@ -104,16 +104,16 @@ message Compile {
   // Which compiler call this is. Compiled answers each kind with its own
   // result.
   oneof call {
-    // Find the Saved Functions each source calls and the Tool Call Paths it
-    // names, so Coral can load and check them before it compiles. Answered
-    // with Analyzed.
+    // Find the Private and Shared Tools each source calls and the Tool Call
+    // Paths it names, so Coral can load and check them before it compiles.
+    // Answered with Analyzed.
     Analyze analyze = 3;
-    // Compile a Program body, with the Saved Functions it calls, into the
-    // JavaScript a Run executes. Answered with Package.
+    // Compile a Program body, with the Private and Shared Tools it links,
+    // into the JavaScript a Run executes. Answered with Package.
     ProgramSource compile = 4;
-    // Check a Saved Function's source when it is saved, and produce its type
-    // declaration and diagnostics. Answered with Prepared.
-    SavedFunctionSource prepare = 5;
+    // Check an Authored Tool's source when it is saved or published, and
+    // produce its type declaration and diagnostics. Answered with Prepared.
+    AuthoredToolSource prepare = 5;
   }
 }
 
@@ -144,12 +144,12 @@ message Analyze {
 
 // One source to analyze.
 message AnalyzedSource {
-  // The source, and whether it is a Program body or a Saved Function.
+  // The source, and whether it is a Program body or an Authored Tool.
   oneof source {
     // A Program body.
     string program = 1;
-    // A Saved Function module.
-    string saved_function = 2;
+    // An Authored Tool module: a Private or a Shared Tool.
+    string authored_tool = 2;
   }
 }
 
@@ -159,14 +159,16 @@ message Analyzed {
   repeated SourceReferences sources = 1;
 }
 
-// The Saved Functions one source calls, and the Tool Call Paths it names.
-// Analysis resolves no Tool.
+// The Private and Shared Tools one source calls, and the Tool Call Paths it
+// names. Analysis resolves no Tool.
 message SourceReferences {
-  // The coral.functions references, in path order.
-  repeated Reference functions = 1;
-  // Every prefix of a literal coral.providers or coral.workspace chain that
-  // could be a Tool Call Path.
+  // The coral.private references, in path order.
+  repeated Reference private_tools = 1;
+  // Every prefix of a literal Tool chain under coral that could be a Tool
+  // Call Path.
   repeated string tool_call_paths = 2;
+  // The coral.shared references, in path order.
+  repeated Reference shared_tools = 3;
 }
 
 // Why analyze stopped.
@@ -177,22 +179,37 @@ message AnalysisFailure {
   CompileFailure failure = 2;
 }
 
-// A Program body, the Saved Functions it links, and the Tools it may call.
+// A Program body, the Private and Shared Tools it links, and the Tools it may
+// call.
 message ProgramSource {
   // The Program body.
   string source = 1;
-  // The linked Saved Functions, in the order they initialize.
-  repeated LinkedSavedFunction saved_functions = 2;
+  // The linked Private and Shared Tools, in the order they initialize.
+  repeated LinkedTool linked_tools = 2;
   // The Call Paths the caller can call. Unset: the calls are not checked.
   Callable callable = 3;
+  // The Tool Keys of the Built-in Tools the Program calls on coral.
+  repeated string builtin_tools = 4;
 }
 
-// One Saved Function source linked into a Program.
-message LinkedSavedFunction {
-  // Its path under coral.functions.
+// One Private or Shared Tool source linked into a Program.
+message LinkedTool {
+  // Its path under its root.
   repeated string path_segments = 1;
   // Its module source.
   string source = 2;
+  // The member of coral that holds it.
+  LinkedToolRoot root = 3;
+}
+
+// The member of coral that holds a linked Tool.
+enum LinkedToolRoot {
+  // Never sent.
+  LINKED_TOOL_ROOT_UNSPECIFIED = 0;
+  // coral.private: the caller's own Private Tools.
+  LINKED_TOOL_ROOT_PRIVATE = 1;
+  // coral.shared: the Workspace's Shared Tools.
+  LINKED_TOOL_ROOT_SHARED = 2;
 }
 
 // The complete Call Paths the caller can call.
@@ -201,22 +218,27 @@ message Callable {
   repeated string call_paths = 1;
 }
 
-// One Saved Function module to prepare.
-message SavedFunctionSource {
+// One Authored Tool module to prepare.
+message AuthoredToolSource {
   // The module source.
   string source = 1;
   // What types the coral namespace. Unset: it stays untyped.
   Declarations declarations = 2;
+  // The Tool Keys of the Built-in Tools on coral.
+  repeated string builtin_tools = 3;
 }
 
 // The declarations that type the coral namespace for one save.
 message Declarations {
   // Above this size, a typed declaration is saved untyped.
   uint64 declaration_max_bytes = 1;
-  // Types coral.providers and coral.workspace. Unset: they stay untyped.
+  // Types coral.providers and the Built-in Tools on coral. Unset: they stay
+  // untyped.
   CallableDeclarations tools = 2;
-  // Types coral.functions. Unset: it stays untyped.
-  CallableDeclarations functions = 3;
+  // Types coral.private. Unset: it stays untyped.
+  CallableDeclarations private_tools = 3;
+  // Types coral.shared. Unset: it stays untyped.
+  CallableDeclarations shared_tools = 4;
 }
 
 // The declarations that type one part of the coral namespace.
@@ -227,16 +249,16 @@ message CallableDeclarations {
 
 // The declaration that types one Call Path.
 message CallableDeclaration {
-  // The path, relative to coral for a Tool and to coral.functions for a
-  // Saved Function.
+  // The path, relative to coral for a Tool, to coral.private for a Private
+  // Tool and to coral.shared for a Shared Tool.
   repeated string path_segments = 1;
   // Self-contained TypeScript with one default export.
   string declaration = 2;
 }
 
-// One statically named Saved Function reference.
+// One statically named Private or Shared Tool reference.
 message Reference {
-  // The dotted path relative to coral.functions.
+  // The dotted path relative to its root.
   string path = 1;
   // The one-based authored line.
   uint64 line = 2;
@@ -244,10 +266,13 @@ message Reference {
   uint64 column = 3;
 }
 
-// The called chains that name no Tool the caller can call.
+// The called chains of one source that name no Tool the caller can call.
 message UnknownToolCalls {
   // The chains, in source order.
   repeated UnknownToolCall calls = 1;
+  // The source: the index of the linked Tool among those compiled with the
+  // Program. Unset: the Program body.
+  optional uint64 linked = 2;
 }
 
 // One called chain that names no Tool the caller can call.
@@ -274,7 +299,7 @@ message Package {
   repeated Diagnostic diagnostics = 4;
 }
 
-// One prepared Saved Function.
+// One prepared Authored Tool.
 message Prepared {
   // The self-contained emitted declaration.
   string declaration = 1;
@@ -287,8 +312,25 @@ message Prepared {
   }
   // Advisory diagnostics.
   repeated Diagnostic diagnostics = 4;
-  // The Saved Function references the module names, in path order.
+  // The Private Tool references the module names, in path order.
   repeated Reference references = 5;
+  // The Shared Tool references the module names, in path order.
+  repeated Reference shared_references = 6;
+  // The literal Tool chains under coral the module names.
+  repeated ToolChain tool_chains = 7;
+  // Where the declaration's arguments or result hold something other than
+  // data. Unset: they are all data.
+  optional string not_data = 8;
+}
+
+// One literal Tool chain under coral that a module names.
+message ToolChain {
+  // The segments relative to coral.
+  repeated string segments = 1;
+  // Whether the module calls it.
+  bool called = 2;
+  // Whether it was cut before a computed segment.
+  bool computed = 3;
 }
 
 // The callable-rooted fields of one declaration.
@@ -341,7 +383,7 @@ message CompileFailure {
     bool timed_out = 1;
     // The compiler rejected the source.
     Rejection rejected = 2;
-    // A coral.functions access names no supported Saved Function path.
+    // A coral.private or coral.shared access names no supported Tool path.
     ReferenceRejection reference = 3;
     // Compiling passed the compiler's heap limit.
     bool memory_limit = 4;
@@ -367,7 +409,7 @@ message Rejection {
   string message = 2;
 }
 
-// A coral.functions access that names no supported Saved Function path.
+// A coral.private or coral.shared access that names no supported Tool path.
 message ReferenceRejection {
   // The safe reason.
   string message = 1;
@@ -430,7 +472,7 @@ message RunPackage {
   bytes sha256 = 3;
   // The Run's value limits.
   ValueLimits value_limits = 4;
-  // The Saved Function snapshots linked into the script.
+  // The Private and Shared Tool snapshots linked into the script.
   repeated LinkedSnapshot linked_snapshots = 5;
   // Coral's protocol level.
   uint32 protocol_level = 6;
@@ -450,12 +492,14 @@ message ValueLimits {
   uint64 run_output_bytes = 4;
 }
 
-// One Saved Function snapshot linked into a package.
+// One Private or Shared Tool snapshot linked into a package.
 message LinkedSnapshot {
-  // Its path relative to `coral.functions`, such as `debug.fetch`.
+  // Its path under its root, such as `debug.fetch`.
   string path = 1;
-  // The snapshot's id, which names it in a source location.
-  string saved_function_id = 2;
+  // The Tool's id, which names it in a source location.
+  string tool_id = 2;
+  // The member of coral that holds it.
+  LinkedToolRoot root = 3;
 }
 
 // The package is loaded; the Run Executor waits for Started. A script the
@@ -541,12 +585,15 @@ enum LogLevel {
 
 // An authored source location.
 message Location {
-  // The Saved Function snapshot that holds it. Empty: the Program body.
-  string saved_function_id = 1;
+  // The id of the linked Tool that holds it. Empty: the Program body.
+  string tool_id = 1;
   // The one-based line.
   uint32 line = 2;
   // The one-based column, in UTF-16 code units.
   uint32 column = 3;
+  // The member of coral that holds the linked Tool. Unspecified: the Program
+  // body.
+  LinkedToolRoot root = 4;
 }
 
 // How the Program ended.

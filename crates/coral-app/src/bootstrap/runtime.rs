@@ -6,13 +6,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use coral_db::Database;
-use coral_functions::SavedFunctionModule;
 use coral_mcp::{
     McpHttpConfig, McpHttpError, McpModules, RunningMcpHttpServer, start_authenticated, start_local,
 };
 use coral_run::RunModule;
 use coral_search::{SearchIndex, UniversalSearchModule};
 use coral_task::{TaskCommands, TaskModule};
+use coral_tools::PrivateToolModule;
 use coral_workspace::WorkspaceModule;
 
 use super::error::AppError;
@@ -25,9 +25,9 @@ use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthori
 
 /// What a launching binary adds to Coral beyond what every build has.
 ///
-/// The `coral` binary passes the default. The released binary will pass what
-/// `ee/` registers, and each Enterprise Feature will check [`Self::edition`]
-/// each time it is used (ADR 0033).
+/// The `coral` binary passes the default. The released binary passes what
+/// `ee/` registers, and each Enterprise Feature checks [`Self::edition`] each
+/// time it is used (ADR 0033).
 #[derive(Clone, Default)]
 pub struct Extensions {
     /// Decides the deployment's Edition. The default is always Community.
@@ -510,21 +510,18 @@ fn mcp_modules(
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
-    let saved_functions = SavedFunctionModule::with_compiler_client(
+    let private_tools = PrivateToolModule::with_compiler_client(
         database,
         workspaces.clone(),
         compiler,
         runtime_limits.compilation_timeout(),
     );
-    // MCP-started Runs link people to Reef and save Saved Functions through
+    // MCP-started Runs link people to Reef and save Private Tools through
     // the one module, so every save shares its compiler and deadline. This
     // clone shares the server's Run Owners; no other clone runs a Program.
     let runs = runs
         .with_human_interface(human_interface.clone())
-        .with_saved_functions(coral_run::SavedFunctions::new(
-            saved_functions,
-            search_index,
-        ));
+        .with_private_tools(coral_run::PrivateTools::new(private_tools, search_index));
     let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
     McpModules::new(workspaces, tasks, commands, runs, search, human_interface)
 }
