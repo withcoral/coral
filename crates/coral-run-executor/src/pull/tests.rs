@@ -725,3 +725,27 @@ async fn a_message_up_to_the_link_bound_reaches_coral() {
         "{reply:?}"
     );
 }
+
+// Catches: a size check that rejects a `Compile` that fits, or passes one
+// that does not, near the message bound.
+#[test]
+fn a_call_is_too_large_exactly_when_its_compile_passes_the_bound() {
+    let encoded = |call: &Call| {
+        let compile = pull_response::Message::Compile(Compile {
+            number: u64::MAX,
+            time_left_ms: u32::MAX,
+            call: Some(call.clone()),
+        });
+        prost::Message::encoded_len(&response(compile))
+    };
+    let near = MESSAGE_MAX_BYTES - 64;
+    for extra in 0..128 {
+        let call = compile_call(&"x".repeat(near + extra), &[], None);
+        assert_eq!(
+            too_large(&call),
+            encoded(&call) > MESSAGE_MAX_BYTES,
+            "{} bytes encoded",
+            encoded(&call)
+        );
+    }
+}

@@ -235,8 +235,9 @@ export async function desktopProcesses(app: ElectronApplication): Promise<Deskto
 }
 
 /**
- * Kills the app and the runtime and Reef it started. Killing only Electron
- * would orphan the runtime, still writing to a data folder about to be removed.
+ * Kills the app and the runtime, its local Run Executors and Reef it started.
+ * Killing only Electron would orphan the runtime, still writing to a data
+ * folder about to be removed.
  */
 async function forceStop(app: ElectronApplication) {
   const { runtime, runExecutors, reef } = await desktopProcesses(app).catch(() => ({

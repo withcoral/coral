@@ -129,6 +129,9 @@ impl PullStreamCompiler {
         time_left: Duration,
         call: &Call,
     ) -> Result<Read, CompileError> {
+        if time_left.saturating_sub(called.elapsed()).is_zero() {
+            return Err(CompileError::TimedOut);
+        }
         // The source, not the compiler, passed the bound: rejected before
         // it waits for room, and nothing is sent.
         if crate::pull::too_large(call) {

@@ -462,10 +462,13 @@ impl PullStreams {
 /// Whether `call`, sent as a `Compile`, passes [`MESSAGE_MAX_BYTES`]. Sent,
 /// such a message would end the stream and every compile on it.
 pub(crate) fn too_large(call: &Call) -> bool {
-    // A `Compile`'s number, time left and framing around its call, at their
-    // longest.
-    const FRAMING_BYTES: usize = 32;
-    call.encoded_len() + FRAMING_BYTES > MESSAGE_MAX_BYTES
+    use prost::encoding::encoded_len_varint;
+    // The `Compile`: its call, its longest number and its longest time left,
+    // each a key byte and a varint.
+    let compile = call.encoded_len() + 1 + 10 + 1 + 5;
+    // The `PullResponse` around it: a key byte and a length.
+    let response = 1 + encoded_len_varint(compile as u64) + compile;
+    response > MESSAGE_MAX_BYTES
 }
 
 /// Coral's side of the link: the pull streams it holds, the credentials it

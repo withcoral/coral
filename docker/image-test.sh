@@ -282,6 +282,11 @@ const message = Buffer.concat([field(1, "Children"), field(2, crypto.randomUUID(
 const header = Buffer.alloc(5);
 header.writeUInt32BE(message.length, 1);
 const client = http2.connect("http://127.0.0.1:14555");
+const stalled = setTimeout(() => {
+  console.error("CreateWorkspace timed out");
+  client.destroy();
+  process.exit(1);
+}, 30000);
 const request = client.request({
   ":method": "POST",
   ":path": "/coral.management.v1.WorkspaceService/CreateWorkspace",
@@ -295,6 +300,7 @@ request.on("trailers", (trailers) => {
   if (trailers["grpc-status"] !== "0") console.error("CreateWorkspace:", trailers);
 });
 request.on("end", async () => {
+  clearTimeout(stalled);
   client.close();
   // The frame header, then Workspace.name: field 1, one length byte.
   const workspace = Buffer.concat(chunks).subarray(5);

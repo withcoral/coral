@@ -97,8 +97,12 @@ test('Quit stops Desktop’s processes, and a relaunch keeps the workspace at th
           'coral.providers.records.lookup',
         )
       })
+      const running = await desktopProcesses(app)
+      expect(running.runExecutors).toHaveLength(1)
+      children = [...running.runtime, ...running.runExecutors, ...running.reef]
     },
     { label: 'Relaunch' },
   )
   expect(relaunched).toEqual({ code: 0, signal: null })
+  for (const pid of children) expect(processExists(pid), `process ${pid}`).toBe(false)
 })
