@@ -17,25 +17,6 @@ use crate::wire::v1::compiled::Answer;
 use crate::wire::v1::{self as wire, Compile, Compiled};
 use crate::{AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
 
-/// The kinds a rejection can carry. A kind off this list reads as
-/// `compilation`, so a peer never widens the set of `error.type` values.
-const REJECTION_KINDS: [&str; 6] = [
-    "compilation",
-    "invalid_program_body",
-    "invalid_saved_function",
-    "source_too_deeply_nested",
-    "forbidden_capability",
-    "invalid_function_save",
-];
-/// The kinds a compiler failure can carry. Any other reads as
-/// `compiler_protocol`.
-const FAILURE_KINDS: [&str; 4] = [
-    "initialization",
-    "compiler_protocol",
-    "invalid_source_map",
-    "engine",
-];
-
 /// A compile message that breaks the protocol: a missing field, an answer
 /// of the wrong kind or count, or a package whose digest does not match. The
 /// side that reads one ends the stream that carried it: Coral's
@@ -194,7 +175,9 @@ pub(crate) fn failure(error: CompileError) -> wire::CompileFailure {
     }
 }
 
-/// The error a `failure` answer carries.
+/// The error a `failure` answer carries. A kind off coral-v8's lists reads
+/// as `compilation` or `compiler_protocol`, so a peer never widens the set
+/// of `error.type` values.
 pub(crate) fn compile_error(failure: wire::CompileFailure) -> Result<CompileError, ProtocolError> {
     let known = |kinds: &[&'static str], kind: &str, other| {
         kinds
@@ -207,7 +190,7 @@ pub(crate) fn compile_error(failure: wire::CompileFailure) -> Result<CompileErro
         Failure::TimedOut(_) => CompileError::TimedOut,
         Failure::Rejected(wire::Rejection { kind, message }) => {
             CompileError::Diagnostics(Diagnostics::Message {
-                kind: known(&REJECTION_KINDS, &kind, "compilation"),
+                kind: known(&coral_v8::Error::REJECTION_CODES, &kind, "compilation"),
                 message,
             })
         }
@@ -227,7 +210,7 @@ pub(crate) fn compile_error(failure: wire::CompileFailure) -> Result<CompileErro
         Failure::Busy(_) => CompileError::Unavailable(Unavailable::Busy),
         Failure::Stopped(_) => CompileError::Unavailable(Unavailable::Stopped),
         Failure::Failed(kind) => CompileError::Unavailable(Unavailable::Failed(known(
-            &FAILURE_KINDS,
+            &coral_v8::Error::COMPILER_FAILURE_CODES,
             &kind,
             "compiler_protocol",
         ))),
@@ -518,6 +501,40 @@ mod tests {
 
     use super::*;
     use crate::InProcessCompiler;
+
+    // Catches: an error, or a kind coral-v8 reports, that the pull stream
+    // reads back as another.
+    #[test]
+    fn every_compile_error_crosses_the_stream() {
+        let errors = [
+            CompileError::TimedOut,
+            CompileError::MemoryLimit,
+            CompileError::Unavailable(Unavailable::Busy),
+            CompileError::Unavailable(Unavailable::Stopped),
+            CompileError::Diagnostics(Diagnostics::Reference {
+                message: "computed access".to_owned(),
+                line: 2,
+                column: 7,
+            }),
+            CompileError::Diagnostics(Diagnostics::UnknownTools(vec![UnknownToolCall::new(
+                "github.repos.get".to_owned(),
+                3,
+                9,
+            )])),
+        ];
+        let rejections = coral_v8::Error::REJECTION_CODES.map(|kind| {
+            CompileError::Diagnostics(Diagnostics::Message {
+                kind,
+                message: "rejected".to_owned(),
+            })
+        });
+        let failures = coral_v8::Error::COMPILER_FAILURE_CODES
+            .map(|kind| CompileError::Unavailable(Unavailable::Failed(kind)));
+        for error in errors.into_iter().chain(rejections).chain(failures) {
+            let carried = compile_error(failure(error.clone()));
+            assert_eq!(carried.ok(), Some(error.clone()), "{error:?}");
+        }
+    }
 
     #[test]
     fn a_call_past_its_time_answers_timed_out() {

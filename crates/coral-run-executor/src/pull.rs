@@ -158,6 +158,10 @@ pub enum Refused {
     /// The pull stream ended, or is ending.
     #[error("the pull stream is closed")]
     Closed,
+    /// The message is past [`MESSAGE_MAX_BYTES`]. Sent, it would end the
+    /// stream and every compile in flight on it.
+    #[error("the message is too large for the pull stream")]
+    TooLarge,
 }
 
 /// The pull streams this Coral Instance holds, for the compiler client and
@@ -199,11 +203,9 @@ impl Held {
         Ok(())
     }
 
-    fn send(&self, message: pull_response::Message) {
+    fn send(&self, response: PullResponse) {
         // A closed receiver means the stream is ending; its holder removes it.
-        drop(self.outbound.send(Ok(PullResponse {
-            message: Some(message),
-        })));
+        drop(self.outbound.send(Ok(response)));
     }
 }
 
@@ -230,7 +232,7 @@ impl PullStreams {
             return Ok(());
         }
         held.spend(u32::try_from(runs.len()).unwrap_or(u32::MAX))?;
-        held.send(pull_response::Message::Taken(Taken { runs }));
+        held.send(response(pull_response::Message::Taken(Taken { runs })));
         Ok(())
     }
 
@@ -241,30 +243,42 @@ impl PullStreams {
     ///
     /// # Errors
     ///
-    /// Returns [`Refused`] when the stream is gone or has no room.
+    /// Returns [`Refused`] when the stream is gone or has no room, or the
+    /// `Compile` is too large to send. A refused call sends and spends
+    /// nothing.
     pub(crate) fn compile(
         &self,
         stream: StreamId,
         time_left_ms: u32,
         call: Call,
     ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+        let takes = Takes::of(&call);
+        // Sized with the longest number, before the lock. Sent, a message
+        // past the bound would end the stream and every compile on it.
+        let mut message = pull_response::Message::Compile(Compile {
+            number: u64::MAX,
+            time_left_ms,
+            call: Some(call),
+        });
+        if message.encoded_len() > MESSAGE_MAX_BYTES {
+            return Err(Refused::TooLarge);
+        }
         let mut held = lock(&self.held);
         let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
         held.spend(1)?;
         held.compiles_sent += 1;
         let number = held.compiles_sent;
+        if let pull_response::Message::Compile(compile) = &mut message {
+            compile.number = number;
+        }
         let (answered, answer) = sync_mpsc::sync_channel(1);
         let in_flight = InFlight {
             due: Instant::now() + Duration::from_millis(time_left_ms.into()),
-            takes: Takes::of(&call),
+            takes,
             answered,
         };
         held.compiles.insert(number, in_flight);
-        held.send(pull_response::Message::Compile(Compile {
-            number,
-            time_left_ms,
-            call: Some(call),
-        }));
+        held.send(response(message));
         Ok(answer)
     }
 
@@ -500,12 +514,10 @@ impl LinkService for PullService {
             Status::unavailable("the Run Executor lease is not written")
         })?;
         let (outbound, responses) = mpsc::unbounded_channel();
-        let welcome = PullResponse {
-            message: Some(pull_response::Message::Welcome(Welcome {
-                protocol_level: PROTOCOL_LEVEL,
-                coral_instance_id: self.link.coral_instance_id.clone(),
-            })),
-        };
+        let welcome = response(pull_response::Message::Welcome(Welcome {
+            protocol_level: PROTOCOL_LEVEL,
+            coral_instance_id: self.link.coral_instance_id.clone(),
+        }));
         // The receiver is still here, so the send lands.
         drop(outbound.send(Ok(welcome)));
         let stream = self
@@ -629,6 +641,12 @@ fn renewed(written: Result<(), coral_db::Error>) {
             error.type = safe::kind(error.code()),
             "Run Executor lease renewal failed; the next one retries"
         );
+    }
+}
+
+pub(crate) fn response(message: pull_response::Message) -> PullResponse {
+    PullResponse {
+        message: Some(message),
     }
 }
 

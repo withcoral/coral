@@ -33,8 +33,8 @@ pub const PROTOCOL_LEVEL: u32 = 1;
 /// it. It holds a compile's TypeScript, at most 512 KiB in all, and a
 /// package well past the 1 MiB script and 2 MiB source map Coral accepts, so
 /// Coral, not the link, refuses an oversized package. A typed prepare's
-/// declarations, up to 256 KiB for each callable Tool, have no total bound: a
-/// message past this one ends the stream.
+/// declarations, up to 256 KiB for each callable Tool, have no total bound:
+/// Coral sends no `Compile` past this one, and that call alone fails.
 pub const MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// The longest Run this Run Executor holds: the Run deadline's maximum.
@@ -190,6 +190,9 @@ struct Link {
     compiler: Arc<dyn CompilerClient>,
     /// Whether a pull stream Coral welcomed is open.
     linked: watch::Sender<bool>,
+    /// Told after each `Compile` is queued, so a test can wait for one.
+    #[cfg(test)]
+    on_queued: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl Link {
@@ -217,6 +220,8 @@ impl Link {
             hello,
             compiler,
             linked,
+            #[cfg(test)]
+            on_queued: None,
         }
     }
 
@@ -299,6 +304,11 @@ impl Link {
                         held = held.saturating_add(1);
                         if queue.send((Instant::now(), compile)).is_err() {
                             return End::Failed;
+                        }
+                        #[cfg(test)]
+                        if let Some(on_queued) = &self.on_queued {
+                            // A test that waits for none drops its receiver.
+                            let _unwatched = on_queued.send(()).is_err();
                         }
                     }
                     // Taken is not served yet, so it breaks the protocol here

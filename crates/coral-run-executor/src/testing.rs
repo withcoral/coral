@@ -198,12 +198,10 @@ impl LinkService for Script {
             Answer::Welcome(level) => level,
             Answer::Move => PROTOCOL_LEVEL,
         };
-        let welcome = PullResponse {
-            message: Some(pull_response::Message::Welcome(Welcome {
-                protocol_level,
-                coral_instance_id: "scripted-coral".to_owned(),
-            })),
-        };
+        let welcome = crate::pull::response(pull_response::Message::Welcome(Welcome {
+            protocol_level,
+            coral_instance_id: "scripted-coral".to_owned(),
+        }));
         let (outbound, stream) = mpsc::channel(1);
         tokio::spawn(async move {
             if outbound.send(Ok(welcome)).await.is_err() {

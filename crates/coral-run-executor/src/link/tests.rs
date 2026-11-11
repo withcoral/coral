@@ -315,10 +315,11 @@ async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns()
     }
 }
 
-/// The in-process compiler with a gate: each compile waits for a release.
+/// The in-process compiler with a gate: each compile reports the time it
+/// was given, then waits for a release.
 struct Gated {
     compiler: InProcessCompiler,
-    entered: mpsc::UnboundedSender<()>,
+    entered: mpsc::UnboundedSender<Duration>,
     released: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
@@ -339,7 +340,7 @@ impl CompilerClient for Gated {
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
         let stopped = || CompileError::Unavailable(crate::Unavailable::Stopped);
-        self.entered.send(()).map_err(|_gone| stopped())?;
+        self.entered.send(time_left).map_err(|_gone| stopped())?;
         let released = self.released.lock().map_err(|_poisoned| stopped())?;
         released.recv().map_err(|_gone| stopped())?;
         self.compiler
@@ -357,7 +358,7 @@ impl CompilerClient for Gated {
 }
 
 #[tokio::test]
-async fn a_compile_holds_a_unit_of_room_until_it_is_answered() {
+async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
     let (entered, mut entries) = mpsc::unbounded_channel();
     let (release, released) = std::sync::mpsc::channel();
@@ -373,34 +374,41 @@ async fn a_compile_holds_a_unit_of_room_until_it_is_answered() {
     };
     let heap = IsolateLimits::defaults().compiler_heap_bytes();
     let (linked, _linked) = watch::channel(false);
-    let link = Link::new(config(&coral, heap), Arc::new(gated), linked);
+    let (on_queued, mut queued) = mpsc::unbounded_channel();
+    let mut link = Link::new(config(&coral, heap), Arc::new(gated), linked);
+    link.on_queued = Some(on_queued);
     tokio::spawn(async move { link.hold().await });
     let mut call = coral.next_call().await;
-    let compile = |compiler: &Arc<PullStreamCompiler>| {
+    let compile = |compiler: &Arc<PullStreamCompiler>, time_left| {
         let compiler = Arc::clone(compiler);
         std::thread::spawn(move || {
             compiler
-                .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], None)
+                .compile(time_left, "return 42;", &[], None)
                 .map(drop)
         })
     };
-    let first = compile(&call.compiler);
+    let first = compile(&call.compiler, TEST_COMPILATION_TIMEOUT);
     entries.recv().await.unwrap();
     // A second compile arrives while the first holds the compiler thread.
-    let second = compile(&call.compiler);
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    let short = Duration::from_millis(500);
+    let second = compile(&call.compiler, short);
+    for _compile in 0..2 {
+        queued.recv().await.unwrap();
+    }
+    // Its time runs out while it waits.
+    tokio::time::sleep(short).await;
     release.send(()).unwrap();
     assert_eq!(
         call.rooms.recv().await,
         Some(7),
         "the second holds its unit"
     );
-    entries.recv().await.unwrap();
+    assert_eq!(entries.recv().await, Some(Duration::ZERO), "no time left");
     release.send(()).unwrap();
     assert_eq!(call.rooms.recv().await, Some(8));
-    for caller in [first, second] {
-        assert_eq!(caller.join().unwrap(), Ok(()));
-    }
+    assert_eq!(first.join().unwrap(), Ok(()));
+    // Its caller stopped waiting at its own deadline, before this answer.
+    let _gave_up = second.join().unwrap();
 }
 
 #[tokio::test]

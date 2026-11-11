@@ -15,7 +15,7 @@ use tonic::transport::{Channel, Endpoint};
 
 use super::*;
 use crate::CompileError;
-use crate::compile_wire::{analyze_call, failure, package_sha256};
+use crate::compile_wire::{analyze_call, compile_call, failure, package_sha256};
 use crate::wire::v1::compiled::Answer;
 use crate::wire::v1::{self as wire, Hello, Room};
 use coral_v8::AnalyzedSource;
@@ -406,6 +406,27 @@ async fn sends_spend_the_room_and_a_report_replaces_it() {
     assert_eq!(link.held(&id, |_| true).await.free, 1);
     let second = compile(2, TIME_LEFT_MS);
     assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(second)));
+}
+
+#[test]
+fn a_compile_past_the_link_bound_is_refused_alone() {
+    let streams = PullStreams::default();
+    let (outbound, mut sent) = mpsc::unbounded_channel();
+    let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
+    let too_large = compile_call(&"x".repeat(MESSAGE_MAX_BYTES), &[], None);
+
+    let refused = streams.compile(stream, TIME_LEFT_MS, too_large);
+    assert_eq!(refused.err(), Some(Refused::TooLarge));
+    // Nothing went, no room was spent, and no number was used.
+    assert_eq!(
+        sent.try_recv().err(),
+        Some(mpsc::error::TryRecvError::Empty)
+    );
+    assert!(!streams.compiles_in_flight(stream));
+    assert_eq!(streams.held().first().map(|held| held.free), Some(1));
+    streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+    let next = sent.try_recv().unwrap().unwrap();
+    assert_eq!(next.message, Some(Down::Compile(compile(1, TIME_LEFT_MS))));
 }
 
 #[tokio::test]

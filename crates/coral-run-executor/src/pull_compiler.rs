@@ -19,7 +19,8 @@ use crate::{
 ///
 /// [`PullStreams`] numbers each call, spends its unit of room, and reads
 /// each answer back. A call fails as a busy compiler when the stream has no
-/// room, and as a stopped one when the stream ends first.
+/// room, as a stopped one when the stream ends first, and as a failed one
+/// when it is too large to send.
 #[derive(Clone)]
 pub struct PullStreamCompiler {
     streams: PullStreams,
@@ -54,11 +55,13 @@ impl PullStreamCompiler {
         let answer = self
             .streams
             .compile(self.stream, time_left_ms, call)
-            .map_err(|refused| {
-                CompileError::Unavailable(match refused {
-                    Refused::NoRoom => Unavailable::Busy,
-                    Refused::Closed => Unavailable::Stopped,
-                })
+            .map_err(|refused| match refused {
+                Refused::NoRoom => CompileError::Unavailable(Unavailable::Busy),
+                Refused::Closed => CompileError::Unavailable(Unavailable::Stopped),
+                // Nothing was sent: the stream and its compiles go on.
+                Refused::TooLarge => {
+                    CompileError::Unavailable(Unavailable::Failed("compiler_protocol"))
+                }
             })?;
         match answer.recv_timeout(left()) {
             Ok(Read::Failure(error)) => Err(error),

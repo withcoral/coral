@@ -864,6 +864,30 @@ pub enum Error {
 }
 
 impl Error {
+    /// The [`Self::code`] of each error the source's author caused, which
+    /// [`CompileFailure`] reports as [`CompileFailure::Rejected`]. This list
+    /// decides that, so a peer that reads a rejection's code back checks it
+    /// against the same set.
+    pub const REJECTION_CODES: [&'static str; 8] = [
+        "compilation",
+        "invalid_program_body",
+        "invalid_saved_function",
+        "source_too_deeply_nested",
+        "forbidden_capability",
+        "invalid_saved_function_reference",
+        "invalid_function_save",
+        "memory_limit_exceeded",
+    ];
+    /// The [`Self::code`] of each error a compile fails with for a reason
+    /// the source did not cause. The other errors that
+    /// [`CompileFailure::Failed`] carries come from running a Program.
+    pub const COMPILER_FAILURE_CODES: [&'static str; 4] = [
+        "initialization",
+        "compiler_protocol",
+        "invalid_source_map",
+        "engine",
+    ];
+
     /// The error's stable kind, for an event's `error.type`: a bounded
     /// code that never carries the error's text.
     #[must_use]
@@ -924,14 +948,9 @@ impl From<Error> for CompileFailure {
             Error::CompilerBusy => Self::Busy,
             Error::CompilationTimedOut => Self::TimedOut,
             Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
-            authored @ (Error::Compilation { .. }
-            | Error::InvalidProgramBody
-            | Error::InvalidSavedFunction(_)
-            | Error::SourceTooDeeplyNested
-            | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. }
-            | Error::InvalidFunctionSave(_)
-            | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
+            authored if Error::REJECTION_CODES.contains(&authored.code()) => {
+                Self::Rejected(format_compiler_error(authored))
+            }
             other => Self::Failed(other.code()),
         }
     }
