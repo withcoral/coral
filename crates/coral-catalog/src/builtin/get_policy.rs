@@ -37,8 +37,8 @@ pub(super) fn definition() -> Definition {
                  They cover every provider's tools, the built-in tools, the shared tools and \
                  your own private tools. Pass under, such as coral.providers.github, to read \
                  only the tools under that path. A tool without a rule is left out: it takes \
-                 its default, which search shows. No tool is disabled by default, so rules \
-                 names every disabled tool."
+                 its default, which search shows. No tool is disabled by default, so the rules \
+                 name every disabled tool."
                     .to_string(),
             ),
         ),
@@ -59,6 +59,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "super::present")]
     #[schemars(
         with = "String",
+        length(max = crate::SEARCH_PATH_MAX_BYTES),
         description = "Read only the tools under this call path, such as \
                        coral.providers.github or coral.shared. Omit it to read every rule."
     )]

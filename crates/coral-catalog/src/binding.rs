@@ -12,9 +12,10 @@ pub enum ExecutionBinding {
     Mcp(McpExecutionBinding),
     /// A Built-in Provider Tool that Coral performs itself.
     Builtin(BuiltinExecutionBinding),
-    /// A Private Tool that Coral performs by running its definition in the
-    /// Run. No catalog stores one: the Private Provider's catalog holds no
-    /// Tool, and each Invocation retains the definition its Run linked.
+    /// A Private or Shared Tool that Coral performs by running its
+    /// definition in the Run. No catalog stores one: the Private and Shared
+    /// Providers' catalogs hold no Tool, and each Invocation retains the
+    /// definition its Run linked.
     Code(CodeExecutionBinding),
 }
 

@@ -269,7 +269,7 @@ struct ResultData<'d> {
 }
 
 impl<'d> ResultData<'d> {
-    /// A Tool's result is a union of envelopes, each a wrapper around
+    /// A Provider Tool's result is a union of envelopes, each a wrapper around
     /// one response's data (see `signature::envelope`). An Authored Tool's
     /// whole result is success data.
     fn of(callable: &'d Signature, kind: EntityKind) -> Self {

@@ -145,7 +145,7 @@ attribute! {
         Mcp => "mcp",
         /// A Tool Coral serves itself.
         Builtin => "builtin",
-        /// A Private Tool Coral performs by running its body in the Run.
+        /// A Private or Shared Tool Coral performs by running its body in the Run.
         Code => "code",
     }
 }

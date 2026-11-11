@@ -13,7 +13,7 @@ use crate::Error;
 
 /// Maximum UTF-8 byte length of one submitted Program body.
 pub const PROGRAM_SOURCE_MAX_BYTES: usize = 64 * 1024;
-/// Maximum number of distinct Private Tools in one linked source closure.
+/// Maximum number of distinct Private and Shared Tools in one linked source closure.
 pub const LINKED_TOOL_MAX_COUNT: usize = 64;
 /// Maximum combined UTF-8 bytes in submitted and linked TypeScript source.
 pub const COMBINED_TYPESCRIPT_MAX_BYTES: usize = 512 * 1024;

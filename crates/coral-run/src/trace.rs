@@ -274,8 +274,8 @@ impl InvocationTrace {
     }
 
     /// Counts the Invocation of `tool` as started, once its Run Owner
-    /// admitted it, and measures it until [`Self::end`]. One the owner
-    /// refuses is never counted.
+    /// admitted it, and measures it until [`Self::end`] or
+    /// [`Self::run_terminated`]. One the owner refuses is never counted.
     pub(crate) fn admitted(&self, tool: &coral_catalog::MaterializedTool) {
         let protocol = match tool.execution_binding() {
             ExecutionBinding::Http(_) => metric::ProviderProtocol::Http,
