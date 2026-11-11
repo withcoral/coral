@@ -5,27 +5,29 @@ use std::collections::HashMap;
 use std::future::{Future, pending};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc as sync_mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_db::Database;
 use coral_telemetry::safe;
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior, Sleep, interval_at, sleep_until, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
 use tonic::{Code, Request, Response, Status, Streaming};
 
+use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::link::{KEEPALIVE, Token};
+use crate::wire::v1::compile::Call;
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{
     Compile, Compiled, PullRequest, PullResponse, Taken, TakenRun, Welcome, pull_request,
     pull_response,
 };
-use crate::{PROTOCOL_LEVEL, lease_repository};
+use crate::{MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, lease_repository};
 
 /// How long the listener keeps a connection, and a pull stream its open
 /// time: then a GOAWAY, and the pull stream ends cleanly (the move).
@@ -125,6 +127,12 @@ impl Credentials {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CredentialId(Verifier);
 
+/// A dialed admission for a stream a test inserts without the listener.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn dialed_admission() -> (Kind, CredentialId) {
+    (Kind::Dialed, CredentialId(verifier("dialed")))
+}
+
 impl std::fmt::Debug for CredentialId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("CredentialId")
@@ -184,6 +192,10 @@ pub enum Refused {
     /// The pull stream ended, or is ending.
     #[error("the pull stream is closed")]
     Closed,
+    /// The message is past [`MESSAGE_MAX_BYTES`]. Sent, it would end the
+    /// stream and every compile in flight on it.
+    #[error("the message is too large for the pull stream")]
+    TooLarge,
 }
 
 /// The pull streams this Coral Instance holds, for the compiler client and
@@ -202,8 +214,18 @@ struct Held {
     closing: bool,
     outbound: mpsc::UnboundedSender<Result<PullResponse, Status>>,
     compiles_sent: u64,
-    /// Each compile in flight: its deadline and where its answer goes.
-    compiles: HashMap<u64, (Instant, oneshot::Sender<Compiled>)>,
+    /// Each compile in flight, by number.
+    compiles: HashMap<u64, InFlight>,
+}
+
+/// A compile sent and not yet answered.
+struct InFlight {
+    /// When its time runs out.
+    due: Instant,
+    /// The answers it accepts.
+    takes: Takes,
+    /// Where its answer goes: a channel of one, sent on once.
+    answered: sync_mpsc::SyncSender<Read>,
 }
 
 impl Held {
@@ -216,11 +238,9 @@ impl Held {
         Ok(())
     }
 
-    fn send(&self, message: pull_response::Message) {
+    fn send(&self, response: PullResponse) {
         // A closed receiver means the stream is ending; its holder removes it.
-        drop(self.outbound.send(Ok(PullResponse {
-            message: Some(message),
-        })));
+        drop(self.outbound.send(Ok(response)));
     }
 }
 
@@ -247,32 +267,54 @@ impl PullStreams {
             return Ok(());
         }
         held.spend(u32::try_from(runs.len()).unwrap_or(u32::MAX))?;
-        held.send(pull_response::Message::Taken(Taken { runs }));
+        held.send(response(pull_response::Message::Taken(Taken { runs })));
         Ok(())
     }
 
-    /// Sends `compile` on `stream` under the stream's next call number,
-    /// which replaces its own. It spends one unit. The answer arrives on the
-    /// receiver, which closes unanswered if the stream ends first.
+    /// Sends `call` on `stream` as its next numbered `Compile`, with
+    /// `time_left_ms` to answer. It spends one unit. The answer, read and
+    /// checked against the call, arrives on the receiver, which disconnects
+    /// unanswered if the stream ends first.
     ///
     /// # Errors
     ///
-    /// Returns [`Refused`] when the stream is gone or has no room.
-    pub fn compile(
+    /// Returns [`Refused`] when the stream is gone or has no room, or the
+    /// `Compile` is too large to send. A refused call sends and spends
+    /// nothing.
+    pub(crate) fn compile(
         &self,
         stream: StreamId,
-        mut compile: Compile,
-    ) -> Result<oneshot::Receiver<Compiled>, Refused> {
+        time_left_ms: u32,
+        call: Call,
+    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+        let takes = Takes::of(&call);
+        // Sized with the longest number, before the lock. Sent, a message
+        // past the bound would end the stream and every compile on it.
+        let mut message = pull_response::Message::Compile(Compile {
+            number: u64::MAX,
+            time_left_ms,
+            call: Some(call),
+        });
+        if message.encoded_len() > MESSAGE_MAX_BYTES {
+            return Err(Refused::TooLarge);
+        }
         let mut held = lock(&self.held);
         let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
         held.spend(1)?;
         held.compiles_sent += 1;
-        compile.number = held.compiles_sent;
-        let deadline = Instant::now() + Duration::from_millis(compile.time_left_ms.into());
-        let (answer, answered) = oneshot::channel();
-        held.compiles.insert(compile.number, (deadline, answer));
-        held.send(pull_response::Message::Compile(compile));
-        Ok(answered)
+        let number = held.compiles_sent;
+        if let pull_response::Message::Compile(compile) = &mut message {
+            compile.number = number;
+        }
+        let (answered, answer) = sync_mpsc::sync_channel(1);
+        let in_flight = InFlight {
+            due: Instant::now() + Duration::from_millis(time_left_ms.into()),
+            takes,
+            answered,
+        };
+        held.compiles.insert(number, in_flight);
+        held.send(response(message));
+        Ok(answer)
     }
 
     pub(crate) fn insert(
@@ -302,28 +344,52 @@ impl PullStreams {
         stream
     }
 
-    /// Applies one message from `stream`'s Run Executor.
-    pub(crate) fn receive(&self, stream: StreamId, request: &PullRequest) -> Result<(), Status> {
-        let mut held = lock(&self.held);
-        let Some(held) = held.get_mut(&stream) else {
+    /// Applies one message from `stream`'s Run Executor. A message that
+    /// breaks the protocol changes nothing; its holder ends the stream. Only
+    /// that holder calls it, one message at a time.
+    pub(crate) fn receive(&self, stream: StreamId, request: PullRequest) -> Result<(), Status> {
+        match request.message {
+            Some(pull_request::Message::Room(room)) => {
+                if let Some(held) = lock(&self.held).get_mut(&stream) {
+                    held.view.free = room.free;
+                    held.view.last_work = Some(Instant::now());
+                }
+                Ok(())
+            }
+            Some(pull_request::Message::Compiled(compiled)) => self.answer(stream, compiled),
+            Some(pull_request::Message::Hello(_)) => {
+                Err(Status::invalid_argument("Hello opens the pull stream once"))
+            }
+            None => Err(Status::invalid_argument("the message is empty")),
+        }
+    }
+
+    /// Hands `compiled` to the compile in flight it answers, once it reads
+    /// as an answer to that call.
+    fn answer(&self, stream: StreamId, compiled: Compiled) -> Result<(), Status> {
+        let Some(in_flight) = lock(&self.held)
+            .get(&stream)
+            .map(|held| held.compiles.get(&compiled.number).map(|call| call.takes))
+        else {
             return Ok(());
         };
-        match &request.message {
-            Some(pull_request::Message::Room(room)) => {
-                held.view.free = room.free;
-                held.view.last_work = Some(Instant::now());
-            }
-            Some(pull_request::Message::Compiled(compiled)) => {
-                let (_, answer) = held.compiles.remove(&compiled.number).ok_or_else(|| {
-                    Status::invalid_argument("Compiled answers no Compile in flight")
-                })?;
-                // An answer nobody waits for any more is dropped.
-                let _unawaited = answer.send(*compiled).is_err();
-            }
-            Some(pull_request::Message::Hello(_)) => {
-                return Err(Status::invalid_argument("Hello opens the pull stream once"));
-            }
-            None => return Err(Status::invalid_argument("the message is empty")),
+        let takes = in_flight
+            .ok_or_else(|| Status::invalid_argument("Compiled answers no Compile in flight"))?;
+        // Read outside the lock: a package's digest covers megabytes. Only
+        // this stream's holder answers its compiles, so the call still waits.
+        let read = compiled
+            .answer
+            .ok_or(ProtocolError)
+            .and_then(Read::answer)
+            .ok()
+            .filter(|read| read.answers(takes))
+            .ok_or_else(|| Status::invalid_argument("Compiled breaks the protocol"))?;
+        let answered = lock(&self.held)
+            .get_mut(&stream)
+            .and_then(|held| held.compiles.remove(&compiled.number));
+        if let Some(in_flight) = answered {
+            // An answer nobody waits for any more is dropped.
+            drop(in_flight.answered.try_send(read));
         }
         Ok(())
     }
@@ -337,7 +403,7 @@ impl PullStreams {
             held.closing = true;
             held.compiles
                 .values()
-                .map(|(deadline, _)| *deadline)
+                .map(|in_flight| in_flight.due)
                 .fold(now, Instant::max)
         })
     }
@@ -348,8 +414,13 @@ impl PullStreams {
             .is_some_and(|held| !held.compiles.is_empty())
     }
 
-    fn remove(&self, stream: StreamId) -> Option<Held> {
-        lock(&self.held).remove(&stream)
+    /// Forgets `stream`, which fails its compiles in flight, and ends
+    /// Coral's side with `violation`, or cleanly without one: the move.
+    pub(crate) fn end(&self, stream: StreamId, violation: Option<Status>) {
+        let held = lock(&self.held).remove(&stream);
+        if let (Some(held), Some(violation)) = (held, violation) {
+            drop(held.outbound.send(Err(violation)));
+        }
     }
 }
 
@@ -411,7 +482,11 @@ impl LinkServer {
             .http2_keepalive_interval(Some(KEEPALIVE))
             .http2_keepalive_timeout(Some(KEEPALIVE))
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .add_service(LinkServiceServer::new(service))
+            .add_service(
+                LinkServiceServer::new(service)
+                    .max_decoding_message_size(MESSAGE_MAX_BYTES)
+                    .max_encoding_message_size(MESSAGE_MAX_BYTES),
+            )
             .serve_with_incoming_shutdown(
                 TcpIncoming::from(listener).with_nodelay(Some(true)),
                 async move {
@@ -479,12 +554,10 @@ impl LinkService for PullService {
             Status::unavailable("the Run Executor lease is not written")
         })?;
         let (outbound, responses) = mpsc::unbounded_channel();
-        let welcome = PullResponse {
-            message: Some(pull_response::Message::Welcome(Welcome {
-                protocol_level: PROTOCOL_LEVEL,
-                coral_instance_id: self.link.coral_instance_id.clone(),
-            })),
-        };
+        let welcome = response(pull_response::Message::Welcome(Welcome {
+            protocol_level: PROTOCOL_LEVEL,
+            coral_instance_id: self.link.coral_instance_id.clone(),
+        }));
         // The receiver is still here, so the send lands.
         drop(outbound.send(Ok(welcome)));
         let stream =
@@ -533,7 +606,7 @@ impl PullService {
             tokio::select! {
                 message = inbound.message() => match message {
                     Ok(Some(request)) => {
-                        if let Err(status) = streams.receive(stream, &request) {
+                        if let Err(status) = streams.receive(stream, request) {
                             break Err(status);
                         }
                     }
@@ -573,10 +646,7 @@ impl PullService {
         if let Some(renewal) = renewal {
             renewed(renewal.await);
         }
-        // Dropping the last sender ends Coral's side cleanly: the move.
-        if let (Some(held), Err(status)) = (streams.remove(stream), end) {
-            drop(held.outbound.send(Err(status)));
-        }
+        streams.end(stream, end.err());
     }
 
     async fn renew(&self, run_executor_id: &str, kind: Kind) -> Result<(), coral_db::Error> {
@@ -614,9 +684,15 @@ fn renewed(written: Result<(), coral_db::Error>) {
     }
 }
 
+pub(crate) fn response(message: pull_response::Message) -> PullResponse {
+    PullResponse {
+        message: Some(message),
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
