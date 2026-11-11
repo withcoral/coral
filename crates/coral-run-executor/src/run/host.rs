@@ -131,7 +131,7 @@ impl RunHost {
                 Err(ToolHostError::Fatal)
             }
             invocation_result::Outcome::ResultJson(json) => Ok(json),
-            invocation_result::Outcome::Rejection(rejection) => Err(ToolHostError::Rejected {
+            invocation_result::Outcome::CoralFailure(rejection) => Err(ToolHostError::Rejected {
                 code: rejection.code.into(),
                 message: rejection.message.into(),
                 trace_id: Some(rejection.trace_id).filter(|id| !id.is_empty()),

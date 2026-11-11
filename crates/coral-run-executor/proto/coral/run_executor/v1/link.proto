@@ -94,20 +94,287 @@ message TakenRun {
   string claim_id = 2;
 }
 
-// One compile call. Coral sends none yet: each call's input comes with the
-// compiler that serves it.
+// One compile call, which holds one unit of room until Compiled answers it.
+// It carries source and no Workspace, Principal or credential.
 message Compile {
   // This call's number on this pull stream, which Compiled repeats.
   uint64 number = 1;
   // The time left until the caller's compilation deadline, in milliseconds.
   uint32 time_left_ms = 2;
+  // Which compiler call this is. Compiled answers each kind with its own
+  // result.
+  oneof call {
+    // Find the Saved Functions each source calls and the Tool Call Paths it
+    // names, so Coral can load and check them before it compiles. Answered
+    // with Analyzed.
+    Analyze analyze = 3;
+    // Compile a Program body, with the Saved Functions it calls, into the
+    // JavaScript a Run executes. Answered with Package.
+    ProgramSource compile = 4;
+    // Check a Saved Function's source when it is saved, and produce its type
+    // declaration and diagnostics. Answered with Prepared.
+    SavedFunctionSource prepare = 5;
+  }
 }
 
-// The answer to one Compile. The package and the typed error come with the
-// compiler.
+// The answer to one Compile.
 message Compiled {
   // The number of the Compile it answers.
   uint64 number = 1;
+  // The result for the kind of call, or why the call has none.
+  oneof answer {
+    // The result of an analyze call.
+    Analyzed analyzed = 2;
+    // The result of a compile call.
+    Package package = 3;
+    // The result of a prepare call.
+    Prepared prepared = 4;
+    // Why a compile or prepare call has no result.
+    CompileFailure failure = 5;
+    // Why an analyze call has no result, and which source it stopped at.
+    AnalysisFailure analysis_failure = 6;
+  }
+}
+
+// The sources to analyze, in order.
+message Analyze {
+  // The sources.
+  repeated AnalyzedSource sources = 1;
+}
+
+// One source to analyze.
+message AnalyzedSource {
+  // The source, and whether it is a Program body or a Saved Function.
+  oneof source {
+    // A Program body.
+    string program = 1;
+    // A Saved Function module.
+    string saved_function = 2;
+  }
+}
+
+// What each source names, in the order of the sources.
+message Analyzed {
+  // One per source.
+  repeated SourceReferences sources = 1;
+}
+
+// The Saved Functions one source calls, and the Tool Call Paths it names.
+// Analysis resolves no Tool.
+message SourceReferences {
+  // The coral.functions references, in path order.
+  repeated Reference functions = 1;
+  // Every prefix of a literal coral.providers or coral.workspace chain that
+  // could be a Tool Call Path.
+  repeated string tool_call_paths = 2;
+}
+
+// Why analyze stopped.
+message AnalysisFailure {
+  // The index of the source it stopped at.
+  uint64 index = 1;
+  // Why that source returned no result.
+  CompileFailure failure = 2;
+}
+
+// A Program body, the Saved Functions it links, and the Tools it may call.
+message ProgramSource {
+  // The Program body.
+  string source = 1;
+  // The linked Saved Functions, in the order they initialize.
+  repeated LinkedSavedFunction saved_functions = 2;
+  // The Call Paths the caller can call. Unset: the calls are not checked.
+  Callable callable = 3;
+}
+
+// One Saved Function source linked into a Program.
+message LinkedSavedFunction {
+  // Its path under coral.functions.
+  repeated string path_segments = 1;
+  // Its module source.
+  string source = 2;
+}
+
+// The complete Call Paths the caller can call.
+message Callable {
+  // The Call Paths.
+  repeated string call_paths = 1;
+}
+
+// One Saved Function module to prepare.
+message SavedFunctionSource {
+  // The module source.
+  string source = 1;
+  // What types the coral namespace. Unset: it stays untyped.
+  Declarations declarations = 2;
+}
+
+// The declarations that type the coral namespace for one save.
+message Declarations {
+  // Above this size, a typed declaration is saved untyped.
+  uint64 declaration_max_bytes = 1;
+  // Types coral.providers and coral.workspace. Unset: they stay untyped.
+  CallableDeclarations tools = 2;
+  // Types coral.functions. Unset: it stays untyped.
+  CallableDeclarations functions = 3;
+}
+
+// The declarations that type one part of the coral namespace.
+message CallableDeclarations {
+  // One declaration per Call Path.
+  repeated CallableDeclaration declarations = 1;
+}
+
+// The declaration that types one Call Path.
+message CallableDeclaration {
+  // The path, relative to coral for a Tool and to coral.functions for a
+  // Saved Function.
+  repeated string path_segments = 1;
+  // Self-contained TypeScript with one default export.
+  string declaration = 2;
+}
+
+// One statically named Saved Function reference.
+message Reference {
+  // The dotted path relative to coral.functions.
+  string path = 1;
+  // The one-based authored line.
+  uint64 line = 2;
+  // The one-based authored column.
+  uint64 column = 3;
+}
+
+// The called chains that name no Tool the caller can call.
+message UnknownToolCalls {
+  // The chains, in source order.
+  repeated UnknownToolCall calls = 1;
+}
+
+// One called chain that names no Tool the caller can call.
+message UnknownToolCall {
+  // The complete chain as written.
+  string call_path = 1;
+  // The one-based authored line.
+  uint64 line = 2;
+  // The one-based authored column.
+  uint64 column = 3;
+}
+
+// A Program package.
+message Package {
+  // The JavaScript V8 runs.
+  string script = 1;
+  // The source map emitted with it.
+  string source_map = 2;
+  // The SHA-256 of the script's UTF-8 byte length as eight big-endian
+  // bytes, then the script's UTF-8 bytes, then the source map's. A digest
+  // that does not match breaks the protocol.
+  bytes sha256 = 3;
+  // Non-blocking diagnostics.
+  repeated Diagnostic diagnostics = 4;
+}
+
+// One prepared Saved Function.
+message Prepared {
+  // The self-contained emitted declaration.
+  string declaration = 1;
+  // The callable-rooted fields of the declaration, or why there are none.
+  oneof projection {
+    // The fields.
+    DeclarationFields fields = 2;
+    // The private reason the fields could not be prepared.
+    string fault = 3;
+  }
+  // Advisory diagnostics.
+  repeated Diagnostic diagnostics = 4;
+  // The Saved Function references the module names, in path order.
+  repeated Reference references = 5;
+}
+
+// The callable-rooted fields of one declaration.
+message DeclarationFields {
+  // The fields.
+  repeated DeclarationField fields = 1;
+}
+
+// One callable-rooted field of a declaration.
+message DeclarationField {
+  // The path rooted at input or result.
+  string path = 1;
+  // Its names, documentation and type.
+  string text = 2;
+}
+
+// One TypeScript compiler diagnostic.
+message Diagnostic {
+  // Its category.
+  DiagnosticCategory category = 1;
+  // The official TypeScript diagnostic code.
+  uint64 code = 2;
+  // The flattened message.
+  string message = 3;
+  // The one-based line, when known.
+  optional uint64 line = 4;
+  // The one-based column, when known.
+  optional uint64 column = 5;
+}
+
+// A TypeScript diagnostic category.
+enum DiagnosticCategory {
+  // Never sent.
+  DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0;
+  // An informational message.
+  DIAGNOSTIC_CATEGORY_MESSAGE = 1;
+  // A non-blocking warning.
+  DIAGNOSTIC_CATEGORY_WARNING = 2;
+  // A blocking error.
+  DIAGNOSTIC_CATEGORY_ERROR = 3;
+  // A non-blocking suggestion.
+  DIAGNOSTIC_CATEGORY_SUGGESTION = 4;
+}
+
+// Why a call returned no result.
+message CompileFailure {
+  // The failure.
+  oneof failure {
+    // The call's time ran out while it waited or compiled.
+    bool timed_out = 1;
+    // The compiler rejected the source.
+    Rejection rejected = 2;
+    // A coral.functions access names no supported Saved Function path.
+    ReferenceRejection reference = 3;
+    // Compiling passed the compiler's heap limit.
+    bool memory_limit = 4;
+    // The compiler had no room for the call: its queue of waiting calls was
+    // full.
+    bool busy = 5;
+    // The compiler stopped before it answered.
+    bool stopped = 6;
+    // The compiler failed for a reason the source did not cause: the
+    // failure's kind, without its text.
+    string failed = 7;
+    // Called literal Tool chains that name no Tool the caller can call. Only
+    // a compile with callable Call Paths fails this way.
+    UnknownToolCalls unknown_tools = 8;
+  }
+}
+
+// A rejected source.
+message Rejection {
+  // The rejection's stable kind, such as compilation.
+  string kind = 1;
+  // The safe message for the source's author.
+  string message = 2;
+}
+
+// A coral.functions access that names no supported Saved Function path.
+message ReferenceRejection {
+  // The safe reason.
+  string message = 1;
+  // The one-based authored line.
+  uint64 line = 2;
+  // The one-based authored column.
+  uint64 column = 3;
 }
 
 // A message the Run Executor sends on a Run stream.
@@ -128,7 +395,7 @@ message RunResponse {
   // The message.
   oneof message {
     // The Run's package, the answer to Open for a held Run not started.
-    Package package = 1;
+    RunPackage package = 1;
     // The Run started: the Program may run.
     Started started = 2;
     // The highest request number committed.
@@ -153,13 +420,13 @@ message Open {
 }
 
 // What a Run Executor needs to load and run one Program.
-message Package {
+message RunPackage {
   // The emitted JavaScript.
   string script = 1;
   // The authored source map of the script.
   string source_map = 2;
-  // The SHA-256 digest of the script and the source map, as
-  // `coral_run_executor::package_digest` computes it.
+  // The SHA-256 digest of the script and the source map, as `Package`
+  // carries it.
   bytes sha256 = 3;
   // The Run's value limits.
   ValueLimits value_limits = 4;
@@ -334,7 +601,7 @@ message InvocationResult {
     // The Tool Result, as native JSON.
     string result_json = 3;
     // A Coral Failure.
-    Rejection rejection = 4;
+    CoralFailure coral_failure = 4;
     // An Upstream Outcome that is not a Declared Success.
     UpstreamOutcome upstream_outcome = 5;
     // A host failure: the Program stops without a catchable result.
@@ -343,7 +610,7 @@ message InvocationResult {
 }
 
 // A Coral Failure the Program catches as a `ToolError`.
-message Rejection {
+message CoralFailure {
   // Its stable code.
   string code = 1;
   // Its safe message.

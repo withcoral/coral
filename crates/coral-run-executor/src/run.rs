@@ -6,14 +6,13 @@ mod host;
 use std::sync::Arc;
 
 use coral_telemetry::safe;
-use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::PROTOCOL_LEVEL;
 use crate::link::{Client, compatible};
 use crate::wire::v1::{
-    Open, Package, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
+    Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
 use host::RunHost;
 
@@ -40,19 +39,6 @@ impl Default for RunLimits {
             applied_cap_bytes: APPLIED_CAP_BYTES,
         }
     }
-}
-
-/// The SHA-256 digest a [`Package`] carries: of the script's length as eight
-/// big-endian bytes, the script, then the source map.
-#[must_use]
-pub fn package_digest(script: &str, source_map: &str) -> Vec<u8> {
-    let length = u64::try_from(script.len()).unwrap_or(u64::MAX);
-    Sha256::new()
-        .chain_update(length.to_be_bytes())
-        .chain_update(script)
-        .chain_update(source_map)
-        .finalize()
-        .to_vec()
 }
 
 impl From<coral_value::ValueLimits> for ValueLimits {
@@ -153,7 +139,7 @@ impl Drop for StopsOnDrop {
 /// Checks `package` and starts its Program's thread, which loads it. `None`
 /// when the package breaks the protocol.
 fn load(
-    package: Package,
+    package: RunPackage,
     outbound: mpsc::UnboundedSender<RunRequest>,
     limits: RunLimits,
 ) -> Option<(Arc<RunHost>, oneshot::Receiver<()>)> {
@@ -165,7 +151,9 @@ fn load(
         );
         return None;
     }
-    if package.sha256 != package_digest(&package.script, &package.source_map) {
+    if package.sha256[..]
+        != crate::compile_wire::package_sha256(&package.script, &package.source_map)
+    {
         tracing::warn!("the package's digest does not match it; closing the Run stream");
         return None;
     }

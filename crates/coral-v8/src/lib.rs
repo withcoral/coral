@@ -322,7 +322,9 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
-    pub(crate) fn new(
+    /// A package with its non-blocking diagnostics, as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         javascript: String,
         source_map: String,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -366,6 +368,12 @@ impl CompiledProgram {
     pub const fn profile(&self) -> TypeScriptProfile {
         TYPESCRIPT_PROFILE
     }
+
+    /// The JavaScript, source map and diagnostics, without a copy.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, Vec<CompilerDiagnostic>) {
+        (self.javascript, self.source_map, self.diagnostics)
+    }
 }
 
 /// One callable-rooted field projected from an emitted Saved Function declaration.
@@ -377,6 +385,12 @@ pub struct SavedFunctionDeclarationField {
 }
 
 impl SavedFunctionDeclarationField {
+    /// The field at `path` with its `text`.
+    #[must_use]
+    pub const fn new(path: String, text: String) -> Self {
+        Self { path, text }
+    }
+
     /// Returns the readable JavaScript path rooted at `input` or `result`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -400,7 +414,9 @@ pub struct SavedFunctionCompilation {
 }
 
 impl SavedFunctionCompilation {
-    pub(crate) const fn new(
+    /// The authoring output as the compiler emitted it.
+    #[must_use]
+    pub const fn new(
         declaration: String,
         declaration_field_projection: Result<Vec<SavedFunctionDeclarationField>, String>,
         diagnostics: Vec<CompilerDiagnostic>,
@@ -454,6 +470,12 @@ pub struct SavedFunctionReference {
 }
 
 impl SavedFunctionReference {
+    /// The reference to `path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(path: String, line: u64, column: u64) -> Self {
+        Self { path, line, column }
+    }
+
     /// Returns the dotted path relative to `coral.functions`.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -490,6 +512,18 @@ impl LinkedSavedFunctionSource {
             source,
         }
     }
+
+    /// The path under `coral.functions`.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// The module source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 }
 
 /// One source for [`ProgramCompiler::analyze`].
@@ -510,6 +544,15 @@ pub struct SourceReferences {
 }
 
 impl SourceReferences {
+    /// The `functions` and `tool_call_paths` one source names.
+    #[must_use]
+    pub const fn new(functions: Vec<SavedFunctionReference>, tool_call_paths: Vec<String>) -> Self {
+        Self {
+            functions,
+            tool_call_paths,
+        }
+    }
+
     /// Returns the directly named `coral.functions` paths, in path order.
     #[must_use]
     pub fn functions(&self) -> &[SavedFunctionReference] {
@@ -537,6 +580,16 @@ pub struct UnknownToolCall {
 }
 
 impl UnknownToolCall {
+    /// The unknown `call_path` at its authored `line` and `column`.
+    #[must_use]
+    pub const fn new(call_path: String, line: u64, column: u64) -> Self {
+        Self {
+            call_path,
+            line,
+            column,
+        }
+    }
+
     /// The complete chain as written, such as
     /// `coral.providers.notion.retrievePage`.
     #[must_use]
@@ -580,6 +633,18 @@ impl CallableDeclaration {
             declaration,
         }
     }
+
+    /// Returns the path segments.
+    #[must_use]
+    pub fn path_segments(&self) -> &[String] {
+        &self.path_segments
+    }
+
+    /// Returns the declaration.
+    #[must_use]
+    pub fn declaration(&self) -> &str {
+        &self.declaration
+    }
 }
 
 /// The declarations that type the `coral` namespace for one Saved Function
@@ -622,6 +687,24 @@ impl CoralDeclarations {
         self.functions = Some(functions);
         self
     }
+
+    /// Returns the size above which a typed declaration is saved untyped.
+    #[must_use]
+    pub const fn declaration_max_bytes(&self) -> usize {
+        self.declaration_max_bytes
+    }
+
+    /// Returns the declarations that type the Tools, if any do.
+    #[must_use]
+    pub fn tools(&self) -> Option<&[CallableDeclaration]> {
+        self.tools.as_deref()
+    }
+
+    /// Returns the declarations that type `coral.functions`, if any do.
+    #[must_use]
+    pub fn functions(&self) -> Option<&[CallableDeclaration]> {
+        self.functions.as_deref()
+    }
 }
 
 /// TypeScript compiler diagnostic category.
@@ -649,6 +732,24 @@ pub struct CompilerDiagnostic {
 }
 
 impl CompilerDiagnostic {
+    /// The diagnostic as the compiler reported it.
+    #[must_use]
+    pub const fn new(
+        category: DiagnosticCategory,
+        code: u64,
+        message: String,
+        line: Option<u64>,
+        column: Option<u64>,
+    ) -> Self {
+        Self {
+            category,
+            code,
+            message,
+            line,
+            column,
+        }
+    }
+
     /// Returns the diagnostic category.
     #[must_use]
     pub const fn category(&self) -> DiagnosticCategory {
@@ -770,6 +871,30 @@ pub enum Error {
 }
 
 impl Error {
+    /// The [`Self::code`] of each error the source's author caused, which
+    /// [`CompileFailure`] reports as [`CompileFailure::Rejected`]. This list
+    /// decides that, so a peer that reads a rejection's code back checks it
+    /// against the same set.
+    pub const REJECTION_CODES: [&'static str; 8] = [
+        "compilation",
+        "invalid_program_body",
+        "invalid_saved_function",
+        "source_too_deeply_nested",
+        "forbidden_capability",
+        "invalid_saved_function_reference",
+        "invalid_function_save",
+        "memory_limit_exceeded",
+    ];
+    /// The [`Self::code`] of each error a compile fails with for a reason
+    /// the source did not cause. The other errors that
+    /// [`CompileFailure::Failed`] carries come from running a Program.
+    pub const COMPILER_FAILURE_CODES: [&'static str; 4] = [
+        "initialization",
+        "compiler_protocol",
+        "invalid_source_map",
+        "engine",
+    ];
+
     /// The error's stable kind, for an event's `error.type`: a bounded
     /// code that never carries the error's text.
     #[must_use]
@@ -811,7 +936,8 @@ impl Error {
 pub enum CompileFailure {
     /// The source was rejected, with a safe bounded diagnostic for its author.
     Rejected(String),
-    /// The bounded compiler queue had no room for the request.
+    /// The compiler had no room for the request: its bounded queue is
+    /// full, or a Run Executor's pull stream has spent its room.
     Busy,
     /// The compile deadline expired.
     TimedOut,
@@ -828,14 +954,9 @@ impl From<Error> for CompileFailure {
             Error::CompilerBusy => Self::Busy,
             Error::CompilationTimedOut => Self::TimedOut,
             Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
-            authored @ (Error::Compilation { .. }
-            | Error::InvalidProgramBody
-            | Error::InvalidSavedFunction(_)
-            | Error::SourceTooDeeplyNested
-            | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. }
-            | Error::InvalidFunctionSave(_)
-            | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
+            authored if Error::REJECTION_CODES.contains(&authored.code()) => {
+                Self::Rejected(format_compiler_error(authored))
+            }
             other => Self::Failed(other.code()),
         }
     }

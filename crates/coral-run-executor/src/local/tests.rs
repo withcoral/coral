@@ -189,14 +189,18 @@ async fn a_child_idle_for_five_minutes_retires_and_its_verifier_is_forgotten() {
     let report = |free| PullRequest {
         message: Some(pull_request::Message::Room(Room { free })),
     };
-    let one_held = report(MAX_RUNS_HELD - 1);
-    harness.streams.receive(stream, &one_held).unwrap();
+    harness
+        .streams
+        .receive(stream, report(MAX_RUNS_HELD - 1))
+        .unwrap();
     sleep(6 * MINUTE).await;
     assert!(!harness.child(0, |child| child.stdin_closed));
 
     // The idle period starts when its room is whole again.
-    let whole = report(MAX_RUNS_HELD);
-    harness.streams.receive(stream, &whole).unwrap();
+    harness
+        .streams
+        .receive(stream, report(MAX_RUNS_HELD))
+        .unwrap();
 
     // Its pull stream moves at the connection age. While it is away, a
     // request for room starts nothing, and the move is no work.

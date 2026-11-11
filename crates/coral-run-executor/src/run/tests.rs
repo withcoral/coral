@@ -6,8 +6,8 @@ use tokio::sync::oneshot;
 use super::*;
 use crate::testing::{Answer, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
-    Committed, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult, Invoke, Loaded, Location,
-    Log, LogLevel, Rejection, Request, RunEnd, Started, Terminate, TerminateReason,
+    Committed, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult, Invoke,
+    Loaded, Location, Log, LogLevel, Request, RunEnd, Started, Terminate, TerminateReason,
     UpstreamOutcome, finish, invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
@@ -25,7 +25,7 @@ async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, oneshot::Sender<()>
     (coral, retire)
 }
 
-fn compiled(source: &str) -> Package {
+fn compiled(source: &str) -> RunPackage {
     let compiler = InProcessCompiler::new(coral_v8::IsolateLimits::defaults()).unwrap();
     let program = compiler
         .compile(TEST_COMPILATION_TIMEOUT, source, &[], None)
@@ -34,7 +34,7 @@ fn compiled(source: &str) -> Package {
 }
 
 /// Takes Run `run_id` and answers its Open with `package`, which loads.
-async fn loaded(coral: &mut ScriptedCoral, run_id: &str, package: Package) -> RunCall {
+async fn loaded(coral: &mut ScriptedCoral, run_id: &str, package: RunPackage) -> RunCall {
     coral.take(run_id, "claim-1");
     let mut run = coral.next_run().await;
     assert_eq!(
@@ -57,7 +57,7 @@ async fn loaded(coral: &mut ScriptedCoral, run_id: &str, package: Package) -> Ru
 /// Started.
 async fn started(
     coral: &mut ScriptedCoral,
-    package: Package,
+    package: RunPackage,
     cpu_budget_ms: Option<u64>,
 ) -> RunCall {
     let run = loaded(coral, "run-1", package).await;
@@ -147,7 +147,7 @@ return issue.id;"#;
         );
     }
     // Answered in the other order: each settles the Invoke it names.
-    let rejection = Rejection {
+    let rejection = CoralFailure {
         code: "tool_not_found".to_owned(),
         message: "Tool Call Path was not found".to_owned(),
         trace_id: String::new(),
@@ -156,7 +156,7 @@ return issue.id;"#;
     run.send(result(
         2,
         0,
-        invocation_result::Outcome::Rejection(rejection),
+        invocation_result::Outcome::CoralFailure(rejection),
     ))
     .await;
     let issue = r#"{"id":7,"title":"Ship it"}"#.to_owned();
@@ -377,7 +377,8 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
     // A script the isolate cannot compile: Finish in place of Loaded.
     let mut broken = compiled("return 1;");
     broken.script = "return (".to_owned();
-    broken.sha256 = package_digest(&broken.script, &broken.source_map);
+    broken.sha256 =
+        crate::compile_wire::package_sha256(&broken.script, &broken.source_map).to_vec();
     coral.take("run-1", "claim-1");
     let mut run = coral.next_run().await;
     run.send(run_response::Message::Package(broken)).await;
@@ -409,7 +410,7 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
 }
 
 /// How a case breaks a loadable package.
-type Breaks = fn(&mut Package);
+type Breaks = fn(&mut RunPackage);
 
 /// Catches: a package loaded although it breaks the protocol, or a closed
 /// stream that keeps its unit.
@@ -423,7 +424,8 @@ async fn a_package_that_breaks_the_protocol_closes_the_stream() {
         }),
         ("a source map the isolate cannot read", |package| {
             package.source_map = "not a source map".to_owned();
-            package.sha256 = package_digest(&package.script, &package.source_map);
+            package.sha256 =
+                crate::compile_wire::package_sha256(&package.script, &package.source_map).to_vec();
         }),
         ("no value limits", |package| package.value_limits = None),
         ("a value limit of zero", |package| {

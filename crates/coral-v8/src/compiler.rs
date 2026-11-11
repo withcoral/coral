@@ -1193,7 +1193,34 @@ mod tests {
                 CompileFailure::Failed("invalid_source_map"),
             ),
         ] {
+            if let CompileFailure::Failed(kind) = failure {
+                assert!(Error::COMPILER_FAILURE_CODES.contains(&kind), "{kind}");
+            }
             assert_eq!(CompileFailure::from(error), failure);
+        }
+        // Every error the author causes, so a code renamed off
+        // `Error::REJECTION_CODES` cannot turn one into `Failed`.
+        let authored = [
+            Error::Compilation {
+                diagnostics: Vec::new(),
+            },
+            Error::InvalidProgramBody,
+            Error::InvalidSavedFunction("no default export".into()),
+            Error::SourceTooDeeplyNested,
+            Error::ForbiddenCapability("eval".into()),
+            Error::InvalidSavedFunctionReference {
+                message: "computed access".into(),
+                line: 2,
+                column: 7,
+            },
+            Error::InvalidFunctionSave("names no function".into()),
+            Error::MemoryLimitExceeded,
+        ];
+        assert_eq!(authored.len(), Error::REJECTION_CODES.len());
+        for error in authored {
+            let code = error.code();
+            let failure = CompileFailure::from(error);
+            assert!(matches!(failure, CompileFailure::Rejected(_)), "{code}");
         }
     }
 
