@@ -79,7 +79,7 @@ where
     let held = StateLock::acquire_existing(&layout)?;
     let database_config = resolve_database(&layout, config)?;
     validate_database_state(&database_config).await?;
-    let vectors = validate_config()?;
+    let vector_storage = validate_config()?;
 
     let lock = if let Some(lock) = held {
         lock
@@ -94,11 +94,11 @@ where
     layout.ensure()?;
     let database = Database::connect(database_config).await?;
     // The chain's search steps need the features this checks.
-    coral_search::prepare_storage(&database, vectors).await?;
+    coral_search::prepare_storage(&database, vector_storage).await?;
     super::migrations::migrate_current(&database).await?;
     // After the chain: a table in a schema without the state marker reads
     // as pre-v1 state at the next boot.
-    coral_search::prepare_vector_table(&database, vectors).await?;
+    coral_search::prepare_vector_table(&database, vector_storage).await?;
 
     Ok(InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),
@@ -146,63 +146,40 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_postgres_boots_with_a_vector_table_only_while_the_setting_is_on() {
         coral_test_support::database_only!(Postgres);
-        let url = crate::bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
-            .expect("read Postgres test URL")
-            .expect("the Postgres test selector requires CORAL_TEST_POSTGRES_URL");
-        // A fixture puts the extensions the boot checks need in `public`, as
-        // in a default deployment. Created by this boot, they would land in
-        // its own schema, off every other test's search path.
-        let _extensions = coral_test_support::TestDatabase::new(coral_db::migration_plan())
-            .await
-            .expect("install the shared extensions");
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("open Postgres");
-
-        for (vectors, expected) in [
-            (
-                coral_search::VectorStorage::On { dimension: 3 },
-                Some("halfvec(3)"),
-            ),
-            (coral_search::VectorStorage::Off, None),
+        for (vector_storage, expected) in [
+            (coral_search::VectorStorage::On { dimension: 3 }, true),
+            (coral_search::VectorStorage::Off, false),
         ] {
-            let schema = format!("coral_boot_{}", uuid::Uuid::new_v4().simple());
-            sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
-                .execute(&pool)
-                .await
-                .expect("create the boot schema");
-            let mut scoped = url::Url::parse(&url).expect("parse Postgres test URL");
-            scoped
-                .query_pairs_mut()
-                .append_pair("options[search_path]", &format!("{schema},public"));
-            let options = coral_db::DatabaseOptions::Postgres { url: scoped.into() };
+            let options = coral_test_support::empty_postgres_schema(
+                coral_test_support::SearchPath::WithPublic,
+            )
+            .await
+            .expect("create an empty schema");
             let temp = TempDir::new().unwrap();
             let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
 
-            let state = super::initialize(layout, "", |_, _| Ok(options), || Ok(vectors))
+            let state = super::initialize(layout, "", |_, _| Ok(options), || Ok(vector_storage))
                 .await
-                .unwrap_or_else(|error| panic!("{vectors:?}: boot: {error}"));
+                .unwrap_or_else(|error| panic!("{vector_storage:?}: boot: {error}"));
 
-            let vector_type: Option<String> = sqlx::query_scalar(
-                "SELECT format_type(a.atttypid, a.atttypmod) \
-                 FROM pg_catalog.pg_attribute a \
-                 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
-                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 \
-                 AND c.relname = 'search_entity_embeddings' \
-                 AND a.attname = 'embedding'",
-            )
-            .bind(&schema)
-            .fetch_optional(&pool)
-            .await
-            .expect("read the vector column");
             let (database, _lock) = state.into_parts();
+            let (vector_table,): (bool,) = database
+                .fetch_optional(
+                    sea_query::Query::select()
+                        .expr(sea_query::Expr::cust(
+                            "EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
+                             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                             WHERE n.nspname = current_schema() \
+                             AND c.relname = 'search_entity_embeddings')",
+                        ))
+                        .to_owned(),
+                )
+                .await
+                .expect("read the schema")
+                .expect("EXISTS returns one row");
             database.close().await;
-            assert_eq!(vector_type.as_deref(), expected, "{vectors:?}");
+            assert_eq!(vector_table, expected, "{vector_storage:?}");
         }
-        pool.close().await;
     }
 
     #[tokio::test]

@@ -78,7 +78,7 @@ for (const [name, change] of Object.entries(changes)) {
 
 const accepted = {
   'adds the next migration': (repo) => repo.write('crates/coral-db/migrations/0010_runs.sql', runs),
-  'adds the next migration with a text vector': (repo) =>
+  'adds the next migration with a tsvector column': (repo) =>
     repo.write(
       'crates/coral-db/migrations/postgres/0010_runs.sql',
       "ALTER TABLE runs ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', id)) STORED;\n",

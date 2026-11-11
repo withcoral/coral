@@ -1,18 +1,21 @@
 //! Universal Search's database features and vector table at boot.
 //!
 //! The shared migration chain creates Universal Search's tables and the
-//! text-search objects each backend needs: generated vectors, trigram indexes
+//! text-search objects each backend needs: generated `tsvector` columns, trigram indexes
 //! and statistics tables on Postgres, an FTS5 table and its triggers on
 //! `SQLite`. Those objects need database features that a migration cannot
 //! create or explain. [`prepare_storage`] checks them before the chain runs,
 //! and pgvector too while the vector side is on. [`prepare_vector_table`]
-//! keeps the table of Search Entity vectors on Postgres after the chain runs.
+//! keeps the pgvector table of Search Entity embeddings on Postgres after the
+//! chain runs.
 
 mod repository;
 #[cfg(test)]
 mod tests;
 
 use coral_db::{Database, DatabaseSystem};
+
+use repository::VectorTable;
 
 /// A failure to prepare Universal Search's storage at boot.
 #[derive(Debug, thiserror::Error)]
@@ -49,11 +52,11 @@ pub enum StorageError {
 /// missing.
 pub async fn prepare_storage(
     database: &Database,
-    vectors: VectorStorage,
+    vector_storage: VectorStorage,
 ) -> Result<(), StorageError> {
     match database.system() {
         DatabaseSystem::Postgres => {
-            check_postgres_features(probe_postgres(database, vectors).await?)
+            check_postgres_features(probe_postgres(database, vector_storage).await?)
         }
         DatabaseSystem::Sqlite => check_sqlite_features(probe_sqlite(database).await?),
     }
@@ -77,6 +80,27 @@ enum Extension {
     Vector,
 }
 
+impl Extension {
+    const fn feature(self) -> &'static str {
+        match self {
+            Self::PgTrgm => "pg_trgm extension",
+            Self::Vector => "vector extension",
+        }
+    }
+
+    const fn remedy(self) -> &'static str {
+        match self {
+            Self::PgTrgm => {
+                "install pg_trgm in a schema on Coral's search path, or let Coral's database role create it"
+            }
+            Self::Vector => {
+                "install pgvector 0.7 or later in a schema on Coral's search path, let Coral's \
+                 database role create it, or set `[search] semantic_search_enabled = false`"
+            }
+        }
+    }
+}
+
 /// What the Postgres probe found out about the extensions.
 struct PostgresFeatures {
     server_version: String,
@@ -87,13 +111,13 @@ struct PostgresFeatures {
 
 async fn probe_postgres(
     database: &Database,
-    vectors: VectorStorage,
+    vector_storage: VectorStorage,
 ) -> Result<PostgresFeatures, StorageError> {
     let mut transaction = database.begin_read_snapshot().await?;
     let server_version = repository::postgres_server_version(&mut transaction).await?;
     transaction.rollback().await?;
     let pg_trgm = probe_extension(database, Extension::PgTrgm).await?;
-    let vector = match vectors {
+    let vector = match vector_storage {
         VectorStorage::Off => None,
         VectorStorage::On { .. } => Some(probe_extension(database, Extension::Vector).await?),
     };
@@ -145,25 +169,18 @@ async fn probe_extension(
 }
 
 fn check_postgres_features(probe: PostgresFeatures) -> Result<(), StorageError> {
-    let (feature, cause, remedy) = match (probe.pg_trgm, probe.vector) {
-        (FeatureProbe::Missing { cause }, _) => (
-            "pg_trgm extension",
-            cause,
-            "install pg_trgm in a schema on Coral's search path, or let Coral's database role create it",
-        ),
-        (FeatureProbe::Present, Some(FeatureProbe::Missing { cause })) => (
-            "vector extension",
-            cause,
-            "install pgvector 0.7 or later in a schema on Coral's search path, let Coral's \
-             database role create it, or set `[search] semantic_search_enabled = false`",
-        ),
+    let (extension, cause) = match (probe.pg_trgm, probe.vector) {
+        (FeatureProbe::Missing { cause }, _) => (Extension::PgTrgm, cause),
+        (FeatureProbe::Present, Some(FeatureProbe::Missing { cause })) => {
+            (Extension::Vector, cause)
+        }
         (FeatureProbe::Present, None | Some(FeatureProbe::Present)) => return Ok(()),
     };
     Err(StorageError::MissingFeature {
         database: format!("Postgres {}", probe.server_version),
-        feature,
+        feature: extension.feature(),
         cause,
-        remedy,
+        remedy: extension.remedy(),
     })
 }
 
@@ -199,28 +216,32 @@ pub enum VectorStorage {
 /// or created.
 pub async fn prepare_vector_table(
     database: &Database,
-    vectors: VectorStorage,
+    vector_storage: VectorStorage,
 ) -> Result<(), StorageError> {
-    let VectorStorage::On { dimension } = vectors else {
+    let VectorStorage::On { dimension } = vector_storage else {
         return Ok(());
     };
     if database.system() != DatabaseSystem::Postgres {
         return Ok(());
     }
-    let statement = repository::vector_table_statement(dimension);
     let mut transaction = database.begin().await?;
     // Read committed: the read below sees what a boot that held the lock
     // first committed.
     repository::lock_vector_table(&mut transaction).await?;
-    match repository::vector_table_created_by(&mut transaction).await? {
-        Some(Some(existing)) if existing == statement => {
+    match repository::vector_table(&mut transaction, dimension).await? {
+        VectorTable::Current => {
             transaction.rollback().await?;
             return Ok(());
         }
-        Some(_) => repository::drop_vector_table(&mut transaction).await?,
-        None => {}
+        VectorTable::Other => {
+            tracing::info!(
+                "dropping the search vector table that this Coral would not create; every Search Entity embeds again"
+            );
+            repository::drop_vector_table(&mut transaction).await?;
+        }
+        VectorTable::Absent => {}
     }
-    repository::create_vector_table(&mut transaction, &statement).await?;
+    repository::create_vector_table(&mut transaction, dimension).await?;
     transaction.commit().await?;
     Ok(())
 }
