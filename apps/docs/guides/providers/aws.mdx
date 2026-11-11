@@ -34,7 +34,7 @@ flowchart LR
 
 - **A self-hosted Coral deployment, version 1.6.1 or later.** This guide covers [Docker Compose](/getting-started/self-host/docker-compose) and [Kubernetes](/getting-started/self-host/kubernetes).
 - **An AWS Region for the endpoint.** The examples use `https://aws-mcp.us-east-1.api.aws/mcp`. AWS lists the [other Regions](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html#step-2-choose-auth-method).
-- **A place on AWS to run the bridge.** The Docker Compose example gets the bridge's IAM role from an Amazon EC2 instance. The Kubernetes example gets it from Amazon EKS. This guide does not cover other platforms. On Amazon ECS, give the bridge a [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html). Outside AWS, use [IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html).
+- **A place on AWS to run the bridge.** The Docker Compose example gets the bridge's IAM role from an Amazon EC2 instance. The Kubernetes example gets it from Amazon EKS. This guide does not cover other platforms. On Amazon ECS, set the role as the [task role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) of the bridge's task. Every container in that task can use the role. Outside AWS, use [IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html).
 - **Permission to create an IAM role** in the AWS account that the provider reads.
 
 ## Set up the bridge
@@ -255,7 +255,7 @@ With `--logLevel none`, the bridge logs nothing. Remove the option to see the er
 | "Coral's outbound settings do not allow this address."     | Add the `[outbound]` policy to Coral's configuration, then restart Coral.                                 |
 | "Coral cannot read this server's OAuth resource metadata." | Check the bridge's URL. If it is correct, check that Coral is version 1.6.1 or later.                     |
 | The bridge returns `401 Unauthorized`                      | The token in Coral does not match `SUPERGATEWAY_API_KEY`. Connect the account again with the correct key. |
-| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the instance's role or the service account's role.                  |
+| `No AWS credentials found` in the bridge's logs            | The proxy found no credentials. Check the instance's role, the task role or the service account's role.   |
 | `InvalidSignatureException` in the bridge's logs           | `--region` does not match the Region in the endpoint URL, or the container's clock is wrong.              |
 | A tool returns an access denied error                      | The bridge's IAM role lacks the permission. Attach a policy that grants it.                               |
 | The first call after a restart is slow                     | The bridge downloads the proxy when it first runs it. Later calls are faster.                             |
