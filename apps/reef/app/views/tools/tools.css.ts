@@ -225,6 +225,19 @@ export const publishSide = style({
   paddingInlineEnd: 24,
   '@media': { '(max-width: 760px)': { borderInlineEnd: 'none', paddingInlineEnd: 0 } },
 })
+// The code pane's tabs, with the switch between changes and the full text at their end.
+// The row draws the line under both, in place of the tab list's own.
+export const codeTabs = style({
+  alignItems: 'center',
+  boxShadow: `inset 0 -1px ${theme.stroke.primary}`,
+  display: 'flex',
+  gap: 12,
+  minWidth: 0,
+})
+globalStyle(`${codeTabs} > :first-child`, { flex: '1 1 auto', minWidth: 0 })
+export const codeTabList = style({ boxShadow: 'none' })
+// The tabs keep 8px under their labels, so the switch keeps it too and lines up with them.
+export const codeView = style({ flexShrink: 0, marginBlockEnd: 8 })
 // One labelled part of the left pane: its label, then what it holds.
 export const publishPart = style({ display: 'grid', gap: 8, justifyItems: 'start', minWidth: 0 })
 // The publish dialog's footer stays at the popup's bottom edge, so the policy

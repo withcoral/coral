@@ -454,45 +454,53 @@ function Decisions({ review }: { review: PublishReviewView }) {
 }
 
 /**
- * The code the owner reviews, in tabs: the source or its changes from the
- * revision it replaces, the declaration, and the diagnostics when there are some.
+ * The code the owner reviews, in tabs: the source, the declaration, and the
+ * diagnostics when there are some. A publish that replaces a revision shows
+ * the source and the declaration as changes from it, or in full: one switch
+ * at the end of the tabs sets both.
  */
 function Code({ review }: { review: PublishReviewView }) {
   const { previous } = review
-  const [sourceView, setSourceView] = useState<'changes' | 'full'>(previous ? 'changes' : 'full')
+  const [view, setView] = useState<'changes' | 'full'>(previous ? 'changes' : 'full')
+  const changes = previous !== null && view === 'changes'
   return (
     <Tabs.Root defaultValue="source" className={styles.stack}>
-      <Tabs.List inset="none">
-        <Tabs.Tab value="source">{previous ? 'Changes' : 'Source'}</Tabs.Tab>
-        <Tabs.Tab value="declaration">Declaration</Tabs.Tab>
-        {review.diagnostics.length > 0 && (
-          <Tabs.Tab value="diagnostics">
-            Diagnostics{' '}
-            <Typography.BodySmall as="span" variant="secondary">
-              {review.diagnostics.length.toLocaleString('en-US')}
-            </Typography.BodySmall>
-          </Tabs.Tab>
+      <div className={styles.codeTabs}>
+        <Tabs.List inset="none" className={styles.codeTabList}>
+          <Tabs.Tab value="source">Source</Tabs.Tab>
+          <Tabs.Tab value="declaration">Declaration</Tabs.Tab>
+          {review.diagnostics.length > 0 && (
+            <Tabs.Tab value="diagnostics">
+              Diagnostics{' '}
+              <Typography.BodySmall as="span" variant="secondary">
+                {review.diagnostics.length.toLocaleString('en-US')}
+              </Typography.BodySmall>
+            </Tabs.Tab>
+          )}
+          <Tabs.Indicator />
+        </Tabs.List>
+        {previous && (
+          <span className={styles.codeView}>
+            <SegmentedControl
+              label="View"
+              size="small"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: 'changes', label: `Changes from revision ${previous.revision}` },
+                { value: 'full', label: 'Full' },
+              ]}
+            />
+          </span>
         )}
-        <Tabs.Indicator />
-      </Tabs.List>
+      </div>
       <Tabs.Panel value="source" className={styles.stack}>
         {review.origin.kind === 'private' && (
           <Fact icon="TriangleAlert" color="warning">
             Every member can read this source. Remove tokens and IDs that only you should see.
           </Fact>
         )}
-        {previous && (
-          <SegmentedControl
-            label="Source view"
-            value={sourceView}
-            onChange={setSourceView}
-            options={[
-              { value: 'changes', label: `Changes from revision ${previous.revision}` },
-              { value: 'full', label: 'Full source' },
-            ]}
-          />
-        )}
-        {previous && sourceView === 'changes' ? (
+        {changes ? (
           <DiffView
             label="Source changes"
             before={previous.source}
@@ -505,12 +513,13 @@ function Code({ review }: { review: PublishReviewView }) {
         )}
       </Tabs.Panel>
       <Tabs.Panel value="declaration">
-        {declarationChanges(review) ? (
+        {changes ? (
           <DiffView
             label="Declaration changes"
-            before={previous!.declaration}
+            before={previous.declaration}
             after={review.declaration}
             maxLines={REVIEW_LINES}
+            unchanged="The declaration does not change."
           />
         ) : (
           <CodeBlock value={review.declaration} format="typescript" framed />

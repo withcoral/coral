@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { sourceLines } from '@/wax/components/code-block'
 
-import { diffLines, foldUnchanged, type DiffLine } from './diff-lines'
+import { diffLines, foldUnchanged, shownLines, type DiffLine } from './diff-lines'
 
 /** A diff as one string per line: its marker, both line numbers, and its text. */
 const rows = (lines: DiffLine[]) =>
@@ -64,6 +64,32 @@ describe('the two texts a diff must give back', () => {
     expect(numbers('before')).toEqual(sourceLines(before).map((_, index) => index + 1))
     expect(numbers('after')).toEqual(sourceLines(after).map((_, index) => index + 1))
   })
+})
+
+// Catches: an empty unchanged row after the last line of two texts that both
+// end with a line break, or a line break that only one text ends with, or an
+// empty line inside the text, dropped from the diff.
+it.each([
+  {
+    name: 'both end with a line break',
+    before: 'a\nb\n',
+    after: 'a\nc\n',
+    rows: ['  1 1 a', '- 2 . b', '+ . 2 c'],
+  },
+  {
+    name: 'only the new text ends with one',
+    before: 'a',
+    after: 'a\n',
+    rows: ['  1 1 a', '+ . 2 '],
+  },
+  {
+    name: 'an empty line inside',
+    before: 'a\n\nb',
+    after: 'a\n\nc',
+    rows: ['  1 1 a', '  2 2 ', '- 3 . b', '+ . 3 c'],
+  },
+])('shows only the lines of the texts when $name', ({ before, after, rows: expected }) => {
+  expect(rows(shownLines(diffLines(before, after)))).toEqual(expected)
 })
 
 // Catches: a one-line change reported as the whole text removed and added.

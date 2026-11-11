@@ -168,3 +168,14 @@ export function foldUnchanged(lines: DiffLine[], context = 3): (DiffLine | DiffF
   }
   return rows
 }
+
+/**
+ * The lines a diff shows: all of them but the empty one after a final line
+ * break that both texts end with. It ends their last line; it starts none.
+ */
+export function shownLines(lines: DiffLine[]): DiffLine[] {
+  const last = lines.at(-1)
+  return last && lines.length > 1 && last.kind === 'same' && last.text === ''
+    ? lines.slice(0, -1)
+    : lines
+}

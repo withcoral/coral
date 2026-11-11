@@ -5,7 +5,7 @@ import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 
-import { diffLines, foldUnchanged } from './diff-lines'
+import { diffLines, foldUnchanged, shownLines } from './diff-lines'
 import * as styles from './diff-view.css'
 
 const markers = { same: ' ', removed: '−', added: '+' } as const
@@ -38,7 +38,7 @@ export function DiffView({
   lineBreaksOnly?: string
 }) {
   const rows = useMemo(() => {
-    const lines = diffLines(before, after)
+    const lines = shownLines(diffLines(before, after))
     return lines.every((line) => line.kind === 'same') ? null : foldUnchanged(lines, context)
   }, [before, after, context])
   if (!rows)
