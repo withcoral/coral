@@ -53,7 +53,7 @@ SET failure_message = CASE failure_message
     failure_error_json = REPLACE(REPLACE(REPLACE(failure_error_json,
         '"code":"saved_function_not_found"', '"code":"private_tool_not_found"'),
         '"message":"Saved Function was not found"', '"message":"Private Tool was not found"'),
-        '"source":"Saved Function coral.private.', '"source":"Private Tool coral.private.')
+        '"source":"Saved Function coral.functions.', '"source":"Private Tool coral.private.')
 WHERE failure_error_json LIKE '%Saved Function%'
     OR failure_error_json LIKE '%saved_function%';
 

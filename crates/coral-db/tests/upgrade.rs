@@ -385,11 +385,11 @@ const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
     VALUES
         ('run', 'workspace', 'user:upgrade', 'user', 'failed', 1, 9, 5, 'program_failed',
          'ToolError: Saved Function was not found',
-         '{"name":"ToolError","message":"Saved Function was not found","frames":[{"source":"Saved Function coral.private.people.greet","line":2,"column":7},{"source":"Program","line":1,"column":1}],"tool":{"code":"saved_function_not_found"}}',
+         '{"name":"ToolError","message":"Saved Function was not found","frames":[{"source":"Saved Function coral.functions.people.greet","line":2,"column":7},{"source":"Program","line":1,"column":1}],"tool":{"code":"saved_function_not_found"}}',
          3, 0, 0, '{}'),
         ('program-error', 'workspace', 'user:upgrade', 'user', 'failed', 1, 9, 5,
-         'program_failed', 'Error: Saved Function coral.private.people.greet broke',
-         '{"name":"Error","message":"Saved Function coral.private.people.greet broke","frames":[]}',
+         'program_failed', 'Error: Saved Function coral.functions.people.greet broke',
+         '{"name":"Error","message":"Saved Function coral.functions.people.greet broke","frames":[]}',
          2, 0, 0, '{}');
     INSERT INTO program_run_saved_function_snapshots
         (run_id, workspace_id, saved_function_id, path, source)
@@ -415,7 +415,7 @@ const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
          qualified_name, title, description, provider_name, searchable_text, deprecated,
          fingerprint, indexed_at_unix_nanos)
     VALUES ('workspace', 'tool', 'saved_function', 'tool', 'user:upgrade', 'user',
-            'coral.private.people.greet', 'people.greet', 'people.greet', 'Greet one person',
+            'coral.functions.people.greet', 'people.greet', 'people.greet', 'Greet one person',
             'private', 'greet person', FALSE, 'fingerprint', 3);
     INSERT INTO search_index_states
         (workspace_id, target_id, kind, saved_function_id, principal_id, principal_kind, state,
@@ -434,7 +434,7 @@ const ROWS_BEFORE_PRIVATE_TOOL_NAMES: &str = r#"
          'succeeded', '{"kind":"saved_function","id":"tool"}', 'tool'),
         ('search', 'workspace', 'task', 'user:upgrade', 'user', 'search', 'saved_function', 1, 2,
          'succeeded',
-         '{"kind":"discovery","context":{"kind":"search","query":"saved_function","provider":null,"limit":5},"response":{"hits":[{"kind":"saved_function","call_path":"coral.private.people.greet"}],"retrievers":[{"retriever":"saved_function","state":"ok"}]}}',
+         '{"kind":"discovery","context":{"kind":"search","query":"saved_function","provider":null,"limit":5},"response":{"hits":[{"kind":"saved_function","call_path":"coral.functions.people.greet"}],"retrievers":[{"retriever":"saved_function","state":"ok"}]}}',
          NULL),
         ('rejected', 'workspace', 'task', 'user:upgrade', 'user', 'save', 'save broken', 1, 2,
          'rejected',
@@ -507,8 +507,8 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
                  WHERE id = 'program-error'",
                 [
                     "program-error",
-                    "Error: Saved Function coral.private.people.greet broke",
-                    r#"{"name":"Error","message":"Saved Function coral.private.people.greet broke","frames":[]}"#,
+                    "Error: Saved Function coral.functions.people.greet broke",
+                    r#"{"name":"Error","message":"Saved Function coral.functions.people.greet broke","frames":[]}"#,
                 ],
             ),
             (
@@ -529,6 +529,14 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
                 ["private_tool", "tool", "fingerprint"],
             ),
             (
+                "SELECT call_path, call_path, call_path FROM search_entities",
+                [
+                    "coral.private.people.greet",
+                    "coral.private.people.greet",
+                    "coral.private.people.greet",
+                ],
+            ),
+            (
                 "SELECT kind, authored_tool_id, CAST(failed_authored_tool_revision AS TEXT) \
                  FROM search_index_states",
                 ["private_tool", "tool", "3"],
@@ -543,7 +551,7 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
                 [
                     "search",
                     "saved_function",
-                    r#"{"kind":"discovery","context":{"kind":"search","query":"saved_function","provider":null,"limit":5},"response":{"hits":[{"kind":"private_tool","call_path":"coral.private.people.greet"}],"retrievers":[{"retriever":"private_tool","state":"ok"}]}}"#,
+                    r#"{"kind":"discovery","context":{"kind":"search","query":"saved_function","provider":null,"limit":5},"response":{"hits":[{"kind":"private_tool","call_path":"coral.functions.people.greet"}],"retrievers":[{"retriever":"private_tool","state":"ok"}]}}"#,
                 ],
             ),
             (
