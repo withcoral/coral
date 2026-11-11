@@ -10,8 +10,14 @@ use coral_v8::{
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::wire::v1::compile::Call;
 use crate::{
-    AnalysisError, CompileError, CompilerClient, PullStreams, Refused, StreamId, Unavailable,
+    AnalysisError, CompileError, CompilerClient, Diagnostics, PullStreams, Refused, StreamId,
+    Unavailable,
 };
+
+/// Why a call too large to send is rejected. Only a typed save's Tool
+/// declarations can grow a call that large.
+const TOO_LARGE: &str =
+    "The source and the Tool declarations that type it are too large to compile; call fewer Tools";
 
 /// Coral's side of the compiles one held pull stream carries: a
 /// [`CompilerClient`] that sends each call down the stream as `Compile` and
@@ -19,8 +25,8 @@ use crate::{
 ///
 /// [`PullStreams`] numbers each call, spends its unit of room, and reads
 /// each answer back. A call fails as a busy compiler when the stream has no
-/// room, as a stopped one when the stream ends first, and as a failed one
-/// when it is too large to send.
+/// room, as a stopped one when the stream ends first, and as rejected when
+/// it is too large to send.
 #[derive(Clone)]
 pub struct PullStreamCompiler {
     streams: PullStreams,
@@ -58,10 +64,12 @@ impl PullStreamCompiler {
             .map_err(|refused| match refused {
                 Refused::NoRoom => CompileError::Unavailable(Unavailable::Busy),
                 Refused::Closed => CompileError::Unavailable(Unavailable::Stopped),
-                // Nothing was sent: the stream and its compiles go on.
-                Refused::TooLarge => {
-                    CompileError::Unavailable(Unavailable::Failed("compiler_protocol"))
-                }
+                // The source, not the compiler, passed the bound. Nothing was
+                // sent, so the stream and its compiles go on.
+                Refused::TooLarge => CompileError::Diagnostics(Diagnostics::Message {
+                    kind: "compilation",
+                    message: TOO_LARGE.to_owned(),
+                }),
             })?;
         match answer.recv_timeout(left()) {
             Ok(Read::Failure(error)) => Err(error),
@@ -246,5 +254,20 @@ mod tests {
             }),
             "a call once the stream ended"
         );
+    }
+
+    #[test]
+    fn a_call_too_large_to_send_is_rejected() {
+        let streams = PullStreams::default();
+        let (outbound, _sent) = mpsc::unbounded_channel();
+        let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
+        let caller = PullStreamCompiler::new(streams, stream);
+        let source = "x".repeat(crate::MESSAGE_MAX_BYTES);
+        let rejected = caller.compile(TEST_COMPILATION_TIMEOUT, &source, &[], None);
+        let rejection = CompileError::Diagnostics(Diagnostics::Message {
+            kind: "compilation",
+            message: TOO_LARGE.to_owned(),
+        });
+        assert_eq!(rejected.map(drop), Err(rejection));
     }
 }
