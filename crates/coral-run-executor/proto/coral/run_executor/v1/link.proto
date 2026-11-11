@@ -98,13 +98,18 @@ message Compile {
   uint64 number = 1;
   // The time left until the caller's compilation deadline, in milliseconds.
   uint32 time_left_ms = 2;
-  // The call: one kind per call of the compiler client.
+  // Which compiler call this is. Compiled answers each kind with its own
+  // result.
   oneof call {
-    // What each source names: Analyzed.
+    // Find the Saved Functions and Tools that each source calls by name, so
+    // Coral can load and check them before it compiles. Answered with
+    // Analyzed.
     Analyze analyze = 3;
-    // A Program body lowered with the Saved Functions it links: Package.
+    // Compile a Program body, with the Saved Functions it calls, into the
+    // JavaScript a Run executes. Answered with Package.
     ProgramSource compile = 4;
-    // One Saved Function's declaration and diagnostics: Prepared.
+    // Check a Saved Function's source when it is saved, and produce its type
+    // declaration and diagnostics. Answered with Prepared.
     SavedFunctionSource prepare = 5;
   }
 }
@@ -113,17 +118,17 @@ message Compile {
 message Compiled {
   // The number of the Compile it answers.
   uint64 number = 1;
-  // The answer of the kind its call names, or why there is none.
+  // The result for the kind of call, or why the call has none.
   oneof answer {
-    // For analyze.
+    // The result of an analyze call.
     Analyzed analyzed = 2;
-    // For compile.
+    // The result of a compile call.
     Package package = 3;
-    // For prepare.
+    // The result of a prepare call.
     Prepared prepared = 4;
-    // For compile or prepare, when it returned no result.
+    // Why a compile or prepare call has no result.
     CompileFailure failure = 5;
-    // For analyze, when it returned no result.
+    // Why an analyze call has no result, and which source it stopped at.
     AnalysisFailure analysis_failure = 6;
   }
 }
@@ -136,7 +141,7 @@ message Analyze {
 
 // One source to analyze.
 message AnalyzedSource {
-  // The source, by what it is.
+  // The source, and whether it is a Program body or a Saved Function.
   oneof source {
     // A Program body.
     string program = 1;
@@ -151,7 +156,7 @@ message Analyzed {
   repeated SourceReferences sources = 1;
 }
 
-// What one source names directly.
+// The Saved Functions and Tools that one source calls by name.
 message SourceReferences {
   // The coral.functions references, in path order.
   repeated Reference functions = 1;

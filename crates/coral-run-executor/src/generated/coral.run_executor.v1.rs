@@ -123,22 +123,28 @@ pub struct Compile {
     /// The time left until the caller's compilation deadline, in milliseconds.
     #[prost(uint32, tag = "2")]
     pub time_left_ms: u32,
-    /// The call: one kind per call of the compiler client.
+    /// Which compiler call this is. Compiled answers each kind with its own
+    /// result.
     #[prost(oneof = "compile::Call", tags = "3, 4, 5")]
     pub call: ::core::option::Option<compile::Call>,
 }
 /// Nested message and enum types in `Compile`.
 pub mod compile {
-    /// The call: one kind per call of the compiler client.
+    /// Which compiler call this is. Compiled answers each kind with its own
+    /// result.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
-        /// What each source names: Analyzed.
+        /// Find the Saved Functions and Tools that each source calls by name, so
+        /// Coral can load and check them before it compiles. Answered with
+        /// Analyzed.
         #[prost(message, tag = "3")]
         Analyze(super::Analyze),
-        /// A Program body lowered with the Saved Functions it links: Package.
+        /// Compile a Program body, with the Saved Functions it calls, into the
+        /// JavaScript a Run executes. Answered with Package.
         #[prost(message, tag = "4")]
         Compile(super::ProgramSource),
-        /// One Saved Function's declaration and diagnostics: Prepared.
+        /// Check a Saved Function's source when it is saved, and produce its type
+        /// declaration and diagnostics. Answered with Prepared.
         #[prost(message, tag = "5")]
         Prepare(super::SavedFunctionSource),
     }
@@ -149,28 +155,28 @@ pub struct Compiled {
     /// The number of the Compile it answers.
     #[prost(uint64, tag = "1")]
     pub number: u64,
-    /// The answer of the kind its call names, or why there is none.
+    /// The result for the kind of call, or why the call has none.
     #[prost(oneof = "compiled::Answer", tags = "2, 3, 4, 5, 6")]
     pub answer: ::core::option::Option<compiled::Answer>,
 }
 /// Nested message and enum types in `Compiled`.
 pub mod compiled {
-    /// The answer of the kind its call names, or why there is none.
+    /// The result for the kind of call, or why the call has none.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Answer {
-        /// For analyze.
+        /// The result of an analyze call.
         #[prost(message, tag = "2")]
         Analyzed(super::Analyzed),
-        /// For compile.
+        /// The result of a compile call.
         #[prost(message, tag = "3")]
         Package(super::Package),
-        /// For prepare.
+        /// The result of a prepare call.
         #[prost(message, tag = "4")]
         Prepared(super::Prepared),
-        /// For compile or prepare, when it returned no result.
+        /// Why a compile or prepare call has no result.
         #[prost(message, tag = "5")]
         Failure(super::CompileFailure),
-        /// For analyze, when it returned no result.
+        /// Why an analyze call has no result, and which source it stopped at.
         #[prost(message, tag = "6")]
         AnalysisFailure(super::AnalysisFailure),
     }
@@ -185,13 +191,13 @@ pub struct Analyze {
 /// One source to analyze.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AnalyzedSource {
-    /// The source, by what it is.
+    /// The source, and whether it is a Program body or a Saved Function.
     #[prost(oneof = "analyzed_source::Source", tags = "1, 2")]
     pub source: ::core::option::Option<analyzed_source::Source>,
 }
 /// Nested message and enum types in `AnalyzedSource`.
 pub mod analyzed_source {
-    /// The source, by what it is.
+    /// The source, and whether it is a Program body or a Saved Function.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Source {
         /// A Program body.
@@ -209,7 +215,7 @@ pub struct Analyzed {
     #[prost(message, repeated, tag = "1")]
     pub sources: ::prost::alloc::vec::Vec<SourceReferences>,
 }
-/// What one source names directly.
+/// The Saved Functions and Tools that one source calls by name.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SourceReferences {
     /// The coral.functions references, in path order.
