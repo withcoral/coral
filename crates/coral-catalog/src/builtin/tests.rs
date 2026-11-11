@@ -24,9 +24,9 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
         BuiltinTool::Search => super::search::tests::valid_arguments(),
-        BuiltinTool::AddTool => super::private_tools::valid_add_arguments(),
-        BuiltinTool::UpdateTool => super::private_tools::valid_update_arguments(),
-        BuiltinTool::RemoveTool => super::private_tools::valid_remove_arguments(),
+        BuiltinTool::AddCustomTool => super::private_tools::valid_add_arguments(),
+        BuiltinTool::UpdateCustomTool => super::private_tools::valid_update_arguments(),
+        BuiltinTool::RemoveCustomTool => super::private_tools::valid_remove_arguments(),
     }
 }
 
@@ -331,7 +331,7 @@ fn private_tool_results() -> [(BuiltinTool, Value); 3] {
     };
     [
         (
-            BuiltinTool::AddTool,
+            BuiltinTool::AddCustomTool,
             super::SavedToolResult {
                 revision: 1,
                 diagnostics: Vec::new(),
@@ -340,9 +340,9 @@ fn private_tool_results() -> [(BuiltinTool, Value); 3] {
             }
             .into_tool_result(),
         ),
-        (BuiltinTool::UpdateTool, saved.into_tool_result()),
+        (BuiltinTool::UpdateCustomTool, saved.into_tool_result()),
         (
-            BuiltinTool::RemoveTool,
+            BuiltinTool::RemoveCustomTool,
             super::RemovedToolResult {
                 call_path: "coral.private.github.pulls.listStale".to_owned(),
             }
@@ -467,10 +467,10 @@ fn a_missing_path_carries_at_most_three_suggestions() {
 fn a_save_without_an_extracted_source_is_refused_naming_source() {
     type Parse = fn(&Value) -> Result<(), Vec<super::ArgumentProblem>>;
     let parsers: [(&str, Parse); 2] = [
-        ("addTool", |arguments| {
+        ("addCustomTool", |arguments| {
             super::ToolSaveArguments::parse_add(arguments).map(drop)
         }),
-        ("updateTool", |arguments| {
+        ("updateCustomTool", |arguments| {
             super::ToolSaveArguments::parse_update(arguments).map(drop)
         }),
     ];
@@ -500,7 +500,7 @@ fn a_save_without_an_extracted_source_is_refused_naming_source() {
     }
 }
 
-// Catches: an updateTool that accepts a revision no tool can be at, or
+// Catches: an updateCustomTool that accepts a revision no tool can be at, or
 // that accepts `null` for an argument to omit.
 #[test]
 fn update_tool_refuses_a_revision_below_one_naming_expected_revision() {
@@ -534,8 +534,8 @@ fn update_tool_refuses_a_revision_below_one_naming_expected_revision() {
 fn a_save_reads_its_declared_policy_and_refuses_any_other_word_naming_policy() {
     type Parse = fn(&Value) -> Result<super::ToolSaveArguments, Vec<super::ArgumentProblem>>;
     let parsers: [(&str, Parse); 2] = [
-        ("addTool", super::ToolSaveArguments::parse_add),
-        ("updateTool", super::ToolSaveArguments::parse_update),
+        ("addCustomTool", super::ToolSaveArguments::parse_add),
+        ("updateCustomTool", super::ToolSaveArguments::parse_update),
     ];
     let save = json!({ "path": "a.b", "description": "d", "source": "export default 1" });
     for (tool, parse) in parsers {

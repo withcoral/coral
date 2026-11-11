@@ -281,7 +281,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     let refused = session
         .authoring_value(
             task_id,
-            "removeTool",
+            "removeCustomTool",
             &json!({ "path": format!("weather.{CANARY}") }),
         )
         .await;

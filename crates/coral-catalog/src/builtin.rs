@@ -146,12 +146,12 @@ pub enum BuiltinTool {
     Search,
     /// Creates one of the caller's own Private Tools; fails when one is
     /// at the path.
-    AddTool,
+    AddCustomTool,
     /// Replaces one of the caller's own Private Tools; fails when none is
     /// at the path, or when its revision is not the one expected.
-    UpdateTool,
+    UpdateCustomTool,
     /// Removes one of the caller's own Private Tools.
-    RemoveTool,
+    RemoveCustomTool,
 }
 
 impl BuiltinTool {
@@ -163,9 +163,9 @@ impl BuiltinTool {
         Self::UpdatePolicy,
         Self::UpdateProvider,
         Self::Search,
-        Self::AddTool,
-        Self::UpdateTool,
-        Self::RemoveTool,
+        Self::AddCustomTool,
+        Self::UpdateCustomTool,
+        Self::RemoveCustomTool,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -179,9 +179,9 @@ impl BuiltinTool {
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
             Self::Search => "search",
-            Self::AddTool => "addTool",
-            Self::UpdateTool => "updateTool",
-            Self::RemoveTool => "removeTool",
+            Self::AddCustomTool => "addCustomTool",
+            Self::UpdateCustomTool => "updateCustomTool",
+            Self::RemoveCustomTool => "removeCustomTool",
         }
     }
 
@@ -210,7 +210,9 @@ impl BuiltinTool {
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
             Self::Search => search::NEEDS,
-            Self::AddTool | Self::UpdateTool | Self::RemoveTool => private_tools::NEEDS,
+            Self::AddCustomTool | Self::UpdateCustomTool | Self::RemoveCustomTool => {
+                private_tools::NEEDS
+            }
         }
     }
 }
@@ -361,12 +363,12 @@ pub enum BuiltinArguments {
     UpdateProvider(Box<UpdateProviderArguments>),
     /// `search`'s arguments.
     Search(SearchArguments),
-    /// `addTool`'s arguments.
-    AddTool(ToolSaveArguments),
-    /// `updateTool`'s arguments.
-    UpdateTool(ToolSaveArguments),
-    /// `removeTool`'s arguments.
-    RemoveTool(RemoveToolArguments),
+    /// `addCustomTool`'s arguments.
+    AddCustomTool(ToolSaveArguments),
+    /// `updateCustomTool`'s arguments.
+    UpdateCustomTool(ToolSaveArguments),
+    /// `removeCustomTool`'s arguments.
+    RemoveCustomTool(RemoveToolArguments),
 }
 
 impl BuiltinArguments {
@@ -393,11 +395,15 @@ impl BuiltinArguments {
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
             BuiltinTool::Search => SearchArguments::parse(arguments).map(Self::Search),
-            BuiltinTool::AddTool => ToolSaveArguments::parse_add(arguments).map(Self::AddTool),
-            BuiltinTool::UpdateTool => {
-                ToolSaveArguments::parse_update(arguments).map(Self::UpdateTool)
+            BuiltinTool::AddCustomTool => {
+                ToolSaveArguments::parse_add(arguments).map(Self::AddCustomTool)
             }
-            BuiltinTool::RemoveTool => RemoveToolArguments::parse(arguments).map(Self::RemoveTool),
+            BuiltinTool::UpdateCustomTool => {
+                ToolSaveArguments::parse_update(arguments).map(Self::UpdateCustomTool)
+            }
+            BuiltinTool::RemoveCustomTool => {
+                RemoveToolArguments::parse(arguments).map(Self::RemoveCustomTool)
+            }
         }
     }
 }
@@ -678,9 +684,9 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
         BuiltinTool::Search => search::definition(),
-        BuiltinTool::AddTool => private_tools::add_definition(),
-        BuiltinTool::UpdateTool => private_tools::update_definition(),
-        BuiltinTool::RemoveTool => private_tools::remove_definition(),
+        BuiltinTool::AddCustomTool => private_tools::add_definition(),
+        BuiltinTool::UpdateCustomTool => private_tools::update_definition(),
+        BuiltinTool::RemoveCustomTool => private_tools::remove_definition(),
     }
 }
 

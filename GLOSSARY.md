@@ -294,7 +294,7 @@ Tools Coral itself performs, with no upstream dispatch. Its Call Root is `coral`
 Search, Tool Access State, Approval Requests, and Tool Invocation records with every other Provider. Each of
 its Tools declares the Workspace action it needs, and a Principal discovers, invokes, and inspects only the
 Tools whose action its authority permits: every Principal reaches `listProviders`, `getPolicy` and `search`, every
-Principal that authors in the Workspace, Agents included, reaches `addTool`, `updateTool` and `removeTool`, and only a User
+Principal that authors in the Workspace, Agents included, reaches `addCustomTool`, `updateCustomTool` and `removeCustomTool`, and only a User
 with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and `updatePolicy`. An
 Owner can disable and enable it and set its Tool policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Workspace's Providers
@@ -303,7 +303,7 @@ has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Wor
 Tool rules a Workspace Owner set that apply to these Tools, keyed by each Tool's complete Call
 Path: every Provider's, the Built-in Tools, the Shared Tools and the caller's own Private Tools (`getPolicy`), set
 the exact Tool Access State of 1–100 Tools by complete Call Path, all or none (`updatePolicy`), and add, update or
-remove one of the caller's own Private Tools (`addTool`, `updateTool`, `removeTool`). They never change the content of another Principal's Private Tool or of any Shared Tool: an Owner removes an
+remove one of the caller's own Private Tools (`addCustomTool`, `updateCustomTool`, `removeCustomTool`). They never change the content of another Principal's Private Tool or of any Shared Tool: an Owner removes an
 Agent's Private Tool, and publishes a Shared Tool, in Reef only.
 `updatePolicy` reaches an Owner-created Provider's Tools, the Shared Tools and the Owner's own Private Tools, and
 refuses a Built-in Tool's path, so a Program cannot loosen the approval on the Tools that change the Workspace. When Coral boots, it
@@ -592,8 +592,8 @@ one Tool policy for one Provider regardless of its Invoking Principal. A Princip
 discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
 Discoverable Tool); a stale Invocation fails safely. If no exact rule matches, a default applies: a Tool that
 declares itself read-only, or an OpenAPI/HTTP-sourced Tool with a safe HTTP method (GET, HEAD, OPTIONS, or TRACE),
-defaults to `enabled`; so does a Built-in Tool whose catalog declares `enabled` as its default, as `addTool`, `updateTool`
-and `removeTool` do, because they change only the caller's own Private Tools (ADR 0031); every other Tool defaults to
+defaults to `enabled`; so does a Built-in Tool whose catalog declares `enabled` as its default, as `addCustomTool`, `updateCustomTool`
+and `removeCustomTool` do, because they change only the caller's own Private Tools (ADR 0031); every other Tool defaults to
 `approval_required`. Coral's own catalog, a Private Tool's author, and the Owner at a Shared Tool Publish can declare a Tool's default, and
 each retained Generation keeps it. The default applies to every Tool
 without an exact rule, including those of existing Providers, and a Workspace Owner overrides it with an exact rule, for
@@ -771,8 +771,10 @@ link. Reading it is a separate Provider Tool; Coral never auto-fetches it. _Avoi
 Tool. The two kinds share one source format, one declaration format, the same limits, and the same data-only contract,
 and differ in their Call Root, their owner, and how their source changes: a Private Tool Save replaces a Private Tool,
 and a Shared Tool Publish adds a Shared Tool Revision. A Provider Tool is not one: an Upstream Service or Coral itself
-performs it. Use the term only for what both kinds share. _Avoid_: Saved Function, code tool, custom tool, user-defined
-tool
+performs it. Use the term only for what both kinds share. In the README, docs and Reef, "custom tool" is the
+plain-English name for an Authored Tool, and the Built-in Tools that author Private Tools carry it
+(`addCustomTool`, `updateCustomTool`, `removeCustomTool`). Domain code keeps Private Tool and Shared Tool.
+_Avoid_: Saved Function, code tool, user-defined tool
 
 **Private Tool Path**: The Principal-owned dotted JavaScript path relative to `coral.private` that names one Private
 Tool, such as `internal.finance.calculateTax`. Each segment is a valid JavaScript path segment, and Coral rejects
@@ -780,13 +782,13 @@ reserved internal segments. Parent paths are virtual namespaces rather than fold
 path identifies one current definition for that Principal in one Workspace. _Avoid_: Filesystem path, public package
 name, Private Tool version
 
-**Private Tool Save**: The atomic creation (`coral.addTool`) or replacement (`coral.updateTool`) of one current
+**Private Tool Save**: The atomic creation (`coral.addCustomTool`) or replacement (`coral.updateCustomTool`) of one current
 Private Tool at an exact Private Tool Path. A call to either Built-in Tool, from a Program or from a Private Tool it links,
 supplies the path, an explicit description, and the function to save: a function that the calling source declares at
 its top level. Its source is that declaration and every top-level declaration it reaches, as written, with the function
-as its default export. `addTool` fails when the path exists. `updateTool` fails when the path is missing or, given an
+as its default export. `addCustomTool` fails when the path exists. `updateCustomTool` fails when the path is missing or, given an
 expected revision, when the current revision differs. Either can set the Tool's default Tool Access State, `enabled`
-when `addTool` omits it; an update that omits it keeps the current one. `coral.removeTool` removes one. Each call is a Tool Invocation of its Run, not a separate Task Interaction; MCP has no authoring tools.
+when `addCustomTool` omits it; an update that omits it keeps the current one. `coral.removeCustomTool` removes one. Each call is a Tool Invocation of its Run, not a separate Task Interaction; MCP has no authoring tools.
 Only the owning Principal can save or replace it. Without an expected revision, the latest accepted save wins. It replaces the source, description,
 declaration, and diagnostics together, while failure leaves the current Private Tool unchanged. A save outlives its Run. A
 Program can call the function it saves, but not by its Private Tool Path: its Run linked its Private Tools at
@@ -822,7 +824,7 @@ TypeScript is its behavior authority, and its Private Tool Declaration is its in
 Provider Tool, can call several Tools, and, like every Tool, takes and returns only data: no callback, function, or
 class instance crosses a call. At Program admission Coral statically identifies literal Private Tool references,
 rejects computed Private Tool Paths, and links the exact current source closure into the Program compilation. It also
-extracts, from the Program and from each linked source, the module that each literal `coral.addTool`
+extracts, from the Program and from each linked source, the module that each literal `coral.addCustomTool`
 call saves (Private Tool Save). V1 does not
 preserve reverse-reference integrity when a Private Tool is later deleted; a missing source in the closure blocks a
 later Run at admission. Coral does not publish the Private Tool as JSON Schema or a separately retained JavaScript

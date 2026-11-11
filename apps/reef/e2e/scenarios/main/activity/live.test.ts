@@ -34,7 +34,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
       if (sequence === 1)
         expect(
           (
-            await runner.addTool(
+            await runner.addCustomTool(
               'live.fixture',
               'Describe fixture',
               'const fixture = () => 42;',
@@ -236,8 +236,14 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         })
         const newLabel = 'Save a reusable tool'
         expect(
-          (await latest.addTool('live.added', 'New child', 'const added = () => 43;', 'added'))
-            .isError,
+          (
+            await latest.addCustomTool(
+              'live.added',
+              'New child',
+              'const added = () => 43;',
+              'added',
+            )
+          ).isError,
         ).not.toBe(true)
         await taskSection()
           .getByRole('link', { name: newLabel, exact: true })

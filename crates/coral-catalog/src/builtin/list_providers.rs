@@ -19,19 +19,19 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::ListProviders.key(),
-        summary: "List the Providers in this Workspace",
+        summary: "List the providers in this workspace",
         presentation: ToolPresentation::new(
             Some("List providers".to_string()),
-            "List every Provider in this Workspace, including disabled ones and Coral's \
-             own, in the order they were created. Also list the Providers your addProvider \
+            "List every provider in this workspace, including disabled ones and Coral's \
+             own, in the order they were created. Also list the providers your addProvider \
              calls asked for that a person has not finished yet."
                 .to_string(),
             false,
-            vec!["providers".to_string()],
+            vec!["Providers".to_string()],
             Some(
-                "Pass an empty object. Call a Provider's Tools under its callRoot. A \
+                "Pass an empty object. Call a provider's tools under its callRoot. A \
                  namespace is taken when coral.providers.<namespace> is a callRoot under \
-                 providers, even when its Provider is disabled. A Provider that addProvider \
+                 providers, even when its provider is disabled. A provider that addProvider \
                  asked a person to finish is under setups until it is published, and then \
                  under providers. The person can publish it under another namespace. When its \
                  callRoot is in neither list, the person renamed it, did not finish it in \
@@ -70,14 +70,14 @@ pub(super) fn parse(arguments: &Value) -> Result<(), Vec<ArgumentProblem>> {
 pub struct ListProvidersResult {
     /// Each Provider, with what it offers the caller.
     #[schemars(
-        description = "Every Provider in this Workspace, in the order they were created. Coral's \
+        description = "Every provider in this workspace, in the order they were created. Coral's \
                        own comes first."
     )]
     pub providers: Vec<ListedProvider>,
     /// The Providers the caller's `addProvider` calls asked a person to
     /// finish, which a person can still finish.
     #[schemars(
-        description = "The Providers your addProvider calls asked a person to finish, which \
+        description = "The providers your addProvider calls asked a person to finish, which \
                        nobody has published yet, oldest first. Each expires an hour after \
                        addProvider started it."
     )]
@@ -99,20 +99,20 @@ impl ListProvidersResult {
 pub struct ListedProvider {
     /// The Call Root its Tools are called under, such as
     /// `coral.providers.github`, or `coral` for the Built-in Provider.
-    #[schemars(description = "The path you call the Provider's Tools under: \
-                       coral.providers.<namespace> for a Provider a person added, or \
+    #[schemars(description = "The path you call the provider's tools under: \
+                       coral.providers.<namespace> for a provider a person added, or \
                        coral for Coral's own, whose tools are directly on it.")]
     pub call_root: String,
     /// The Provider Namespace; `None` for the Built-in Provider, which has
     /// none.
     #[schemars(
-        description = "The Provider Namespace, which getProvider takes. Null for Coral's own \
-                       Provider, which has none."
+        description = "The provider namespace, which getProvider takes. Null for Coral's own \
+                       provider, which has none."
     )]
     pub namespace: Option<String>,
     /// Whether the Provider accepts calls.
     #[schemars(
-        description = "Whether the Provider accepts calls. A disabled Provider still holds its \
+        description = "Whether the provider accepts calls. A disabled provider still holds its \
                        callRoot."
     )]
     pub state: ListedProviderState,
@@ -164,15 +164,15 @@ pub struct ListedSetup {
     #[schemars(
         description = "What the person does next: awaiting_configuration to confirm how Coral \
                        reads the source, awaiting_sign_in to sign in so that Coral can read its \
-                       Tools, awaiting_discovery to try again on the page when Coral could \
-                       not read the Tools after the sign-in (the person does not sign in \
-                       again), or ready to add the Provider, signing in first when its route \
+                       tools, awaiting_discovery to try again on the page when Coral could \
+                       not read the tools after the sign-in (the person does not sign in \
+                       again), or ready to add the provider, signing in first when its route \
                        needs an account."
     )]
     pub state: ListedSetupState,
     /// The Coral UI page where a person finishes it.
     #[schemars(
-        description = "The Coral UI page where a person finishes and publishes the Provider. \
+        description = "The Coral UI page where a person finishes and publishes the provider. \
                        Show it to the person again if they lost it."
     )]
     pub url: String,

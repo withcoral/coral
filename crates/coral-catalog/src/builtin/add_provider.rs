@@ -30,15 +30,15 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::AddProvider.key(),
-        summary: "Add a Provider from an OpenAPI document or URL, or an MCP server URL",
+        summary: "Add a provider from an OpenAPI document or URL, or an MCP server URL",
         presentation: ToolPresentation::new(
             Some("Add provider".to_string()),
-            "Add a Provider to this Workspace from an OpenAPI document, an OpenAPI \
+            "Add a provider to this workspace from an OpenAPI document, an OpenAPI \
              document URL, or an MCP server URL. It returns a Coral UI link where a \
-             person previews, finishes and publishes the Provider."
+             person previews, finishes and publishes the provider."
                 .to_string(),
             false,
-            vec!["providers".to_string()],
+            vec!["Providers".to_string()],
             Some(
                 "Choose credentialRoute to match the source: none when it needs no \
                  credential, fixed for one shared account, caller for each person's own \
@@ -49,10 +49,10 @@ pub(super) fn definition() -> Definition {
                  if the service needs none. When the service needs a credential that the \
                  source does not declare, give authentication, such as { method: \"bearer\" \
                  }, with fixed or caller. Never pass a secret or a literal credential value: Coral stores \
-                 your arguments, and Workspace Owners can see them. When Coral cannot \
+                 your arguments, and workspace owners can see them. When Coral cannot \
                  fetch a source URL, the call fails with upstream_incomplete: check that \
                  the URL is reachable, then call again. When status is needs_person, show \
-                 the person the returned url. The Provider's Tools exist only after the \
+                 the person the returned url. The provider's tools exist only after the \
                  person publishes it. To check later whether the person published it, call \
                  coral.listProviders."
                     .to_string(),
@@ -91,8 +91,8 @@ pub struct AddProviderArguments {
 #[schemars(description = "", transform = require_credential_route)]
 struct Arguments {
     #[schemars(
-        description = "Provider Namespace: a short JavaScript identifier, such as github. The \
-                       Provider's Tools are called under coral.providers.<namespace>."
+        description = "Provider namespace: a short JavaScript identifier, such as github. The \
+                       provider's tools are called under coral.providers.<namespace>."
     )]
     namespace: String,
     source: ProviderSourceInput,
@@ -101,7 +101,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "present")]
     #[schemars(
         with = "BuiltinCredentialRoute",
-        description = "Whose account Invocations use: none for a source that needs no \
+        description = "Whose account invocations use: none for a source that needs no \
                        credential, fixed for one shared account that a person signs in to, or \
                        caller for each person's own account."
     )]
@@ -109,7 +109,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "present")]
     #[schemars(
         with = "String",
-        description = "The Provider's name. Omit it to use the source's title."
+        description = "The provider's name. Omit it to use the source's title."
     )]
     display_name: Option<String>,
     #[serde(default, deserialize_with = "present")]
@@ -207,15 +207,15 @@ impl AddProviderArguments {
 #[schemars(deny_unknown_fields, description = "")]
 pub enum AddProviderResult {
     /// A person finishes the Provider at `url`.
-    #[schemars(description = "A person must finish the Provider in the Coral UI.")]
+    #[schemars(description = "A person must finish the provider in the Coral UI.")]
     NeedsPerson {
         /// The Coral UI page where a person finishes and publishes it.
         #[schemars(
-            description = "The Coral UI page where a person finishes and publishes the Provider."
+            description = "The Coral UI page where a person finishes and publishes the provider."
         )]
         url: String,
         /// The requested Provider Namespace.
-        #[schemars(description = "The requested Provider Namespace. The person can change it.")]
+        #[schemars(description = "The requested provider namespace. The person can change it.")]
         namespace: String,
     },
 }

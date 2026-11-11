@@ -58,7 +58,7 @@ impl Fixture {
     }
 
     /// Saves a function as `call`'s Principal the way a Program's
-    /// `coral.addTool` or `coral.updateTool` does: typed from the Tools it can
+    /// `coral.addCustomTool` or `coral.updateCustomTool` does: typed from the Tools it can
     /// discover, then the index is told. No Task Attempt records it.
     async fn save_private_tool(
         &self,
@@ -99,7 +99,7 @@ impl Fixture {
     }
 
     /// Deletes `call`'s Principal's function at `path` the way a Program's
-    /// `coral.removeTool` does, then tells the index.
+    /// `coral.removeCustomTool` does, then tells the index.
     async fn delete_private_tool(
         &self,
         call: &AttributedCommand,

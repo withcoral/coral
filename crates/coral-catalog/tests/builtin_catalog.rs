@@ -147,7 +147,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinTool::AddTool,
+            BuiltinTool::AddCustomTool,
             // A second add at the path fails, and it replaces nothing.
             ToolHints::new(Some(false), Some(false), Some(false), Some(false)),
             &[
@@ -158,7 +158,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinTool::UpdateTool,
+            BuiltinTool::UpdateCustomTool,
             // A replace discards the previous source and adds a revision.
             ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
             &[
@@ -168,7 +168,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinTool::RemoveTool,
+            BuiltinTool::RemoveCustomTool,
             // Removing again fails, so it is not idempotent.
             ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
             &[
@@ -210,16 +210,16 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     assert_eq!(
         target_keys,
         [
+            "addCustomTool",
             "addProvider",
-            "addTool",
             "getPolicy",
             "getProvider",
             "listProviders",
-            "removeTool",
+            "removeCustomTool",
             "search",
+            "updateCustomTool",
             "updatePolicy",
-            "updateProvider",
-            "updateTool"
+            "updateProvider"
         ]
     );
     // The retained Generation keeps the enabled default the catalog declares
@@ -228,7 +228,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
         assert_eq!(
             facts.declares_enabled_by_default(),
-            ["addTool", "updateTool", "removeTool"].contains(&key),
+            ["addCustomTool", "updateCustomTool", "removeCustomTool"].contains(&key),
             "{key}"
         );
     };

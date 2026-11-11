@@ -93,7 +93,7 @@ async fn remove_default_limit_fixtures(session: &super::RawSession, task: &str) 
         let deleted = session
             .authoring_value(
                 task,
-                "removeTool",
+                "removeCustomTool",
                 &json!({ "path": format!("optionalDefaults.item{index}") }),
             )
             .await;

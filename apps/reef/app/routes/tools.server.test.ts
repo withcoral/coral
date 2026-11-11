@@ -120,7 +120,7 @@ function serve(role: WorkspaceRole, { disabled = false } = {}) {
                   row(sharedProvider, 'shared/2', 'tides'),
                 ]
               : provider === builtin
-                ? [row(builtin, 'search', 'search'), row(builtin, 'addTool', 'addTool')]
+                ? [row(builtin, 'search', 'search'), row(builtin, 'addCustomTool', 'addCustomTool')]
                 : [
                     row(github, 'issues/list', 'issues.list', { tags: ['issues'] }),
                     row(github, 'issues/greet', 'issues.greet', { tags: ['issues'] }),
@@ -271,7 +271,7 @@ it('groups every tool under Coral, Shared, each provider and Private, with its c
       total: 2,
       ready: 2,
       path: `/${builtin}`,
-      tools: ['search', 'addTool'],
+      tools: ['search', 'addCustomTool'],
     },
     {
       kind: 'shared',

@@ -8,7 +8,7 @@ A Program calls three kinds of Tool, and every Tool call has one contract: it is
 data and returns data, is one Tool Invocation, and has a Tool Access State.
 
 - A **Provider Tool** is at `coral.providers.<namespace>.<path>`. The Built-in Provider's Tools now sit directly on
-  `coral`: `coral.search`, `coral.addProvider`, `coral.addTool`.
+  `coral`: `coral.search`, `coral.addProvider`, `coral.addCustomTool`.
 - A **Private Tool** is what a Saved Function was. It is at `coral.private.<path>` and belongs to the Principal who
   saved it.
 - A **Shared Tool** is at `coral.shared.<path>`. A Workspace Owner publishes it from a Private Tool, and the Workspace
@@ -29,10 +29,10 @@ a call.
   `coral.providers` keeps its name.
   - There are no aliases and no pointers. An old path fails at admission like any path that names no Tool. Retained
     Runs keep the paths they recorded, and Reef reads them under the new roots.
-  - `saveFunction` and `deleteFunction` become `coral.addTool` (create only), `coral.updateTool` (replace only, with an
-    optional expected revision) and `coral.removeTool`.
-  - `addTool` and `updateTool` take an optional `policy`, the tool's default Tool Access State. It is `enabled` when
-    `addTool` omits it, and an update that omits it keeps the current one. Owner rules override it, as for any Tool.
+  - `saveFunction` and `deleteFunction` become `coral.addCustomTool` (create only), `coral.updateCustomTool` (replace only, with an
+    optional expected revision) and `coral.removeCustomTool`.
+  - `addCustomTool` and `updateCustomTool` take an optional `policy`, the tool's default Tool Access State. It is `enabled` when
+    `addCustomTool` omits it, and an update that omits it keeps the current one. Owner rules override it, as for any Tool.
 - **A Private Tool call is an Invocation.** Each call crosses to Coral and back, so the call is always asynchronous and
   takes and returns only data.
   - **One object in.** A Private or Shared Tool takes one argument, an object, as a Provider Tool does. Its default

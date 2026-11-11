@@ -4,18 +4,18 @@ status: accepted
 
 # Agents author their Private Tools from inside Programs
 
-An agent creates, replaces and removes its own Private Tools by calling the Built-in Tools `coral.addTool`,
-`coral.updateTool` and `coral.removeTool` from a Program, not through MCP `save_function` and `delete_function`. They
+An agent creates, replaces and removes its own Private Tools by calling the Built-in Tools `coral.addCustomTool`,
+`coral.updateCustomTool` and `coral.removeCustomTool` from a Program, not through MCP `save_function` and `delete_function`. They
 act only on the caller's own Private Tools at `coral.private`, and every Principal that authors in the Workspace
 reaches them, Agents included (ADR 0034 decides their arguments). With ADR 0026, Coral's MCP surface keeps only the tools that run Programs, observe Runs and end Tasks.
 
 A Program saves a function by reference: `source` names a function that the calling source declares at its top level,
 as a function declaration or as a `const` bound to an arrow or function expression. The Program declares the reusable
-work as that function, calls it, and after it returns passes it to `addTool` or `updateTool`, so an agent tests and
+work as that function, calls it, and after it returns passes it to `addCustomTool` or `updateCustomTool`, so an agent tests and
 saves in one Run. No string form exists. We first took `source` as a string, and agents struggled to escape backticks and `${` in
 the sources they wrote as template literals; a reference has nothing to escape.
 
-At Program admission, Coral finds each literal `coral.addTool(...)` and `coral.updateTool(...)` call, in the Program
+At Program admission, Coral finds each literal `coral.addCustomTool(...)` and `coral.updateCustomTool(...)` call, in the Program
 and in every Private Tool it links, each scoped to its own top-level declarations. It saves the module the call names: the function
 and every top-level declaration statement it reaches, followed through every reference, function bodies and types
 included, as written and in source order, with the function as its default export. A dependency can be any declaration:

@@ -1,4 +1,4 @@
-// A literal `coral.addTool({ source: name })` or `coral.updateTool` call
+// A literal `coral.addCustomTool({ source: name })` or `coral.updateCustomTool` call
 // saves the function `name` names: a function the calling
 // source declares at its top level. Admission extracts its module, the
 // declaration and every top-level declaration statement it reaches, and
@@ -9,7 +9,7 @@ const PRIVATE_TOOL_SOURCE_GLOBAL = '__coralPrivateToolSource';
 
 // The Built-in Tools that take a function as `source`. The Program host
 // in runtime/program_host_bootstrap.js lists them too; change both.
-const SAVING_TOOLS = new Set(['addTool', 'updateTool']);
+const SAVING_TOOLS = new Set(['addCustomTool', 'updateCustomTool']);
 
 // The saving Tool `access` names, or undefined.
 function savingTool(access) {

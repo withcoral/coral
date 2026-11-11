@@ -1,4 +1,4 @@
-//! Performs `coral.addTool`, `updateTool` and `removeTool`: Private Tool
+//! Performs `coral.addCustomTool`, `updateCustomTool` and `removeCustomTool`: Private Tool
 //! authoring as the invoking Principal, in its own namespace. Each
 //! call is this Invocation of this Run, recorded like any other, not a
 //! separate Task Interaction. The source a save receives is the module
@@ -46,7 +46,7 @@ impl PrivateTools {
     }
 }
 
-/// `addTool`'s or `updateTool`'s arguments, each checked by
+/// `addCustomTool`'s or `updateCustomTool`'s arguments, each checked by
 /// coral-tools.
 #[derive(Clone)]
 pub(crate) struct SaveTool {
@@ -54,14 +54,14 @@ pub(crate) struct SaveTool {
 }
 
 impl SaveTool {
-    /// `addTool`, which only creates.
+    /// `addCustomTool`, which only creates.
     pub(super) fn add(arguments: &ToolSaveArguments) -> Result<Self, Rejection> {
         Self::checked(arguments).map(|save| Self {
             save: save.create_only(),
         })
     }
 
-    /// `updateTool`, which only replaces, at the expected revision if any.
+    /// `updateCustomTool`, which only replaces, at the expected revision if any.
     pub(super) fn update(arguments: &ToolSaveArguments) -> Result<Self, Rejection> {
         Self::checked(arguments).map(|save| Self {
             save: save.replace_only(arguments.expected_revision()),
@@ -165,7 +165,7 @@ impl SaveTool {
                 vec![InputProblem::new(
                     "path",
                     format!(
-                        "{} is one of your tools; change it with coral.updateTool, or choose \
+                        "{} is one of your tools; change it with coral.updateCustomTool, or choose \
                          another path",
                         call_path(self.save.path())
                     ),
@@ -176,14 +176,14 @@ impl SaveTool {
     }
 }
 
-/// `removeTool`'s path, checked by coral-tools.
+/// `removeCustomTool`'s path, checked by coral-tools.
 #[derive(Clone)]
-pub(crate) struct RemoveTool {
+pub(crate) struct RemoveCustomTool {
     path: PrivateToolPath,
 }
 
-impl RemoveTool {
-    /// `removeTool`, with its path checked before any other work.
+impl RemoveCustomTool {
+    /// `removeCustomTool`, with its path checked before any other work.
     pub(super) fn new(arguments: &RemoveToolArguments) -> Result<Self, Rejection> {
         PrivateToolPath::parse(arguments.path())
             .map(|path| Self { path })

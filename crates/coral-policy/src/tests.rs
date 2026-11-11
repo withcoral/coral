@@ -171,9 +171,9 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
     // read-only evidence.
     let defaults = [
         (&builtin, "listProviders", ToolAccessState::Enabled),
-        (&builtin, "addTool", ToolAccessState::Enabled),
-        (&builtin, "updateTool", ToolAccessState::Enabled),
-        (&builtin, "removeTool", ToolAccessState::Enabled),
+        (&builtin, "addCustomTool", ToolAccessState::Enabled),
+        (&builtin, "updateCustomTool", ToolAccessState::Enabled),
+        (&builtin, "removeCustomTool", ToolAccessState::Enabled),
         (&builtin, "addProvider", ToolAccessState::ApprovalRequired),
         (&builtin, "updatePolicy", ToolAccessState::ApprovalRequired),
         (
@@ -219,7 +219,7 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
         .set_access_states(
             &change(owner.clone(), 55, '7'),
             vec![(
-                target(&builtin, "removeTool"),
+                target(&builtin, "removeCustomTool"),
                 ToolAccessState::ApprovalRequired,
             )],
         )
@@ -245,7 +245,7 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
             "getValue",
             "patchValue",
             "putValue",
-            "removeTool",
+            "removeCustomTool",
             "retry_value",
             "updatePolicy",
             "updateProvider",

@@ -36,17 +36,17 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::GetProvider.key(),
-        summary: "Read a Provider's configuration",
+        summary: "Read a provider's configuration",
         presentation: ToolPresentation::new(
             Some("Get provider".to_string()),
-            "Read the configuration of one Provider in this Workspace, in the shapes \
+            "Read the configuration of one provider in this workspace, in the shapes \
              addProvider takes."
                 .to_string(),
             false,
-            vec!["providers".to_string()],
+            vec!["Providers".to_string()],
             Some(
-                "Pass the namespace of a Provider whose Tools are called under \
-                 coral.providers.<namespace>. A namespace that no Provider holds fails with \
+                "Pass the namespace of a provider whose tools are called under \
+                 coral.providers.<namespace>. A namespace that no provider holds fails with \
                  provider_not_found. The result never holds a secret or a credential value: \
                  a credential part with source literal and no value holds a fixed value that \
                  Coral does not return. Coral sets authentication.issuer, \
@@ -70,7 +70,7 @@ pub(super) fn definition() -> Definition {
 #[schemars(description = "")]
 struct Arguments {
     #[schemars(
-        description = "The Provider Namespace, such as github. The Provider's Tools are \
+        description = "The provider namespace, such as github. The provider's tools are \
                        called under coral.providers.<namespace>."
     )]
     namespace: String,
@@ -112,12 +112,12 @@ impl GetProviderArguments {
 #[schemars(deny_unknown_fields, description = "")]
 pub struct GetProviderResult {
     /// The Provider Namespace.
-    #[schemars(description = "The Provider Namespace. Its Tools are called under \
+    #[schemars(description = "The provider namespace. Its tools are called under \
                        coral.providers.<namespace>.")]
     pub namespace: String,
     /// Whether the Provider accepts calls.
     #[schemars(
-        description = "Whether the Provider accepts calls. A disabled Provider still holds its \
+        description = "Whether the provider accepts calls. A disabled provider still holds its \
                        namespace."
     )]
     pub state: ListedProviderState,
@@ -125,7 +125,7 @@ pub struct GetProviderResult {
     #[schemars(description = "")]
     pub source: ProviderSourceOutput,
     /// Whose Account Invocations use.
-    #[schemars(description = "Whose account Invocations use.")]
+    #[schemars(description = "Whose account invocations use.")]
     pub credential_route: BuiltinCredentialRoute,
     /// The configuration `addProvider` takes.
     #[serde(flatten)]
@@ -147,7 +147,7 @@ impl GetProviderResult {
 #[serde(rename_all = "camelCase")]
 #[schemars(deny_unknown_fields, description = "")]
 pub struct ConfigurationOutput {
-    #[schemars(description = "The Provider display name.")]
+    #[schemars(description = "The provider display name.")]
     display_name: String,
     #[schemars(
         description = "Server choice per server declaration, keyed by declaration pointer such \

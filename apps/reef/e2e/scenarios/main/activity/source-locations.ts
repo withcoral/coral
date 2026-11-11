@@ -123,7 +123,7 @@ export async function sourceLocations(context: TestContext) {
       taskIntent: `Locate calls ${crypto.randomUUID()}`,
     })
     expect(
-      (await execute.addTool('locations.notify', 'Notify after lookups', snapshot, 'notify'))
+      (await execute.addCustomTool('locations.notify', 'Notify after lookups', snapshot, 'notify'))
         .isError,
     ).not.toBe(true)
     const observed = await observeRun(execute, await execute.exec(program))
@@ -204,7 +204,7 @@ export async function sourceLocations(context: TestContext) {
     await step('Change the Private Tool; the Run keeps the snapshot it accepted', async () => {
       expect(
         (
-          await execute.updateTool(
+          await execute.updateCustomTool(
             'locations.notify',
             'Replaced after the Run',
             replacement,

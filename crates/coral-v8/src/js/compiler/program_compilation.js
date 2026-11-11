@@ -101,7 +101,7 @@ function linkedToolInputRefusal({ program, sourceFile, pathSegments, root }) {
   const shared = root === 'shared';
   const fix = shared
     ? 'A Workspace Owner must publish a new revision.'
-    : 'Save it again with coral.updateTool.';
+    : 'Save it again with coral.updateCustomTool.';
   return `${shared ? 'Shared' : 'Private'} Tool coral.${shared ? 'shared' : 'private'}.${pathSegments.join('.')}:${at.line + 1}:${at.character + 1}: ${shape.reason}. ${fix}`;
 }
 

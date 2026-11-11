@@ -1,4 +1,4 @@
-//! `coral.addTool`, `coral.updateTool` and `coral.removeTool`: the schemas a
+//! `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool`: the schemas a
 //! Program is typed from, the arguments Coral reads against the input
 //! schemas, and the results it writes against the output schemas. They
 //! create, replace and remove one of the caller's own Private Tools;
@@ -20,10 +20,10 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Author;
 const PATH_DESCRIPTION: &str = "Dotted path under coral.private, without that prefix, such as \
                                 github.pulls.listStale.";
 
-const DESCRIPTION_DESCRIPTION: &str = "One line, one or two sentences: what the tool does and \
-                                       when to use it. Use words a search would match. Do not \
-                                       restate input or return types; the declaration is shown \
-                                       beside it.";
+const DESCRIPTION_DESCRIPTION: &str = "What the tool does and when to use it, in one or two \
+                                       sentences on one line. Use words a search would match. \
+                                       Search shows the declaration beside it, so leave out the \
+                                       input and return types.";
 
 /// The description of `policy`, ending with what omitting it does.
 macro_rules! policy_description {
@@ -42,29 +42,28 @@ const ADD_POLICY_DESCRIPTION: &str = policy_description!("Omit it for enabled.")
 const UPDATE_POLICY_DESCRIPTION: &str = policy_description!("Omit it to keep the current one.");
 
 const SAVE_NOTES: &str = "Pass source as the name of a function declared at the top level of \
-                          this Program, with function or const: not a string, an inline \
-                          function or any other expression. The function takes one object, \
-                          such as ({ id }: { id: string }), and returns JSON data: convert a \
-                          Date, Map or Set first. Coral saves the function with the \
-                          top-level declarations it uses. Call it before saving, and call the \
-                          saved tool by its path in later Programs. Type errors do not stop the \
-                          save: read diagnostics in the result, and fix an error with \
-                          coral.updateTool.";
+                          this program with function or const, such as source: listStale. The \
+                          function takes one object, such as ({ id }: { id: string }), and \
+                          returns JSON data: convert a Date, Map or Set first. Coral saves it \
+                          with the top-level declarations it uses. Call it in this program \
+                          first, so you save code that ran. Type errors do not stop the save: \
+                          read diagnostics in the result, and fix an error with \
+                          coral.updateCustomTool.";
 
 pub(super) fn add_definition() -> Definition {
     Definition {
-        key: BuiltinTool::AddTool.key(),
-        summary: "Add one of your Private Tools",
+        key: BuiltinTool::AddCustomTool.key(),
+        summary: "Save a function from this program as one of your private tools",
         presentation: ToolPresentation::new(
-            Some("Add tool".to_string()),
-            "Create one of your Private Tools. Later Programs call it as \
-             coral.private.<path>(...)."
+            Some("Add custom tool".to_string()),
+            "Save a function from this program as a private tool, so your later programs \
+             can reuse it as coral.private.<path>(...)."
                 .to_string(),
             false,
-            vec!["tools".to_string()],
+            vec!["Custom tools".to_string()],
             Some(format!(
                 "{SAVE_NOTES} A path that already names one of your tools fails with \
-                 private_tool_exists; change that tool with coral.updateTool."
+                 private_tool_exists; change that tool with coral.updateCustomTool."
             )),
         ),
         // A second add at the same path fails, so it is not idempotent, and
@@ -81,18 +80,20 @@ pub(super) fn add_definition() -> Definition {
 
 pub(super) fn update_definition() -> Definition {
     Definition {
-        key: BuiltinTool::UpdateTool.key(),
-        summary: "Update one of your Private Tools",
+        key: BuiltinTool::UpdateCustomTool.key(),
+        summary: "Replace one of your private tools",
         presentation: ToolPresentation::new(
-            Some("Update tool".to_string()),
-            "Replace the description and source of one of your Private Tools.".to_string(),
+            Some("Update custom tool".to_string()),
+            "Replace the source and description of one of your private tools, to fix it or \
+             change what it does."
+                .to_string(),
             false,
-            vec!["tools".to_string()],
+            vec!["Custom tools".to_string()],
             Some(format!(
                 "{SAVE_NOTES} A path that names none of your tools fails with \
-                 private_tool_not_found. Pass expectedRevision, the revision addTool or \
-                 updateTool returned, to fail with private_tool_revision_conflict when the \
-                 tool changed since. A Program already running keeps the version it linked."
+                 private_tool_not_found. Pass expectedRevision, the revision addCustomTool or \
+                 updateCustomTool returned, to fail with private_tool_revision_conflict when the \
+                 tool changed since. A program already running keeps the version it linked."
             )),
         ),
         // A replace discards the previous source, and each one adds a
@@ -107,16 +108,17 @@ pub(super) fn update_definition() -> Definition {
 
 pub(super) fn remove_definition() -> Definition {
     Definition {
-        key: BuiltinTool::RemoveTool.key(),
-        summary: "Remove one of your Private Tools",
+        key: BuiltinTool::RemoveCustomTool.key(),
+        summary: "Remove one of your private tools",
         presentation: ToolPresentation::new(
-            Some("Remove tool".to_string()),
-            "Remove one of your Private Tools.".to_string(),
+            Some("Remove custom tool".to_string()),
+            "Remove one of your private tools, so later programs can no longer call it."
+                .to_string(),
             false,
-            vec!["tools".to_string()],
+            vec!["Custom tools".to_string()],
             Some(
                 "A path that names none of your tools fails with private_tool_not_found. A \
-                 Program already running keeps the version it linked."
+                 program already running keeps the version it linked."
                     .to_string(),
             ),
         ),
@@ -129,7 +131,7 @@ pub(super) fn remove_definition() -> Definition {
     }
 }
 
-/// `addTool`'s arguments as a Program writes them.
+/// `addCustomTool`'s arguments as a Program writes them.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(description = "")]
@@ -145,7 +147,7 @@ struct AddArguments {
     policy: Option<ToolAccessState>,
 }
 
-/// `updateTool`'s arguments as a Program writes them.
+/// `updateCustomTool`'s arguments as a Program writes them.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[schemars(description = "")]
@@ -160,7 +162,7 @@ struct UpdateArguments {
     #[schemars(
         with = "u64",
         range(min = 1),
-        description = "The revision you expect the tool to be at, as addTool or updateTool \
+        description = "The revision you expect the tool to be at, as addCustomTool or updateCustomTool \
                        returned it. Omit it to replace whatever is current."
     )]
     expected_revision: Option<u64>,
@@ -169,7 +171,7 @@ struct UpdateArguments {
     policy: Option<ToolAccessState>,
 }
 
-/// `removeTool`'s arguments as a Program writes them.
+/// `removeCustomTool`'s arguments as a Program writes them.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(description = "")]
@@ -191,7 +193,7 @@ pub(super) fn source_schema(_generator: &mut schemars::SchemaGenerator) -> schem
         "type": "string",
         "minLength": 1,
         "x-coral-opaque-type": SOURCE_OPAQUE_TYPE,
-        "description": "A function declared at the top level of this Program, after you have \
+        "description": "A function declared at the top level of this program, after you have \
                         called it.",
     })
 }
@@ -222,7 +224,7 @@ fn empty<'a>(fields: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Argume
         .collect()
 }
 
-/// `addTool`'s or `updateTool`'s arguments in the shape the schema allows.
+/// `addCustomTool`'s or `updateCustomTool`'s arguments in the shape the schema allows.
 /// coral-tools checks each value itself.
 #[derive(Debug, Clone)]
 pub struct ToolSaveArguments {
@@ -252,8 +254,8 @@ impl ToolSaveArguments {
         &self.source
     }
 
-    /// The revision `updateTool` expects the tool to be at; always `None`
-    /// for `addTool`.
+    /// The revision `updateCustomTool` expects the tool to be at; always `None`
+    /// for `addCustomTool`.
     #[must_use]
     pub const fn expected_revision(&self) -> Option<u64> {
         self.expected_revision
@@ -266,13 +268,13 @@ impl ToolSaveArguments {
         self.policy
     }
 
-    /// Reads `addTool`'s arguments.
+    /// Reads `addCustomTool`'s arguments.
     ///
     /// # Errors
     ///
     /// Returns the argument to correct.
     pub fn parse_add(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
-        if let Some(problem) = missing_source(arguments, BuiltinTool::AddTool) {
+        if let Some(problem) = missing_source(arguments, BuiltinTool::AddCustomTool) {
             return Err(vec![problem]);
         }
         let AddArguments {
@@ -284,13 +286,13 @@ impl ToolSaveArguments {
         Self::checked(path, description, source, None, policy)
     }
 
-    /// Reads `updateTool`'s arguments.
+    /// Reads `updateCustomTool`'s arguments.
     ///
     /// # Errors
     ///
     /// Returns the argument to correct.
     pub fn parse_update(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
-        if let Some(problem) = missing_source(arguments, BuiltinTool::UpdateTool) {
+        if let Some(problem) = missing_source(arguments, BuiltinTool::UpdateCustomTool) {
             return Err(vec![problem]);
         }
         let UpdateArguments {
@@ -342,7 +344,7 @@ impl ToolSaveArguments {
     }
 }
 
-/// `removeTool`'s arguments in the shape the schema allows.
+/// `removeCustomTool`'s arguments in the shape the schema allows.
 #[derive(Debug, Clone)]
 pub struct RemoveToolArguments {
     path: String,
@@ -370,7 +372,7 @@ impl RemoveToolArguments {
     }
 }
 
-/// The only arguments `addTool` takes, for its conformance test.
+/// The only arguments `addCustomTool` takes, for its conformance test.
 #[cfg(test)]
 pub(super) fn valid_add_arguments() -> Vec<Value> {
     vec![
@@ -388,7 +390,7 @@ pub(super) fn valid_add_arguments() -> Vec<Value> {
     ]
 }
 
-/// The arguments `updateTool` takes, for its conformance test.
+/// The arguments `updateCustomTool` takes, for its conformance test.
 #[cfg(test)]
 pub(super) fn valid_update_arguments() -> Vec<Value> {
     let path = "github.pulls.listStale";
@@ -406,26 +408,26 @@ pub(super) fn valid_update_arguments() -> Vec<Value> {
     ]
 }
 
-/// The only arguments `removeTool` takes, for its conformance test.
+/// The only arguments `removeCustomTool` takes, for its conformance test.
 #[cfg(test)]
 pub(super) fn valid_remove_arguments() -> Vec<Value> {
     vec![serde_json::json!({ "path": "github.pulls.listStale" })]
 }
 
-/// What `addTool` and `updateTool` return: the tool as later Programs see
+/// What `addCustomTool` and `updateCustomTool` return: the tool as later Programs see
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields, description = "")]
 pub struct SavedToolResult {
     /// The complete Call Path.
-    #[schemars(description = "The complete Call Path a later Program calls, such as \
+    #[schemars(description = "The complete call path a later program calls, such as \
                        coral.private.github.pulls.listStale.")]
     pub call_path: String,
     /// The saved description.
     #[schemars(description = "The description search shows.")]
     pub description: String,
     /// The emitted declaration.
-    #[schemars(description = "The TypeScript declaration later Programs are typed from.")]
+    #[schemars(description = "The TypeScript declaration later programs are typed from.")]
     pub declaration: String,
     /// The advisory diagnostics saved with it.
     #[schemars(
@@ -439,7 +441,7 @@ pub struct SavedToolResult {
     /// The revision this save made.
     #[schemars(
         description = "The tool's revision after this save: 1 when added, and one \
-                       more at each update. Pass it to updateTool as expectedRevision."
+                       more at each update. Pass it to updateCustomTool as expectedRevision."
     )]
     pub revision: u64,
 }
@@ -462,12 +464,12 @@ impl SavedToolResult {
     }
 }
 
-/// What `removeTool` returns.
+/// What `removeCustomTool` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields, description = "")]
 pub struct RemovedToolResult {
     /// The complete Call Path that no longer names a tool.
-    #[schemars(description = "The complete Call Path of the removed tool.")]
+    #[schemars(description = "The complete call path of the removed tool.")]
     pub call_path: String,
 }
 

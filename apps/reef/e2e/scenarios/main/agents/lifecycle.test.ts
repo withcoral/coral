@@ -86,8 +86,14 @@ test('Agent credential issuance, rotation, disablement, expiry and destructive c
           taskIntent: 'Retained Agent lifecycle work',
         })
         expect(
-          (await runner.addTool('answer', 'Agent answer', 'const answer = () => 42;', 'answer'))
-            .isError,
+          (
+            await runner.addCustomTool(
+              'answer',
+              'Agent answer',
+              'const answer = () => 42;',
+              'answer',
+            )
+          ).isError,
         ).not.toBe(true)
         expect(
           (await runner.exec('return coral.private.answer();')).structuredContent.final_value,

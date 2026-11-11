@@ -124,7 +124,7 @@ impl PrivateToolModule {
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
     /// `SearchIndex::sync_authored_tool` after its commit, as
-    /// `coral.addTool` and `coral.updateTool` do. Until then, the reconcile task
+    /// `coral.addCustomTool` and `coral.updateCustomTool` do. Until then, the reconcile task
     /// indexes the Private Tool.
     ///
     /// # Errors

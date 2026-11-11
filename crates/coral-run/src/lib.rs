@@ -423,7 +423,7 @@ impl RunModule {
         &self.instance
     }
 
-    /// Lets `coral.addTool`, `updateTool` and `removeTool` author the
+    /// Lets `coral.addCustomTool`, `updateCustomTool` and `removeCustomTool` author the
     /// invoking Principal's Private Tools. Without it, such a call fails
     /// with `tool_unavailable`.
     #[must_use]

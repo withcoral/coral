@@ -25,21 +25,21 @@ const MAX_TOOLS: usize = 100;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::UpdatePolicy.key(),
-        summary: "Change the Tool policy of this Workspace",
+        summary: "Change the tool policy of this workspace",
         presentation: ToolPresentation::new(
             Some("Update policy".to_string()),
-            "Enable, require approval for, or disable Tools in this Workspace: a \
-             Provider's Tools, Shared Tools and your own Private Tools."
+            "Enable, require approval for, or disable tools in this workspace: a \
+             provider's tools, shared tools and your own private tools."
                 .to_string(),
             false,
-            vec!["policy".to_string()],
+            vec!["Policy".to_string()],
             Some(
-                "Pass 1 to 100 Tools, each by its complete Call Path, such as \
-                 coral.providers.github.repos.delete or coral.shared.mail.remind. A Tool you \
+                "Pass 1 to 100 tools, each by its complete call path, such as \
+                 coral.providers.github.repos.delete or coral.shared.mail.remind. A tool you \
                  do not name keeps its state. All the states change, or none does, and the \
-                 failure names each refused path: a path that names no Tool fails with \
-                 tool_not_found, and one that names a Built-in Tool, such as coral.search, \
-                 fails with invalid_input. Set a Built-in Tool's policy in the Coral UI. Read \
+                 failure names each refused path: a path that names no tool fails with \
+                 tool_not_found, and one that names a built-in tool, such as coral.search, \
+                 fails with invalid_input. Set a built-in tool's policy in the Coral UI. Read \
                  the current rules with getPolicy."
                     .to_string(),
             ),
@@ -61,8 +61,8 @@ pub(super) fn definition() -> Definition {
 #[schemars(description = "")]
 struct Arguments {
     #[schemars(
-        description = "The Tool Access State to set for each Tool, keyed by its complete \
-                       Call Path, such as coral.providers.github.repos.get. enabled runs a call \
+        description = "The tool access state to set for each tool, keyed by its complete \
+                       call path, such as coral.providers.github.repos.get. enabled runs a call \
                        at once, approval_required waits for a person to approve it, and \
                        disabled refuses it.",
         extend("minProperties" = 1, "maxProperties" = MAX_TOOLS)
@@ -94,7 +94,7 @@ impl UpdatePolicyArguments {
         if !(1..=MAX_TOOLS).contains(&arguments.tools.len()) {
             return Err(vec![ArgumentProblem::new(
                 "tools",
-                format!("name 1 to {MAX_TOOLS} Tools"),
+                format!("name 1 to {MAX_TOOLS} tools"),
             )]);
         }
         Ok(Self {
@@ -121,8 +121,8 @@ pub(super) fn valid_arguments() -> Vec<Value> {
 pub struct UpdatePolicyResult {
     /// Each sent path's state after the call.
     #[schemars(
-        description = "The Tool Access State of each Tool the call named, keyed by its \
-                       complete Call Path."
+        description = "The tool access state of each tool the call named, keyed by its \
+                       complete call path."
     )]
     pub tools: BTreeMap<String, crate::ToolAccessState>,
 }
@@ -147,11 +147,11 @@ mod tests {
             .map(|index| (format!("tool{index}"), serde_json::json!("enabled")))
             .collect::<serde_json::Map<_, _>>();
         for (tools, field, reason) in [
-            (serde_json::json!({}), "tools", "name 1 to 100 Tools"),
+            (serde_json::json!({}), "tools", "name 1 to 100 tools"),
             (
                 serde_json::Value::Object(oversized),
                 "tools",
-                "name 1 to 100 Tools",
+                "name 1 to 100 tools",
             ),
             (
                 serde_json::json!({ "coral.search": "open" }),

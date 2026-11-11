@@ -6,7 +6,7 @@
 //! deletes the Private Tool together with its exact rule, and hands search
 //! the Private Tool's id after the commit (ADR 0017). A notification never
 //! fails the workflow; the reconcile task converges what a lost or failed
-//! notification missed. `coral.removeTool` composes the same for a Program,
+//! notification missed. `coral.removeCustomTool` composes the same for a Program,
 //! in coral-run.
 use std::sync::Arc;
 

@@ -37,10 +37,10 @@ pub(super) fn definition() -> Definition {
         presentation: ToolPresentation::new(
             Some("Search".to_string()),
             "Find the provider tools, shared tools and private tools you can call, ranked by \
-             a query, or read the exact descriptions of the Call Paths you name."
+             a query, or read the exact descriptions of the call paths you name."
                 .to_string(),
             false,
-            vec!["discovery".to_string()],
+            vec!["Discovery".to_string()],
             Some(
                 "Pass query for hits, best first, or paths for exact descriptions. Call a hit \
                  by its complete literal call_path. A path that names nothing you can call \
@@ -101,7 +101,7 @@ struct QueryInput {
         schema_with = "provider_schema",
         description = "When the user names a service, all its namespaces from \
                        coral.providers.<namespace>, or coral for Coral's own tools. \
-                       Otherwise leave it out. It narrows provider tools to those Providers; \
+                       Otherwise leave it out. It narrows provider tools to those providers; \
                        shared tools and your private tools stay. A namespace you cannot \
                        search is refused with the full list."
     )]
@@ -132,7 +132,7 @@ struct PathsInput {
     #[schemars(
         length(min = 1, max = 10),
         inner(length(max = SEARCH_PATH_MAX_BYTES)),
-        description = "1 to 10 complete Call Paths to read exactly, each at most 1024 UTF-8 \
+        description = "1 to 10 complete call paths to read exactly, each at most 1024 UTF-8 \
                        bytes, such as coral.providers.github.repos.get."
     )]
     paths: Vec<String>,
@@ -148,7 +148,7 @@ struct PathsInput {
 struct TypesInput {
     #[schemars(
         schema_with = "one_path_schema",
-        description = "The one complete Call Path whose types to read, at most 1024 UTF-8 \
+        description = "The one complete call path whose types to read, at most 1024 UTF-8 \
                        bytes."
     )]
     paths: (String,),
@@ -271,13 +271,13 @@ impl SearchArguments {
         if paths.is_empty() || paths.len() > SEARCH_PATHS_MAX {
             problems.push(ArgumentProblem::new(
                 "paths",
-                format!("pass 1 to {SEARCH_PATHS_MAX} Call Paths"),
+                format!("pass 1 to {SEARCH_PATHS_MAX} call paths"),
             ));
         }
         if paths.iter().any(|path| path.len() > SEARCH_PATH_MAX_BYTES) {
             problems.push(ArgumentProblem::new(
                 "paths",
-                format!("a Call Path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"),
+                format!("a call path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"),
             ));
         }
         // As the schema reads it: `types`, even empty, names one path's types.
@@ -402,7 +402,7 @@ pub(super) const fn exact_in_json(value: u64) -> bool {
 #[schemars(deny_unknown_fields, description = "")]
 pub struct SearchResult {
     /// The hits, best first; in Call Path order for a listing.
-    #[schemars(description = "The hits, best first. Without a query, in Call Path order.")]
+    #[schemars(description = "The hits, best first. Without a query, in call path order.")]
     pub hits: Vec<SearchHit>,
     /// The `offset` of the next page; `None` on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,7 +425,7 @@ pub struct SearchResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(
     deny_unknown_fields,
-    description = "One Search Hit. Call a read from it when it is complete. Read its exact \
+    description = "One search hit. Call a read from it when it is complete. Read its exact \
                    description first otherwise, and before a write."
 )]
 pub struct SearchHit {
@@ -497,7 +497,7 @@ pub struct SearchHit {
 #[schemars(
     rename = "Hints",
     deny_unknown_fields,
-    description = "Effect hints the Provider declared. An absent field is undeclared, not a \
+    description = "Effect hints the provider declared. An absent field is undeclared, not a \
                    protocol default."
 )]
 pub struct DeclaredHints {
@@ -586,7 +586,7 @@ impl JsonSchema for SearchRetrieverState {
         let mut schema = words_schema(&["partial", "error"]);
         schema.insert(
             "description".to_owned(),
-            "- `partial`: some Providers, shared tools or private tools are not indexed yet, or failed; \
+            "- `partial`: some providers, shared tools or private tools are not indexed yet, or failed; \
              results may be missing.\n- `error`: the retriever could not rank; its results are \
              missing.\n\nRetry shortly or list without a query."
                 .into(),
@@ -714,7 +714,7 @@ pub enum Description {
         /// Whether a person must approve each call.
         #[schemars(description = "")]
         approval_required: bool,
-        /// Its current revision, which `updateTool` takes as
+        /// Its current revision, which `updateCustomTool` takes as
         /// `expectedRevision`.
         #[schemars(description = "", range(max = JSON_SAFE_INTEGER_MAX))]
         revision: u64,

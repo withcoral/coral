@@ -23,22 +23,22 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinTool::GetPolicy.key(),
-        summary: "Read the Tool policy of this Workspace",
+        summary: "Read the tool policy of this workspace",
         presentation: ToolPresentation::new(
             Some("Get policy".to_string()),
-            "Read the rules a Workspace Owner set for the Tools you can call in this \
-             Workspace, including the disabled Tools that search does not show."
+            "Read the rules a workspace owner set for the tools you can call in this \
+             workspace, including the disabled tools that search does not show."
                 .to_string(),
             false,
-            vec!["policy".to_string()],
+            vec!["Policy".to_string()],
             Some(
-                "Rules are keyed by complete Call Path, such as \
+                "Rules are keyed by complete call path, such as \
                  coral.providers.github.repos.get, coral.search or coral.shared.mail.remind. \
-                 They cover every Provider's Tools, the Built-in Tools, the Shared Tools and \
-                 your own Private Tools. Pass under, such as coral.providers.github, to read \
-                 only the Tools under that path. A Tool without a rule is left out: it takes \
-                 its default, which search shows. No Tool is disabled by default, so rules \
-                 names every disabled Tool."
+                 They cover every provider's tools, the built-in tools, the shared tools and \
+                 your own private tools. Pass under, such as coral.providers.github, to read \
+                 only the tools under that path. A tool without a rule is left out: it takes \
+                 its default, which search shows. No tool is disabled by default, so rules \
+                 names every disabled tool."
                     .to_string(),
             ),
         ),
@@ -59,14 +59,14 @@ struct Arguments {
     #[serde(default, deserialize_with = "super::present")]
     #[schemars(
         with = "String",
-        description = "Read only the Tools under this Call Path, such as \
+        description = "Read only the tools under this call path, such as \
                        coral.providers.github or coral.shared. Omit it to read every rule."
     )]
     under: Option<String>,
 }
 
 /// Why `under` is not a Call Path prefix.
-const UNDER_REASON: &str = "use a Call Path, such as `coral.providers.github`";
+const UNDER_REASON: &str = "use a call path, such as `coral.providers.github`";
 
 /// `getPolicy`'s arguments, checked by every rule that needs no Workspace
 /// state.
@@ -132,8 +132,8 @@ pub(super) fn valid_arguments() -> Vec<Value> {
 pub struct GetPolicyResult {
     /// Each exact rule, keyed by its Tool's complete Call Path.
     #[schemars(
-        description = "The Tool Access State a Workspace Owner set for each Tool, \
-                       keyed by its complete Call Path, such as coral.providers.github.repos.get. \
+        description = "The tool access state a workspace owner set for each tool, \
+                       keyed by its complete call path, such as coral.providers.github.repos.get. \
                        enabled runs a call at once, approval_required waits for a person to \
                        approve it, and disabled refuses it."
     )]
@@ -180,7 +180,7 @@ mod tests {
                     .expect_err("a problem"),
                 [ArgumentProblem::new(
                     "under",
-                    "use a Call Path, such as `coral.providers.github`"
+                    "use a call path, such as `coral.providers.github`"
                 )],
                 "{under}"
             );

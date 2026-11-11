@@ -683,7 +683,7 @@ async fn a_namespace_in_use_is_a_conflict() {
 }
 
 /// Ends the Run just after a Built-in call prepares its work: addProvider's
-/// Setup, or addTool's compile.
+/// Setup, or addCustomTool's compile.
 pub(super) struct RunEndsAfterPreparation {
     pub(super) clock: Arc<TestClock>,
 }
@@ -1822,7 +1822,7 @@ async fn update_policy_rejects_an_argument_problem_before_admission() {
         final_value(&scope.terminal(&scope.owner, &run).await),
         serde_json::json!({
             "code": "invalid_input",
-            "message": "Tool arguments are invalid at `tools`: name 1 to 100 Tools",
+            "message": "Tool arguments are invalid at `tools`: name 1 to 100 tools",
         }),
     );
     assert!(!scope.recorded_an_invocation(&run).await);

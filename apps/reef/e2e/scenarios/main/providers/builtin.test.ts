@@ -102,9 +102,9 @@ test('Coral leads the tools page, offers nothing to change, stops calls while di
           'listProviders',
           'getPolicy',
           'search',
-          'addTool',
-          'updateTool',
-          'removeTool',
+          'addCustomTool',
+          'updateCustomTool',
+          'removeCustomTool',
         ]) {
           await page.getByRole('link', { name: shown, exact: true }).waitFor()
         }

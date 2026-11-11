@@ -3571,7 +3571,7 @@ fn linking_refuses_a_stored_tool_that_does_not_take_one_object() {
             ),
             "Private Tool coral.private.people.greet:1:31: `input` has type string; take one \
              object instead, such as `({ name }: { name: string })`. Save it again with \
-             coral.updateTool.",
+             coral.updateCustomTool.",
         ),
         (
             linked_source(
@@ -3580,7 +3580,7 @@ fn linking_refuses_a_stored_tool_that_does_not_take_one_object() {
             ),
             "Private Tool coral.private.math.add:2:3: it takes 2 parameters; take one object \
              instead, such as `({ name }: { name: string })`. Save it again with \
-             coral.updateTool.",
+             coral.updateCustomTool.",
         ),
         (
             shared_source(

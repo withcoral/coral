@@ -226,7 +226,7 @@
           "type": "boolean"
         }
       },
-      "description": "Effect hints the Provider declared. An absent field is undeclared, not a protocol default."
+      "description": "Effect hints the provider declared. An absent field is undeclared, not a protocol default."
     },
     "Diagnostic": {
       "type": "object",

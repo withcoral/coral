@@ -20,7 +20,7 @@
           "items": {
             "$ref": "#/$defs/SearchHit"
           },
-          "description": "The hits, best first. Without a query, in Call Path order."
+          "description": "The hits, best first. Without a query, in call path order."
         },
         "next_offset": {
           "type": "integer",
@@ -98,7 +98,7 @@
         "complete",
         "description_snippet"
       ],
-      "description": "One Search Hit. Call a read from it when it is complete. Read its exact description first otherwise, and before a write."
+      "description": "One search hit. Call a read from it when it is complete. Read its exact description first otherwise, and before a write."
     },
     "Hints": {
       "type": "object",
@@ -117,7 +117,7 @@
           "type": "boolean"
         }
       },
-      "description": "Effect hints the Provider declared. An absent field is undeclared, not a protocol default."
+      "description": "Effect hints the provider declared. An absent field is undeclared, not a protocol default."
     },
     "RetrieverStatus": {
       "type": "object",
@@ -153,7 +153,7 @@
         "partial",
         "error"
       ],
-      "description": "- `partial`: some Providers, shared tools or private tools are not indexed yet, or failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
+      "description": "- `partial`: some providers, shared tools or private tools are not indexed yet, or failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
     },
     "RetrieverCoverage": {
       "type": "object",

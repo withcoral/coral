@@ -955,7 +955,7 @@ export function programRunner(
   }
   /** Saves the function `name` that `declarations` declare with the authoring Tool `verb`. */
   const authorTool = async (
-    verb: 'addTool' | 'updateTool',
+    verb: 'addCustomTool' | 'updateCustomTool',
     path: string,
     description: string,
     declarations: string,
@@ -990,26 +990,26 @@ export function programRunner(
     },
     /**
      * Adds a Private Tool the way an agent does: a Program declares `declarations`, which declare
-     * the function `name` at its top level, and passes it to `coral.addTool`.
+     * the function `name` at its top level, and passes it to `coral.addCustomTool`.
      * Coral stores {@link savedSource} of them. The Program is one more uncounted exec of the
      * Task; a failed save is an error result.
      */
-    async addTool(
+    async addCustomTool(
       path: string,
       description: string,
       declarations: string,
       name: string,
     ): Promise<ToolResult> {
-      return authorTool('addTool', path, description, declarations, name)
+      return authorTool('addCustomTool', path, description, declarations, name)
     },
-    /** {@link addTool}, but `coral.updateTool` replaces the Private Tool already at `path`. */
-    async updateTool(
+    /** {@link addCustomTool}, but `coral.updateCustomTool` replaces the Private Tool already at `path`. */
+    async updateCustomTool(
       path: string,
       description: string,
       declarations: string,
       name: string,
     ): Promise<ToolResult> {
-      return authorTool('updateTool', path, description, declarations, name)
+      return authorTool('updateCustomTool', path, description, declarations, name)
     },
     async wait(update: RunUpdate): Promise<ToolResult<RunUpdate>> {
       await initialize()

@@ -49,7 +49,7 @@ You can add a provider multiple times, each under its own namespace, to give the
 Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its tools and performs them itself, without an upstream service. It is listed first under **Tools** in the [Coral UI](#coral-ui).
 
 - Its tools sit directly on `coral`, as in `coral.search`, with no namespace.
-- Members and agents can find and call only `coral.listProviders`, `coral.getPolicy`, `coral.search`, `coral.addTool`, `coral.updateTool` and `coral.removeTool`. Workspace owners can find and call all its tools.
+- Members and agents can find and call only `coral.listProviders`, `coral.getPolicy`, `coral.search`, `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool`. Workspace owners can find and call all its tools.
 - Workspace owners can only disable it, enable it, and set its [policy](#tool-policy). Nobody can rename or remove it. It has no [accounts](#account-setting).
 
 ## Tools
@@ -86,7 +86,7 @@ You can add the same provider multiple times, with different account settings. F
 - Ask, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
 - Block, the tool cannot be called, and is hidden from the agent altogether
 
-Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addTool`, `coral.updateTool` and `coral.removeTool` are Allow too, because they change only the caller's own private tools. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
+Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool` are Allow too, because they change only the caller's own private tools. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
 
 A program reads the policy rules with `coral.getPolicy`, keyed by each tool's call path, such as `coral.providers.github.repos.get`. It reads every provider's tools, the built-in tools, the shared tools and its own private tools. Pass `under`, such as `coral.providers.github`, to read only part of them. A workspace owner's program can change a rule with `coral.updatePolicy`, which needs approval until you set another policy for it:
 
@@ -150,7 +150,7 @@ A [program](#programs) calls one the same way it calls a [tool](#tools). It can 
 
 A private tool takes one object and returns JSON data. Coral refuses a `Date`, a `Map`, `NaN` or a function instead of converting it, and names where it is.
 
-A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.addTool`. Coral saves the function with the top-level declarations it uses. `coral.addTool` fails when the path is already taken. A program replaces a private tool with `coral.updateTool` and removes one with `coral.removeTool`. All three act only on the principal's own private tools.
+A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.addCustomTool`. Coral saves the function with the top-level declarations it uses. `coral.addCustomTool` fails when the path is already taken. A program replaces a private tool with `coral.updateCustomTool` and removes one with `coral.removeCustomTool`. All three act only on the principal's own private tools.
 
 ```ts
 async function staleIssues({ days }: { days: number }) {
@@ -161,7 +161,7 @@ function daysAgo(days: number) {
 }
 
 const issues = await staleIssues({ days: 30 });
-await coral.addTool({
+await coral.addCustomTool({
   path: "triage.staleIssues",
   description: "List open issues with no update in a number of days.",
   source: staleIssues,

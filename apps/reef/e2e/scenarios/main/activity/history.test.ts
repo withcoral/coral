@@ -79,7 +79,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           })
           expect(
             (
-              await execute.addTool(
+              await execute.addCustomTool(
                 'history.snapshot',
                 'Retained history fixture',
                 original,
@@ -98,7 +98,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           task = execute.taskId()
           expect(
             (
-              await execute.updateTool(
+              await execute.updateCustomTool(
                 'history.snapshot',
                 'Changed current private tool',
                 replacement,

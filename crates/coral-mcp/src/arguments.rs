@@ -16,7 +16,7 @@ const EXEC_TASK_ID_DESCRIPTION: &str =
     "The task_id of the Task this call continues. Pass exactly one of task_id or goal.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
-const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
+const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this run. Without it, the response returns the run's events from the start.";
 /// `exec`'s description, with the one example of discovery an agent reads.
 /// A test runs its first Program against a real `coral.search` and
 /// saves it as a Private Tool to type-check it, so keep that Program whole.
@@ -175,7 +175,7 @@ pub(crate) struct ExecArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_EXEC_WAIT_MS),
-        description = format!("Longest this call waits for the Run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
+        description = format!("Longest this call waits for the run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -201,7 +201,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("Longest this call waits for the Run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_WAIT_MS}, which returns at once.")
+        description = format!("Longest this call waits for the run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_WAIT_MS}, which returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -351,25 +351,25 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             crate::projection::ExecResult<'_>,
         >(
             EXEC_TOOL_DESCRIPTION,
-            mutation_annotations("Execute Program", true, true),
+            mutation_annotations("Execute program", true, true),
         ))),
         shown_as_app(always_loaded(tool::<
             WaitArguments,
             crate::projection::ObservedRun<'_>,
         >(
             concat!(
-                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                "Observe one program run: its authored emissions and logs, current `required_actions`, and `state`. Returns when `required_actions` change, the run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
                 // What to do when the Run waits on a person: write the link,
                 // then keep waiting. `exec` returns the same Run Update, but
                 // its description keeps the discovery example within its
                 // budget, so it gives the first step and points here.
-                " Human handoff: a non-empty `required_actions` means the Run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the Run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the Run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the Program as `coral.ToolError`, and a Run past its own deadline ends `timed_out`: report what happened from the Run's output, and do not start the Program again unless asked. For `account_connection`, ask only when the entry appears."
+                " Human handoff: a non-empty `required_actions` means the run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the program as `coral.ToolError`, and a run past its own deadline ends `timed_out`: report what happened from the run's output, and do not start the program again unless asked. For `account_connection`, ask only when the entry appears."
             ),
-            read_annotations("Wait for Run"),
+            read_annotations("Wait for run"),
         ))),
         tool::<CancelArguments, crate::projection::ObservedRun<'_>>(
-            "Request cancellation of one Program Run.",
-            mutation_annotations("Cancel Run", true, false),
+            "Request cancellation of one program run.",
+            mutation_annotations("Cancel run", true, false),
         ),
         always_loaded(tool::<EndTaskArguments, crate::projection::EndedTask>(
             "Record one Task's success or failure outcome. The first call wins.",

@@ -580,7 +580,7 @@ impl Save<'_> {
             "{}\n{}",
             self.declarations,
             authored_call(
-                "addTool",
+                "addCustomTool",
                 &format!(
                     "{{ path: {}, description: {}, source: {} }}",
                     json!(self.path),
@@ -813,7 +813,7 @@ async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_ver
             "`wait`",
             "`next_cursor`",
             "`url`",
-            "complete literal Call Path",
+            "complete literal call path",
             "`fetch`",
             "`setTimeout`",
             "`coral.ToolError`",
@@ -1560,7 +1560,7 @@ return { found: found.data, read: read.data };"#,
     let deleted = authoring_value(
         &client_a,
         &task_id,
-        "removeTool",
+        "removeCustomTool",
         &json!({ "path": "weather.currentTemperature" }),
     )
     .await;

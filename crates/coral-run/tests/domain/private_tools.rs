@@ -1,4 +1,4 @@
-//! `coral.addTool`, `coral.updateTool` and `coral.removeTool` author the
+//! `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool` author the
 //! invoking Principal's Private Tools from inside a Program, over the real
 //! V8 engine. Authoring rules are tested at their owner, coral-tools, and
 //! the default Access State at coral-policy.
@@ -61,7 +61,7 @@ async fn member(scope: &AdminScope, user: &str) -> AuthenticatedPrincipal {
 /// A Program that declares `declarations`, which declare `saved`, and adds
 /// `saved` at `path`. It returns a Tool error's code and message.
 fn add(path: &str, declarations: &str) -> RunSubmission {
-    author("addTool", path, declarations, "")
+    author("addCustomTool", path, declarations, "")
 }
 
 fn greet() -> RunSubmission {
@@ -257,7 +257,7 @@ async fn type_errors_are_advisory_and_invalid_private_tools_save_nothing() {
 async fn an_approved_save_compiles_and_commits() {
     let (scope, _index) = authoring_scope("user:functions-rules").await;
     scope
-        .set_access_to("coral.addTool", ToolAccessState::ApprovalRequired)
+        .set_access_to("coral.addCustomTool", ToolAccessState::ApprovalRequired)
         .await;
     let run = scope.start(&scope.owner, add("people.greet", SOURCE)).await;
     scope.approve(&scope.owner, &run).await;
@@ -282,7 +282,7 @@ async fn a_save_outlives_its_failed_run_and_search_finds_it() {
         .start(
             &scope.owner,
             submission(&format!(
-                "{SOURCE}\nawait coral.addTool({{ path: 'people.greet', \
+                "{SOURCE}\nawait coral.addCustomTool({{ path: 'people.greet', \
                  description: 'Greet one person by name.', source: saved }});\n\
                  throw new Error('after the save');"
             )),
@@ -343,7 +343,7 @@ async fn a_run_that_ends_while_its_save_compiles_saves_nothing() {
 async fn a_program_calls_its_function_then_saves_it_in_one_run() {
     let (scope, _index) = authoring_scope("user:functions-same-run").await;
     let by_path = format!(
-        "{SOURCE}\nawait coral.addTool({{ path: 'people.greet', \
+        "{SOURCE}\nawait coral.addCustomTool({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
          return coral.private.people.greet({{ name: 'Ada' }});"
     );
@@ -355,7 +355,7 @@ async fn a_program_calls_its_function_then_saves_it_in_one_run() {
 
     let tested = format!(
         "{SOURCE}\nconst greeting = saved({{ name: 'Ada' }});\n\
-         await coral.addTool({{ path: 'people.greet', \
+         await coral.addCustomTool({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
          return greeting;"
     );
@@ -377,13 +377,13 @@ async fn a_private_tool_adds_and_removes_tools() {
     let tools = format!(
         "{SOURCE}
 async function saver() {{
-    return coral.addTool({{ path: 'people.greet', description: 'Greet one person by name.', source: saved }});
+    return coral.addCustomTool({{ path: 'people.greet', description: 'Greet one person by name.', source: saved }});
 }}
 async function remover() {{
-    return coral.removeTool({{ path: 'people.greet' }});
+    return coral.removeCustomTool({{ path: 'people.greet' }});
 }}
-const saving = await coral.addTool({{ path: 'tools.saver', description: 'Add the greeting.', source: saver }});
-const removing = await coral.addTool({{ path: 'tools.remover', description: 'Remove the greeting.', source: remover }});
+const saving = await coral.addCustomTool({{ path: 'tools.saver', description: 'Add the greeting.', source: saver }});
+const removing = await coral.addCustomTool({{ path: 'tools.remover', description: 'Remove the greeting.', source: remover }});
 return [saving.data.diagnostics, removing.data.diagnostics];"
     );
     // A function is the type `source` takes, so neither save has a type error.
@@ -463,7 +463,7 @@ async fn programs_reach_the_builtin_and_private_tools_on_coral() {
     );
 }
 
-/// The function `addTool` and `updateTool` save in place of `saved`: it
+/// The function `addCustomTool` and `updateCustomTool` save in place of `saved`: it
 /// says goodbye, so a call shows which version is current.
 const OTHER_SOURCE: &str = "const saved = ({ name }: { name: string }): string => `bye ${name}`;";
 
@@ -481,7 +481,7 @@ try {{
     ))
 }
 
-/// `coral.addTool` or `coral.updateTool` saving `saved` from
+/// `coral.addCustomTool` or `coral.updateCustomTool` saving `saved` from
 /// `declarations` at `path`, with `extra` fields after `source`.
 fn author(verb: &str, path: &str, declarations: &str, extra: &str) -> RunSubmission {
     tool_call(
@@ -497,7 +497,10 @@ fn author(verb: &str, path: &str, declarations: &str, extra: &str) -> RunSubmiss
 fn remove(path: &str) -> RunSubmission {
     tool_call(
         "",
-        &format!("coral.removeTool({{ path: {path} }})", path = json!(path)),
+        &format!(
+            "coral.removeCustomTool({{ path: {path} }})",
+            path = json!(path)
+        ),
     )
 }
 
@@ -520,7 +523,7 @@ async fn lifecycle_actions(
 
 // Catches: an authoring Tool whose refusal reaches the Program under any
 // code but its own, or without saying what to correct (a taken path that
-// does not name itself and coral.updateTool), or whose result reports the
+// does not name itself and coral.updateCustomTool), or whose result reports the
 // wrong path or revision.
 // coral-tools tests that a refusal changes nothing.
 #[tokio::test]
@@ -532,7 +535,7 @@ async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_
     let added = outcome(
         &scope,
         &scope.owner,
-        author("addTool", "people.greet", SOURCE, ""),
+        author("addCustomTool", "people.greet", SOURCE, ""),
     )
     .await;
     assert_eq!(
@@ -546,19 +549,19 @@ async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_
 
     for (run, code, message) in [
         (
-            author("addTool", "people.greet", OTHER_SOURCE, ""),
+            author("addCustomTool", "people.greet", OTHER_SOURCE, ""),
             "private_tool_exists",
             "A Private Tool already exists at `path`: coral.private.people.greet is one of your \
-             tools; change it with coral.updateTool, or choose another path",
+             tools; change it with coral.updateCustomTool, or choose another path",
         ),
         (
-            author("updateTool", "people.missing", OTHER_SOURCE, ""),
+            author("updateCustomTool", "people.missing", OTHER_SOURCE, ""),
             "private_tool_not_found",
             "Private Tool was not found",
         ),
         (
             author(
-                "updateTool",
+                "updateCustomTool",
                 "people.greet",
                 OTHER_SOURCE,
                 ", expectedRevision: 2",
@@ -584,14 +587,14 @@ async fn create_only_replace_only_and_revision_conflicts_reach_the_program_with_
     for (run, revision) in [
         (
             author(
-                "updateTool",
+                "updateCustomTool",
                 "people.greet",
                 OTHER_SOURCE,
                 ", expectedRevision: 1",
             ),
             2,
         ),
-        (author("updateTool", "people.greet", SOURCE, ""), 3),
+        (author("updateCustomTool", "people.greet", SOURCE, ""), 3),
     ] {
         let updated = outcome(&scope, &scope.owner, run).await;
         assert_eq!(
@@ -629,13 +632,13 @@ async fn each_principal_adds_updates_and_removes_only_its_own_tools() {
     outcome(
         &scope,
         &scope.owner,
-        author("addTool", "people.greet", SOURCE, ""),
+        author("addCustomTool", "people.greet", SOURCE, ""),
     )
     .await;
     for principal in [&member, &agent] {
         for (run, code) in [
             (
-                author("updateTool", "people.greet", OTHER_SOURCE, ""),
+                author("updateCustomTool", "people.greet", OTHER_SOURCE, ""),
                 "private_tool_not_found",
             ),
             (remove("people.greet"), "private_tool_not_found"),
@@ -650,7 +653,7 @@ async fn each_principal_adds_updates_and_removes_only_its_own_tools() {
         let added = outcome(
             &scope,
             principal,
-            author("addTool", "people.greet", OTHER_SOURCE, ""),
+            author("addCustomTool", "people.greet", OTHER_SOURCE, ""),
         )
         .await;
         assert_eq!(
@@ -819,7 +822,7 @@ async fn a_private_tool_that_throws_or_returns_no_data_fails_its_caller_with_a_t
         ),
         (
             "fails.nested",
-            "const saved = async () => coral.removeTool({ path: 'nothing.here' });",
+            "const saved = async () => coral.removeCustomTool({ path: 'nothing.here' });",
             "private_tool_not_found",
             "Private Tool was not found",
             "private_tool_not_found",
@@ -941,7 +944,7 @@ async fn a_missing_private_tool_is_refused_like_any_unknown_path_with_its_neares
         &scope,
         &scope.owner,
         author(
-            "addTool",
+            "addCustomTool",
             "people.greetPerson",
             "const saved = async ({ name }: { name: string }): Promise<string> => `hello ${name}`;",
             "",
@@ -1119,7 +1122,7 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
         let saved = outcome(
             &scope,
             &author,
-            author_with("addTool", CALLING_SOURCE, &policy),
+            author_with("addCustomTool", CALLING_SOURCE, &policy),
         )
         .await;
         assert!(
@@ -1221,7 +1224,7 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
     }
 }
 
-// Catches: a `coral.removeTool` that leaves its Private Tool's exact rule
+// Catches: a `coral.removeCustomTool` that leaves its Private Tool's exact rule
 // among the Workspace's rules or takes another Tool's, a refused one that
 // takes a rule, or one that commits although its rule removal failed.
 #[tokio::test]
@@ -1283,7 +1286,7 @@ async fn removing_a_tool_removes_its_exact_rule_and_no_other() {
 
     // An Owner's rule refuses the remove of the ruled Tool itself.
     scope
-        .set_access_to("coral.removeTool", ToolAccessState::Disabled)
+        .set_access_to("coral.removeCustomTool", ToolAccessState::Disabled)
         .await;
     let refused = outcome(&scope, &scope.owner, remove("people.greet")).await;
     assert_eq!(
@@ -1297,7 +1300,7 @@ async fn removing_a_tool_removes_its_exact_rule_and_no_other() {
         "a refused remove takes no rule"
     );
     scope
-        .set_access_to("coral.removeTool", ToolAccessState::Enabled)
+        .set_access_to("coral.removeCustomTool", ToolAccessState::Enabled)
         .await;
 
     // While the rule delete fails, the remove fails with it and keeps its
@@ -1384,7 +1387,7 @@ async fn demote_the_owner(scope: &AdminScope, index: usize) {
         .expect("make the first Owner a Member");
 }
 
-/// `coral.addTool` or `coral.updateTool` saving `saved` from
+/// `coral.addCustomTool` or `coral.updateCustomTool` saving `saved` from
 /// `declarations` at `people.greet`, with `extra` fields after `source`.
 fn author_with(verb: &str, declarations: &str, extra: &str) -> RunSubmission {
     author(verb, "people.greet", declarations, extra)
@@ -1436,7 +1439,7 @@ async fn calls_inside_a_body_follow_their_own_policy_and_the_kill_switch() {
             &scope,
             &scope.owner,
             author(
-                "addTool",
+                "addCustomTool",
                 "people.inner",
                 "const saved = async ({ name }: { name: string }): Promise<string> => `inner ${name}`;",
                 &format!(", policy: {}", json!(row.inner_declared)),
@@ -1448,7 +1451,7 @@ async fn calls_inside_a_body_follow_their_own_policy_and_the_kill_switch() {
             &scope,
             &scope.owner,
             author_with(
-                "addTool",
+                "addCustomTool",
                 "const saved = async ({ name }: { name: string }): Promise<string> => {
                     await coral.listProviders();
                     return await coral.private.people.inner({ name });

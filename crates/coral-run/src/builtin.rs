@@ -47,7 +47,7 @@ pub(crate) enum BuiltinCall {
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
     SaveTool(Box<private_tools::SaveTool>),
-    RemoveTool(private_tools::RemoveTool),
+    RemoveCustomTool(private_tools::RemoveCustomTool),
 }
 
 pub use private_tools::PrivateTools;
@@ -91,16 +91,16 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
-                    BuiltinArguments::AddTool(arguments) => {
+                    BuiltinArguments::AddCustomTool(arguments) => {
                         private_tools::SaveTool::add(&arguments)
                             .map(|call| Self::SaveTool(Box::new(call)))
                     }
-                    BuiltinArguments::UpdateTool(arguments) => {
+                    BuiltinArguments::UpdateCustomTool(arguments) => {
                         private_tools::SaveTool::update(&arguments)
                             .map(|call| Self::SaveTool(Box::new(call)))
                     }
-                    BuiltinArguments::RemoveTool(arguments) => {
-                        private_tools::RemoveTool::new(&arguments).map(Self::RemoveTool)
+                    BuiltinArguments::RemoveCustomTool(arguments) => {
+                        private_tools::RemoveCustomTool::new(&arguments).map(Self::RemoveCustomTool)
                     }
                 }),
         )
@@ -117,7 +117,7 @@ impl BuiltinCall {
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
             Self::SaveTool(call) => call.perform(host).await,
-            Self::RemoveTool(call) => call.perform(host).await,
+            Self::RemoveCustomTool(call) => call.perform(host).await,
         }
     }
 }
@@ -157,9 +157,9 @@ pub(crate) async fn recover(
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
             | BuiltinTool::Search
-            | BuiltinTool::AddTool
-            | BuiltinTool::UpdateTool
-            | BuiltinTool::RemoveTool,
+            | BuiltinTool::AddCustomTool
+            | BuiltinTool::UpdateCustomTool
+            | BuiltinTool::RemoveCustomTool,
         )
         | None => Ok(None),
     }
@@ -178,7 +178,7 @@ pub(crate) trait InvokingRun: Send + Sync {
     fn now(&self) -> Result<i64, Error>;
 
     /// Lets a test end the Run once the call prepared its work and before
-    /// it checks the Run: addProvider's Setup, or addTool's compile.
+    /// it checks the Run: addProvider's Setup, or addCustomTool's compile.
     #[cfg(test)]
     fn prepared(&self) {}
 }
