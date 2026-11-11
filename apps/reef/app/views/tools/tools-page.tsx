@@ -2160,21 +2160,11 @@ function effectivePolicy(
 }
 
 /**
- * The provider's state beside its name: search indexing, its unavailable tools,
- * and its destructive tools that run without approval. Each pairs an icon or
- * words with its color.
+ * The provider's state beside its name: search indexing and its unavailable
+ * tools. Each pairs an icon or words with its color.
  */
 function ProviderNotices({ provider }: { provider: ProviderView }) {
-  const { policies } = usePolicyMutations()
   const unavailable = provider.totalCount - provider.readyCount
-  // A provider heading stays mounted over all its tools, through every scroll.
-  const destructive = useMemo(
-    () =>
-      provider.tools.filter(
-        (tool) => tool.hints.destructive && effectivePolicy(policies, provider, tool) === 'enabled',
-      ).length,
-    [policies, provider],
-  )
   return (
     <>
       {provider.searchIndex?.state === 'pending' && (
@@ -2203,16 +2193,6 @@ function ProviderNotices({ provider }: { provider: ProviderView }) {
         <Pill size="small" color="amber">
           {`${unavailable} unavailable`}
         </Pill>
-      )}
-      {destructive > 0 && (
-        <Tooltip content="These tools can delete or change data. They run without approval.">
-          <span className={styles.inlineTooltipTarget} tabIndex={0}>
-            <Pill size="small" color="amber">
-              <Icon name="TriangleAlert" size="14" color="inherit" />
-              {`${countLabel(destructive, 'destructive tool')} allowed`}
-            </Pill>
-          </span>
-        </Tooltip>
       )}
     </>
   )

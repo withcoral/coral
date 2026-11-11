@@ -431,26 +431,17 @@ test('the toolbar filter counts each policy in the tab and the search', async ()
   expect(filterChoices()).toEqual(['All 2', 'Allow 1', 'Ask 1', 'Block 0 (off)'])
 })
 
-// Catches: an unavailable count that still filters from the heading, or a
-// destructive tool that runs without approval and no warning, as saved or while
-// a change is in flight.
-test('a provider heading shows its unavailable tools and destructive risk', async () => {
+// Catches: an unavailable count that still filters from the heading.
+test('a provider heading shows its unavailable tools', () => {
   const [list, get] = github.tools
-  const risky = {
+  const partly = {
     ...github,
     readyCount: 1,
-    tools: [
-      { ...list!, hints: { destructive: true }, policy: 'enabled' as const },
-      { ...get!, available: false },
-    ],
+    tools: [list!, { ...get!, available: false }],
   }
-  renderPage({ providers: [risky], action: () => new Promise(() => {}) })
+  renderPage({ providers: [partly] })
   expect(githubHeading()).toHaveTextContent('1 unavailable')
   expect(within(githubHeading()).queryByRole('button', { name: /unavailable/ })).toBeNull()
-  expect(githubHeading()).toHaveTextContent('1 destructive tool allowed')
-
-  await choosePolicy('issues.list', 'Ask')
-  expect(githubHeading()).not.toHaveTextContent('destructive')
 })
 
 // Catches: the page drawing its own sticky provider and group rows instead of

@@ -307,30 +307,9 @@ export const TreeToolUsage: Story = {
     />
   ),
 }
-// A provider heading's status: a destructive tool that runs without approval on
-// GitHub, and unavailable tools on HR system.
+// A provider heading's status: unavailable tools on GitHub and HR system.
 export const TreeProviderStatus: Story = {
-  render: () => (
-    <ToolsPage
-      {...treeProps}
-      providers={[
-        {
-          ...github,
-          // issues.close becomes available below, so every GitHub tool is ready.
-          readyCount: 4,
-          tools: github.tools.map((tool) =>
-            tool.relativePath === 'issues.close'
-              ? { ...tool, available: true, policy: 'enabled' }
-              : tool.relativePath === 'repos.get'
-                ? { ...tool, policy: 'disabled' }
-                : tool,
-          ),
-        },
-        weather,
-        blocked,
-      ]}
-    />
-  ),
+  render: () => <ToolsPage {...treeProps} providers={[github, weather, blocked]} />,
 }
 export const TreeCollapsedProvider: Story = {
   render: () => <ToolsPage {...treeProps} />,
