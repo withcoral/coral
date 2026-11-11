@@ -212,6 +212,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   static markup changes alone do not need Vitest coverage. Vitest coverage does
   not replace required product-journey or local/remote parity evidence.
 - Use vanilla-extract, not Tailwind.
+- Format Reef with `npm run format --prefix apps/reef` (oxfmt). Do not run
+  `prettier`: a dependency installs it, but it uses other settings, and oxfmt
+  keeps the objects it splits across lines, so `oxfmt` afterwards does not
+  undo it.
 - Reef has one build for every deployment. Do not add a Desktop build marker
   or branch Reef on its host. Desktop's window behavior belongs in the
   `apps/desktop` main process.

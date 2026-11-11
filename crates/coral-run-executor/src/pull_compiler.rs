@@ -141,7 +141,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::Kind;
+    use crate::pull::dialed_admission;
     use crate::pull::tests::{compiled, up};
     use crate::wire::v1::compile_failure::Failure;
     use crate::wire::v1::compiled::Answer;
@@ -214,7 +214,12 @@ mod tests {
         for (name, free, time_left, answering, expected) in cases {
             let streams = PullStreams::default();
             let (outbound, mut sent) = mpsc::unbounded_channel();
-            let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, free, outbound);
+            let stream = streams.insert(
+                "a-run-executor".to_owned(),
+                dialed_admission(),
+                free,
+                outbound,
+            );
             let caller = PullStreamCompiler::new(streams.clone(), stream);
             let calling = thread::spawn(move || {
                 let program = caller.compile(time_left, "return 42;", &[], None)?;
@@ -241,7 +246,7 @@ mod tests {
         }
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
-        let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
+        let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
         streams.end(stream, None);
         let ended = PullStreamCompiler::new(streams, stream);
         let program = AnalyzedSource::Program("return 1;".to_owned());
@@ -260,7 +265,7 @@ mod tests {
     fn a_call_too_large_to_send_is_rejected() {
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
-        let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
+        let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
         let caller = PullStreamCompiler::new(streams, stream);
         let source = "x".repeat(crate::MESSAGE_MAX_BYTES);
         let rejected = caller.compile(TEST_COMPILATION_TIMEOUT, &source, &[], None);

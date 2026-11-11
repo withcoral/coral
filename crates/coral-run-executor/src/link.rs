@@ -161,6 +161,11 @@ impl Token {
         Ok(Self(Arc::new(secret)))
     }
 
+    /// The token itself, for the stdin of the local child that carries it.
+    pub(crate) fn expose(&self) -> &str {
+        self.0.expose()
+    }
+
     /// The token's SHA-256 verifier, which Coral's side keeps in place of it.
     pub(crate) fn verifier(&self) -> [u8; 32] {
         crate::pull::verifier(self.0.expose())

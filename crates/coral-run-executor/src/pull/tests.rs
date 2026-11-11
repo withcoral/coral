@@ -412,7 +412,7 @@ async fn sends_spend_the_room_and_a_report_replaces_it() {
 fn a_compile_past_the_link_bound_is_refused_alone() {
     let streams = PullStreams::default();
     let (outbound, mut sent) = mpsc::unbounded_channel();
-    let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
+    let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
     let too_large = compile_call(&"x".repeat(MESSAGE_MAX_BYTES), &[], None);
 
     let refused = streams.compile(stream, TIME_LEFT_MS, too_large);
@@ -669,7 +669,7 @@ fn an_answer_that_breaks_the_protocol_changes_nothing() {
     for (name, (call, sound, takes), broken) in breaks {
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
-        let stream = streams.insert("a-run-executor".to_owned(), Kind::Dialed, 1, outbound);
+        let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
         let answer = streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
         let refused = streams.receive(stream, up(broken(1)));
         assert_eq!(
