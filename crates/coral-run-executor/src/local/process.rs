@@ -77,13 +77,18 @@ fn own_process_group(command: &mut Command) {
     command.process_group(0);
 }
 
-/// `BELOW_NORMAL_PRIORITY_CLASS`, `CREATE_NEW_PROCESS_GROUP` and
-/// `CREATE_NO_WINDOW`: the priority is set as the process starts.
+/// Its own process group and no console window. The priority is set as the
+/// process starts.
 #[cfg(windows)]
 fn own_process_group(command: &mut Command) {
     use std::os::windows::process::CommandExt as _;
 
-    command.creation_flags(0x0000_4000 | 0x0000_0200 | 0x0800_0000);
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    command
+        .creation_flags(BELOW_NORMAL_PRIORITY_CLASS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }
 
 /// Priority +10, below Coral's. A child that keeps Coral's priority still

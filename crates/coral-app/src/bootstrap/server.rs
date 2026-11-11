@@ -1105,7 +1105,7 @@ pub(crate) async fn start_server(
 /// What bootstrap resolved to start local Run Executors: the `[runtime]`
 /// settings, this process's own binary and the children's environment.
 pub(crate) struct LocalChildren {
-    settings: super::server_config::LocalRunExecutors,
+    settings: super::server_config::LocalRunExecutorSettings,
     program: std::path::PathBuf,
     environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }

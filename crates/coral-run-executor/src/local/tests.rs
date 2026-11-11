@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use coral_telemetry::testing::ExportCapture;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
-use tracing::span;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 use super::{LocalChild, LocalRunExecutors, ProcessStarter};
 use crate::link::Token;
@@ -68,6 +69,13 @@ impl LocalChild for FakeChild {
             (false, true) => Some(Some(0)),
             (false, false) => None,
         }
+    }
+}
+
+impl Drop for FakeChild {
+    /// Dropping a real child closes the pipe to its stdin.
+    fn drop(&mut self) {
+        self.close_stdin();
     }
 }
 
@@ -208,46 +216,29 @@ async fn a_child_idle_for_five_minutes_retires_and_its_verifier_is_forgotten() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_stop_wins_over_a_request_for_room_that_waits_beside_it() {
+async fn a_stop_closes_each_childs_stdin_and_wins_over_a_request_that_waits_beside_it() {
     let harness = Harness::start();
+    harness.request_room().await;
+    harness.hello(0, 0);
+    assert!(!harness.child(0, |child| child.stdin_closed));
+
     harness.supervisor.request_room();
     harness.supervisor.stop();
     sleep(3 * SECOND).await;
-    assert_eq!(harness.starts(), [0_u64; 0]);
-}
-
-/// Counts the warnings that the limit holds work back.
-struct LimitWarnings(Arc<AtomicUsize>);
-
-impl tracing::Subscriber for LimitWarnings {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
-        span::Id::from_u64(1)
-    }
-
-    fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
-
-    fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        let fields = event.metadata().fields();
-        if fields.field("coral.run_executor.local_limit").is_some() {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn enter(&self, _: &span::Id) {}
-
-    fn exit(&self, _: &span::Id) {}
+    assert!(harness.child(0, |child| child.stdin_closed && !child.killed));
+    assert_eq!(harness.starts(), [0], "the request starts nothing");
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_request_for_room_at_the_limit_starts_nothing_and_is_logged_once_a_minute() {
-    let warnings = Arc::new(AtomicUsize::new(0));
-    let _subscriber = tracing::subscriber::set_default(LimitWarnings(warnings.clone()));
+    let logs = ExportCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
+    let warnings = || {
+        logs.text()
+            .matches("local_run_executor_limit is reached")
+            .count()
+    };
     let harness = Harness::start();
 
     // A request while a child is starting, or while one has room, starts
@@ -258,7 +249,7 @@ async fn a_request_for_room_at_the_limit_starts_nothing_and_is_logged_once_a_min
         assert_eq!(harness.starts().len(), index + 1);
         harness.hello(index, 0);
     }
-    assert_eq!(warnings.load(Ordering::Relaxed), 0);
+    assert_eq!(warnings(), 0);
 
     harness.request_room().await;
     sleep(30 * SECOND).await;
@@ -267,8 +258,8 @@ async fn a_request_for_room_at_the_limit_starts_nothing_and_is_logged_once_a_min
         LIMIT,
         "a fifth request starts nothing"
     );
-    assert_eq!(warnings.load(Ordering::Relaxed), 1);
+    assert_eq!(warnings(), 1);
     sleep(MINUTE).await;
     assert_eq!(harness.starts().len(), LIMIT);
-    assert_eq!(warnings.load(Ordering::Relaxed), 2);
+    assert_eq!(warnings(), 2);
 }

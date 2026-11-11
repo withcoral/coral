@@ -155,7 +155,7 @@ impl LoadedServerConfig {
     /// Resolves the local Run Executors of `[runtime]`: none when
     /// `local_run_executors` is false, which `[listeners.run_executor]`
     /// must then make up for with a `token_env`.
-    pub(crate) fn local_run_executors(&self) -> Result<Option<LocalRunExecutors>, AppError> {
+    pub(crate) fn local_run_executors(&self) -> Result<Option<LocalRunExecutorSettings>, AppError> {
         let config = self.parse()?;
         config
             .runtime
@@ -441,7 +441,7 @@ struct RuntimeSettings {
 
 /// The resolved local Run Executors: how many, and how many Runs each holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LocalRunExecutors {
+pub(crate) struct LocalRunExecutorSettings {
     pub(crate) limit: usize,
     pub(crate) max_runs_held: u32,
 }
@@ -467,7 +467,10 @@ impl RuntimeSettings {
     /// The local Run Executors, or none when they are off. Off, and with no
     /// operator token (`dialed` false) to admit another, nothing could run
     /// a Program: that refuses to boot.
-    fn local_run_executors(&self, dialed: bool) -> Result<Option<LocalRunExecutors>, AppError> {
+    fn local_run_executors(
+        &self,
+        dialed: bool,
+    ) -> Result<Option<LocalRunExecutorSettings>, AppError> {
         let refuse = |message: &str| Err(AppError::FailedPrecondition(message.to_owned()));
         if self.local_run_executor_limit == 0 {
             return refuse("runtime.local_run_executor_limit must be at least 1");
@@ -476,7 +479,7 @@ impl RuntimeSettings {
             return refuse("runtime.run_executor_max_runs_held must be at least 1");
         }
         match (self.local_run_executors, dialed) {
-            (true, _) => Ok(Some(LocalRunExecutors {
+            (true, _) => Ok(Some(LocalRunExecutorSettings {
                 limit: self.local_run_executor_limit,
                 max_runs_held: self.run_executor_max_runs_held,
             })),
@@ -1355,7 +1358,7 @@ client_secret = 'test-secret'
     fn local_run_executors_are_on_by_default_and_off_only_beside_an_operator_token() {
         let off = "[runtime]\nlocal_run_executors = false\n";
         let token = "[listeners.run_executor]\ntoken_env = 'TOKEN'\n";
-        let local = |limit, max_runs_held| super::LocalRunExecutors {
+        let local = |limit, max_runs_held| super::LocalRunExecutorSettings {
             limit,
             max_runs_held,
         };
@@ -1389,8 +1392,13 @@ client_secret = 'test-secret'
                 (Ok(resolved), Ok(expected)) => assert_eq!(*resolved, expected, "{raw}"),
                 (Err(AppError::FailedPrecondition(message)), Err(expected)) => {
                     assert!(message.contains(expected), "{raw}: {message}");
-                    // Boot validation refuses it too.
-                    assert!(config.validate().is_err(), "{raw}");
+                    // Boot validation refuses it the same way.
+                    match config.validate() {
+                        Err(AppError::FailedPrecondition(message)) => {
+                            assert!(message.contains(expected), "{raw}: {message}");
+                        }
+                        other => panic!("{raw}: {other:?}"),
+                    }
                 }
                 _ => panic!("{raw}: {resolved:?}"),
             }
