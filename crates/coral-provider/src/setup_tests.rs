@@ -901,34 +901,43 @@ async fn setup_inspection_settles_expiry_before_returning_consistent_state_and_c
 
 #[tokio::test]
 async fn mcp_without_a_challenge_offers_explicit_bearer_without_fabricating_oauth() {
-    let harness = harness().await;
-    let (actor, workspace) = workspace_owner(&harness, "user:mcp-no-challenge").await;
-    let context = change_context(actor.clone(), 10, '5');
-    let owner = workspace.id().clone();
-    let server = mcp_server(TOKEN).await;
-    Mock::given(method("POST"))
-        .and(|request: &Request| !request.headers.contains_key("authorization"))
-        .respond_with(ResponseTemplate::new(401))
-        .with_priority(1)
-        .mount(&server)
-        .await;
-    let setup = harness
-        .providers
-        .prepare_setup(&context, &owner, crate::tests::mcp_url(server.uri()), None)
-        .await
-        .unwrap();
-    let review = harness
-        .providers
-        .review_setup_configuration(&actor, &owner, setup.id())
-        .await
-        .unwrap();
-    assert_eq!(
-        review.authentication_methods,
-        [coral_catalog::AuthenticationKind::Bearer]
-    );
-    assert!(review.document.unwrap().suggested.authentication.is_none());
-    assert!(review.issuer.is_none());
-    assert!(review.resource.is_none());
+    // The well-known OAuth locations either hold nothing or sit behind the
+    // credential the server asks for on every path.
+    for well_known in [404, 401] {
+        let harness = harness().await;
+        let (actor, workspace) = workspace_owner(&harness, "user:mcp-no-challenge").await;
+        let context = change_context(actor.clone(), 10, '5');
+        let owner = workspace.id().clone();
+        let server = mcp_server(TOKEN).await;
+        Mock::given(method("POST"))
+            .and(|request: &Request| !request.headers.contains_key("authorization"))
+            .respond_with(ResponseTemplate::new(401))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(well_known))
+            .mount(&server)
+            .await;
+        let setup = harness
+            .providers
+            .prepare_setup(&context, &owner, crate::tests::mcp_url(server.uri()), None)
+            .await
+            .unwrap_or_else(|error| panic!("well-known answers {well_known}: {error:?}"));
+        let review = harness
+            .providers
+            .review_setup_configuration(&actor, &owner, setup.id())
+            .await
+            .unwrap();
+        assert_eq!(
+            review.authentication_methods,
+            [coral_catalog::AuthenticationKind::Bearer],
+            "well-known answers {well_known}"
+        );
+        assert!(review.document.unwrap().suggested.authentication.is_none());
+        assert!(review.issuer.is_none());
+        assert!(review.resource.is_none());
+    }
 }
 
 #[tokio::test]
