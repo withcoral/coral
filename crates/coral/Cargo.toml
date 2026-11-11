@@ -23,6 +23,7 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 
 coral-app.workspace = true
+coral-embed.workspace = true
 coral-mcp.workspace = true
 coral-run-executor.workspace = true
 
