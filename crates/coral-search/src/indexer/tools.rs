@@ -439,6 +439,11 @@ fn tool_row<'a>(
         description,
         provider_name: format!("{} {}", entries.call_root().name(), entries.display_name()),
         searchable_text: searchable_text(entries, tool),
+        field_names: crate::index_text::field_names(
+            tool.declaration_fields()
+                .iter()
+                .map(|field| field.path().as_str()),
+        ),
         deprecated: tool.deprecated(),
     })
 }
