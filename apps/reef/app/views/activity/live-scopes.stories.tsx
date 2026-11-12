@@ -1001,13 +1001,19 @@ export const StopsAtTheExpansionLimit: Story = {
     await closed()
     // Live mode expands neither, and its toggle says why.
     await expect(address().getAll('expand')).toHaveLength(19)
+    // The pointer is still on the toggle after the click, so a hover alone
+    // sends no mouseenter. Move it off first, then back.
+    await userEvent.unhover(latest())
     await userEvent.hover(latest())
-    await expect(
-      // The tooltip itself, not the toggle's hidden description.
-      await screen.findByText('Collapse a record before you follow the latest activity.', {
-        selector: ':not([id])',
-      }),
-    ).toBeVisible()
+    // The tooltip itself, not the toggle's hidden description. It fades in, so
+    // wait until it is visible, not only until it exists.
+    await waitFor(() =>
+      expect(
+        screen.getByText('Collapse a record before you follow the latest activity.', {
+          selector: ':not([id])',
+        }),
+      ).toBeVisible(),
+    )
     await expect(latest()).toHaveAccessibleDescription(
       'Collapse a record before you follow the latest activity.',
     )

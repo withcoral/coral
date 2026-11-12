@@ -222,7 +222,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   behavior that depends on browser APIs or a complete user journey. `npm test`
   runs every story's `play` function in Chromium, so an assertion there is a
   test; give each behavior one home, a story or a Vitest test, and query by role
-  and label with Testing Library in both. Styling and
+  and label with Testing Library in both. After a `click`, the pointer stays
+  on the element, so a `hover` on it does nothing: `unhover` it first. Wait
+  for an animated popup with `waitFor`, since `expect(await findBy…)` checks
+  it only once. Styling and
   static markup changes alone do not need Vitest coverage. Vitest coverage does
   not replace required product-journey or local/remote parity evidence.
 - Use vanilla-extract, not Tailwind.
