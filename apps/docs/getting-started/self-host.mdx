@@ -60,7 +60,7 @@ Without the image, Coral looks for `model.onnx` and `tokenizer.json` in these fo
 1. `/opt/coral/models/bge-small-en-v1.5/`. Coral looks here on Linux only.
 2. `models/bge-small-en-v1.5/` in Coral's [configuration folder](/reference/configuration).
 
-If neither folder holds the files, Coral downloads them from GitHub. Until the files are ready, search matches by words only.
+If neither folder holds the files, Coral downloads them from GitHub into the second folder. Then Coral deletes the other folders in `models`. Until the files are ready, search matches by words only.
 
 A host without network access cannot download the files. On such a host, do one of these steps:
 
