@@ -402,6 +402,13 @@ impl EntityKind {
         }
     }
 
+    /// The kind whose stable name is `kind`, as a search row stores it.
+    pub(crate) fn parse(kind: &str) -> Option<Self> {
+        [Self::ProviderTool, Self::PrivateTool, Self::SharedTool]
+            .into_iter()
+            .find(|candidate| candidate.as_str() == kind)
+    }
+
     /// The Search Entity kind of an Authored Tool of `kind`.
     pub(crate) const fn authored(kind: AuthoredToolKind) -> Self {
         match kind {

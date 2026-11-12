@@ -108,11 +108,14 @@ The Embedder is the third supervised task beside Observer and Reconcile. It owns
 one intra-op thread. It wakes on every index write, on the reconcile tick and at boot, and drains a predicate, not a
 queue table: a vector is stale when it is missing, when its revision differs, or when its source stamp differs from the
 row's `indexed_at`. It takes the oldest Generation first, in small batches, with one write per batch under the
-Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries, then tries its rows one
-by one. A row that fails while the rows beside it succeed is skipped until its revision or source stamp changes or the
-process restarts, so one bad row cannot hold back every row behind it. The skip list lives in memory; there is no
-stored per-row failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding
-runs on a blocking thread at normal priority.
+Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries once. When the retry
+fails in the database, the Embedder skips nothing and stops until the next wake. When it fails in the model, the
+Embedder embeds a fixed probe text; if the probe fails too, the model is down, and the Embedder stops the same way.
+Otherwise it tries the batch's rows one by one, and a row that still fails is skipped until its revision or source stamp
+changes or the process restarts. The probe stands in for the rows beside a failing row, so one bad row cannot hold back
+every row behind it, even when it is alone in its batch. The skip list lives in memory; there is no stored per-row
+failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding runs on a
+blocking thread at normal priority.
 
 A Graph-sized Provider (19,830 rows) becomes searchable by meaning in about 11.5 minutes on one x86 vCPU and 2.9 minutes
 on one M4 core; until then it ranks by words. Two Coral Instances that overlap during a rolling update can embed the
