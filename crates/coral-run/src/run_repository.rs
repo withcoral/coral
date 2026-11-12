@@ -36,6 +36,7 @@ pub(crate) use inbox::{
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
+pub(crate) use run_row::UndecodableRun;
 pub(crate) use termination::{
     Takeover, finish_run, finish_termination, finish_unstarted_run, interrupt_run,
     request_termination,
@@ -106,11 +107,14 @@ pub(crate) async fn find_exact_in_transaction(
 /// ago. An earlier release claimed a moment after acceptance and released
 /// the claim on an interruption, so a fresh Run with no claim belongs to the
 /// process that accepted it and is not abandoned.
+///
+/// Each Run decodes on its own: a row that does not decode comes back as
+/// its [`UndecodableRun`], in its place, and costs no other Run its read.
 pub(crate) async fn lapsed_leases(
     transaction: &mut Transaction<'_>,
     now_unix_nanos: i64,
     lease_nanos: i64,
-) -> Result<Vec<RunRecord>, Error> {
+) -> Result<Vec<Result<RunRecord, UndecodableRun>>, Error> {
     let lapsed = Condition::any()
         .add(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).lte(now_unix_nanos))
         .add(
@@ -133,7 +137,7 @@ pub(crate) async fn lapsed_leases(
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(RunRow::decode).collect()
+    Ok(rows.into_iter().map(RunRow::decode_or_name).collect())
 }
 
 pub(crate) async fn find_visible_in_transaction(
