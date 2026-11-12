@@ -8,6 +8,7 @@ This guide will explain how to deploy Coral in your Kubernetes cluster. We assum
 We will use `<coral-host>` as the placeholder for the domain of your Coral deployment.
 
 - See the [Configuration Reference](/reference/configuration) for more details on the configuration options.
+- The `coral` image holds the model for [search by meaning](/getting-started/self-host#search-by-meaning), so the pod needs no network access to get it. If you set a memory limit on the `coral` container, add about 360 MiB for search by meaning.
 
 ## Common setup
 
@@ -286,6 +287,8 @@ spec:
 
 </Tab>
 <Tab title="With Postgres">
+
+Your Postgres server needs pgvector 0.7 or later. Coral creates the `vector` extension when its database role has permission. Otherwise, Coral does not start until you install pgvector, or set `semantic_search_enabled = false` in `[search]`. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
 
 2. Create the config and coral server deployment. Save this to `coral.yaml`.
 

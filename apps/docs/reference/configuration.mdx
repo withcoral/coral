@@ -108,7 +108,16 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 | Key                          | Description                                                                                                                 | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval on which provider tool, private tool, and shared tool search indexing is executed. Must be greater than 0. | No       | `300`   |
-| `semantic_search_enabled`    | Prepares the database for search by meaning. Search still matches by words only. On Postgres, `true` needs pgvector 0.7 or later: Coral creates the `vector` extension when its database role may, and otherwise does not start. Coral reads the setting at startup. With `true`, Coral looks for the search model in `/opt/coral/models` on Linux, then in `models` in its state directory. When neither folder holds it, Coral downloads it (133 MB) from GitHub into `models`. Then Coral deletes the other model folders in `models`. | No       | `false` |
+| `semantic_search_enabled`    | Search matches tools by meaning as well as by words when `true`. Coral reads it at startup. | No       | `true`  |
+
+With `semantic_search_enabled = true`:
+
+- **Postgres needs pgvector 0.7 or later.** At startup, Coral creates the `vector` extension when its database role has permission. If Coral cannot create it, Coral does not start. The error names the `vector extension` and tells you to install pgvector or to set `semantic_search_enabled = false`. SQLite needs no extension.
+- **Coral needs the model files.** The `ghcr.io/withcoral/coral` image holds them. Without the image, Coral looks in `/opt/coral/models/bge-small-en-v1.5/` on Linux, then in `models/bge-small-en-v1.5/` in the configuration folder. If neither folder holds the files, Coral downloads them from GitHub. A host without network access needs the files in one of these folders, or the setting set to `false`.
+- **Search by meaning has a cost.** Coral uses up to about 360 MiB more memory while it embeds tools, on one background thread at low priority. A new provider with about 20,000 tools matches by words only for about 12 minutes on one x86 vCPU.
+- **An x86-64 CPU needs the x86-64-v3 features, such as AVX2.** On an older CPU, search matches by words only.
+
+With `false`, Coral loads no model, downloads nothing and does not check for pgvector. See [Search by meaning](/getting-started/self-host#search-by-meaning) for the details.
 
 ### `[updates]`
 
