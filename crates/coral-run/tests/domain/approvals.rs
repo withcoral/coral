@@ -906,10 +906,14 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    // Isolate the request's deadline from the Run's: its timer (30 s on the
-    // host clock) does not fire within this test.
+    // Isolate the request's deadline from the Run's, and keep the owner from
+    // recording the expiry while the test reads. Two owner paths would: the
+    // request's timer (30 s on the host clock) and the periodic precheck of
+    // parked waits, which reads the test clock. An hour keeps the precheck
+    // out of this test.
     fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30))
+            .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
     let tool = fixture
         .user_tool("user:late-reader", "Approval past its deadline")
         .await;
@@ -925,8 +929,8 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
         run.run_id(),
     )
     .await;
-    // The clock passes the deadline; the request's timer does not fire
-    // within this test.
+    // The clock passes the deadline; neither the request's timer nor the
+    // precheck runs within this test.
     fixture
         .clock
         .next
