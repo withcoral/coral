@@ -44,7 +44,7 @@ pub(crate) enum Next {
         not(test),
         expect(
             dead_code,
-            reason = "the pass that expires old history (#2430) is the first with a bound"
+            reason = "History Expiry (#2430) is the first pass with a bound"
         )
     )]
     Soon,
@@ -85,7 +85,7 @@ impl Schedule {
         not(test),
         expect(
             dead_code,
-            reason = "the pass that expires old history (#2430) is the first to take jitter"
+            reason = "History Expiry (#2430) is the first pass that takes jitter"
         )
     )]
     pub(crate) const fn jittered(mut self, window: Duration) -> Self {
