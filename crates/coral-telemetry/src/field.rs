@@ -61,6 +61,10 @@ const CORAL: &[&str] = &[
     // The Shared Tool and its Call Path.
     "coral.shared_tool.id",
     "coral.shared_tool.call_path",
+    // A Secret Store: the name the operator gave it, and its kind. Never a
+    // metric attribute.
+    "coral.secret_store.name",
+    "coral.secret_store.kind",
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
     // A Run Executor's protocol level and its peer's, when a link refuses

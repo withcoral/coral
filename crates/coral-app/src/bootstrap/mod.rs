@@ -5,6 +5,7 @@ mod env;
 mod error;
 mod health;
 mod runtime;
+mod secret_store_config;
 mod server;
 mod server_config;
 

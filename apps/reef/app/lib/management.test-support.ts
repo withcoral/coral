@@ -21,6 +21,7 @@ import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
 import { SharedToolService } from '@/generated/coral/management/v1/shared_tool_pb'
 import { UsageDataService } from '@/generated/coral/management/v1/usage_data_pb'
+import { SecretStoreService } from '@/generated/coral/management/v1/secret_store_pb'
 import { WorkspaceService } from '@/generated/coral/management/v1/workspace_pb'
 
 import type { ManagementApi } from './management.server'
@@ -42,6 +43,7 @@ const services = {
   sharedTools: SharedToolService,
   releases: ReleaseService,
   usageData: UsageDataService,
+  secretStores: SecretStoreService,
 } satisfies Record<keyof ManagementApi, DescService>
 
 type Services = typeof services

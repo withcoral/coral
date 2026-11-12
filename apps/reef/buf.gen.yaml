@@ -23,3 +23,4 @@ inputs:
       - ../../crates/coral-grpc/proto/coral/management/v1/shared_tool.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/release.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/usage_data.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/secret_store.proto

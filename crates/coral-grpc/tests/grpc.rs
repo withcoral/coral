@@ -119,14 +119,18 @@ impl Fixture {
     }
 
     async fn with_session_auth(enabled: bool) -> Self {
-        Self::compose(enabled, None).await
+        Self::compose(enabled, None, coral_secret_store::SecretStores::default()).await
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "composes the real domain graph and authenticated test principals once"
     )]
-    async fn compose(enabled: bool, releases: Option<coral_release::ReleaseCheck>) -> Self {
+    async fn compose(
+        enabled: bool,
+        releases: Option<coral_release::ReleaseCheck>,
+        secret_stores: coral_secret_store::SecretStores,
+    ) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
         let issuer = SessionTokenIssuer::new(
@@ -293,6 +297,10 @@ impl Fixture {
                     coral_usage::Build::Source,
                     &coral_usage::SendEnvironment::default(),
                 )),
+                secret_stores: coral_administration::SecretStoreInventory::new(
+                    OrganizationModule::new(database.clone()),
+                    secret_stores,
+                ),
             },
             coral_grpc::TransportContext {
                 authentication,
@@ -453,6 +461,12 @@ impl Fixture {
 
     fn releases(&self) -> management::release_service_client::ReleaseServiceClient<Channel> {
         management::release_service_client::ReleaseServiceClient::new(self.channel.clone())
+    }
+
+    fn secret_stores(
+        &self,
+    ) -> management::secret_store_service_client::SecretStoreServiceClient<Channel> {
+        management::secret_store_service_client::SecretStoreServiceClient::new(self.channel.clone())
     }
 
     fn organization_workspaces(
@@ -1188,7 +1202,12 @@ async fn release_inspection_projects_the_newer_release() {
     );
     check.refresh().await.unwrap();
 
-    let on = Fixture::compose(true, Some(check)).await;
+    let on = Fixture::compose(
+        true,
+        Some(check),
+        coral_secret_store::SecretStores::default(),
+    )
+    .await;
     let off = Fixture::new().await;
     for (fixture, expected) in [
         (
@@ -1270,4 +1289,78 @@ async fn usage_data_projects_the_view_and_denies_members_the_switch() {
         .into_inner();
     assert!(!changed.sharing);
     assert!(changed.can_change);
+}
+
+/// The projection names each store, its kind and its state, and a denial is a denial.
+#[tokio::test]
+async fn only_an_organization_owner_lists_the_defined_secret_stores() {
+    let named = |name| coral_secret_store::SecretStoreName::parse(name).unwrap();
+    let fixture = Fixture::compose(
+        true,
+        None,
+        coral_secret_store::SecretStores::new([
+            (
+                named("zeta"),
+                coral_secret_store::SecretStoreKind::new("test", "Test store").unwrap(),
+                Arc::new(coral_test_support::InMemorySecretStore::new()) as _,
+            ),
+            (
+                named("alpha"),
+                coral_secret_store::SecretStoreKind::missing("absent").unwrap(),
+                Arc::new(coral_secret_store::MissingKind) as _,
+            ),
+        ])
+        .unwrap(),
+    )
+    .await;
+    let list = |principal, audience| {
+        let mut client = fixture.secret_stores();
+        let request = request(
+            management::ListSecretStoresRequest {},
+            &fixture.token(principal, audience),
+            audience,
+        );
+        async move { client.list_secret_stores(request).await }
+    };
+
+    let answer = list(&fixture.owner, "reef").await.unwrap().into_inner();
+    assert_eq!(
+        answer.secret_stores,
+        [
+            management::SecretStore {
+                name: "secretStores/alpha".into(),
+                kind: "absent".into(),
+                kind_label: "absent".into(),
+                state: management::SecretStoreState::KindMissing.into(),
+            },
+            management::SecretStore {
+                name: "secretStores/zeta".into(),
+                kind: "test".into(),
+                kind_label: "Test store".into(),
+                state: management::SecretStoreState::Available.into(),
+            },
+        ]
+    );
+
+    let denied = list(&fixture.member, "reef").await.unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    let anonymous = fixture
+        .secret_stores()
+        .list_secret_stores(tonic::Request::new(management::ListSecretStoresRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(anonymous.code(), tonic::Code::Unauthenticated);
+
+    let none = Fixture::new().await;
+    let answer = none
+        .secret_stores()
+        .list_secret_stores(request(
+            management::ListSecretStoresRequest {},
+            &none.token(&none.owner, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(answer.secret_stores.is_empty());
 }
