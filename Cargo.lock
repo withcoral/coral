@@ -942,14 +942,12 @@ name = "coral-release"
 version = "1.6.0"
 dependencies = [
  "coral-outbound",
- "coral-telemetry",
  "reqwest",
  "semver",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
- "tracing",
  "url",
  "wiremock",
 ]

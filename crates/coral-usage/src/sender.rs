@@ -3,8 +3,6 @@
 use std::time::Duration;
 
 use coral_telemetry::safe;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 
 use crate::UsageData;
 
@@ -14,8 +12,8 @@ pub const COLLECTOR_URL: &str = "https://telemetry.withcoral.com/v1/report";
 /// How long one send may take.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often a running process looks for a finished day. A report goes out
-/// within this long after its UTC day ends.
+/// How often bootstrap runs [`UsageData::send_due`], after one run at once.
+/// A report goes out within this long after its UTC day ends.
 pub const CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 /// What one send attempt learned.
@@ -73,25 +71,6 @@ impl UsageData {
         }
         Ok(SendOutcome::Done)
     }
-
-    /// Checks at once, then every `interval`. Abort the handle to stop.
-    #[must_use]
-    pub fn spawn(&self, client: coral_outbound::Client, interval: Duration) -> JoinHandle<()> {
-        let usage = self.clone();
-        let mut checks = tokio::time::interval(interval);
-        checks.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        tokio::spawn(async move {
-            loop {
-                checks.tick().await;
-                if let Err(error) = usage.send_due(&client, COLLECTOR_URL, unix_nanos).await {
-                    tracing::info!(
-                        error.type = safe::kind(error.code()),
-                        "usage data check failed; the next check retries"
-                    );
-                }
-            }
-        })
-    }
 }
 
 /// Whether the collector will refuse the same report again: a 4xx, but a
@@ -100,12 +79,4 @@ fn refused_for_good(status: reqwest::StatusCode) -> bool {
     status.is_client_error()
         && status != reqwest::StatusCode::REQUEST_TIMEOUT
         && status != reqwest::StatusCode::TOO_MANY_REQUESTS
-}
-
-fn unix_nanos() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
-        .unwrap_or(0)
 }

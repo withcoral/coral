@@ -26,6 +26,16 @@
   client anything outside the response to its own request.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code.
+- A sweep, a check or a cleanup that the server runs on a cadence is a
+  periodic pass. Its module exposes the pass as one function, and bootstrap
+  schedules it with `Passes` (`crates/coral-app/src/bootstrap/periodic.rs`); do
+  not give a new pass its own timer loop. Every Coral Instance runs every
+  pass, so let the rows a pass works on settle each unit of work: do not add a
+  jobs table, a leader or a deployment-wide lock
+  ([ADR 0036](docs/adr/0036-periodic-work-runs-as-idempotent-passes-on-every-coral-instance.md)).
+  Search reconciliation keeps its own supervisor. A timer that belongs to one
+  connection, stream or child process, such as a keepalive or a lease renewal,
+  is not a pass.
 - Route untrusted outbound HTTP through `coral-outbound::Client`. Pass the
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See

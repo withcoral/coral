@@ -36,6 +36,8 @@ const CORAL: &[&str] = &[
     "coral.run.last_commit_age_ms",
     // How many Runs an expired-lease sweep recovered.
     "coral.run.recovered",
+    // The periodic pass a log record is about, by its fixed name.
+    "coral.periodic.pass",
     // How many Runs were still live when the Shutdown Drain ran out, and how
     // long it lasted, in milliseconds.
     "coral.shutdown.live_runs",
