@@ -7,7 +7,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
  && apt-get update && apt-get install -y --no-install-recommends \
     clang cmake ninja-build pkg-config libssl-dev protobuf-compiler ffmpeg \
-    openssl libnss3-tools postgresql tini xvfb xauth libgtk-3-0t64 \
+    openssl libnss3-tools postgresql postgresql-17-pgvector tini xvfb xauth libgtk-3-0t64 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace/apps/reef
 COPY apps/reef/package*.json ./
