@@ -18,6 +18,7 @@ import { listen, validateFixtureTLS } from './provider-fixtures.ts'
 import { detectFfmpeg } from './ffmpeg.ts'
 import { resultsServer } from './results-server.ts'
 import { startIdentityProvider } from './oidc-fixture.ts'
+import { startStack } from './stack.ts'
 
 test('Reel defaults to main and reserves database selection for that suite', () => {
   assert.deepEqual(commandOptions([]), { suite: 'main', database: 'sqlite', vitest: [] })
@@ -474,4 +475,26 @@ test('a parity entry snapshots the shared definition it runs, not harness suppor
   assert.ok(snapshot.includes('// Shared definition: e2e/scenarios/main/activity/binary-output.ts'))
   assert.ok(snapshot.includes('export async function binaryOutput('))
   assert.ok(!snapshot.includes('export async function withOwner('))
+})
+
+test('a Coral that exits during startup shows how it ended and its last output', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'reel-exit-'))
+  try {
+    const coralBinary = join(dir, 'coral')
+    await writeFile(
+      coralBinary,
+      '#!/bin/sh\necho "starting"\necho "Error: address 127.0.0.1:4100 already in use" >&2\nexit 3\n',
+      { mode: 0o755 },
+    )
+    await assert.rejects(
+      startStack({ coralBinary, childEnv: { PATH: process.env.PATH }, runDir: dir }),
+      (error: Error) => {
+        assert.match(error.message, /exited \(3\) during startup/)
+        assert.match(error.message, /Error: address 127\.0\.0\.1:4100 already in use/)
+        return true
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

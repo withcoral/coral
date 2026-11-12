@@ -72,6 +72,12 @@ function startProcess(
     child.once('close', () => resolve())
   })
   let stopping: Promise<void> | undefined
+  // CI keeps no run directory, so a startup failure carries the cause itself.
+  const ending = () => {
+    let tail = output.split('\n').slice(-40).join('\n').trim()
+    for (const value of privateValues) if (value) tail = tail.replaceAll(value, '[redacted]')
+    return `See ${log}. Its last output:\n${tail}`
+  }
   return {
     pid: child.pid,
     async match(pattern: RegExp) {
@@ -81,11 +87,12 @@ function startProcess(
         const match = output.match(pattern)
         if (match) return match[1]
         if (child.exitCode !== null || child.signalCode !== null) {
-          throw new Error(`Process exited during startup. See ${log}`)
+          const end = child.exitCode ?? child.signalCode
+          throw new Error(`Process exited (${end}) during startup. ${ending()}`)
         }
         await delay(50)
       }
-      throw new Error(`Startup timed out. See ${log}`)
+      throw new Error(`Startup timed out. ${ending()}`)
     },
     stop() {
       stopping ??= (async () => {
