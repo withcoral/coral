@@ -44,12 +44,13 @@ const STATUS_FILTERS: CatalogFilterOptions<PersonalAccountState | 'all'> = [
 
 const FILTER_ID = 'accounts-filter'
 
-// Names sort without regard to case, so "github" and "Zendesk" do not split by it.
-const byName = (a: UserAccountRow, b: UserAccountRow) =>
-  a.name.toLocaleLowerCase().localeCompare(b.name.toLocaleLowerCase())
+// One fixed locale, so the server and every browser put the rows in the same order when the
+// page hydrates. It ignores case, so "github" and "Zendesk" do not split by it.
+const compareText = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' })
+const byName = (a: UserAccountRow, b: UserAccountRow) => compareText(a.name, b.name)
 // Statuses sort by the label you read, not by the state's key.
 const byStatus = (a: UserAccountRow, b: UserAccountRow) =>
-  states[a.state].label.localeCompare(states[b.state].label)
+  compareText(states[a.state].label, states[b.state].label)
 
 type SortColumn = 'provider' | 'status'
 interface Sort {

@@ -2,7 +2,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { data, useLoaderData, type ActionFunctionArgs } from 'react-router'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, onTestFinished, vi } from 'vitest'
 import type { ActionCount } from '@/lib/activity-live-types'
 import type { ActionSignal } from '@/lib/use-action-signal'
 import { renderRoute, shellSignal } from '@/test-support/route'
@@ -280,4 +280,41 @@ it('keeps your order when the connection revision changes', async () => {
   // Provider order would put Zendesk last.
   await waitFor(() => expect(shownProviders()).toEqual(['Zendesk', 'Attio', 'github', 'Linear']))
   expect(sorts()).toEqual(['none', 'descending'])
+})
+
+/** Runs the test as a runtime whose default locale is `locale`, such as a browser set to it. */
+function runtimeLocale(locale: string) {
+  const compare = String.prototype.localeCompare
+  const spy = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+    this: string,
+    that,
+    locales,
+    options,
+  ) {
+    return compare.call(this, that, locales ?? locale, options)
+  })
+  onTestFinished(() => spy.mockRestore())
+  return spy
+}
+
+// Catches: an order that follows the runtime's locale, so the server and a browser in
+// another language disagree when the page hydrates. Swedish puts Ö after Z.
+it.each(['en', 'sv'])('lists the accounts in one order in a runtime set to %s', async (locale) => {
+  const compared = runtimeLocale(locale)
+  await renderLive({
+    view: viewAt('one', [
+      account('Zendesk', 'connected'),
+      account('Öresund', 'connected'),
+      account('Okta', 'needs_reconnect'),
+    ]),
+  })
+  expect(shownProviders()).toEqual(['Okta', 'Öresund', 'Zendesk'])
+
+  // Equal statuses fall back to the same provider order.
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['Öresund', 'Zendesk', 'Okta'])
+  // Today's status labels sort alike in both locales, so the order cannot show that the
+  // status comparison names its locale too. Every comparison the page made names one.
+  expect(compared.mock.calls.length).toBeGreaterThan(0)
+  expect(compared.mock.calls.filter(([, locales]) => locales === undefined)).toEqual([])
 })
