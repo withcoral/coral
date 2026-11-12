@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{Delivery, RetryTiming, SearchModel, SearchModelState};
+use super::{Delivery, DownloadError, DownloadTiming, SearchModel, SearchModelState, download};
 
 const MODEL: &[u8] = b"model bytes";
 const TOKENIZER: &[u8] = b"tokenizer bytes";
@@ -20,6 +20,14 @@ const RELEASE_PATH: &str = "/release";
 
 /// How long a test waits for the module before it fails.
 const PATIENCE: Duration = Duration::from_secs(10);
+
+/// Waits short enough for many attempts in one test.
+const TIMING: DownloadTiming = DownloadTiming {
+    first_retry: Duration::from_millis(10),
+    max_retry: Duration::from_millis(50),
+    wrong_file_retry: Duration::from_millis(10),
+    stall: Duration::from_millis(500),
+};
 
 /// [`MANIFEST`] with files of a few bytes, released at `server`.
 fn manifest(server: &MockServer) -> Manifest {
@@ -64,24 +72,27 @@ impl Dirs {
     }
 }
 
-fn start(server: &MockServer, dirs: &Dirs, loopback: NetworkAccess) -> SearchModel {
-    let client = coral_outbound::Client::new(
-        DestinationPolicy::new(loopback, NetworkAccess::Deny),
+fn client(loopback: NetworkAccess, private_networks: NetworkAccess) -> coral_outbound::Client {
+    coral_outbound::Client::new(
+        DestinationPolicy::new(loopback, private_networks),
         // Longer than every test waits, so only the stall bound ends a
         // silent server.
         Duration::from_mins(1),
     )
-    .expect("client");
+    .expect("client")
+}
+
+fn start(server: &MockServer, dirs: &Dirs) -> SearchModel {
+    start_with(server, dirs, TIMING)
+}
+
+fn start_with(server: &MockServer, dirs: &Dirs, timing: DownloadTiming) -> SearchModel {
     let (model, _delivery) = SearchModel::start(Delivery {
         manifest: manifest(server),
         models_dirs: vec![dirs.system.clone(), dirs.state.clone()],
         download_dir: dirs.state.clone(),
-        client,
-        retry: RetryTiming {
-            first: Duration::from_millis(10),
-            max: Duration::from_millis(50),
-            stall: Duration::from_millis(500),
-        },
+        client: client(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
+        timing,
     });
     model
 }
@@ -93,71 +104,6 @@ async fn serve(server: &MockServer, file: &str, body: &[u8]) {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
         .mount(server)
         .await;
-}
-
-async fn ready(model: &SearchModel) -> Option<PathBuf> {
-    tokio::time::timeout(PATIENCE, model.ready())
-        .await
-        .expect("the model is ready in time")
-}
-
-fn read(path: &Path) -> Vec<u8> {
-    std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-}
-
-#[tokio::test]
-async fn absent_files_are_downloaded_checked_and_reported_ready() {
-    let server = MockServer::start().await;
-    serve(&server, "model.onnx", MODEL).await;
-    serve(&server, "tokenizer.json", TOKENIZER).await;
-    let dirs = Dirs::new();
-
-    let model = start(&server, &dirs, NetworkAccess::HttpAndHttps);
-
-    assert_eq!(ready(&model).await, Some(dirs.downloaded()));
-    assert_eq!(read(&dirs.downloaded().join("model.onnx")), MODEL);
-    assert_eq!(read(&dirs.downloaded().join("tokenizer.json")), TOKENIZER);
-}
-
-/// Waits until `server` has answered `count` requests for the release's
-/// `file`.
-async fn requested(server: &MockServer, file: &str, count: usize) {
-    let path = format!("{RELEASE_PATH}/{file}");
-    tokio::time::timeout(PATIENCE, async {
-        loop {
-            let requests = server.received_requests().await.unwrap_or_default();
-            if requests
-                .iter()
-                .filter(|request| request.url.path() == path)
-                .count()
-                >= count
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_elapsed| panic!("{count} requests for {file} in time"));
-}
-
-#[tokio::test]
-async fn a_file_with_another_digest_never_gets_the_final_name_and_is_downloaded_again() {
-    let server = MockServer::start().await;
-    serve(&server, "model.onnx", b"model bytez").await;
-    serve(&server, "tokenizer.json", TOKENIZER).await;
-    let dirs = Dirs::new();
-
-    let model = start(&server, &dirs, NetworkAccess::HttpAndHttps);
-    // The second request starts only after the first attempt has ended.
-    requested(&server, "model.onnx", 2).await;
-
-    assert!(
-        !dirs.downloaded().join("model.onnx").exists(),
-        "a file with another digest got the final name"
-    );
-    assert_eq!(model.state(), SearchModelState::Downloading);
-    assert_eq!(model.looked().await, Some(SearchModelState::Downloading));
 }
 
 /// Answers a request for the release's `file` with a redirect to
@@ -179,24 +125,165 @@ async fn serve_asset(server: &MockServer, asset_path: &str, body: &[u8]) {
         .await;
 }
 
+async fn ready(model: &SearchModel) -> Option<PathBuf> {
+    tokio::time::timeout(PATIENCE, model.ready())
+        .await
+        .expect("the model is ready in time")
+}
+
+fn read(path: &Path) -> Vec<u8> {
+    std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+/// The names in `dir`, sorted.
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// The requests `server` has answered for `request_path`.
+async fn requests_for(server: &MockServer, request_path: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == request_path)
+        .count()
+}
+
+/// Waits until `server` has answered `count` requests for the release's
+/// `file`.
+async fn requested(server: &MockServer, file: &str, count: usize) {
+    let release_path = format!("{RELEASE_PATH}/{file}");
+    tokio::time::timeout(PATIENCE, async {
+        while requests_for(server, &release_path).await < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_elapsed| panic!("{count} requests for {file} in time"));
+}
+
 #[tokio::test]
-async fn a_download_follows_the_release_redirects_to_the_asset_host() {
+async fn absent_files_are_downloaded_checked_and_reported_ready() {
+    for case in ["served by the release", "redirected to the asset host"] {
+        let server = MockServer::start().await;
+        if case == "served by the release" {
+            serve(&server, "model.onnx", MODEL).await;
+            serve(&server, "tokenizer.json", TOKENIZER).await;
+        } else {
+            // GitHub's redirect is absolute; a relative one works too.
+            let absolute = format!("{}/assets/1?signature=x", server.uri());
+            redirect(&server, "model.onnx", &absolute).await;
+            redirect(&server, "tokenizer.json", "/assets/2").await;
+            serve_asset(&server, "/assets/1", MODEL).await;
+            serve_asset(&server, "/assets/2", TOKENIZER).await;
+        }
+        let dirs = Dirs::new();
+
+        let model = start(&server, &dirs);
+
+        assert_eq!(ready(&model).await, Some(dirs.downloaded()), "{case}");
+        assert_eq!(read(&dirs.downloaded().join("model.onnx")), MODEL, "{case}");
+        assert_eq!(
+            read(&dirs.downloaded().join("tokenizer.json")),
+            TOKENIZER,
+            "{case}"
+        );
+        assert_eq!(
+            names(&dirs.downloaded()),
+            ["model.onnx", "tokenizer.json"],
+            "{case}: a partial file stays"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_download_may_take_longer_than_the_client_timeout() {
     let server = MockServer::start().await;
-    redirect(
-        &server,
-        "model.onnx",
-        &format!("{}/assets/1?signature=x", server.uri()),
-    )
-    .await;
-    redirect(&server, "tokenizer.json", "/assets/2").await;
-    serve_asset(&server, "/assets/1", MODEL).await;
-    serve_asset(&server, "/assets/2", TOKENIZER).await;
+    Mock::given(method("GET"))
+        .and(path(format!("{RELEASE_PATH}/model.onnx")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(MODEL)
+                .set_delay(Duration::from_millis(300)),
+        )
+        .mount(&server)
+        .await;
+    serve(&server, "tokenizer.json", TOKENIZER).await;
     let dirs = Dirs::new();
 
-    let model = start(&server, &dirs, NetworkAccess::HttpAndHttps);
+    // The model's answer takes longer than this client's own timeout, but
+    // less than the stall bound, which is the only bound on a download.
+    let (model, _delivery) = SearchModel::start(Delivery {
+        manifest: manifest(&server),
+        models_dirs: vec![dirs.state.clone()],
+        download_dir: dirs.state.clone(),
+        client: coral_outbound::Client::new(
+            DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
+            Duration::from_millis(100),
+        )
+        .expect("client"),
+        timing: TIMING,
+    });
 
     assert_eq!(ready(&model).await, Some(dirs.downloaded()));
-    assert_eq!(read(&dirs.downloaded().join("model.onnx")), MODEL);
+}
+
+#[tokio::test]
+async fn a_file_with_another_digest_never_gets_the_final_name_and_is_downloaded_again() {
+    let server = MockServer::start().await;
+    serve(&server, "model.onnx", b"model bytez").await;
+    serve(&server, "tokenizer.json", TOKENIZER).await;
+    let dirs = Dirs::new();
+
+    let model = start(&server, &dirs);
+    // The second request starts only after the first attempt has ended.
+    requested(&server, "model.onnx", 2).await;
+
+    assert!(
+        !dirs.downloaded().join("model.onnx").exists(),
+        "a file with another digest got the final name"
+    );
+    assert_eq!(model.state(), SearchModelState::Downloading);
+    assert_eq!(
+        model.wait_for_lookup().await,
+        Some(SearchModelState::Downloading)
+    );
+}
+
+#[tokio::test]
+async fn after_a_file_with_another_digest_the_next_attempt_waits_the_long_retry() {
+    let server = MockServer::start().await;
+    serve(&server, "model.onnx", b"model bytez").await;
+    serve(&server, "tokenizer.json", TOKENIZER).await;
+    let dirs = Dirs::new();
+
+    let _model = start_with(
+        &server,
+        &dirs,
+        DownloadTiming {
+            wrong_file_retry: Duration::from_hours(1),
+            ..TIMING
+        },
+    );
+    requested(&server, "model.onnx", 1).await;
+    // Without the long wait, the 10 ms retries fit many attempts in here.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        requests_for(&server, &format!("{RELEASE_PATH}/model.onnx")).await,
+        1
+    );
 }
 
 /// A local address where nothing listens.
@@ -237,7 +324,7 @@ async fn a_failed_attempt_is_retried_until_one_succeeds() {
         serve(&server, "tokenizer.json", TOKENIZER).await;
         let dirs = Dirs::new();
 
-        let model = start(&server, &dirs, NetworkAccess::HttpAndHttps);
+        let model = start(&server, &dirs);
 
         assert_eq!(
             tokio::time::timeout(PATIENCE, model.ready()).await,
@@ -272,7 +359,7 @@ async fn files_on_disk_are_ready_without_a_request() {
         place_files(if in_system { &dirs.system } else { &dirs.state });
         let other_model = place_other_model(&dirs.state);
 
-        let model = start(&server, &dirs, NetworkAccess::HttpAndHttps);
+        let model = start(&server, &dirs);
 
         let expected = if in_system {
             dirs.system.join(MODEL_ID)
@@ -281,7 +368,7 @@ async fn files_on_disk_are_ready_without_a_request() {
         };
         assert_eq!(ready(&model).await, Some(expected.clone()), "{case}");
         assert_eq!(
-            model.looked().await,
+            model.wait_for_lookup().await,
             Some(SearchModelState::Ready(expected)),
             "{case}"
         );
@@ -304,7 +391,7 @@ async fn other_model_folders_are_removed_once_the_model_is_ready_and_not_before(
     let dirs = Dirs::new();
     let other_model = place_other_model(&dirs.state);
 
-    let model = start(&server, &dirs, NetworkAccess::HttpAndHttps);
+    let model = start(&server, &dirs);
     requested(&server, "tokenizer.json", 2).await;
 
     assert!(other_model.exists(), "removed before the model is ready");
@@ -317,23 +404,44 @@ async fn other_model_folders_are_removed_once_the_model_is_ready_and_not_before(
 }
 
 #[tokio::test]
-async fn the_destination_policy_decides_whether_the_files_are_downloaded() {
-    let server = MockServer::start().await;
-    serve(&server, "model.onnx", MODEL).await;
-    serve(&server, "tokenizer.json", TOKENIZER).await;
-    let dirs = Dirs::new();
+async fn the_destination_policy_checks_every_request_of_a_download() {
+    // (case, loopback access, release requests that reach the server)
+    let cases = [
+        ("the release host", NetworkAccess::Deny, 0),
+        (
+            "a redirect to a private address",
+            NetworkAccess::HttpAndHttps,
+            1,
+        ),
+    ];
+    for (case, loopback, release_requests) in cases {
+        let server = MockServer::start().await;
+        redirect(
+            &server,
+            "tokenizer.json",
+            "http://10.255.255.1/tokenizer.json",
+        )
+        .await;
+        let dirs = Dirs::new();
+        let client = client(loopback, NetworkAccess::Deny);
 
-    let model = start(&server, &dirs, NetworkAccess::Deny);
-    // Many attempts fit in this time: the first retry waits 10 ms.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+        let attempt = download(
+            &client,
+            &manifest(&server),
+            &dirs.downloaded(),
+            TIMING.stall,
+        )
+        .await;
 
-    assert_eq!(model.state(), SearchModelState::Downloading);
-    assert!(
-        server
-            .received_requests()
-            .await
-            .unwrap_or_default()
-            .is_empty()
-    );
-    assert!(!dirs.downloaded().join("tokenizer.json").exists());
+        assert!(
+            matches!(attempt, Err(DownloadError::DestinationRejected)),
+            "{case}: {attempt:?}"
+        );
+        assert_eq!(
+            requests_for(&server, &format!("{RELEASE_PATH}/tokenizer.json")).await,
+            release_requests,
+            "{case}"
+        );
+        assert_eq!(names(&dirs.downloaded()), Vec::<String>::new(), "{case}");
+    }
 }

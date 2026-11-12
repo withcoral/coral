@@ -44,6 +44,13 @@ pub enum ModelState {
 }
 
 impl Manifest {
+    /// Every file of the model. A folder that holds all of them, each with
+    /// its size and SHA-256, holds the model.
+    #[must_use]
+    pub const fn files(&self) -> [ModelFile; 2] {
+        [self.tokenizer_file, self.model_file]
+    }
+
     /// Looks for this manifest's files in the folder `<model id>` of each
     /// of `models_dirs`, in order. One folder must hold every file. The
     /// lookup reads each file whole to check its SHA-256.
@@ -51,9 +58,10 @@ impl Manifest {
     pub fn find(&self, models_dirs: &[PathBuf]) -> ModelState {
         for models_dir in models_dirs {
             let dir = models_dir.join(self.model_id);
-            if [self.model_file, self.tokenizer_file]
+            if self
+                .files()
                 .iter()
-                .all(|file| matches(&dir.join(file.name), file))
+                .all(|file| file.is_at(&dir.join(file.name)))
             {
                 return ModelState::Ready(dir);
             }
@@ -67,21 +75,15 @@ impl ModelFile {
     /// that cannot be read does not match. It reads the file whole.
     #[must_use]
     pub fn is_at(&self, path: &Path) -> bool {
-        matches(path, self)
+        let Ok(opened) = File::open(path) else {
+            return false;
+        };
+        match opened.metadata() {
+            Ok(metadata) if metadata.is_file() && metadata.len() == self.size => {}
+            _ => return false,
+        }
+        sha256(opened).is_ok_and(|digest| digest == self.sha256)
     }
-}
-
-/// Whether the file at `path` has `file`'s size and SHA-256. A file that
-/// cannot be read does not match.
-fn matches(path: &Path, file: &ModelFile) -> bool {
-    let Ok(opened) = File::open(path) else {
-        return false;
-    };
-    match opened.metadata() {
-        Ok(metadata) if metadata.is_file() && metadata.len() == file.size => {}
-        _ => return false,
-    }
-    sha256(opened).is_ok_and(|digest| digest == file.sha256)
 }
 
 /// The SHA-256 of `file`'s bytes, as lowercase hex.

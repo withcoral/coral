@@ -51,16 +51,20 @@ pub(crate) struct Delivery {
     /// The client every download request goes through, with the operator's
     /// outbound destination policy.
     pub(crate) client: coral_outbound::Client,
-    pub(crate) retry: RetryTiming,
+    pub(crate) timing: DownloadTiming,
 }
 
-/// How a download waits.
+/// How long a download waits, and for what.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RetryTiming {
+pub(crate) struct DownloadTiming {
     /// The wait after the first failed attempt. Each later wait doubles.
-    pub(crate) first: Duration,
+    pub(crate) first_retry: Duration,
     /// The longest wait between attempts.
-    pub(crate) max: Duration,
+    pub(crate) max_retry: Duration,
+    /// The shortest wait after an attempt that got a whole file with
+    /// another size or SHA-256. Such a file comes back on the next attempt
+    /// too, so a short wait downloads the model again and again.
+    pub(crate) wrong_file_retry: Duration,
     /// An attempt fails when the server sends nothing for this long.
     pub(crate) stall: Duration,
 }
@@ -84,9 +88,10 @@ impl Delivery {
             models_dirs: coral_embed::models_dirs(state_dir),
             download_dir: coral_embed::state_models_dir(state_dir),
             client,
-            retry: RetryTiming {
-                first: Duration::from_secs(10),
-                max: Duration::from_mins(15),
+            timing: DownloadTiming {
+                first_retry: Duration::from_secs(10),
+                max_retry: Duration::from_mins(15),
+                wrong_file_retry: Duration::from_hours(6),
                 stall: Duration::from_mins(1),
             },
         }
@@ -109,13 +114,13 @@ impl SearchModel {
     /// Waits until the lookup on disk ends and returns the state after it.
     /// A download that ends at once can be missed: then the state is
     /// already ready. Returns `None` when the delivery stops first.
-    pub async fn looked(&self) -> Option<SearchModelState> {
+    pub async fn wait_for_lookup(&self) -> Option<SearchModelState> {
         let mut state = self.state.clone();
-        let looked = state
+        let after_lookup = state
             .wait_for(|state| *state != SearchModelState::Looking)
             .await
             .ok()?;
-        Some(looked.clone())
+        Some(after_lookup.clone())
     }
 
     /// Waits until the files are ready and returns their folder. Returns
@@ -141,7 +146,7 @@ async fn deliver(delivery: Delivery, state: watch::Sender<SearchModelState>) {
         models_dirs,
         download_dir,
         client,
-        retry,
+        timing,
     } = delivery;
     // The lookup ends without a result only when the runtime stops. Then
     // the state's sender drops, and `ready` returns `None`.
@@ -153,14 +158,18 @@ async fn deliver(delivery: Delivery, state: watch::Sender<SearchModelState>) {
         ModelState::Absent => {
             state.send_replace(SearchModelState::Downloading);
             let dir = download_dir.join(manifest.model_id);
-            let mut wait = retry.first;
-            while let Err(error) = download(&client, &manifest, &dir, retry.stall).await {
+            let mut wait = timing.first_retry;
+            while let Err(error) = download(&client, &manifest, &dir, timing.stall).await {
                 tracing::info!(
                     error.type = safe::kind(error.code()),
                     "search model download failed; Coral retries"
                 );
-                tokio::time::sleep(wait).await;
-                wait = wait.saturating_mul(2).min(retry.max);
+                let pause = match error {
+                    DownloadError::WrongFile => wait.max(timing.wrong_file_retry),
+                    _ => wait,
+                };
+                tokio::time::sleep(pause).await;
+                wait = wait.saturating_mul(2).min(timing.max_retry);
             }
             dir
         }
@@ -214,6 +223,8 @@ fn remove_other_models(download_dir: &Path, model_id: &str) {
 /// Why one download attempt did not put the files in place.
 #[derive(Debug, thiserror::Error)]
 enum DownloadError {
+    #[error("the download URL is not a URL")]
+    InvalidUrl,
     #[error("the outbound destination policy rejects the download")]
     DestinationRejected,
     #[error("the request failed")]
@@ -223,7 +234,7 @@ enum DownloadError {
     #[error("a redirect has no usable location, or there are too many")]
     BadRedirect,
     #[error("the file does not have the manifest's size and SHA-256")]
-    Digest,
+    WrongFile,
     #[error("a file could not be written")]
     Io(#[from] std::io::Error),
     #[error("the file check stopped")]
@@ -241,11 +252,12 @@ impl DownloadError {
     /// The failure's stable code.
     const fn code(&self) -> &'static str {
         match self {
+            Self::InvalidUrl => "invalid_url",
             Self::DestinationRejected => "destination_rejected",
             Self::Http(_) => "http",
             Self::Stalled => "stalled",
             Self::BadRedirect => "bad_redirect",
-            Self::Digest => "digest",
+            Self::WrongFile => "wrong_file",
             Self::Io(_) => "io",
             Self::Check(_) => "check",
         }
@@ -260,7 +272,7 @@ async fn download(
     stall: Duration,
 ) -> Result<(), DownloadError> {
     tokio::fs::create_dir_all(dir).await?;
-    for file in [manifest.tokenizer_file, manifest.model_file] {
+    for file in manifest.files() {
         let target = dir.join(file.name);
         if is_at(file, target.clone()).await? {
             continue;
@@ -271,18 +283,21 @@ async fn download(
             if is_at(file, partial.clone()).await? {
                 Ok(())
             } else {
-                Err(DownloadError::Digest)
+                Err(DownloadError::WrongFile)
             }
         }
         .await;
         if let Err(error) = checked {
             // A partial file is of no use. One that stays is written again
             // from the start by the next attempt.
-            if tokio::fs::remove_file(&partial).await.is_err() {
-                tracing::debug!(
-                    error.type = safe::kind("io"),
-                    "a partial search model file stays until the next attempt"
-                );
+            match tokio::fs::remove_file(&partial).await {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    tracing::debug!(
+                        error.type = safe::kind("io"),
+                        "a partial search model file stays until the next attempt"
+                    );
+                }
+                _ => {}
             }
             return Err(error);
         }
@@ -307,7 +322,7 @@ async fn fetch(
     stall: Duration,
 ) -> Result<(), DownloadError> {
     let mut url = Url::parse(&format!("{}/{}", manifest.download_url, file.name))
-        .map_err(|_error| DownloadError::DestinationRejected)?;
+        .map_err(|_error| DownloadError::InvalidUrl)?;
     let mut response = None;
     for _ in 0..=MAX_REDIRECTS {
         let request = client
@@ -345,7 +360,7 @@ async fn fetch(
     {
         written = written.saturating_add(chunk.len() as u64);
         if written > file.size {
-            return Err(DownloadError::Digest);
+            return Err(DownloadError::WrongFile);
         }
         out.write_all(&chunk).await?;
     }
