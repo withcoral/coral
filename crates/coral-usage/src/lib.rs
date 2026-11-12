@@ -7,8 +7,9 @@
 //! install ID, and the reports to send. [`UsageData::view`] shows any
 //! Organization Member the exact JSON of the next and the last report;
 //! [`UsageData::set_sharing`] lets an Organization Owner turn sharing off or
-//! on. [`UsageData::spawn`] makes each finished day's report and sends it
-//! through the bootstrap-selected destination policy.
+//! on. [`UsageData::send_due`] is one pass: it makes each finished day's
+//! report and sends it through the bootstrap-selected destination policy.
+//! Bootstrap runs it at once, then every [`CHECK_INTERVAL`].
 //!
 //! # Invariants
 //!

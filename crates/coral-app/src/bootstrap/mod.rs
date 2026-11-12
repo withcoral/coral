@@ -4,6 +4,7 @@ mod consts;
 mod env;
 mod error;
 mod health;
+mod periodic;
 mod runtime;
 mod secret_store_config;
 mod server;
