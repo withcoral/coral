@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { data, useLoaderData, type ActionFunctionArgs } from 'react-router'
 import { beforeEach, expect, it, vi } from 'vitest'
@@ -68,7 +68,7 @@ async function renderLive(
   resolve: (form: FormData) => unknown = () => ({ connection: 'declined' }),
 ) {
   const { wrapper, signal } = shellSignal(signalOf(counted(coral.view.revision!)))
-  renderRoute(<LoadedRoute />, {
+  const { router } = renderRoute(<LoadedRoute />, {
     csrf: 'test',
     loader: () => coral.view,
     wrapper,
@@ -79,10 +79,11 @@ async function renderLive(
       },
       // Opening the connect dialog starts an authorization here.
       { path: '/connect/:provider', action: () => ({ error: 'Try later.' }) },
+      { path: '/elsewhere', Component: () => <p>Elsewhere</p> },
     ],
   })
   await screen.findByRole('table', { name: 'Accounts' })
-  return { signal }
+  return { signal, router }
 }
 
 /** A modal dialog hides the rows from assistive technology, but they stay on the page. */
@@ -147,4 +148,89 @@ it('refreshes in place when the connection revision changes, and keeps your dial
   expect(within(rowOf('Linear')).queryByText(/^Connection request expires in/)).toBeNull()
   expect(screen.getByRole('dialog', { name: 'Reconnect Ledger' })).toBe(dialog)
   expect(screen.getByRole('searchbox', { name: 'Filter accounts', hidden: true })).toHaveValue('l')
+})
+
+const account = (name: string, state: UserAccountRow['state']): UserAccountRow => ({
+  ...ledger,
+  provider: `${workspaceView.name}/providers/${name}`,
+  name,
+  state,
+  detailPath: `/details/${name}`,
+})
+/** The provider names, in the order of their rows. */
+const shownProviders = () =>
+  screen.getAllByRole('link', { name: / account details$/ }).map((link) => link.textContent)
+
+const unsorted = () =>
+  viewAt('one', [
+    account('Zendesk', 'connected'),
+    account('github', 'not_connected'),
+    account('Attio', 'needs_reconnect'),
+    account('Linear', 'connected'),
+  ])
+/** What the Provider and Status headings report to assistive technology. */
+const sorts = () =>
+  screen
+    .getAllByRole('columnheader')
+    .slice(0, 2)
+    .map((heading) => heading.getAttribute('aria-sort'))
+const sortBy = (column: 'provider' | 'status') =>
+  userEvent.click(screen.getByRole('button', { name: `Sort by ${column}` }))
+
+// Catches: rows in the order Coral returns them, which is not an order you can scan.
+it('lists the accounts by provider name, without regard to case', async () => {
+  await renderLive({ view: unsorted() })
+  expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['ascending', 'none'])
+})
+
+// Catches: a heading that sorts one way only, and equal statuses left in an order you
+// cannot scan.
+it('sorts by provider or by status label, in each direction', async () => {
+  await renderLive({ view: unsorted() })
+
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Zendesk', 'Linear', 'github', 'Attio'])
+  expect(sorts()).toEqual(['descending', 'none'])
+
+  // Connected, Needs reconnect, Not connected.
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['Linear', 'Zendesk', 'Attio', 'github'])
+  expect(sorts()).toEqual(['none', 'ascending'])
+
+  // The two connected accounts stay in provider order.
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['github', 'Attio', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['none', 'descending'])
+
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['ascending', 'none'])
+})
+
+// Catches: a filter that resets the order, or an order that drops the filter.
+it('keeps the order while you filter, and the filter while you sort', async () => {
+  await renderLive({ view: unsorted() })
+  await sortBy('status')
+  await sortBy('status')
+  await userEvent.type(screen.getByRole('searchbox', { name: 'Filter accounts' }), 't')
+  await waitFor(() => expect(shownProviders()).toEqual(['github', 'Attio']))
+
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Attio', 'github'])
+  expect(screen.getByRole('searchbox', { name: 'Filter accounts' })).toHaveValue('t')
+})
+
+// Catches: an order kept across visits, which the page does not promise.
+it('lists by provider name again when you come back to the page', async () => {
+  const { router } = await renderLive({ view: unsorted() })
+  await sortBy('status')
+  expect(sorts()).toEqual(['none', 'ascending'])
+
+  await act(() => router.navigate('/elsewhere'))
+  await act(() => router.navigate('/'))
+
+  await screen.findByRole('table', { name: 'Accounts' })
+  expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['ascending', 'none'])
 })
