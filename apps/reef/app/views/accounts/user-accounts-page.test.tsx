@@ -234,3 +234,49 @@ it('lists by provider name again when you come back to the page', async () => {
   expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
   expect(sorts()).toEqual(['ascending', 'none'])
 })
+
+// Catches: a sorted table whose rows open or act on the account that held the place before.
+it('opens and acts on the account each row shows after you sort', async () => {
+  const posted: FormDataEntryValue[] = []
+  const { router } = await renderLive(
+    {
+      view: viewAt('one', [linear, account('Zendesk', 'connected'), account('Attio', 'connected')]),
+    },
+    (form) => {
+      posted.push(form.get('name')!)
+      return { connection: 'declined' }
+    },
+  )
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Zendesk', 'Linear', 'Attio'])
+
+  await userEvent.click(within(rowOf('Linear')).getByRole('button', { name: 'Decline Linear' }))
+  await waitFor(() => expect(posted).toEqual([request]))
+
+  // A click on the first row, outside its link, opens the account the row names.
+  const first = screen.getAllByRole('row').find((row) => within(row).queryByRole('link'))!
+  await userEvent.click(within(first).getByText('Connected'))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/details/Zendesk'))
+})
+
+// Catches: a refresh that puts the rows back in provider order, or leaves a changed
+// account at its old place.
+it('keeps your order when the connection revision changes', async () => {
+  const coral = { view: unsorted() }
+  const { signal } = await renderLive(coral)
+  await sortBy('status')
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['github', 'Attio', 'Linear', 'Zendesk'])
+
+  // github connects, and Coral returns the accounts in another order.
+  coral.view = viewAt('two', [
+    account('Linear', 'connected'),
+    account('github', 'connected'),
+    account('Zendesk', 'connected'),
+    account('Attio', 'needs_reconnect'),
+  ])
+  await signal(signalOf(counted('two')))
+
+  await waitFor(() => expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk']))
+  expect(sorts()).toEqual(['none', 'descending'])
+})
