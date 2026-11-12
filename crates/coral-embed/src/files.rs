@@ -53,6 +53,13 @@ pub struct UnreadableModelFile {
 }
 
 impl Manifest {
+    /// Every file of the model. A folder that holds all of them, each with
+    /// its size and SHA-256, holds the model.
+    #[must_use]
+    pub const fn files(&self) -> [ModelFile; 2] {
+        [self.tokenizer_file, self.model_file]
+    }
+
     /// Looks for this manifest's files in the folder `<model id>` of each
     /// of `models_dirs`, in order. One folder must hold every file. The
     /// lookup reads each file whole to check its SHA-256, the small
@@ -66,8 +73,8 @@ impl Manifest {
     pub fn find(&self, models_dirs: &[PathBuf]) -> Result<ModelState, UnreadableModelFile> {
         'folders: for models_dir in models_dirs {
             let dir = models_dir.join(self.model_id);
-            for file in [self.tokenizer_file, self.model_file] {
-                if !matches(&dir.join(file.name), &file)? {
+            for file in self.files() {
+                if !file.is_at(&dir.join(file.name))? {
                     continue 'folders;
                 }
             }
@@ -86,27 +93,21 @@ impl ModelFile {
     /// Returns [`UnreadableModelFile`] when the file is there but cannot be
     /// read.
     pub fn is_at(&self, path: &Path) -> Result<bool, UnreadableModelFile> {
-        matches(path, self)
+        let unreadable = |source| UnreadableModelFile {
+            path: path.to_path_buf(),
+            source,
+        };
+        let opened = match File::open(path) {
+            Ok(opened) => opened,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(unreadable(error)),
+        };
+        let metadata = opened.metadata().map_err(unreadable)?;
+        if !metadata.is_file() || metadata.len() != self.size {
+            return Ok(false);
+        }
+        Ok(sha256(opened).map_err(unreadable)? == self.sha256)
     }
-}
-
-/// Whether the file at `path` has `file`'s size and SHA-256. A file that is
-/// not there does not match.
-fn matches(path: &Path, file: &ModelFile) -> Result<bool, UnreadableModelFile> {
-    let unreadable = |source| UnreadableModelFile {
-        path: path.to_path_buf(),
-        source,
-    };
-    let opened = match File::open(path) {
-        Ok(opened) => opened,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(unreadable(error)),
-    };
-    let metadata = opened.metadata().map_err(unreadable)?;
-    if !metadata.is_file() || metadata.len() != file.size {
-        return Ok(false);
-    }
-    Ok(sha256(opened).map_err(unreadable)? == file.sha256)
 }
 
 /// The SHA-256 of `file`'s bytes, as lowercase hex.

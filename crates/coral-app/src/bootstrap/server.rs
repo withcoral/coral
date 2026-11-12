@@ -1304,7 +1304,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_search_model_is_looked_for_and_downloaded_only_while_the_setting_is_on() {
+    async fn the_search_model_is_looked_for_only_while_the_setting_is_on() {
+        // With the setting on, the delivery can start a request for the
+        // real model before shutdown stops it. The delivery's own tests use
+        // a local server.
         for (search, looked_for) in [
             ("", false),
             ("[search]\nsemantic_search_enabled = false\n", false),

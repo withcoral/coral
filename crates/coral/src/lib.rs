@@ -189,7 +189,7 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     println!("Press Ctrl-C to stop the server.");
     if let Some(search_model) = server.search_model() {
         tokio::spawn(async move {
-            match search_model.looked().await {
+            match search_model.wait_for_lookup().await {
                 Some(coral_app::SearchModelState::Downloading) => println!(
                     "Coral search model absent: downloading it. Search matches by words until it is ready."
                 ),
