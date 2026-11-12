@@ -23,7 +23,7 @@ mod query_first;
 use serde as _;
 
 pub use cpu::{CpuTooOld, check_cpu};
-pub use files::{ModelState, SYSTEM_MODELS_DIR, models_dirs};
+pub use files::{ModelState, SYSTEM_MODELS_DIR, models_dirs, state_models_dir};
 pub use manifest::{
     EmbedderRevision, IndexText, MANIFEST, Manifest, Merge, ModelFile, Pooling, QueryText,
 };

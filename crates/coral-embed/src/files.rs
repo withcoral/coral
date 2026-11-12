@@ -21,8 +21,15 @@ pub fn models_dirs(state_dir: &Path) -> Vec<PathBuf> {
     if cfg!(target_os = "linux") {
         dirs.push(PathBuf::from(SYSTEM_MODELS_DIR));
     }
-    dirs.push(state_dir.join("models"));
+    dirs.push(state_models_dir(state_dir));
     dirs
+}
+
+/// The folder of model folders in the state directory `state_dir`. Coral
+/// downloads a model's files into it.
+#[must_use]
+pub fn state_models_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("models")
 }
 
 /// Whether the manifest's files are on disk.
@@ -52,6 +59,15 @@ impl Manifest {
             }
         }
         ModelState::Absent
+    }
+}
+
+impl ModelFile {
+    /// Whether the file at `path` has this file's size and SHA-256. A file
+    /// that cannot be read does not match. It reads the file whole.
+    #[must_use]
+    pub fn is_at(&self, path: &Path) -> bool {
+        matches(path, self)
     }
 }
 

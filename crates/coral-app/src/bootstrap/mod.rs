@@ -12,7 +12,7 @@ mod server_config;
 pub use error::AppError;
 pub use health::EngineReadiness as ListenerReadiness;
 pub use runtime::{Extensions, Launch, RunningRuntime, RuntimeError, start_runtime};
-pub use search_model::SearchModel;
+pub use search_model::{SearchModel, SearchModelState};
 pub use server::{PreparedServerBuilder, RunningServer, ServerBuilder, ServerMode};
 pub use server_config::{
     LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, ServeSettings, SessionAuthSettings,

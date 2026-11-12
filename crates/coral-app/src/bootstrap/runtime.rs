@@ -289,7 +289,8 @@ impl RunningRuntime {
     }
 
     /// The state of the search model's files. `None` when `[search]
-    /// semantic_search_enabled` is off: then nothing looks for the files.
+    /// semantic_search_enabled` is off: then nothing looks for the files
+    /// and nothing downloads them.
     #[must_use]
     pub fn search_model(&self) -> Option<super::SearchModel> {
         self.grpc.search_model()

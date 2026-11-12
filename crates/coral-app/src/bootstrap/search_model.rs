@@ -1,63 +1,362 @@
-//! The lookup for the search model's files, and its result for the rest of
+//! The delivery of the search model's files, and its result for the rest of
 //! the Coral Instance.
+//!
+//! Coral looks for the manifest's files in each folder of model folders, in
+//! order. When no folder holds them, it downloads them from the model
+//! release through the outbound client, into the state directory. A file
+//! gets its final name only after its size and SHA-256 match. A failed
+//! attempt waits, then tries again, while the process runs. Once the files
+//! are ready, the other model folders in the state directory go. The ADR
+//! "Universal Search adds a vector list from a bundled CPU model" has the
+//! reasons.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use coral_embed::{MANIFEST, ModelState};
+use coral_embed::{Manifest, ModelFile, ModelState};
+use coral_telemetry::safe;
+use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use url::Url;
 
-/// The state of the files that Universal Search embeds text with. The
-/// state is absent until a lookup finds the files. Search ranks by words
-/// alone while the state is absent.
+/// Where the search model's files are. Search ranks by words alone until
+/// they are ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchModelState {
+    /// Coral looks for the files on disk.
+    Looking,
+    /// No folder holds the files. Coral downloads them and retries until
+    /// they land.
+    Downloading,
+    /// This folder holds every file of the manifest, each with the
+    /// manifest's size and SHA-256.
+    Ready(PathBuf),
+}
+
+/// The state of the files that Universal Search embeds text with.
 #[derive(Debug, Clone)]
 pub struct SearchModel {
-    state: watch::Receiver<ModelState>,
+    state: watch::Receiver<SearchModelState>,
+}
+
+/// What [`SearchModel::start`] looks for, where, and how it downloads.
+pub(crate) struct Delivery {
+    pub(crate) manifest: Manifest,
+    /// The folders of model folders to look in, in order.
+    pub(crate) models_dirs: Vec<PathBuf>,
+    /// The folder of model folders that a download goes to. Once the files
+    /// are ready, Coral removes every other model folder from it.
+    pub(crate) download_dir: PathBuf,
+    /// The client every download request goes through, with the operator's
+    /// outbound destination policy.
+    pub(crate) client: coral_outbound::Client,
+    pub(crate) retry: RetryTiming,
+}
+
+/// How a download waits.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RetryTiming {
+    /// The wait after the first failed attempt. Each later wait doubles.
+    pub(crate) first: Duration,
+    /// The longest wait between attempts.
+    pub(crate) max: Duration,
+    /// An attempt fails when the server sends nothing for this long.
+    pub(crate) stall: Duration,
+}
+
+/// How long a download request may wait to connect.
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The longest one file's transfer may take. The stall bound ends a
+/// transfer that stops long before this.
+const TRANSFER_LIMIT: Duration = Duration::from_hours(6);
+
+/// GitHub sends a release download to its asset host with one redirect.
+const MAX_REDIRECTS: usize = 5;
+
+impl Delivery {
+    /// The delivery of [`coral_embed::MANIFEST`] for a Coral process whose
+    /// state directory is `state_dir`.
+    pub(crate) fn coral(state_dir: &Path, client: coral_outbound::Client) -> Self {
+        Self {
+            manifest: coral_embed::MANIFEST,
+            models_dirs: coral_embed::models_dirs(state_dir),
+            download_dir: coral_embed::state_models_dir(state_dir),
+            client,
+            retry: RetryTiming {
+                first: Duration::from_secs(10),
+                max: Duration::from_mins(15),
+                stall: Duration::from_mins(1),
+            },
+        }
+    }
 }
 
 impl SearchModel {
-    /// Starts a lookup for the manifest's files in `models_dirs`, in order.
-    /// The lookup runs on a blocking thread, so boot does not wait for the
-    /// digests.
-    pub(crate) fn start_lookup(models_dirs: Vec<PathBuf>) -> Self {
-        let (sender, state) = watch::channel(ModelState::Absent);
-        tokio::task::spawn_blocking(move || {
-            sender.send_replace(MANIFEST.find(&models_dirs));
-        });
-        Self { state }
+    /// Starts the delivery. Abort the handle to stop it.
+    pub(crate) fn start(delivery: Delivery) -> (Self, JoinHandle<()>) {
+        let (sender, state) = watch::channel(SearchModelState::Looking);
+        (Self { state }, tokio::spawn(deliver(delivery, sender)))
+    }
+
+    /// Where the files are now.
+    #[must_use]
+    pub fn state(&self) -> SearchModelState {
+        self.state.borrow().clone()
+    }
+
+    /// Waits until the lookup on disk ends and returns the state after it.
+    /// A download that ends at once can be missed: then the state is
+    /// already ready. Returns `None` when the delivery stops first.
+    pub async fn looked(&self) -> Option<SearchModelState> {
+        let mut state = self.state.clone();
+        let looked = state
+            .wait_for(|state| *state != SearchModelState::Looking)
+            .await
+            .ok()?;
+        Some(looked.clone())
     }
 
     /// Waits until the files are ready and returns their folder. Returns
-    /// `None` when the lookup ends without them.
+    /// `None` when the delivery stops without them.
     pub async fn ready(&self) -> Option<PathBuf> {
         let mut state = self.state.clone();
         let ready = state
-            .wait_for(|state| matches!(state, ModelState::Ready(_)))
+            .wait_for(|state| matches!(state, SearchModelState::Ready(_)))
             .await
             .ok()?;
-        let ModelState::Ready(dir) = &*ready else {
+        let SearchModelState::Ready(dir) = &*ready else {
             return None;
         };
         Some(dir.clone())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
+/// Finds the files, or downloads them until they land, and reports where
+/// they are.
+async fn deliver(delivery: Delivery, state: watch::Sender<SearchModelState>) {
+    let Delivery {
+        manifest,
+        models_dirs,
+        download_dir,
+        client,
+        retry,
+    } = delivery;
+    // The lookup ends without a result only when the runtime stops. Then
+    // the state's sender drops, and `ready` returns `None`.
+    let Ok(found) = tokio::task::spawn_blocking(move || manifest.find(&models_dirs)).await else {
+        return;
+    };
+    let dir = match found {
+        ModelState::Ready(dir) => dir,
+        ModelState::Absent => {
+            state.send_replace(SearchModelState::Downloading);
+            let dir = download_dir.join(manifest.model_id);
+            let mut wait = retry.first;
+            while let Err(error) = download(&client, &manifest, &dir, retry.stall).await {
+                tracing::info!(
+                    error.type = safe::kind(error.code()),
+                    "search model download failed; Coral retries"
+                );
+                tokio::time::sleep(wait).await;
+                wait = wait.saturating_mul(2).min(retry.max);
+            }
+            dir
+        }
+    };
+    let model_id = manifest.model_id;
+    // The removal ends before the state turns ready, so a reader of the
+    // ready state never sees the other folders.
+    if tokio::task::spawn_blocking(move || remove_other_models(&download_dir, model_id))
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            error.type = safe::kind("join"),
+            "the removal of old search model folders stopped; the next start retries"
+        );
+    }
+    state.send_replace(SearchModelState::Ready(dir));
+}
 
-    use tempfile::TempDir;
-
-    use super::SearchModel;
-
-    #[tokio::test]
-    async fn a_lookup_that_finds_no_files_ends_absent() {
-        let temp = TempDir::new().unwrap();
-        let model = SearchModel::start_lookup(vec![temp.path().join("models")]);
-
-        let ready = tokio::time::timeout(Duration::from_secs(10), model.ready())
-            .await
-            .expect("the lookup ends");
-
-        assert_eq!(ready, None);
+/// Removes every folder in `download_dir` but the folder of `model_id`.
+/// The folders of an earlier manifest's model are of no use to this
+/// binary. A failure leaves the folder for the next start.
+fn remove_other_models(download_dir: &Path, model_id: &str) {
+    let entries = match std::fs::read_dir(download_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_error) => {
+            tracing::warn!(
+                error.type = safe::kind("io"),
+                "the search model folder could not be read; old models stay"
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        // `file_type` does not follow a symbolic link, so a link to a
+        // folder elsewhere stays, with its target.
+        let is_folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if is_folder
+            && entry.file_name() != model_id
+            && std::fs::remove_dir_all(entry.path()).is_err()
+        {
+            tracing::warn!(
+                error.type = safe::kind("io"),
+                "an old search model folder could not be removed; the next start retries"
+            );
+        }
     }
 }
+
+/// Why one download attempt did not put the files in place.
+#[derive(Debug, thiserror::Error)]
+enum DownloadError {
+    #[error("the outbound destination policy rejects the download")]
+    DestinationRejected,
+    #[error("the request failed")]
+    Http(reqwest::Error),
+    #[error("the server sent nothing for too long")]
+    Stalled,
+    #[error("a redirect has no usable location, or there are too many")]
+    BadRedirect,
+    #[error("the file does not have the manifest's size and SHA-256")]
+    Digest,
+    #[error("a file could not be written")]
+    Io(#[from] std::io::Error),
+    #[error("the file check stopped")]
+    Check(#[from] tokio::task::JoinError),
+}
+
+impl DownloadError {
+    fn from_fetch(error: reqwest::Error) -> Self {
+        match coral_outbound::FetchError::from(error) {
+            coral_outbound::FetchError::DestinationRejected => Self::DestinationRejected,
+            coral_outbound::FetchError::Http(error) => Self::Http(error),
+        }
+    }
+
+    /// The failure's stable code.
+    const fn code(&self) -> &'static str {
+        match self {
+            Self::DestinationRejected => "destination_rejected",
+            Self::Http(_) => "http",
+            Self::Stalled => "stalled",
+            Self::BadRedirect => "bad_redirect",
+            Self::Digest => "digest",
+            Self::Io(_) => "io",
+            Self::Check(_) => "check",
+        }
+    }
+}
+
+/// Downloads each file of `manifest` that `dir` does not hold yet.
+async fn download(
+    client: &coral_outbound::Client,
+    manifest: &Manifest,
+    dir: &Path,
+    stall: Duration,
+) -> Result<(), DownloadError> {
+    tokio::fs::create_dir_all(dir).await?;
+    for file in [manifest.tokenizer_file, manifest.model_file] {
+        let target = dir.join(file.name);
+        if is_at(file, target.clone()).await? {
+            continue;
+        }
+        let partial = dir.join(format!("{}.part", file.name));
+        let checked = async {
+            fetch(client, manifest, file, &partial, stall).await?;
+            if is_at(file, partial.clone()).await? {
+                Ok(())
+            } else {
+                Err(DownloadError::Digest)
+            }
+        }
+        .await;
+        if let Err(error) = checked {
+            // A partial file is of no use. One that stays is written again
+            // from the start by the next attempt.
+            if tokio::fs::remove_file(&partial).await.is_err() {
+                tracing::debug!(
+                    error.type = safe::kind("io"),
+                    "a partial search model file stays until the next attempt"
+                );
+            }
+            return Err(error);
+        }
+        tokio::fs::rename(&partial, &target).await?;
+    }
+    Ok(())
+}
+
+/// Whether the file at `path` has `file`'s size and SHA-256. It reads the
+/// file whole, on a blocking thread.
+async fn is_at(file: ModelFile, path: PathBuf) -> Result<bool, DownloadError> {
+    Ok(tokio::task::spawn_blocking(move || file.is_at(&path)).await?)
+}
+
+/// Writes the release's `file` to `partial`. Each redirect goes through
+/// `client` again, so the destination policy checks every host.
+async fn fetch(
+    client: &coral_outbound::Client,
+    manifest: &Manifest,
+    file: ModelFile,
+    partial: &Path,
+    stall: Duration,
+) -> Result<(), DownloadError> {
+    let mut url = Url::parse(&format!("{}/{}", manifest.download_url, file.name))
+        .map_err(|_error| DownloadError::DestinationRejected)?;
+    let mut response = None;
+    for _ in 0..=MAX_REDIRECTS {
+        let request = client
+            .get(url.as_str())
+            .map_err(|_rejected| DownloadError::DestinationRejected)?
+            // The client's own timeout would bound the whole transfer; the
+            // stall bound below replaces it.
+            .timeout(TRANSFER_LIMIT);
+        let answer = tokio::time::timeout(stall, request.send())
+            .await
+            .map_err(|_elapsed| DownloadError::Stalled)?
+            .map_err(DownloadError::from_fetch)?;
+        if !is_redirect(answer.status()) {
+            response = Some(
+                answer
+                    .error_for_status()
+                    .map_err(DownloadError::from_fetch)?,
+            );
+            break;
+        }
+        url = answer
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|location| location.to_str().ok())
+            .and_then(|location| url.join(location).ok())
+            .ok_or(DownloadError::BadRedirect)?;
+    }
+    let mut response = response.ok_or(DownloadError::BadRedirect)?;
+    let mut out = tokio::fs::File::create(partial).await?;
+    let mut written: u64 = 0;
+    while let Some(chunk) = tokio::time::timeout(stall, response.chunk())
+        .await
+        .map_err(|_elapsed| DownloadError::Stalled)?
+        .map_err(DownloadError::from_fetch)?
+    {
+        written = written.saturating_add(chunk.len() as u64);
+        if written > file.size {
+            return Err(DownloadError::Digest);
+        }
+        out.write_all(&chunk).await?;
+    }
+    out.flush().await?;
+    Ok(())
+}
+
+/// Whether `status` sends the client to the `Location` header.
+fn is_redirect(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
+}
+
+#[cfg(test)]
+mod tests;

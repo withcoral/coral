@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
-use super::search_model::SearchModel;
+use super::search_model::{Delivery, SearchModel};
 use super::server_config::{
     Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
 };
@@ -359,10 +359,20 @@ impl PreparedServerBuilder {
         let runtime_limits = deployment_config.runtime_limits()?;
         let config = builder.config;
         let vault = open_credential_vault(&deployment_config, state.credential_key_path())?;
-        // With the setting off, nothing looks for the model's files.
+        // With the setting off, nothing looks for the model's files and
+        // nothing downloads them.
         let search_model = deployment_config
             .semantic_search_enabled()?
-            .then(|| SearchModel::start_lookup(coral_embed::models_dirs(state.state_dir())));
+            .then(|| {
+                coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
+                    .map(|client| Delivery::coral(state.state_dir(), client))
+                    .map_err(|_error| {
+                        AppError::FailedPrecondition(
+                            "search model download client initialization failed".into(),
+                        )
+                    })
+            })
+            .transpose()?;
         let (coral_db, state_lock) = state.into_parts();
         let mode = config.resolved_mode(&deployment_config)?;
         if session_auth.is_none() && !super::is_loopback_ip(mode.bind_addr().ip()) {
@@ -580,6 +590,7 @@ pub struct RunningServer {
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
     search_model: Option<SearchModel>,
+    search_model_delivery: Option<JoinHandle<()>>,
     release_check: Option<JoinHandle<()>>,
     usage_check: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -677,6 +688,9 @@ impl RunningServer {
             worker.abort();
         }
         self.search_reconcile.abort();
+        if let Some(delivery) = &self.search_model_delivery {
+            delivery.abort();
+        }
         if let Some(check) = &self.release_check {
             check.abort();
         }
@@ -739,7 +753,8 @@ impl RunningServer {
     }
 
     /// The state of the search model's files. `None` when `[search]
-    /// semantic_search_enabled` is off: then nothing looks for the files.
+    /// semantic_search_enabled` is off: then nothing looks for the files
+    /// and nothing downloads them.
     #[must_use]
     pub fn search_model(&self) -> Option<SearchModel> {
         self.search_model.clone()
@@ -790,6 +805,9 @@ impl Drop for RunningServer {
             worker.abort();
         }
         self.search_reconcile.abort();
+        if let Some(delivery) = &self.search_model_delivery {
+            delivery.abort();
+        }
         if let Some(check) = &self.release_check {
             check.abort();
         }
@@ -884,7 +902,7 @@ pub(crate) async fn start_server(
     policy: coral_outbound::DestinationPolicy,
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
-    search_model: Option<SearchModel>,
+    search_model: Option<Delivery>,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
     readiness: EngineReadiness,
@@ -1108,6 +1126,7 @@ pub(crate) async fn start_server(
         })
     });
     let search_reconcile = search_index.spawn_reconcile_task();
+    let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
     let release_check = releases.map(|releases| releases.spawn(coral_release::CHECK_INTERVAL));
     let usage_check =
         usage.map(|usage| usage.data.spawn(usage.client, coral_usage::CHECK_INTERVAL));
@@ -1119,6 +1138,7 @@ pub(crate) async fn start_server(
         search_index,
         search_reconcile,
         search_model,
+        search_model_delivery,
         release_check,
         usage_check,
         accounts,
@@ -1258,7 +1278,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_search_model_is_looked_for_only_while_the_setting_is_on() {
+    async fn the_search_model_is_looked_for_and_downloaded_only_while_the_setting_is_on() {
         for (search, looked_for) in [
             ("", false),
             ("[search]\nsemantic_search_enabled = false\n", false),
