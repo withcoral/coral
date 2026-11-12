@@ -498,10 +498,10 @@ mod tests {
                 vec![],
             ),
         ] {
-            let printer = MigrationLines::default();
+            let chooser = MigrationLines::default();
             let printed: Vec<String> = progress
                 .into_iter()
-                .filter_map(|progress| printer.line(progress))
+                .filter_map(|progress| chooser.line(progress))
                 .collect();
             assert_eq!(printed, lines, "{case}");
         }
