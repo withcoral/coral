@@ -11,7 +11,7 @@ pub struct CpuTooOld {
     pub missing: Vec<&'static str>,
 }
 
-/// Checks that this CPU meets the model's floor: x86-64-v3 on x86-64.
+/// Checks that this CPU meets the floor of ADR 0035: x86-64-v3 on x86-64.
 /// Every arm64 CPU meets it.
 ///
 /// # Errors
@@ -51,7 +51,9 @@ fn check_features(
 #[cfg(target_arch = "x86_64")]
 mod x86_64_v3 {
     /// Each feature of the x86-64-v3 level, with whether this CPU has it.
-    /// The level includes x86-64-v2, so its features are here too.
+    /// The level includes x86-64-v2, so its features are here too. LAHF/SAHF
+    /// is not here: `is_x86_feature_detected!` cannot detect it, and every
+    /// CPU that has AVX2, BMI2 and FMA also has it.
     pub(super) fn detect() -> [(&'static str, bool); 15] {
         [
             ("cmpxchg16b", is_x86_feature_detected!("cmpxchg16b")),
