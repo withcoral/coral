@@ -743,6 +743,7 @@ pub(super) async fn insert_account(
                 ProviderAccounts::ConfiguredByUserId,
                 ProviderAccounts::Contract,
                 ProviderAccounts::EncryptedCredentials,
+                ProviderAccounts::SecretReferences,
                 ProviderAccounts::GrantedScope,
                 ProviderAccounts::AutomaticRefresh,
                 ProviderAccounts::TokenExpiresAtUnixNanos,
@@ -759,6 +760,7 @@ pub(super) async fn insert_account(
                 Expr::val(context.actor().user_id().as_str()),
                 Expr::val(account.contract.to_storage()?),
                 Expr::val(account.ciphertext),
+                Expr::val(account.secret_references),
                 Expr::val(account.granted_scope),
                 Expr::val(account.automatic_refresh.map(i64::from)),
                 Expr::val(account.token_expires_at_unix_nanos),
@@ -900,6 +902,7 @@ fn account_inspection_query() -> sea_query::SelectStatement {
             ProviderAccounts::RequiresAuthorization,
             ProviderAccounts::GrantedScope,
             ProviderAccounts::AutomaticRefresh,
+            ProviderAccounts::SecretReferences,
         ])
         // Decode the persistence tombstone without loading credential material,
         // private generations, or refresh bookkeeping into the inspection path.
@@ -1486,6 +1489,7 @@ struct AccountInspectionRow {
     requires_authorization: i64,
     disconnected: i64,
     granted_scope: String,
+    secret_references: Option<String>,
 }
 
 impl AccountInspectionRow {
@@ -1503,6 +1507,13 @@ impl AccountInspectionRow {
             requires_authorization: self.requires_authorization != 0,
             disconnected: self.disconnected != 0,
             granted_scope: self.granted_scope,
+            // A reference that does not parse leaves no usable Account at dispatch.
+            // Inspection still opens, so a Workspace Owner can reconnect it.
+            secret_references: self
+                .secret_references
+                .as_deref()
+                .and_then(|stored| encoding::decode_references(stored).ok())
+                .unwrap_or_default(),
         })
     }
 }

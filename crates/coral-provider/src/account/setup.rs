@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::completion::{AuthorizedAccount, create_account};
 use super::setup_repository::{delete, insert, load, scrub};
-use super::{AccountModule, ProviderAccountId, setup_repository};
+use super::{AccountModule, CredentialMaterial, ProviderAccountId, setup_repository};
 use crate::access::CredentialRoute;
 use crate::{
     Error, LifecycleAction, LifecycleOutcome, ProviderId, ProviderModule, ProviderSetupId,
@@ -37,6 +37,8 @@ pub(crate) struct Provisional {
     pub(super) contract: ProviderCredentialContract,
     pub(super) credential_generation: String,
     pub(super) encrypted_credentials: Option<String>,
+    /// The Secret References beside the sealed record, as stored, for a Setup with any.
+    pub(super) secret_references: Option<String>,
     /// When the sealed access token expires, carried to the Account at promotion.
     pub(super) token_expires_at_unix_nanos: Option<i64>,
     pub(super) granted_scope: String,
@@ -276,6 +278,8 @@ pub struct SetupAuthentication {
     /// Exact provisional grant identity reviewed for explicit shared or self retention.
     /// This is not a runtime Account until Publication promotes it.
     pub provisional_grant_id: Option<ProviderAccountId>,
+    /// The provisional grant names a Secret Store, so only a shared Account can keep it.
+    pub holds_secret_references: bool,
     /// The Reported Grant, verbatim from the token endpoint; empty for secrets.
     pub granted_scope: String,
     /// Host deadline after which the sealed material cannot be promoted.
@@ -413,6 +417,8 @@ pub(crate) struct SealedSetupCredential {
     pub(crate) contract: ProviderCredentialContract,
     pub(crate) credential_generation: String,
     pub(crate) ciphertext: String,
+    /// The Secret References to keep beside the sealed record, as stored.
+    pub(crate) secret_references: Option<String>,
     pub(crate) granted_scope: String,
     pub(crate) expires_at_unix_nanos: i64,
 }
@@ -752,12 +758,13 @@ impl AccountModule {
         }))
     }
 
-    /// Seals a secret whose deadline runs from the Setup's creation, not from entry.
-    pub(crate) fn seal_setup_secret(
+    /// Seals typed values whose deadline runs from the Setup's creation, not from
+    /// entry. References stay beside the record, and no value read from a store joins it.
+    fn seal_setup_material(
         &self,
         context: &ChangeContext,
         contract: ProviderCredentialContract,
-        values: &CredentialValues,
+        material: &CredentialMaterial,
         setup_created_at_unix_nanos: i64,
     ) -> Result<SealedSetupCredential, Error> {
         let expires_at_unix_nanos = setup_deadline(setup_created_at_unix_nanos)?;
@@ -765,16 +772,20 @@ impl AccountModule {
             return Err(Error::ProviderSetupNotApplicable);
         }
         let credential_generation = Uuid::new_v4().to_string();
-        let ciphertext = self.vault.seal(
-            &credential_generation,
-            &super::repository::encode_values(values)?,
-        )?;
+        let ciphertext = material.seal(&self.vault, &credential_generation)?;
+        let secret_references = match material {
+            CredentialMaterial::Fields { references, .. } => {
+                Some(super::repository::encode_references(references)?)
+            }
+            CredentialMaterial::Values(_) | CredentialMaterial::OAuth(_) => None,
+        };
         Ok(SealedSetupCredential {
             actor_user_id: context.actor().user_id().clone(),
             provisional_grant_id: ProviderAccountId(Uuid::new_v4()),
             contract,
             credential_generation,
             ciphertext,
+            secret_references,
             granted_scope: String::new(),
             expires_at_unix_nanos,
         })
@@ -792,6 +803,26 @@ impl AccountModule {
         id: &ProviderSetupId,
         configuration_revision: i64,
         values: CredentialValues,
+    ) -> Result<SetupAuthentication, Error> {
+        self.save_setup_material(
+            context,
+            owner,
+            id,
+            configuration_revision,
+            CredentialMaterial::Values(values),
+        )
+        .await
+    }
+
+    /// Saves typed values or checked references for this exact Setup and User. The
+    /// caller read each reference outside this transaction; this rechecks its grant.
+    pub(super) async fn save_setup_material(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        id: &ProviderSetupId,
+        configuration_revision: i64,
+        material: CredentialMaterial,
     ) -> Result<SetupAuthentication, Error> {
         let mut tx = self.providers.database.begin().await?;
         let authority = self
@@ -815,17 +846,28 @@ impl AccountModule {
         }
         let contract =
             crate::configuration::effective_contract(self.providers.outbound_policy, &loaded)?;
-        super::check_values(&contract, &values)?;
+        match &material {
+            CredentialMaterial::Fields { references, .. } => {
+                // Discovery reads the tools with what it holds, and never reads a store.
+                if discovery {
+                    return Err(Error::SecretReferenceNotAllowed);
+                }
+                self.admit_setup_references(&mut tx, owner, &contract, references)
+                    .await?;
+            }
+            CredentialMaterial::Values(values) => super::check_values(&contract, values)?,
+            CredentialMaterial::OAuth(_) => return Err(Error::AccountInput),
+        }
         if let Some(previous) = load(&mut tx, owner, id).await? {
             if !previous.belongs_to(context.actor()) {
                 return Err(Error::AccountNotFound);
             }
             delete(&mut tx, owner, id).await?;
         }
-        let sealed = self.seal_setup_secret(
+        let sealed = self.seal_setup_material(
             context,
             contract,
-            &values,
+            &material,
             loaded.setup.created_at_unix_nanos(),
         )?;
         insert(&mut tx, owner, id, &sealed).await?;
@@ -864,6 +906,7 @@ impl AccountModule {
             contract: sealed.contract,
             authorized: true,
             provisional_grant_id: Some(sealed.provisional_grant_id),
+            holds_secret_references: sealed.secret_references.is_some(),
             granted_scope: String::new(),
             expires_at_unix_nanos: Some(sealed.expires_at_unix_nanos),
             authorization: None,
@@ -1050,6 +1093,9 @@ impl ProviderModule {
             contract,
             authorized: own.as_ref().is_some_and(|row| row.is_live(now)),
             provisional_grant_id: own.as_ref().map(|row| row.grant_id),
+            holds_secret_references: own
+                .as_ref()
+                .is_some_and(|row| row.secret_references.is_some()),
             granted_scope: own
                 .as_ref()
                 .map(|row| row.granted_scope.clone())
@@ -1349,7 +1395,7 @@ pub(crate) async fn replace_shared(
             .encrypted_credentials
             .as_deref()
             .ok_or(Error::AccountRequired)?,
-        secret_references: None,
+        secret_references: row.secret_references.as_deref(),
         granted_scope: &row.granted_scope,
         token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
     };
@@ -1402,6 +1448,10 @@ pub(crate) async fn promote(
     } = target;
     let caller = match route {
         CredentialRoute::Fixed => None,
+        // A User's own Account never takes a reference, so this Setup's grant cannot become one.
+        CredentialRoute::Caller if row.secret_references.is_some() => {
+            return Err(Error::SecretReferenceNotAllowed);
+        }
         CredentialRoute::Caller => Some(super::intent::Caller::User(
             context.actor().user_id().clone(),
         )),
@@ -1424,7 +1474,7 @@ pub(crate) async fn promote(
                 .encrypted_credentials
                 .as_deref()
                 .ok_or(Error::AccountRequired)?,
-            secret_references: None,
+            secret_references: row.secret_references.as_deref(),
             granted_scope: &row.granted_scope,
             token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
         },

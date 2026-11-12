@@ -92,6 +92,14 @@ A User's own Account does not take one, because a User could otherwise name a pa
 Coral would read it. Provider Setup's temporary use for discovery takes secret entry or OAuth, never a reference.
 A Program cannot set a reference, so an agent-written Program cannot probe the store through the setup check.
 
+Provider setup can set references too, only for the shared Account it would publish. Setup holds the references beside
+the sealed typed values, reads each once to check it and seals nothing it read, and Publication copies them to the
+Account. Discovery refuses one, because it has no account choice yet and would have to read a store to list tools, and
+Publication refuses a grant with references for a `caller` Account without spending the Setup.
+
+Who can inspect an Account in Reef can read its references. A reference is configuration, not a secret, and it stays
+out of Programs, Agents, telemetry and Invocation errors.
+
 ## Fail closed
 
 A reference must resolve when it is saved. At dispatch, an unreachable store, a

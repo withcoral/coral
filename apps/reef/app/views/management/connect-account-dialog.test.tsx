@@ -16,6 +16,7 @@ const authorization = (id: string) => `/workspaces/w/account-authorizations/${id
 const progress = (id: string) => `/workspaces/w/account-authorizations/${id}/progress?${returnTo}`
 const pending: AuthorizationView = {
   secretStores: [],
+  savedReferences: {},
   providerName: 'GitHub',
   scope: 'agent',
   path: authorization('first'),

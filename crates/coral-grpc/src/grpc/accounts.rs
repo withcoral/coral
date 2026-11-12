@@ -8,7 +8,7 @@ use coral_workspace::{AuthenticatedUser, PrincipalId, WorkspaceId};
 use tonic::{Request, Response, Status};
 
 /// Each Credential Field as a value or a reference. A field named twice is refused.
-fn credential_fields(
+pub(super) fn credential_fields(
     values: std::collections::HashMap<String, String>,
     references: std::collections::HashMap<String, wire::CredentialFieldReference>,
 ) -> Result<std::collections::BTreeMap<String, coral_credentials::CredentialField>, Status> {
@@ -116,6 +116,20 @@ fn account_view(value: domain::AccountSummary) -> wire::ProviderAccount {
             .configured_by_user_id
             .map(|id| id.to_string())
             .unwrap_or_default(),
+        secret_references: value
+            .secret_references
+            .into_iter()
+            .map(|(field, reference)| {
+                (
+                    field,
+                    wire::CredentialFieldReference {
+                        secret_store: format!("secretStores/{}", reference.store()),
+                        path: reference.path().to_owned(),
+                        key: reference.key().unwrap_or_default().to_owned(),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 fn account_inspection_view(value: domain::AccountView) -> wire::GetProviderAccountResponse {

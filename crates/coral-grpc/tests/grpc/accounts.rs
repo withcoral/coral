@@ -254,6 +254,7 @@ async fn shared_publication_with_an_unreviewed_grant_fails_without_a_provider() 
         .setups()
         .authorize_provider_setup(request(
             management::AuthorizeProviderSetupRequest {
+                secret_references: std::collections::HashMap::new(),
                 name: setup.name.clone(),
                 configuration_revision: 1,
                 credential_values: token_values(TOKEN),
@@ -478,11 +479,11 @@ async fn secret_references_cross_the_wire_with_their_refusals() {
     let name = accounts
         .start_provider_account_authorization(request(
             management::StartProviderAccountAuthorizationRequest {
-                parent,
+                parent: parent.clone(),
                 request_id: uuid::Uuid::new_v4().to_string(),
                 redirect_uri: "https://reef.example/account/callback".into(),
                 target: Some(Target::Reconnect(management::AccountReconnectTarget {
-                    provider,
+                    provider: provider.clone(),
                     account,
                 })),
             },
@@ -597,4 +598,109 @@ async fn secret_references_cross_the_wire_with_their_refusals() {
         management::SetupAuthorizationState::Succeeded
     );
     assert!(!format!("{completed:?}").contains("stored-canary"));
+
+    // An Account read returns each field's reference, and never a typed value.
+    let saved = shared_account(&f, &parent, provider, &owner).await;
+    assert_eq!(
+        saved.secret_references["token"],
+        management::CredentialFieldReference {
+            secret_store: "secretStores/team".into(),
+            path: "team/forecast".into(),
+            key: "token".into(),
+        }
+    );
+    assert!(!format!("{saved:?}").contains("stored-canary"));
+
+    // Provider setup takes the same references, with the same refusal.
+    let mut setups = f.setups();
+    let pending = setups
+        .create_configured_setup(request(
+            setup_request(
+                parent.clone(),
+                Input::OpenapiDocument(openapi_document(true).into()),
+            ),
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let authorize = |references| {
+        request(
+            management::AuthorizeProviderSetupRequest {
+                name: pending.name.clone(),
+                configuration_revision: 1,
+                credential_values: std::collections::HashMap::new(),
+                secret_references: references,
+            },
+            &owner,
+            "reef",
+        )
+    };
+    let refused = setups
+        .authorize_provider_setup(authorize(reference("secretStores/other", "team/forecast")))
+        .await
+        .unwrap_err();
+    assert_eq!(error_reason(&refused), "SECRET_STORE_NOT_GRANTED");
+    let authorized = setups
+        .authorize_provider_setup(authorize(reference("secretStores/team", "team/forecast")))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(authorized.authorized && authorized.holds_secret_references);
+    assert!(!format!("{authorized:?}").contains("stored-canary"));
+    let published = f
+        .providers()
+        .publish_provider(request(
+            management::PublishProviderRequest {
+                parent: parent.clone(),
+                setup: pending.name.clone(),
+                configuration_revision: 1,
+                namespace: "from_setup".into(),
+                request_id: uuid::Uuid::new_v4().to_string(),
+                account_grant: authorized.provisional_grant_id,
+                credential_route: Some(route(management::credential_route::Kind::Fixed)),
+                ..Default::default()
+            },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .provider;
+    let promoted = shared_account(&f, &parent, published, &owner).await;
+    // Publication copies the whole reference, not just its path.
+    assert_eq!(
+        promoted.secret_references["token"],
+        management::CredentialFieldReference {
+            secret_store: "secretStores/team".into(),
+            path: "team/forecast".into(),
+            key: "token".into(),
+        }
+    );
+}
+
+async fn shared_account(
+    f: &Fixture,
+    parent: &str,
+    provider: String,
+    token: &str,
+) -> management::ProviderAccount {
+    f.accounts()
+        .get_provider_account(request(
+            management::GetProviderAccountRequest {
+                parent: parent.into(),
+                provider,
+                scope: management::ProviderAccountScope::Shared.into(),
+                agent: String::new(),
+            },
+            token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .account
+        .unwrap()
 }

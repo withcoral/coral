@@ -125,6 +125,9 @@ message ProviderAccount {
   google.protobuf.Timestamp connected_time = 7;
   // Configuring Coral User identifier, not a verified upstream identity.
   string configured_by_user = 8;
+  // The Credential Fields a Secret Store holds, by field name. Any other field holds
+  // a typed value, which is never returned.
+  map<string, CredentialFieldReference> secret_references = 9;
 }
 
 // Inspects one exact scope; no all-Users inspection exists.
@@ -251,16 +254,6 @@ message SubmitProviderAccountSecretRequest {
   // Secret References by field name, for the fields a Secret Store holds. Only a
   // shared Account takes one. A field appears here or in credential_values, never both.
   map<string, CredentialFieldReference> secret_references = 4;
-}
-
-// The address of one Credential Field's value in a Secret Store granted to the Workspace.
-message CredentialFieldReference {
-  // secretStores/{store}.
-  string secret_store = 1;
-  // Where the value lives in the store.
-  string path = 2;
-  // The key within the entry, where the store has keys.
-  string key = 3;
 }
 
 // Encoded OAuth callback data, passed only from the Reef server to Coral.

@@ -30,6 +30,7 @@ const view: AccountsView = {
   path: '/accounts',
   scope: 'shared',
   account,
+  credentialSources: [],
   scopes: ['read', 'write'],
   needsCredential: true,
   usesScope: true,
@@ -50,6 +51,7 @@ const authorization: AuthorizationView = {
   grantedScope: '',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
   secretStores: [],
+  savedReferences: {},
   form,
 }
 const workspace = {
@@ -220,6 +222,31 @@ export const Agent: Story = {
     />
   ),
 }
+// Catches: a stored value implied where there is none, or a reference's parts left out.
+export const SharedWithSecretReference: Story = {
+  render: () => (
+    <AccountsPage
+      view={{
+        ...view,
+        scope: 'shared',
+        credentialSources: [
+          { name: 'email', label: 'Email', reference: undefined },
+          {
+            name: 'token',
+            label: 'API token',
+            reference: { store: 'platform', path: 'team/forecast', key: 'token' },
+          },
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText('Email: entered value')).toBeVisible()
+    await expect(
+      canvas.getByText('API token: secret store platform, path team/forecast, key token'),
+    ).toBeVisible()
+  },
+}
 export const SecretEntry: Story = { render: () => <AuthorizationPage view={authorization} /> }
 
 const sharedSecretEntry: AuthorizationView = {
@@ -236,8 +263,9 @@ export const SecretEntryWithSecretStore: Story = {
   render: () => <AuthorizationPage view={sharedSecretEntry} />,
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('radiogroup', { name: 'Value source for Token' })).toBeVisible()
+    await expect(canvas.getByLabelText('Token', { exact: true })).toBeInTheDocument()
     await userEvent.click(canvas.getByRole('radio', { name: 'Use a secret store' }))
-    await expect(canvas.queryByRole('textbox', { name: /token/i })).toBeNull()
+    await expect(canvas.queryByLabelText('Token', { exact: true })).toBeNull()
     await expect(canvas.getByRole('textbox', { name: 'Path' })).toBeRequired()
     await expect(canvas.getByRole('textbox', { name: 'Key' })).toBeRequired()
     // A store is always chosen, so the form cannot post without one.
@@ -252,6 +280,49 @@ export const SecretEntryWithSecretStore: Story = {
       }),
     ).toBeInTheDocument()
     await userEvent.keyboard('{Escape}')
+  },
+}
+// Catches: a reference moved to another store on its own after it lost its grant,
+// though another store is granted and would be the first choice.
+export const ReconnectAfterGrantRevoked: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        secretStores: [{ name: 'platform', blockers: [] }],
+        savedReferences: {
+          token: { store: 'removed', path: 'team/forecast', key: 'token' },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'removed',
+    )
+  },
+}
+// Catches: Reconnect asking for a reference again, or a typed field filled in.
+export const ReconnectWithSavedReference: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        savedReferences: {
+          token: { store: 'research', path: 'team/forecast', key: 'token' },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'research',
+    )
+    await expect(canvas.getByRole('textbox', { name: 'Path' })).toHaveValue('team/forecast')
+    await expect(canvas.getByRole('textbox', { name: 'Key' })).toHaveValue('token')
+    await expect(canvas.queryByLabelText('Token', { exact: true })).toBeNull()
   },
 }
 export const SecretEntryWithSecretStoreProblem: Story = {
