@@ -9,15 +9,23 @@ import "coral/management/v1/provider.proto";
 // current domain authority; Workspace ownership never exposes another User's work.
 service ProviderAccountService {
   // Complete exact-Agent Provider inspection. Never lists Agents or User accounts.
-  rpc ListAgentProviders(ListAgentProvidersRequest) returns (ListAgentProvidersResponse);
+  rpc ListAgentProviders(ListAgentProvidersRequest) returns (ListAgentProvidersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // The authenticated User's own Account for every separate-account Provider.
-  rpc ListUserAccounts(ListUserAccountsRequest) returns (ListUserAccountsResponse);
+  rpc ListUserAccounts(ListUserAccountsRequest) returns (ListUserAccountsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // Inspects one exact Provider Account scope.
-  rpc GetProviderAccount(GetProviderAccountRequest) returns (GetProviderAccountResponse);
+  rpc GetProviderAccount(GetProviderAccountRequest) returns (GetProviderAccountResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // Starts durable secret entry or host-owned OAuth against the target's contract.
   rpc StartProviderAccountAuthorization(StartProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization);
   // Reads only the initiating User's durable authorization.
-  rpc GetProviderAccountAuthorization(GetProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization);
+  rpc GetProviderAccountAuthorization(GetProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // Completes secret entry without returning the submitted value.
   rpc SubmitProviderAccountSecret(SubmitProviderAccountSecretRequest) returns (ProviderAccountAuthorization);
   // Completes setup or account OAuth from host-issued state and exchanges a code once.
@@ -27,7 +35,9 @@ service ProviderAccountService {
   // Scrubs credentials and preserves Account identity and authorization fences.
   rpc DisconnectProviderAccount(DisconnectProviderAccountRequest) returns (google.protobuf.Empty);
   // Inspects only the requesting User's connection workflow.
-  rpc GetAccountConnectionRequest(GetAccountConnectionRequestRequest) returns (AccountConnectionRequest);
+  rpc GetAccountConnectionRequest(GetAccountConnectionRequestRequest) returns (AccountConnectionRequest) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // Declines a pending connection request; first terminal result wins.
   rpc ResolveAccountConnectionRequest(ResolveAccountConnectionRequestRequest) returns (AccountConnectionRequest);
 }

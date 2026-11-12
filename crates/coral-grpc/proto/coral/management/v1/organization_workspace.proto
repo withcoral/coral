@@ -8,7 +8,9 @@ import "coral/management/v1/workspace.proto";
 // Membership there. It grants no access to anything inside a Workspace.
 service OrganizationWorkspaceService {
   // Lists every Workspace with its state and designated Owners.
-  rpc ListOrganizationWorkspaces(ListOrganizationWorkspacesRequest) returns (ListOrganizationWorkspacesResponse);
+  rpc ListOrganizationWorkspaces(ListOrganizationWorkspacesRequest) returns (ListOrganizationWorkspacesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Makes one User a designated Owner of an active Workspace.
   rpc AssignWorkspaceOwner(AssignWorkspaceOwnerRequest) returns (OrganizationWorkspace);
   // Archives a Workspace without a Membership there.

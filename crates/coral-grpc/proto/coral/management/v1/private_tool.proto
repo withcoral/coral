@@ -17,10 +17,14 @@ import "google/protobuf/timestamp.proto";
 // each Agent's Private Tools to a Workspace Owner.
 service PrivateToolService {
   // Lists one page of the caller's own Private Tools in path order, without source or diagnostics.
-  rpc ListPrivateTools(ListPrivateToolsRequest) returns (ListPrivateToolsResponse);
+  rpc ListPrivateTools(ListPrivateToolsRequest) returns (ListPrivateToolsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Returns one Private Tool with its source and saved diagnostics: the
   // caller's own, or an Agent's for a Workspace Owner.
-  rpc GetPrivateTool(GetPrivateToolRequest) returns (PrivateTool);
+  rpc GetPrivateTool(GetPrivateToolRequest) returns (PrivateTool) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Deletes one Private Tool and records its lifecycle Event with the caller
   // as its actor: the caller's own, or an Agent's for a Workspace Owner.
   // Coral keeps no reverse references: Programs that call the path fail at admission.

@@ -936,3 +936,41 @@ async fn agent_and_organization_membership_pages_round_trip_and_bind_their_token
         (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
     );
 }
+
+/// Reef sends a call again after Coral drops the shared HTTP/2 session only
+/// when its method declares an `idempotency_level`. A read without one fails
+/// the page whenever a session ends under it.
+#[test]
+fn every_read_method_declares_that_repeating_it_is_safe() {
+    const READS: [&str; 6] = ["Get", "List", "Browse", "Count", "Inspect", "Summarize"];
+    let mut undeclared = Vec::new();
+    let mut pending = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proto/coral")];
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            pending.extend(
+                std::fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let mut lines = source.lines().map(str::trim).peekable();
+        while let Some(line) = lines.next() {
+            let Some(name) = line.strip_prefix("rpc ") else {
+                continue;
+            };
+            let name = name.split('(').next().unwrap();
+            let declared = lines
+                .peek()
+                .is_some_and(|next| next.starts_with("option idempotency_level = "));
+            if READS.iter().any(|read| name.starts_with(read)) && !declared {
+                undeclared.push(name.to_owned());
+            }
+        }
+    }
+    assert!(
+        undeclared.is_empty(),
+        "add `option idempotency_level = NO_SIDE_EFFECTS;` (or IDEMPOTENT when it records state) to {undeclared:?}"
+    );
+}
