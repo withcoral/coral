@@ -13,6 +13,7 @@ import type { ManagementApi } from './management.server'
 import { privateHeaders } from './management.server'
 import { secretStoreId } from './organization.server'
 import { secretStoreBlockers } from './secret-store-state'
+import { referenceFormView } from './reference-form'
 const MAX_FIELDS = 16
 const MAX_VALUE_LENGTH = 16 * 1024
 const MAX_REFERENCE_LENGTH = 1024
@@ -25,10 +26,11 @@ export const SECRET_STORE_PROBLEMS: Record<string, string> = {
     'This workspace has no grant for this secret store. Ask an organization owner to grant it.',
   SECRET_STORE_UNREACHABLE:
     'Coral cannot reach this secret store. Ask your operator to check its address and outbound settings.',
-  SECRET_ENTRY_NOT_FOUND: 'The secret store has no entry at this path. Check the path.',
+  SECRET_ENTRY_NOT_FOUND:
+    'The secret store has no secret at this reference. Check the path or variable name.',
   SECRET_KEY_NOT_FOUND: 'This entry has no such key. Check the key.',
   SECRET_STORE_PERMISSION_DENIED:
-    'The secret store denied this read. Check the path, or ask your operator to check its policy.',
+    'The secret store denied this read. Check the reference, or ask your operator to check its policy.',
   SECRET_STORE_MALFORMED_RESPONSE: 'The secret store sent an unusable value. Check the entry.',
   SECRET_STORE_NEEDS_ENTERPRISE:
     'This secret store needs the Enterprise Edition. Ask your operator about the Enterprise Edition.',
@@ -49,6 +51,7 @@ export async function offeredSecretStores(
     .map((store) => ({
       name: secretStoreId(store.name),
       blockers: secretStoreBlockers(store.state),
+      form: referenceFormView(store.referenceForm),
     }))
 }
 

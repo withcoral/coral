@@ -124,23 +124,34 @@ impl LoadedServerConfig {
         self.parse()?.credentials.key_env()
     }
 
-    /// The Secret Stores this deployment defines. Reads each store's secret ID
-    /// from the environment and sends nothing.
+    /// The Secret Stores this deployment defines, of the kinds every build has
+    /// and of `kinds`. Reads each store's secret ID from the environment and
+    /// sends nothing; an `env` store keeps the reader for later reads.
     pub(crate) fn secret_stores(
         &self,
         kinds: &coral_secret_store::SecretStoreKinds,
         policy: coral_outbound::DestinationPolicy,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
-        self.secret_stores_from(kinds, policy, &AppEnvironment::env_var)
+        self.secret_stores_from(
+            kinds,
+            policy,
+            &(std::sync::Arc::new(AppEnvironment::env_var) as coral_secret_store::EnvReader),
+        )
     }
 
     pub(super) fn secret_stores_from(
         &self,
         kinds: &coral_secret_store::SecretStoreKinds,
         policy: coral_outbound::DestinationPolicy,
-        env: &dyn Fn(&str) -> Result<Option<String>, std::env::VarError>,
+        env: &coral_secret_store::EnvReader,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
-        super::secret_store_config::build(&self.parse()?.secret_stores, kinds, policy, env)
+        super::secret_store_config::build(
+            &self.raw,
+            &self.parse()?.secret_stores,
+            kinds,
+            policy,
+            env,
+        )
     }
 
     /// Validates all deployment sections after the persistent-state fence.
@@ -159,7 +170,7 @@ impl LoadedServerConfig {
         config.runtime.resolve()?;
         config.search.reconcile_interval()?;
         config.credentials.key_env()?;
-        super::secret_store_config::validate(&config.secret_stores, secret_store_kinds)?;
+        super::secret_store_config::validate(&self.raw, &config.secret_stores, secret_store_kinds)?;
         self.auth_settings()?;
         crate::telemetry::TelemetryConfig::from_toml(&self.raw)?;
         Ok(())

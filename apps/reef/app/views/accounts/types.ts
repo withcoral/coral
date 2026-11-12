@@ -1,5 +1,6 @@
 import type { ProviderLogo } from '@/views/providers/types'
 import type { Crumb, FormContext, ActionResult, WorkspaceView } from '@/views/management/types'
+import type { ReferenceFormView } from '@/lib/reference-form'
 import type { CredentialFieldView, SavedReferenceView } from '@/views/providers/types'
 export type { FormContext, ActionResult }
 
@@ -23,8 +24,16 @@ export interface AccountsView {
   scope: 'shared' | 'agent'
   account?: AccountView
   /** Where each Credential Field's value lives, in name order. Never the value. */
-  /** Each field by name, which is unique where labels need not be. */
-  credentialSources: { name: string; label: string; reference?: SavedReferenceView }[]
+  /**
+   * Each field by name, which is unique where labels need not be. A reference carries
+   * its store's form when Coral sent it.
+   */
+  credentialSources: {
+    name: string
+    label: string
+    reference?: SavedReferenceView
+    form?: ReferenceFormView
+  }[]
   scopes: string[]
   needsCredential: boolean
   usesScope: boolean
@@ -127,4 +136,6 @@ export interface OfferedSecretStore {
   name: string
   /** Empty when Coral can read from the store. A save still checks the read. */
   blockers: string[]
+  /** What a reference to the store holds. */
+  form: ReferenceFormView
 }

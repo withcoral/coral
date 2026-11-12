@@ -10,6 +10,10 @@ import { AccountsPage } from './accounts-page'
 import { AuthorizationPage } from './authorization-page'
 import { UserAccountsPage } from './user-accounts-page'
 import type { AccountsView, AuthorizationView, UserAccountsView } from './types'
+import type { ReferenceFormView } from '@/lib/reference-form'
+
+const pathAndKey: ReferenceFormView = { pathLabel: 'Path', key: { label: 'Key', required: true } }
+const variableName: ReferenceFormView = { pathLabel: 'Variable name', pathPrefix: 'MYCO_' }
 
 const form = { csrf: 'storybook', requestId: 'storybook' }
 const account = {
@@ -236,14 +240,24 @@ export const SharedWithSecretReference: Story = {
             label: 'API token',
             reference: { store: 'platform', path: 'team/forecast', key: 'token' },
           },
+          {
+            name: 'application_key',
+            label: 'Application key',
+            reference: { store: 'env', path: 'MYCO_DD_APP_KEY', key: '' },
+            form: variableName,
+          },
         ],
       }}
     />
   ),
+  // Catches: a reference shown in another kind's words, such as a path for a variable.
   play: async ({ canvas }) => {
     await expect(canvas.getByText('Email: entered value')).toBeVisible()
     await expect(
       canvas.getByText('API token: secret store platform, path team/forecast, key token'),
+    ).toBeVisible()
+    await expect(
+      canvas.getByText('Application key: secret store env, variable name MYCO_DD_APP_KEY'),
     ).toBeVisible()
   },
 }
@@ -253,12 +267,14 @@ const sharedSecretEntry: AuthorizationView = {
   ...authorization,
   scope: 'shared',
   secretStores: [
-    { name: 'platform', blockers: [] },
-    { name: 'research', blockers: ['Needs Enterprise'] },
+    { name: 'platform', blockers: [], form: pathAndKey },
+    { name: 'env', blockers: [], form: variableName },
+    { name: 'research', blockers: ['Needs Enterprise'], form: pathAndKey },
   ],
 }
-// Catches: the typed input submitted beside a reference, a store never chosen, or
-// source controls a screen reader cannot tell apart from another field's.
+// Catches: the typed input submitted beside a reference, a store never chosen, inputs
+// that do not follow the chosen store's kind, or source controls a screen reader cannot
+// tell apart from another field's.
 export const SecretEntryWithSecretStore: Story = {
   render: () => <AuthorizationPage view={sharedSecretEntry} />,
   play: async ({ canvas }) => {
@@ -272,6 +288,14 @@ export const SecretEntryWithSecretStore: Story = {
     await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
       'platform',
     )
+    // An env store's reference is one variable name, with its prefix as a hint.
+    await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
+    await userEvent.click(await within(document.body).findByRole('menuitemradio', { name: 'env' }))
+    const variable = await canvas.findByRole('textbox', { name: 'Variable name' })
+    await expect(variable).toBeRequired()
+    await expect(variable).toHaveAccessibleDescription('Starts with MYCO_')
+    await expect(canvas.queryByRole('textbox', { name: 'Path' })).toBeNull()
+    await expect(canvas.queryByRole('textbox', { name: 'Key' })).toBeNull()
     // A store Coral cannot read now is still offered, and says why in words.
     await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
     await expect(
@@ -289,7 +313,7 @@ export const ReconnectAfterGrantRevoked: Story = {
     <AuthorizationPage
       view={{
         ...sharedSecretEntry,
-        secretStores: [{ name: 'platform', blockers: [] }],
+        secretStores: [{ name: 'platform', blockers: [], form: pathAndKey }],
         savedReferences: {
           token: { store: 'removed', path: 'team/forecast', key: 'token' },
         },

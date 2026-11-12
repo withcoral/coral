@@ -3578,6 +3578,9 @@ impl coral_secret_store::SecretStore for InterferingStore {
         }
         value
     }
+    fn reference_form(&self) -> coral_secret_store::ReferenceForm {
+        self.inner.reference_form()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

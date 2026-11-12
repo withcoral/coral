@@ -1,4 +1,5 @@
 import { SecretStoreState } from '@/generated/coral/management/v1/secret_store_pb'
+import { UNKNOWN_REFERENCE_FORM } from './reference-form'
 import { authRouteTestArgs, authTestContext } from '@/auth/server-context.test-helper'
 import { loader as oauthCallback } from '@/routes/provider-setup-oauth-callback'
 import { commitCallbackReturn } from './provider-publication-attempt/setup.server'
@@ -849,7 +850,20 @@ const submit = (form: FormData) =>
     form,
   )
 
-const connected = (state: ProviderAccountState) => ({
+// An env-like store sends its form; a store that sends none gets the generic one.
+const variableForm = {
+  pathLabel: 'Variable name',
+  pathPrefix: 'MYCO_',
+  keyLabel: '',
+  keyRequired: false,
+}
+const variableView = { pathLabel: 'Variable name', pathPrefix: 'MYCO_' }
+const offered = [
+  { name: 'platform', blockers: [], form: variableView },
+  { name: 'licensed', blockers: ['Needs Enterprise'], form: UNKNOWN_REFERENCE_FORM },
+]
+
+const connected = (state: ProviderAccountState, canManage = false) => ({
   requestedScopes: [],
   credentialFields: {
     email: { label: 'Email', description: '', sensitive: false },
@@ -858,6 +872,7 @@ const connected = (state: ProviderAccountState) => ({
   account: {
     id: 'a',
     state,
+    canManage,
     secretReferences: {
       gone: { secretStore: 'secretStores/platform', path: 'old', key: 'k' },
       token: { secretStore: 'secretStores/platform', path: 'team/forecast', key: 'token' },
@@ -876,7 +891,11 @@ describe('secret references on a shared account', () => {
     mocks.getProvider.mockResolvedValue({ name: 'p', displayName: 'Provider' })
     mocks.listWorkspaceSecretStores.mockResolvedValue({
       secretStores: [
-        { name: 'secretStores/platform', state: SecretStoreState.AVAILABLE },
+        {
+          name: 'secretStores/platform',
+          state: SecretStoreState.AVAILABLE,
+          referenceForm: variableForm,
+        },
         { name: 'secretStores/licensed', state: SecretStoreState.NEEDS_ENTERPRISE },
         { name: 'secretStores/removed', state: SecretStoreState.REMOVED },
       ],
@@ -896,10 +915,7 @@ describe('secret references on a shared account', () => {
   // offered as usable, or a resource name shown.
   it('offers a shared account the stores it can name, and says which cannot read', async () => {
     const view = await loadPending(sharedProvider)
-    expect(view.secretStores).toEqual([
-      { name: 'platform', blockers: [] },
-      { name: 'licensed', blockers: ['Needs Enterprise'] },
-    ])
+    expect(view.secretStores).toEqual(offered)
   })
 
   // Catches: Reconnect asking for saved references again, or a store that lost its
@@ -916,10 +932,7 @@ describe('secret references on a shared account', () => {
     expect(view.savedReferences).toEqual({
       token: { store: 'removed', path: 'team/forecast', key: 'token' },
     })
-    expect(view.secretStores).toEqual([
-      { name: 'platform', blockers: [] },
-      { name: 'licensed', blockers: ['Needs Enterprise'] },
-    ])
+    expect(view.secretStores).toEqual(offered)
   })
 
   // Catches: a disconnected account described as holding a value, a reference shown
@@ -936,6 +949,40 @@ describe('secret references on a shared account', () => {
     ])
     mocks.getProviderAccount.mockResolvedValue(connected(ProviderAccountState.DISCONNECTED))
     expect((await load('scope=shared')).credentialSources).toEqual([])
+  })
+
+  // Catches: a reference shown in generic words to someone who may list its store, or
+  // a page that fails for someone who may not.
+  it("describes a reference in its store's words only for someone who can change it", async () => {
+    const token = { store: 'platform', path: 'team/forecast', key: 'token' }
+    mocks.getProviderAccount.mockResolvedValue(connected(ProviderAccountState.READY, true))
+    mocks.listWorkspaceSecretStores.mockResolvedValue({
+      secretStores: [{ name: 'secretStores/platform', referenceForm: variableForm }],
+    })
+    expect((await load('scope=shared')).credentialSources[1]).toEqual({
+      name: 'token',
+      label: 'Token',
+      reference: token,
+      form: variableView,
+    })
+    // Someone who cannot change the account never asks for the store list.
+    mocks.listWorkspaceSecretStores.mockClear()
+    mocks.getProviderAccount.mockResolvedValue(connected(ProviderAccountState.READY, false))
+    expect((await load('scope=shared')).credentialSources[1]).toEqual({
+      name: 'token',
+      label: 'Token',
+      reference: token,
+    })
+    expect(mocks.listWorkspaceSecretStores).not.toHaveBeenCalled()
+    mocks.getProviderAccount.mockResolvedValue(connected(ProviderAccountState.READY, true))
+    mocks.listWorkspaceSecretStores.mockRejectedValue(
+      new ConnectError('permission denied', Code.PermissionDenied),
+    )
+    expect((await load('scope=shared')).credentialSources[1]).toEqual({
+      name: 'token',
+      label: 'Token',
+      reference: token,
+    })
   })
 
   // Catches: a User offered a reference that Coral refuses.

@@ -6,6 +6,7 @@ import { Picker } from '@/wax/components/picker'
 import { SegmentedControl } from '@/wax/components/segmented-control'
 import * as styles from '@/views/management/credential-fields.css'
 import type { OfferedSecretStore } from './types'
+import { UNKNOWN_REFERENCE_FORM } from '@/lib/reference-form'
 
 const SOURCES = [
   { value: 'value', label: 'Enter value' },
@@ -13,8 +14,9 @@ const SOURCES = [
 ] as const
 
 /**
- * One Credential Field on a shared account: a typed value, or the store, path and key
- * of a secret store entry. Only the chosen inputs are in the form.
+ * One Credential Field on a shared account: a typed value, or a reference to a secret
+ * store entry. The chosen store says what the reference holds: a path and a key, or
+ * one variable name. Only the chosen inputs are in the form.
  */
 export function CredentialSource({
   value,
@@ -38,9 +40,13 @@ export function CredentialSource({
   // the reference never moves to another store on its own.
   const choices =
     saved && !stores.some(({ name }) => name === saved.store)
-      ? [...stores, { name: saved.store, blockers: ['Unavailable'] }]
+      ? [...stores, { name: saved.store, blockers: ['Unavailable'], form: UNKNOWN_REFERENCE_FORM }]
       : stores
+  // Each store's kind says what its references hold, so the inputs follow the store.
+  const form = choices.find(({ name }) => name === store)?.form ?? UNKNOWN_REFERENCE_FORM
+  const kept = store === saved?.store ? saved : undefined
   const pathId = useId()
+  const hintId = useId()
   const keyId = useId()
   return (
     <>
@@ -69,28 +75,35 @@ export function CredentialSource({
               onChange={setStore}
             />
           </div>
-          <div className={styles.field}>
+          {/* A new store starts empty, so a path for one kind never reaches another. */}
+          <div className={styles.field} key={`path-${store}`}>
             <Typography.BodySmallStrong as="label" htmlFor={pathId}>
-              Path
+              {form.pathLabel}
             </Typography.BodySmallStrong>
             <Inputs.TextInput
               id={pathId}
               name={referenceInputName(field, 'path')}
-              defaultValue={saved?.path}
+              defaultValue={kept?.path}
+              ariaDescribedBy={form.pathPrefix ? hintId : undefined}
               required
             />
+            {form.pathPrefix && (
+              <Typography.BodySmall id={hintId}>Starts with {form.pathPrefix}</Typography.BodySmall>
+            )}
           </div>
-          <div className={styles.field}>
-            <Typography.BodySmallStrong as="label" htmlFor={keyId}>
-              Key
-            </Typography.BodySmallStrong>
-            <Inputs.TextInput
-              id={keyId}
-              name={referenceInputName(field, 'key')}
-              defaultValue={saved?.key}
-              required
-            />
-          </div>
+          {form.key && (
+            <div className={styles.field} key={`key-${store}`}>
+              <Typography.BodySmallStrong as="label" htmlFor={keyId}>
+                {form.key.label}
+              </Typography.BodySmallStrong>
+              <Inputs.TextInput
+                id={keyId}
+                name={referenceInputName(field, 'key')}
+                defaultValue={kept?.key}
+                required={form.key.required}
+              />
+            </div>
+          )}
         </div>
       )}
     </>

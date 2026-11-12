@@ -5,6 +5,9 @@
 //! the build lacks is still defined, so a deployment can move between builds:
 //! Coral starts, warns, and fails every read of it.
 //!
+//! Every build has the `env` kind, which reads the environment through the
+//! reader bootstrap hands it. A launching binary cannot replace it.
+//!
 //! Each entry decodes on its own, so a failure can name the store as well as
 //! the field. A name is only repeated once it has passed validation, because
 //! an operator can paste a secret under the wrong key.
@@ -12,8 +15,9 @@
 use std::sync::Arc;
 
 use coral_secret_store::{
-    BuildEnvironment, MissingKind, SecretStore, SecretStoreFactory, SecretStoreKind,
-    SecretStoreKinds, SecretStoreName, SecretStores, SettingError, StoreSettings,
+    BuildEnvironment, EnvKind, EnvReader, MissingKind, NamedVariables, SecretStore,
+    SecretStoreFactory, SecretStoreKind, SecretStoreKinds, SecretStoreName, SecretStores,
+    SettingError, StoreSettings,
 };
 
 use super::AppError;
@@ -100,10 +104,63 @@ fn entry<'a>(
     })
 }
 
+/// The launching binary's kinds, then the kinds every build has, which
+/// replace any of the same name.
+fn with_core_kinds(kinds: &SecretStoreKinds, read: EnvReader) -> SecretStoreKinds {
+    SecretStoreKinds::default()
+        .with_all(kinds)
+        .with(Arc::new(EnvKind::new(read)))
+}
+
+/// Every environment variable config names: the value of each key that ends
+/// in `_env`, by convention, one string or a list of them.
+fn named_variables(config: &str) -> Result<NamedVariables, AppError> {
+    fn walk(value: &toml::Value, path: &str, named: &mut Vec<(String, String)>) {
+        match value {
+            toml::Value::Table(table) => {
+                for (key, value) in table {
+                    let path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    if key.ends_with("_env") {
+                        let variables = match value {
+                            toml::Value::Array(values) => values.iter().collect(),
+                            value => vec![value],
+                        };
+                        named.extend(
+                            variables
+                                .into_iter()
+                                .filter_map(toml::Value::as_str)
+                                .map(|name| (path.clone(), name.trim().to_owned())),
+                        );
+                    } else {
+                        walk(value, &path, named);
+                    }
+                }
+            }
+            toml::Value::Array(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    walk(value, &format!("{path}[{index}]"), named);
+                }
+            }
+            _ => {}
+        }
+    }
+    let config: toml::Table =
+        toml::from_str(config).map_err(|_error| invalid("the file is not a TOML table"))?;
+    let mut named = Vec::new();
+    walk(&toml::Value::Table(config), "", &mut named);
+    Ok(NamedVariables::new(named))
+}
+
 fn entries<'a>(
+    config: &str,
     raw: &[toml::Value],
     kinds: &'a SecretStoreKinds,
 ) -> Result<Vec<Entry<'a>>, AppError> {
+    let named = named_variables(config)?;
     let mut stores: Vec<Entry<'a>> = Vec::with_capacity(raw.len());
     for (index, raw) in raw.iter().enumerate() {
         let store = entry(index, raw, kinds)?;
@@ -115,7 +172,7 @@ fn entries<'a>(
         }
         if let Some(factory) = store.factory {
             factory
-                .validate(&store.settings)
+                .validate(&store.settings, &named)
                 .map_err(|error| rejected(&store.label, &error))?;
         }
         stores.push(store);
@@ -123,22 +180,34 @@ fn entries<'a>(
     Ok(stores)
 }
 
-/// Checks each store's settings without reading the environment.
-pub(super) fn validate(raw: &[toml::Value], kinds: &SecretStoreKinds) -> Result<(), AppError> {
-    entries(raw, kinds).map(drop)
+/// Checks each store's settings without reading the environment. `config`
+/// is the whole file, whose `*_env` settings an `env` store stays clear of.
+pub(super) fn validate(
+    config: &str,
+    raw: &[toml::Value],
+    kinds: &SecretStoreKinds,
+) -> Result<(), AppError> {
+    // Validation reads no variable.
+    let kinds = with_core_kinds(kinds, Arc::new(|_: &str| Ok(None)));
+    entries(config, raw, &kinds).map(drop)
 }
 
 /// Builds the stores. No request leaves here, so an unreachable store does
 /// not stop Coral from starting; a missing secret does.
 pub(super) fn build(
+    config: &str,
     raw: &[toml::Value],
     kinds: &SecretStoreKinds,
     policy: coral_outbound::DestinationPolicy,
-    env: &dyn Fn(&str) -> Result<Option<String>, std::env::VarError>,
+    env: &EnvReader,
 ) -> Result<SecretStores, AppError> {
-    let environment = BuildEnvironment { policy, env };
+    let kinds = with_core_kinds(kinds, Arc::clone(env));
+    let environment = BuildEnvironment {
+        policy,
+        env: &**env,
+    };
     let mut stores = Vec::with_capacity(raw.len());
-    for entry in entries(raw, kinds)? {
+    for entry in entries(config, raw, &kinds)? {
         let store: Arc<dyn SecretStore> = if let Some(factory) = entry.factory {
             factory
                 .build(&entry.settings, &environment)
@@ -162,8 +231,8 @@ mod tests {
 
     use coral_outbound::DestinationPolicy;
     use coral_secret_store::{
-        BuildEnvironment, Error, SecretReference, SecretStore, SecretStoreFactory, SecretStoreKind,
-        SecretStoreKinds, SecretStores, SettingError, StoreSettings, StoreStatus,
+        BuildEnvironment, Error, NamedVariables, SecretReference, SecretStore, SecretStoreFactory,
+        SecretStoreKind, SecretStoreKinds, SecretStores, SettingError, StoreSettings, StoreStatus,
     };
     use coral_test_support::InMemorySecretStore;
     use serde::Deserialize;
@@ -188,7 +257,11 @@ mod tests {
         fn kind(&self) -> &SecretStoreKind {
             &self.0
         }
-        fn validate(&self, settings: &StoreSettings) -> Result<(), SettingError> {
+        fn validate(
+            &self,
+            settings: &StoreSettings,
+            _named: &NamedVariables,
+        ) -> Result<(), SettingError> {
             let settings: TestSettings = settings.decode()?;
             if settings.path.is_empty() {
                 return Err(SettingError::new("path", "must not be empty"));
@@ -220,10 +293,94 @@ mod tests {
     }
 
     fn build(raw: &str, secret: Option<&str>) -> Result<SecretStores, AppError> {
-        let (_temp, config) = load(raw);
-        config.secret_stores_from(&kinds(), DestinationPolicy::default(), &|name| {
-            Ok(secret.filter(|_| name == "SECRET").map(str::to_owned))
+        let secret = secret.map(str::to_owned);
+        build_with(raw, &kinds(), move |name| {
+            secret.clone().filter(|_| name == "SECRET")
         })
+    }
+
+    fn build_with(
+        raw: &str,
+        kinds: &SecretStoreKinds,
+        env: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) -> Result<SecretStores, AppError> {
+        let (_temp, config) = load(raw);
+        config.secret_stores_from(
+            kinds,
+            DestinationPolicy::default(),
+            &(Arc::new(move |name: &str| Ok(env(name))) as coral_secret_store::EnvReader),
+        )
+    }
+
+    /// The `env` kind is Community: every build has it, beside what the
+    /// launching binary registers.
+    #[tokio::test]
+    async fn every_build_reads_an_env_store() {
+        let raw = "[[secret_stores]]\nname = 'env'\nkind = 'env'\nprefix = 'MYCO_'\n";
+        let stores = build_with(raw, &SecretStoreKinds::default(), |name| {
+            (name == "MYCO_API_KEY").then(|| "sk-live-value".to_owned())
+        })
+        .unwrap();
+        let listed: Vec<_> = stores
+            .list()
+            .map(|(name, kind, status)| (name.as_str(), kind.name(), kind.label(), status))
+            .collect();
+        assert_eq!(
+            listed,
+            [(
+                "env",
+                "env",
+                "Environment variables",
+                StoreStatus::Available
+            )]
+        );
+        let reference = SecretReference::new("env".into(), "MYCO_API_KEY".into(), None).unwrap();
+        let value = stores.get("env").unwrap().read(&reference).await.unwrap();
+        assert_eq!(value.expose(), "sk-live-value");
+    }
+
+    /// An env store's prefix stays clear of every variable another setting
+    /// names, and the error names that setting, not the variable.
+    #[test]
+    fn an_env_prefix_must_not_cover_a_variable_config_names() {
+        let env_store = "[[secret_stores]]\nname = 'env'\nkind = 'env'\nprefix = 'MYCO_'\n";
+        for (raw, setting) in [
+            (
+                "[credentials]\nkey_env = ' MYCO_KEY '\n".to_owned(),
+                "credentials.key_env",
+            ),
+            (
+                "[database]\nbackend = 'postgres'\nurl_env = 'MYCO_DATABASE_URL'\n".to_owned(),
+                "database.url_env",
+            ),
+            (
+                "[listeners.run_executor]\ntoken_env = ['OTHER', 'MYCO_TOKEN']\n".to_owned(),
+                "listeners.run_executor.token_env",
+            ),
+            (
+                store("vault").replace("'SECRET'", "'MYCO_SECRET'"),
+                "secret_stores[0].secret_env",
+            ),
+        ] {
+            let raw = format!("{raw}{env_store}");
+            let index = usize::from(raw.contains("name = 'vault'"));
+            let Err(AppError::FailedPrecondition(error)) = validate(&raw) else {
+                panic!("{raw}: an env prefix over a named variable must fail validation");
+            };
+            assert_eq!(
+                error,
+                format!(
+                    "server configuration is invalid: secret_stores[{index}] (env).prefix: \
+                     covers the variable that {setting} names"
+                ),
+                "{raw}"
+            );
+        }
+        validate(&format!(
+            "[credentials]\nkey_env = 'OTHER_KEY'\n{}{env_store}",
+            store("vault")
+        ))
+        .expect("no named variable is under the prefix");
     }
 
     fn validate(raw: &str) -> Result<(), AppError> {

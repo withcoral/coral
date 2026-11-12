@@ -25,7 +25,8 @@
   not hold state between a client's requests in the Adapter, and do not send a
   client anything outside the response to its own request.
 - Read process environment only at process bootstrap. Pass explicit values to
-  domain code.
+  domain code. The `env` Secret Store is the one exception: bootstrap hands it
+  a reader, and it reads only under its guarded prefix (ADR 0036).
 - Route untrusted outbound HTTP through `coral-outbound::Client`. Pass the
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See
