@@ -7,6 +7,7 @@ import { AgentSettingsPage } from './agent-settings-page'
 import { AgentsPage } from './agents-page'
 import { ManagementError } from './management-error'
 import { OrganizationMembersPage } from './organization-members-page'
+import { OrganizationSecretStoresPage } from './organization-secret-stores-page'
 import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
 import { Activity } from '@/views/activity/activity'
@@ -1313,6 +1314,31 @@ export const RemoveSoleOwnerNoCandidate: Story = {
     )
     await expect(dialog.getByRole('button', { name: 'Remove from organization' })).toBeDisabled()
   },
+}
+
+// Organization secret stores
+export const OrganizationSecretStores: Story = {
+  render: () => (
+    <OrganizationSecretStoresPage
+      stores={[
+        { name: 'platform', kind: 'Vault KV v2', blockers: [] },
+        { name: 'research', kind: 'Vault KV v2', blockers: ['Needs Enterprise'] },
+      ]}
+    />
+  ),
+  parameters: { initialEntry: '/organization/secret-stores' },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
+    const row = within(canvas.getByRole('row', { name: /platform/ }))
+    await expect(row.getByText('Vault KV v2')).toBeVisible()
+    await expect(row.getByText('Available')).toBeVisible()
+    const licensed = within(canvas.getByRole('row', { name: /research/ }))
+    await expect(licensed.getByText('Needs Enterprise')).toBeVisible()
+  },
+}
+export const OrganizationSecretStoresEmpty: Story = {
+  render: () => <OrganizationSecretStoresPage stores={[]} />,
+  parameters: { initialEntry: '/organization/secret-stores' },
 }
 
 // Organization workspaces

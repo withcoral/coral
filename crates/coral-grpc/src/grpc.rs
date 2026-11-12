@@ -10,6 +10,7 @@ mod policies;
 mod private_tools;
 mod providers;
 mod releases;
+mod secret_stores;
 mod shared_tools;
 mod usage_data;
 mod workspaces;
@@ -59,6 +60,8 @@ pub struct Dependencies {
     pub releases: Option<coral_release::ReleaseCheck>,
     /// The deployment's usage data; absent where the application composes none.
     pub usage: Option<coral_usage::UsageData>,
+    /// The Secret Stores the operator defined, for an Organization Owner.
+    pub secret_stores: coral_administration::SecretStoreInventory,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -100,6 +103,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
         usage: dependencies.usage,
+        secret_stores: dependencies.secret_stores,
     };
     let mut routes = tonic::service::Routes::default()
         .add_service(
@@ -150,6 +154,11 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             management::usage_data_service_server::UsageDataServiceServer::new(services.clone()),
         )
         .add_service(
+            management::secret_store_service_server::SecretStoreServiceServer::new(
+                services.clone(),
+            ),
+        )
+        .add_service(
             management::private_tool_service_server::PrivateToolServiceServer::new(
                 services.clone(),
             ),
@@ -195,6 +204,7 @@ struct GrpcServices {
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<coral_usage::UsageData>,
+    secret_stores: coral_administration::SecretStoreInventory,
 }
 
 impl GrpcServices {

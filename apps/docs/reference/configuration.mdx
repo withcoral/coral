@@ -117,6 +117,25 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 | ------- | -------------------------------------------------- | -------- | ------- |
 | `check` | Check GitHub for a newer Coral release when `true` | No       | `false` |
 
+### `[[secret_stores]]`
+
+Defines a connection to a secrets system you run. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name, kind and status in the account menu, under **Secret stores**.
+
+Each store has a `kind`: the secrets system it connects to. The other keys in its table depend on the kind.
+
+| Key    | Description                                                                                                | Required | Default |
+| ------ | ---------------------------------------------------------------------------------------------------------- | -------- | ------- |
+| `name` | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit | Yes      | N/A     |
+| `kind` | The secrets system. The other keys depend on the kind.                                                     | Yes      | N/A     |
+
+A store's name stands for one trust boundary. To point at a different store, add a new store under a new name.
+
+Coral reads this section when it starts, and stores no credential for a store in its database.
+
+- A malformed store stops Coral from starting. The error names the store and the field.
+- An unreachable store does not stop Coral from starting.
+- A store whose kind your build of Coral cannot read does not stop Coral from starting. Coral logs a warning, shows the store as **Not in this build**, and every read from it fails. Its grants and references stay.
+
 ### `[otel]`
 
 Controls telemetry export to an OpenTelemetry endpoint.

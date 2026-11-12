@@ -46,6 +46,9 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
+//! [`SecretStoreInventory`] shows an Organization Owner the Secret Stores the
+//! operator defined.
+//!
 //! This Module depends on Workspace, Provider, Tools, Policy, Auth, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
@@ -53,12 +56,14 @@
 //! post-commit cleanup is required.
 mod private_tools;
 mod providers;
+mod secret_stores;
 mod shared_tools;
 mod tool_rules;
 mod workspaces;
 
 pub use private_tools::PrivateToolWorkflow;
 pub use providers::ProviderWorkflow;
+pub use secret_stores::SecretStoreInventory;
 pub use shared_tools::SharedToolWorkflow;
 pub use workspaces::WorkspaceWorkflow;
 
