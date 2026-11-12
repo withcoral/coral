@@ -63,7 +63,8 @@ impl From<coral_search::StorageError> for AppError {
     fn from(error: coral_search::StorageError) -> Self {
         match error {
             coral_search::StorageError::Database(error) => error.into(),
-            coral_search::StorageError::MissingFeature { .. } => {
+            coral_search::StorageError::MissingFeature { .. }
+            | coral_search::StorageError::UnexpectedVectorTable { .. } => {
                 Self::FailedPrecondition(error.to_string())
             }
         }
@@ -104,13 +105,27 @@ mod tests {
 
     #[test]
     fn search_storage_failures_an_operator_can_fix_are_preconditions() {
-        let missing = AppError::from(coral_search::StorageError::MissingFeature {
-            database: "Postgres 17.10".to_string(),
-            feature: "pg_trgm extension",
-            cause: "permission denied".to_string(),
-            remedy: "install it",
-        });
-        assert!(matches!(missing, AppError::FailedPrecondition(_)));
-        assert!(missing.to_string().contains("pg_trgm extension"));
+        for (error, named) in [
+            (
+                coral_search::StorageError::MissingFeature {
+                    database: "Postgres 17.10".to_string(),
+                    feature: "pg_trgm extension",
+                    cause: "permission denied".to_string(),
+                    remedy: "install it",
+                },
+                "pg_trgm extension",
+            ),
+            (
+                coral_search::StorageError::UnexpectedVectorTable {
+                    column_type: Some("vector(384)".to_string()),
+                    expected_dimension: 384,
+                },
+                "found vector(384)",
+            ),
+        ] {
+            let error = AppError::from(error);
+            assert!(matches!(error, AppError::FailedPrecondition(_)), "{error}");
+            assert!(error.to_string().contains(named), "{error}");
+        }
     }
 }

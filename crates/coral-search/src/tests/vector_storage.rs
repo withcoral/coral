@@ -51,6 +51,48 @@ async fn a_reboot_keeps_the_vectors_and_another_dimension_recreates_the_table() 
 }
 
 #[tokio::test]
+async fn a_vector_table_without_a_halfvec_of_fixed_dimension_stops_the_boot_and_stays() {
+    coral_test_support::database_only!(Postgres);
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    for (embedding_column, found) in [
+        ("", None),
+        (", embedding vector(3)", Some("vector(3)")),
+        (", embedding halfvec", Some("halfvec")),
+    ] {
+        fixture
+            .execute_fixture_sql(&format!(
+                "DROP TABLE IF EXISTS search_entity_embeddings; \
+                 CREATE TABLE search_entity_embeddings (doc_id TEXT NOT NULL{embedding_column}); \
+                 INSERT INTO search_entity_embeddings (doc_id) VALUES ('kept')"
+            ))
+            .await
+            .expect("store a vector table of another shape");
+
+        let refused = prepare_vector_table(&database, VectorStorage::On { dimension: 3 }).await;
+
+        let Err(StorageError::UnexpectedVectorTable {
+            column_type,
+            expected_dimension,
+        }) = refused
+        else {
+            panic!("{embedding_column:?} must stop the boot: {refused:?}");
+        };
+        assert_eq!((column_type.as_deref(), expected_dimension), (found, 3));
+        assert_eq!(
+            vector_type(&database).await.as_deref(),
+            found,
+            "{embedding_column:?}: the boot changed the column"
+        );
+        assert_eq!(
+            stored_doc_ids(&database).await,
+            ["kept"],
+            "{embedding_column:?}: the boot changed the rows"
+        );
+    }
+}
+
+#[tokio::test]
 async fn coral_instances_that_boot_at_once_all_start() {
     coral_test_support::database_only!(Postgres);
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
@@ -128,6 +170,19 @@ async fn stored_vectors(database: &Database) -> Vec<String> {
         .await
         .expect("read the stored vectors");
     rows.into_iter().map(|(vector,)| vector).collect()
+}
+
+async fn stored_doc_ids(database: &Database) -> Vec<String> {
+    let rows: Vec<(String,)> = database
+        .fetch_all(
+            Query::select()
+                .column(Alias::new("doc_id"))
+                .from(Alias::new("search_entity_embeddings"))
+                .to_owned(),
+        )
+        .await
+        .expect("read the stored rows");
+    rows.into_iter().map(|(doc_id,)| doc_id).collect()
 }
 
 /// The type of the vector column in this fixture's own schema, or `None`
