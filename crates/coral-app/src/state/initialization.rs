@@ -37,6 +37,7 @@ use coral_db::{Database, DatabaseOptions};
 pub(crate) struct InitializedState {
     database: Arc<Database>,
     credential_key_path: std::path::PathBuf,
+    state_dir: std::path::PathBuf,
     lock: StateLock,
 }
 
@@ -51,6 +52,12 @@ impl InitializedState {
     /// names a secret-held key instead; bootstrap makes that choice.
     pub(crate) fn credential_key_path(&self) -> &std::path::Path {
         &self.credential_key_path
+    }
+
+    /// The state root (the layout's config directory). It holds the
+    /// configuration, the SQLite database and the other files of the state.
+    pub(crate) fn state_dir(&self) -> &std::path::Path {
+        &self.state_dir
     }
 }
 
@@ -103,6 +110,7 @@ where
 
     Ok(InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),
+        state_dir: layout.config_dir().to_path_buf(),
         database: Arc::new(database),
         lock,
     })

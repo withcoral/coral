@@ -6,6 +6,7 @@ mod error;
 mod health;
 mod periodic;
 mod runtime;
+mod search_model;
 mod secret_store_config;
 mod server;
 mod server_config;
@@ -16,6 +17,7 @@ pub use runtime::{
     Extensions, Launch, MigrationProgress, MigrationReport, RunningRuntime, RuntimeError,
     start_runtime,
 };
+pub use search_model::SearchModel;
 pub use server::{PreparedServerBuilder, RunningServer, ServerBuilder, ServerMode};
 pub use server_config::{
     LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, ServeSettings, SessionAuthSettings,
