@@ -268,6 +268,12 @@ spec:
           volumeMounts:
             - name: state
               mountPath: /var/lib/coral
+          # Coral updates its database before it listens.
+          startupProbe:
+            grpc:
+              port: 14555
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             grpc:
               port: 14555
@@ -383,6 +389,12 @@ spec:
           volumeMounts:
             - name: state
               mountPath: /var/lib/coral
+          # Coral updates its database before it listens.
+          startupProbe:
+            grpc:
+              port: 14555
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             grpc:
               port: 14555
@@ -441,6 +453,43 @@ kubectl apply -f coral.yaml
 ```
 
 4. Wait for the deployments to stabilize. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client via `https://mcp.<coral-host>`.
+
+## Upgrade
+
+Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first.
+
+1. Back up Coral's state.
+   - **Postgres.** Take a dump or a snapshot of the database, and keep the `coral-secrets` values with it.
+   - **SQLite.** Snapshot the `coral-state` volume with your storage's snapshot tool. To copy its files instead, stop Coral first and wait for its pod to go:
+
+     ```shell
+     kubectl -n coral scale deployment/coral --replicas=0
+     kubectl -n coral wait --for=delete pod -l app=coral --timeout=2m
+     ```
+
+2. Deploy the new version. With the `latest` tags of this guide, restart both Deployments:
+
+   ```shell
+   kubectl -n coral rollout restart deployment/coral deployment/coral-web
+   ```
+
+   If you pin a version, such as `ghcr.io/withcoral/coral:1.6.0`, change both image tags in your manifests and apply them instead:
+
+   ```shell
+   kubectl apply -f common.yaml -f coral.yaml
+   ```
+
+3. If you stopped Coral for the backup, start it again:
+
+   ```shell
+   kubectl -n coral scale deployment/coral --replicas=1
+   ```
+
+4. Check the rollout:
+
+   ```shell
+   kubectl -n coral rollout status deployment/coral
+   ```
 
 ## Offering a Coral plugin
 
