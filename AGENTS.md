@@ -148,8 +148,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   after three, constants in `crates/coral-run/src/execution.rs`), and the
   supervisor of a panicked owner task writes the same one Interrupted chunk.
 - A write to a source never touches the Universal Search tables, and they keep
-  no foreign key to a source but the Workspace. Notify `SearchIndex` after the
-  commit with ids alone; its reconcile pass repairs what a notification missed
+  no foreign key to a source but the Workspace (the vector table keeps none).
+  Notify `SearchIndex` after the commit with ids alone; its reconcile pass
+  repairs what a notification missed
   ([ADR 0017](docs/adr/0017-universal-search-never-gates-the-catalog.md)).
 - The transaction that removes a Private or a Shared Tool also removes its
   exact rules: the caller that owns the transaction joins
@@ -166,7 +167,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Add every schema migration to `crates/coral-db/migrations`, the one shared
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to
-  both `postgres/` and `sqlite/` instead.
+  both `postgres/` and `sqlite/` instead. The one exception is the Universal
+  Search vector table, which
+  [ADR 0035](docs/adr/0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)
+  keeps out of the chain so that a Postgres without pgvector still runs it.
 - Change a schema only by adding a migration. Never delete a migration that
   is on `main`, or change its file name or bytes: databases created from an
   earlier `main` must keep booting.

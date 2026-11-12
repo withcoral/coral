@@ -421,7 +421,7 @@ mod tests {
         coral_search::prepare_storage(&db)
             .await
             .expect("check the search features");
-        super::super::migrations::migrate_current(&db)
+        super::super::migrations::migrate_current(&db, &|_| {})
             .await
             .expect("migrate fresh Postgres schema");
         validate_database_state(&fresh)

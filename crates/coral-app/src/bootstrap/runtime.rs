@@ -34,6 +34,11 @@ pub struct Extensions {
     pub edition: coral_edition::EditionCheck,
 }
 
+pub use coral_db::MigrationProgress;
+
+/// Where startup reports each database migration step it applies.
+pub type MigrationReport = std::sync::Arc<dyn Fn(MigrationProgress<'_>) + Send + Sync + 'static>;
+
 /// What the launching process says about this launch.
 ///
 /// [`Launch::from_env`] reads it once at process bootstrap.
@@ -59,6 +64,9 @@ pub struct Launch {
     /// Compile in this process instead of on Run Executors: for a test that
     /// starts Coral in its own process, whose binary is no `coral`.
     pub compile_in_process: bool,
+    /// Where startup reports each database migration step it applies. They
+    /// run before telemetry starts, so without this a long step is silent.
+    pub migration_report: Option<MigrationReport>,
 }
 
 impl Launch {
@@ -84,6 +92,10 @@ impl Launch {
         };
         let builder = match self.usage_environment {
             Some(environment) => builder.with_usage_environment(environment),
+            None => builder,
+        };
+        let builder = match self.migration_report {
+            Some(report) => builder.with_migration_report(report),
             None => builder,
         };
         if self.desktop {

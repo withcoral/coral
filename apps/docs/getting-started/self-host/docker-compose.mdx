@@ -276,6 +276,36 @@ Each `public_url` is an origin: a scheme, a host and an optional port, with no p
 
 The redirect URI to register is then `https://<coral-host>:8443/auth/oidc/callback`.
 
+## Upgrade
+
+Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first. Run these commands in the directory of your compose file.
+
+1. Back up Coral's state. With Postgres, take a dump or a snapshot of the database, and keep your `.env` file with it. With SQLite, stop Coral and archive the state volume:
+
+   ```shell
+   docker compose stop coral-web coral
+   docker run --rm --volumes-from "$(docker compose ps -aq coral)" -v "$PWD":/backup busybox \
+     tar czf /backup/coral-state.tar.gz -C /var/lib/coral .
+   ```
+
+2. If your compose file pins a version, such as `ghcr.io/withcoral/coral:1.6.0`, change both image tags to the new version.
+
+3. Pull the new images and start them:
+
+   ```shell
+   docker compose pull coral coral-web
+   docker compose up -d coral coral-web
+   ```
+
+To return to an earlier version with SQLite, stop Coral, set both image tags to that version, and restore the archive before you start it:
+
+```shell
+docker compose stop coral-web coral
+docker run --rm --volumes-from "$(docker compose ps -aq coral)" -v "$PWD":/backup busybox \
+  sh -c 'find /var/lib/coral -mindepth 1 -delete && tar xzf /backup/coral-state.tar.gz -C /var/lib/coral'
+docker compose up -d coral coral-web
+```
+
 ## Troubleshooting
 
 - **`coral-web` cannot reach the auth server.** `coral-web` calls the auth server at `CORAL_WEB_AUTH_ISSUER`, its public URL, from inside the compose network. That hostname must resolve and route from the containers, not only from your browser.

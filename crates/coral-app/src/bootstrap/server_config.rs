@@ -54,6 +54,8 @@ pub(crate) struct Launcher {
     pub(crate) extensions: super::runtime::Extensions,
     /// Compile in this process: a test that starts Coral in its own process.
     pub(crate) compile_in_process: bool,
+    /// Where startup reports each database migration step it applies.
+    pub(crate) migration_report: Option<super::runtime::MigrationReport>,
 }
 
 /// Local auth support's default port under Desktop, which registers it as a
