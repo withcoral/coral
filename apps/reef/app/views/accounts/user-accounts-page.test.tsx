@@ -1,8 +1,8 @@
 /** @vitest-environment happy-dom */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { data, useLoaderData, type ActionFunctionArgs } from 'react-router'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, onTestFinished, vi } from 'vitest'
 import type { ActionCount } from '@/lib/activity-live-types'
 import type { ActionSignal } from '@/lib/use-action-signal'
 import { renderRoute, shellSignal } from '@/test-support/route'
@@ -68,7 +68,7 @@ async function renderLive(
   resolve: (form: FormData) => unknown = () => ({ connection: 'declined' }),
 ) {
   const { wrapper, signal } = shellSignal(signalOf(counted(coral.view.revision!)))
-  renderRoute(<LoadedRoute />, {
+  const { router } = renderRoute(<LoadedRoute />, {
     csrf: 'test',
     loader: () => coral.view,
     wrapper,
@@ -79,10 +79,11 @@ async function renderLive(
       },
       // Opening the connect dialog starts an authorization here.
       { path: '/connect/:provider', action: () => ({ error: 'Try later.' }) },
+      { path: '/elsewhere', Component: () => <p>Elsewhere</p> },
     ],
   })
   await screen.findByRole('table', { name: 'Accounts' })
-  return { signal }
+  return { signal, router }
 }
 
 /** A modal dialog hides the rows from assistive technology, but they stay on the page. */
@@ -147,4 +148,173 @@ it('refreshes in place when the connection revision changes, and keeps your dial
   expect(within(rowOf('Linear')).queryByText(/^Connection request expires in/)).toBeNull()
   expect(screen.getByRole('dialog', { name: 'Reconnect Ledger' })).toBe(dialog)
   expect(screen.getByRole('searchbox', { name: 'Filter accounts', hidden: true })).toHaveValue('l')
+})
+
+const account = (name: string, state: UserAccountRow['state']): UserAccountRow => ({
+  ...ledger,
+  provider: `${workspaceView.name}/providers/${name}`,
+  name,
+  state,
+  detailPath: `/details/${name}`,
+})
+/** The provider names, in the order of their rows. */
+const shownProviders = () =>
+  screen.getAllByRole('link', { name: / account details$/ }).map((link) => link.textContent)
+
+const unsorted = () =>
+  viewAt('one', [
+    account('Zendesk', 'connected'),
+    account('github', 'not_connected'),
+    account('Attio', 'needs_reconnect'),
+    account('Linear', 'connected'),
+  ])
+/** What the Provider and Status headings report to assistive technology. */
+const sorts = () =>
+  screen
+    .getAllByRole('columnheader')
+    .slice(0, 2)
+    .map((heading) => heading.getAttribute('aria-sort'))
+const sortBy = (column: 'provider' | 'status') =>
+  userEvent.click(screen.getByRole('button', { name: `Sort by ${column}` }))
+
+// Catches: rows in the order Coral returns them, which is not an order you can scan.
+it('lists the accounts by provider name, without regard to case', async () => {
+  await renderLive({ view: unsorted() })
+  expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['ascending', 'none'])
+})
+
+// Catches: a heading that sorts one way only, and equal statuses left in an order you
+// cannot scan.
+it('sorts by provider or by status label, in each direction', async () => {
+  await renderLive({ view: unsorted() })
+
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Zendesk', 'Linear', 'github', 'Attio'])
+  expect(sorts()).toEqual(['descending', 'none'])
+
+  // Connected, Needs reconnect, Not connected.
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['Linear', 'Zendesk', 'Attio', 'github'])
+  expect(sorts()).toEqual(['none', 'ascending'])
+
+  // The two connected accounts stay in provider order.
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['github', 'Attio', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['none', 'descending'])
+
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['ascending', 'none'])
+})
+
+// Catches: a filter that resets the order, or an order that drops the filter.
+it('keeps the order while you filter, and the filter while you sort', async () => {
+  await renderLive({ view: unsorted() })
+  await sortBy('status')
+  await sortBy('status')
+  await userEvent.type(screen.getByRole('searchbox', { name: 'Filter accounts' }), 't')
+  await waitFor(() => expect(shownProviders()).toEqual(['github', 'Attio']))
+
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Attio', 'github'])
+  expect(screen.getByRole('searchbox', { name: 'Filter accounts' })).toHaveValue('t')
+})
+
+// Catches: an order kept across visits, which the page does not promise.
+it('lists by provider name again when you come back to the page', async () => {
+  const { router } = await renderLive({ view: unsorted() })
+  await sortBy('status')
+  expect(sorts()).toEqual(['none', 'ascending'])
+
+  await act(() => router.navigate('/elsewhere'))
+  await act(() => router.navigate('/'))
+
+  await screen.findByRole('table', { name: 'Accounts' })
+  expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk'])
+  expect(sorts()).toEqual(['ascending', 'none'])
+})
+
+// Catches: a sorted table whose rows open or act on the account that held the place before.
+it('opens and acts on the account each row shows after you sort', async () => {
+  const posted: FormDataEntryValue[] = []
+  const { router } = await renderLive(
+    {
+      view: viewAt('one', [linear, account('Zendesk', 'connected'), account('Attio', 'connected')]),
+    },
+    (form) => {
+      posted.push(form.get('name')!)
+      return { connection: 'declined' }
+    },
+  )
+  await sortBy('provider')
+  expect(shownProviders()).toEqual(['Zendesk', 'Linear', 'Attio'])
+
+  await userEvent.click(within(rowOf('Linear')).getByRole('button', { name: 'Decline Linear' }))
+  await waitFor(() => expect(posted).toEqual([request]))
+
+  // A click on the first row, outside its link, opens the account the row names.
+  const first = screen.getAllByRole('row').find((row) => within(row).queryByRole('link'))!
+  await userEvent.click(within(first).getByText('Connected'))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/details/Zendesk'))
+})
+
+// Catches: a refresh that puts the rows back in provider order, or leaves a changed
+// account at its old place.
+it('keeps your order when the connection revision changes', async () => {
+  const coral = { view: unsorted() }
+  const { signal } = await renderLive(coral)
+  await sortBy('status')
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['github', 'Attio', 'Linear', 'Zendesk'])
+
+  // github and Attio connect, Zendesk needs a reconnect, and Coral returns another order.
+  coral.view = viewAt('two', [
+    account('Linear', 'connected'),
+    account('github', 'connected'),
+    account('Zendesk', 'needs_reconnect'),
+    account('Attio', 'connected'),
+  ])
+  await signal(signalOf(counted('two')))
+
+  // Provider order would put Zendesk last.
+  await waitFor(() => expect(shownProviders()).toEqual(['Zendesk', 'Attio', 'github', 'Linear']))
+  expect(sorts()).toEqual(['none', 'descending'])
+})
+
+/** Runs the test as a runtime whose default locale is `locale`, such as a browser set to it. */
+function runtimeLocale(locale: string) {
+  const compare = String.prototype.localeCompare
+  const spy = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+    this: string,
+    that,
+    locales,
+    options,
+  ) {
+    return compare.call(this, that, locales ?? locale, options)
+  })
+  onTestFinished(() => spy.mockRestore())
+  return spy
+}
+
+// Catches: an order that follows the runtime's locale, so the server and a browser in
+// another language disagree when the page hydrates. Swedish puts Ö after Z.
+it.each(['en', 'sv'])('lists the accounts in one order in a runtime set to %s', async (locale) => {
+  const compared = runtimeLocale(locale)
+  await renderLive({
+    view: viewAt('one', [
+      account('Zendesk', 'connected'),
+      account('Öresund', 'connected'),
+      account('Okta', 'needs_reconnect'),
+    ]),
+  })
+  expect(shownProviders()).toEqual(['Okta', 'Öresund', 'Zendesk'])
+
+  // Equal statuses fall back to the same provider order.
+  await sortBy('status')
+  expect(shownProviders()).toEqual(['Öresund', 'Zendesk', 'Okta'])
+  // Today's status labels sort alike in both locales, so the order cannot show that the
+  // status comparison names its locale too. Every comparison the page made names one.
+  expect(compared.mock.calls.length).toBeGreaterThan(0)
+  expect(compared.mock.calls.filter(([, locales]) => locales === undefined)).toEqual([])
 })
