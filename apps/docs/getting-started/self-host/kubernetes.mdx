@@ -226,8 +226,6 @@ metadata:
   namespace: coral
 spec:
   replicas: 1
-  # Longer than the startup probe allows a start.
-  progressDeadlineSeconds: 2100
   strategy:
     type: Recreate
   selector:
@@ -270,13 +268,12 @@ spec:
           volumeMounts:
             - name: state
               mountPath: /var/lib/coral
-          # Coral updates its database before it listens. This probe gives a
-          # start 30 minutes before the liveness probe can restart the pod.
+          # Coral updates its database before it listens.
           startupProbe:
             grpc:
               port: 14555
-            periodSeconds: 10
-            failureThreshold: 180
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             grpc:
               port: 14555
@@ -343,8 +340,6 @@ metadata:
   namespace: coral
 spec:
   replicas: 1
-  # Longer than the startup probe allows a start.
-  progressDeadlineSeconds: 2100
   selector:
     matchLabels:
       app: coral
@@ -394,13 +389,12 @@ spec:
           volumeMounts:
             - name: state
               mountPath: /var/lib/coral
-          # Coral updates its database before it listens. This probe gives a
-          # start 30 minutes before the liveness probe can restart the pod.
+          # Coral updates its database before it listens.
           startupProbe:
             grpc:
               port: 14555
-            periodSeconds: 10
-            failureThreshold: 180
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             grpc:
               port: 14555
@@ -491,13 +485,11 @@ Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first.
    kubectl -n coral scale deployment/coral --replicas=1
    ```
 
-4. Wait for Coral:
+4. Check the rollout:
 
    ```shell
-   kubectl -n coral rollout status deployment/coral --timeout=35m
+   kubectl -n coral rollout status deployment/coral
    ```
-
-Follow the update with `kubectl -n coral logs -f deployment/coral`. The `coral` Deployment has a startup probe and a longer progress deadline so that Kubernetes doesn't restart a long update part-way. Keep both if you write your own manifests.
 
 ## Offering a Coral plugin
 

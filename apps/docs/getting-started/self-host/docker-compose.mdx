@@ -297,11 +297,7 @@ Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first. Run these 
    docker compose up -d coral coral-web
    ```
 
-4. Follow the update with `docker compose logs -f coral`.
-
-On a large database the update can run longer than the image's health check waits, which is about a minute. `docker compose up -d` then reports `dependency coral failed to start`, but `coral` keeps running. Wait until `docker compose ps` shows `coral` as healthy, then run `docker compose up -d coral coral-web` again to start `coral-web`.
-
-To go back with SQLite, stop Coral, set both image tags to the version you had, and restore the archive before you start it:
+To return to an earlier version with SQLite, stop Coral, set both image tags to that version, and restore the archive before you start it:
 
 ```shell
 docker compose stop coral-web coral

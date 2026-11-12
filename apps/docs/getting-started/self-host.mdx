@@ -28,18 +28,17 @@ Make sure you can configure the names to point to your Coral deployment (details
 
 ## Upgrade Coral
 
-Coral updates its database when a new version first starts, before it accepts connections. On a large database the update can take several minutes. An older version refuses to start on a database that a newer version has updated, so your backup is the only way back.
+Coral updates its own database when a new version starts. You don't run a separate migration step.
 
 To upgrade:
 
-1. Read the [release notes](https://github.com/withcoral/coral/releases) for every version between yours and the new one.
+1. Read the [release notes](https://github.com/withcoral/coral/releases) for the versions between yours and the new one.
 2. Back up Coral's state:
    - **SQLite.** Stop Coral, then copy the volume mounted at `/var/lib/coral`. It holds the database and the credentials key.
-   - **Postgres.** Take a dump or a snapshot of the database. Keep the value of `CORAL_CREDENTIALS_KEY` with it, because Coral can't read stored credentials without that key.
+   - **Postgres.** Take a dump or a snapshot of the database. Keep the value of `CORAL_CREDENTIALS_KEY` with it.
 3. Start the new `coral` and `coral-web` images. Upgrade both to the same version.
-4. Wait until `coral` is healthy. If it stops during the update, it starts the unfinished part again the next time it starts.
 
-To go back, stop Coral, restore the backup, and start the version that wrote it.
+To return to an earlier version, restore the backup and start that version.
 
 The [Docker Compose](/getting-started/self-host/docker-compose#upgrade) and [Kubernetes](/getting-started/self-host/kubernetes#upgrade) guides have the commands.
 
