@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use coral_catalog::{AuthoredToolKind, SEARCH_PROVIDERS_MAX, ToolHints, ToolPresentation};
 pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
@@ -21,12 +19,6 @@ pub const SEARCH_DEFAULT_LIMIT: u16 = 10;
 pub const SEARCH_RESULT_LIMIT_MAX: u16 = 50;
 /// Conservative transport-neutral response budget for one search page.
 pub const SEARCH_PAGE_MAX_BYTES: usize = 2 * 1024 * 1024;
-/// Maximum metadata field names retained as evidence for one match.
-pub const SEARCH_EVIDENCE_FIELDS_MAX: usize = 16;
-/// Maximum declaration paths retained as evidence for one match.
-pub const SEARCH_EVIDENCE_PATHS_MAX: usize = 32;
-/// Maximum UTF-8 bytes retained in one evidence path.
-pub const SEARCH_EVIDENCE_PATH_MAX_BYTES: usize = coral_catalog::DECLARATION_PATH_MAX_BYTES;
 
 /// One optional bounded Universal Search query.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -677,52 +669,6 @@ impl AuthoringDescription {
     }
 }
 
-/// Query-specific evidence for one Universal Search match.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SearchEvidence {
-    fields: Vec<String>,
-    paths: Vec<String>,
-}
-
-impl SearchEvidence {
-    pub(crate) fn new(fields: Vec<String>, paths: Vec<String>) -> Self {
-        Self {
-            fields: bounded_unique(fields, SEARCH_EVIDENCE_FIELDS_MAX, None),
-            paths: bounded_unique(
-                paths,
-                SEARCH_EVIDENCE_PATHS_MAX,
-                Some(SEARCH_EVIDENCE_PATH_MAX_BYTES),
-            ),
-        }
-    }
-
-    /// Returns matched public metadata field names.
-    #[must_use]
-    pub fn fields(&self) -> &[String] {
-        &self.fields
-    }
-
-    /// Returns matched readable declaration paths.
-    #[must_use]
-    pub fn paths(&self) -> &[String] {
-        &self.paths
-    }
-}
-
-fn bounded_unique(
-    values: Vec<String>,
-    maximum: usize,
-    maximum_bytes: Option<usize>,
-) -> Vec<String> {
-    let mut seen = HashSet::new();
-    values
-        .into_iter()
-        .filter(|value| maximum_bytes.is_none_or(|bound| value.len() <= bound))
-        .filter(|value| seen.insert(value.clone()))
-        .take(maximum)
-        .collect()
-}
-
 /// One item of a search page: enough to call a read from its signature line
 /// when that line is complete, or to know that describe comes first. Never
 /// the declaration or the types it references.
@@ -731,9 +677,6 @@ pub struct SearchHit {
     call_path: CallPath,
     signature: SignatureLine,
     description_snippet: String,
-    guidance_snippet: Option<String>,
-    matched_tags: Vec<String>,
-    evidence: SearchEvidence,
     tool: Option<ToolHit>,
 }
 
@@ -783,20 +726,13 @@ impl ToolHit {
 pub(crate) struct HitText {
     pub(crate) signature: SignatureLine,
     pub(crate) description_snippet: String,
-    pub(crate) guidance_snippet: Option<String>,
-    pub(crate) matched_tags: Vec<String>,
 }
 
 impl SearchHit {
-    pub(crate) fn from_tool(
-        description: &ToolAuthoringDescription,
-        text: HitText,
-        evidence: SearchEvidence,
-    ) -> Self {
+    pub(crate) fn from_tool(description: &ToolAuthoringDescription, text: HitText) -> Self {
         Self::new(
             description.call_path.clone(),
             text,
-            evidence,
             Some(ToolHit {
                 provider_display_name: description.provider_display_name.clone(),
                 title: description.title().map(str::to_string),
@@ -807,27 +743,15 @@ impl SearchHit {
         )
     }
 
-    pub(crate) fn from_authored_tool(
-        call_path: CallPath,
-        text: HitText,
-        evidence: SearchEvidence,
-    ) -> Self {
-        Self::new(call_path, text, evidence, None)
+    pub(crate) fn from_authored_tool(call_path: CallPath, text: HitText) -> Self {
+        Self::new(call_path, text, None)
     }
 
-    fn new(
-        call_path: CallPath,
-        text: HitText,
-        evidence: SearchEvidence,
-        tool: Option<ToolHit>,
-    ) -> Self {
+    fn new(call_path: CallPath, text: HitText, tool: Option<ToolHit>) -> Self {
         Self {
             call_path,
             signature: text.signature,
             description_snippet: text.description_snippet,
-            guidance_snippet: text.guidance_snippet,
-            matched_tags: text.matched_tags,
-            evidence,
             tool,
         }
     }
@@ -857,11 +781,6 @@ impl SearchHit {
         &self.signature.text
     }
 
-    /// Returns the signature line's callable and input, without its result.
-    pub(crate) fn signature_input(&self) -> &str {
-        self.signature.input()
-    }
-
     /// Returns whether the signature line is complete enough to call from:
     /// it has no cut marker, and its input names no type it does not show.
     #[must_use]
@@ -869,29 +788,10 @@ impl SearchHit {
         self.signature.complete
     }
 
-    /// Returns the bounded window of the description.
+    /// Returns the beginning of the description, cut to a bound.
     #[must_use]
     pub fn description_snippet(&self) -> &str {
         &self.description_snippet
-    }
-
-    /// Returns the bounded window of the guidance, only when a query term
-    /// matched in it.
-    #[must_use]
-    pub fn guidance_snippet(&self) -> Option<&str> {
-        self.guidance_snippet.as_deref()
-    }
-
-    /// Returns the tags a query term matched.
-    #[must_use]
-    pub fn matched_tags(&self) -> &[String] {
-        &self.matched_tags
-    }
-
-    /// Returns metadata fields and declaration paths that explain this match.
-    #[must_use]
-    pub const fn evidence(&self) -> &SearchEvidence {
-        &self.evidence
     }
 
     /// Returns what the hit shows only for a Tool.
@@ -906,15 +806,11 @@ impl SearchHit {
             self.call_path.as_str(),
             self.signature.text.as_str(),
             self.description_snippet.as_str(),
-            self.guidance_snippet.as_deref().unwrap_or_default(),
             tool.map_or("", |tool| tool.provider_display_name.as_str()),
             tool.and_then(|tool| tool.title.as_deref())
                 .unwrap_or_default(),
         ]
         .into_iter()
-        .chain(self.matched_tags.iter().map(String::as_str))
-        .chain(self.evidence.fields.iter().map(String::as_str))
-        .chain(self.evidence.paths.iter().map(String::as_str))
         .fold(1_024usize, |total, value| {
             total.saturating_add(value.len().saturating_mul(6))
         })

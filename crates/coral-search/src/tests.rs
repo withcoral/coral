@@ -170,11 +170,6 @@ async fn listing_orders_hits_by_call_path() {
         tool_hit.description_snippet(),
         "Fetch the current conditions for one forecast location."
     );
-    assert_eq!(
-        (tool_hit.guidance_snippet(), tool_hit.matched_tags()),
-        (None, &[][..]),
-        "a listing matched no term"
-    );
     let tool = tool_hit.tool().expect("Tool facts");
     assert_eq!(tool.title(), Some("Get one weather forecast"));
     assert!(tool.deprecated());
@@ -312,33 +307,6 @@ async fn queries_match_safe_tool_fields_and_private_tool_declarations() {
             "query {query:?} must return the Tool"
         );
     }
-    for (query, guidance_snippet, matched_tags) in [
-        (
-            "stable location identifier",
-            Some("Use a stable location identifier when one is available."),
-            &[][..],
-        ),
-        ("forecast", None, &["forecast"][..]),
-        ("current conditions", None, &[][..]),
-    ] {
-        let page = scope.query(&fixture, query).await;
-        let hit = page
-            .hits()
-            .iter()
-            .find(|hit| hit.call_path().as_str() == TracerScope::TOOL)
-            .expect("Tool hit");
-        assert_eq!(
-            (
-                hit.guidance_snippet(),
-                hit.matched_tags()
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-            ),
-            (guidance_snippet, matched_tags.to_vec()),
-            "query {query:?}: guidance and tags appear only where a term matched"
-        );
-    }
     let authored_tool_results = scope.query(&fixture, "formatForecast").await;
     assert_eq!(
         authored_tool_results
@@ -347,16 +315,14 @@ async fn queries_match_safe_tool_fields_and_private_tool_declarations() {
             .map(|result| result.call_path().as_str()),
         Some(TracerScope::FUNCTION)
     );
-    let declaration_results = scope.query(&fixture, "temperatureC").await;
-    let saved_declaration_match = declaration_results
-        .hits()
-        .iter()
-        .find(|result| result.kind() == EntityKind::PrivateTool)
-        .expect("Private Tool declaration match");
-    assert_eq!(
-        saved_declaration_match.evidence().paths(),
-        ["input.temperatureC"],
-        "Private Tool evidence must use callable-rooted compiler-projected declaration fields"
+    assert!(
+        scope
+            .query(&fixture, "temperatureC")
+            .await
+            .hits()
+            .iter()
+            .any(|result| result.call_path().as_str() == TracerScope::FUNCTION),
+        "a Private Tool matches by the fields of its compiled declaration"
     );
 }
 
@@ -679,15 +645,15 @@ async fn private_tool_replacement_and_corrupt_relevance_keep_exact_descriptions(
         replaced.id(),
     )
     .await;
-    // The Private Tool matched this declaration field before the fault.
+    // The Private Tool's row still holds this declaration field.
     assert!(
         scope
             .query(&fixture, "temperatureC")
             .await
             .hits()
             .iter()
-            .all(|item| item.kind() == EntityKind::ProviderTool),
-        "a corrupt Private Tool declaration lane matches nothing"
+            .any(|item| item.call_path().as_str() == TracerScope::FUNCTION),
+        "a hit never reads the declaration fields, so their corruption hides nothing"
     );
     let listing_with_corrupt_relevance = fixture
         .search
@@ -713,7 +679,7 @@ async fn private_tool_replacement_and_corrupt_relevance_keep_exact_descriptions(
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one fixture specifies both independent ranking lanes and public evidence"
+    reason = "one fixture specifies both independent ranking lanes"
 )]
 async fn relevance_combines_metadata_and_schema_lanes_before_call_path_ties() {
     let fixture = TestModules::new().await;
@@ -810,11 +776,9 @@ async fn relevance_combines_metadata_and_schema_lanes_before_call_path_ties() {
         call_path_results
             .hits()
             .first()
-            .expect("Call Path result")
-            .evidence()
-            .fields(),
-        ["call_path"],
-        "Tool Keys and relative paths must not masquerade as public metadata concepts"
+            .map(|result| result.call_path().as_str()),
+        Some("coral.providers.ranking.alphaData"),
+        "a Tool's name finds it first"
     );
 
     let schema_description_results = fixture
@@ -835,31 +799,9 @@ async fn relevance_combines_metadata_and_schema_lanes_before_call_path_ties() {
         ["coral.providers.ranking.alphaData"],
         "schema-field retrieval derives from authoritative schemas rather than generated TypeScript text"
     );
-    assert_eq!(
-        results
-            .hits()
-            .first()
-            .expect("metadata result")
-            .evidence()
-            .fields(),
-        ["description", "title"],
-    );
-    assert!(
-        schema_description_results
-            .hits()
-            .first()
-            .expect("schema result")
-            .evidence()
-            .paths()
-            .contains(&"input.weather".to_string())
-    );
 }
 
 #[tokio::test]
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the schema-graph fixture asserts one known single-result page"
-)]
 async fn openapi_declaration_paths_follow_references_unions_arrays_and_recursion() {
     let fixture = TestModules::new().await;
     let user =
@@ -935,11 +877,9 @@ async fn openapi_declaration_paths_follow_references_unions_arrays_and_recursion
         .await;
 
     fixture.converge().await;
-    for (query, expected_path) in [
-        ("recursive filter", "input.filters[].label"),
-        ("waiting", "result.data[].status"),
-        ("fallback branch", "result.data[].alternate"),
-    ] {
+    // Only `input.filters[].label`, `result.data[].status` and
+    // `result.data[].alternate` hold these words.
+    for query in ["recursive filter", "waiting", "fallback branch"] {
         let page = fixture
             .search
             .search(
@@ -949,15 +889,13 @@ async fn openapi_declaration_paths_follow_references_unions_arrays_and_recursion
             )
             .await
             .expect("search schema graph fields");
-        assert_eq!(page.hits().len(), 1, "query {query:?}");
-        assert!(
-            page.hits()[0]
-                .evidence()
-                .paths()
+        assert_eq!(
+            page.hits()
                 .iter()
-                .any(|path| path == expected_path),
-            "query {query:?} did not expose {expected_path:?}: {:?}",
-            page.hits()[0].evidence().paths(),
+                .map(|hit| hit.call_path().as_str())
+                .collect::<Vec<_>>(),
+            ["coral.providers.graph.inspectGraph"],
+            "query {query:?}"
         );
     }
 }
@@ -1026,11 +964,9 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
         .await;
 
     fixture.converge().await;
-    for (query, expected_path) in [
-        ("visiblealpha", "input.body.visibleInput"),
-        ("visiblebeta", "result.data.visibleOutput"),
-        ("tuplegamma", "result.data.tuple[].tupleMember"),
-    ] {
+    // Only `input.body.visibleInput`, `result.data.visibleOutput` and
+    // `result.data.tuple[].tupleMember` hold these words.
+    for query in ["visiblealpha", "visiblebeta", "tuplegamma"] {
         let page = fixture
             .search
             .search(
@@ -1040,15 +976,12 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
             )
             .await
             .expect("search visible declaration field");
-        let result = page.hits().first().expect("one projection result");
-        assert!(
-            result
-                .evidence()
-                .paths()
-                .iter()
-                .any(|path| path == expected_path),
-            "query {query:?} did not expose {expected_path:?}: {:?}",
-            result.evidence().paths(),
+        assert_eq!(
+            page.hits()
+                .first()
+                .map(|result| result.call_path().as_str()),
+            Some("coral.providers.projection.projectSurface"),
+            "query {query:?}"
         );
     }
     let argumentless = fixture
@@ -1064,7 +997,7 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
         .expect("search argumentless Tool");
     assert!(
         argumentless.hits().is_empty(),
-        "an omitted input parameter must not produce evidence"
+        "an omitted input parameter is not indexed"
     );
 
     for omitted in ["hiddenalpha", "hiddenbeta", "headergamma", "false"] {
@@ -1082,7 +1015,7 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
             "indexed omitted field {omitted:?}: {:?}",
             page.hits()
                 .iter()
-                .map(|item| item.evidence().paths())
+                .map(|item| item.call_path().as_str())
                 .collect::<Vec<_>>()
         );
     }
@@ -1093,7 +1026,7 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
     clippy::indexing_slicing,
     reason = "the committed ranking corpus asserts known nonempty result pages"
 )]
-async fn synthetic_ranking_corpus_covers_phrase_weights_coverage_ties_and_evidence() {
+async fn synthetic_ranking_corpus_covers_phrase_weights_coverage_and_ties() {
     let fixture = TestModules::new().await;
     let user = organization_user(
         fixture.search.database.clone(),
@@ -1143,14 +1076,6 @@ async fn synthetic_ranking_corpus_covers_phrase_weights_coverage_ties_and_eviden
             "coral.providers.corpus.opDeclaration",
         ],
         "a whole-query phrase ranks first, then a title match over declaration paths alone"
-    );
-    let cross = &fusion.hits()[1];
-    assert!(cross.evidence().fields().contains(&"title".to_string()));
-    assert!(
-        cross
-            .evidence()
-            .paths()
-            .contains(&"input.archive".to_string())
     );
 
     let coverage = fixture
@@ -1364,10 +1289,9 @@ async fn mcp_publication_prepares_schema_field_paths_for_search() {
         .skip_search();
 
     fixture.converge().await;
-    for (query, expected_path) in [
-        ("tenant partition", "input.tenant"),
-        ("archived", "result.data.structuredContent.status"),
-    ] {
+    // Only `input.tenant` and `result.data.structuredContent.status` hold
+    // these words.
+    for query in ["tenant partition", "archived"] {
         let page = fixture
             .search
             .search(
@@ -1380,14 +1304,8 @@ async fn mcp_publication_prepares_schema_field_paths_for_search() {
         let result = page.hits().first().expect("MCP search result");
         assert_eq!(
             result.call_path().as_str(),
-            "coral.providers.records.lookupRecords"
-        );
-        assert!(
-            result
-                .evidence()
-                .paths()
-                .iter()
-                .any(|path| path == expected_path)
+            "coral.providers.records.lookupRecords",
+            "query {query:?}"
         );
     }
 }
@@ -1666,11 +1584,6 @@ async fn oversized_declaration_regenerates_with_its_shallow_fields_searchable() 
         item.call_path().as_str(),
         "coral.providers.weather.getForecast"
     );
-    assert!(
-        item.evidence()
-            .paths()
-            .contains(&"result.data.humidityPercent".to_owned())
-    );
     let deep = fixture
         .search
         .search(
@@ -1896,85 +1809,6 @@ async fn oversized_complete_tool_description_is_unavailable_not_truncated() {
 }
 
 #[tokio::test]
-async fn query_evidence_is_bounded() {
-    let fixture = TestModules::new().await;
-    let user = organization_user(
-        fixture.search.database.clone(),
-        "user:search-evidence-bound",
-    )
-    .await;
-    let principal = AuthenticatedPrincipal::user(user.clone());
-    let workspace_id = fixture.create_workspace(&user).await;
-    let properties = (0..128)
-        .map(|index| format!("\"field{index:03}\":{{\"type\":\"string\"}}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let document = format!(
-        r#"{{
-          "openapi": "3.1.0",
-          "info": {{"title": "Evidence Provider", "version": "1"}},
-          "servers": [{{"url": "https://example.test"}}],
-          "security": [],
-          "paths": {{
-            "/evidence": {{
-              "get": {{
-                "operationId": "getEvidence",
-                "responses": {{
-                  "200": {{
-                    "description": "Evidence",
-                    "content": {{
-                      "application/json": {{
-                        "schema": {{"type": "object", "properties": {{{properties}}}}}
-                      }}
-                    }}
-                  }}
-                }}
-              }}
-            }}
-          }}
-        }}"#
-    );
-    let setup = fixture
-        .providers
-        .prepare_openapi_fixture(
-            &change(user.clone(), 20, '2'),
-            &workspace_id,
-            OpenApiDocument::parse(&document).expect("OpenAPI document"),
-        )
-        .await
-        .expect("create Provider Setup");
-    fixture
-        .providers
-        .publish_workspace_provider(
-            &change(user, 30, '3'),
-            WorkspaceProviderPublicationRequest::new(
-                ManagementRequestId::parse("61000000-0000-4000-8000-000000000005")
-                    .expect("request id"),
-                workspace_id.clone(),
-                setup.id().clone(),
-                ProviderNamespace::parse("evidence").expect("namespace"),
-                CredentialRoute::None,
-            ),
-        )
-        .await
-        .expect("publish evidence Provider")
-        .skip_search();
-
-    fixture.converge().await;
-    let page = fixture
-        .search
-        .search(
-            &principal,
-            &workspace_id,
-            &SearchRequest::query(SearchQuery::parse("string").expect("query")),
-        )
-        .await
-        .expect("search broad schema term");
-    let result = page.hits().first().expect("complete result");
-    assert_eq!(result.evidence().paths().len(), 32);
-}
-
-#[tokio::test]
 async fn ordinary_private_tool_search_never_loads_source() {
     let fixture = TestModules::new().await;
     let user = organization_user(
@@ -2119,14 +1953,13 @@ async fn a_page_of_fifty_hits_fits_the_budget_with_bounded_text() {
         );
         assert!(
             hit.description_snippet().len() <= SNIPPET_MAX_BYTES
-                && hit.description_snippet().starts_with(CUT_MARKER)
-                && hit.description_snippet().contains("paging"),
-            "the snippet opens around the late match: {}",
+                && hit
+                    .description_snippet()
+                    .starts_with("Filler words before the match.")
+                && hit.description_snippet().ends_with(CUT_MARKER)
+                && !hit.description_snippet().contains("paging"),
+            "the snippet is the start of the description, not the late match: {}",
             hit.description_snippet()
-        );
-        assert!(
-            !hit.evidence().fields().is_empty() || !hit.evidence().paths().is_empty(),
-            "every hit carries evidence"
         );
     }
 }
@@ -2137,32 +1970,32 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
     let user = organization_user(fixture.search.database.clone(), "user:search-byte-pages").await;
     let principal = AuthenticatedPrincipal::user(user.clone());
     let workspace_id = fixture.create_workspace(&user).await;
-    // Thirty-two evidence paths of about one KiB each make every hit large.
-    let fields = (0..32)
-        .map(|field| format!("pagedfield{field:02}{}: string;", "x".repeat(980)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut expected = std::collections::BTreeSet::new();
-    for index in 0..12 {
-        fixture
-            .private_tools
-            .save(
-                &PrivateToolChangeContext::new(principal.clone(), 100, trace('7')),
-                &workspace_id,
-                PrivateToolSave::new(
-                    PrivateToolPath::parse(&format!("paged.function{index:02}"))
-                        .expect("Private Tool path"),
-                    AuthoredToolDescription::parse("Paged contract").expect("description"),
-                    AuthoredToolSource::parse(&format!(
-                        "interface Wide {{\n{fields}\n}}\nexport default function wide(input: Wide): number {{ return 1; }}"
-                    ))
-                    .expect("wide source"),
-                ),
+    // A hit names no field of its declaration, so only a long Call Path
+    // makes it large: these are about 40 KiB, and the bound counts six bytes
+    // for each byte of text.
+    let long = "Segment".repeat(5_800);
+    let operations = (0..12)
+        .map(|index| {
+            format!(
+                r#""/paged{index:02}":{{"get":{{"operationId":"paged{index:02}{long}","summary":"Paged contract","responses":{{"200":{{"description":"ok"}}}}}}}}"#
             )
-            .await
-            .expect("save wide function");
-        expected.insert(format!("coral.private.paged.function{index:02}"));
-    }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    fixture
+        .publish_openapi(
+            &user,
+            &workspace_id,
+            &format!(
+                r#"{{"openapi":"3.1.0","info":{{"title":"Paged","version":"1"}},"servers":[{{"url":"https://example.test"}}],"security":[],"paths":{{{operations}}}}}"#
+            ),
+            "paged",
+            20,
+        )
+        .await;
+    let expected = (0..12)
+        .map(|index| format!("coral.providers.paged.paged{index:02}{long}"))
+        .collect::<std::collections::BTreeSet<_>>();
     fixture.converge().await;
 
     let limit = SearchLimit::parse(50).expect("maximum page limit");
@@ -2171,8 +2004,9 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
     let mut page_count = 0;
     loop {
         page_count += 1;
-        let mut request = SearchRequest::query(SearchQuery::parse("pagedfield").expect("query"))
-            .with_limit(limit);
+        let mut request =
+            SearchRequest::query(SearchQuery::parse("paged contract").expect("query"))
+                .with_limit(limit);
         if let Some(next) = offset {
             request = request.with_offset(next);
         }

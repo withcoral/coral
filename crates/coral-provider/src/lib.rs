@@ -43,10 +43,11 @@ mod configuration_tests;
 mod repository;
 mod search;
 pub use search::{
-    ActiveGeneration, ActiveProvider, GenerationEntries, HydratedTool, LoadedGenerations,
-    ToolEntry, active_generations_in_transaction, active_providers_in_transaction,
-    hydrate_tool_in_transaction, prepare_active_generation_entries_in_transaction,
-    tool_material_by_relative_path_in_transaction, workspace_active_generations_in_transaction,
+    ActiveGeneration, ActiveProvider, GenerationEntries, ToolEntry,
+    active_generations_in_transaction, active_providers_in_transaction,
+    prepare_active_generation_entries_in_transaction,
+    tool_material_by_relative_path_in_transaction, tool_material_in_transaction,
+    workspace_active_generations_in_transaction,
 };
 mod program_setup;
 #[cfg(test)]

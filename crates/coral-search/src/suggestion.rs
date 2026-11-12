@@ -91,16 +91,12 @@ pub(crate) async fn suggestions(
         return Ok(suggested);
     }
     let terms = query_terms(&words.join(" "));
-    let ranking = RequestContext {
-        terms: Some(&terms),
-        ..context
-    };
     begin_query(transaction).await?;
     let provider_filter = ProviderFilter::one(&call_root);
     let window = match tools
         .query(
             transaction,
-            ranking,
+            context,
             &QueryRequest {
                 terms: &terms,
                 provider_filter: &provider_filter,

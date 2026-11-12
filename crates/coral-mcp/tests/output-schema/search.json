@@ -57,28 +57,7 @@
         },
         "description_snippet": {
           "type": "string",
-          "description": "At most 512 UTF-8 bytes of the description, around the first matched term; `…` marks cut text."
-        },
-        "guidance_snippet": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Present only when a query term matched the guidance."
-        },
-        "matched_tags": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "The tags a query term matched; absent when none did."
-        },
-        "matched_inputs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "The arguments a query term matched that the signature line does not show; absent when there are none."
+          "description": "The start of the description, at most 512 UTF-8 bytes; a final `…` marks cut text."
         },
         "hints": {
           "$ref": "#/$defs/Hints"

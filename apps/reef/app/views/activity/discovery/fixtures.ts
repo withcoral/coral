@@ -10,7 +10,9 @@
  *   purpose. Its diagnostic is real.
  *
  * Built from those captures, to show each branch:
- * - `complete`: the captured page as Coral writes it now.
+ * - `complete`: the captured page as Coral wrote it after the trim, while hits
+ *   still said why they matched.
+ * - `current`: the same page as Coral writes it now: no hit says why it matched.
  * - `mixed`: a Private Tool hit, a guidance match, a matched input, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
  * - `sparse`: a Private Tool hit, then a hit whose signature and description are empty.
@@ -166,8 +168,8 @@ interface UntrimmedHit {
   [key: string]: unknown
 }
 /**
- * One captured hit as Coral writes it now. It drops what the Call Path, the
- * rank, or describe states, and the flags and hints that are not set.
+ * One captured hit as Coral wrote it after the trim. It drops what the Call
+ * Path, the rank, or describe states, and the flags and hints that are not set.
  */
 function trimmed({
   kind: _kind,
@@ -222,6 +224,12 @@ const untrimmed = {
 const complete = {
   hits: githubHits.map(trimmed),
   next_offset: 5,
+}
+
+/** The captured page as Coral writes it now, without why each hit matched. */
+const current = {
+  hits: githubHits.map(({ matched_tags: _tags, ...hit }) => trimmed(hit)),
+  next_offset: complete.next_offset,
 }
 
 /** A trimmed page as Coral retained it before pages had an offset. */
@@ -327,6 +335,7 @@ const describePrivateTool = {
 /** Each response as the stored JSON text. */
 export const stored = {
   complete: JSON.stringify(complete),
+  current: JSON.stringify(current),
   withCursor: JSON.stringify(withCursor),
   untrimmed: JSON.stringify(untrimmed),
   mixed: JSON.stringify(mixed),
