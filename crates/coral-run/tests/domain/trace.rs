@@ -53,20 +53,34 @@ fn refused_meters() -> &'static (SdkMeterProvider, Metrics) {
 /// [`telemetry`] makes one, so a test takes it before its work.
 pub(super) struct Telemetry {
     spans: &'static SpanCapture,
+    logs: &'static ExportCapture,
 }
 
 pub(super) fn telemetry() -> Telemetry {
-    Telemetry { spans: capture() }
+    Telemetry {
+        spans: capture(),
+        logs: operational_logs(),
+    }
 }
 
 impl Telemetry {
     /// Asserts that no span, span event or operational log holds any of
     /// `canaries`.
     pub(super) fn assert_holds_none_of(&self, canaries: impl IntoIterator<Item = &'static str>) {
-        let telemetry = format!("{:?}{}", self.spans.finished(), operational_logs().text());
+        let telemetry = format!("{:?}{}", self.spans.finished(), self.logs.text());
         for canary in canaries {
             assert!(!telemetry.contains(canary), "telemetry holds {canary}");
         }
+    }
+
+    /// The operational logs that left the host holding `text`, such as a
+    /// test's own Run ID, each record as text to search.
+    pub(super) fn logs_holding(&self, text: &str) -> Vec<String> {
+        self.logs
+            .log_records()
+            .into_iter()
+            .filter(|record| record.contains(text))
+            .collect()
     }
 }
 
