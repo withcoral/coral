@@ -4,9 +4,6 @@ status: accepted
 
 # Universal Search never gates the catalog
 
-Amended by [ADR 0033](0033-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md) on 2026-11-10: the
-vector table keeps no foreign key, not even to `workspace_records`; the Reconcile task removes its orphans.
-
 Universal Search is a projection of the catalog. It never changes whether an Operation can be called, and no Setup or
 Publication waits for it. An index bound or an indexing failure is logged when the index is written and is never a
 reason to refuse a call. An agent that cannot find an Operation through search can still call it.
@@ -31,8 +28,11 @@ a deleted function leaves search at once, before its row does.
 A cascade from Saved Functions into `search_entities` made a delete wait for any index write that held the row, and on
 Postgres the two could deadlock (#2684).
 
-Each search table keeps its foreign key to `workspace_records`. No user action deletes a Workspace, so that cascade is not
-on any request path, and it removes a tenant's search text when a host removes the Workspace.
+Each search table but the vector table keeps its foreign key to `workspace_records`. No user action deletes a Workspace,
+so that cascade is not on any request path, and it removes a tenant's search text when a host removes the Workspace. The
+vector table ([ADR 0035](0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)) keeps no foreign key,
+because a sqlite-vec table cannot hold one: the reconcile pass removes vectors whose Search Entity or Workspace is gone,
+and since reads answer only from live sources, such a vector never reaches a page.
 
 Rejected: taking the Workspace's index lock in the delete, or holding the function row in the index write. Each fixes this
 deadlock, but the first makes a delete wait for search and the second leaves the lock order a rule every writer must

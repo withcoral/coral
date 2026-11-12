@@ -10,8 +10,8 @@ Coral process on Desktop and on the server. A background Embedder gives each Sea
 Entity without a current vector ranks by words alone. Search Hits carry no evidence. One setting turns the vector side
 off.
 
-The kinds are those of [#2967](https://github.com/withcoral/coral/issues/2967): Provider Tools, Private Tools (which
-replace Saved Functions) and Shared Tools, found through `coral.search`.
+The kinds are those of [ADR 0034](0034-every-callable-is-a-tool.md): Provider Tools, Private Tools and Shared Tools,
+found through `coral.search`.
 
 Universal Search ranked by words only, so a query that names a Tool by what it does, not by the words in its
 description, missed it. On the labelled bench, hit@10 goes from 0.668 (words alone) to 0.753 (fused) on the Microsoft
@@ -38,13 +38,16 @@ on the map [#2856](https://github.com/withcoral/coral/issues/2856).
 ## The vector list
 
 The vector query carries the lexical query's `WHERE`: the caller's discoverable Providers, complete Generations, policy
-exclusions and the Provider filter. Both queries return the window depth (100) from the same read snapshot. The
-retriever merges them by reciprocal rank, k=60, with weight 1:1, and cuts the result to the window. An entry is strong
-when the retriever's own strong rule holds for it, wherever it came from, or when it is in the top 5 of the vector list.
-The engine's strong-first fusion across kinds ([ADR 0011](0011-universal-search-engine-and-retrievers.md)) does not
-change.
+exclusions and the Provider filter. It reads only vectors of the current Embedder revision, and before the merge the
+retriever drops each vector entry whose source stamp differs from its Search Entity's, so a vector of an old model or
+of old text never ranks. Both queries return the window depth from the same read snapshot. The retriever merges them
+by reciprocal rank with equal weight and cuts the result to the window. An entry is strong when the retriever's own
+strong rule holds for it, wherever it came from, or when it is among a fixed number at the top of the vector list. The
+engine's strong-first fusion across kinds ([ADR 0011](0011-universal-search-engine-and-retrievers.md)) does not
+change. The manifest holds the merge constants; [#3050](https://github.com/withcoral/coral/issues/3050) has their
+values.
 
-- **Top 5 is a constant.** It does not follow the request's limit, so the order is the same for every page size and
+- **The strong count is fixed.** It does not follow the request's limit, so the order is the same for every page size and
   offset pages ([ADR 0028](0028-search-pages-by-a-plain-offset.md)) do not repeat or skip rows. Vector hits that are
   never strong lose 2.1 to 3.8 points on Set B. The best similarity threshold was 0.2 to 2.4 points lower, its
   value moved between sets and models, and a threshold relative to the top hit marked all 50 vector hits strong
@@ -64,7 +67,7 @@ the limit; a merge in the engine across kinds, which would change ADR 0011's fus
 
 `matched_tags`, `matched_inputs`, the Guidance Snippet and the rule that dropped a hit with no matched field go. The
 Description Snippet starts at the beginning of the description. A hit from the vector list has no matched word to show,
-and the drop rule would remove it. This amends ADR 0011, where evidence crossed into the engine.
+and the drop rule would remove it. ADR 0011 states the new contract.
 
 [The prototype](https://github.com/withcoral/coral/issues/2864#issuecomment-6685151365) measured no cost: the same hits
 on every Set A page and pages 2.2% smaller; in duels the turns, tokens and cost per solve moved less than 9% with no
@@ -104,10 +107,12 @@ indexer revision, so a model change re-embeds every Entity without re-indexing w
 The Embedder is the third supervised task beside Observer and Reconcile. It owns one OS thread at low priority with
 one intra-op thread. It wakes on every index write, on the reconcile tick and at boot, and drains a predicate, not a
 queue table: a vector is stale when it is missing, when its revision differs, or when its source stamp differs from the
-row's `indexed_at`. It takes the oldest Generation first, in batches of about 32 rows, with one write per batch under
-the Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries; there is no per-row
-failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding runs on a blocking thread at normal
-priority.
+row's `indexed_at`. It takes the oldest Generation first, in small batches, with one write per batch under the
+Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries, then tries its rows one
+by one. A row that fails while the rows beside it succeed is skipped until its revision or source stamp changes or the
+process restarts, so one bad row cannot hold back every row behind it. The skip list lives in memory; there is no
+stored per-row failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding
+runs on a blocking thread at normal priority.
 
 A Graph-sized Provider (19,830 rows) becomes searchable by meaning in about 11.5 minutes on one x86 vCPU and 2.9 minutes
 on one M4 core; until then it ranks by words. Two Coral Instances that overlap during a rolling update can embed the
@@ -120,8 +125,8 @@ creates it at boot from the manifest, before the Embedder starts, and drops and 
 the migration chain, the one exception to that rule: a migration with a vector column fails on a Postgres without
 pgvector, and Coral with the vector side off must start there.
 
-- **Postgres:** `halfvec(384)`, with the filter columns (kind, Provider, Generation, Tool key) on the vector table, so
-  the vector query reads it alone and scans it exactly. At the sandbox RDS shape the
+- **Postgres:** `halfvec(384)`, with the filter columns (kind, Provider, Generation, Tool key, Embedder revision) on
+  the vector table, so the vector query reads it alone and scans it exactly. At the sandbox RDS shape the
   [scan](https://github.com/withcoral/coral/issues/2948#issuecomment-6689216657) costs about 1.55 µs a row: a Graph
   Workspace takes 31 to 37 ms, and p50 passes 50 ms at about 32,000 rows per Workspace. Joined to the entity table, a
   Provider filter made the planner sort by distance and nested-loop (p99 about 630 ms at 10 Workspaces), and the plan
@@ -137,8 +142,8 @@ pgvector, and Coral with the vector side off must start there.
 - **No foreign keys**, not even to `workspace_records`. A `vec0` table cannot hold one, and a cascade from a source
   makes a delete wait for the index ([#2684](https://github.com/withcoral/coral/issues/2684)). The Reconcile task removes
   vectors whose Search Entity or Workspace is gone. Retrieval reads only live sources
-  ([ADR 0017](0017-universal-search-never-gates-the-catalog.md)), so an orphan never reaches a page. This amends ADR
-  0017's rule that each search table keeps its Workspace key.
+  ([ADR 0017](0017-universal-search-never-gates-the-catalog.md)), so an orphan never reaches a page; ADR 0017 states
+  this exception.
 
 Rejected for now: HNSW. It makes a large Workspace fast (about 4 ms) but loses 3 to 6% recall, needs an iterative scan,
 `ef_search` of 200 or more and a custom plan per Workspace, and its index needs memory too.
@@ -161,9 +166,9 @@ embedding, no Embedder thread, no download and no extension check.
 A failure on the vector side at query time (model absent, session error, vector table missing during a rolling update,
 vector query error) gives that retriever its lexical list alone. It never puts the retriever in the `Error` state, and
 the page says nothing. Telemetry says it ([#2855](https://github.com/withcoral/coral/issues/2855)): the retriever's
-span records `fused` or `lexical_only` with a reason (`disabled`, `model_absent`, `model_failed`, `cpu_floor`,
-`embed_failed`), a `coral.search.embed_query` span times the query embedding, and the Embedder reports its backlog and
-batch durations.
+span records whether it merged the two lists or used the lexical list alone, with one reason for each cause above, for
+the setting and for the CPU floor ([#3057](https://github.com/withcoral/coral/issues/3057) names them). A span times
+the query embedding, and the Embedder reports its backlog, batch durations and skipped rows.
 
 ## Consequences
 
