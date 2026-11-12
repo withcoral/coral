@@ -2,8 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 
 import { Banner, Button, Typography } from '@/wax/components'
+import { Brand } from '@/wax/components/brand'
 
-import { PageLayout } from './page-layout'
+import { PageLayout, TopBar } from './page-layout'
 
 const meta = {
   component: PageLayout,
@@ -106,4 +107,25 @@ export const TitledCompact: Story = {
       </>
     ),
   },
+}
+
+// A page outside the navigation shows its own content in place of breadcrumbs.
+export const TopBarWithStart: Story = {
+  render: () => (
+    <TopBar
+      start={<Brand />}
+      actions={
+        <>
+          <Typography.BodySmall as="span" variant="secondary">
+            someone@example.com
+          </Typography.BodySmall>
+          <Button.TextButton variant="secondary">Sign out</Button.TextButton>
+        </>
+      }
+    />
+  ),
+}
+export const TopBarWithStartMobile: Story = {
+  ...TopBarWithStart,
+  globals: { viewport: { value: 'mobile1', isRotated: false } },
 }
