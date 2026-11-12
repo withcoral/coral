@@ -17,8 +17,10 @@ export class LocalPostgres {
 
   constructor(env: NodeJS.ProcessEnv) {
     this.env = { ...env }
-    this.container = env.LOCAL_POSTGRES_CONTAINER || 'coral-test-postgres'
-    this.image = env.LOCAL_POSTGRES_IMAGE || 'docker.io/library/postgres:17'
+    // A container keeps the image it started with, so the default name changes
+    // with the image. Universal Search's vector side needs pgvector.
+    this.container = env.LOCAL_POSTGRES_CONTAINER || 'coral-test-pgvector'
+    this.image = env.LOCAL_POSTGRES_IMAGE || 'docker.io/pgvector/pgvector:0.8.2-pg17-trixie'
   }
 
   private selectedEngine() {

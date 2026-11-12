@@ -12,9 +12,9 @@ test('provisioning owns container startup and readiness without Make on PATH', a
   const fixture = await postgresFixture(context, { readinessFailures: 1 })
   const lease = await new LocalPostgres(fixture.env).provision()
   const state = await fixture.state()
-  assert.deepEqual(state.containers['coral-test-postgres'], {
+  assert.deepEqual(state.containers['coral-test-pgvector'], {
     running: true,
-    image: 'docker.io/library/postgres:17',
+    image: 'docker.io/pgvector/pgvector:0.8.2-pg17-trixie',
     publish: '127.0.0.1::5432',
     port: '55432',
     shm: '1g',
@@ -38,7 +38,7 @@ test('a disposable database is closed once after a failed consumer without remov
   const state = await fixture.state()
   assert.deepEqual(state.databases, [])
   assert.deepEqual(state.dropped, [new URL(lease.url).pathname.slice(1)])
-  assert.equal(state.containers['coral-test-postgres'].running, true)
+  assert.equal(state.containers['coral-test-pgvector'].running, true)
   assert.equal(fixture.env.CORAL_TEST_POSTGRES_URL, undefined)
 })
 

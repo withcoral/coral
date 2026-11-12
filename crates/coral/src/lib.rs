@@ -1,5 +1,5 @@
 //! The `coral` process: starts the runtime, runs a Run Executor, or reports
-//! its version.
+//! its version. A hidden `embed-check` times the embedding model.
 //!
 //! Application composition belongs to `coral-app`. This process parses its
 //! arguments, reports where the runtime listens, and maps signals and errors
@@ -30,6 +30,8 @@ use clap::Parser;
 use coral_app::bootstrap::is_loopback_ip;
 use tokio::sync::oneshot;
 
+mod embed_check;
+
 /// This binary's version and the commit it was built from.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SHA"));
 
@@ -45,6 +47,9 @@ struct ProcessArgs {
 enum Command {
     /// Runs a Run Executor, which dials Coral and holds its pull stream.
     RunExecutor(RunExecutorArgs),
+    /// Loads the embedding model and times query embedding.
+    #[command(hide = true)]
+    EmbedCheck(embed_check::EmbedCheckArgs),
 }
 
 /// A Run Executor's flags. It keeps no config file and no state.
@@ -128,8 +133,13 @@ impl coral_app::RunErrorTelemetry for ProcessError {
 #[tokio::main]
 pub async fn run(extensions: coral_app::Extensions) -> ExitCode {
     let ProcessArgs { command } = ProcessArgs::parse();
-    if let Some(Command::RunExecutor(args)) = command {
-        return match run_executor(args).await {
+    let result = match command {
+        Some(Command::RunExecutor(args)) => Some(run_executor(args).await),
+        Some(Command::EmbedCheck(args)) => Some(embed_check::run(&args)),
+        None => None,
+    };
+    if let Some(result) = result {
+        return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("Error: {error:?}");
@@ -176,6 +186,14 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     let url_path = coral_mcp::WORKSPACE_MCP_ROUTE;
     println!("Coral MCP HTTP server serving each Workspace at http://{address}{url_path}");
     println!("Press Ctrl-C to stop the server.");
+    if let Some(search_model) = server.search_model() {
+        tokio::spawn(async move {
+            match search_model.ready().await {
+                Some(dir) => println!("Coral search model ready in {}", dir.display()),
+                None => println!("Coral search model absent: search matches by words only"),
+            }
+        });
+    }
 
     let wait = wait_for_shutdown_signal_or_server_exit(
         server.wait_for_exit(),

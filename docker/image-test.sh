@@ -118,6 +118,17 @@ assert_log() {
     }
 }
 
+# For a line that a background task logs after the container is healthy.
+wait_log() {
+    attempts=0
+    while [ "$attempts" -lt 30 ]; do
+        logs "$1" | grep -Fq "$2" && return 0
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+    assert_log "$1" "$2"
+}
+
 # http_status <reef container> <url>: Reef's image carries Node, the runtime
 # image carries no HTTP client, and both share one network namespace.
 http_status() {
@@ -235,6 +246,24 @@ public_url = "http://127.0.0.1:3000"
     assert_log "$container" 'CORAL_CONFIG is set but'
     "$ENGINE" run --rm -v "$mounted:/var/lib/coral" --entrypoint /bin/sh "$CORAL_IMAGE" \
         -c "[ -d $config_path ]" || fail 'CORAL_CONFIG replaced a directory at the config path'
+
+    # With search by meaning on, the runtime finds the model that the image
+    # holds, with no network to download it from.
+    semantic='[listeners.grpc]
+bind = "127.0.0.1:14555"
+
+[listeners.web]
+public_url = "http://127.0.0.1:3000"
+
+[search]
+semantic_search_enabled = true
+'
+    new_volume semantic
+    start coral-semantic "$CORAL_IMAGE" -v "$volume:/var/lib/coral" --network none \
+        -e CORAL_CONFIG="$semantic"
+    wait_healthy "$container"
+    wait_log "$container" 'Coral search model ready in /opt/coral/models/bge-small-en-v1.5'
+    remove "$container"
 
     # An unwritable volume fails fast with one actionable message.
     new_volume readonly

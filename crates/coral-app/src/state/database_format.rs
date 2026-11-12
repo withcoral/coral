@@ -418,9 +418,14 @@ mod tests {
         let db = Database::connect(fresh.clone())
             .await
             .expect("open fresh Postgres schema");
-        coral_search::prepare_storage(&db)
-            .await
-            .expect("check the search features");
+        coral_search::prepare_storage(
+            &db,
+            coral_search::VectorStorage::On {
+                dimension: coral_embed::MANIFEST.dimension,
+            },
+        )
+        .await
+        .expect("check the search features");
         super::super::migrations::migrate_current(&db)
             .await
             .expect("migrate fresh Postgres schema");
