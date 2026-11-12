@@ -88,7 +88,7 @@ volumes:
 </Tab>
 <Tab title="With Postgres">
 
-This example runs Postgres in a container. The `pgvector/pgvector` image is Postgres with the pgvector extension, which [search by meaning](/getting-started/self-host#search-by-meaning) needs. Coral connects through the Postgres socket in the `postgres-socket` volume. Over the network, Coral connects to Postgres only with `sslmode=verify-full`.
+This example runs Postgres in a container. The `pgvector/pgvector` image is Postgres with the pgvector extension, which [semantic search](/getting-started/self-host#semantic-search) needs. Coral connects through the Postgres socket in the `postgres-socket` volume. Over the network, Coral connects to Postgres only with `sslmode=verify-full`.
 
 ```yaml
 services:
