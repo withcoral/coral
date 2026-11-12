@@ -18,7 +18,7 @@ We will use `<coral-host>` as the placeholder for the domain of your Coral deplo
 
   Coral derives the redirect URI from `listeners.auth.public_url`; there is no separate setting for it.
 
-- **Images.** `latest` is the newest stable release. To pin a version, use a tag from the [releases page](https://github.com/withcoral/coral/releases) without the leading `v`, such as `ghcr.io/withcoral/coral:1.0.0`. The images are built for `linux/amd64` only. On an arm64 host, such as an Apple Silicon Mac, add `platform: linux/amd64` to both services to run them under emulation. Under emulation with Rosetta, search matches by words only. See [Older CPUs](/getting-started/self-host#older-cpus).
+- **Images.** `latest` is the newest stable release. To pin a version, use a tag from the [releases page](https://github.com/withcoral/coral/releases) without the leading `v`, such as `ghcr.io/withcoral/coral:1.0.0`. The images are built for `linux/amd64` only. On an arm64 host, such as an Apple Silicon Mac, add `platform: linux/amd64` to the `coral` and `coral-web` services to run them under emulation. Under emulation with Rosetta, search matches by words only. See [Older CPUs](/getting-started/self-host#older-cpus).
 
 ## Deploy
 
@@ -88,7 +88,7 @@ volumes:
 </Tab>
 <Tab title="With Postgres">
 
-This example runs Postgres in a container. The `pgvector/pgvector` image is Postgres with the pgvector extension, which [search by meaning](/getting-started/self-host#search-by-meaning) needs. Coral connects through the Postgres socket in the `postgres-socket` volume. Coral needs TLS for a Postgres server that it connects to over the network.
+This example runs Postgres in a container. The `pgvector/pgvector` image is Postgres with the pgvector extension, which [search by meaning](/getting-started/self-host#search-by-meaning) needs. Coral connects through the Postgres socket in the `postgres-socket` volume. Over the network, Coral connects to Postgres only with `sslmode=verify-full`.
 
 ```yaml
 services:
@@ -167,13 +167,18 @@ volumes:
   postgres-socket:
 ```
 
-To use your own Postgres server, remove the `postgres` service and its volumes, and remove `depends_on` and `volumes` from `coral`. Set `CORAL_DATABASE_URL: ${CORAL_DATABASE_URL}` and put the URL in your `.env` file:
+To use your own Postgres server:
 
-```dotenv
-CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full
-```
+1. Remove the `postgres` service and its volumes.
+2. Remove `depends_on` and `volumes` from the `coral` service.
+3. Set `CORAL_DATABASE_URL: ${CORAL_DATABASE_URL}` on the `coral` service.
+4. Put the URL in your `.env` file:
 
-Your server needs pgvector 0.7 or later, or `semantic_search_enabled = false` in `[search]`. Without them, Coral does not start. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
+   ```dotenv
+   CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full
+   ```
+
+Your server needs pgvector 0.7 or later. If it does not have pgvector, set `semantic_search_enabled = false` in `[search]`. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
 
 If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral container so Coral knows it can trust the certificate. For example, if you're using AWS RDS:
 
