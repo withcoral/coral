@@ -1,3 +1,4 @@
+import { SecretStoreState } from '@/generated/coral/management/v1/secret_store_pb'
 import { authRouteTestArgs, authTestContext } from '@/auth/server-context.test-helper'
 import { loader as oauthCallback } from '@/routes/provider-setup-oauth-callback'
 import { commitCallbackReturn } from './provider-publication-attempt/setup.server'
@@ -38,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   completeProviderSetupAuthorization: vi.fn(),
   countRequiredActions: vi.fn(),
   listProviders: vi.fn(),
+  listWorkspaceSecretStores: vi.fn(),
 }))
 const handlers = {
   providers: { getProvider: mocks.getProvider, listProviders: mocks.listProviders },
@@ -53,6 +55,7 @@ const handlers = {
     completeProviderSetupAuthorization: mocks.completeProviderSetupAuthorization,
   },
   activity: { countRequiredActions: mocks.countRequiredActions },
+  secretStores: { listWorkspaceSecretStores: mocks.listWorkspaceSecretStores },
 }
 const api = fakeManagement(handlers)
 const transport = fakeManagementTransport(handlers)
@@ -827,5 +830,161 @@ describe('connecting your account in a dialog', () => {
   it('has no account of yours to connect when calls use the shared account', async () => {
     await expect(connect()).rejects.toMatchObject({ status: 404 })
     expect(mocks.startProviderAccountAuthorization).not.toHaveBeenCalled()
+  })
+})
+
+const references = (fields: Record<string, string>) => {
+  const form = new FormData()
+  form.set('intent', 'secret')
+  for (const [key, value] of Object.entries(fields)) form.set(key, value)
+  return form
+}
+const submit = (form: FormData) =>
+  authorizationAction(
+    new Request(
+      `http://localhost${base}/account-authorizations/${authorizationId}?returnTo=%2Factivity`,
+    ),
+    context,
+    { workspace, authorization: authorizationId },
+    form,
+  )
+
+describe('secret references on a shared account', () => {
+  const loadPending = (target: object, search = '') => {
+    mocks.getProviderAccountAuthorization.mockResolvedValue({
+      name: authorizationResource,
+      state: SetupAuthorizationState.PENDING,
+      target,
+      credentialFields: {},
+    })
+    mocks.getProvider.mockResolvedValue({ name: 'p', displayName: 'Provider' })
+    mocks.listWorkspaceSecretStores.mockResolvedValue({
+      secretStores: [
+        { name: 'secretStores/platform', state: SecretStoreState.AVAILABLE },
+        { name: 'secretStores/licensed', state: SecretStoreState.NEEDS_ENTERPRISE },
+        { name: 'secretStores/removed', state: SecretStoreState.REMOVED },
+      ],
+    })
+    return loadAuthorization(
+      new Request(`http://localhost${base}/account-authorizations/${authorizationId}${search}`),
+      context,
+      { workspace, authorization: authorizationId },
+    )
+  }
+  const sharedProvider = {
+    case: 'sharedProvider',
+    value: `workspaces/${workspace}/providers/${providerId}`,
+  }
+
+  // Catches: a store config removed offered as a choice, a store Coral cannot read
+  // offered as usable, or a resource name shown.
+  it('offers a shared account the stores it can name, and says which cannot read', async () => {
+    const view = await loadPending(sharedProvider)
+    expect(view.secretStores).toEqual([
+      { name: 'platform', blockers: [] },
+      { name: 'licensed', blockers: ['Needs Enterprise'] },
+    ])
+  })
+
+  // Catches: a User offered a reference that Coral refuses.
+  it('offers your own account no store, without asking Coral', async () => {
+    mocks.listWorkspaceSecretStores.mockClear()
+    const view = await loadPending({
+      case: 'userProvider',
+      value: `workspaces/${workspace}/providers/${providerId}`,
+    })
+    expect(view.secretStores).toEqual([])
+    expect(mocks.listWorkspaceSecretStores).not.toHaveBeenCalled()
+  })
+
+  // Catches: text from the address shown as if Coral said it.
+  it('shows only the problems it knows from the address', async () => {
+    const known = await loadPending(sharedProvider, '?secretStoreProblem=SECRET_KEY_NOT_FOUND')
+    expect(known.secretStoreProblem).toBe('This entry has no such key. Check the key.')
+    const forged = await loadPending(sharedProvider, '?secretStoreProblem=Send+your+password')
+    expect(forged.secretStoreProblem).toBeUndefined()
+  })
+
+  // Catches: a store-backed field sent as a value, or a mixed form losing either kind.
+  it('sends each field as a value or a reference', async () => {
+    mocks.submitProviderAccountSecret.mockResolvedValue({})
+    await submit(
+      references({
+        'credential.email': 'dummy@example.test',
+        'reference.api_token.store': 'platform',
+        'reference.api_token.path': 'team/jira',
+        'reference.api_token.key': 'token',
+      }),
+    )
+    const [sent] = mocks.submitProviderAccountSecret.mock.lastCall as [
+      {
+        name: string
+        credentialValues: Record<string, string>
+        secretReferences: Record<string, object>
+      },
+    ]
+    expect(sent.credentialValues).toEqual({ email: 'dummy@example.test' })
+    expect(sent.secretReferences.api_token).toMatchObject({
+      secretStore: 'secretStores/platform',
+      path: 'team/jira',
+      key: 'token',
+    })
+  })
+
+  // Catches: an all-reference form refused for carrying no typed value.
+  it('accepts a form with references alone', async () => {
+    mocks.submitProviderAccountSecret.mockResolvedValue({})
+    await submit(
+      references({
+        'reference.token.store': 'platform',
+        'reference.token.path': 'team/jira',
+        'reference.token.key': 'token',
+      }),
+    )
+    expect(mocks.submitProviderAccountSecret).toHaveBeenCalled()
+  })
+
+  // Catches: a reference with no store or path reaching Coral, or a forged input name.
+  it.each([
+    ['no store', { 'reference.token.path': 'p', 'reference.token.key': 'k' }],
+    ['no path', { 'reference.token.store': 's', 'reference.token.key': 'k' }],
+    [
+      'an unknown part',
+      { 'reference.token.store': 's', 'reference.token.path': 'p', 'reference.token.x': '1' },
+    ],
+    ['a long path', { 'reference.token.store': 's', 'reference.token.path': 'p'.repeat(1025) }],
+  ])('refuses %s', async (_case, fields) => {
+    mocks.submitProviderAccountSecret.mockClear()
+    const failure: unknown = await submit(references(fields)).catch((error: unknown) => error)
+    expect(failure).toMatchObject({ status: 400 })
+    expect(mocks.submitProviderAccountSecret).not.toHaveBeenCalled()
+  })
+
+  // Catches: a repeated part whose first value is empty, so the later one silently wins.
+  it('refuses a part given twice, even when the first is empty', async () => {
+    mocks.submitProviderAccountSecret.mockClear()
+    const form = references({ 'reference.token.store': 's', 'reference.token.path': '' })
+    form.append('reference.token.path', 'team/jira')
+    const failure: unknown = await submit(form).catch((error: unknown) => error)
+    expect(failure).toMatchObject({ status: 400 })
+    expect(mocks.submitProviderAccountSecret).not.toHaveBeenCalled()
+  })
+
+  // Catches: an open connection sent to an error page, or a path in the address.
+  it('returns to the connection with the reason a reference failed', async () => {
+    mocks.submitProviderAccountSecret.mockRejectedValue(
+      new ConnectError('SECRET_ENTRY_NOT_FOUND', Code.FailedPrecondition),
+    )
+    const response = await submit(
+      references({
+        'reference.token.store': 'platform',
+        'reference.token.path': 'team/secret-path',
+        'reference.token.key': 'token',
+      }),
+    )
+    const location = response.headers.get('Location')!
+    expect(location).toContain('secretStoreProblem=SECRET_ENTRY_NOT_FOUND')
+    expect(location).toContain('returnTo=%2Factivity')
+    expect(location).not.toContain('secret-path')
   })
 })

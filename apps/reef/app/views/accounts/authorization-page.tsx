@@ -5,6 +5,7 @@ import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { Fields } from '@/views/management/forms'
 import { ManagementLayout, trail } from '@/views/management/layout'
+import { CredentialSource } from './credential-source'
 import type { AuthorizationView } from './types'
 import { DeviceCodeDialog } from './device-code'
 import { oauthFailureMessage } from './oauth-failure'
@@ -69,8 +70,20 @@ export function AuthorizationPage({
             <Typography.BodySmall as="p">
               Enter the credentials from {v.providerName}.
             </Typography.BodySmall>
+            {v.secretStoreProblem && <Banner variant="error">{v.secretStoreProblem}</Banner>}
             <CredentialFields fields={v.credentialFields}>
-              {(input) => <Inputs.CredentialInput {...input} />}
+              {(input, field, label) =>
+                v.secretStores.length > 0 ? (
+                  <CredentialSource
+                    value={<Inputs.CredentialInput {...input} />}
+                    field={field}
+                    label={label}
+                    stores={v.secretStores}
+                  />
+                ) : (
+                  <Inputs.CredentialInput {...input} />
+                )
+              }
             </CredentialFields>
           </form>
         ))}

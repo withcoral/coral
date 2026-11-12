@@ -136,6 +136,12 @@ Coral reads this section when it starts, and stores no credential for a store in
 - An unreachable store does not stop Coral from starting.
 - A store whose kind your build of Coral cannot read does not stop Coral from starting. Coral logs a warning, shows the store as **Not in this build**, and every read from it fails. Its grants and references stay.
 
+A workspace owner uses a granted store when they connect a shared account: for each field, they choose **Use a secret store** and enter its path and key. Coral reads the value once to check it, then reads it again for each call and keeps no copy.
+
+#### Limit what each store can read
+
+The store's own policy is the security boundary, and Coral adds no check of its own. **A grant of a store to a workspace covers everything that store's role can read.** So give each store its own read-only role, with the least access that works, and use separate stores for workspaces that must not see each other's secrets.
+
 ### `[otel]`
 
 Controls telemetry export to an OpenTelemetry endpoint.
@@ -148,7 +154,7 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`     | Base URL of an OTLP over HTTP endpoint. Coral sends to `/v1/traces`, `/v1/logs` and `/v1/metrics` under it. | No       | N/A                                                                                                                                     |
 | `headers`      | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                    |
-| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
+| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info`                                             |
 | `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 | `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
@@ -217,7 +223,10 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                                  |
 | `coral.output.size`                      | Histogram | `output.kind`                                                                |
 | `coral.output.rejections`                | Counter   | `output.kind`                                                                |
+| `coral.secret_store.read.duration`       | Histogram | `secret_store.kind`, `outcome`                                               |
 | `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                                 |
+
+No metric names a Secret Store. To find the store behind a slow or failing read, use the log records: each read logs `coral.secret_store.name`, `coral.secret_store.kind` and `coral.secret_store.read_ms`. A failed read logs at `warn` and adds `error.type`.
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 

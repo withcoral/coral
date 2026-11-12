@@ -115,6 +115,21 @@ impl WorkspaceModule {
         Ok(grants)
     }
 
+    /// Whether the Workspace holds a grant for this store. The caller has already
+    /// decided the actor may ask, as the Account module has for a Secret Reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database failure.
+    pub async fn secret_store_granted_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+        workspace: &WorkspaceId,
+        store: &str,
+    ) -> Result<bool, Error> {
+        repository::exists(tx, workspace, store).await
+    }
+
     /// The stores granted to one Workspace, ordered by name, for its Owner.
     ///
     /// # Errors

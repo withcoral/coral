@@ -50,6 +50,10 @@ export interface AuthorizationView {
   grantedScope: string
   /** The Credential Fields to enter for secret entry, in name order. */
   credentialFields: CredentialFieldView[]
+  /** The secret stores a field can name. Empty unless this is a shared account's secret entry. */
+  secretStores: OfferedSecretStore[]
+  /** Why Coral refused the last reference, as an instruction. */
+  secretStoreProblem?: string
   form: FormContext
 }
 /** Durable Account Connection Request state, as the Run shows it. */
@@ -111,4 +115,11 @@ export interface UserAccountView {
   oauth: boolean
   credentialFields: CredentialFieldView[]
   form: FormContext
+}
+
+/** A secret store a field can name, and why Coral cannot read from it now. */
+export interface OfferedSecretStore {
+  name: string
+  /** Empty when Coral can read from the store. A save still checks the read. */
+  blockers: string[]
 }

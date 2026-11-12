@@ -304,6 +304,12 @@ impl SecretStores {
             .map(|defined| (defined.kind.clone(), defined.store.status()))
     }
 
+    /// The kind of the store with this name, while config defines it.
+    #[must_use]
+    pub fn kind(&self, name: &str) -> Option<&SecretStoreKind> {
+        self.0.get(name).map(|defined| &defined.kind)
+    }
+
     /// The store with this name, while config defines it.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn SecretStore>> {

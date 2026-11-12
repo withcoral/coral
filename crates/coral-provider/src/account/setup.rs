@@ -1349,6 +1349,7 @@ pub(crate) async fn replace_shared(
             .encrypted_credentials
             .as_deref()
             .ok_or(Error::AccountRequired)?,
+        secret_references: None,
         granted_scope: &row.granted_scope,
         token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
     };
@@ -1423,6 +1424,7 @@ pub(crate) async fn promote(
                 .encrypted_credentials
                 .as_deref()
                 .ok_or(Error::AccountRequired)?,
+            secret_references: None,
             granted_scope: &row.granted_scope,
             token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
         },

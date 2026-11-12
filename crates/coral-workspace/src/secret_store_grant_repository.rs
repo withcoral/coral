@@ -61,6 +61,27 @@ pub(super) async fn delete(
     Ok(rows == 1)
 }
 
+/// Whether the Workspace holds a grant for this store.
+pub(super) async fn exists(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    store: &str,
+) -> Result<bool, Error> {
+    let row: Option<(String,)> = tx
+        .fetch_optional(
+            Query::select()
+                .column(WorkspaceSecretStoreGrants::StoreName)
+                .from(WorkspaceSecretStoreGrants::Table)
+                .and_where(
+                    Expr::col(WorkspaceSecretStoreGrants::WorkspaceId).eq(workspace.to_string()),
+                )
+                .and_where(Expr::col(WorkspaceSecretStoreGrants::StoreName).eq(store))
+                .to_owned(),
+        )
+        .await?;
+    Ok(row.is_some())
+}
+
 /// The stores granted to one Workspace, ordered by name.
 pub(super) async fn list_for_workspace(
     tx: &mut Transaction<'_>,

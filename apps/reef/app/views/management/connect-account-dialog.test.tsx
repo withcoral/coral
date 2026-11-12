@@ -15,6 +15,7 @@ const returnTo = new URLSearchParams({ returnTo: agentPage })
 const authorization = (id: string) => `/workspaces/w/account-authorizations/${id}?${returnTo}`
 const progress = (id: string) => `/workspaces/w/account-authorizations/${id}/progress?${returnTo}`
 const pending: AuthorizationView = {
+  secretStores: [],
   providerName: 'GitHub',
   scope: 'agent',
   path: authorization('first'),

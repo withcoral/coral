@@ -4174,6 +4174,26 @@ pub struct SubmitProviderAccountSecretRequest {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
+    /// Secret References by field name, for the fields a Secret Store holds. Only a
+    /// shared Account takes one. A field appears here or in credential_values, never both.
+    #[prost(map = "string, message", tag = "4")]
+    pub secret_references: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        CredentialFieldReference,
+    >,
+}
+/// The address of one Credential Field's value in a Secret Store granted to the Workspace.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CredentialFieldReference {
+    /// secretStores/{store}.
+    #[prost(string, tag = "1")]
+    pub secret_store: ::prost::alloc::string::String,
+    /// Where the value lives in the store.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+    /// The key within the entry, where the store has keys.
+    #[prost(string, tag = "3")]
+    pub key: ::prost::alloc::string::String,
 }
 /// Encoded OAuth callback data, passed only from the Reef server to Coral.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

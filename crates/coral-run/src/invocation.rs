@@ -990,10 +990,10 @@ impl ToolInvoker {
         }
     }
 
-    /// Decrypts the selected credentials outside every lock, after the
-    /// enforcement point and the pre-send check, and authorizes the dispatch
-    /// with them. A token renewed since the enforcement point is the one
-    /// dispatched.
+    /// Decrypts the selected credentials, and reads any field a Secret Store
+    /// holds, outside every lock, after the enforcement point and the pre-send
+    /// check, and authorizes the dispatch with them. A token renewed since the
+    /// enforcement point is the one dispatched.
     async fn authorize(
         &self,
         admitted: &AdmittedInvocation,
@@ -1144,7 +1144,8 @@ impl ToolInvoker {
     /// Renews the selected credentials outside every lock, after the
     /// enforcement point parked the Invocation on a refresh: the material is
     /// decrypted, and refreshed when expired, by the Account Module; nothing is
-    /// kept here.
+    /// kept here. This reads no Secret Store: only [`Self::authorize`] does,
+    /// after the enforcement point permits the dispatch.
     async fn prepare_credentials(
         &self,
         admitted: &AdmittedInvocation,
@@ -1159,12 +1160,12 @@ impl ToolInvoker {
         tokio::select! {
             biased;
             () = self.stop.requested() => Err(Error::ProgramHostTerminated),
-            result = accounts.credentials(
+            result = accounts.prepare_dispatch(
                 &self.workspace_id,
                 admitted.target.provider_access().id(),
                 evidence,
                 self.now()?,
-            ) => result.map(|_| ()).map_err(account_error),
+            ) => result.map_err(account_error),
         }
     }
 
@@ -1914,6 +1915,19 @@ pub(crate) fn account_failure(error: coral_provider::Error) -> Result<CoralFailu
         }
         coral_provider::Error::OAuthClientConfiguration => CoralFailure::OAuthClientConfiguration,
         coral_provider::Error::CredentialRefreshFailed => CoralFailure::CredentialRefreshFailed,
+        coral_provider::Error::SecretStoreRead(read) => match read {
+            coral_secret_store::Error::Unreachable => CoralFailure::SecretStoreUnreachable,
+            coral_secret_store::Error::EntryNotFound => CoralFailure::SecretEntryNotFound,
+            coral_secret_store::Error::KeyNotFound => CoralFailure::SecretKeyNotFound,
+            coral_secret_store::Error::PermissionDenied => {
+                CoralFailure::SecretStorePermissionDenied
+            }
+            coral_secret_store::Error::MalformedResponse => {
+                CoralFailure::SecretStoreMalformedResponse
+            }
+            coral_secret_store::Error::NeedsEnterprise => CoralFailure::SecretStoreNeedsEnterprise,
+            coral_secret_store::Error::KindMissing => CoralFailure::SecretStoreKindMissing,
+        },
         coral_provider::Error::AccountAuthorizationChanged => {
             CoralFailure::AccountAuthorizationChanged
         }

@@ -49,6 +49,7 @@ const authorization: AuthorizationView = {
   oauth: false,
   grantedScope: '',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
+  secretStores: [],
   form,
 }
 const workspace = {
@@ -220,6 +221,52 @@ export const Agent: Story = {
   ),
 }
 export const SecretEntry: Story = { render: () => <AuthorizationPage view={authorization} /> }
+
+const sharedSecretEntry: AuthorizationView = {
+  ...authorization,
+  scope: 'shared',
+  secretStores: [
+    { name: 'platform', blockers: [] },
+    { name: 'research', blockers: ['Needs Enterprise'] },
+  ],
+}
+// Catches: the typed input submitted beside a reference, a store never chosen, or
+// source controls a screen reader cannot tell apart from another field's.
+export const SecretEntryWithSecretStore: Story = {
+  render: () => <AuthorizationPage view={sharedSecretEntry} />,
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radiogroup', { name: 'Value source for Token' })).toBeVisible()
+    await userEvent.click(canvas.getByRole('radio', { name: 'Use a secret store' }))
+    await expect(canvas.queryByRole('textbox', { name: /token/i })).toBeNull()
+    await expect(canvas.getByRole('textbox', { name: 'Path' })).toBeRequired()
+    await expect(canvas.getByRole('textbox', { name: 'Key' })).toBeRequired()
+    // A store is always chosen, so the form cannot post without one.
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'platform',
+    )
+    // A store Coral cannot read now is still offered, and says why in words.
+    await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
+    await expect(
+      await within(document.body).findByRole('menuitemradio', {
+        name: 'research (Needs Enterprise)',
+      }),
+    ).toBeInTheDocument()
+    await userEvent.keyboard('{Escape}')
+  },
+}
+export const SecretEntryWithSecretStoreProblem: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        secretStoreProblem: 'The secret store has no entry at this path. Check the path.',
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/no entry at this path/)).toBeVisible()
+  },
+}
 export const OAuthPending: Story = {
   render: () => <AuthorizationPage view={{ ...authorization, oauth: true }} />,
 }
