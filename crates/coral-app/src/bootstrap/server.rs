@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
-use super::periodic::{Next, Passes, Schedule};
+use super::periodic::{Passes, Schedule};
 use super::server_config::{
     Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
 };
@@ -877,7 +877,7 @@ pub(crate) async fn start_server(
     local_children: Option<LocalChildren>,
 ) -> Result<RunningServer, AppError> {
     let coral_instance_id = instance.to_string();
-    let mut passes = Passes::new(&coral_instance_id);
+    let mut passes = Passes::default();
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
     let builtin_catalog = coral_catalog::BuiltinCatalog::running()
@@ -1093,7 +1093,7 @@ pub(crate) async fn start_server(
                         .await
                         .map_err(|error| error.code())?;
                 }
-                Ok(Next::AtCadence)
+                Ok(())
             }
         });
     }
@@ -1103,7 +1103,7 @@ pub(crate) async fn start_server(
             let releases = releases.clone();
             async move {
                 releases.check().await;
-                Ok(Next::AtCadence)
+                Ok(())
             }
         });
     }
@@ -1119,7 +1119,7 @@ pub(crate) async fn start_server(
                 })
                 .await
                 .map_err(|error| error.code())?;
-                Ok(Next::AtCadence)
+                Ok(())
             }
         });
     }
@@ -1158,7 +1158,7 @@ pub(crate) struct LocalChildren {
 
 /// One pass of the expired-lease sweep. It fails with the error's code, and
 /// the next pass reads again.
-async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<Next, &'static str> {
+async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<(), &'static str> {
     let recovered = runs
         .sweep_expired_leases()
         .await
@@ -1169,7 +1169,7 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<Next, &'sta
             "expired-lease sweep recovered Runs"
         );
     }
-    Ok(Next::AtCadence)
+    Ok(())
 }
 
 /// Serves the private gRPC listener and the Run Executor listener until

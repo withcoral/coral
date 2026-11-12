@@ -1,5 +1,4 @@
-//! Periodic passes: the work the clock starts, not a request
-//! ([ADR 0037](../../../../docs/adr/0037-periodic-work-runs-as-idempotent-passes-on-every-coral-instance.md)).
+//! Periodic passes: the work the clock starts, not a request.
 //!
 //! # Interface
 //!
@@ -10,9 +9,8 @@
 //!
 //! # Invariants
 //!
-//! - Every Coral Instance runs every pass, so a pass is safe to run at the
-//!   same moment in two of them: the rows it works on settle each unit of
-//!   work.
+//! - Each Coral Instance runs its own passes. A pass that must not run in
+//!   two of them at once settles that itself.
 //! - One pass never overlaps itself in one Coral Instance: the next run
 //!   starts after the last returned.
 //! - A pass keeps a fixed cadence anchored at its first run. A run that went
@@ -23,8 +21,6 @@
 //! - Stopping a pass cancels a run in flight at its next await.
 
 use std::future::Future;
-use std::hash::{DefaultHasher, Hash as _, Hasher as _};
-use std::num::NonZeroU64;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -33,32 +29,11 @@ use std::time::Duration;
 use coral_telemetry::safe;
 use tokio::task::AbortHandle;
 
-/// What a pass asks of its schedule when it returns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Next {
-    /// The pass found nothing more to do: run again at the cadence.
-    AtCadence,
-    /// The pass stopped at its bound with work left: run again after
-    /// [`SOON`], or at the next tick when that comes first.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "History Expiry (#2430) is the first pass with a bound"
-        )
-    )]
-    Soon,
-}
-
-/// How long after a pass that stopped at its bound the next one starts.
-pub(crate) const SOON: Duration = Duration::from_secs(60);
-
 /// When a pass runs.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Schedule {
     cadence: Duration,
     first_after: Duration,
-    jitter: Duration,
 }
 
 impl Schedule {
@@ -67,7 +42,6 @@ impl Schedule {
         Self {
             cadence,
             first_after: Duration::ZERO,
-            jitter: Duration::ZERO,
         }
     }
 
@@ -77,38 +51,15 @@ impl Schedule {
         self.first_after = delay;
         self
     }
-
-    /// Delays the first pass by a further part of `window` that differs
-    /// between Coral Instances, so that Coral Instances that started together
-    /// do not run the pass at the same moment.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "History Expiry (#2430) is the first pass that takes jitter"
-        )
-    )]
-    pub(crate) const fn jittered(mut self, window: Duration) -> Self {
-        self.jitter = window;
-        self
-    }
 }
 
 /// The periodic passes of one Coral Instance.
+#[derive(Default)]
 pub(crate) struct Passes {
-    instance: String,
     running: Vec<AbortHandle>,
 }
 
 impl Passes {
-    /// No passes yet, for the Coral Instance with this id.
-    pub(crate) fn new(instance: &str) -> Self {
-        Self {
-            instance: instance.to_owned(),
-            running: Vec::new(),
-        }
-    }
-
     /// Runs `pass` on `schedule` until [`Self::stop`], or until the returned
     /// handle aborts it alone. `name` is the pass's fixed name in logs; a
     /// run fails with its error's stable code.
@@ -124,48 +75,24 @@ impl Passes {
     ) -> AbortHandle
     where
         P: FnMut() -> F + Send + 'static,
-        F: Future<Output = Result<Next, &'static str>> + Send + 'static,
+        F: Future<Output = Result<(), &'static str>> + Send + 'static,
     {
         assert!(
             !schedule.cadence.is_zero(),
             "a pass's cadence must be positive"
         );
-        let first = tokio::time::Instant::now()
-            + schedule.first_after
-            + self.offset_within(schedule.jitter, name);
+        let first = tokio::time::Instant::now() + schedule.first_after;
         let handle = tokio::spawn(async move {
             let mut ticks = tokio::time::interval_at(first, schedule.cadence);
             ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut next = Next::AtCadence;
             loop {
-                match next {
-                    Next::AtCadence => drop(ticks.tick().await),
-                    // The tick first: when both are ready it is consumed,
-                    // so it does not start a second run right after.
-                    Next::Soon => tokio::select! {
-                        biased;
-                        _ = ticks.tick() => {}
-                        () = tokio::time::sleep(SOON) => {}
-                    },
-                }
-                next = run(name, &mut pass).await;
+                ticks.tick().await;
+                run(name, &mut pass).await;
             }
         })
         .abort_handle();
         self.running.push(handle.clone());
         handle
-    }
-
-    /// An offset into `window` that is fixed for this Coral Instance and
-    /// pass, and spread evenly over Coral Instances: their ids are random.
-    fn offset_within(&self, window: Duration, name: &str) -> Duration {
-        let Some(window) = NonZeroU64::new(u64::try_from(window.as_nanos()).unwrap_or(u64::MAX))
-        else {
-            return Duration::ZERO;
-        };
-        let mut hasher = DefaultHasher::new();
-        (&self.instance, name).hash(&mut hasher);
-        Duration::from_nanos(hasher.finish() % window)
     }
 
     /// Stops every pass. Idempotent.
@@ -185,32 +112,26 @@ impl Drop for Passes {
 
 /// One run of `pass`, to its end. A failure or a panic is logged here, and
 /// the schedule goes on at the cadence.
-async fn run<P, F>(name: &'static str, pass: &mut P) -> Next
+async fn run<P, F>(name: &'static str, pass: &mut P)
 where
     P: FnMut() -> F,
-    F: Future<Output = Result<Next, &'static str>>,
+    F: Future<Output = Result<(), &'static str>>,
 {
     // The call is inside the caught future too: a pass may panic before it
     // returns its future.
     let outcome = CaughtPanic(Box::pin(async { pass().await })).await;
     match outcome {
-        Some(Ok(next)) => next,
-        Some(Err(code)) => {
-            tracing::warn!(
-                coral.periodic.pass = safe::kind(name),
-                error.type = safe::kind(code),
-                "periodic pass failed; the next one runs at the cadence"
-            );
-            Next::AtCadence
-        }
-        None => {
-            tracing::error!(
-                coral.periodic.pass = safe::kind(name),
-                error.type = safe::kind("panicked"),
-                "periodic pass panicked; the next one runs at the cadence"
-            );
-            Next::AtCadence
-        }
+        Some(Ok(())) => {}
+        Some(Err(code)) => tracing::warn!(
+            coral.periodic.pass = safe::kind(name),
+            error.type = safe::kind(code),
+            "periodic pass failed; the next one runs at the cadence"
+        ),
+        None => tracing::error!(
+            coral.periodic.pass = safe::kind(name),
+            error.type = safe::kind("panicked"),
+            "periodic pass panicked; the next one runs at the cadence"
+        ),
     }
 }
 
@@ -243,30 +164,27 @@ mod tests {
 
     use tokio::task::AbortHandle;
 
-    use super::{Next, Passes, Schedule};
+    use super::{Passes, Schedule};
 
     const HOUR: Duration = Duration::from_hours(1);
-    const MINUTE: Duration = Duration::from_mins(1);
     const SECOND: Duration = Duration::from_secs(1);
 
-    /// What one scripted pass does.
+    /// What one scripted run does.
     #[derive(Debug, Clone, Copy)]
     enum Step {
         Done,
-        /// Takes this long, then finds nothing more to do.
+        /// Takes this long, then ends.
         Slow(Duration),
-        Soon,
         Fail,
         Panic,
         /// Panics as it is called, before it returns a future.
         PanicAtTheCall,
     }
 
-    /// When each pass started, as time since `Passes::start`.
+    /// When each run started, as time since `Passes::start`.
     type Starts = Arc<Mutex<Vec<Duration>>>;
 
-    /// Starts a pass on `passes` that follows `script`, then finds nothing
-    /// more to do.
+    /// Starts a pass on `passes` whose runs follow `script`, then just end.
     fn scripted(passes: &mut Passes, schedule: Schedule, script: &[Step]) -> (Starts, AbortHandle) {
         let starts = Starts::default();
         let began = tokio::time::Instant::now();
@@ -281,12 +199,11 @@ mod tests {
             );
             async move {
                 match step {
-                    Step::Done => Ok(Next::AtCadence),
+                    Step::Done => Ok(()),
                     Step::Slow(took) => {
                         tokio::time::sleep(took).await;
-                        Ok(Next::AtCadence)
+                        Ok(())
                     }
-                    Step::Soon => Ok(Next::Soon),
                     Step::Fail => Err("refused"),
                     Step::Panic | Step::PanicAtTheCall => panic!("scripted panic"),
                 }
@@ -297,11 +214,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_handle_stops_its_own_pass_and_stop_ends_them_all() {
-        let mut passes = Passes::new("instance");
+        let mut passes = Passes::default();
         let (stopped_alone, handle) = scripted(&mut passes, Schedule::every(HOUR), &[]);
         let (stopped_with_all, _) = scripted(&mut passes, Schedule::every(HOUR), &[]);
         let count = |starts: &Starts| starts.lock().unwrap().len();
-        // A pass that is still in flight when everything stops.
+        // A run that is still in flight when everything stops.
         let ended = Arc::new(AtomicBool::new(false));
         let in_flight = Arc::clone(&ended);
         passes.start(
@@ -312,7 +229,7 @@ mod tests {
                 async move {
                     tokio::time::sleep(HOUR).await;
                     in_flight.store(true, Ordering::SeqCst);
-                    Ok(Next::AtCadence)
+                    Ok(())
                 }
             },
         );
@@ -325,20 +242,18 @@ mod tests {
         passes.stop();
         tokio::time::sleep(HOUR * 2).await;
         assert_eq!((count(&stopped_alone), count(&stopped_with_all)), (1, 2));
-        assert!(!ended.load(Ordering::SeqCst), "stop ends a pass in flight");
+        assert!(!ended.load(Ordering::SeqCst), "stop ends a run in flight");
     }
 
     #[test]
     #[should_panic(expected = "cadence must be positive")]
     fn a_zero_cadence_is_refused_when_the_pass_starts() {
-        Passes::new("instance").start("zero", Schedule::every(Duration::ZERO), || async {
-            Ok(Next::AtCadence)
-        });
+        Passes::default().start("zero", Schedule::every(Duration::ZERO), || async { Ok(()) });
     }
 
     #[tokio::test(start_paused = true)]
     async fn dropping_the_set_stops_its_passes() {
-        let mut passes = Passes::new("instance");
+        let mut passes = Passes::default();
         let (starts, _) = scripted(&mut passes, Schedule::every(HOUR), &[]);
         tokio::time::sleep(SECOND).await;
         drop(passes);
@@ -357,110 +272,65 @@ mod tests {
         }
         let cases = [
             Case {
-                name: "the first pass runs at once, then one each cadence",
+                name: "the first run is at once, then one each cadence",
                 schedule: Schedule::every(HOUR),
                 script: vec![],
                 watch: HOUR * 2,
                 starts: vec![Duration::ZERO, HOUR, HOUR * 2],
             },
             Case {
-                name: "a first pass after a delay keeps the cadence from there",
+                name: "a first run after a delay keeps the cadence from there",
                 schedule: Schedule::every(HOUR).first_after(HOUR / 2),
                 script: vec![],
                 watch: HOUR * 2,
                 starts: vec![HOUR / 2, HOUR * 3 / 2],
             },
             Case {
-                name: "a pass that ran through two ticks gets one pass as it ends, then the next tick",
+                name: "a run that went through two ticks gets one run as it ends, then the next tick",
                 schedule: Schedule::every(HOUR),
                 script: vec![Step::Done, Step::Slow(HOUR * 2 + SECOND)],
                 watch: HOUR * 4,
                 starts: vec![Duration::ZERO, HOUR, HOUR * 3 + SECOND, HOUR * 4],
             },
             Case {
-                name: "the pass after a failed one runs at the cadence",
+                name: "the run after a failed one starts at the cadence",
                 schedule: Schedule::every(HOUR),
                 script: vec![Step::Fail],
                 watch: HOUR,
                 starts: vec![Duration::ZERO, HOUR],
             },
             Case {
-                name: "the pass after a panicked one runs at the cadence",
+                name: "the run after a panicked one starts at the cadence",
                 schedule: Schedule::every(HOUR),
                 script: vec![Step::Panic],
                 watch: HOUR,
                 starts: vec![Duration::ZERO, HOUR],
             },
             Case {
-                name: "the pass after one that panicked at its call runs at the cadence",
+                name: "the run after one that panicked at its call starts at the cadence",
                 schedule: Schedule::every(HOUR),
                 script: vec![Step::PanicAtTheCall],
                 watch: HOUR,
                 starts: vec![Duration::ZERO, HOUR],
             },
-            Case {
-                name: "a pass that asks to run again soon runs each time it asks, then at the next tick",
-                schedule: Schedule::every(HOUR),
-                script: vec![Step::Soon, Step::Soon],
-                watch: HOUR,
-                starts: vec![Duration::ZERO, MINUTE, MINUTE * 2, HOUR],
-            },
-            Case {
-                name: "soon and the tick at the same moment are one run",
-                schedule: Schedule::every(MINUTE),
-                script: vec![Step::Soon],
-                watch: MINUTE * 2,
-                starts: vec![Duration::ZERO, MINUTE, MINUTE * 2],
-            },
-            Case {
-                name: "soon is never later than the next tick",
-                schedule: Schedule::every(MINUTE / 2),
-                script: vec![Step::Soon],
-                watch: MINUTE,
-                starts: vec![Duration::ZERO, MINUTE / 2, MINUTE],
-            },
         ];
         for case in cases {
-            let mut passes = Passes::new("instance");
+            let mut passes = Passes::default();
             let (starts, _) = scripted(&mut passes, case.schedule, &case.script);
-            // One second past the last tick, so that its pass has started.
+            // One second past the last tick, so that its run has started.
             tokio::time::sleep(case.watch + SECOND).await;
             assert_eq!(*starts.lock().unwrap(), case.starts, "{}", case.name);
         }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn jitter_delays_the_first_pass_by_a_part_of_its_window_that_differs_between_instances() {
-        let window = MINUTE * 5;
-        let mut firsts = Vec::new();
-        for instance in ["a", "b", "c", "d"] {
-            let mut passes = Passes::new(instance);
-            let schedule = Schedule::every(HOUR).jittered(window);
-            let (starts, _) = scripted(&mut passes, schedule, &[]);
-            tokio::time::sleep(HOUR + window).await;
-            passes.stop();
-
-            let starts = starts.lock().unwrap().clone();
-            let [first, second] = starts[..] else {
-                panic!("two passes in an hour and the window: {starts:?}");
-            };
-            assert!(first < window, "{instance}: {first:?}");
-            assert_eq!(second, first + HOUR, "the cadence starts at the first pass");
-            firsts.push(first);
-        }
-        firsts.sort();
-        firsts.dedup();
-        assert_eq!(firsts.len(), 4, "each instance gets its own delay");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_pass_that_failed_or_panicked_is_logged_by_name() {
+    async fn a_run_that_failed_or_panicked_is_logged_by_pass_name() {
         use tracing_subscriber::layer::SubscriberExt as _;
 
         let logs = coral_telemetry::testing::ExportCapture::default();
         let _subscriber =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
-        let mut passes = Passes::new("instance");
+        let mut passes = Passes::default();
         scripted(
             &mut passes,
             Schedule::every(HOUR),

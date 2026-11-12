@@ -203,13 +203,6 @@ the goal instead of naming a Task, and Coral never infers which Task a call belo
 _Avoid_: Single call, synthetic Run wrapper, Principal-owned Task, Workspace-shared Task, using Episode or session as
 aliases for Task
 
-**History Expiry**: Coral's removal of execution history that has had no activity for 30 days. A Task expires as one
-unit with its attempts, its feedback, its Runs and their execution history, 30 days after the unit's last activity and
-never while one of its Runs is nonterminal. A Run that belongs to no Task expires 30 days after it ends. Reading history
-is not activity. The period is fixed; it is not an operator, Organization or Workspace setting. Expiry removes no
-current configuration, Tool, Provider Account or Administrative Lifecycle Event. _Avoid_: purge, cleanup, retention
-setting, expiring a Run of a Task by its own age
-
 **Task identifier**: The name Coral gives a Task when it starts it: four words from Coral's word list, lowercase and
 joined by hyphens, such as `random-big-business-store`. Coral draws the words at random, inserts the Task with them as
 its primary key, and draws again when the name is already in use, so no two Tasks in one deployment share one. A Task
