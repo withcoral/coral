@@ -591,6 +591,8 @@ pub struct RunningServer {
     search_reconcile: JoinHandle<()>,
     search_model: Option<SearchModel>,
     search_model_delivery: Option<JoinHandle<()>>,
+    /// Loads the model for the Embedder; none while the vector side is off.
+    search_model_load: Option<JoinHandle<()>>,
     release_check: Option<JoinHandle<()>>,
     usage_check: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -690,6 +692,9 @@ impl RunningServer {
         self.search_reconcile.abort();
         if let Some(delivery) = &self.search_model_delivery {
             delivery.abort();
+        }
+        if let Some(load) = &self.search_model_load {
+            load.abort();
         }
         if let Some(check) = &self.release_check {
             check.abort();
@@ -807,6 +812,9 @@ impl Drop for RunningServer {
         self.search_reconcile.abort();
         if let Some(delivery) = &self.search_model_delivery {
             delivery.abort();
+        }
+        if let Some(load) = &self.search_model_load {
+            load.abort();
         }
         if let Some(check) = &self.release_check {
             check.abort();
@@ -934,6 +942,17 @@ pub(crate) async fn start_server(
     // reconcile task's first pass runs in the background, so neither boot nor
     // a request waits for it.
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
+    // Only Postgres keeps vectors yet, so only there does the Embedder need
+    // the model in memory. Every clone of the index is made after this, so
+    // each write wakes the Embedder; the model fills the slot once the
+    // delivery below finds the files.
+    let embedder_model = (search_model.is_some()
+        && database.system() == coral_db::DatabaseSystem::Postgres)
+        .then(|| watch::channel(None));
+    let search_index = match &embedder_model {
+        Some((_, model)) => search_index.with_embedder(model.clone()),
+        None => search_index,
+    };
     let provider_workflow =
         coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
     // Every Workspace has a Built-in Provider with this process's catalog,
@@ -1127,6 +1146,10 @@ pub(crate) async fn start_server(
     });
     let search_reconcile = search_index.spawn_reconcile_task();
     let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
+    let search_model_load = search_model
+        .as_ref()
+        .zip(embedder_model)
+        .map(|(files, (slot, _))| files.load_into(slot));
     let release_check = releases.map(|releases| releases.spawn(coral_release::CHECK_INTERVAL));
     let usage_check =
         usage.map(|usage| usage.data.spawn(usage.client, coral_usage::CHECK_INTERVAL));
@@ -1139,6 +1162,7 @@ pub(crate) async fn start_server(
         search_reconcile,
         search_model,
         search_model_delivery,
+        search_model_load,
         release_check,
         usage_check,
         accounts,

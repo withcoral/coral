@@ -40,6 +40,9 @@ enum SearchEntities {
     Description,
     ProviderName,
     SearchableText,
+    /// The words of the leaf names of the entity's declaration paths, for
+    /// the Embedder's text; `NULL` in a row an older indexer wrote.
+    FieldNames,
     Deprecated,
     Fingerprint,
     /// When the row last changed: the attempt that wrote its values.
@@ -196,7 +199,7 @@ async fn advisory_lock(
 
 /// The columns a Tool row sets, in [`ToolRow::values`] order. The
 /// first two are the key.
-const TOOL_COLUMNS: [SearchEntities; 15] = [
+const TOOL_COLUMNS: [SearchEntities; 16] = [
     SearchEntities::WorkspaceId,
     SearchEntities::DocId,
     SearchEntities::Kind,
@@ -209,6 +212,7 @@ const TOOL_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::Description,
     SearchEntities::ProviderName,
     SearchEntities::SearchableText,
+    SearchEntities::FieldNames,
     SearchEntities::Deprecated,
     SearchEntities::Fingerprint,
     SearchEntities::IndexedAtUnixNanos,
@@ -228,6 +232,7 @@ pub(crate) struct ToolRow<'a> {
     pub(super) description: String,
     pub(super) provider_name: String,
     pub(super) searchable_text: String,
+    pub(super) field_names: String,
     pub(super) deprecated: bool,
 }
 
@@ -251,6 +256,7 @@ impl ToolRow<'_> {
             self.description.clone().into(),
             self.provider_name.clone().into(),
             self.searchable_text.clone().into(),
+            self.field_names.clone().into(),
             self.deprecated.into(),
             generation_id.into(),
             indexed_at_unix_nanos.into(),
@@ -574,7 +580,7 @@ pub(super) async fn delete_provider(
 
 /// The columns an Authored Tool row sets, in [`AuthoredToolRow::values`] order.
 /// The first two are the key.
-const AUTHORED_TOOL_COLUMNS: [SearchEntities; 15] = [
+const AUTHORED_TOOL_COLUMNS: [SearchEntities; 16] = [
     SearchEntities::WorkspaceId,
     SearchEntities::DocId,
     SearchEntities::Kind,
@@ -587,6 +593,7 @@ const AUTHORED_TOOL_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::Description,
     SearchEntities::ProviderName,
     SearchEntities::SearchableText,
+    SearchEntities::FieldNames,
     SearchEntities::Deprecated,
     SearchEntities::Fingerprint,
     SearchEntities::IndexedAtUnixNanos,
@@ -604,6 +611,7 @@ pub(crate) struct AuthoredToolRow<'a> {
     pub(super) qualified_name: &'a str,
     pub(super) description: &'a str,
     pub(super) searchable_text: String,
+    pub(super) field_names: String,
     pub(super) revision: u64,
 }
 
@@ -624,6 +632,7 @@ impl AuthoredToolRow<'_> {
             self.description.into(),
             "".into(),
             self.searchable_text.clone().into(),
+            self.field_names.clone().into(),
             false.into(),
             authored_tool_fingerprint(self.revision).into(),
             indexed_at_unix_nanos.into(),

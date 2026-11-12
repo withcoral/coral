@@ -96,6 +96,10 @@ const CORAL: &[&str] = &[
     "coral.search.reconcile.workspaces_checked",
     "coral.search.reconcile.workspaces_recounted",
     "coral.search.reconcile.rows_written",
+    // One write of the Embedder: the Search Entities it embedded and the
+    // vectors it wrote.
+    "coral.search.embedder.rows",
+    "coral.search.embedder.vectors_written",
     // The Edition a Coral Instance started as.
     "coral.edition",
 ];

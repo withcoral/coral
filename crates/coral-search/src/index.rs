@@ -22,6 +22,9 @@ use crate::indexer::authored_tools::{self, AuthoredToolIndexer, AuthoredToolSync
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
+use embedder::EmbedderState;
+
+mod embedder;
 mod reconcile;
 mod statistics;
 mod telemetry;
@@ -68,6 +71,10 @@ pub struct SearchIndex {
     /// reconcile pass's copy does not: the pass recounts what it changed.
     schedules_recounts: bool,
     telemetry: Arc<telemetry::IndexTelemetry>,
+    /// The Embedder, when the vector side is on.
+    embedder: Option<Arc<EmbedderState>>,
+    /// The pause before the Embedder retries a failed batch.
+    embedder_retry_pause: Duration,
     #[cfg(test)]
     row_build_pause: Option<Arc<RowBuildPause>>,
     /// A test-only index whose notifications write nothing.
@@ -137,6 +144,8 @@ impl SearchIndex {
             recount_delay: statistics::RECOUNT_DELAY,
             schedules_recounts: true,
             telemetry: Arc::new(telemetry::IndexTelemetry::default()),
+            embedder: None,
+            embedder_retry_pause: embedder::RETRY_PAUSE,
             #[cfg(test)]
             row_build_pause: None,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -145,6 +154,42 @@ impl SearchIndex {
             stall_after_lock: None,
             #[cfg(any(test, feature = "test-fixtures"))]
             stall_before_write: None,
+        }
+    }
+
+    /// Turns the vector side on, on Postgres: the Embedder runs beside the
+    /// reconcile task, embeds with `model` once it holds one, and the reconcile
+    /// task removes vectors whose Search Entity is gone. On `SQLite`, which
+    /// keeps no vectors yet, nothing changes. Saving or publishing a source
+    /// never calls the model: only the Embedder does, in the background.
+    #[must_use]
+    pub fn with_embedder(
+        mut self,
+        model: tokio::sync::watch::Receiver<Option<Arc<dyn coral_embed::Embed>>>,
+    ) -> Self {
+        if self.database.system() == coral_db::DatabaseSystem::Postgres {
+            self.embedder = Some(Arc::new(EmbedderState::new(model)));
+        }
+        self
+    }
+
+    /// Replaces the pause before the Embedder retries a failed batch, so a
+    /// test does not wait out the real one.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn with_embedder_retry_pause(mut self, pause: Duration) -> Self {
+        self.embedder_retry_pause = pause;
+        self
+    }
+
+    /// Waits until the Embedder has finished a drain that started after
+    /// every index write before this call, and every reconcile pass. Returns
+    /// at once when the vector side is off. Waits for the model first, so a
+    /// test awaits this only once the model is ready.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub async fn embedded(&self) {
+        if let Some(embedder) = &self.embedder {
+            embedder.drained().await;
         }
     }
 
@@ -730,6 +775,7 @@ impl SearchIndex {
         );
         let (effect, committed_at) = written?;
         self.rows_changed(workspace_id);
+        self.wake_embedder();
         self.observe_committed_visibility(workspace_id.clone(), effect, committed_at);
         Ok(rows)
     }

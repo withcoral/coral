@@ -11,9 +11,10 @@
 //! reasons.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use coral_embed::{Manifest, ModelFile, ModelState};
+use coral_embed::{Embed, LoadError, Manifest, Model, ModelFile, ModelState};
 use coral_telemetry::safe;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
@@ -135,6 +136,39 @@ impl SearchModel {
             return None;
         };
         Some(dir.clone())
+    }
+
+    /// Loads the model into `slot` once its files are ready, on a blocking
+    /// thread. The slot stays empty when the files never arrive, when the
+    /// CPU is below the floor, or when the model does not load: search then
+    /// matches by words alone.
+    pub(crate) fn load_into(&self, slot: watch::Sender<Option<Arc<dyn Embed>>>) -> JoinHandle<()> {
+        let files = self.clone();
+        tokio::spawn(async move {
+            let Some(dir) = files.ready().await else {
+                return;
+            };
+            match tokio::task::spawn_blocking(move || Model::load(&dir)).await {
+                Ok(Ok(model)) => {
+                    let model: Arc<dyn Embed> = Arc::new(model);
+                    slot.send_replace(Some(model));
+                }
+                Ok(Err(LoadError::CpuTooOld(_))) => tracing::info!(
+                    "this CPU is below the floor for search by meaning; search matches by words only"
+                ),
+                Ok(Err(error)) => tracing::error!(
+                    error.type = safe::kind(match error {
+                        LoadError::Tokenizer { .. } => "tokenizer_load_failed",
+                        _ => "model_load_failed",
+                    }),
+                    "failed to load the search model; search matches by words only"
+                ),
+                Err(_) => tracing::error!(
+                    error.type = safe::kind("model_load_panicked"),
+                    "loading the search model panicked; search matches by words only"
+                ),
+            }
+        })
     }
 }
 

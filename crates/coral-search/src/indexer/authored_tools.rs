@@ -279,6 +279,13 @@ fn authored_tool_row(entry: &AuthoredToolEntry) -> Result<AuthoredToolRow<'_>, I
         qualified_name: entry.path().relative_path(),
         description: entry.description().as_str(),
         searchable_text: searchable_text(entry),
+        field_names: crate::index_text::field_names(
+            entry
+                .declaration_fields()
+                .unwrap_or_default()
+                .iter()
+                .map(coral_tools::AuthoredToolDeclarationField::path),
+        ),
         revision: entry.revision(),
     })
 }

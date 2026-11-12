@@ -2,6 +2,7 @@ mod builtin;
 mod describe;
 mod describe_tools;
 mod discover;
+mod embedder;
 mod index;
 mod ranking;
 mod retrieval;
