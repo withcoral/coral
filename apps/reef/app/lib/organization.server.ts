@@ -66,3 +66,6 @@ export function organizationWorkspaceView(w: OrganizationWorkspace): Organizatio
     owners: w.owners.map(ownerView),
   }
 }
+
+/** A secret store's name without its resource prefix. */
+export const secretStoreId = (name: string) => name.replace(/^secretStores\//, '')

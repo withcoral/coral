@@ -12,6 +12,8 @@ export function secretStoreBlockers(state: SecretStoreState): string[] {
       return ['Needs Enterprise']
     case SecretStoreState.KIND_MISSING:
       return ['Not in this build']
+    case SecretStoreState.REMOVED:
+      return ['Removed from config']
     default:
       return ['Unknown state']
   }

@@ -119,7 +119,7 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 
 ### `[[secret_stores]]`
 
-Defines a connection to a secrets system you run. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name, kind and status in the account menu, under **Secret stores**.
+Defines a connection to a secrets system you run. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name, kind and status in the account menu, under **Secret stores**. There they grant a store to a workspace, or revoke that grant. An archived workspace keeps its grants, and you cannot change them until you restore it. A grant whose store you remove from this file shows as **Removed from config**.
 
 Each store has a `kind`: the secrets system it connects to. The other keys in its table depend on the kind.
 

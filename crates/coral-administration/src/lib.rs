@@ -46,14 +46,16 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
-//! [`SecretStoreInventory`] shows an Organization Owner the Secret Stores the
-//! operator defined.
+//! [`SecretStoreAdministration`] shows an Organization Owner the Secret Stores the
+//! operator defined and manages their grants to Workspaces, and shows a Workspace
+//! Owner the stores granted to their Workspace.
 //!
-//! This Module depends on Workspace, Provider, Tools, Policy, Auth, and the private database
-//! foundation. It never calls Run or Task, deletes retained history, initializes a
-//! compiler, or performs network revocation. Current authority at the commit is
-//! sufficient to block later dispatch at the Policy Enforcement Point; no
-//! post-commit cleanup is required.
+//! This Module depends on Workspace (with its Organization governance), Provider,
+//! Tools, Policy, Auth, Secret Store, and the private database foundation. It
+//! never calls Run or Task, deletes retained history, initializes a compiler, or
+//! performs network revocation. For access removal, current authority at the
+//! commit is sufficient to block later dispatch at the Policy Enforcement Point;
+//! no post-commit cleanup is required.
 mod private_tools;
 mod providers;
 mod secret_stores;
@@ -63,7 +65,9 @@ mod workspaces;
 
 pub use private_tools::PrivateToolWorkflow;
 pub use providers::ProviderWorkflow;
-pub use secret_stores::SecretStoreInventory;
+pub use secret_stores::{
+    GrantedSecretStore, OrganizationSecretStoreGrant, SecretStoreAdministration,
+};
 pub use shared_tools::SharedToolWorkflow;
 pub use workspaces::WorkspaceWorkflow;
 
@@ -203,7 +207,8 @@ impl AccessLifecycleModule {
         Ok(())
     }
 }
-/// An access-removal failure; no facet commits independently.
+/// An access-removal or Secret Store administration failure; no facet commits
+/// independently.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Database transaction failure.
@@ -224,6 +229,9 @@ pub enum Error {
     /// Refresh Grant retirement failed.
     #[error(transparent)]
     Auth(#[from] coral_auth::Error),
+    /// Deployment config defines no Secret Store with this name.
+    #[error("deployment config defines no such Secret Store")]
+    UndefinedSecretStore,
 }
 #[cfg(test)]
 mod organization_rejoin_tests;

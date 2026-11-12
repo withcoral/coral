@@ -60,8 +60,8 @@ pub struct Dependencies {
     pub releases: Option<coral_release::ReleaseCheck>,
     /// The deployment's usage data; absent where the application composes none.
     pub usage: Option<coral_usage::UsageData>,
-    /// The Secret Stores the operator defined, for an Organization Owner.
-    pub secret_stores: coral_administration::SecretStoreInventory,
+    /// The Secret Stores the operator defined and their grants to Workspaces.
+    pub secret_stores: coral_administration::SecretStoreAdministration,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -204,7 +204,7 @@ struct GrpcServices {
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<coral_usage::UsageData>,
-    secret_stores: coral_administration::SecretStoreInventory,
+    secret_stores: coral_administration::SecretStoreAdministration,
 }
 
 impl GrpcServices {
