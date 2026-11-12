@@ -268,15 +268,16 @@ it('keeps your order when the connection revision changes', async () => {
   await sortBy('status')
   expect(shownProviders()).toEqual(['github', 'Attio', 'Linear', 'Zendesk'])
 
-  // github connects, and Coral returns the accounts in another order.
+  // github and Attio connect, Zendesk needs a reconnect, and Coral returns another order.
   coral.view = viewAt('two', [
     account('Linear', 'connected'),
     account('github', 'connected'),
-    account('Zendesk', 'connected'),
-    account('Attio', 'needs_reconnect'),
+    account('Zendesk', 'needs_reconnect'),
+    account('Attio', 'connected'),
   ])
   await signal(signalOf(counted('two')))
 
-  await waitFor(() => expect(shownProviders()).toEqual(['Attio', 'github', 'Linear', 'Zendesk']))
+  // Provider order would put Zendesk last.
+  await waitFor(() => expect(shownProviders()).toEqual(['Zendesk', 'Attio', 'github', 'Linear']))
   expect(sorts()).toEqual(['none', 'descending'])
 })
