@@ -126,7 +126,7 @@ Each store has a `kind`: the secrets system it connects to. The other keys in it
 | Key    | Description                                                                                                | Required | Default |
 | ------ | ---------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `name` | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit | Yes      | N/A     |
-| `kind` | The secrets system. The other keys depend on the kind.                                                     | Yes      | N/A     |
+| `kind` | The secrets system, such as `env`. The other keys depend on the kind.                                      | Yes      | N/A     |
 
 A store's name stands for one trust boundary. To point at a different store, add a new store under a new name.
 
@@ -136,7 +136,32 @@ Coral reads this section when it starts, and stores no credential for a store in
 - An unreachable store does not stop Coral from starting.
 - A store whose kind your build of Coral cannot read does not stop Coral from starting. Coral logs a warning, shows the store as **Not in this build**, and every read from it fails. Its grants and references stay.
 
-A workspace owner uses a granted store when they connect a shared account: for each field, they choose **Use a secret store** and enter its path and key. Coral reads the value once to check it, then reads it again for each call and keeps no copy.
+A workspace owner uses a granted store when they connect a shared account: for each field, they choose **Use a secret store**, pick the store, and enter what its kind asks for. Coral reads the value once to check it, then reads it again for each call and keeps no copy.
+
+#### Read from environment variables
+
+The `env` kind reads each value from an environment variable of the Coral process. Use it when your platform injects secrets into the environment, for example from Kubernetes Secrets. Every build of Coral has it, on the Community Edition too.
+
+```toml
+[[secret_stores]]
+name = "env"
+kind = "env"
+prefix = "MYCO_"
+```
+
+| Key      | Description                                                                         | Required | Default |
+| -------- | ----------------------------------------------------------------------------------- | -------- | ------- |
+| `prefix` | The start of every variable name the store can read: letters, digits and `_` only | Yes      | N/A     |
+
+A workspace owner who chooses an `env` store enters one **Variable name**, such as `MYCO_API_KEY`. The form shows the prefix the name must start with. Coral reads only a name that starts with the prefix and holds letters, digits and `_` only, so a reference can never name a variable outside the prefix. Coral reads the variable each time it needs the value. A variable that is not set fails as an entry the store does not have, so Coral refuses to save a reference to it.
+
+A grant of an `env` store to a workspace covers every variable under its prefix. So pick a prefix that holds only the secrets you mean to share. Coral refuses to start, and names the setting, when a prefix:
+
+- is empty, or is the start of `CORAL_`, such as `C` or `CORAL`,
+- starts with `CORAL_`, because those variables are Coral's own,
+- covers a variable that another setting names, such as `credentials.key_env`, `database.url_env` or `listeners.run_executor.token_env`. Coral checks every setting whose name ends in `_env`.
+
+Coral compares names without regard to case.
 
 #### Limit what each store can read
 

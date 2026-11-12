@@ -2,7 +2,9 @@
 //! It joins Organization governance (ADR 0015) and the Workspace's grants with the
 //! registry bootstrap builds, which knows nothing about Users or Workspaces. A
 //! grant names a store, so it means nothing while config does not define that store.
-use coral_secret_store::{SecretStoreKind, SecretStoreName, SecretStores, StoreStatus};
+use coral_secret_store::{
+    SecretStoreKind, SecretStoreName, SecretStores, StoreDescription, StoreStatus,
+};
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationModule, Workspace, WorkspaceId, WorkspaceModule,
 };
@@ -12,9 +14,10 @@ use coral_workspace::{
 pub struct GrantedSecretStore {
     /// The name the grant holds.
     pub name: String,
-    /// The store's kind and current status. `None` means config does not
-    /// define the store, so the grant is kept but gives the Workspace nothing.
-    pub defined: Option<(SecretStoreKind, StoreStatus)>,
+    /// The store's kind, current status and reference form. `None` means
+    /// config does not define the store, so the grant is kept but gives the
+    /// Workspace nothing.
+    pub defined: Option<StoreDescription>,
 }
 
 /// One grant in the Organization, for an Organization Owner.
@@ -248,7 +251,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|store| (store.name, store.defined))
+            .map(|store| (store.name, store.defined.map(|d| (d.kind, d.status))))
             .collect();
         let expected = [
             (
@@ -265,7 +268,12 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|grant| (grant.store.name, grant.store.defined))
+            .map(|grant| {
+                (
+                    grant.store.name,
+                    grant.store.defined.map(|d| (d.kind, d.status)),
+                )
+            })
             .collect();
         assert_eq!(all, expected);
 

@@ -5,7 +5,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_secret_store::{
-    Error, Secret, SecretReference, SecretStore, SecretStoreKind, SecretStoreName, SecretStores,
+    Error, KeyField, ReferenceForm, Secret, SecretReference, SecretStore, SecretStoreKind,
+    SecretStoreName, SecretStores,
 };
 
 /// A registry that defines each of these stores under its name.
@@ -89,6 +90,17 @@ impl SecretStore for InMemorySecretStore {
         let entry = entries.get(reference.path()).ok_or(Error::EntryNotFound)?;
         let value = entry.get(key).ok_or(Error::KeyNotFound)?;
         Secret::new(value.clone()).map_err(|_error| Error::MalformedResponse)
+    }
+    /// Entries hold named keys, so a reference holds a path and a key.
+    fn reference_form(&self) -> ReferenceForm {
+        ReferenceForm {
+            path_label: "Path".into(),
+            path_prefix: None,
+            key: Some(KeyField {
+                label: "Key".into(),
+                required: true,
+            }),
+        }
     }
 }
 

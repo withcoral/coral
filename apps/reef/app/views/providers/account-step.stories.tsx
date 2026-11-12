@@ -7,6 +7,7 @@ import { LocalDeploymentContext } from '@/lib/deployment'
 import type { CreationAttempt } from '@/lib/provider-publication-attempt/model'
 import { AccountStep } from './account-step'
 import type { SetupView } from './types'
+import { UNKNOWN_REFERENCE_FORM } from '@/lib/reference-form'
 
 /**
  * The last step of Add on its own, so its layout can be worked on without
@@ -246,7 +247,10 @@ const typed: SetupView = {
 }
 // Catches: a reference offered anywhere but the shared account's dialog.
 export const SharedDialogOffersSecretStore: Story = {
-  args: { setup: typed, secretStores: [{ name: 'platform', blockers: [] }] },
+  args: {
+    setup: typed,
+    secretStores: [{ name: 'platform', blockers: [], form: UNKNOWN_REFERENCE_FORM }],
+  },
   play: async ({ canvas }) => {
     const page = within(document.body)
     await userEvent.click(canvas.getByRole('button', { name: 'Connect the shared account' }))
@@ -260,7 +264,10 @@ export const SharedDialogOffersSecretStore: Story = {
   },
 }
 export const OwnDialogStaysTyped: Story = {
-  args: { setup: typed, secretStores: [{ name: 'platform', blockers: [] }] },
+  args: {
+    setup: typed,
+    secretStores: [{ name: 'platform', blockers: [], form: UNKNOWN_REFERENCE_FORM }],
+  },
   play: async ({ canvas }) => {
     const page = within(document.body)
     await userEvent.click(canvas.getByRole('radio', { name: /^Connect now/ }))

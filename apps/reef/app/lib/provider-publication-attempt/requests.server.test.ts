@@ -681,7 +681,7 @@ describe('secret entry', () => {
 
     expect(result).toMatchObject({
       data: {
-        error: 'The secret store has no entry at this path. Check the path.',
+        error: 'The secret store has no secret at this reference. Check the path or variable name.',
         connecting: 'fixed',
       },
     })

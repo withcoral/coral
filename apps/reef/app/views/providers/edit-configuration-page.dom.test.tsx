@@ -9,6 +9,7 @@ import { expect, it } from 'vitest'
 import { LocalDeploymentContext } from '@/lib/deployment'
 import type { UpdateTask } from '@/lib/provider-publication-attempt/model'
 import { EditConfigurationPage } from './edit-configuration-page'
+import { UNKNOWN_REFERENCE_FORM } from '@/lib/reference-form'
 import type {
   AccountChoice,
   ConfigurationReviewView,
@@ -245,7 +246,7 @@ it('opens a replacement with the shared account references filled in', async () 
     page: replacing,
     task: 'refresh',
     account: 'fixed',
-    secretStores: [{ name: 'platform', blockers: [] }],
+    secretStores: [{ name: 'platform', blockers: [], form: UNKNOWN_REFERENCE_FORM }],
     savedReferences: { token: { store: 'platform', path: 'team/forecast', key: 'token' } },
   })
   await userEvent.click(screen.getByRole('button', { name: 'Connect the shared account' }))

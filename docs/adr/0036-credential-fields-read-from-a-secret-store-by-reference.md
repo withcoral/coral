@@ -78,12 +78,18 @@ Coral is out of scope: it would need the customer's store open to our network an
 ## Store kinds, and which need the Enterprise Edition
 
 Each store has a kind, the secrets system its adapter speaks, such as Vault KV version 2. Core keeps Secret Stores,
-grants, Secret References and their schema, and knows no kind by name: a build registers its kinds, and core parses only
-a store's name and kind and hands the rest of its settings to that kind. A kind may be an Enterprise Feature (ADR 0033).
+grants, Secret References and their schema. A build registers its kinds, and core parses only a store's name and kind
+and hands the rest of its settings to that kind. A kind may be an Enterprise Feature (ADR 0033).
 Vault KV version 2 is one, and lives in `ee/`. It checks the Edition on every read and, while the Edition is Community,
 refuses with its own reason and deletes nothing. A store whose kind the build lacks still boots and shows as unavailable,
 with its grants and references kept, so a deployment can move between the released binary and a source build. Each
 store reports whether it is available, so Reef can show it before anyone saves a reference; the read still decides.
+
+Core has one kind of its own, `env`, for deployments that inject secrets into the environment, such as from Kubernetes
+Secrets. Its store names a prefix, and a reference names one whole variable that starts with it and is longer than it. It reads the variable on each
+use, as other kinds read their store, through a reader bootstrap hands it: the one place Coral reads the environment
+after bootstrap. Boot refuses a prefix that could cover Coral's own `CORAL_` variables or a variable any `*_env`
+setting names, such as `credentials.key_env`, so a reference cannot read Coral's own secrets.
 
 ## Only a Workspace Owner, in Reef
 

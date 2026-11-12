@@ -15349,6 +15349,26 @@ pub struct SecretStore {
     /// Whether Coral can read from the store right now.
     #[prost(enumeration = "SecretStoreState", tag = "4")]
     pub state: i32,
+    /// What a Secret Reference to the store holds. Set on a store a grant names,
+    /// where a Workspace Owner may choose it for a reference.
+    #[prost(message, optional, tag = "5")]
+    pub reference_form: ::core::option::Option<SecretReferenceForm>,
+}
+/// The parts of a Secret Reference to one store, so a form asks for exactly those.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecretReferenceForm {
+    /// What the path is, such as "Path" or "Variable name".
+    #[prost(string, tag = "1")]
+    pub path_label: ::prost::alloc::string::String,
+    /// What every path the store reads starts with. Empty when the store sets none.
+    #[prost(string, tag = "2")]
+    pub path_prefix: ::prost::alloc::string::String,
+    /// What the key is, such as "Key". Empty when a reference holds no key.
+    #[prost(string, tag = "3")]
+    pub key_label: ::prost::alloc::string::String,
+    /// Whether a reference must hold a key.
+    #[prost(bool, tag = "4")]
+    pub key_required: bool,
 }
 /// Owner-only request. Config and the Workspace count bound the list, so it has no pages.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

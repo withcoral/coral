@@ -388,6 +388,18 @@ export async function loadAccounts(
     }[view.scope],
     agent: view.agent,
   })
+  // Only someone who can change the account may list the stores, so only they see
+  // each reference in its store's words. Anyone else sees the generic ones.
+  const forms = new Map(
+    current.account?.canManage && Object.keys(current.account.secretReferences).length > 0
+      ? (
+          await offeredSecretStores(api, view.parent).catch((error: unknown) => {
+            if (error instanceof ConnectError && error.code === Code.PermissionDenied) return []
+            throw error
+          })
+        ).map(({ name, form }) => [name, form])
+      : [],
+  )
   return {
     workspace: view.workspace,
     parents: view.parents,
@@ -402,7 +414,8 @@ export async function loadAccounts(
       current.account && current.account.state !== ProviderAccountState.DISCONNECTED
         ? credentialFieldViews(current.credentialFields).map(({ name, label }) => {
             const reference = current.account?.secretReferences[name]
-            return { name, label, reference: reference && savedReferenceView(reference) }
+            const saved = reference && savedReferenceView(reference)
+            return { name, label, reference: saved, form: saved && forms.get(saved.store) }
           })
         : [],
     scopes: current.requestedScopes,
