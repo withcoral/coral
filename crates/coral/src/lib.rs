@@ -194,19 +194,36 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
 /// Startup applies them before it listens and before telemetry starts, so
 /// these lines are the only sign that the process is on a long step.
 fn print_migrations() -> coral_app::MigrationReport {
-    let upgrading = std::sync::atomic::AtomicBool::new(false);
+    let lines = MigrationLines::default();
     std::sync::Arc::new(move |progress| {
-        if let coral_app::MigrationProgress::Pending { applied, .. } = progress {
-            upgrading.store(applied > 0, std::sync::atomic::Ordering::Relaxed);
-        }
-        if upgrading.load(std::sync::atomic::Ordering::Relaxed) {
-            println!("{}", migration_line(progress));
+        if let Some(line) = lines.line(progress) {
+            println!("{line}");
         }
     })
 }
 
-/// The line for one piece of migration progress. [`print_migrations`] prints
-/// none for a new database: its steps are many and each takes milliseconds.
+/// Chooses the line for each piece of one startup's migration progress.
+#[derive(Default)]
+struct MigrationLines {
+    /// The database had steps before this startup, so this is an upgrade.
+    upgrading: std::sync::atomic::AtomicBool,
+}
+
+impl MigrationLines {
+    /// The line for `progress`. A new database has none: its steps are many
+    /// and each takes milliseconds.
+    fn line(&self, progress: coral_app::MigrationProgress<'_>) -> Option<String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let coral_app::MigrationProgress::Pending { applied, .. } = progress {
+            self.upgrading.store(applied > 0, Relaxed);
+        }
+        self.upgrading
+            .load(Relaxed)
+            .then(|| migration_line(progress))
+    }
+}
+
+/// The line for one piece of an upgrade's migration progress.
 fn migration_line(progress: coral_app::MigrationProgress<'_>) -> String {
     use coral_app::MigrationProgress::{Finished, Pending, Started};
     match progress {
@@ -439,45 +456,54 @@ mod tests {
         }
     }
 
+    /// A new database's steps are many and quick, so printing them would
+    /// bury the listener lines. An upgrade's steps are the ones to show.
     #[test]
-    fn each_piece_of_migration_progress_has_its_line() {
+    fn an_upgrade_prints_each_migration_step_and_a_new_database_prints_none() {
         use coral_app::MigrationProgress::{Finished, Pending, Started};
 
-        let step = (63, "every callable is a tool");
-        for (progress, line) in [
+        const WAIT: &str = "A step over a large table can take minutes, and Coral listens when \
+                            the last one finishes.";
+        let started = Started {
+            version: 63,
+            description: "every callable is a tool",
+        };
+        let finished = Finished {
+            version: 63,
+            description: "every callable is a tool",
+            elapsed: std::time::Duration::from_millis(262_440),
+        };
+        let pending = |applied, pending| Pending { applied, pending };
+        for (case, progress, lines) in [
             (
-                Pending {
-                    applied: 62,
-                    pending: 1,
-                },
-                "Coral is migrating the database: 1 step to apply. A step over a large table \
-                 can take minutes, and Coral listens when the last one finishes.",
+                "an upgrade of one step",
+                vec![pending(62, 1), started, finished],
+                vec![
+                    format!("Coral is migrating the database: 1 step to apply. {WAIT}"),
+                    "Database migration 0063 (every callable is a tool) started.".to_owned(),
+                    "Database migration 0063 (every callable is a tool) finished in 262.4 s."
+                        .to_owned(),
+                ],
             ),
             (
-                Pending {
-                    applied: 62,
-                    pending: 4,
-                },
-                "Coral is migrating the database: 4 steps to apply. A step over a large table \
-                 can take minutes, and Coral listens when the last one finishes.",
+                "an upgrade of several steps",
+                vec![pending(62, 4)],
+                vec![format!(
+                    "Coral is migrating the database: 4 steps to apply. {WAIT}"
+                )],
             ),
             (
-                Started {
-                    version: step.0,
-                    description: step.1,
-                },
-                "Database migration 0063 (every callable is a tool) started.",
-            ),
-            (
-                Finished {
-                    version: step.0,
-                    description: step.1,
-                    elapsed: std::time::Duration::from_millis(262_440),
-                },
-                "Database migration 0063 (every callable is a tool) finished in 262.4 s.",
+                "a new database",
+                vec![pending(0, 66), started, finished],
+                vec![],
             ),
         ] {
-            assert_eq!(migration_line(progress), line);
+            let printer = MigrationLines::default();
+            let printed: Vec<String> = progress
+                .into_iter()
+                .filter_map(|progress| printer.line(progress))
+                .collect();
+            assert_eq!(printed, lines, "{case}");
         }
     }
 

@@ -138,6 +138,54 @@ mod tests {
         entries
     }
 
+    /// Migrations run before telemetry starts, so the launcher's report is
+    /// their only output. A report dropped on the way to the database would
+    /// make an upgrade silent again.
+    #[tokio::test]
+    async fn startup_reports_each_migration_step_to_the_launcher() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("config.toml"), CONFIG).unwrap();
+        let planned: Vec<i64> = coral_db::migration_plan()
+            .for_system(coral_db::DatabaseSystem::Sqlite)
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+
+        for (boot, pending) in [("a new state root", planned.len()), ("the next start", 0)] {
+            let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let report = std::sync::Arc::clone(&reported);
+            let prepared = crate::ServerBuilder::new()
+                .with_config_dir(temp.path())
+                .with_migration_report(std::sync::Arc::new(move |progress| {
+                    report.lock().unwrap().push(match progress {
+                        coral_db::MigrationProgress::Pending { applied, pending } => {
+                            format!("{applied} applied, {pending} pending")
+                        }
+                        coral_db::MigrationProgress::Started { version, .. } => {
+                            format!("started {version}")
+                        }
+                        coral_db::MigrationProgress::Finished { version, .. } => {
+                            format!("finished {version}")
+                        }
+                    });
+                }))
+                .prepare()
+                .await
+                .unwrap();
+            // The next start needs the state lock.
+            drop(prepared);
+
+            let expected: Vec<String> = (pending > 0)
+                .then(|| format!("0 applied, {pending} pending"))
+                .into_iter()
+                .chain(planned.iter().take(pending).flat_map(|version| {
+                    [format!("started {version}"), format!("finished {version}")]
+                }))
+                .collect();
+            assert_eq!(*reported.lock().unwrap(), expected, "{boot}");
+        }
+    }
+
     #[tokio::test]
     async fn a_held_state_root_refuses_another_runtime_without_change() {
         for initialized in [false, true] {
