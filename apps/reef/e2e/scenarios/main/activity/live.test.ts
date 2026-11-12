@@ -15,6 +15,9 @@ import { shownPayload } from '../../../support/payloads.ts'
 import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 
+/** How many filler Runs start at once. */
+const FILL_BATCH = 10
+
 test('Activity automatically streams new rows and continuously loads bounded child viewports without losing detail', async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
@@ -181,11 +184,18 @@ test('Activity automatically streams new rows and continuously loads bounded chi
       'Expand an execution outside the first task window without fetching the whole history',
       async () => {
         // Fill the Task with the shortest Runs: only their place around the observed Run
-        // matters. An agent adds nothing else to a Task.
+        // matters. An agent adds nothing else to a Task. Their order among themselves
+        // does not matter either, so start them in batches. Each finished Run also makes
+        // an open Activity page read the Task again, so leave the page while filling.
         async function fill(count: number) {
-          for (let index = 0; index < count; index++)
-            expect((await latest.exec('return null;')).isError).not.toBe(true)
+          for (let started = 0; started < count; started += FILL_BATCH)
+            await Promise.all(
+              Array.from({ length: Math.min(FILL_BATCH, count - started) }, async () =>
+                expect((await latest.exec('return null;')).isError).not.toBe(true),
+              ),
+            )
         }
+        await page.goto('about:blank')
         await fill(200)
         const observed = await observeRun(
           latest,
