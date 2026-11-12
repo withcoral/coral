@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
+use super::search_model::SearchModel;
 use super::server_config::{
     Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
 };
@@ -358,6 +359,10 @@ impl PreparedServerBuilder {
         let runtime_limits = deployment_config.runtime_limits()?;
         let config = builder.config;
         let vault = open_credential_vault(&deployment_config, state.credential_key_path())?;
+        // With the setting off, nothing looks for the model's files.
+        let search_model = deployment_config
+            .semantic_search_enabled()?
+            .then(|| SearchModel::start_lookup(coral_embed::models_dirs(state.state_dir())));
         let (coral_db, state_lock) = state.into_parts();
         let mode = config.resolved_mode(&deployment_config)?;
         if session_auth.is_none() && !super::is_loopback_ip(mode.bind_addr().ip()) {
@@ -454,6 +459,7 @@ impl PreparedServerBuilder {
             policy,
             runtime_limits,
             reconcile_interval,
+            search_model,
             releases,
             usage,
             readiness,
@@ -573,6 +579,7 @@ pub struct RunningServer {
     device_recovery: Option<JoinHandle<()>>,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
+    search_model: Option<SearchModel>,
     release_check: Option<JoinHandle<()>>,
     usage_check: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -731,6 +738,13 @@ impl RunningServer {
         self.search_index.clone()
     }
 
+    /// The state of the search model's files. `None` when `[search]
+    /// semantic_search_enabled` is off: then nothing looks for the files.
+    #[must_use]
+    pub fn search_model(&self) -> Option<SearchModel> {
+        self.search_model.clone()
+    }
+
     /// The readiness every listener of this process reports: database
     /// reachability, and not serving once shutdown begins.
     #[must_use]
@@ -870,6 +884,7 @@ pub(crate) async fn start_server(
     policy: coral_outbound::DestinationPolicy,
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
+    search_model: Option<SearchModel>,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
     readiness: EngineReadiness,
@@ -1103,6 +1118,7 @@ pub(crate) async fn start_server(
         device_recovery,
         search_index,
         search_reconcile,
+        search_model,
         release_check,
         usage_check,
         accounts,
@@ -1239,5 +1255,30 @@ mod tests {
         })
         .await
         .expect("shutdown aborts the reconcile task");
+    }
+
+    #[tokio::test]
+    async fn the_search_model_is_looked_for_only_while_the_setting_is_on() {
+        for (search, looked_for) in [
+            ("", false),
+            ("[search]\nsemantic_search_enabled = false\n", false),
+            ("[search]\nsemantic_search_enabled = true\n", true),
+        ] {
+            let temp = TempDir::new().unwrap();
+            std::fs::write(
+                temp.path().join("config.toml"),
+                format!("[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n{search}"),
+            )
+            .unwrap();
+            let server = ServerBuilder::new()
+                .with_config_dir(temp.path())
+                .start()
+                .await
+                .unwrap();
+
+            assert_eq!(server.search_model().is_some(), looked_for, "{search:?}");
+
+            server.shutdown_inner().await.unwrap();
+        }
     }
 }

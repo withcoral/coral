@@ -108,11 +108,17 @@ impl LoadedServerConfig {
         self.parse()?.search.reconcile_interval()
     }
 
+    /// Whether `[search] semantic_search_enabled` turns Universal Search's
+    /// vector side on.
+    pub(crate) fn semantic_search_enabled(&self) -> Result<bool, AppError> {
+        Ok(self.parse()?.search.semantic_search_enabled)
+    }
+
     /// Universal Search's vector side: vectors of the model manifest's
     /// dimension when `[search] semantic_search_enabled` is true, otherwise
     /// off.
     pub(crate) fn vector_storage(&self) -> Result<coral_search::VectorStorage, AppError> {
-        Ok(if self.parse()?.search.semantic_search_enabled {
+        Ok(if self.semantic_search_enabled()? {
             coral_search::VectorStorage::On {
                 dimension: coral_embed::MANIFEST.dimension,
             }

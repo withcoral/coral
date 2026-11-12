@@ -6,10 +6,14 @@
 //! change stored vectors. [`check_cpu`] tells whether this CPU meets the
 //! floor below which the vector side stays off.
 //!
+//! [`Manifest::find`] looks for the manifest's files in the folders that
+//! [`models_dirs`] lists and checks their digests.
+//!
 //! [`Model`] loads the manifest's files into ONNX Runtime and gives vectors
 //! through [`Embed`], the one interface search code takes.
 
 mod cpu;
+mod files;
 mod manifest;
 mod model;
 mod query_first;
@@ -19,6 +23,7 @@ mod query_first;
 use serde as _;
 
 pub use cpu::{CpuTooOld, check_cpu};
+pub use files::{ModelState, SYSTEM_MODELS_DIR, models_dirs};
 pub use manifest::{
     EmbedderRevision, IndexText, MANIFEST, Manifest, Merge, ModelFile, Pooling, QueryText,
 };
