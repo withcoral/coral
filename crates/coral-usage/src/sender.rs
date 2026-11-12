@@ -12,8 +12,8 @@ pub const COLLECTOR_URL: &str = "https://telemetry.withcoral.com/v1/report";
 /// How long one send may take.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often bootstrap runs [`UsageData::send_due`], after one run at once.
-/// A report goes out within this long after its UTC day ends.
+/// How often bootstrap runs [`UsageData::send_due`] after the first run at
+/// startup. A report goes out within this long after its UTC day ends.
 pub const CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 /// What one send attempt learned.

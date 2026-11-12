@@ -5,6 +5,8 @@
 //! Disconnect retains the Account identifier and a durable fence.
 //! Token renewal changes material, not authorization.
 //! Setup credentials remain provisional until explicit atomic Publication promotion.
+//! A shared Account's field may hold a Secret Reference, read from its Secret Store
+//! for each dispatch after enforcement permits it, and never stored.
 //! Repositories own scoped persistence; this module owns authority and transactions.
 use coral_workspace::WorkspaceId;
 
@@ -14,6 +16,7 @@ pub(crate) mod consent;
 pub use consent::ConsentNavigation;
 mod management;
 pub(crate) mod oauth_client;
+mod secret_references;
 pub use oauth_client::{OAuthClientAuthentication, OAuthClientConfiguration, OAuthClientStatus};
 #[cfg(test)]
 mod management_tests;
@@ -191,6 +194,25 @@ enum CredentialSelection {
 }
 
 /// Accepts values only for exactly the Credential Fields a typed-in method names.
+/// Checks that the fields name exactly the contract's Credential Fields, before
+/// anything reads a store for them.
+fn check_field_names<'a>(
+    contract: &ProviderCredentialContract,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), Error> {
+    let expected: std::collections::BTreeSet<&str> = contract
+        .authentication()
+        .credential_fields()
+        .iter()
+        .copied()
+        .collect();
+    let names: std::collections::BTreeSet<&str> = names.into_iter().collect();
+    if expected.is_empty() || names != expected {
+        return Err(Error::AccountInput);
+    }
+    Ok(())
+}
+
 fn check_values(
     contract: &ProviderCredentialContract,
     values: &CredentialValues,
@@ -217,6 +239,11 @@ fn check_values(
 // Both variants stay host-private and are encoded only when sealing the record.
 enum CredentialMaterial {
     Values(CredentialValues),
+    /// Typed values and Secret References. Only the values are sealed.
+    Fields {
+        values: std::collections::BTreeMap<String, coral_credentials::Secret>,
+        references: std::collections::BTreeMap<String, coral_credentials::SecretReference>,
+    },
     OAuth(oauth::TokenResponse),
 }
 
@@ -225,7 +252,7 @@ impl CredentialMaterial {
     /// material; typed-in values do not expire.
     const fn token_expires_at_unix_nanos(&self) -> Option<i64> {
         match self {
-            Self::Values(_) => None,
+            Self::Values(_) | Self::Fields { .. } => None,
             Self::OAuth(token) => token.expires_at,
         }
     }
@@ -234,6 +261,10 @@ impl CredentialMaterial {
         match self {
             Self::Values(values) => {
                 let json = repository::encode_values(values)?;
+                Ok(vault.seal(generation, &json)?)
+            }
+            Self::Fields { values, .. } => {
+                let json = repository::encode_sealed_fields(values)?;
                 Ok(vault.seal(generation, &json)?)
             }
             Self::OAuth(token) => {
@@ -251,6 +282,8 @@ impl CredentialMaterial {
 pub struct AccountModule {
     providers: ProviderModule,
     vault: CredentialVault,
+    /// The stores this deployment defines. Grants decide which a Workspace may name.
+    secret_stores: coral_secret_store::SecretStores,
     device_worker_id: String,
     device_stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     device_tasks: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
@@ -347,6 +380,10 @@ struct LoadedAccount {
     authorization_version: String,
     contract: ProviderCredentialContract,
     encrypted_credentials: String,
+    /// The Secret References stored for this Account's fields. Decoded only for
+    /// a dispatch, so a bad value leaves that Account unusable and every other
+    /// read intact.
+    secret_references: Option<repository::StoredReferences>,
     user_id: Option<coral_workspace::UserId>,
     agent_id: Option<coral_workspace::PrincipalId>,
     requires_authorization: bool,
@@ -381,6 +418,7 @@ impl AccountModule {
         Self {
             providers,
             vault,
+            secret_stores: coral_secret_store::SecretStores::default(),
             device_worker_id: uuid::Uuid::new_v4().to_string(),
             device_stopped: std::sync::Arc::default(),
             device_tasks: std::sync::Arc::default(),
@@ -396,6 +434,13 @@ impl AccountModule {
     #[must_use]
     pub fn with_client_id_metadata_document(mut self, document_url: String) -> Self {
         self.client_id_metadata_document = Some(document_url);
+        self
+    }
+
+    /// Gives the Module the Secret Stores deployment config defines.
+    #[must_use]
+    pub fn with_secret_stores(mut self, stores: coral_secret_store::SecretStores) -> Self {
+        self.secret_stores = stores;
         self
     }
 
@@ -1096,6 +1141,10 @@ mod reconnect;
 mod refresh;
 #[cfg(test)]
 mod scoped_account_tests;
+#[cfg(test)]
+mod secret_reference_tests;
+#[cfg(test)]
+mod secret_store_field_tests;
 use intent::AuthorizationTarget;
 
 mod access_removal;

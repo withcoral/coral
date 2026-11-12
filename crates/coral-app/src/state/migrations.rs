@@ -1,8 +1,14 @@
 //! Application of Coral's one migration plan and recognition of its ledger.
 
-/// Applies Coral's migration plan, validating every applied migration.
-pub(crate) async fn migrate_current(database: &coral_db::Database) -> Result<(), coral_db::Error> {
-    database.migrate(coral_db::migration_plan()).await
+/// Applies Coral's migration plan, validating every applied migration, and
+/// tells `report` about each step it applies.
+pub(crate) async fn migrate_current(
+    database: &coral_db::Database,
+    report: coral_db::MigrationReport<'_>,
+) -> Result<(), coral_db::Error> {
+    database
+        .migrate_reporting(coral_db::migration_plan(), report)
+        .await
 }
 
 /// Reports whether `rows` are the first migrations of `system`'s half of the
@@ -81,7 +87,7 @@ mod tests {
             .await
             .expect("apply current migrations");
         let restarted = fixture.connect_peer().await.expect("reopen the database");
-        super::migrate_current(&restarted)
+        super::migrate_current(&restarted, &|_| {})
             .await
             .expect("validate current migrations again");
     }

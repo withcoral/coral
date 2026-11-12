@@ -1,5 +1,5 @@
 //! Periodic passes: the work the clock starts, not a request
-//! ([ADR 0036](../../../../docs/adr/0036-periodic-work-runs-as-idempotent-passes-on-every-coral-instance.md)).
+//! ([ADR 0037](../../../../docs/adr/0037-periodic-work-runs-as-idempotent-passes-on-every-coral-instance.md)).
 //!
 //! # Interface
 //!
@@ -140,9 +140,12 @@ impl Passes {
             loop {
                 match next {
                     Next::AtCadence => drop(ticks.tick().await),
+                    // The tick first: when both are ready it is consumed,
+                    // so it does not start a second run right after.
                     Next::Soon => tokio::select! {
-                        () = tokio::time::sleep(SOON) => {}
+                        biased;
                         _ = ticks.tick() => {}
+                        () = tokio::time::sleep(SOON) => {}
                     },
                 }
                 next = run(name, &mut pass).await;
@@ -401,6 +404,13 @@ mod tests {
                 script: vec![Step::Soon, Step::Soon],
                 watch: HOUR,
                 starts: vec![Duration::ZERO, MINUTE, MINUTE * 2, HOUR],
+            },
+            Case {
+                name: "soon and the tick at the same moment are one run",
+                schedule: Schedule::every(MINUTE),
+                script: vec![Step::Soon],
+                watch: MINUTE * 2,
+                starts: vec![Duration::ZERO, MINUTE, MINUTE * 2],
             },
             Case {
                 name: "soon is never later than the next tick",

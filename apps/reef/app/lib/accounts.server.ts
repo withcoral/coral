@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { data, redirect, type RouterContextProvider } from 'react-router'
-import { credentialFieldViews, credentialValuesFrom } from './credential-fields.server'
+import {
+  credentialFieldViews,
+  credentialFieldsFrom,
+  credentialValuesFrom,
+  offeredSecretStores,
+  savedReferenceView,
+  savedSecretReferences,
+  SECRET_STORE_PROBLEMS,
+} from './credential-fields.server'
 import { redirectToProviderConsent } from './provider-consent.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { ConnectError, Code } from '@connectrpc/connect'
@@ -206,16 +214,32 @@ export async function loadAuthorization(
   const started = safeReturnTo(returnTo)
   if (state === 'succeeded' && (scope === 'user' || scope === 'agent') && started)
     throw redirect(started, { headers: accountHeaders })
+  const oauth =
+    value.userCode !== undefined || Boolean(value.consentNavigation) || value.consentRejected
+  const problem = new URL(request.url).searchParams.get('secretStoreProblem')
+  // Only a shared Account's secret entry takes a reference. Reconnect starts from the saved ones.
+  const takesReferences = scope === 'shared' && !oauth && state === 'pending'
+  const parent = workspaceName(params.workspace)
+  const offered = takesReferences ? await offeredSecretStores(api, parent) : []
+  const savedReferences =
+    takesReferences && target.case === 'sharedProvider'
+      ? await savedSecretReferences(api, parent, target.value)
+      : {}
   return {
     ...accountNavigation(returnTo, path, workspaceName(params.workspace)),
+    secretStores: offered,
+    savedReferences,
+    secretStoreProblem:
+      problem && Object.hasOwn(SECRET_STORE_PROBLEMS, problem)
+        ? SECRET_STORE_PROBLEMS[problem]
+        : undefined,
     providerName: (providerParents ?? parents)[1]?.label || 'Unavailable provider',
     parents,
     scope,
     retryPath,
     state,
     userCode: value.userCode,
-    oauth:
-      value.userCode !== undefined || Boolean(value.consentNavigation) || value.consentRejected,
+    oauth,
     applicationFailure: value.failureCode === 'oauth_client_configuration',
     failure: value.failureCode,
     automaticRefresh: value.automaticRefresh,
@@ -364,6 +388,18 @@ export async function loadAccounts(
     }[view.scope],
     agent: view.agent,
   })
+  // Only someone who can change the account may list the stores, so only they see
+  // each reference in its store's words. Anyone else sees the generic ones.
+  const forms = new Map(
+    current.account?.canManage && Object.keys(current.account.secretReferences).length > 0
+      ? (
+          await offeredSecretStores(api, view.parent).catch((error: unknown) => {
+            if (error instanceof ConnectError && error.code === Code.PermissionDenied) return []
+            throw error
+          })
+        ).map(({ name, form }) => [name, form])
+      : [],
+  )
   return {
     workspace: view.workspace,
     parents: view.parents,
@@ -373,6 +409,15 @@ export async function loadAccounts(
     active: view.active,
     route: view.route,
     account: current.account ? accountView(current.account) : undefined,
+    // A disconnected account holds no credential, so it has nothing to describe.
+    credentialSources:
+      current.account && current.account.state !== ProviderAccountState.DISCONNECTED
+        ? credentialFieldViews(current.credentialFields).map(({ name, label }) => {
+            const reference = current.account?.secretReferences[name]
+            const saved = reference && savedReferenceView(reference)
+            return { name, label, reference: saved, form: saved && forms.get(saved.store) }
+          })
+        : [],
     scopes: current.requestedScopes,
     needsCredential: current.credentialMethod !== CredentialMethod.NONE,
     usesScope: view.scope === 'shared' ? view.route === 'fixed' : view.route === 'caller',
@@ -726,6 +771,12 @@ async function consentRedirect(
   return response
 }
 
+function withSecretStoreProblem(path: string, reason: string) {
+  const url = new URL(path, 'http://reef')
+  url.searchParams.set('secretStoreProblem', reason)
+  return `${url.pathname}${url.search}`
+}
+
 export async function authorizationAction(
   request: Request,
   context: Readonly<RouterContextProvider>,
@@ -740,10 +791,7 @@ export async function authorizationAction(
       case 'navigate':
         return await consentRedirect(api, context, name, path)
       case 'secret':
-        await api.accounts.submitProviderAccountSecret({
-          name,
-          credentialValues: credentialValuesFrom(form),
-        })
+        await api.accounts.submitProviderAccountSecret({ name, ...credentialFieldsFrom(form) })
         break
       case 'cancel':
         await api.accounts.cancelProviderAccountAuthorization({ name })
@@ -752,6 +800,9 @@ export async function authorizationAction(
         throw new Response('Invalid action', { status: 400, headers: accountHeaders })
     }
   } catch (error) {
+    // A reference that failed its check leaves the connection open, so you can fix it here.
+    if (error instanceof ConnectError && Object.hasOwn(SECRET_STORE_PROBLEMS, error.rawMessage))
+      return redirect(withSecretStoreProblem(path, error.rawMessage), { headers: accountHeaders })
     if (
       (error instanceof ConnectError && error.code === Code.FailedPrecondition) ||
       (error instanceof Response && error.status === 409)

@@ -1,6 +1,7 @@
 /** @vitest-environment happy-dom */
 
 import { render, screen, within } from '@testing-library/react'
+import type { OfferedSecretStore } from '@/views/accounts/types'
 import userEvent from '@testing-library/user-event'
 import { createRoutesStub, redirect } from 'react-router'
 import { expect, it } from 'vitest'
@@ -8,7 +9,14 @@ import { expect, it } from 'vitest'
 import { LocalDeploymentContext } from '@/lib/deployment'
 import type { UpdateTask } from '@/lib/provider-publication-attempt/model'
 import { EditConfigurationPage } from './edit-configuration-page'
-import type { AccountChoice, ConfigurationReviewView, SetupView } from './types'
+import { UNKNOWN_REFERENCE_FORM } from '@/lib/reference-form'
+import type {
+  AccountChoice,
+  ConfigurationReviewView,
+  SavedReferenceView,
+  SetupView,
+  StepperResult,
+} from './types'
 
 const review: ConfigurationReviewView = {
   revision: '1',
@@ -74,12 +82,18 @@ function renderPage({
   account = 'none',
   local = false,
   source,
+  secretStores,
+  savedReferences,
+  result,
 }: {
   page?: SetupView
   task?: UpdateTask
   account?: AccountChoice
   local?: boolean
   source?: { url: string; kind: 'mcp' | 'url' }
+  secretStores?: OfferedSecretStore[]
+  savedReferences?: Record<string, SavedReferenceView>
+  result?: StepperResult
 } = {}) {
   const intents: string[] = []
   // What each Start again sends to open a new Setup.
@@ -95,6 +109,9 @@ function renderPage({
           displayName="Records"
           etag="v2"
           source={source}
+          secretStores={secretStores}
+          savedReferences={savedReferences}
+          result={result}
           basePath={`${providerPath}/update`}
           cancelPath={providerPath}
           toolsPath="/workspaces/demo/tools"
@@ -209,6 +226,50 @@ it.each([
   const dialog = await screen.findByRole('dialog', { name: 'Save changes?' })
   expect(dialog).toHaveTextContent('Reconnect each agent account.')
   expect(dialog.textContent?.includes('Other users reconnect their own accounts.')).toBe(others)
+})
+
+const replacing: SetupView = {
+  ...setup,
+  state: 'ready',
+  credentialMethod: 'bearer',
+  credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
+  configuration: { ...review, interruptsAccess: true },
+}
+
+// Catches: an update that asks for the raw value of a credential a store holds, which
+// would move the secret into Coral without anyone choosing that.
+it('opens a replacement with the shared account references filled in', async () => {
+  renderPage({
+    page: replacing,
+    task: 'refresh',
+    account: 'fixed',
+    secretStores: [{ name: 'platform', blockers: [], form: UNKNOWN_REFERENCE_FORM }],
+    savedReferences: { token: { store: 'platform', path: 'team/forecast', key: 'token' } },
+  })
+  await userEvent.click(screen.getByRole('button', { name: 'Connect the shared account' }))
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+  expect(within(dialog).getByRole('textbox', { name: 'Path' })).toHaveValue('team/forecast')
+  expect(within(dialog).getByRole('textbox', { name: 'Key' })).toHaveValue('token')
+})
+
+// Catches: a refused replacement reopening on another option, with its message out of view.
+it('stays on connecting after Coral refuses a replacement', () => {
+  renderPage({
+    page: { ...replacing, authorized: true, provisionalGrantId: 'grant' },
+    task: 'refresh',
+    account: 'fixed',
+    result: {
+      error: 'The secret store has no entry at this path. Check the path.',
+      credential: null,
+      connecting: 'fixed',
+    },
+  })
+  expect(screen.getByRole('radio', { name: 'Connect another account' })).toBeChecked()
+  expect(screen.getByText(/no entry at this path/)).toBeInTheDocument()
 })
 
 // Catches: a reload or Back during a shared-account sign-in hiding that

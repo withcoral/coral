@@ -9,8 +9,8 @@ Services.
 **Organization**: The administrative owner above Workspaces. Each Coral deployment contains exactly one Organization.
 Isolating multiple Organizations means running separate deployments, so the cross-Organization boundary is physical
 rather than an in-query filter within one deployment. An Organization Owner governs Workspaces without authority inside
-them: the Owner can list every Workspace with its name, state, and designated Owners, assign a designated Owner, and
-archive or restore a Workspace. Everything else in a Workspace needs a Workspace Membership there. A local deployment
+them: the Owner can list every Workspace with its name, state, and designated Owners, assign a designated Owner,
+archive or restore a Workspace, and grant a Secret Store to it or revoke that grant. Everything else in a Workspace needs a Workspace Membership there. A local deployment
 has one implicit Organization whose implicit local User is its Organization Owner. _Avoid_: Mutable Organization
 resource, inherited Workspace authority, Organization-wide access to another User's private work
 
@@ -116,7 +116,7 @@ assigning a separate Agent Owner. Its authority comes from current Workspace pol
 Providers. It has no Principal-specific Tool policy; an Agent that needs a different Tool set
 belongs in a different Workspace. A `fixed` Credential Route uses the Provider's shared Account for every caller.
 A `caller` route uses the Agent's own Provider Account, provisioned beforehand by a Workspace Owner through
-secret entry or OAuth for that exact Agent and Provider. The Agent does not sign in interactively; the provisioning
+secret entry, Secret References or OAuth for that exact Agent and Provider. The Agent does not sign in interactively; the provisioning
 human is not the invoking Principal. Account ownership does not become Agent authority. An Agent is `enabled` or
 `disabled`. Disabling it rejects new Runs and later upstream
 dispatches, including pending Invocations, and disables its Provider Accounts while preserving attribution. An
@@ -180,12 +180,12 @@ policy. _Avoid_: MCP clientInfo, Program identity, secret URL, recoverable crede
 **Administrative Lifecycle Event**: An immutable, non-secret record of an accepted control-plane or authoring change
 that can affect future authority, configuration, or code. It covers Organization Membership, Workspace and Workspace
 Membership changes, Agents and Agent Registrations, Provider setup, publication, Credential Route and lifecycle changes,
-Provider Account authorization, connection and disconnection, Tool policy, approval decisions, Private Tool
-saves and deletions, and Shared Tool publishes and removals. It records an actor that is either the accountable Principal or Coral itself, together with the
+Provider Account authorization, connection and disconnection, Secret Store grants and revocations, Tool policy,
+approval decisions, Private Tool saves and deletions, and Shared Tool publishes and removals. It records an actor that is either the accountable Principal or Coral itself, together with the
 action, safe target, outcome, changed field paths, timestamp, and trace identifier, without copying credentials,
 before-and-after values, or Invocation arguments. It also records whether a Workspace Membership or Organization Owner
 governance authorized the change. Organization Owners can inspect Organization Membership events and the events for
-their own governance actions: Owner assignment, archive, and restore. A Workspace Owner can inspect that Workspace's
+their own governance actions: Owner assignment, archive, restore, and Secret Store grants and revocations. A Workspace Owner can inspect that Workspace's
 Workspace, Membership, Agent, Agent Private Tool, Provider, Credential Route, policy, and shared or Agent Provider
 Account events. A User can inspect events for their own Provider Accounts, Membership, and Private Tools, and every Member User can inspect Shared Tool events. Ownership
 does not expose another User's private work, and Agents cannot browse these events. Each event belongs to the domain
@@ -393,7 +393,7 @@ masked while typed, schemas, Call Paths, and Tools added at an already-authorize
 compatibility.
 _Avoid_: Provider Account, credential material, scope compatibility check
 
-**Provider Account Authorization**: A durable host-owned process that obtains credentials through secret entry or OAuth
+**Provider Account Authorization**: A durable host-owned process that obtains credentials through secret entry, Secret References or OAuth
 for temporary Provider Setup use, an initial Provider Account, or explicit replacement of one exact Account. Its safe
 progress and completion metadata contain no credentials, and completion cannot silently retarget another caller,
 account setting, or changed authentication requirement.
@@ -412,8 +412,18 @@ _Avoid_: granted scopes, scope check, parsed scopes
 _In Reef_: "granted permissions"
 
 **Credential Field**: One named value in a Provider Account's credentials, such as Jira's account email or Datadog's
-application key. It belongs to that one account and is never a Provider-wide setting.
+application key. It belongs to that one account, is never a Provider-wide setting, and holds a value entered in Coral
+or named by a Secret Reference.
 _Avoid_: credential input, secret (a field need not be sensitive), credential parameter
+
+**Secret Store**: An operator-defined connection to a secrets system outside Coral, such as HashiCorp Vault, with its own
+identity there. That system's policy decides what the store can read. Its kind names the secrets system; a kind may be
+an Enterprise Feature.
+_Avoid_: vault, credential vault, external credential store
+
+**Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
+the store, a path, and a key where the store has keys. The value stays in the store and Coral never stores a copy.
+_Avoid_: vault path, secret pointer, linked secret
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
 shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). A Program cannot

@@ -11,11 +11,13 @@ workspace = true
 
 [dependencies]
 coral-outbound = { workspace = true, features = ["transport"] }
+coral-telemetry.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]

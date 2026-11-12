@@ -215,6 +215,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Supplies where startup reports each database migration step it
+    /// applies. Migrations run before telemetry starts and before any
+    /// listener, so this is the one sign of a long step. Without it, startup
+    /// reports none.
+    #[must_use]
+    pub fn with_migration_report(mut self, report: super::runtime::MigrationReport) -> Self {
+        self.launcher.migration_report = Some(report);
+        self
+    }
+
     /// Marks a Desktop launch: local auth support then defaults to Desktop's
     /// fixed Provider OAuth callback port. An explicit `listeners.auth.bind` wins.
     #[must_use]
@@ -272,11 +282,13 @@ impl ServerBuilder {
         let environment = AppEnvironment::discover();
         let layout = environment.app_state_layout(self.config.config_dir.clone())?;
         let deployment_config = LoadedServerConfig::load(&layout)?;
+        let report_migration = self.launcher.migration_report.clone();
         let state = initialize_state(
             layout,
             deployment_config.raw(),
             resolve_database_config,
-            || deployment_config.validate(),
+            || deployment_config.validate(&self.launcher.extensions.secret_store_kinds),
+            report_migration.as_deref().unwrap_or(&|_| {}),
         )
         .await?;
         Ok(PreparedServerBuilder {
@@ -430,6 +442,8 @@ impl PreparedServerBuilder {
             authorization_server.is_some(),
             policy,
         )?;
+        let secret_stores = deployment_config
+            .secret_stores(&builder.launcher.extensions.secret_store_kinds, policy)?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
@@ -454,6 +468,7 @@ impl PreparedServerBuilder {
             reconcile_interval,
             releases,
             usage,
+            secret_stores,
             readiness,
             state_lock,
             instance,
@@ -854,6 +869,7 @@ pub(crate) async fn start_server(
     reconcile_interval: std::time::Duration,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
+    secret_stores: coral_secret_store::SecretStores,
     readiness: EngineReadiness,
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
@@ -874,6 +890,7 @@ pub(crate) async fn start_server(
     );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
+            .with_secret_stores(secret_stores.clone())
             .with_client_bootstrap_policy(client_bootstrap_policy);
         match client_id_metadata_document {
             Some(document) => accounts.with_client_id_metadata_document(document),
@@ -968,7 +985,7 @@ pub(crate) async fn start_server(
                 providers.clone(),
                 search_index.clone(),
             ),
-            workspaces,
+            workspaces: workspaces.clone(),
             providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
@@ -978,6 +995,11 @@ pub(crate) async fn start_server(
             runs: runs.clone(),
             releases: releases.clone(),
             usage: usage.as_ref().map(|usage| usage.data.clone()),
+            secret_stores: coral_administration::SecretStoreAdministration::new(
+                coral_workspace::OrganizationModule::new(database.clone()),
+                workspaces.clone(),
+                secret_stores,
+            ),
         },
         coral_grpc::TransportContext {
             authentication,
@@ -1080,14 +1102,7 @@ pub(crate) async fn start_server(
         passes.start("release_check", schedule, move || {
             let releases = releases.clone();
             async move {
-                // The check is a hint, not a health signal: a feed that gives
-                // no version is no failed pass.
-                if let Err(error) = releases.refresh().await {
-                    tracing::info!(
-                        error.type = safe::kind(error.code()),
-                        "release check found no version; the next check retries"
-                    );
-                }
+                releases.check().await;
                 Ok(Next::AtCadence)
             }
         });

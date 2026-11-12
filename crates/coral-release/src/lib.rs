@@ -5,7 +5,7 @@
 //! [`ReleaseCheck`] reads the release feed through the bootstrap-selected
 //! destination policy and keeps the newest stable version in memory.
 //! [`ReleaseCheck::newer_release`] answers from that memory and never waits
-//! for the network. [`ReleaseCheck::refresh`] is one pass: it reads the feed
+//! for the network. [`ReleaseCheck::check`] is one pass: it reads the feed
 //! once. Bootstrap runs it at boot, then every [`CHECK_INTERVAL`].
 //!
 //! The feed is the latest stable release of `withcoral/coral-releases`. The
@@ -21,6 +21,7 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use coral_telemetry::safe;
 use semver::Version;
 use url::Url;
 
@@ -163,6 +164,18 @@ impl ReleaseCheck {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(version);
         Ok(())
+    }
+
+    /// One pass of the check, for bootstrap to run on [`CHECK_INTERVAL`]:
+    /// [`Self::refresh`], with a read that gave no version logged here. The
+    /// check is a hint, so such a read is no failure of the pass.
+    pub async fn check(&self) {
+        if let Err(error) = self.refresh().await {
+            tracing::info!(
+                error.type = safe::kind(error.code()),
+                "release check found no version; the next check retries"
+            );
+        }
     }
 
     async fn read_feed(&self) -> Result<Version, CheckError> {

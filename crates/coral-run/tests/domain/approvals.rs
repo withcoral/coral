@@ -2862,3 +2862,32 @@ async fn an_owner_that_dies_after_recording_a_decision_leaves_its_requester_the_
     .await;
     assert_eq!(terminal.state(), RunState::Interrupted);
 }
+
+/// A pending Approval Request whose stored ID is not one Coral issues is the
+/// row's fault: reading the Run's Required Actions fails as corrupt data, not
+/// as the reader's invalid input, and writes nothing to the Run.
+/// Catches: a stored row that does not decode reported as a caller's mistake.
+#[tokio::test]
+async fn a_pending_request_with_no_valid_stored_id_is_corrupt_data_to_its_reader() {
+    let held = HeldApproval::new("user:corrupt-approval-id").await;
+    let (fixture, workspace_id) = (&held.fixture, &held.tool.workspace_id);
+    let before = fixture.run_record(workspace_id, &held.run).await;
+    let corrupted = fixture
+        .inject_fault(&format!(
+            "UPDATE invocation_approvals SET id = 'unknown' WHERE run_id = '{}'",
+            held.run
+        ))
+        .await;
+    assert_eq!(corrupted, 1);
+
+    let observed = fixture
+        .runs
+        .observe(&held.actor, workspace_id, &held.run, &immediate(None, 1))
+        .await;
+
+    assert!(
+        matches!(observed, Err(Error::CorruptData(_))),
+        "{observed:?}"
+    );
+    assert_eq!(fixture.run_record(workspace_id, &held.run).await, before);
+}

@@ -52,23 +52,28 @@ export function EditConfigurationPage({
   form,
   result,
   pending = false,
+  secretStores,
+  savedReferences,
 }: UpdatePageProps & { setup: SetupView }) {
   const [formDirty, setFormDirty] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const signInFormId = useId()
   const held = setup.authorized && Boolean(setup.provisionalGrantId)
   const [plan, setPlan] = useState<AccountPlan>(() =>
-    (attempt.account ?? currentAccount) === 'caller'
-      ? 'caller'
-      : held
-        ? 'shared-held'
-        : // A sign-in in progress or one that failed survives a reload or Back,
-          // with its recovery controls in view.
-          setup.authorization && setup.authorization.state !== 'succeeded'
-          ? 'shared-connect'
-          : currentAccount === 'fixed' && setup.configuration?.interruptsAccess !== true
-            ? 'shared-current'
-            : 'shared-connect',
+    // A refused credential keeps its answer, which only a saved one records.
+    result?.connecting === 'fixed'
+      ? 'shared-connect'
+      : (attempt.account ?? currentAccount) === 'caller'
+        ? 'caller'
+        : held
+          ? 'shared-held'
+          : // A sign-in in progress or one that failed survives a reload or Back,
+            // with its recovery controls in view.
+            setup.authorization && setup.authorization.state !== 'succeeded'
+            ? 'shared-connect'
+            : currentAccount === 'fixed' && setup.configuration?.interruptsAccess !== true
+              ? 'shared-current'
+              : 'shared-connect',
   )
   // A device sign-in finishes while this page revalidates. Use it, as a reload would.
   const [seenGrant, setSeenGrant] = useState(held ? setup.provisionalGrantId : undefined)
@@ -227,6 +232,8 @@ export function EditConfigurationPage({
             pending={pending}
             callbackUrl={callbackUrl}
             formId={signInFormId}
+            secretStores={secretStores}
+            savedReferences={savedReferences}
           />
           <Dialog.Actions>
             <Button.TextButton

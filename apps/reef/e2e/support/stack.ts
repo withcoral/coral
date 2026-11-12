@@ -12,6 +12,7 @@ import {
   type SessionLifetimes,
 } from './authenticated-target.ts'
 import { startInstanceControl } from './instance-control.ts'
+import { envSecretStore } from './secret-store-fixture.ts'
 import { startRoundRobinProxy, type Backend } from './round-robin-proxy.ts'
 
 export async function bounded<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
@@ -198,12 +199,15 @@ export async function startStack(options: {
     else localWeb = await reservePort()
     // Instances share one credential key, or none could read what another sealed.
     const credentialKey = options.multiInstance ? randomBytes(32).toString('base64') : undefined
+    // An `env` Secret Store, which every build has. Granting it needs an organization owner.
+    const envStore = options.authenticated && options.fixtures ? envSecretStore : undefined
     const coralEnv = {
       ...childEnv,
       ...(localWeb ? { CORAL_LOCAL_WEB_URL: localWeb.url } : {}),
       ...(options.postgresURL ? { E2E_STACK_POSTGRES_URL: options.postgresURL } : {}),
       ...(credentialKey ? { E2E_CREDENTIAL_KEY: credentialKey } : {}),
       ...authentication?.coralEnv,
+      ...envStore?.env,
     }
     const instances: Backend[] = []
     for (const [index, stateDir] of stateDirs.entries()) {
@@ -219,6 +223,7 @@ export async function startStack(options: {
             ? "[database]\nbackend = 'postgres'\nurl_env = 'E2E_STACK_POSTGRES_URL'\n"
             : '') +
           (credentialKey ? "[credentials]\nkey_env = 'E2E_CREDENTIAL_KEY'\n" : '') +
+          (envStore?.config ?? '') +
           (authentication?.config(index) ??
             `
 [listeners.grpc]
@@ -239,6 +244,7 @@ bind = '127.0.0.1:0'
           options.postgresURL ?? '',
           credentialKey ?? '',
           ...(authentication ? Object.values(authentication.coralEnv) : []),
+          ...Object.values(envStore?.env ?? {}),
         ],
       )
       processes.push(coral)
