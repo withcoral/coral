@@ -167,7 +167,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Add every schema migration to `crates/coral-db/migrations`, the one shared
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to
-  both `postgres/` and `sqlite/` instead.
+  both `postgres/` and `sqlite/` instead. The one exception is the Universal
+  Search vector table, which
+  [ADR 0035](docs/adr/0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)
+  keeps out of the chain so that a Postgres without pgvector still runs it.
 - Change a schema only by adding a migration. Never delete a migration that
   is on `main`, or change its file name or bytes: databases created from an
   earlier `main` must keep booting.

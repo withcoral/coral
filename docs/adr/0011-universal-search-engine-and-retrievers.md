@@ -40,9 +40,9 @@ Private Tools out of the top three on about two thirds of queries.
 
 ## Search owns its index
 
-Search entries live in a table that search owns, not on the Generation row. After a Provider Generation or a Saved
-Function commits, the committing workflow tells search, which prepares and writes the entries; a periodic reconcile
-converges whatever a lost notification missed. Ranking runs in the database on both backends, Postgres full-text search
-and SQLite FTS5, with the same field weights. Indexing is therefore not atomic with publication: until the entries land,
-that Provider is missing from relevance and the page reports partial results. ADR 0017 records why that gap is
-accepted.
+Search entries live in a table that search owns, not on the Generation row. After a Provider Generation commits, a
+Private Tool is saved or a Shared Tool is published, the committing workflow tells search, which prepares and writes the
+entries; a periodic reconcile converges whatever a lost notification missed. Ranking runs in the database on both
+backends, Postgres full-text search and SQLite FTS5, with the same field weights. Indexing is therefore not atomic with
+publication: until the entries land, that Provider is missing from relevance and the page reports partial results.
+ADR 0017 records why that gap is accepted.

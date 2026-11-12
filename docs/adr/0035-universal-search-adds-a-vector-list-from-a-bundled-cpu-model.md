@@ -130,8 +130,7 @@ pgvector, and Coral with the vector side off must start there.
   [scan](https://github.com/withcoral/coral/issues/2948#issuecomment-6689216657) costs about 1.55 µs a row: a Graph
   Workspace takes 31 to 37 ms, and p50 passes 50 ms at about 32,000 rows per Workspace. Joined to the entity table, a
   Provider filter made the planner sort by distance and nested-loop (p99 about 630 ms at 10 Workspaces), and the plan
-  slowed as other Workspaces arrived. The query binds its vector as `halfvec`; a `vector` cast in SQL converts again for
-  every row. `halfvec(384)` keeps 26 MB per Graph Workspace against 44 MB for `vector(384)`.
+  slowed as other Workspaces arrived. `halfvec(384)` keeps 26 MB per Graph Workspace against 44 MB for `vector(384)`.
 - **pgvector is required on Postgres** while the vector side is on. The storage check creates the extension where its
   role may (the RDS master user may, as for `pg_trgm`) and otherwise refuses to start with a one-line remedy. With the
   setting off it checks nothing.
@@ -160,7 +159,7 @@ system path, or turns the vector side off.
 
 ## The setting and failures
 
-`[search] semantic_search_enabled`, one process-wide boolean read at boot, default true. False means no query
+One process-wide setting, read at boot, turns the vector side off; the vector side is on by default. Off means no query
 embedding, no Embedder thread, no download and no extension check.
 
 A failure on the vector side at query time (model absent, session error, vector table missing during a rolling update,
