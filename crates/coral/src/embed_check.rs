@@ -1,11 +1,15 @@
 //! `coral embed-check`, hidden: loads the embedding model and times query
 //! embedding, so you can measure a platform with the shipped binary (#3051).
 
-use std::path::PathBuf;
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::Context as _;
-use coral_embed::{Embed as _, MANIFEST, Model};
+use anyhow::{Context as _, bail};
+use coral_embed::{Embed as _, MANIFEST, Model, ModelFile};
+use sha2::{Digest as _, Sha256};
 
 /// Queries embedded before timing starts.
 const WARMUP: usize = 3;
@@ -38,6 +42,10 @@ pub(crate) struct EmbedCheckArgs {
 pub(crate) fn run(args: &EmbedCheckArgs) -> anyhow::Result<()> {
     println!("model {}", MANIFEST.model_id);
     println!("embedder_revision {}", MANIFEST.embedder_revision());
+    // `Model::load` leaves the digests to the caller that found the files.
+    for file in [MANIFEST.tokenizer_file, MANIFEST.model_file] {
+        check_file(&args.model_dir, file)?;
+    }
     let started = Instant::now();
     let model = Model::load(&args.model_dir)
         .with_context(|| format!("load the model from {}", args.model_dir.display()))?;
@@ -66,6 +74,46 @@ pub(crate) fn run(args: &EmbedCheckArgs) -> anyhow::Result<()> {
         percentile(&times, 100),
         times.len()
     );
+    Ok(())
+}
+
+/// Fails unless `file` in `dir` has the manifest's size and SHA-256.
+fn check_file(dir: &Path, file: ModelFile) -> anyhow::Result<()> {
+    let path = dir.join(file.name);
+    let mut opened = File::open(&path).with_context(|| format!("open {}", path.display()))?;
+    let size = opened
+        .metadata()
+        .with_context(|| format!("read the size of {}", path.display()))?
+        .len();
+    if size != file.size {
+        bail!(
+            "{} has {size} bytes, expected {} bytes",
+            path.display(),
+            file.size
+        );
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1 << 16];
+    loop {
+        let read = opened
+            .read(&mut buffer)
+            .with_context(|| format!("read {}", path.display()))?;
+        let Some(chunk) = buffer.get(..read).filter(|chunk| !chunk.is_empty()) else {
+            break;
+        };
+        hasher.update(chunk);
+    }
+    let mut digest = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(digest, "{byte:02x}")?;
+    }
+    if digest != file.sha256 {
+        bail!(
+            "{} has SHA-256 {digest}, expected {}",
+            path.display(),
+            file.sha256
+        );
+    }
     Ok(())
 }
 

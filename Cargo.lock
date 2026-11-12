@@ -620,6 +620,7 @@ dependencies = [
  "coral-run-executor",
  "coral-test-support",
  "reqwest",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror",
  "tokio",
@@ -811,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "coral-embed"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ort",
  "serde",
