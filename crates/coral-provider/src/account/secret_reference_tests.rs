@@ -179,7 +179,12 @@ async fn an_account_with_a_reference_fails_closed_and_changes_nothing() {
             "{references}"
         );
         assert!(matches!(held, Err(Error::AccountRequired)), "{references}");
-        assert_eq!(account.view().await, before, "{references}");
+        // Inspection shows the column as it parses. The Account's state stays as it was.
+        let mut after = account.view().await;
+        if let Some(summary) = after.account.as_mut() {
+            summary.secret_references.clear();
+        }
+        assert_eq!(after, before, "{references}");
     }
 }
 

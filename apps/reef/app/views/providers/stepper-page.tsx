@@ -57,6 +57,7 @@ function StepperAttemptPage({
   recipes = [],
   recipeConfiguration = null,
   recipeDocumentationUrl = null,
+  secretStores = [],
   form,
   result,
   pending = false,
@@ -142,6 +143,7 @@ function StepperAttemptPage({
       callbackUrl={callbackUrl}
       backPath={toolsPath}
       documentationUrl={recipeDocumentationUrl}
+      secretStores={secretStores}
       disabled={local.kind === 'workspace' && !NAMESPACE.test(local.namespace)}
     />
   ) : undefined

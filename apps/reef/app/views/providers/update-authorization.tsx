@@ -1,4 +1,5 @@
 import { Form } from 'react-router'
+import type { OfferedSecretStore } from '@/views/accounts/types'
 import { isOAuthMethod } from '@/lib/provider-publication-attempt/model'
 import { Fields } from '@/views/management/forms'
 import { OAuthApplicationBlock } from './oauth-application'
@@ -9,7 +10,7 @@ import {
   SignInStatus,
   signInLabel,
 } from './setup-steps'
-import type { FormContext, SetupView } from './types'
+import type { FormContext, SavedReferenceView, SetupView } from './types'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as styles from './providers.css'
 
@@ -20,6 +21,8 @@ export function UpdateAuthorization({
   pending,
   callbackUrl,
   formId,
+  secretStores,
+  savedReferences,
 }: {
   setup: SetupView
   form: FormContext
@@ -27,6 +30,9 @@ export function UpdateAuthorization({
   callbackUrl: string
   /** Names the sign-in form for a submit button outside it, which then replaces its own. */
   formId?: string
+  /** The stores the replacement can name, and the references it replaces. */
+  secretStores?: OfferedSecretStore[]
+  savedReferences?: Record<string, SavedReferenceView>
 }) {
   const oauth = isOAuthMethod(setup.credentialMethod)
   const inFlight =
@@ -65,6 +71,8 @@ export function UpdateAuthorization({
           pending={pending}
           id={formId}
           extra={replacement}
+          secretStores={secretStores}
+          savedReferences={savedReferences}
         >
           {!formId && (
             <DocumentSubmitButton disabled={pending}>Authorize replacement</DocumentSubmitButton>

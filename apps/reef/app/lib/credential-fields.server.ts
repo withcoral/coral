@@ -1,12 +1,85 @@
 // Credential Fields travel as one map of field name to value, for every method a
 // person types a secret into. The values stay in form data and the outgoing request.
-import type { CredentialField } from '@/generated/coral/management/v1/provider_pb'
-import type { CredentialFieldView } from '@/views/providers/types'
+import type {
+  CredentialField,
+  CredentialFieldReference,
+} from '@/generated/coral/management/v1/provider_pb'
+import { SecretStoreState } from '@/generated/coral/management/v1/secret_store_pb'
+import type { OfferedSecretStore } from '@/views/accounts/types'
+import type { CredentialFieldView, SavedReferenceView } from '@/views/providers/types'
 import { CREDENTIAL_INPUT_PREFIX as PREFIX, REFERENCE_INPUT_PREFIX } from './credential-field-names'
+import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
+import type { ManagementApi } from './management.server'
 import { privateHeaders } from './management.server'
+import { secretStoreId } from './organization.server'
+import { secretStoreBlockers } from './secret-store-state'
 const MAX_FIELDS = 16
 const MAX_VALUE_LENGTH = 16 * 1024
 const MAX_REFERENCE_LENGTH = 1024
+
+/** What each refused Secret Reference tells the Workspace Owner to do. */
+export const SECRET_STORE_PROBLEMS: Record<string, string> = {
+  SECRET_REFERENCE_NOT_ALLOWED:
+    'Only a shared account can use a secret store. Enter the value, or share the account.',
+  SECRET_STORE_NOT_GRANTED:
+    'This workspace has no grant for this secret store. Ask an organization owner to grant it.',
+  SECRET_STORE_UNREACHABLE:
+    'Coral cannot reach this secret store. Ask your operator to check its address and outbound settings.',
+  SECRET_ENTRY_NOT_FOUND: 'The secret store has no entry at this path. Check the path.',
+  SECRET_KEY_NOT_FOUND: 'This entry has no such key. Check the key.',
+  SECRET_STORE_PERMISSION_DENIED:
+    'The secret store denied this read. Check the path, or ask your operator to check its policy.',
+  SECRET_STORE_MALFORMED_RESPONSE: 'The secret store sent an unusable value. Check the entry.',
+  SECRET_STORE_NEEDS_ENTERPRISE:
+    'This secret store needs the Enterprise Edition. Ask your operator about the Enterprise Edition.',
+  SECRET_STORE_KIND_MISSING:
+    'This build of Coral cannot read this kind of secret store. Ask your operator to check it.',
+}
+
+/** The stores a shared Account may name. Only a workspace owner can list them. */
+export async function offeredSecretStores(
+  api: ManagementApi,
+  parent: string,
+): Promise<OfferedSecretStore[]> {
+  const { secretStores } = await api.secretStores.listWorkspaceSecretStores({ parent })
+  // A store Coral cannot read now is still offered, marked, so a saved reference to it
+  // stays visible.
+  return secretStores
+    .filter((store) => store.state !== SecretStoreState.REMOVED)
+    .map((store) => ({
+      name: secretStoreId(store.name),
+      blockers: secretStoreBlockers(store.state),
+    }))
+}
+
+/** A saved reference in the words the views use, with its store as a bare name. */
+export function savedReferenceView(reference: CredentialFieldReference): SavedReferenceView {
+  return {
+    store: secretStoreId(reference.secretStore),
+    path: reference.path,
+    key: reference.key,
+  }
+}
+
+/** The references a Provider's shared Account holds now, by field name. */
+export async function savedSecretReferences(
+  api: ManagementApi,
+  parent: string,
+  provider: string,
+): Promise<Record<string, SavedReferenceView>> {
+  const { account } = await api.accounts.getProviderAccount({
+    parent,
+    provider,
+    scope: ProviderAccountScope.SHARED,
+    agent: '',
+  })
+  return Object.fromEntries(
+    Object.entries(account?.secretReferences ?? {}).map(([name, reference]) => [
+      name,
+      savedReferenceView(reference),
+    ]),
+  )
+}
 
 /** The fields Coral asks for, in name order, as the views show them. */
 export function credentialFieldViews(

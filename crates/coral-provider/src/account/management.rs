@@ -47,6 +47,9 @@ pub struct AccountSummary {
     pub management_scope: WorkspaceId,
     /// Current authority to manage this Account.
     pub can_manage: bool,
+    /// The fields a Secret Store holds, by field name. Any other field holds a typed
+    /// value, which inspection never returns.
+    pub secret_references: std::collections::BTreeMap<String, coral_credentials::SecretReference>,
 }
 
 /// Exact Account status, requirements, and permitted initial action from one authorized snapshot.
@@ -74,6 +77,8 @@ pub(super) struct AccountInspection {
     pub(super) requires_authorization: bool,
     pub(super) disconnected: bool,
     pub(super) granted_scope: String,
+    pub(super) secret_references:
+        std::collections::BTreeMap<String, coral_credentials::SecretReference>,
 }
 
 fn summary(
@@ -98,6 +103,7 @@ fn summary(
         granted_scope: row.granted_scope,
         management_scope: workspace.clone(),
         can_manage,
+        secret_references: row.secret_references,
     }
 }
 

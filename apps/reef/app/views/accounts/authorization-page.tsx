@@ -73,12 +73,13 @@ export function AuthorizationPage({
             {v.secretStoreProblem && <Banner variant="error">{v.secretStoreProblem}</Banner>}
             <CredentialFields fields={v.credentialFields}>
               {(input, field, label) =>
-                v.secretStores.length > 0 ? (
+                v.secretStores.length > 0 || v.savedReferences[field] ? (
                   <CredentialSource
                     value={<Inputs.CredentialInput {...input} />}
                     field={field}
                     label={label}
                     stores={v.secretStores}
+                    saved={v.savedReferences[field]}
                   />
                 ) : (
                   <Inputs.CredentialInput {...input} />

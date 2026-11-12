@@ -62,6 +62,14 @@ export function AccountsPage({
         {account && (
           <div role="group" aria-label={`Account ${account.id}`} className={styles.account}>
             <AccountSummary account={account} />
+            {v.credentialSources.map(({ name, label, reference }) => (
+              <Typography.BodySmall as="p" key={name} className={styles.reference}>
+                {label}:{' '}
+                {reference
+                  ? `secret store ${reference.store}, path ${reference.path}${reference.key ? `, key ${reference.key}` : ''}`
+                  : 'entered value'}
+              </Typography.BodySmall>
+            ))}
             {!account.canManage && (
               <Typography.BodySmall as="p">You cannot change this account.</Typography.BodySmall>
             )}
