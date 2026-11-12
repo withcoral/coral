@@ -107,9 +107,13 @@ fn contains_only_bootstrap_configuration(
     // Another runtime may already hold a fresh root's lock file before it
     // publishes the marker. The lock file holds no state.
     let lock_file = lock_file_path(layout.config_dir());
+    // An operator may put the search model's files in the root before the
+    // first start. Coral 0.x never wrote a folder with this name.
+    let models_dir = coral_embed::state_models_dir(layout.config_dir());
     for entry in entries {
         if entry.path() == layout.config_file()
             || (entry.path() == lock_file && entry.file_type()?.is_file())
+            || (entry.path() == models_dir && entry.file_type()?.is_dir())
         {
             continue;
         }
@@ -242,6 +246,39 @@ mod tests {
             }
 
             let result = validate_state_root(&layout, config.unwrap_or_default());
+            if fresh {
+                assert!(result.is_ok(), "{case}: {result:?}");
+            } else {
+                let Err(AppError::FailedPrecondition(detail)) = result else {
+                    panic!("{case}: expected the pre-v1 rejection: {result:?}");
+                };
+                assert!(detail.contains("pre-v1"), "{case}: {detail}");
+            }
+        }
+    }
+
+    /// An operator may put the search model's files in the root before the
+    /// first start, where Coral looks for them.
+    #[test]
+    fn a_fresh_root_may_hold_the_search_model_folder() {
+        const CONFIG: &str = "[search]\nsemantic_search_enabled = true\n";
+        for (case, models_is_folder, fresh) in [
+            ("a models folder with a model", true, true),
+            ("a models file", false, false),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
+            std::fs::write(layout.config_file(), CONFIG).unwrap();
+            let models = coral_embed::state_models_dir(temp.path());
+            if models_is_folder {
+                let model = models.join(coral_embed::MANIFEST.model_id);
+                std::fs::create_dir_all(&model).unwrap();
+                std::fs::write(model.join("model.onnx"), b"model").unwrap();
+            } else {
+                std::fs::write(&models, b"").unwrap();
+            }
+
+            let result = validate_state_root(&layout, CONFIG);
             if fresh {
                 assert!(result.is_ok(), "{case}: {result:?}");
             } else {
