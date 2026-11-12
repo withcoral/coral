@@ -281,13 +281,24 @@ pub(super) async fn pending_for_run(
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(|(id, deadline)| Ok((ApprovalId::parse(&id)?, deadline)))
-        .collect()
+    request_deadlines(rows)
 }
 
 /// The Run's undecided Approval Requests whose deadline is at or before
 /// `by_unix_nanos`, with their deadlines, in deadline order.
+/// Stored Approval Request IDs with their deadlines, decoded. A stored ID
+/// that does not parse is the row's fault, not a caller's.
+fn request_deadlines(rows: Vec<(String, i64)>) -> Result<Vec<(ApprovalId, i64)>, Error> {
+    rows.into_iter()
+        .map(|(id, deadline)| {
+            let id = ApprovalId::parse(&id).map_err(|_error| {
+                Error::CorruptData("Approval Request has invalid identity".into())
+            })?;
+            Ok((id, deadline))
+        })
+        .collect()
+}
+
 pub(super) async fn undecided_by(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
@@ -313,9 +324,7 @@ pub(super) async fn undecided_by(
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(|(id, deadline)| Ok((ApprovalId::parse(&id)?, deadline)))
-        .collect()
+    request_deadlines(rows)
 }
 
 pub(super) async fn insert_pending(

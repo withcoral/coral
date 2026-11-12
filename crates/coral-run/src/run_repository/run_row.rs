@@ -114,7 +114,7 @@ impl RunRow {
     pub(super) fn decode_or_name(self) -> Result<RunRecord, UndecodableRun> {
         let stored_id = self.id.clone();
         self.decode().map_err(|error| UndecodableRun {
-            id: HeldRunId::of_stored_row(&stored_id),
+            id: RunId::parse(&stored_id).ok().map(HeldRunId::of_held_row),
             error: Box::new(error),
         })
     }

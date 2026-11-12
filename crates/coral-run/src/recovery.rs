@@ -58,8 +58,9 @@ impl RunModule {
     /// the Run ended, the record answers it.
     ///
     /// A Run whose stored rows do not decode (its Run row, an Approval
-    /// Request or a Run Inbox request) is left out and logged with its ID;
-    /// the pass recovers the rest, and reads that Run again next time.
+    /// Request or a Run Inbox request) is left out and logged, with its ID
+    /// when its row stores one Coral issues; the pass recovers the rest, and
+    /// reads that Run again next time.
     ///
     /// Bootstrap runs the first pass before any listener binds, then on a
     /// fixed cadence of [`Self::sweep_interval`].

@@ -90,10 +90,10 @@ impl HeldRunId {
         &self.0
     }
 
-    /// The ID a Run row stores, when it is one Coral issues: the row is held
-    /// even when the rest of it does not decode to a record.
-    pub(crate) fn of_stored_row(stored: &str) -> Option<Self> {
-        RunId::parse(stored).ok().map(Self)
+    /// The ID of a Run whose row Coral read, even when the rest of that row
+    /// does not decode to a record.
+    pub(crate) const fn of_held_row(run_id: RunId) -> Self {
+        Self(run_id)
     }
 
     /// A Run ID as if Coral held its row.
