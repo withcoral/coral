@@ -14,7 +14,7 @@
 //! of it fails with [`Error::KindMissing`] (ADR 0036).
 //!
 //! [`SecretStores::list`] is open to anything holding the registry, so a caller
-//! serving people goes through `coral_administration::SecretStoreInventory`.
+//! serving people goes through `coral_administration::SecretStoreAdministration`.
 //!
 //! No error here carries a path, a key, a value or a store's token, so a caller
 //! may report any of them to a Program.
@@ -293,6 +293,15 @@ impl SecretStores {
         self.0
             .iter()
             .map(|(name, defined)| (name, &defined.kind, defined.store.status()))
+    }
+
+    /// The kind and current status of the store with this name, while config
+    /// defines it.
+    #[must_use]
+    pub fn describe(&self, name: &str) -> Option<(SecretStoreKind, StoreStatus)> {
+        self.0
+            .get(name)
+            .map(|defined| (defined.kind.clone(), defined.store.status()))
     }
 
     /// The store with this name, while config defines it.

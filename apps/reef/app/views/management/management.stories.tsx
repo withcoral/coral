@@ -122,6 +122,7 @@ const emptyAgentGlimpse = activityPage([], agent.name, {
 const overview: WorkspaceOverviewProps = {
   workspace,
   agents: [agent, blockedAgent],
+  secretStores: [],
   providers: [
     {
       id: 'github',
@@ -208,6 +209,25 @@ export const Unavailable: Story = { render: () => <ManagementError status={503} 
 
 // Overview
 export const OwnerOverview: Story = { render: () => <WorkspaceOverview {...overview} /> }
+
+// Catches: an owner unable to tell a granted store that works from one Coral cannot read.
+export const OverviewWithSecretStores: Story = {
+  render: () => (
+    <WorkspaceOverview
+      {...overview}
+      secretStores={[
+        { name: 'platform', blockers: [] },
+        { name: 'licensed', blockers: ['Needs Enterprise'] },
+        { name: 'retired', blockers: ['Removed from config'] },
+      ]}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(within(canvas.getByText('platform')).getByText('Available')).toBeVisible()
+    await expect(within(canvas.getByText('licensed')).getByText('Needs Enterprise')).toBeVisible()
+    await expect(within(canvas.getByText('retired')).getByText('Removed from config')).toBeVisible()
+  },
+}
 // The last week's totals sit under the cards.
 export const SummaryOverview: Story = {
   render: () => (
@@ -1317,28 +1337,105 @@ export const RemoveSoleOwnerNoCandidate: Story = {
 }
 
 // Organization secret stores
+const secretStoreKind = 'Vault KV v2'
+const organizationSecretStores = {
+  form,
+  workspaces: [
+    { name: 'workspaces/research', displayName: 'Research' },
+    { name: 'workspaces/5f0c2a9e-0000-4000-8000-000000000001', displayName: 'Support' },
+    { name: 'workspaces/b71e94d0-0000-4000-8000-000000000002', displayName: 'Support' },
+  ],
+  stores: [
+    {
+      name: 'platform',
+      kind: secretStoreKind,
+      blockers: [],
+      workspaces: [
+        { name: 'workspaces/research', displayName: 'Research', archived: false },
+        { name: 'workspaces/closed', displayName: 'Closed', archived: true },
+      ],
+    },
+    { name: 'research', kind: secretStoreKind, blockers: ['Needs Enterprise'], workspaces: [] },
+    {
+      name: 'retired',
+      kind: null,
+      blockers: ['Removed from config'],
+      workspaces: [{ name: 'workspaces/support', displayName: 'Support', archived: false }],
+    },
+  ],
+}
 export const OrganizationSecretStores: Story = {
-  render: () => (
-    <OrganizationSecretStoresPage
-      stores={[
-        { name: 'platform', kind: 'Vault KV v2', blockers: [] },
-        { name: 'research', kind: 'Vault KV v2', blockers: ['Needs Enterprise'] },
-      ]}
-    />
-  ),
+  render: () => <OrganizationSecretStoresPage {...organizationSecretStores} />,
   parameters: { initialEntry: '/organization/secret-stores' },
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
     const row = within(canvas.getByRole('row', { name: /platform/ }))
-    await expect(row.getByText('Vault KV v2')).toBeVisible()
+    await expect(row.getByText(secretStoreKind)).toBeVisible()
+    await expect(row.getByText('Closed · Archived')).toBeVisible()
     await expect(row.getByText('Available')).toBeVisible()
     const licensed = within(canvas.getByRole('row', { name: /research/ }))
     await expect(licensed.getByText('Needs Enterprise')).toBeVisible()
+    // A store config removed says so in words, and keeps its grant.
+    const retired = within(canvas.getByRole('row', { name: /retired/ }))
+    await expect(retired.getByText('Removed from config')).toBeVisible()
+    await expect(retired.getByText('Support')).toBeVisible()
   },
 }
 export const OrganizationSecretStoresEmpty: Story = {
-  render: () => <OrganizationSecretStoresPage stores={[]} />,
+  render: () => <OrganizationSecretStoresPage form={form} workspaces={[]} stores={[]} />,
   parameters: { initialEntry: '/organization/secret-stores' },
+}
+// Catches: granting to a workspace that holds the grant, a submit with no workspace,
+// a grant offered for a store config removed, two workspaces of one name that look
+// the same, or a form that submits the wrong store or workspace.
+export const GrantSecretStore: Story = {
+  render: OrganizationSecretStores.render,
+  parameters: OrganizationSecretStores.parameters,
+  play: async ({ canvas }) => {
+    const body = within(document.body)
+    await userEvent.click(canvas.getByRole('button', { name: 'Actions for retired' }))
+    // A menu takes focus a frame after it opens, and Escape goes to the focused element.
+    // Wait for both, or the check passes before the menu opens and Escape closes nothing.
+    const retired = await body.findByRole('menu')
+    await waitFor(() => expect(retired).toContainElement(document.activeElement as HTMLElement))
+    await expect(
+      within(retired).queryByRole('menuitem', { name: 'Grant to a workspace' }),
+    ).toBeNull()
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(body.queryByRole('menu')).toBeNull())
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Actions for platform' }))
+    await userEvent.click(await body.findByRole('menuitem', { name: 'Grant to a workspace' }))
+    const dialog = within(await body.findByRole('dialog'))
+    await expect(dialog.getByRole('button', { name: 'Grant' })).toBeDisabled()
+    await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
+    const support = await body.findByRole('menuitemradio', { name: 'Support (b71e94d0)' })
+    await expect(
+      body.getByRole('menuitemradio', { name: 'Support (5f0c2a9e)' }),
+    ).toBeInTheDocument()
+    await expect(body.queryByRole('menuitemradio', { name: 'Research' })).toBeNull()
+    await userEvent.click(support)
+    const submit = dialog.getByRole('button', { name: 'Grant' })
+    await expect(submit).toBeEnabled()
+    const fields = new FormData((submit as HTMLButtonElement).form!)
+    await expect(fields.get('intent')).toBe('grant')
+    await expect(fields.get('name')).toBe('secretStores/platform')
+    await expect(fields.get('workspace')).toBe('workspaces/b71e94d0-0000-4000-8000-000000000002')
+  },
+}
+// Catches: a revocation offered for an archived workspace, which Coral refuses.
+export const RevokeSecretStore: Story = {
+  render: OrganizationSecretStores.render,
+  parameters: OrganizationSecretStores.parameters,
+  play: async ({ canvas }) => {
+    const body = within(document.body)
+    await userEvent.click(canvas.getByRole('button', { name: 'Actions for platform' }))
+    await userEvent.click(await body.findByRole('menuitem', { name: 'Revoke from a workspace' }))
+    const dialog = within(await body.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
+    await body.findByRole('menuitemradio', { name: 'Research' })
+    await expect(body.queryByRole('menuitemradio', { name: 'Closed' })).toBeNull()
+  },
 }
 
 // Organization workspaces

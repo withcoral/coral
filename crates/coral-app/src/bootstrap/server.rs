@@ -998,7 +998,7 @@ pub(crate) async fn start_server(
                 providers.clone(),
                 search_index.clone(),
             ),
-            workspaces,
+            workspaces: workspaces.clone(),
             providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
@@ -1008,8 +1008,9 @@ pub(crate) async fn start_server(
             runs: runs.clone(),
             releases: releases.clone(),
             usage: usage.as_ref().map(|usage| usage.data.clone()),
-            secret_stores: coral_administration::SecretStoreInventory::new(
+            secret_stores: coral_administration::SecretStoreAdministration::new(
                 coral_workspace::OrganizationModule::new(database.clone()),
+                workspaces.clone(),
                 secret_stores,
             ),
         },
