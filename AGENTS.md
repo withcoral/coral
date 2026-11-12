@@ -259,6 +259,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
+- Drive time in a test with fake timers or a test clock, not real waits.
+  Read the clock once per decision, in tests and product code alike: two
+  readings can differ, and a millisecond then decides which of two equal
+  timers fires first.
 - Inject faults through the owning crate's API or
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is
