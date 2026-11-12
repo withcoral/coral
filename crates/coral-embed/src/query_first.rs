@@ -40,10 +40,15 @@ impl<T> QueryFirst<T> {
 
     /// Runs `work` on the value when no query waits or runs.
     pub(crate) fn document<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
-        let mut value = self
-            .query_done
-            .wait_while(self.lock(), |_| self.queries.load(Ordering::SeqCst) > 0)
-            .unwrap_or_else(PoisonError::into_inner);
+        // Not `wait_while`: on a poisoned lock it returns at the first
+        // wake-up without a new check of the count.
+        let mut value = self.lock();
+        while self.queries.load(Ordering::SeqCst) > 0 {
+            value = self
+                .query_done
+                .wait(value)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
         work(&mut value)
     }
 
@@ -134,5 +139,47 @@ mod tests {
         document_done
             .recv_timeout(Duration::from_secs(10))
             .expect("the document runs after the query panicked");
+    }
+
+    /// A document can wake while a query waits: a `Condvar` may wake it at
+    /// any time, and a new query can come after the last one ended. The
+    /// document must check again, also after a panic poisoned the lock.
+    #[test]
+    fn a_woken_document_waits_again_while_a_query_waits() {
+        let gate = Arc::new(QueryFirst::new(0));
+        thread::spawn({
+            let gate = Arc::clone(&gate);
+            move || gate.document(|_| panic!("a document failed"))
+        })
+        .join()
+        .expect_err("the document panics");
+        gate.queries.fetch_add(1, Ordering::SeqCst);
+        let (done, document_done) = mpsc::channel();
+        thread::spawn({
+            let gate = Arc::clone(&gate);
+            move || {
+                gate.document(|count| *count += 1);
+                done.send(()).unwrap();
+            }
+        });
+        for _ in 0..50 {
+            gate.query_done.notify_all();
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            document_done.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "the document ran while a query waited"
+        );
+
+        {
+            // As a query does: off the count while it holds the lock.
+            let _held = gate.lock();
+            gate.queries.fetch_sub(1, Ordering::SeqCst);
+            gate.query_done.notify_all();
+        }
+        document_done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the document runs once no query waits");
     }
 }
