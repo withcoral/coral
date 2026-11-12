@@ -5,13 +5,16 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use coral_embed::{MANIFEST, Manifest, ModelFile};
+use coral_embed::{CpuTooOld, MANIFEST, Manifest, ModelFile};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{Delivery, DownloadError, DownloadTiming, SearchModel, SearchModelState, download};
+use super::{
+    Delivery, DownloadError, DownloadTiming, SearchModel, SearchModelState, SearchModelStop,
+    download,
+};
 
 const MODEL: &[u8] = b"model bytes";
 const TOKENIZER: &[u8] = b"tokenizer bytes";
@@ -25,7 +28,6 @@ const PATIENCE: Duration = Duration::from_secs(10);
 const TIMING: DownloadTiming = DownloadTiming {
     first_retry: Duration::from_millis(10),
     max_retry: Duration::from_millis(50),
-    wrong_file_retry: Duration::from_millis(10),
     stall: Duration::from_millis(500),
 };
 
@@ -82,19 +84,21 @@ fn client(loopback: NetworkAccess, private_networks: NetworkAccess) -> coral_out
     .expect("client")
 }
 
-fn start(server: &MockServer, dirs: &Dirs) -> SearchModel {
-    start_with(server, dirs, TIMING)
-}
-
-fn start_with(server: &MockServer, dirs: &Dirs, timing: DownloadTiming) -> SearchModel {
-    let (model, _delivery) = SearchModel::start(Delivery {
+/// The delivery of the test manifest from `server` into `dirs`, on a CPU
+/// that meets the floor.
+fn delivery(server: &MockServer, dirs: &Dirs) -> Delivery {
+    Delivery {
         manifest: manifest(server),
         models_dirs: vec![dirs.system.clone(), dirs.state.clone()],
         download_dir: dirs.state.clone(),
         client: client(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
-        timing,
-    });
-    model
+        timing: TIMING,
+        cpu: Ok(()),
+    }
+}
+
+fn start(server: &MockServer, dirs: &Dirs) -> SearchModel {
+    SearchModel::start(delivery(server, dirs)).0
 }
 
 /// Serves `body` at the release's `file`.
@@ -129,6 +133,19 @@ async fn ready(model: &SearchModel) -> Option<PathBuf> {
     tokio::time::timeout(PATIENCE, model.ready())
         .await
         .expect("the model is ready in time")
+}
+
+/// Takes `model`'s states until the delivery ends, and returns the last.
+async fn last_state(model: &mut SearchModel) -> Option<SearchModelState> {
+    tokio::time::timeout(PATIENCE, async {
+        let mut last = None;
+        while let Some(state) = model.next_state().await {
+            last = Some(state);
+        }
+        last
+    })
+    .await
+    .expect("the delivery ends in time")
 }
 
 fn read(path: &Path) -> Vec<u8> {
@@ -225,64 +242,115 @@ async fn a_download_may_take_longer_than_the_client_timeout() {
     // The model's answer takes longer than this client's own timeout, but
     // less than the stall bound, which is the only bound on a download.
     let (model, _delivery) = SearchModel::start(Delivery {
-        manifest: manifest(&server),
-        models_dirs: vec![dirs.state.clone()],
-        download_dir: dirs.state.clone(),
         client: coral_outbound::Client::new(
             DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
             Duration::from_millis(100),
         )
         .expect("client"),
-        timing: TIMING,
+        ..delivery(&server, &dirs)
     });
 
     assert_eq!(ready(&model).await, Some(dirs.downloaded()));
 }
 
 #[tokio::test]
-async fn a_file_with_another_digest_never_gets_the_final_name_and_is_downloaded_again() {
+async fn below_the_cpu_floor_nothing_is_downloaded() {
     let server = MockServer::start().await;
-    serve(&server, "model.onnx", b"model bytez").await;
+    serve(&server, "model.onnx", MODEL).await;
     serve(&server, "tokenizer.json", TOKENIZER).await;
     let dirs = Dirs::new();
+    let too_old = CpuTooOld {
+        missing: vec!["avx2", "fma"],
+    };
 
-    let model = start(&server, &dirs);
-    // The second request starts only after the first attempt has ended.
-    requested(&server, "model.onnx", 2).await;
+    let (model, _delivery) = SearchModel::start(Delivery {
+        cpu: Err(too_old.clone()),
+        ..delivery(&server, &dirs)
+    });
 
-    assert!(
-        !dirs.downloaded().join("model.onnx").exists(),
-        "a file with another digest got the final name"
-    );
-    assert_eq!(model.state(), SearchModelState::Downloading);
     assert_eq!(
-        model.wait_for_lookup().await,
-        Some(SearchModelState::Downloading)
+        ready(&model).await,
+        None,
+        "the delivery ends without the files"
     );
+    assert_eq!(
+        model.state(),
+        SearchModelState::Stopped(SearchModelStop::CpuTooOld(too_old))
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap_or_default().len(),
+        0
+    );
+    assert!(!dirs.downloaded().exists(), "a model folder was made");
 }
 
 #[tokio::test]
-async fn after_a_file_with_another_digest_the_next_attempt_waits_the_long_retry() {
+async fn a_file_with_another_digest_never_gets_the_final_name_and_is_downloaded_again_at_the_next_start()
+ {
     let server = MockServer::start().await;
     serve(&server, "model.onnx", b"model bytez").await;
     serve(&server, "tokenizer.json", TOKENIZER).await;
     let dirs = Dirs::new();
 
-    let _model = start_with(
-        &server,
-        &dirs,
-        DownloadTiming {
-            wrong_file_retry: Duration::from_hours(1),
-            ..TIMING
-        },
-    );
-    requested(&server, "model.onnx", 1).await;
-    // Without the long wait, the 10 ms retries fit many attempts in here.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut model = start(&server, &dirs);
 
     assert_eq!(
+        last_state(&mut model).await,
+        Some(SearchModelState::Stopped(SearchModelStop::WrongFile))
+    );
+    assert_eq!(
+        names(&dirs.downloaded()),
+        ["tokenizer.json"],
+        "a file with another digest got a name"
+    );
+    assert_eq!(
         requests_for(&server, &format!("{RELEASE_PATH}/model.onnx")).await,
-        1
+        1,
+        "the same process downloaded the file again"
+    );
+
+    server.reset().await;
+    serve(&server, "model.onnx", MODEL).await;
+    let next_start = start(&server, &dirs);
+
+    assert_eq!(ready(&next_start).await, Some(dirs.downloaded()));
+    assert_eq!(read(&dirs.downloaded().join("model.onnx")), MODEL);
+}
+
+#[tokio::test]
+async fn a_failed_attempt_reports_why_and_when_the_next_one_starts() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let dirs = Dirs::new();
+
+    let (mut model, _delivery) = SearchModel::start(Delivery {
+        timing: DownloadTiming {
+            first_retry: Duration::from_hours(1),
+            ..TIMING
+        },
+        ..delivery(&server, &dirs)
+    });
+
+    let (reason, retry_in) = tokio::time::timeout(PATIENCE, async {
+        loop {
+            match model.next_state().await {
+                Some(SearchModelState::Retrying { reason, retry_in }) => break (reason, retry_in),
+                Some(_) => {}
+                None => panic!("the delivery ended"),
+            }
+        }
+    })
+    .await
+    .expect("a failed attempt in time");
+
+    assert_eq!(retry_in, Duration::from_hours(1));
+    assert!(reason.contains("500 Internal Server Error"), "{reason}");
+    assert!(
+        !reason.contains(RELEASE_PATH),
+        "the reason names the URL: {reason}"
     );
 }
 
@@ -366,12 +434,7 @@ async fn files_on_disk_are_ready_without_a_request() {
         } else {
             dirs.downloaded()
         };
-        assert_eq!(ready(&model).await, Some(expected.clone()), "{case}");
-        assert_eq!(
-            model.wait_for_lookup().await,
-            Some(SearchModelState::Ready(expected)),
-            "{case}"
-        );
+        assert_eq!(ready(&model).await, Some(expected), "{case}");
         assert_eq!(
             server.received_requests().await.unwrap_or_default().len(),
             0,

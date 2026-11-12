@@ -5,15 +5,17 @@
 //! order. When no folder holds them, it downloads them from the model
 //! release through the outbound client, into the state directory. A file
 //! gets its final name only after its size and SHA-256 match. A failed
-//! attempt waits, then tries again, while the process runs. Once the files
-//! are ready, the other model folders in the state directory go. The ADR
+//! attempt waits, then tries again, while the process runs. A whole file
+//! with another size or SHA-256 stops the download until the next start.
+//! Below the CPU floor, Coral downloads nothing. Once the files are ready,
+//! the other model folders in the state directory go. The ADR
 //! "Universal Search adds a vector list from a bundled CPU model" has the
 //! reasons.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use coral_embed::{Manifest, ModelFile, ModelState};
+use coral_embed::{CpuTooOld, Manifest, ModelFile, ModelState};
 use coral_telemetry::safe;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
@@ -26,15 +28,39 @@ use url::Url;
 pub enum SearchModelState {
     /// Coral looks for the files on disk.
     Looking,
-    /// No folder holds the files. Coral downloads them and retries until
-    /// they land.
+    /// No folder holds the files. Coral downloads them.
     Downloading,
-    /// A file is there, but Coral cannot read it. Coral stops there and
-    /// does not download over it, until it starts with a file it can read.
-    Unreadable(String),
+    /// An attempt failed. The state stays until an attempt ends.
+    Retrying {
+        /// Why the attempt failed, with the cause of each error in turn.
+        reason: String,
+        /// The wait from the failure to the next attempt.
+        retry_in: Duration,
+    },
     /// This folder holds every file of the manifest, each with the
     /// manifest's size and SHA-256.
     Ready(PathBuf),
+    /// Coral does not download the files while this process runs.
+    Stopped(SearchModelStop),
+}
+
+/// Why Coral stopped the download without the files.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SearchModelStop {
+    /// The release sent a whole file with another size or SHA-256. The
+    /// same file comes back on each attempt, so only the next start
+    /// downloads it again.
+    #[error(
+        "a downloaded file does not have the manifest's size and SHA-256; the next start downloads it again"
+    )]
+    WrongFile,
+    /// This CPU cannot run the model, so a download is of no use.
+    #[error(transparent)]
+    CpuTooOld(CpuTooOld),
+    /// A file is there, but Coral cannot read it. Coral does not download
+    /// over a file that the operator put in place.
+    #[error("{0}; Coral does not download over a file it cannot read")]
+    Unreadable(String),
 }
 
 /// The state of the files that Universal Search embeds text with.
@@ -55,6 +81,9 @@ pub(crate) struct Delivery {
     /// outbound destination policy.
     pub(crate) client: coral_outbound::Client,
     pub(crate) timing: DownloadTiming,
+    /// Whether this CPU meets the model's floor. Below it, Coral downloads
+    /// nothing.
+    pub(crate) cpu: Result<(), CpuTooOld>,
 }
 
 /// How long a download waits, and for what.
@@ -64,10 +93,6 @@ pub(crate) struct DownloadTiming {
     pub(crate) first_retry: Duration,
     /// The longest wait between attempts.
     pub(crate) max_retry: Duration,
-    /// The shortest wait after an attempt that got a whole file with
-    /// another size or SHA-256. Such a file comes back on the next attempt
-    /// too, so a short wait downloads the model again and again.
-    pub(crate) wrong_file_retry: Duration,
     /// An attempt fails when the server sends nothing for this long.
     pub(crate) stall: Duration,
 }
@@ -94,9 +119,9 @@ impl Delivery {
             timing: DownloadTiming {
                 first_retry: Duration::from_secs(10),
                 max_retry: Duration::from_mins(15),
-                wrong_file_retry: Duration::from_hours(6),
                 stall: Duration::from_mins(1),
             },
+            cpu: coral_embed::check_cpu(),
         }
     }
 }
@@ -114,16 +139,13 @@ impl SearchModel {
         self.state.borrow().clone()
     }
 
-    /// Waits until the lookup on disk ends and returns the state after it.
-    /// A download that ends at once can be missed: then the state is
-    /// already ready. Returns `None` when the delivery stops first.
-    pub async fn wait_for_lookup(&self) -> Option<SearchModelState> {
-        let mut state = self.state.clone();
-        let after_lookup = state
-            .wait_for(|state| *state != SearchModelState::Looking)
-            .await
-            .ok()?;
-        Some(after_lookup.clone())
+    /// Waits for a state that this handle has not returned yet, and returns
+    /// it. A state that the next one replaces at once can be missed.
+    /// Returns `None` once the delivery has ended and this handle has
+    /// returned its last state.
+    pub async fn next_state(&mut self) -> Option<SearchModelState> {
+        self.state.changed().await.ok()?;
+        Some(self.state.borrow_and_update().clone())
     }
 
     /// Waits until the files are ready and returns their folder. Returns
@@ -150,6 +172,7 @@ async fn deliver(delivery: Delivery, state: watch::Sender<SearchModelState>) {
         download_dir,
         client,
         timing,
+        cpu,
     } = delivery;
     // The lookup ends without a result only when the runtime stops. Then
     // the state's sender drops, and `ready` returns `None`.
@@ -162,24 +185,44 @@ async fn deliver(delivery: Delivery, state: watch::Sender<SearchModelState>) {
                 error.type = safe::kind("unreadable"),
                 "a search model file cannot be read; Coral does not download over it"
             );
-            state.send_replace(SearchModelState::Unreadable(unreadable.to_string()));
+            state.send_replace(SearchModelState::Stopped(SearchModelStop::Unreadable(
+                unreadable.to_string(),
+            )));
             return;
         }
         Ok(ModelState::Ready(dir)) => dir,
         Ok(ModelState::Absent) => {
+            if let Err(too_old) = cpu {
+                tracing::info!(
+                    error.type = safe::kind("cpu_too_old"),
+                    "this CPU cannot run the search model; Coral does not download it"
+                );
+                state.send_replace(SearchModelState::Stopped(SearchModelStop::CpuTooOld(
+                    too_old,
+                )));
+                return;
+            }
             state.send_replace(SearchModelState::Downloading);
             let dir = download_dir.join(manifest.model_id);
             let mut wait = timing.first_retry;
             while let Err(error) = download(&client, &manifest, &dir, timing.stall).await {
+                if matches!(error, DownloadError::WrongFile) {
+                    tracing::warn!(
+                        error.type = safe::kind(error.code()),
+                        "search model download stopped until the next start"
+                    );
+                    state.send_replace(SearchModelState::Stopped(SearchModelStop::WrongFile));
+                    return;
+                }
                 tracing::info!(
                     error.type = safe::kind(error.code()),
                     "search model download failed; Coral retries"
                 );
-                let pause = match error {
-                    DownloadError::WrongFile => wait.max(timing.wrong_file_retry),
-                    _ => wait,
-                };
-                tokio::time::sleep(pause).await;
+                state.send_replace(SearchModelState::Retrying {
+                    reason: error_chain(&error),
+                    retry_in: wait,
+                });
+                tokio::time::sleep(wait).await;
                 wait = wait.saturating_mul(2).min(timing.max_retry);
             }
             dir
@@ -239,7 +282,7 @@ enum DownloadError {
     #[error("the outbound destination policy rejects the download")]
     DestinationRejected,
     #[error("the request failed")]
-    Http(reqwest::Error),
+    Http(#[source] reqwest::Error),
     #[error("the server sent nothing for too long")]
     Stalled,
     #[error("a redirect has no usable location, or there are too many")]
@@ -258,7 +301,9 @@ impl DownloadError {
     fn from_fetch(error: reqwest::Error) -> Self {
         match coral_outbound::FetchError::from(error) {
             coral_outbound::FetchError::DestinationRejected => Self::DestinationRejected,
-            coral_outbound::FetchError::Http(error) => Self::Http(error),
+            // The failure's reason leaves out the URL: a redirect's URL
+            // holds a signature.
+            coral_outbound::FetchError::Http(error) => Self::Http(error.without_url()),
         }
     }
 
@@ -276,6 +321,18 @@ impl DownloadError {
             Self::Unreadable(_) => "unreadable",
         }
     }
+}
+
+/// `error` and each of its causes, joined with ": ".
+fn error_chain(error: &DownloadError) -> String {
+    let mut chain = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(error) = cause {
+        chain.push_str(": ");
+        chain.push_str(&error.to_string());
+        cause = error.source();
+    }
+    chain
 }
 
 /// Downloads each file of `manifest` that `dir` does not hold yet.

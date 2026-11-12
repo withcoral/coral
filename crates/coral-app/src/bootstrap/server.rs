@@ -1304,15 +1304,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_search_model_is_looked_for_only_while_the_setting_is_on() {
-        // With the setting on, the delivery can start a request for the
-        // real model before shutdown stops it. The delivery's own tests use
-        // a local server.
-        for (search, looked_for) in [
-            ("", false),
-            ("[search]\nsemantic_search_enabled = false\n", false),
-            ("[search]\nsemantic_search_enabled = true\n", true),
-        ] {
+    async fn the_search_model_is_not_looked_for_while_the_setting_is_off() {
+        // With the setting on, the delivery would request the real model
+        // from GitHub. `docker/image-test.sh` boots the image with the
+        // setting on, and the delivery's own tests use a local server.
+        for search in ["", "[search]\nsemantic_search_enabled = false\n"] {
             let temp = TempDir::new().unwrap();
             std::fs::write(
                 temp.path().join("config.toml"),
@@ -1325,7 +1321,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(server.search_model().is_some(), looked_for, "{search:?}");
+            assert!(server.search_model().is_none(), "{search:?}");
 
             server.shutdown_inner().await.unwrap();
         }

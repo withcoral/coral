@@ -187,22 +187,27 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     let url_path = coral_mcp::WORKSPACE_MCP_ROUTE;
     println!("Coral MCP HTTP server serving each Workspace at http://{address}{url_path}");
     println!("Press Ctrl-C to stop the server.");
-    if let Some(search_model) = server.search_model() {
+    if let Some(mut search_model) = server.search_model() {
         tokio::spawn(async move {
-            match search_model.wait_for_lookup().await {
-                Some(coral_app::SearchModelState::Downloading) => println!(
-                    "Coral search model absent: downloading it. Search matches by words until it is ready."
-                ),
-                Some(coral_app::SearchModelState::Unreadable(reason)) => {
-                    println!(
-                        "Coral search model unreadable: {reason}. Search matches by words only until Coral starts with a file it can read."
-                    );
-                    return;
+            while let Some(state) = search_model.next_state().await {
+                match state {
+                    coral_app::SearchModelState::Looking => {}
+                    coral_app::SearchModelState::Downloading => println!(
+                        "Coral search model absent: downloading it. Search matches by words until it is ready."
+                    ),
+                    coral_app::SearchModelState::Retrying { reason, retry_in } => println!(
+                        "Coral search model download failed: {reason}. Coral tries again in {} s.",
+                        retry_in.as_secs()
+                    ),
+                    coral_app::SearchModelState::Stopped(stop) => {
+                        println!(
+                            "Coral search model unavailable: {stop}. Search matches by words."
+                        );
+                    }
+                    coral_app::SearchModelState::Ready(dir) => {
+                        println!("Coral search model ready in {}", dir.display());
+                    }
                 }
-                _ => {}
-            }
-            if let Some(dir) = search_model.ready().await {
-                println!("Coral search model ready in {}", dir.display());
             }
         });
     }

@@ -17,7 +17,7 @@ pub use runtime::{
     Extensions, Launch, MigrationProgress, MigrationReport, RunningRuntime, RuntimeError,
     start_runtime,
 };
-pub use search_model::{SearchModel, SearchModelState};
+pub use search_model::{SearchModel, SearchModelState, SearchModelStop};
 pub use server::{PreparedServerBuilder, RunningServer, ServerBuilder, ServerMode};
 pub use server_config::{
     LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, ServeSettings, SessionAuthSettings,
