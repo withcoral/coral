@@ -226,6 +226,8 @@ metadata:
   namespace: coral
 spec:
   replicas: 1
+  # Longer than the startup probe allows a start.
+  progressDeadlineSeconds: 2100
   strategy:
     type: Recreate
   selector:
@@ -341,10 +343,8 @@ metadata:
   namespace: coral
 spec:
   replicas: 1
-  # Stop the old pod before the new one starts, so an upgrade never runs two
-  # versions of Coral on one database.
-  strategy:
-    type: Recreate
+  # Longer than the startup probe allows a start.
+  progressDeadlineSeconds: 2100
   selector:
     matchLabels:
       app: coral
@@ -462,30 +462,42 @@ kubectl apply -f coral.yaml
 
 ## Upgrade
 
-Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first. These commands assume the `latest` image tags of this guide. If you pin a version, change both image tags and apply your manifests in step 3.
+Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first.
 
-1. Stop Coral:
+1. Back up Coral's state.
+   - **Postgres.** Take a dump or a snapshot of the database, and keep the `coral-secrets` values with it.
+   - **SQLite.** Snapshot the `coral-state` volume with your storage's snapshot tool. To copy its files instead, stop Coral first and wait for its pod to go:
+
+     ```shell
+     kubectl -n coral scale deployment/coral --replicas=0
+     kubectl -n coral wait --for=delete pod -l app=coral --timeout=2m
+     ```
+
+2. Deploy the new version. With the `latest` tags of this guide, restart both Deployments:
 
    ```shell
-   kubectl -n coral scale deployment/coral --replicas=0
+   kubectl -n coral rollout restart deployment/coral deployment/coral-web
    ```
 
-2. Back up Coral's state. With SQLite, snapshot or copy the `coral-state` volume. With Postgres, take a dump or a snapshot of the database, and keep the `coral-secrets` values with it.
+   If you pin a version, such as `ghcr.io/withcoral/coral:1.6.0`, change both image tags in your manifests and apply them instead:
 
-3. Start the new version and wait for it:
+   ```shell
+   kubectl apply -f common.yaml -f coral.yaml
+   ```
+
+3. If you stopped Coral for the backup, start it again:
 
    ```shell
    kubectl -n coral scale deployment/coral --replicas=1
-   kubectl -n coral rollout status deployment/coral --timeout=30m
    ```
 
-4. Restart the UI on the same version:
+4. Wait for Coral:
 
    ```shell
-   kubectl -n coral rollout restart deployment/coral-web
+   kubectl -n coral rollout status deployment/coral --timeout=35m
    ```
 
-Follow the update with `kubectl -n coral logs -f deployment/coral`. The `coral` Deployment uses the `Recreate` strategy and a startup probe so that an upgrade never runs two versions on one database, and a long update isn't restarted part-way. Keep both if you write your own manifests.
+Follow the update with `kubectl -n coral logs -f deployment/coral`. The `coral` Deployment has a startup probe and a longer progress deadline so that Kubernetes doesn't restart a long update part-way. Keep both if you write your own manifests.
 
 ## Offering a Coral plugin
 

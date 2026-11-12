@@ -280,30 +280,35 @@ The redirect URI to register is then `https://<coral-host>:8443/auth/oidc/callba
 
 Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first. Run these commands in the directory of your compose file.
 
-1. Stop Coral:
+1. Back up Coral's state. With Postgres, take a dump or a snapshot of the database, and keep your `.env` file with it. With SQLite, stop Coral and archive the state volume:
 
    ```shell
    docker compose stop coral-web coral
+   docker run --rm --volumes-from "$(docker compose ps -aq coral)" -v "$PWD":/backup busybox \
+     tar czf /backup/coral-state.tar.gz -C /var/lib/coral .
    ```
 
-2. Back up Coral's state. With SQLite, copy the state volume out of the stopped container:
-
-   ```shell
-   docker compose cp coral:/var/lib/coral ./coral-backup
-   ```
-
-   With Postgres, take a dump or a snapshot of the database, and keep your `.env` file with it.
+2. If your compose file pins a version, such as `ghcr.io/withcoral/coral:1.6.0`, change both image tags to the new version.
 
 3. Pull the new images and start them:
 
    ```shell
-   docker compose pull
-   docker compose up -d
+   docker compose pull coral coral-web
+   docker compose up -d coral coral-web
    ```
 
 4. Follow the update with `docker compose logs -f coral`.
 
-On a large database the update can run longer than the image's health check waits, which is about a minute. `docker compose up -d` then reports `dependency coral failed to start`, but `coral` keeps running. Wait until `docker compose ps` shows `coral` as healthy, then run `docker compose up -d` again to start `coral-web`.
+On a large database the update can run longer than the image's health check waits, which is about a minute. `docker compose up -d` then reports `dependency coral failed to start`, but `coral` keeps running. Wait until `docker compose ps` shows `coral` as healthy, then run `docker compose up -d coral coral-web` again to start `coral-web`.
+
+To go back with SQLite, stop Coral, set both image tags to the version you had, and restore the archive before you start it:
+
+```shell
+docker compose stop coral-web coral
+docker run --rm --volumes-from "$(docker compose ps -aq coral)" -v "$PWD":/backup busybox \
+  sh -c 'find /var/lib/coral -mindepth 1 -delete && tar xzf /backup/coral-state.tar.gz -C /var/lib/coral'
+docker compose up -d coral coral-web
+```
 
 ## Troubleshooting
 
