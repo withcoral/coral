@@ -119,14 +119,18 @@ impl Fixture {
     }
 
     async fn with_session_auth(enabled: bool) -> Self {
-        Self::compose(enabled, None).await
+        Self::compose(enabled, None, coral_secret_store::SecretStores::default()).await
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "composes the real domain graph and authenticated test principals once"
     )]
-    async fn compose(enabled: bool, releases: Option<coral_release::ReleaseCheck>) -> Self {
+    async fn compose(
+        enabled: bool,
+        releases: Option<coral_release::ReleaseCheck>,
+        secret_stores: coral_secret_store::SecretStores,
+    ) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
         let issuer = SessionTokenIssuer::new(
@@ -293,6 +297,11 @@ impl Fixture {
                     coral_usage::Build::Source,
                     &coral_usage::SendEnvironment::default(),
                 )),
+                secret_stores: coral_administration::SecretStoreAdministration::new(
+                    OrganizationModule::new(database.clone()),
+                    workspaces.clone(),
+                    secret_stores,
+                ),
             },
             coral_grpc::TransportContext {
                 authentication,
@@ -453,6 +462,12 @@ impl Fixture {
 
     fn releases(&self) -> management::release_service_client::ReleaseServiceClient<Channel> {
         management::release_service_client::ReleaseServiceClient::new(self.channel.clone())
+    }
+
+    fn secret_stores(
+        &self,
+    ) -> management::secret_store_service_client::SecretStoreServiceClient<Channel> {
+        management::secret_store_service_client::SecretStoreServiceClient::new(self.channel.clone())
     }
 
     fn organization_workspaces(
@@ -1188,7 +1203,12 @@ async fn release_inspection_projects_the_newer_release() {
     );
     check.refresh().await.unwrap();
 
-    let on = Fixture::compose(true, Some(check)).await;
+    let on = Fixture::compose(
+        true,
+        Some(check),
+        coral_secret_store::SecretStores::default(),
+    )
+    .await;
     let off = Fixture::new().await;
     for (fixture, expected) in [
         (
@@ -1270,4 +1290,241 @@ async fn usage_data_projects_the_view_and_denies_members_the_switch() {
         .into_inner();
     assert!(!changed.sharing);
     assert!(changed.can_change);
+}
+
+/// The projection names each store, its kind and its state, and a denial is a denial.
+#[tokio::test]
+async fn only_an_organization_owner_lists_the_defined_secret_stores() {
+    let named = |name| coral_secret_store::SecretStoreName::parse(name).unwrap();
+    let fixture = Fixture::compose(
+        true,
+        None,
+        coral_secret_store::SecretStores::new([
+            (
+                named("zeta"),
+                coral_secret_store::SecretStoreKind::new("test", "Test store").unwrap(),
+                Arc::new(coral_test_support::InMemorySecretStore::new()) as _,
+            ),
+            (
+                named("alpha"),
+                coral_secret_store::SecretStoreKind::missing("absent").unwrap(),
+                Arc::new(coral_secret_store::MissingKind) as _,
+            ),
+        ])
+        .unwrap(),
+    )
+    .await;
+    let list = |principal, audience| {
+        let mut client = fixture.secret_stores();
+        let request = request(
+            management::ListSecretStoresRequest {},
+            &fixture.token(principal, audience),
+            audience,
+        );
+        async move { client.list_secret_stores(request).await }
+    };
+
+    let answer = list(&fixture.owner, "reef").await.unwrap().into_inner();
+    assert_eq!(
+        answer.secret_stores,
+        [
+            management::SecretStore {
+                name: "secretStores/alpha".into(),
+                kind: "absent".into(),
+                kind_label: "absent".into(),
+                state: management::SecretStoreState::KindMissing.into(),
+            },
+            management::SecretStore {
+                name: "secretStores/zeta".into(),
+                kind: "test".into(),
+                kind_label: "Test store".into(),
+                state: management::SecretStoreState::Available.into(),
+            },
+        ]
+    );
+
+    let denied = list(&fixture.member, "reef").await.unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    let anonymous = fixture
+        .secret_stores()
+        .list_secret_stores(tonic::Request::new(management::ListSecretStoresRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(anonymous.code(), tonic::Code::Unauthenticated);
+
+    let none = Fixture::new().await;
+    let answer = none
+        .secret_stores()
+        .list_secret_stores(request(
+            management::ListSecretStoresRequest {},
+            &none.token(&none.owner, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(answer.secret_stores.is_empty());
+}
+
+/// A deployment that defines only the `platform` store.
+async fn platform_store_fixture() -> Fixture {
+    Fixture::compose(
+        true,
+        None,
+        coral_secret_store::SecretStores::new([(
+            coral_secret_store::SecretStoreName::parse("platform").unwrap(),
+            coral_secret_store::SecretStoreKind::new("test", "Test store").unwrap(),
+            Arc::new(coral_test_support::InMemorySecretStore::new()) as _,
+        )])
+        .unwrap(),
+    )
+    .await
+}
+
+fn grant_request(
+    fixture: &Fixture,
+    store: &str,
+    request_id: &str,
+) -> management::GrantSecretStoreRequest {
+    management::GrantSecretStoreRequest {
+        workspace: format!("workspaces/{}", fixture.workspace.id()),
+        secret_store: store.into(),
+        request_id: request_id.into(),
+    }
+}
+
+/// Each refusal has its status and reason. The rules themselves are the domain's.
+#[tokio::test]
+async fn a_refused_grant_has_its_status_and_reason() {
+    let fixture = platform_store_fixture().await;
+    let owner = fixture.token(&fixture.owner, "reef");
+    let member = fixture.token(&fixture.member, "reef");
+    for (i, (token, store, code, reason)) in [
+        (
+            &member,
+            "secretStores/platform",
+            tonic::Code::PermissionDenied,
+            "PERMISSION_DENIED",
+        ),
+        (
+            &owner,
+            "secretStores/undefined",
+            tonic::Code::FailedPrecondition,
+            "SECRET_STORE_NOT_DEFINED",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = grant_request(
+            &fixture,
+            store,
+            &format!("00000000-0000-4000-8000-00000000001{i}"),
+        );
+        let status = fixture
+            .secret_stores()
+            .grant_secret_store(request(input, token, "reef"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (status.code(), error_reason(&status).as_str()),
+            (code, reason)
+        );
+    }
+    let input = grant_request(
+        &fixture,
+        "secretStores/Not A Name",
+        "00000000-0000-4000-8000-000000000020",
+    );
+    let malformed = fixture
+        .secret_stores()
+        .grant_secret_store(request(input, &owner, "reef"))
+        .await
+        .unwrap_err();
+    assert_eq!(malformed.code(), tonic::Code::InvalidArgument);
+}
+
+/// Both readers see the store's availability, and a revocation takes a removed store.
+#[tokio::test]
+async fn grants_cross_the_wire_with_their_availability() {
+    let fixture = platform_store_fixture().await;
+    let owner = fixture.token(&fixture.owner, "reef");
+    let workspace = format!("workspaces/{}", fixture.workspace.id());
+    let input = grant_request(
+        &fixture,
+        "secretStores/platform",
+        "00000000-0000-4000-8000-000000000001",
+    );
+    fixture
+        .secret_stores()
+        .grant_secret_store(request(input, &owner, "reef"))
+        .await
+        .unwrap();
+    // Config defined this store once.
+    fixture
+        .workspaces
+        .grant_secret_store(&change(&fixture.owner), fixture.workspace.id(), "removed")
+        .await
+        .unwrap();
+
+    let platform = management::SecretStore {
+        name: "secretStores/platform".into(),
+        kind: "test".into(),
+        kind_label: "Test store".into(),
+        state: management::SecretStoreState::Available.into(),
+    };
+    let removed = management::SecretStore {
+        name: "secretStores/removed".into(),
+        state: management::SecretStoreState::Removed.into(),
+        ..management::SecretStore::default()
+    };
+    let all = fixture
+        .secret_stores()
+        .list_secret_store_grants(request(
+            management::ListSecretStoreGrantsRequest {},
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let [first, second] = all.grants.as_slice() else {
+        panic!("expected two grants, got {:?}", all.grants);
+    };
+    assert_eq!(first.workspace, workspace);
+    assert_eq!(
+        first.workspace_state,
+        management::WorkspaceState::Active as i32
+    );
+    assert!(!first.workspace_display_name.is_empty());
+    assert_eq!(first.secret_store.as_ref(), Some(&platform));
+    assert_eq!(second.secret_store.as_ref(), Some(&removed));
+
+    let own = fixture
+        .secret_stores()
+        .list_workspace_secret_stores(request(
+            management::ListWorkspaceSecretStoresRequest {
+                parent: workspace.clone(),
+            },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(own.secret_stores, [platform, removed]);
+
+    fixture
+        .secret_stores()
+        .revoke_secret_store(request(
+            management::RevokeSecretStoreRequest {
+                workspace,
+                secret_store: "secretStores/removed".into(),
+                request_id: "00000000-0000-4000-8000-000000000030".into(),
+            },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap();
 }

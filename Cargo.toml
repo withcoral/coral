@@ -7,7 +7,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "1.6.0" # x-release-please-version
+version = "1.7.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.97"
 
@@ -140,6 +140,7 @@ coral-policy = { path = "crates/coral-policy" }
 coral-provider = { path = "crates/coral-provider" }
 coral-release = { path = "crates/coral-release" }
 coral-usage = { path = "crates/coral-usage" }
+coral-secret-store = { path = "crates/coral-secret-store" }
 coral-run = { path = "crates/coral-run" }
 coral-run-executor = { path = "crates/coral-run-executor" }
 coral-search = { path = "crates/coral-search" }

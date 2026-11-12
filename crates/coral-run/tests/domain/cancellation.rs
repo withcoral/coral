@@ -1942,6 +1942,163 @@ async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
     }
 }
 
+/// What the sweep cannot decode of one abandoned Run.
+#[derive(Debug, Clone, Copy)]
+enum Undecodable {
+    /// Its Run row snapshots a limit this build does not know, as a build
+    /// that knew one more wrote it.
+    RunRow,
+    /// Its Approval Request, whose deadline passed, stores no ID Coral
+    /// issues.
+    ApprovalRequest,
+    /// A cancellation waits in its Run Inbox with no requester kind this
+    /// build knows.
+    InboxRequest,
+}
+
+/// One abandoned Run the sweep cannot decode does not cost the others their
+/// recovery: the pass skips it, writes nothing to it, and still ends the Run
+/// accepted after it. The log that leaves the host names the skipped Run, so
+/// an operator can find its rows. Once they decode again, the next pass ends
+/// it too.
+/// Catches: one undecodable row failing every pass, so that no abandoned Run
+/// ever ends, and a skip that does not say which Run it left out.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of undecodable Runs, each corrupted, skipped, repaired and recovered"
+)]
+async fn the_sweep_skips_a_run_it_cannot_decode_and_recovers_the_rest() {
+    use crate::run_inbox::OutsideRequest;
+    let telemetry = super::trace::telemetry();
+    for case in [
+        Undecodable::RunRow,
+        Undecodable::ApprovalRequest,
+        Undecodable::InboxRequest,
+    ] {
+        // The sweep reads in acceptance order: the undecodable Run is first.
+        // The held Run keeps its fixture, and its Approval Request waits 20 s
+        // at most, well inside the Run's 60 s.
+        let (held, staged);
+        let (fixture, workspace_id, principal, undecodable) = match case {
+            Undecodable::ApprovalRequest => {
+                held = HeldApproval::expiring("user:undecodable", Duration::from_secs(20)).await;
+                let (workspace_id, run) = (held.tool.workspace_id.clone(), held.run.clone());
+                (&held.fixture, workspace_id, held.actor.clone(), run)
+            }
+            Undecodable::RunRow | Undecodable::InboxRequest => {
+                staged = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+                let (workspace_id, principal) = staged
+                    .user_scope("user:undecodable", "Skip an undecodable Run")
+                    .await;
+                let run = staged
+                    .staged_run(&principal, &workspace_id, "return null;")
+                    .await;
+                (&staged, workspace_id, principal, run)
+            }
+        };
+        let abandoned = fixture
+            .staged_run(&principal, &workspace_id, "return null;")
+            .await;
+        let handed = fixture
+            .hand_to(&workspace_id, &undecodable, "dead-holder", None)
+            .await;
+        fixture
+            .hand_to(&workspace_id, &abandoned, "dead-holder", None)
+            .await;
+        let (corrupt, repair, run_end) = match case {
+            Undecodable::ApprovalRequest => {
+                let request = fixture
+                    .approvals()
+                    .list_for_run(&principal, &workspace_id, &undecodable)
+                    .await
+                    .unwrap()
+                    .remove(0);
+                // The sweep reads only the requests whose deadline passed.
+                fixture
+                    .clock
+                    .next
+                    .store(request.deadline_at_unix_nanos, Ordering::SeqCst);
+                (
+                    format!(
+                        "UPDATE invocation_approvals SET id = 'unknown' WHERE id = '{}'",
+                        request.id
+                    ),
+                    format!(
+                        "UPDATE invocation_approvals SET id = '{}' WHERE id = 'unknown'",
+                        request.id
+                    ),
+                    RunState::Interrupted,
+                )
+            }
+            Undecodable::RunRow => (
+                format!(
+                    "UPDATE program_run_records SET value_limits_json = \
+                     replace(value_limits_json, '}}', ',\"mcp_result_bytes\":1}}') \
+                     WHERE id = '{undecodable}'"
+                ),
+                format!(
+                    "UPDATE program_run_records SET value_limits_json = \
+                     replace(value_limits_json, ',\"mcp_result_bytes\":1', '') \
+                     WHERE id = '{undecodable}'"
+                ),
+                RunState::Interrupted,
+            ),
+            Undecodable::InboxRequest => {
+                fixture
+                    .submit_to_inbox(
+                        &workspace_id,
+                        &undecodable,
+                        OutsideRequest::Cancel(principal.principal().clone()),
+                    )
+                    .await;
+                (
+                    format!(
+                        "UPDATE program_run_inbox SET requester_kind = 'unknown' \
+                         WHERE run_id = '{undecodable}'"
+                    ),
+                    format!(
+                        "UPDATE program_run_inbox SET requester_kind = '{}' \
+                         WHERE run_id = '{undecodable}'",
+                        principal.principal().kind().as_storage_str()
+                    ),
+                    RunState::Canceled,
+                )
+            }
+        };
+        assert_eq!(fixture.inject_fault(&corrupt).await, 1, "{case:?}");
+
+        let sweeper = fixture.next_process();
+        assert_eq!(
+            sweeper.sweep_expired_leases().await.unwrap(),
+            1,
+            "{case:?}: the pass recovers the Run it can decode"
+        );
+        let ended = fixture.terminal_record(&workspace_id, &abandoned).await;
+        assert_eq!(ended.state, RunState::Interrupted, "{case:?}");
+        let skips = telemetry.logs_holding(undecodable.as_str());
+        assert!(
+            matches!(skips.as_slice(), [skip]
+                if skip.contains("expired-lease sweep skips") && skip.contains("corrupt_data")),
+            "{case:?}: one warning names the skipped Run and its error kind: {skips:?}"
+        );
+
+        assert_eq!(fixture.inject_fault(&repair).await, 1, "{case:?}");
+        assert_eq!(
+            fixture.run_record(&workspace_id, &undecodable).await,
+            handed,
+            "{case:?}: the pass that skipped the Run wrote nothing to it"
+        );
+        assert_eq!(
+            sweeper.sweep_expired_leases().await.unwrap(),
+            1,
+            "{case:?}: the next pass recovers the Run once it decodes"
+        );
+        let recovered = fixture.terminal_record(&workspace_id, &undecodable).await;
+        assert_eq!(recovered.state, run_end, "{case:?}");
+    }
+}
+
 /// A Run accepted before shutdown began and launched only after it is not
 /// lost by the drain: shutdown waits for that admission, and the owner it
 /// registers late is interrupted with the rest.

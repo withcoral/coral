@@ -27,7 +27,7 @@ use crate::owner::{
 };
 use crate::run_inbox::Delivery;
 use crate::termination::end_in_one_chunk;
-use crate::types::AcceptedRun;
+use crate::types::{AcceptedRun, HeldRunId};
 use crate::{Error, RunId, RunModule, approval, run_repository};
 
 /// How many recovered owners write their chunk at once in one process.
@@ -55,6 +55,11 @@ impl RunModule {
     /// request inserted after the snapshot waits until that chunk lands; once
     /// the Run ended, the record answers it.
     ///
+    /// A Run whose stored rows do not decode (its Run row, an Approval
+    /// Request or a Run Inbox request) is left out and logged, with its ID
+    /// when its row stores one Coral issues; the pass recovers the rest, and
+    /// reads that Run again next time.
+    ///
     /// Bootstrap runs the first pass before any listener binds, then on a
     /// fixed cadence of [`Self::sweep_interval`].
     ///
@@ -73,16 +78,23 @@ impl RunModule {
         let lapsed = run_repository::lapsed_leases(&mut transaction, now).await?;
         let mut recoveries = Vec::new();
         for run in lapsed {
+            let run = match run {
+                Ok(run) => run,
+                Err(undecodable) => {
+                    skip_undecodable(undecodable.id.as_ref(), &undecodable.error);
+                    continue;
+                }
+            };
             if self.owners.contains(&run.id) {
                 continue;
             }
-            let mut queued = passed_timers(&mut transaction, &run, now).await?;
-            let waiting = self
-                .inbox
-                .waiting(&mut transaction, &run.workspace_id, &run.id)
-                .await?;
-            queued.extend(waiting.into_iter().map(Delivery::into_message));
-            recoveries.push((run, queued));
+            match self.queued_for(&mut transaction, &run, now).await {
+                Ok(queued) => recoveries.push((run, queued)),
+                Err(error @ Error::CorruptData(_)) => {
+                    skip_undecodable(Some(&run.held_id()), &error);
+                }
+                Err(error) => return Err(error),
+            }
         }
         transaction.commit().await?;
         Ok(recoveries
@@ -90,6 +102,24 @@ impl RunModule {
             .map(|(run, queued)| self.schedule_recovery(&run, queued))
             .filter(|recreated| *recreated)
             .count())
+    }
+
+    /// What the recreated owner of `run` finds queued, read in the sweep's
+    /// snapshot: the Approval Request timers that passed by `now_unix_nanos`,
+    /// then the requests waiting in the Run's Run Inbox.
+    async fn queued_for(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        run: &RunRecord,
+        now_unix_nanos: i64,
+    ) -> Result<Vec<Message>, Error> {
+        let mut queued = passed_timers(transaction, run, now_unix_nanos).await?;
+        let waiting = self
+            .inbox
+            .waiting(transaction, &run.workspace_id, &run.id)
+            .await?;
+        queued.extend(waiting.into_iter().map(Delivery::into_message));
+        Ok(queued)
     }
 
     /// Recreates the owner of `run`, with a new claim, its mailbox `queued`
@@ -277,6 +307,18 @@ impl RunModule {
         crate::trace::record_run_end(&run, &crate::trace::RunEnd::Recovered(&kind.outcome()), now);
         Ok(())
     }
+}
+
+/// Logs the lapsed Run a pass leaves out because its stored rows do not
+/// decode. Nothing is written: the Run stays `running` until its rows are
+/// repaired, and every pass reads it again. `run_id` is absent when the row's
+/// stored ID is not one Coral issues.
+fn skip_undecodable(run_id: Option<&HeldRunId>, error: &Error) {
+    tracing::warn!(
+        coral.run.id = run_id.map(safe::id),
+        error.type = safe::kind(error.code()),
+        "expired-lease sweep skips a Run whose stored rows do not decode; the next pass retries it"
+    );
 }
 
 /// What a recovered owner's one chunk writes, as its `apply` decided it.

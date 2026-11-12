@@ -675,15 +675,17 @@ impl SearchIndex {
         entry: &'e I::Entry,
     ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
-        #[cfg(test)]
-        if let Some(pause) = &self.row_build_pause {
-            let receiver = pause.release.lock().unwrap().take();
-            if let Some(receiver) = receiver {
-                pause.entered.notify_one();
-                let _released = receiver.recv_timeout(Duration::from_secs(5));
+        let rows = without_starving_other_tasks(|| {
+            #[cfg(test)]
+            if let Some(pause) = &self.row_build_pause {
+                let receiver = pause.release.lock().unwrap().take();
+                if let Some(receiver) = receiver {
+                    pause.entered.notify_one();
+                    let _released = receiver.recv_timeout(Duration::from_secs(5));
+                }
             }
-        }
-        let rows = indexer.rows(entry)?;
+            indexer.rows(entry)
+        })?;
         #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(stall) = self.stall_before_write {
             tokio::time::sleep(stall).await;
@@ -1007,6 +1009,28 @@ async fn rollback(transaction: Transaction<'_>) {
             error.type = safe::kind(error.code()),
             "failed to roll back a search index write"
         );
+    }
+}
+
+/// Runs `work`, which computes without awaiting, while the runtime's other
+/// tasks go on. A large Generation's rows take a minute to build. The worker
+/// that builds them would otherwise run nothing else for that long, and the
+/// runtime may accept no connection meanwhile, however many workers it has:
+/// the Coral Instance then fails its health checks.
+///
+/// On the multi-thread runtime the worker first hands its other tasks to
+/// another thread. A current-thread runtime, which only tests use, has none
+/// to hand them to, so `work` runs where it is. The rows borrow from their
+/// entry, so they cannot move to a blocking task of their own.
+fn without_starving_other_tasks<T>(work: impl FnOnce() -> T) -> T {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    if matches!(
+        Handle::current().runtime_flavor(),
+        RuntimeFlavor::MultiThread
+    ) {
+        tokio::task::block_in_place(work)
+    } else {
+        work()
     }
 }
 

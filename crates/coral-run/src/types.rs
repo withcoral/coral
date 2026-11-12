@@ -90,6 +90,12 @@ impl HeldRunId {
         &self.0
     }
 
+    /// The ID of a Run whose row Coral read, even when the rest of that row
+    /// does not decode to a record.
+    pub(crate) const fn of_held_row(run_id: RunId) -> Self {
+        Self(run_id)
+    }
+
     /// A Run ID as if Coral held its row.
     #[cfg(test)]
     pub(crate) const fn fixture(run_id: RunId) -> Self {

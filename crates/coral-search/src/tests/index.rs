@@ -341,6 +341,36 @@ async fn legacy_failed_projections_keep_visibility_unknown_until_a_successful_co
     let _stopped = background.await;
 }
 
+// Catches: index row work that keeps its async worker to itself, so the
+// worker's other tasks wait until the rows are built. One worker is how the
+// test sees it: with a second, the other task would run there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn one_worker_runs_other_tasks_while_index_rows_are_built() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let hold = world.index.hold_row_building();
+    let background = world.index.spawn_reconcile_task();
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .expect("row work starts");
+    // The test's own thread is not a worker, so it waits on a plain channel:
+    // a blocked worker also stops the runtime's timers.
+    let (ran, other_ran) = std::sync::mpsc::channel();
+    tokio::spawn(async move {
+        let _sent = ran.send(());
+    });
+    let other_task_ran = other_ran
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok();
+    drop(hold);
+    background.abort();
+    let _stopped = background.await;
+    assert!(
+        other_task_ran,
+        "row work on the only worker stops every other task"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
     let upstream = MockServer::start().await;

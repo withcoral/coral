@@ -10,6 +10,7 @@ import {
   type ActivitySummaryData,
 } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
+import { secretStoreBlockers } from '@/lib/secret-store-state'
 import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import {
   actionFailure,
@@ -23,6 +24,7 @@ import {
   workspaceName,
 } from '@/lib/management.server'
 import { agentView, membershipView, ownerView } from '@/lib/management-views.server'
+import { secretStoreId } from '@/lib/organization.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { blockerLabel, listAllProviders, providerIcons, providerPath } from '@/lib/providers.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
@@ -62,8 +64,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       if (!(error instanceof ConnectError))
         console.error('Unexpected failure in a Reef loader:', error)
     })
-    const [agents, providers, owners, own] = await Promise.all([
+    const [agents, secretStores, providers, owners, own] = await Promise.all([
       owner ? api.agents.listAgents({ parent: w.name, pageSize: GLIMPSE_FETCH }) : null,
+      owner ? api.secretStores.listWorkspaceSecretStores({ parent: w.name }) : null,
       listAllProviders(api, w.name),
       people ? api.memberships.listWorkspaceOwners({ parent: w.name }) : null,
       owner || !people
@@ -89,6 +92,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       {
         workspace: w,
         agents: agents?.agents.map(agentView) ?? [],
+        secretStores:
+          secretStores?.secretStores.map((store) => ({
+            name: secretStoreId(store.name),
+            blockers: secretStoreBlockers(store.state),
+          })) ?? [],
         // The card shows the providers you add. Coral's Built-in Provider stays on
         // the providers page, so a new workspace still offers Add provider here.
         providers: views.filter((provider) => !provider.builtin),
