@@ -284,8 +284,6 @@ pub(super) async fn pending_for_run(
     request_deadlines(rows)
 }
 
-/// The Run's undecided Approval Requests whose deadline is at or before
-/// `by_unix_nanos`, with their deadlines, in deadline order.
 /// Stored Approval Request IDs with their deadlines, decoded. A stored ID
 /// that does not parse is the row's fault, not a caller's.
 fn request_deadlines(rows: Vec<(String, i64)>) -> Result<Vec<(ApprovalId, i64)>, Error> {
@@ -299,6 +297,8 @@ fn request_deadlines(rows: Vec<(String, i64)>) -> Result<Vec<(ApprovalId, i64)>,
         .collect()
 }
 
+/// The Run's undecided Approval Requests whose deadline is at or before
+/// `by_unix_nanos`, with their deadlines, in deadline order.
 pub(super) async fn undecided_by(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
