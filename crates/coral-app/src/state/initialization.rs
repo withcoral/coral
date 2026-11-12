@@ -67,6 +67,7 @@ pub(crate) async fn initialize<F, V>(
     config: &str,
     resolve_database: F,
     validate_config: V,
+    report_migration: coral_db::MigrationReport<'_>,
 ) -> Result<InitializedState, AppError>
 where
     F: FnOnce(&AppStateLayout, &str) -> Result<DatabaseOptions, AppError>,
@@ -92,7 +93,7 @@ where
     let database = Database::connect(database_config).await?;
     // The chain's search steps need the features this checks.
     coral_search::prepare_storage(&database).await?;
-    super::migrations::migrate_current(&database).await?;
+    super::migrations::migrate_current(&database, report_migration).await?;
 
     Ok(InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),

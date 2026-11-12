@@ -154,6 +154,7 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     let launch = coral_app::Launch {
         service_version: Some(VERSION),
         extensions,
+        migration_report: Some(print_migrations()),
         ..coral_app::Launch::from_env()
             .map_err(|error| anyhow::anyhow!("invalid launch environment: {error}"))?
     };
@@ -186,6 +187,49 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     wait.map_err(anyhow::Error::from)?;
     shutdown.map_err(anyhow::Error::from)?;
     Ok(())
+}
+
+/// Prints each database migration step while startup applies it.
+///
+/// Startup applies them before it listens and before telemetry starts, so
+/// these lines are the only sign that the process is on a long step.
+fn print_migrations() -> coral_app::MigrationReport {
+    let upgrading = std::sync::atomic::AtomicBool::new(false);
+    std::sync::Arc::new(move |progress| {
+        if let coral_app::MigrationProgress::Pending { applied, .. } = progress {
+            upgrading.store(applied > 0, std::sync::atomic::Ordering::Relaxed);
+        }
+        if upgrading.load(std::sync::atomic::Ordering::Relaxed) {
+            println!("{}", migration_line(progress));
+        }
+    })
+}
+
+/// The line for one piece of migration progress. [`print_migrations`] prints
+/// none for a new database: its steps are many and each takes milliseconds.
+fn migration_line(progress: coral_app::MigrationProgress<'_>) -> String {
+    use coral_app::MigrationProgress::{Finished, Pending, Started};
+    match progress {
+        Pending { pending, .. } => {
+            let steps = if pending == 1 { "step" } else { "steps" };
+            format!(
+                "Coral is migrating the database: {pending} {steps} to apply. A step over a \
+                 large table can take minutes, and Coral listens when the last one finishes."
+            )
+        }
+        Started {
+            version,
+            description,
+        } => format!("Database migration {version:04} ({description}) started."),
+        Finished {
+            version,
+            description,
+            elapsed,
+        } => format!(
+            "Database migration {version:04} ({description}) finished in {:.1} s.",
+            elapsed.as_secs_f64()
+        ),
+    }
 }
 
 /// Runs a Run Executor until it retires: on a termination signal or, when its
@@ -392,6 +436,48 @@ mod tests {
             assert_eq!(error.exit_status(), exit_code);
             assert_eq!(error.telemetry_exit_code(), exit_code);
             assert_eq!(error.telemetry_error_code(), error_code);
+        }
+    }
+
+    #[test]
+    fn each_piece_of_migration_progress_has_its_line() {
+        use coral_app::MigrationProgress::{Finished, Pending, Started};
+
+        let step = (63, "every callable is a tool");
+        for (progress, line) in [
+            (
+                Pending {
+                    applied: 62,
+                    pending: 1,
+                },
+                "Coral is migrating the database: 1 step to apply. A step over a large table \
+                 can take minutes, and Coral listens when the last one finishes.",
+            ),
+            (
+                Pending {
+                    applied: 62,
+                    pending: 4,
+                },
+                "Coral is migrating the database: 4 steps to apply. A step over a large table \
+                 can take minutes, and Coral listens when the last one finishes.",
+            ),
+            (
+                Started {
+                    version: step.0,
+                    description: step.1,
+                },
+                "Database migration 0063 (every callable is a tool) started.",
+            ),
+            (
+                Finished {
+                    version: step.0,
+                    description: step.1,
+                    elapsed: std::time::Duration::from_millis(262_440),
+                },
+                "Database migration 0063 (every callable is a tool) finished in 262.4 s.",
+            ),
+        ] {
+            assert_eq!(migration_line(progress), line);
         }
     }
 

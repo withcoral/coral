@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
-use sqlx::migrate::{Migrate as _, Migration, Migrator};
+use sqlx::migrate::{Migrate, Migration, Migrator};
 use sqlx::{Connection as _, SqliteConnection};
 
 use crate::backend::{DatabaseBackend, DatabaseSystem};
@@ -69,6 +70,45 @@ impl MigrationPlan {
     }
 }
 
+/// What [`Database::migrate_reporting`] reports while it brings a database up
+/// to its plan.
+///
+/// A step that rewrites a large table can hold the process for minutes before
+/// it listens, so a caller that shows these tells an operator which step the
+/// database is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationProgress<'a> {
+    /// The database has `applied` of the plan's steps and lacks `pending`.
+    /// Reported once, before the first step, and only when a step is pending.
+    Pending {
+        /// How many steps the database already has. Zero is a new database.
+        applied: usize,
+        /// How many steps this call is about to apply.
+        pending: usize,
+    },
+    /// A step is about to run.
+    Started {
+        /// The step's version.
+        version: i64,
+        /// The step's name.
+        description: &'a str,
+    },
+    /// A step ran: this call applied it, or it waited for another Coral
+    /// process that did. `SQLite` commits the steps of one call together after
+    /// the last, so a later failure still undoes a finished step there.
+    Finished {
+        /// The step's version.
+        version: i64,
+        /// The step's name.
+        description: &'a str,
+        /// How long this call spent on the step.
+        elapsed: Duration,
+    },
+}
+
+/// Where [`Database::migrate_reporting`] sends its progress.
+pub type MigrationReport<'a> = &'a (dyn Fn(MigrationProgress<'_>) + Send + Sync);
+
 impl Database {
     /// Validates and applies this database system's half of `plan`.
     ///
@@ -89,6 +129,21 @@ impl Database {
     /// SQL failure, a foreign key that a `SQLite` migration left without its
     /// row, or a backend connection failure.
     pub async fn migrate(&self, plan: &MigrationPlan) -> Result<(), Error> {
+        self.migrate_reporting(plan, &|_| {}).await
+    }
+
+    /// Does what [`Self::migrate`] does, and tells `report` about each step it
+    /// applies as it goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::migrate`] returns. A failed step is reported as
+    /// started and never as finished.
+    pub async fn migrate_reporting(
+        &self,
+        plan: &MigrationPlan,
+        report: MigrationReport<'_>,
+    ) -> Result<(), Error> {
         let migrator = plan.for_system(self.system());
         match &self.backend {
             DatabaseBackend::Sqlite { writes, .. } => {
@@ -96,12 +151,64 @@ impl Database {
                 // Foreign keys stay off on this connection, so the pool must
                 // not hand it to another writer.
                 connection.close_on_drop();
-                migrate_sqlite(migrator, &mut connection).await?;
+                migrate_sqlite(migrator, &mut connection, report).await?;
             }
-            DatabaseBackend::Postgres(pool) => migrator.run(pool).await?,
+            DatabaseBackend::Postgres(pool) => {
+                let mut connection = pool.acquire().await?;
+                apply_pending(migrator, &mut *connection, report).await?;
+            }
         }
         Ok(())
     }
+}
+
+/// Validates the ledger and applies `migrator`'s pending steps one at a time,
+/// reporting each. Returns whether any step was pending.
+async fn apply_pending<C: Migrate>(
+    migrator: &Migrator,
+    connection: &mut C,
+    report: MigrationReport<'_>,
+) -> Result<bool, Error> {
+    // A target below every version creates the ledger if the database has
+    // none, refuses one that this plan cannot continue, and applies nothing.
+    migrator
+        .run_direct(Some(i64::MIN), connection, false)
+        .await?;
+    let applied = connection
+        .list_applied_migrations(&migrator.table_name)
+        .await?;
+    let pending: Vec<&Migration> = migrator
+        .iter()
+        .filter(|migration| {
+            migration.migration_type.is_up_migration()
+                && !applied.iter().any(|row| row.version == migration.version)
+        })
+        .collect();
+    if !pending.is_empty() {
+        report(MigrationProgress::Pending {
+            applied: applied.len(),
+            pending: pending.len(),
+        });
+    }
+    for migration in &pending {
+        report(MigrationProgress::Started {
+            version: migration.version,
+            description: &migration.description,
+        });
+        let started = Instant::now();
+        // Every earlier step is applied, so this target applies one step.
+        migrator
+            .run_direct(Some(migration.version), connection, false)
+            .await?;
+        report(MigrationProgress::Finished {
+            version: migration.version,
+            description: &migration.description,
+            elapsed: started.elapsed(),
+        });
+    }
+    // A run with a target checks the checksums up to it. This one checks all.
+    migrator.run_direct(None, connection, false).await?;
+    Ok(!pending.is_empty())
 }
 
 /// Applies `migrator` with foreign keys off, then checks every foreign key if
@@ -114,24 +221,14 @@ impl Database {
 async fn migrate_sqlite(
     migrator: &Migrator,
     connection: &mut SqliteConnection,
+    report: MigrationReport<'_>,
 ) -> Result<(), Error> {
     sqlx::query("PRAGMA foreign_keys = OFF")
         .execute(&mut *connection)
         .await?;
     // `SQLx` nests each migration's own transaction in this one as a savepoint.
     let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
-    transaction
-        .ensure_migrations_table(&migrator.table_name)
-        .await?;
-    let applied = transaction
-        .list_applied_migrations(&migrator.table_name)
-        .await?;
-    let pending = migrator.migrations.iter().any(|migration| {
-        migration.migration_type.is_up_migration()
-            && !applied.iter().any(|row| row.version == migration.version)
-    });
-
-    migrator.run(&mut *transaction).await?;
+    let pending = apply_pending(migrator, &mut *transaction, report).await?;
     if pending {
         let tables: Vec<String> = sqlx::query_scalar(
             r#"SELECT DISTINCT "table" FROM pragma_foreign_key_check ORDER BY 1"#,

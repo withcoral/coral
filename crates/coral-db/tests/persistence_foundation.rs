@@ -8,8 +8,8 @@
 use std::sync::LazyLock;
 
 use coral_db::{
-    Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, QueryExecutor,
-    ReadOnlyDatabase,
+    Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
+    QueryExecutor, ReadOnlyDatabase,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
@@ -339,6 +339,77 @@ fn fixture_plan(migrations: &[(i64, &'static str, &'static str)]) -> MigrationPl
         )
     };
     MigrationPlan::new(migrator(|m| m.1), migrator(|m| m.2))
+}
+
+/// A boot that printed nothing while it migrated left no line when it was
+/// killed part-way. Each run must say which steps it is on, and only those.
+#[tokio::test]
+async fn a_migration_run_reports_each_step_it_applies() {
+    const SECOND: &str = "CREATE TABLE fixture_second (id TEXT NOT NULL PRIMARY KEY);";
+    // The first step made this table, so the step fails on both databases.
+    const REFUSED: &str = "CREATE TABLE fixture_parents (id TEXT NOT NULL PRIMARY KEY);";
+    let fixture = TestDatabase::new(&fixture_plan(&[])).await.unwrap();
+    let database = fixture.database();
+    let two_steps = fixture_plan(&[(1, LINKED_TABLES, LINKED_TABLES), (2, SECOND, SECOND)]);
+    let with_refused_step = fixture_plan(&[
+        (1, LINKED_TABLES, LINKED_TABLES),
+        (2, SECOND, SECOND),
+        (3, REFUSED, REFUSED),
+    ]);
+
+    let cases: [(&str, &MigrationPlan, bool, &[&str]); 3] = [
+        (
+            "a new database",
+            &two_steps,
+            true,
+            &[
+                "0 applied, 2 pending",
+                "started 1 fixture 1",
+                "finished 1 fixture 1",
+                "started 2 fixture 2",
+                "finished 2 fixture 2",
+            ],
+        ),
+        ("a database at its plan", &two_steps, true, &[]),
+        (
+            "a step that fails",
+            &with_refused_step,
+            false,
+            &["2 applied, 1 pending", "started 3 fixture 3"],
+        ),
+    ];
+    for (case, plan, succeeds, expected) in cases {
+        let reported = std::sync::Mutex::new(Vec::new());
+        let result = database
+            .migrate_reporting(plan, &|progress| {
+                let line = match progress {
+                    MigrationProgress::Pending { applied, pending } => {
+                        format!("{applied} applied, {pending} pending")
+                    }
+                    MigrationProgress::Started {
+                        version,
+                        description,
+                    } => format!("started {version} {description}"),
+                    MigrationProgress::Finished {
+                        version,
+                        description,
+                        ..
+                    } => format!("finished {version} {description}"),
+                };
+                reported.lock().unwrap().push(line);
+            })
+            .await;
+
+        assert_eq!(*reported.lock().unwrap(), expected, "{case}");
+        if succeeds {
+            result.unwrap_or_else(|error| panic!("{case}: {error:?}"));
+        } else {
+            assert!(
+                matches!(result, Err(Error::Migration(_))),
+                "{case}: {result:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

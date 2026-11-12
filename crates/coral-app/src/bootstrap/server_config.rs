@@ -52,6 +52,8 @@ pub(crate) struct Launcher {
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral, such as its Edition check.
     pub(crate) extensions: super::runtime::Extensions,
+    /// Where startup reports each database migration step it applies.
+    pub(crate) migration_report: Option<super::runtime::MigrationReport>,
 }
 
 /// Local auth support's default port under Desktop, which registers it as a
