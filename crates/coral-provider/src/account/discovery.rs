@@ -63,16 +63,25 @@ impl DiscoveryCredential {
 
     /// Re-resolves the same authorization after renewal, under the caller's final
     /// authority/configuration lock. A competing token refresh requires a new discovery attempt.
+    /// A store-backed Account keeps `read`, the value [`Self::resolve`] read before
+    /// this lock, once this recheck finds its authorization and grant still current.
     pub(super) async fn current_account_credentials(
         &self,
         accounts: &super::AccountModule,
         tx: &mut Transaction<'_>,
         workspace: &coral_workspace::WorkspaceId,
         now: i64,
+        read: coral_credentials::Secret,
     ) -> Result<coral_credentials::Secret, Error> {
         let DiscoveryMaterial::Account { provider, evidence } = &self.material else {
             return Err(Error::AccountInput);
         };
+        if accounts
+            .recheck_store_backed_in_transaction(tx, workspace, provider, evidence)
+            .await?
+        {
+            return Ok(read);
+        }
         let values = accounts
             .dispatch_credentials_in_transaction(tx, workspace, provider, evidence, now)
             .await?

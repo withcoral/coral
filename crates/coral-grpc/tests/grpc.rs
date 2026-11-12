@@ -208,6 +208,7 @@ impl Fixture {
             .skip_search();
         tx.commit().await.unwrap();
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
+            .with_secret_stores(secret_stores.clone())
             .with_client_id_metadata_document(
                 "https://reef.example/.well-known/oauth-client".into(),
             );

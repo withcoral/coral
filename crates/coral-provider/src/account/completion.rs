@@ -20,6 +20,8 @@ pub(super) struct AuthorizedAccount<'a> {
     pub(super) generation: &'a str,
     pub(super) contract: &'a ProviderCredentialContract,
     pub(super) ciphertext: &'a str,
+    /// The stored Secret References, for an Account with any.
+    pub(super) secret_references: Option<&'a str>,
     pub(super) granted_scope: &'a str,
     /// When the sealed access token expires, recorded beside the material.
     pub(super) token_expires_at_unix_nanos: Option<i64>,
@@ -86,6 +88,12 @@ impl AccountModule {
         }
         match (&material, row.contract.authentication()) {
             (CredentialMaterial::Values(values), _) => super::check_values(&row.contract, values)?,
+            // The caller checked the fields' values against this contract when it
+            // read them. A contract that changed since ends the Authorization below.
+            (CredentialMaterial::Fields { references, .. }, _) => {
+                self.admit_references_in_transaction(&mut tx, owner, &row, references)
+                    .await?;
+            }
             (
                 CredentialMaterial::OAuth(_),
                 AuthenticationConfiguration::OAuthAuthorizationCode { .. }
@@ -161,7 +169,7 @@ impl AccountModule {
         let ciphertext = material.seal(&self.vault, &generation)?;
         row.granted_scope = match &material {
             CredentialMaterial::OAuth(token) => Some(token.granted_scope()),
-            CredentialMaterial::Values(_) => None,
+            CredentialMaterial::Values(_) | CredentialMaterial::Fields { .. } => None,
         };
         row.automatic_refresh = match &material {
             CredentialMaterial::OAuth(token) => Some(
@@ -170,7 +178,13 @@ impl AccountModule {
                     .as_ref()
                     .is_some_and(|value| !value.is_empty()),
             ),
-            CredentialMaterial::Values(_) => None,
+            CredentialMaterial::Values(_) | CredentialMaterial::Fields { .. } => None,
+        };
+        let secret_references = match &material {
+            CredentialMaterial::Fields { references, .. } => {
+                Some(repository::encode_references(references)?)
+            }
+            CredentialMaterial::Values(_) | CredentialMaterial::OAuth(_) => None,
         };
         let authorized = AuthorizedAccount {
             automatic_refresh: row.automatic_refresh,
@@ -179,6 +193,7 @@ impl AccountModule {
             generation: &generation,
             contract: &row.contract,
             ciphertext: &ciphertext,
+            secret_references: secret_references.as_deref(),
             granted_scope: row.granted_scope.as_deref().unwrap_or_default(),
             token_expires_at_unix_nanos: material.token_expires_at_unix_nanos(),
         };
