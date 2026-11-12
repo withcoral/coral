@@ -75,9 +75,15 @@ pub(super) enum VectorTable {
     Absent,
     /// A table whose vectors have the dimension asked about.
     SameDimension,
-    /// A table whose vectors have another dimension, or no `halfvec`
-    /// column.
+    /// A table whose vectors have another dimension.
     OtherDimension,
+    /// A table with no `embedding` column, or one that is not a `halfvec`
+    /// of a fixed dimension.
+    UnexpectedEmbedding {
+        /// The column's type as Postgres names it, or `None` when the table
+        /// has no such column.
+        column_type: Option<String>,
+    },
 }
 
 /// The statement that creates the vector table for vectors of `dimension`.
@@ -122,9 +128,9 @@ pub(super) async fn vector_table(
     transaction: &mut Transaction<'_>,
     dimension: usize,
 ) -> Result<VectorTable, Error> {
-    let rows: Vec<(Option<String>, Option<i32>)> = transaction
+    let rows: Vec<(Option<String>, Option<i32>, Option<String>)> = transaction
         .fetch_all_sql(
-            "SELECT t.typname::text, a.atttypmod \
+            "SELECT t.typname::text, a.atttypmod, format_type(a.atttypid, a.atttypmod) \
              FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              LEFT JOIN pg_catalog.pg_attribute a \
@@ -138,13 +144,15 @@ pub(super) async fn vector_table(
         .await?;
     Ok(match rows.into_iter().next() {
         None => VectorTable::Absent,
-        Some((Some(type_name), Some(type_modifier)))
-            if type_name == "halfvec"
-                && usize::try_from(type_modifier).is_ok_and(|stored| stored == dimension) =>
-        {
-            VectorTable::SameDimension
+        // A `halfvec` declared without a dimension has the type modifier -1.
+        Some((Some(type_name), Some(type_modifier), column_type)) if type_name == "halfvec" => {
+            match usize::try_from(type_modifier) {
+                Ok(stored) if stored == dimension => VectorTable::SameDimension,
+                Ok(_) => VectorTable::OtherDimension,
+                Err(_) => VectorTable::UnexpectedEmbedding { column_type },
+            }
         }
-        Some(_) => VectorTable::OtherDimension,
+        Some((_, _, column_type)) => VectorTable::UnexpectedEmbedding { column_type },
     })
 }
 

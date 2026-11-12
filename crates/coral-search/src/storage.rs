@@ -32,6 +32,20 @@ pub enum StorageError {
         /// What the operator can do about it.
         remedy: &'static str,
     },
+    /// The vector table has no `embedding` column, or one that is not a
+    /// `halfvec` of a fixed dimension. Boot keeps the table as it is.
+    #[error(
+        "search vector table search_entity_embeddings needs an embedding column of type \
+         halfvec({expected_dimension}), found {}; drop the table and the next boot creates it again",
+        .column_type.as_deref().unwrap_or("no such column")
+    )]
+    UnexpectedVectorTable {
+        /// The `embedding` column's type as Postgres names it, or `None`
+        /// when the table has no such column.
+        column_type: Option<String>,
+        /// The manifest's vector length.
+        expected_dimension: usize,
+    },
     /// Database access failed.
     #[error(transparent)]
     Database(#[from] coral_db::Error),
@@ -227,8 +241,10 @@ pub enum VectorStorage {
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::Database`] when the table cannot be read, dropped
-/// or created.
+/// Returns [`StorageError::UnexpectedVectorTable`] and keeps the table when
+/// its `embedding` column is missing or is not a `halfvec` of a fixed
+/// dimension, and [`StorageError::Database`] when the table cannot be read,
+/// dropped or created.
 pub async fn prepare_vector_table(
     database: &Database,
     vector_storage: VectorStorage,
@@ -253,6 +269,13 @@ pub async fn prepare_vector_table(
                 "dropping the search vector table of another dimension; every Search Entity embeds again"
             );
             repository::drop_vector_table(&mut transaction).await?;
+        }
+        VectorTable::UnexpectedEmbedding { column_type } => {
+            transaction.rollback().await?;
+            return Err(StorageError::UnexpectedVectorTable {
+                column_type,
+                expected_dimension: dimension,
+            });
         }
         VectorTable::Absent => {}
     }
