@@ -288,7 +288,7 @@ spec:
 </Tab>
 <Tab title="With Postgres">
 
-Your Postgres server needs pgvector 0.7 or later. Coral creates the `vector` extension when its database role has permission. Otherwise, Coral does not start until you install pgvector, or set `semantic_search_enabled = false` in `[search]`. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
+Your Postgres server needs pgvector 0.7 or later. If it does not have pgvector, set `semantic_search_enabled = false` in `[search]`. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
 
 2. Create the config and coral server deployment. Save this to `coral.yaml`.
 
