@@ -17,17 +17,41 @@ use crate::wire::v1::{
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
+/// The number of the next request that parks on the Applied cap, within 10 s.
+async fn parks(parked: &mut mpsc::UnboundedReceiver<u64>) -> u64 {
+    tokio::time::timeout(Duration::from_secs(10), parked.recv())
+        .await
+        .expect("a request parks on the Applied cap")
+        .expect("the Run Executor reports each park")
+}
+
 /// A scripted Coral and a Run Executor that holds two Runs, linked, with
 /// its pull stream. The Run Executor retires when the sender drops.
 async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, PullCall, oneshot::Sender<()>) {
+    let (coral, call, retire, _parked) = parking(applied_cap_bytes).await;
+    (coral, call, retire)
+}
+
+/// [`linked`], with the number of each request that parks on the Applied
+/// cap.
+async fn parking(
+    applied_cap_bytes: usize,
+) -> (
+    ScriptedCoral,
+    PullCall,
+    oneshot::Sender<()>,
+    mpsc::UnboundedReceiver<u64>,
+) {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let (on_parked, parked) = mpsc::unbounded_channel();
     let limits = RunLimits {
         applied_cap_bytes,
+        on_parked: Some(Box::leak(Box::new(on_parked))),
         ..RunLimits::default()
     };
     let retire = start_run_executor(&coral, 2, limits, None);
     let call = coral.next_call().await;
-    (coral, call, retire)
+    (coral, call, retire, parked)
 }
 
 fn compiled(source: &str) -> RunPackage {
@@ -146,7 +170,6 @@ fn emit(value_json: &str, line: u32) -> request::Kind {
             tool_id: String::new(),
             line,
             column: 13,
-            ..Location::default()
         }),
     })
 }
@@ -222,7 +245,6 @@ return issue.id;"#;
             tool_id: String::new(),
             line: 6,
             column: 9,
-            ..Location::default()
         }),
     });
     assert_eq!(next_request(&mut run).await, (4, log));
@@ -343,14 +365,14 @@ async fn a_private_tool_call_is_permitted_then_its_body_runs_and_completes() {
     let request::Kind::Perform(perform) = kind else {
         panic!("expected a Perform, got {kind:?}");
     };
-    let at = perform.location.map(|at| (at.root(), at.line, at.tool_id));
+    let at = perform.location.map(|at| (at.line, at.tool_id));
     assert_eq!(
         (number, perform.call_path.as_str(), perform.parent, at),
         (
             2,
             "coral.private.notes.title",
             Some(1),
-            Some((LinkedToolRoot::Private, 2, "tool-8".to_owned()))
+            Some((2, "tool-8".to_owned()))
         )
     );
     run.send(result(2, 0, permitted())).await;
@@ -361,7 +383,6 @@ async fn a_private_tool_call_is_permitted_then_its_body_runs_and_completes() {
             tool_id: "tool-7".to_owned(),
             line: 2,
             column: 54,
-            root: LinkedToolRoot::Private.into(),
         }),
         parent: Some(2),
     });
@@ -501,7 +522,7 @@ async fn a_final_value_counts_against_the_run_output_budget() {
 /// (its Finish included), or one that a Committed never releases.
 #[tokio::test]
 async fn the_applied_cap_holds_the_next_request_until_committed() {
-    let (mut coral, _call, _retire) = linked(8).await;
+    let (mut coral, _call, _retire, mut parked) = parking(8).await;
     let source = r#"await Promise.all([1, 2, 3].map((id) =>
   coral.providers.tracker.issues.get({ id, note: "longer than the cap" })));
 await coral.emit("123456789");
@@ -525,8 +546,7 @@ return 1;"#;
     }
     assert_eq!(next_request(&mut run).await, (4, emit(r#""123456789""#, 3)));
     // 11 output bytes above the watermark, more than the cap: the Log waits.
-    let held = tokio::time::timeout(Duration::from_millis(300), run.next()).await;
-    assert!(held.is_err(), "the next request waits, got {held:?}");
+    assert_eq!(parks(&mut parked).await, 5, "the Log waits");
     run.send(run_response::Message::Committed(Committed {
         request_number: 4,
     }))
@@ -538,8 +558,7 @@ return 1;"#;
     );
     assert_eq!(next_request(&mut run).await, (6, emit(r#""123456789""#, 5)));
     // Finish waits for the cap like any other request.
-    let held = tokio::time::timeout(Duration::from_millis(300), run.next()).await;
-    assert!(held.is_err(), "Finish waits, got {held:?}");
+    assert_eq!(parks(&mut parked).await, 7, "Finish waits");
     run.send(run_response::Message::Committed(Committed {
         request_number: 6,
     }))
@@ -552,21 +571,30 @@ return 1;"#;
 /// lets Program code run after it.
 #[tokio::test]
 async fn terminate_ends_a_program_that_waits_on_a_request() {
-    for (waits_on, source) in [
+    for (waits_on, source, waits) in [
         (
             "an Invoke",
             r#"try { await coral.providers.tracker.issues.list({}); }
 finally { await coral.emit("finally"); }"#,
+            None,
         ),
         (
             "the Applied cap",
             r#"await coral.emit("123456789");
 try { console.info("held"); } finally { await coral.emit("finally"); }"#,
+            Some(2),
         ),
     ] {
-        let (mut coral, _call, _retire) = linked(8).await;
+        let (mut coral, _call, _retire, mut parked) = parking(8).await;
         let mut run = started(&mut coral, compiled(source), None).await;
         assert_eq!(next_request(&mut run).await.0, 1, "{waits_on}");
+        if let Some(number) = waits {
+            assert_eq!(
+                parks(&mut parked).await,
+                number,
+                "{waits_on}: the Log waits"
+            );
+        }
         let terminate = Terminate {
             reason: TerminateReason::Canceled.into(),
         };

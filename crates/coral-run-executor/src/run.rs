@@ -30,6 +30,10 @@ pub struct RunLimits {
     pub isolate: coral_v8::IsolateLimits,
     /// The Applied cap, [`APPLIED_CAP_BYTES`] outside tests.
     pub applied_cap_bytes: usize,
+    /// Told the number of each request that parks on the Applied cap, so a
+    /// test can wait for it.
+    #[cfg(test)]
+    pub(crate) on_parked: Option<&'static mpsc::UnboundedSender<u64>>,
 }
 
 impl Default for RunLimits {
@@ -37,6 +41,8 @@ impl Default for RunLimits {
         Self {
             isolate: coral_v8::IsolateLimits::defaults(),
             applied_cap_bytes: APPLIED_CAP_BYTES,
+            #[cfg(test)]
+            on_parked: None,
         }
     }
 }
@@ -180,7 +186,7 @@ fn load(
     let host = Arc::new(RunHost::new(
         outbound,
         value_limits,
-        limits.applied_cap_bytes,
+        &limits,
         linked,
         trace_id,
     ));

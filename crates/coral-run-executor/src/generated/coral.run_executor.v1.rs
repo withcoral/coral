@@ -831,7 +831,8 @@ pub struct Log {
 /// An authored source location.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Location {
-    /// The id of the linked Tool that holds it. Empty: the Program body.
+    /// The id of the linked Tool that holds it, as its LinkedSnapshot names it.
+    /// Empty: the Program body.
     #[prost(string, tag = "1")]
     pub tool_id: ::prost::alloc::string::String,
     /// The one-based line.
@@ -840,10 +841,6 @@ pub struct Location {
     /// The one-based column, in UTF-16 code units.
     #[prost(uint32, tag = "3")]
     pub column: u32,
-    /// The member of coral that holds the linked Tool. Unspecified: the Program
-    /// body.
-    #[prost(enumeration = "LinkedToolRoot", tag = "4")]
-    pub root: i32,
 }
 /// How the Program ended.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -3613,3 +3613,93 @@ fn linking_refuses_a_stored_tool_that_does_not_take_one_object() {
             .unwrap_or_else(|error| panic!("{source}: {error}"));
     }
 }
+
+/// Records the host calls a Program's run makes, in order, and lets the
+/// Program run when `starts`.
+struct StartingHost {
+    starts: bool,
+    calls: Mutex<Vec<&'static str>>,
+}
+
+impl StartingHost {
+    fn record(&self, call: &'static str) {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(call);
+    }
+}
+
+impl ProgramHost for StartingHost {
+    fn start(&self) -> bool {
+        self.record("start");
+        self.starts
+    }
+
+    fn cpu_budget(&self) -> Option<std::time::Duration> {
+        self.record("cpu_budget");
+        None
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        Box::pin(async { Err(ToolHostError::Fatal) })
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        self.record("emit");
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+// Catches: Program code that runs before `start` returns or after it refuses,
+// or a CPU budget read before `start`, which a Run Executor sets only once
+// Coral starts the Run.
+#[test]
+fn start_runs_before_the_program_and_its_cpu_budget_read() {
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .compile(compilation_deadline(), "await coral.emit(1); return 2;")
+        .expect("compile start probe");
+    for (starts, calls) in [
+        (true, vec!["start", "cpu_budget", "emit"]),
+        (false, vec!["start"]),
+    ] {
+        let host = Arc::new(StartingHost {
+            starts,
+            calls: Mutex::default(),
+        });
+        let result = ProgramExecutor::new(IsolateLimits::default())
+            .execute_with_host(&program, host.clone());
+        assert!(
+            matches!(
+                (starts, &result),
+                (true, Ok(_)) | (false, Err(Error::ProgramHostTerminated))
+            ),
+            "starts {starts}: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            *host.calls.lock().expect("recorded calls"),
+            calls,
+            "starts {starts}"
+        );
+    }
+}

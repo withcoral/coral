@@ -36,6 +36,8 @@ pub(super) struct RunHost {
     control: ProgramExecutionControl,
     value_limits: coral_value::ValueLimits,
     applied_cap_bytes: usize,
+    #[cfg(test)]
+    on_parked: Option<&'static mpsc::UnboundedSender<u64>>,
     /// Each linked Tool's root and path, to its id.
     linked: HashMap<(LinkedToolRoot, String), String>,
     trace_id: Option<String>,
@@ -69,7 +71,7 @@ impl RunHost {
     pub(super) fn new(
         outbound: mpsc::UnboundedSender<RunRequest>,
         value_limits: coral_value::ValueLimits,
-        applied_cap_bytes: usize,
+        limits: &super::RunLimits,
         linked: HashMap<(LinkedToolRoot, String), String>,
         trace_id: Option<String>,
     ) -> Self {
@@ -79,7 +81,9 @@ impl RunHost {
             outbound,
             control: ProgramExecutionControl::new(),
             value_limits,
-            applied_cap_bytes,
+            applied_cap_bytes: limits.applied_cap_bytes,
+            #[cfg(test)]
+            on_parked: limits.on_parked,
             linked,
             trace_id,
         }
@@ -127,18 +131,28 @@ impl RunHost {
     /// outcome, no request waits for it while the Program runs, a permit for
     /// an Invoke or a Complete, or a value for a Perform.
     pub(super) fn invocation_result(&self, result: InvocationResult) -> bool {
-        /// A successful answer, or the rejection any request takes.
+        /// What an answer gives short of a rejection.
         enum Answer {
             Value(String),
             Permitted,
-            Rejected(ToolHostError),
+        }
+        /// A waiter and the answer it takes.
+        enum Reply {
+            Value(
+                oneshot::Sender<Result<String, ToolHostError>>,
+                Result<String, ToolHostError>,
+            ),
+            Permit(
+                oneshot::Sender<Result<(), ToolHostError>>,
+                Result<(), ToolHostError>,
+            ),
         }
         let answer = match result.outcome {
             None => return false,
-            Some(invocation_result::Outcome::ResultJson(json)) => Answer::Value(json),
-            Some(invocation_result::Outcome::Permitted(_)) => Answer::Permitted,
+            Some(invocation_result::Outcome::ResultJson(json)) => Ok(Answer::Value(json)),
+            Some(invocation_result::Outcome::Permitted(_)) => Ok(Answer::Permitted),
             Some(invocation_result::Outcome::CoralFailure(rejection)) => {
-                Answer::Rejected(ToolHostError::Rejected {
+                Err(ToolHostError::Rejected {
                     code: rejection.code.into(),
                     message: rejection.message.into(),
                     trace_id: Some(rejection.trace_id).filter(|id| !id.is_empty()),
@@ -146,46 +160,51 @@ impl RunHost {
                 })
             }
             Some(invocation_result::Outcome::UpstreamOutcome(upstream)) => {
-                Answer::Rejected(ToolHostError::Upstream {
+                Err(ToolHostError::Upstream {
                     code: upstream.code.into(),
                     message: upstream.message.into(),
                     outcome_json: upstream.outcome_json,
                 })
             }
-            Some(invocation_result::Outcome::Fatal(_)) => Answer::Rejected(ToolHostError::Fatal),
+            Some(invocation_result::Outcome::Fatal(_)) => Err(ToolHostError::Fatal),
         };
         let mut state = self.state();
         let Some(awaiting) = state.invocations.remove(&result.number) else {
             return state.stopped;
         };
-        if matches!(
-            (&awaiting, &answer),
-            (Awaiting::Value(_), Answer::Permitted) | (Awaiting::Permit(_), Answer::Value(_))
-        ) {
-            return false;
-        }
+        let reply = match (awaiting, answer) {
+            (Awaiting::Value(sender), Ok(Answer::Value(json))) => Reply::Value(sender, Ok(json)),
+            (Awaiting::Permit(sender), Ok(Answer::Permitted)) => Reply::Permit(sender, Ok(())),
+            (Awaiting::Value(sender), Err(error)) => Reply::Value(sender, Err(error)),
+            (Awaiting::Permit(sender), Err(error)) => Reply::Permit(sender, Err(error)),
+            (Awaiting::Value(_), Ok(Answer::Permitted))
+            | (Awaiting::Permit(_), Ok(Answer::Value(_))) => {
+                return false;
+            }
+        };
         let bytes = usize::try_from(result.bytes).unwrap_or(usize::MAX);
         let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
         state.over_budget |= over_budget;
         drop(state);
-        let answer = if over_budget {
-            Answer::Rejected(ToolHostError::Fatal)
-        } else {
-            answer
-        };
-        if matches!(answer, Answer::Rejected(ToolHostError::Fatal)) {
+        // Output over the budget ends the Run whatever the answer was.
+        let stops = over_budget
+            || matches!(
+                reply,
+                Reply::Value(_, Err(ToolHostError::Fatal))
+                    | Reply::Permit(_, Err(ToolHostError::Fatal))
+            );
+        if stops {
             // The Program may be running JavaScript that never polls this
             // Tool.
             self.stop();
         }
-        match (awaiting, answer) {
-            (Awaiting::Value(sender), Answer::Value(json)) => drop(sender.send(Ok(json))),
-            (Awaiting::Permit(sender), Answer::Permitted) => drop(sender.send(Ok(()))),
-            (Awaiting::Value(sender), Answer::Rejected(error)) => drop(sender.send(Err(error))),
-            (Awaiting::Permit(sender), Answer::Rejected(error)) => drop(sender.send(Err(error))),
-            // Refused above.
-            (Awaiting::Value(_), Answer::Permitted) | (Awaiting::Permit(_), Answer::Value(_)) => {}
+        // A waiter left unanswered settles as a host failure.
+        if !over_budget {
+            match reply {
+                Reply::Value(sender, result) => drop(sender.send(result)),
+                Reply::Permit(sender, result) => drop(sender.send(result)),
+            }
         }
         true
     }
@@ -244,9 +263,9 @@ impl RunHost {
         Some(number)
     }
 
-    /// Sends `kind`, an Invoke or a Complete, at once, and settles with the
-    /// value Coral answers.
-    fn value(&self, kind: request::Kind) -> ToolFuture {
+    /// Sends `kind`, an Invoke or a Complete, and settles with the value
+    /// Coral answers.
+    fn ask(&self, kind: request::Kind) -> ToolFuture {
         let (answer, answered) = oneshot::channel();
         let sent = self.send(kind, 0, Some(Awaiting::Value(answer)));
         Box::pin(async move {
@@ -264,7 +283,7 @@ impl RunHost {
         arguments_json: String,
         location: Option<AuthoredLocation>,
     ) -> ToolFuture {
-        self.value(request::Kind::Invoke(Invoke {
+        self.ask(request::Kind::Invoke(Invoke {
             call_path,
             arguments_json,
             location: self.location(location),
@@ -305,7 +324,16 @@ impl RunHost {
     /// The state once no more than the Applied cap is above the committed
     /// watermark, or the Program stopped.
     fn below_applied_cap(&self) -> MutexGuard<'_, State> {
-        self.wait_until(|state| state.unconfirmed_bytes <= self.applied_cap_bytes)
+        #[cfg(test)]
+        let told = std::cell::Cell::new(false);
+        self.wait_until(|state| {
+            let below = state.unconfirmed_bytes <= self.applied_cap_bytes;
+            #[cfg(test)]
+            if !below && !state.stopped && !told.replace(true) {
+                self.tell_parked(state);
+            }
+            below
+        })
     }
 
     /// The state once `done` holds or the Program stopped.
@@ -318,6 +346,16 @@ impl RunHost {
                 .unwrap_or_else(PoisonError::into_inner);
         }
         state
+    }
+
+    /// Tells a test the number of the request that parks on the Applied cap,
+    /// before it waits.
+    #[cfg(test)]
+    fn tell_parked(&self, state: &State) {
+        if let Some(on_parked) = self.on_parked {
+            // A test that waits for none drops its receiver.
+            let _unwatched = on_parked.send(state.last.saturating_add(1)).is_err();
+        }
     }
 
     /// Whether `bytes` more output fit in the Run Output Budget.
@@ -365,15 +403,14 @@ impl RunHost {
             AuthoredSource::PrivateTool { path } => Some((LinkedToolRoot::Private, path)),
             AuthoredSource::SharedTool { path } => Some((LinkedToolRoot::Shared, path)),
         };
-        let (root, tool_id) = match linked {
-            None => (LinkedToolRoot::Unspecified, String::new()),
-            Some(key) => (key.0, self.linked.get(&key)?.clone()),
+        let tool_id = match linked {
+            None => String::new(),
+            Some(key) => self.linked.get(&key)?.clone(),
         };
         Some(Location {
             tool_id,
             line: location.line,
             column: location.column,
-            root: root.into(),
         })
     }
 
@@ -561,7 +598,7 @@ impl ToolCompletion for Performed {
         };
         // Sent here, on the Program's thread, so the body has ended before
         // any later call of its leftover work.
-        self.0.host.value(request::Kind::Complete(Complete {
+        self.0.host.ask(request::Kind::Complete(Complete {
             perform: self.0.perform,
             outcome: Some(outcome),
         }))

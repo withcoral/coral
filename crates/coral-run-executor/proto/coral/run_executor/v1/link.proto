@@ -646,15 +646,13 @@ enum LogLevel {
 
 // An authored source location.
 message Location {
-  // The id of the linked Tool that holds it. Empty: the Program body.
+  // The id of the linked Tool that holds it, as its LinkedSnapshot names it.
+  // Empty: the Program body.
   string tool_id = 1;
   // The one-based line.
   uint32 line = 2;
   // The one-based column, in UTF-16 code units.
   uint32 column = 3;
-  // The member of coral that holds the linked Tool. Unspecified: the Program
-  // body.
-  LinkedToolRoot root = 4;
 }
 
 // How the Program ended.
