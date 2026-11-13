@@ -752,6 +752,50 @@ mod postgres_only {
         assert!(record(first.as_ref(), "second-worker").await.is_some());
         assert!(record(&second, "first-worker").await.is_some());
     }
+
+    /// Postgres reports a session it shuts down as a database error,
+    /// `57P01`. The statement it cut off has no answer, so the caller retries
+    /// the write instead of taking the error for a rejection.
+    #[tokio::test]
+    async fn a_backend_terminated_mid_statement_leaves_the_write_unanswered() {
+        coral_test_support::database_only!(Postgres);
+        let fixture = TestDatabase::new(&MIGRATOR)
+            .await
+            .expect("create Postgres test database");
+        let database = fixture.database();
+        let mut transaction = database.begin().await.expect("begin the cut-off write");
+        transaction
+            .execute(insert_record("cut-off", "first"))
+            .await
+            .expect("write before the shutdown");
+
+        // The backend signals itself, then ends at the sleep's first
+        // interrupt check: no other session is touched, and nothing races.
+        let error = transaction
+            .execute_script("SELECT pg_terminate_backend(pg_backend_pid()), pg_sleep(60)")
+            .await
+            .expect_err("a terminated backend answers no statement");
+        drop(transaction);
+
+        let Error::Sqlx(sqlx::Error::Database(shutdown)) = &error else {
+            panic!("Postgres reports the shutdown as a database error: {error:?}");
+        };
+        assert_eq!(shutdown.code().as_deref(), Some("57P01"), "{error}");
+        assert!(error.is_unanswered(), "{error}");
+        assert!(!error.is_serialization_conflict(), "{error}");
+
+        // The reread finds nothing applied, and the retry lands.
+        assert_eq!(record(database.as_ref(), "cut-off").await, None);
+        write_record(&database, "cut-off", "retried")
+            .await
+            .expect("the retry lands on a new session");
+        assert_eq!(
+            record(database.as_ref(), "cut-off")
+                .await
+                .map(|row| row.value),
+            Some("retried".to_string())
+        );
+    }
 }
 
 #[tokio::test]
