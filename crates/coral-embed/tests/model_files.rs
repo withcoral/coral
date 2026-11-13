@@ -136,7 +136,9 @@ fn the_first_folder_that_holds_every_file_with_its_digest_is_ready() {
         fill(&first_dir, first);
         fill(&second_dir, second);
 
-        let state = TEST_MANIFEST.find(&[first_dir.clone(), second_dir.clone()]);
+        let state = TEST_MANIFEST
+            .find(&[first_dir.clone(), second_dir.clone()])
+            .expect("every file can be read");
 
         let expected = match expected {
             Found::First => ModelState::Ready(first_dir.join(TEST_MANIFEST.model_id)),
@@ -145,6 +147,34 @@ fn the_first_folder_that_holds_every_file_with_its_digest_is_ready() {
         };
         assert_eq!(state, expected, "{case}");
     }
+}
+
+/// A file that is there but cannot be read stops the lookup with its path,
+/// also when a later folder holds the files: the operator learns why Coral
+/// does not use the files they put in place.
+#[cfg(unix)]
+#[test]
+fn a_file_that_cannot_be_read_stops_the_lookup_with_its_path() {
+    let temp = TempDir::new().unwrap();
+    let first_dir = temp.path().join("first");
+    let second_dir = temp.path().join("second");
+    fill(&first_dir, Contents::Both);
+    fill(&second_dir, Contents::Both);
+    // A link to itself: no user can open it, root included.
+    let model = first_dir
+        .join(TEST_MANIFEST.model_id)
+        .join(TEST_MANIFEST.model_file.name);
+    std::fs::remove_file(&model).unwrap();
+    std::os::unix::fs::symlink(&model, &model).unwrap();
+
+    let error = TEST_MANIFEST
+        .find(&[first_dir, second_dir])
+        .expect_err("the model file cannot be read");
+
+    assert!(
+        error.to_string().contains(&model.display().to_string()),
+        "{error}"
+    );
 }
 
 #[test]

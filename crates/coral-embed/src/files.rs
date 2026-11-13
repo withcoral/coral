@@ -36,36 +36,57 @@ pub enum ModelState {
     Absent,
 }
 
+/// A model file that is there but that Coral cannot read, for example for
+/// lack of permission.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot read {}: {source}", path.display())]
+pub struct UnreadableModelFile {
+    path: PathBuf,
+    source: io::Error,
+}
+
 impl Manifest {
     /// Looks for this manifest's files in the folder `<model id>` of each
     /// of `models_dirs`, in order. One folder must hold every file. The
-    /// lookup reads each file whole to check its SHA-256.
-    #[must_use]
-    pub fn find(&self, models_dirs: &[PathBuf]) -> ModelState {
-        for models_dir in models_dirs {
+    /// lookup reads each file whole to check its SHA-256, the small
+    /// tokenizer first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnreadableModelFile`] at the first file that is there but
+    /// cannot be read. The lookup stops there, so a later folder does not
+    /// hide a file that the operator put in place.
+    pub fn find(&self, models_dirs: &[PathBuf]) -> Result<ModelState, UnreadableModelFile> {
+        'folders: for models_dir in models_dirs {
             let dir = models_dir.join(self.model_id);
-            if [self.model_file, self.tokenizer_file]
-                .iter()
-                .all(|file| matches(&dir.join(file.name), file))
-            {
-                return ModelState::Ready(dir);
+            for file in [self.tokenizer_file, self.model_file] {
+                if !matches(&dir.join(file.name), &file)? {
+                    continue 'folders;
+                }
             }
+            return Ok(ModelState::Ready(dir));
         }
-        ModelState::Absent
+        Ok(ModelState::Absent)
     }
 }
 
-/// Whether the file at `path` has `file`'s size and SHA-256. A file that
-/// cannot be read does not match.
-fn matches(path: &Path, file: &ModelFile) -> bool {
-    let Ok(opened) = File::open(path) else {
-        return false;
+/// Whether the file at `path` has `file`'s size and SHA-256. A file that is
+/// not there does not match.
+fn matches(path: &Path, file: &ModelFile) -> Result<bool, UnreadableModelFile> {
+    let unreadable = |source| UnreadableModelFile {
+        path: path.to_path_buf(),
+        source,
     };
-    match opened.metadata() {
-        Ok(metadata) if metadata.is_file() && metadata.len() == file.size => {}
-        _ => return false,
+    let opened = match File::open(path) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(unreadable(error)),
+    };
+    let metadata = opened.metadata().map_err(unreadable)?;
+    if !metadata.is_file() || metadata.len() != file.size {
+        return Ok(false);
     }
-    sha256(opened).is_ok_and(|digest| digest == file.sha256)
+    Ok(sha256(opened).map_err(unreadable)? == file.sha256)
 }
 
 /// The SHA-256 of `file`'s bytes, as lowercase hex.

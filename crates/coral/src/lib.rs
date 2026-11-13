@@ -189,9 +189,17 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     println!("Press Ctrl-C to stop the server.");
     if let Some(search_model) = server.search_model() {
         tokio::spawn(async move {
-            match search_model.ready().await {
-                Some(dir) => println!("Coral search model ready in {}", dir.display()),
-                None => println!("Coral search model absent: search matches by words only"),
+            match search_model.lookup().await {
+                coral_app::SearchModelState::Ready(dir) => {
+                    println!("Coral search model ready in {}", dir.display());
+                }
+                coral_app::SearchModelState::Absent => {
+                    println!("Coral search model absent: search matches by words only");
+                }
+                coral_app::SearchModelState::Unreadable(reason) => println!(
+                    "Coral search model unreadable: {reason}. Search matches by words only until Coral starts with a file it can read."
+                ),
+                coral_app::SearchModelState::Looking => {}
             }
         });
     }
