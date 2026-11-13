@@ -130,6 +130,7 @@ struct StoredRequest {
     comment: Option<String>,
     trace_id: Option<String>,
     deadline_at_unix_nanos: Option<i64>,
+    inserted_at_unix_nanos: i64,
 }
 
 /// The requests waiting for the Runs `instance` holds, in insert order.
@@ -172,6 +173,7 @@ fn waiting_requests(holder: Option<&CoralInstanceId>) -> sea_query::SelectStatem
             ProgramRunInbox::Comment,
             ProgramRunInbox::TraceId,
             ProgramRunInbox::DeadlineAtUnixNanos,
+            ProgramRunInbox::InsertedAtUnixNanos,
         ])
         .order_by(ProgramRunInbox::InsertedAtUnixNanos, Order::Asc)
         .order_by(ProgramRunInbox::Id, Order::Asc)
@@ -190,6 +192,7 @@ fn delivery(
         comment,
         trace_id,
         deadline_at_unix_nanos: deadline,
+        inserted_at_unix_nanos,
     }: StoredRequest,
 ) -> Result<Delivery, Error> {
     let corrupt = |what: &str| Error::CorruptData(format!("Run Inbox row has invalid {what}"));
@@ -223,6 +226,7 @@ fn delivery(
             run_id: RunId::parse(&run_id).map_err(|_error| corrupt("Run"))?,
             request,
         },
+        submitted_at_unix_nanos: inserted_at_unix_nanos,
     })
 }
 
