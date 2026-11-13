@@ -17,6 +17,7 @@
 //! before `launch` registers the owner) stays in the Run Inbox, and the
 //! registration wakes the reader to read it again.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -187,7 +188,10 @@ impl RunInbox {
         let recorded = self.inbox.recorded(request, until).await?;
         if !recorded {
             let waited = waiting.elapsed().as_millis();
+            // The submission read the Run's row, so Coral holds the Run.
+            let run = HeldRunId::of_held_row(request.run_id.clone());
             tracing::warn!(
+                coral.run.id = safe::id(&run),
                 coral.workspace.id = safe::id(&request.workspace_id),
                 coral.run.request.kind = safe::kind(request.request.kind()),
                 coral.run.request.delay_ms =
@@ -283,18 +287,28 @@ impl Reader {
         let held = holding.clone();
         let registered = owners.clone();
         let task = tokio::spawn(async move {
+            // The rows already logged as late: a row that waits for its chunk
+            // is delivered again on every read, and is logged once.
+            let mut logged = HashSet::new();
             loop {
                 let deliveries = inbox.receive(&instance).await;
                 // Set before looking for the owners, so an owner that
                 // registers meanwhile wakes the next read.
                 held.store(true, Ordering::SeqCst);
                 let mut holds = false;
+                let now = clock.now_unix_nanos().ok();
+                logged.retain(|row| deliveries.iter().any(|delivery| &delivery.row == row));
                 for delivery in deliveries {
                     let Some(owner) = owners.get(&delivery.request.run_id) else {
                         holds = true;
                         continue;
                     };
-                    warn_if_late(clock.as_ref(), owner.held_id(), &delivery);
+                    if let Some(now) = now
+                        && !logged.contains(&delivery.row)
+                        && warn_if_late(now, owner.held_id(), &delivery)
+                    {
+                        logged.insert(delivery.row.clone());
+                    }
                     owner.send(delivery.into_message());
                     #[cfg(test)]
                     observer.inbox_delivered();
@@ -417,12 +431,12 @@ impl Inbox for TableInbox {
 /// after it was submitted. Its requester waits a few seconds for the record;
 /// this tells a slow delivery from a slow owner when that wait runs out.
 /// Between hosts the gap also holds their clocks' difference.
-fn warn_if_late(clock: &dyn Clock, run: &HeldRunId, delivery: &Delivery) {
-    let Ok(now) = clock.now_unix_nanos() else {
-        return;
-    };
-    let delay_ms = now.saturating_sub(delivery.submitted_at_unix_nanos) / 1_000_000;
-    if delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX) {
+/// `true` when it logged one. The expired-lease sweep calls it too, for the
+/// requests a recreated owner finds waiting.
+pub(crate) fn warn_if_late(now_unix_nanos: i64, run: &HeldRunId, delivery: &Delivery) -> bool {
+    let delay_ms = now_unix_nanos.saturating_sub(delivery.submitted_at_unix_nanos) / 1_000_000;
+    let late = delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX);
+    if late {
         tracing::warn!(
             coral.run.id = safe::id(run),
             coral.run.request.kind = safe::kind(delivery.request.request.kind()),
@@ -430,6 +444,7 @@ fn warn_if_late(clock: &dyn Clock, run: &HeldRunId, delivery: &Delivery) {
             "Run Inbox delivered a request to its Run Owner late"
         );
     }
+    late
 }
 
 /// Returns once the change signal rings, or an outage of it begins (the

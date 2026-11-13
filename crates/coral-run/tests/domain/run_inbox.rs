@@ -203,31 +203,35 @@ async fn a_slow_outside_request_is_logged_by_its_requester_and_a_late_delivery()
     let requester = telemetry.logs_holding(&workspace_id.to_string());
     assert!(
         matches!(requester.as_slice(), [log]
-            if log.contains("within its requester's wait") && log.contains("cancel")),
-        "one requester warning names the request's kind: {requester:?}"
+            if log.contains("within its requester's wait")
+                && log.contains("cancel")
+                && log.contains(run_id.as_str())),
+        "one requester warning names the Run and the request's kind: {requester:?}"
     );
 
     // Two seconds later on the Run Module's clock, the reader delivers the
-    // waiting row again: late.
+    // waiting row again, twice: late, and logged once.
     fixture
         .clock
         .next
         .fetch_add(2_000_000_000, Ordering::SeqCst);
-    let delivered = probe.delivered();
-    fixture
-        .runs
-        .start(&principal, &workspace_id, submission("ring"))
-        .await
-        .expect("accept another Program");
-    wait_until(|| probe.delivered() > delivered).await;
-    let late = telemetry.logs_holding(run_id.as_str());
+    for ring in ["ring", "ring again"] {
+        let delivered = probe.delivered();
+        fixture
+            .runs
+            .start(&principal, &workspace_id, submission(ring))
+            .await
+            .expect("accept another Program");
+        wait_until(|| probe.delivered() > delivered).await;
+    }
+    let late: Vec<_> = telemetry
+        .logs_holding(run_id.as_str())
+        .into_iter()
+        .filter(|log| log.contains("delivered a request to its Run Owner late"))
+        .collect();
     assert!(
-        late.iter().any(
-            |log| log.contains("delivered a request to its Run Owner late")
-                && log.contains("cancel")
-                && log.contains("delay_ms")
-        ),
-        "the reader warns of a late delivery: {late:?}"
+        matches!(late.as_slice(), [log] if log.contains("cancel") && log.contains("delay_ms")),
+        "the reader warns of a late delivery once: {late:?}"
     );
 
     release.send(()).expect("land the held chunk");
@@ -237,4 +241,50 @@ async fn a_slow_outside_request_is_logged_by_its_requester_and_a_late_delivery()
         cancellations(&fixture, &principal, &workspace_id, &run_id).await,
         1
     );
+}
+
+/// A request that waited in the Run Inbox while no owner held its Run is
+/// logged as late when the expired-lease sweep hands it to the recreated
+/// owner, as the reader logs one it delivers late.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_a_recreated_owner_finds_late_is_logged() {
+    let telemetry = super::trace::telemetry();
+    let held = HeldApproval::new("user:recovered-late").await;
+    let (fixture, workspace_id, run_id) = (&held.fixture, &held.tool.workspace_id, &held.run);
+    fixture
+        .hand_to(workspace_id, run_id, "dead-holder", None)
+        .await;
+    // No owner here holds the Run, so the cancel waits in the Run Inbox.
+    let cancelling = {
+        let (next, actor, workspace_id, run_id) = (
+            fixture.next_process(),
+            held.actor.clone(),
+            workspace_id.clone(),
+            run_id.clone(),
+        );
+        tokio::spawn(async move {
+            next.cancel(&actor, &workspace_id, &run_id, &immediate(None, 100))
+                .await
+        })
+    };
+    wait_until_async(async || fixture.inbox_rows(workspace_id, run_id).await == 1).await;
+    fixture
+        .clock
+        .next
+        .fetch_add(2_000_000_000, Ordering::SeqCst);
+
+    assert_eq!(
+        fixture.next_process().sweep_expired_leases().await.unwrap(),
+        1
+    );
+    let late: Vec<_> = telemetry
+        .logs_holding(run_id.as_str())
+        .into_iter()
+        .filter(|log| log.contains("delivered a request to its Run Owner late"))
+        .collect();
+    assert!(
+        matches!(late.as_slice(), [log] if log.contains("cancel")),
+        "the sweep warns of the late request once: {late:?}"
+    );
+    let _answered = cancelling.await.expect("join");
 }
