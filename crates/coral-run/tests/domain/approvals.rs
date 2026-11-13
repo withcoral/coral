@@ -908,9 +908,10 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     .await;
     // Isolate the request's deadline from the Run's, and keep the owner from
     // recording the expiry while the test reads. Two owner paths would: the
-    // request's timer (30 s on the host clock) and the periodic precheck of
-    // parked waits, which reads the test clock. An hour keeps the precheck
-    // out of this test.
+    // request's timer (30 s on the host clock), and the periodic precheck of
+    // parked waits, which reads the test clock and wakes the Invocation, whose
+    // held recheck records the expiry. An hour keeps the precheck out of this
+    // test.
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30))
             .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
