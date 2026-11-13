@@ -24,6 +24,7 @@ coral-tools.workspace = true
 coral-catalog.workspace = true
 coral-policy.workspace = true
 coral-search.workspace = true
+coral-secret-store.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

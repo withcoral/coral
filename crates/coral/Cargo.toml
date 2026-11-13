@@ -18,11 +18,13 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 
 coral-app.workspace = true
+coral-embed.workspace = true
 coral-mcp.workspace = true
 coral-run-executor.workspace = true
 

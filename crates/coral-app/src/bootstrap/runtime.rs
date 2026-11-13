@@ -32,6 +32,9 @@ use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthori
 pub struct Extensions {
     /// Decides the deployment's Edition. The default is always Community.
     pub edition: coral_edition::EditionCheck,
+    /// The Secret Store kinds this binary adds to the `env` kind every build
+    /// has. A store of any other kind shows as a kind the build lacks.
+    pub secret_store_kinds: coral_secret_store::SecretStoreKinds,
 }
 
 pub use coral_db::MigrationProgress;

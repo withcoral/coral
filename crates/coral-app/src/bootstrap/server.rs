@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
+use super::periodic::{Passes, Schedule};
 use super::server_config::{
     Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
 };
@@ -37,13 +38,13 @@ const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 /// per replica against a table that is empty whenever no flow is mid-flight.
 const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// A sweep schedule: a fixed cadence anchored at startup, so a slow pass does
-/// not push every later sweep back, and ticks a slow pass ran through are
-/// skipped rather than replayed back to back. The first tick is at once.
-fn fixed_cadence(period: std::time::Duration) -> tokio::time::Interval {
-    let mut sweeps = tokio::time::interval(period);
-    sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    sweeps
+/// The wall clock in nanoseconds since 1970; none when it is set before then
+/// or past what the databases hold.
+fn unix_nanos() -> Option<i64> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(elapsed.as_nanos()).ok()
 }
 
 #[derive(Clone)]
@@ -295,7 +296,7 @@ impl ServerBuilder {
             layout,
             deployment_config.raw(),
             resolve_database_config,
-            || deployment_config.validate(),
+            || deployment_config.validate(&self.launcher.extensions.secret_store_kinds),
             report_migration.as_deref().unwrap_or(&|_| {}),
         )
         .await?;
@@ -450,6 +451,8 @@ impl PreparedServerBuilder {
             authorization_server.is_some(),
             policy,
         )?;
+        let secret_stores = deployment_config
+            .secret_stores(&builder.launcher.extensions.secret_store_kinds, policy)?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
@@ -474,6 +477,7 @@ impl PreparedServerBuilder {
             reconcile_interval,
             releases,
             usage,
+            secret_stores,
             readiness,
             state_lock,
             instance,
@@ -588,12 +592,13 @@ pub struct RunningServer {
     /// The local child supervisor; none with the children turned off.
     local_run_executors: Option<coral_run_executor::LocalRunExecutors>,
     readiness: EngineReadiness,
-    run_recovery: JoinHandle<()>,
-    device_recovery: Option<JoinHandle<()>>,
+    /// Every periodic pass of this Coral Instance.
+    passes: Passes,
+    /// The expired-lease sweep, one of `passes`: it stops before the Run
+    /// drain, and the others after.
+    run_recovery: AbortHandle,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
-    release_check: Option<JoinHandle<()>>,
-    usage_check: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
@@ -685,16 +690,8 @@ impl RunningServer {
         if let Some(supervisor) = &self.local_run_executors {
             supervisor.stop();
         }
-        if let Some(worker) = &self.device_recovery {
-            worker.abort();
-        }
+        self.passes.stop();
         self.search_reconcile.abort();
-        if let Some(check) = &self.release_check {
-            check.abort();
-        }
-        if let Some(check) = &self.usage_check {
-            check.abort();
-        }
         if let Some(accounts) = &self.accounts
             && let Err(error) = accounts.stop_device_authorizations().await
         {
@@ -790,17 +787,8 @@ impl Drop for RunningServer {
         if let Some(supervisor) = &self.local_run_executors {
             supervisor.stop();
         }
-        self.run_recovery.abort();
-        if let Some(worker) = &self.device_recovery {
-            worker.abort();
-        }
+        self.passes.stop();
         self.search_reconcile.abort();
-        if let Some(check) = &self.release_check {
-            check.abort();
-        }
-        if let Some(check) = &self.usage_check {
-            check.abort();
-        }
         if let Some(accounts) = &self.accounts {
             accounts.abort_device_authorizations();
         }
@@ -891,6 +879,7 @@ pub(crate) async fn start_server(
     reconcile_interval: std::time::Duration,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
+    secret_stores: coral_secret_store::SecretStores,
     readiness: EngineReadiness,
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
@@ -899,6 +888,7 @@ pub(crate) async fn start_server(
     compile_in_process: bool,
 ) -> Result<RunningServer, AppError> {
     let coral_instance_id = instance.to_string();
+    let mut passes = Passes::default();
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
     let builtin_catalog = coral_catalog::BuiltinCatalog::running()
@@ -911,6 +901,7 @@ pub(crate) async fn start_server(
     );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
+            .with_secret_stores(secret_stores.clone())
             .with_client_bootstrap_policy(client_bootstrap_policy);
         match client_id_metadata_document {
             Some(document) => accounts.with_client_id_metadata_document(document),
@@ -1053,7 +1044,7 @@ pub(crate) async fn start_server(
                 providers.clone(),
                 search_index.clone(),
             ),
-            workspaces,
+            workspaces: workspaces.clone(),
             providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
@@ -1063,6 +1054,11 @@ pub(crate) async fn start_server(
             runs: runs.clone(),
             releases: releases.clone(),
             usage: usage.as_ref().map(|usage| usage.data.clone()),
+            secret_stores: coral_administration::SecretStoreAdministration::new(
+                coral_workspace::OrganizationModule::new(database.clone()),
+                workspaces.clone(),
+                secret_stores,
+            ),
         },
         coral_grpc::TransportContext {
             authentication,
@@ -1077,7 +1073,12 @@ pub(crate) async fn start_server(
     // back before the first request. A pass that fails is logged, the
     // listeners bind anyway, and the next pass, a half lease later, reads
     // again.
-    sweep_expired_leases(&runs).await;
+    if let Err(code) = sweep_expired_leases(&runs).await {
+        tracing::warn!(
+            error.type = safe::kind(code),
+            "expired-lease sweep failed at boot; the next pass retries"
+        );
+    }
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
@@ -1096,47 +1097,63 @@ pub(crate) async fn start_server(
 
     let run_recovery = {
         let runs = runs.clone();
-        tokio::spawn(async move {
-            let mut sweeps = fixed_cadence(runs.sweep_interval());
-            // The first tick is at once, and the boot pass above ran it.
-            sweeps.tick().await;
-            loop {
-                sweeps.tick().await;
-                sweep_expired_leases(&runs).await;
-            }
+        // The boot pass above was the first, so this one waits a cadence.
+        let schedule = Schedule::every(runs.sweep_interval()).first_after(runs.sweep_interval());
+        passes.start("expired_lease_sweep", schedule, move || {
+            let runs = runs.clone();
+            async move { sweep_expired_leases(&runs).await }
         })
     };
-    let device_recovery = accounts.clone().map(|accounts| {
-        tokio::spawn(async move {
-            let mut sweeps = fixed_cadence(DEVICE_RECOVERY_INTERVAL);
-            loop {
-                sweeps.tick().await;
-                if let Ok(elapsed) =
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                    && let Ok(now) = i64::try_from(elapsed.as_nanos())
-                    && let Err(error) = accounts.recover_device_authorizations(now).await
-                {
-                    tracing::warn!(
-                        error.type = safe::kind(error.code()),
-                        "device authorization recovery failed"
-                    );
+    if let Some(accounts) = accounts.clone() {
+        let schedule = Schedule::every(DEVICE_RECOVERY_INTERVAL);
+        passes.start("device_authorization_recovery", schedule, move || {
+            let accounts = accounts.clone();
+            async move {
+                // A clock that gives no time gets no pass.
+                if let Some(now) = unix_nanos() {
+                    accounts
+                        .recover_device_authorizations(now)
+                        .await
+                        .map_err(|error| error.code())?;
                 }
+                Ok(())
             }
-        })
-    });
+        });
+    }
+    if let Some(releases) = releases {
+        let schedule = Schedule::every(coral_release::CHECK_INTERVAL);
+        passes.start("release_check", schedule, move || {
+            let releases = releases.clone();
+            async move {
+                releases.check().await;
+                Ok(())
+            }
+        });
+    }
+    if let Some(usage) = usage {
+        let schedule = Schedule::every(coral_usage::CHECK_INTERVAL);
+        passes.start("usage_report_check", schedule, move || {
+            let (data, client) = (usage.data.clone(), usage.client.clone());
+            async move {
+                // The collector answering late or not at all is no failure:
+                // the reports wait for the next check.
+                data.send_due(&client, coral_usage::COLLECTOR_URL, || {
+                    unix_nanos().unwrap_or(0)
+                })
+                .await
+                .map_err(|error| error.code())?;
+                Ok(())
+            }
+        });
+    }
     let search_reconcile = search_index.spawn_reconcile_task();
-    let release_check = releases.map(|releases| releases.spawn(coral_release::CHECK_INTERVAL));
-    let usage_check =
-        usage.map(|usage| usage.data.spawn(usage.client, coral_usage::CHECK_INTERVAL));
     Ok(RunningServer {
         providers,
         readiness,
+        passes,
         run_recovery,
-        device_recovery,
         search_index,
         search_reconcile,
-        release_check,
-        usage_check,
         accounts,
         runs,
         compiler,
@@ -1162,20 +1179,20 @@ pub(crate) struct LocalChildren {
     environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }
 
-/// One pass of the expired-lease sweep; a failed pass is logged, and the next
-/// one reads again.
-async fn sweep_expired_leases(runs: &coral_run::RunModule) {
-    match runs.sweep_expired_leases().await {
-        Ok(0) => {}
-        Ok(recovered) => tracing::info!(
+/// One pass of the expired-lease sweep. It fails with the error's code, and
+/// the next pass reads again.
+async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<(), &'static str> {
+    let recovered = runs
+        .sweep_expired_leases()
+        .await
+        .map_err(|error| error.code())?;
+    if recovered > 0 {
+        tracing::info!(
             coral.run.recovered = safe::number(recovered),
             "expired-lease sweep recovered Runs"
-        ),
-        Err(error) => tracing::warn!(
-            error.type = safe::kind(error.code()),
-            "expired-lease sweep failed; the next pass retries"
-        ),
+        );
     }
+    Ok(())
 }
 
 /// Serves the private gRPC listener and the Run Executor listener until
@@ -1216,33 +1233,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{DEVICE_RECOVERY_INTERVAL, ServerBuilder, fixed_cadence};
-
-    #[tokio::test(start_paused = true)]
-    async fn recovery_sweeps_keep_a_fixed_cadence() {
-        let start = tokio::time::Instant::now();
-        let mut sweeps = fixed_cadence(DEVICE_RECOVERY_INTERVAL);
-        sweeps.tick().await;
-        assert_eq!(
-            start.elapsed(),
-            Duration::ZERO,
-            "the first sweep runs at once"
-        );
-        sweeps.tick().await;
-        assert_eq!(start.elapsed(), DEVICE_RECOVERY_INTERVAL);
-
-        // A pass that runs through two boundaries gets one sweep as soon as it
-        // ends, then the schedule resumes on the original grid rather than a
-        // full interval after the late pass.
-        tokio::time::sleep(DEVICE_RECOVERY_INTERVAL * 2 + Duration::from_secs(1)).await;
-        sweeps.tick().await;
-        assert_eq!(
-            start.elapsed(),
-            DEVICE_RECOVERY_INTERVAL * 3 + Duration::from_secs(1)
-        );
-        sweeps.tick().await;
-        assert_eq!(start.elapsed(), DEVICE_RECOVERY_INTERVAL * 4);
-    }
+    use super::ServerBuilder;
 
     #[tokio::test]
     async fn the_search_reconcile_task_runs_beside_the_server_until_shutdown() {

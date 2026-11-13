@@ -25,7 +25,14 @@
   not hold state between a client's requests in the Adapter, and do not send a
   client anything outside the response to its own request.
 - Read process environment only at process bootstrap. Pass explicit values to
-  domain code.
+  domain code. The `env` Secret Store is the one exception: bootstrap hands it
+  a reader, and it reads only under its guarded prefix (ADR 0036).
+- A sweep, a check or a cleanup that the server runs on a cadence is a
+  periodic pass. Its module exposes the pass as one function, and bootstrap
+  schedules it with `Passes` (`crates/coral-app/src/bootstrap/periodic.rs`); do
+  not give a new pass its own timer loop. Search reconciliation keeps its own
+  supervisor. A timer that belongs to one connection, stream or child process,
+  such as a keepalive or a lease renewal, is not a pass.
 - Route untrusted outbound HTTP through `coral-outbound::Client`. Pass the
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See

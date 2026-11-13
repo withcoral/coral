@@ -11,6 +11,13 @@ export interface CredentialFieldInput {
   masked: boolean
 }
 
+/** The Credential Field an input belongs to, and its label, for inputs beside its value. */
+export type CredentialFieldEntry = (
+  input: CredentialFieldInput,
+  field: string,
+  label: string,
+) => ReactNode
+
 /**
  * A label and help text for each Credential Field Coral asks for. The caller renders
  * each Wax CredentialInput inside its own document form, so values never enter
@@ -21,7 +28,7 @@ export function CredentialFields({
   children,
 }: {
   fields: CredentialFieldView[]
-  children: (input: CredentialFieldInput) => ReactNode
+  children: CredentialFieldEntry
 }) {
   const id = useId()
   return (
@@ -31,11 +38,15 @@ export function CredentialFields({
           <Typography.BodySmallStrong as="label" htmlFor={`${id}-${field.name}`}>
             {field.label}
           </Typography.BodySmallStrong>
-          {children({
-            id: `${id}-${field.name}`,
-            name: credentialInputName(field.name),
-            masked: field.sensitive,
-          })}
+          {children(
+            {
+              id: `${id}-${field.name}`,
+              name: credentialInputName(field.name),
+              masked: field.sensitive,
+            },
+            field.name,
+            field.label,
+          )}
           {field.description && (
             <Typography.BodySmall as="p" variant="tertiary">
               {field.description}

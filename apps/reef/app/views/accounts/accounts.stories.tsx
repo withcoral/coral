@@ -10,6 +10,10 @@ import { AccountsPage } from './accounts-page'
 import { AuthorizationPage } from './authorization-page'
 import { UserAccountsPage } from './user-accounts-page'
 import type { AccountsView, AuthorizationView, UserAccountsView } from './types'
+import type { ReferenceFormView } from '@/lib/reference-form'
+
+const pathAndKey: ReferenceFormView = { pathLabel: 'Path', key: { label: 'Key', required: true } }
+const variableName: ReferenceFormView = { pathLabel: 'Variable name', pathPrefix: 'MYCO_' }
 
 const form = { csrf: 'storybook', requestId: 'storybook' }
 const account = {
@@ -30,6 +34,7 @@ const view: AccountsView = {
   path: '/accounts',
   scope: 'shared',
   account,
+  credentialSources: [],
   scopes: ['read', 'write'],
   needsCredential: true,
   usesScope: true,
@@ -49,6 +54,8 @@ const authorization: AuthorizationView = {
   oauth: false,
   grantedScope: '',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
+  secretStores: [],
+  savedReferences: {},
   form,
 }
 const workspace = {
@@ -219,7 +226,142 @@ export const Agent: Story = {
     />
   ),
 }
+// Catches: a stored value implied where there is none, or a reference's parts left out.
+export const SharedWithSecretReference: Story = {
+  render: () => (
+    <AccountsPage
+      view={{
+        ...view,
+        scope: 'shared',
+        credentialSources: [
+          { name: 'email', label: 'Email', reference: undefined },
+          {
+            name: 'token',
+            label: 'API token',
+            reference: { store: 'platform', path: 'team/forecast', key: 'token' },
+          },
+          {
+            name: 'application_key',
+            label: 'Application key',
+            reference: { store: 'env', path: 'MYCO_DD_APP_KEY', key: '' },
+            form: variableName,
+          },
+        ],
+      }}
+    />
+  ),
+  // Catches: a reference shown in another kind's words, such as a path for a variable.
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText('Email: entered value')).toBeVisible()
+    await expect(
+      canvas.getByText('API token: secret store platform, path team/forecast, key token'),
+    ).toBeVisible()
+    await expect(
+      canvas.getByText('Application key: secret store env, variable name MYCO_DD_APP_KEY'),
+    ).toBeVisible()
+  },
+}
 export const SecretEntry: Story = { render: () => <AuthorizationPage view={authorization} /> }
+
+const sharedSecretEntry: AuthorizationView = {
+  ...authorization,
+  scope: 'shared',
+  secretStores: [
+    { name: 'platform', blockers: [], form: pathAndKey },
+    { name: 'env', blockers: [], form: variableName },
+    { name: 'research', blockers: ['Needs Enterprise'], form: pathAndKey },
+  ],
+}
+// Catches: the typed input submitted beside a reference, a store never chosen, inputs
+// that do not follow the chosen store's kind, or source controls a screen reader cannot
+// tell apart from another field's.
+export const SecretEntryWithSecretStore: Story = {
+  render: () => <AuthorizationPage view={sharedSecretEntry} />,
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radiogroup', { name: 'Value source for Token' })).toBeVisible()
+    await expect(canvas.getByLabelText('Token', { exact: true })).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('radio', { name: 'Use a secret store' }))
+    await expect(canvas.queryByLabelText('Token', { exact: true })).toBeNull()
+    await expect(canvas.getByRole('textbox', { name: 'Path' })).toBeRequired()
+    await expect(canvas.getByRole('textbox', { name: 'Key' })).toBeRequired()
+    // A store is always chosen, so the form cannot post without one.
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'platform',
+    )
+    // An env store's reference is one variable name, with its prefix as a hint.
+    await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
+    await userEvent.click(await within(document.body).findByRole('menuitemradio', { name: 'env' }))
+    const variable = await canvas.findByRole('textbox', { name: 'Variable name' })
+    await expect(variable).toBeRequired()
+    await expect(variable).toHaveAccessibleDescription('Starts with MYCO_')
+    await expect(canvas.queryByRole('textbox', { name: 'Path' })).toBeNull()
+    await expect(canvas.queryByRole('textbox', { name: 'Key' })).toBeNull()
+    // A store Coral cannot read now is still offered, and says why in words.
+    await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
+    await expect(
+      await within(document.body).findByRole('menuitemradio', {
+        name: 'research (Needs Enterprise)',
+      }),
+    ).toBeInTheDocument()
+    await userEvent.keyboard('{Escape}')
+  },
+}
+// Catches: a reference moved to another store on its own after it lost its grant,
+// though another store is granted and would be the first choice.
+export const ReconnectAfterGrantRevoked: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        secretStores: [{ name: 'platform', blockers: [], form: pathAndKey }],
+        savedReferences: {
+          token: { store: 'removed', path: 'team/forecast', key: 'token' },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'removed',
+    )
+  },
+}
+// Catches: Reconnect asking for a reference again, or a typed field filled in.
+export const ReconnectWithSavedReference: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        savedReferences: {
+          token: { store: 'research', path: 'team/forecast', key: 'token' },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'research',
+    )
+    await expect(canvas.getByRole('textbox', { name: 'Path' })).toHaveValue('team/forecast')
+    await expect(canvas.getByRole('textbox', { name: 'Key' })).toHaveValue('token')
+    await expect(canvas.queryByLabelText('Token', { exact: true })).toBeNull()
+  },
+}
+export const SecretEntryWithSecretStoreProblem: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        secretStoreProblem: 'The secret store has no entry at this path. Check the path.',
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/no entry at this path/)).toBeVisible()
+  },
+}
 export const OAuthPending: Story = {
   render: () => <AuthorizationPage view={{ ...authorization, oauth: true }} />,
 }

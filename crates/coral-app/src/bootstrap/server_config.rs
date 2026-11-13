@@ -27,6 +27,8 @@ struct ServerConfigFile {
     search: SearchSettings,
     credentials: CredentialSettings,
     updates: UpdateSettings,
+    /// Decoded entry by entry in `secret_store_config`, so a failure can name the store.
+    secret_stores: Vec<toml::Value>,
     #[serde(rename = "auth")]
     _auth: IgnoredAny,
     #[serde(rename = "database")]
@@ -124,12 +126,45 @@ impl LoadedServerConfig {
         self.parse()?.credentials.key_env()
     }
 
+    /// The Secret Stores this deployment defines, of the kinds every build has
+    /// and of `kinds`. Reads each store's secret ID from the environment and
+    /// sends nothing; an `env` store keeps the reader for later reads.
+    pub(crate) fn secret_stores(
+        &self,
+        kinds: &coral_secret_store::SecretStoreKinds,
+        policy: coral_outbound::DestinationPolicy,
+    ) -> Result<coral_secret_store::SecretStores, AppError> {
+        self.secret_stores_from(
+            kinds,
+            policy,
+            &(std::sync::Arc::new(AppEnvironment::env_var) as coral_secret_store::EnvReader),
+        )
+    }
+
+    pub(super) fn secret_stores_from(
+        &self,
+        kinds: &coral_secret_store::SecretStoreKinds,
+        policy: coral_outbound::DestinationPolicy,
+        env: &coral_secret_store::EnvReader,
+    ) -> Result<coral_secret_store::SecretStores, AppError> {
+        super::secret_store_config::build(
+            &self.raw,
+            &self.parse()?.secret_stores,
+            kinds,
+            policy,
+            env,
+        )
+    }
+
     /// Validates all deployment sections after the persistent-state fence.
     /// Secrets are resolved later, only for the surfaces that use them. A
     /// `credentials.key` file beside `credentials.key_env` is refused when the
     /// vault opens, not here: the file is state on the volume, not a setting,
     /// so the configuration alone cannot prove the key has one source.
-    pub(crate) fn validate(&self) -> Result<(), AppError> {
+    pub(crate) fn validate(
+        &self,
+        secret_store_kinds: &coral_secret_store::SecretStoreKinds,
+    ) -> Result<(), AppError> {
         let config = self.parse()?;
         config
             .runtime
@@ -137,6 +172,7 @@ impl LoadedServerConfig {
         config.runtime.resolve()?;
         config.search.reconcile_interval()?;
         config.credentials.key_env()?;
+        super::secret_store_config::validate(&self.raw, &config.secret_stores, secret_store_kinds)?;
         self.auth_settings()?;
         crate::telemetry::TelemetryConfig::from_toml(&self.raw)?;
         Ok(())
@@ -992,7 +1028,7 @@ fn required_oauth_url(label: &str, value: Option<&str>) -> Result<String, AppErr
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::fs;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -1019,7 +1055,7 @@ mod tests {
     }
 
     /// Captures `raw` as the deployment configuration.
-    fn load(raw: &str) -> (TempDir, LoadedServerConfig) {
+    pub(in crate::bootstrap) fn load(raw: &str) -> (TempDir, LoadedServerConfig) {
         let (temp, layout) = deployment(raw);
         (temp, LoadedServerConfig::load(&layout).expect("load"))
     }
@@ -1281,7 +1317,9 @@ client_secret = 'test-secret'
                         format!("{raw}{WEB}")
                     });
                     let config = LoadedServerConfig::load(&layout).unwrap();
-                    config.validate().unwrap();
+                    config
+                        .validate(&coral_secret_store::SecretStoreKinds::default())
+                        .unwrap();
                     let policy = config.outbound_policy(defaults).unwrap();
                     assert_eq!(
                         config
@@ -1397,7 +1435,7 @@ client_secret = 'test-secret'
                 (Err(AppError::FailedPrecondition(message)), Err(expected)) => {
                     assert!(message.contains(expected), "{raw}: {message}");
                     // Boot validation refuses it the same way.
-                    match config.validate() {
+                    match config.validate(&coral_secret_store::SecretStoreKinds::default()) {
                         Err(AppError::FailedPrecondition(message)) => {
                             assert!(message.contains(expected), "{raw}: {message}");
                         }
@@ -1519,7 +1557,10 @@ client_secret = 'test-secret'
                 "search.reconcile_interval_seconds",
             ),
         ] {
-            let error = load(raw).1.validate().expect_err(raw);
+            let error = load(raw)
+                .1
+                .validate(&coral_secret_store::SecretStoreKinds::default())
+                .expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
@@ -1566,7 +1607,10 @@ client_secret = 'test-secret'
                 "credentials.key_env: unsupported value",
             ),
         ] {
-            let error = load(raw).1.validate().expect_err(raw);
+            let error = load(raw)
+                .1
+                .validate(&coral_secret_store::SecretStoreKinds::default())
+                .expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
@@ -1603,7 +1647,10 @@ client_secret = 'test-secret'
                 "outbound.private_networks: wanted string or table",
             ),
         ] {
-            let error = load(raw).1.validate().expect_err(raw);
+            let error = load(raw)
+                .1
+                .validate(&coral_secret_store::SecretStoreKinds::default())
+                .expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message)
                     if message.starts_with("server configuration is invalid: ")
@@ -1636,6 +1683,7 @@ client_secret = 'test-secret'
                 format!("[database]\nbackend = 'postgres://coral:{SECRET}@db.internal/coral'"),
                 "database.backend",
             ),
+            (format!("secret_stores = '{SECRET}'\n"), "secret_stores"),
         ] {
             let temp = TempDir::new().unwrap();
             fs::write(temp.path().join("config.toml"), format!("{section}{WEB}")).unwrap();

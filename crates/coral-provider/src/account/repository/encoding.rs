@@ -5,9 +5,10 @@ use crate::Error;
 use crate::ProviderId;
 use crate::account::oauth::{Flow, TokenResponse};
 use crate::account::{AuthorizationRequest, AuthorizationTarget, OAuthClient, ProviderAccountId};
-use coral_credentials::{CredentialValues, Secret};
+use coral_credentials::{CredentialValues, Secret, SecretReference};
 use coral_workspace::PrincipalId;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
 #[derive(Serialize, Deserialize)]
@@ -165,7 +166,7 @@ pub(in crate::account) fn decode_token(value: &str) -> Result<TokenResponse, Err
 pub(in crate::account) fn encode_values(
     values: &CredentialValues,
 ) -> Result<Zeroizing<String>, Error> {
-    let exposed: std::collections::BTreeMap<&str, &str> = values
+    let exposed: BTreeMap<&str, &str> = values
         .names()
         .filter_map(|name| values.get(name).map(|value| (name, value.expose())))
         .collect();
@@ -173,19 +174,77 @@ pub(in crate::account) fn encode_values(
         .map(Zeroizing::new)
         .map_err(|_invalid| Error::AccountInput)
 }
+/// A record of typed values, which may be empty when a Secret Store holds every field.
+pub(in crate::account) fn encode_sealed_fields(
+    values: &BTreeMap<String, Secret>,
+) -> Result<Zeroizing<String>, Error> {
+    let exposed: BTreeMap<&str, &str> = values
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.expose()))
+        .collect();
+    serde_json::to_string(&exposed)
+        .map(Zeroizing::new)
+        .map_err(|_invalid| Error::AccountInput)
+}
 pub(in crate::account) fn decode_values(value: &str) -> Result<CredentialValues, Error> {
-    let stored: std::collections::BTreeMap<String, String> =
+    CredentialValues::new(decode_sealed_fields(value)?).map_err(|_invalid| Error::AccountInput)
+}
+pub(in crate::account) fn decode_sealed_fields(
+    value: &str,
+) -> Result<BTreeMap<String, Secret>, Error> {
+    let stored: BTreeMap<String, String> =
         serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
     // Each value moves into a zeroizing Secret without another copy.
-    let values = stored
+    stored
         .into_iter()
         .map(|(name, value)| {
             Secret::new(value)
                 .map(|secret| (name, secret))
                 .map_err(|_invalid| Error::AccountInput)
         })
-        .collect::<Result<_, _>>()?;
-    CredentialValues::new(values).map_err(|_invalid| Error::AccountInput)
+        .collect()
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredReference {
+    store: String,
+    path: String,
+    key: Option<String>,
+}
+
+/// The references to store beside an Account's sealed record, by field name.
+pub(in crate::account) fn encode_references(
+    references: &BTreeMap<String, SecretReference>,
+) -> Result<String, Error> {
+    let stored: BTreeMap<&str, StoredReference> = references
+        .iter()
+        .map(|(name, reference)| {
+            (
+                name.as_str(),
+                StoredReference {
+                    store: reference.store().to_owned(),
+                    path: reference.path().to_owned(),
+                    key: reference.key().map(str::to_owned),
+                },
+            )
+        })
+        .collect();
+    serde_json::to_string(&stored).map_err(|_invalid| Error::AccountInput)
+}
+
+/// The references stored beside an Account's sealed record, by field name.
+pub(super) fn decode_references(value: &str) -> Result<BTreeMap<String, SecretReference>, Error> {
+    let stored: BTreeMap<String, StoredReference> =
+        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+    stored
+        .into_iter()
+        .map(|(name, reference)| {
+            SecretReference::new(reference.store, reference.path, reference.key)
+                .map(|reference| (name, reference))
+                .map_err(|_invalid| Error::AccountInput)
+        })
+        .collect()
 }
 
 pub(in crate::account) fn encode_device(

@@ -1,0 +1,21 @@
+[package]
+name = "coral-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ort.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokenizers.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

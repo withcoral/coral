@@ -563,6 +563,9 @@ function SidebarNavigation({
                 <Menu.Item to="/organization/workspaces" icon="Folders">
                   Workspaces
                 </Menu.Item>
+                <Menu.Item to="/organization/secret-stores" icon="KeyRound">
+                  Secret stores
+                </Menu.Item>
                 <Menu.Separator />
               </>
             )}

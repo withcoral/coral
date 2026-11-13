@@ -5,6 +5,7 @@ use sqlx::FromRow;
 
 use super::principal_kind_from_storage;
 use crate::lifecycle::{RunRecord, RunTermination, RunTerminationKind};
+use crate::types::HeldRunId;
 use crate::{
     Error, FinalValue, ProgramValue, RunFailure, RunFailureCode, RunId, RunState,
     RunTerminalOutcome,
@@ -99,7 +100,25 @@ impl RunTerminationKind {
     }
 }
 
+/// A Run row that does not decode to a [`RunRecord`]: which Run, when its
+/// stored ID is one Coral issues, and why.
+#[derive(Debug)]
+pub(crate) struct UndecodableRun {
+    pub(crate) id: Option<HeldRunId>,
+    pub(crate) error: Box<Error>,
+}
+
 impl RunRow {
+    /// [`Self::decode`], naming the Run whose row does not decode, so a
+    /// caller that reads many Runs can leave that one out.
+    pub(super) fn decode_or_name(self) -> Result<RunRecord, UndecodableRun> {
+        let stored_id = self.id.clone();
+        self.decode().map_err(|error| UndecodableRun {
+            id: RunId::parse(&stored_id).ok().map(HeldRunId::of_held_row),
+            error: Box::new(error),
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one decode checks every lifecycle column of the Run row together"

@@ -12,7 +12,7 @@ use crate::{
     Error, LifecycleAction, LifecycleOutcome, ProviderId, repository as provider_repository,
 };
 use coral_catalog::AuthenticationConfiguration;
-use coral_credentials::{CredentialValues, Secret};
+use coral_credentials::{CredentialField, CredentialValues, Secret};
 use coral_db::Transaction;
 use zeroize::Zeroizing;
 
@@ -27,15 +27,67 @@ struct PendingRefresh {
 
 enum CredentialResolution {
     Ready(CredentialValues),
+    /// A Secret Store holds some fields: the caller reads them outside every lock.
+    StoreBacked(std::collections::BTreeMap<String, CredentialField>),
     Refreshing(PendingRefresh),
 }
 
+/// What an Invocation has once any refresh has settled, before a store is read.
+enum SettledCredentials {
+    Ready(CredentialValues),
+    StoreBacked(std::collections::BTreeMap<String, CredentialField>),
+}
+
+/// A typed-in Account's Credential Fields: its sealed record, plus the
+/// references stored beside it. A reference that does not parse, or a field
+/// with both a value and a reference, leaves no usable Account.
+fn stored_fields(
+    row: &LoadedAccount,
+    plaintext: &str,
+) -> Result<std::collections::BTreeMap<String, CredentialField>, Error> {
+    let mut fields: std::collections::BTreeMap<_, _> = repository::decode_sealed_fields(plaintext)?
+        .into_iter()
+        .map(|(name, secret)| (name, CredentialField::Value(secret)))
+        .collect();
+    let Some(references) = &row.secret_references else {
+        return Ok(fields);
+    };
+    let references = references
+        .decode()
+        .map_err(|_invalid| Error::AccountRequired)?;
+    for (name, reference) in references {
+        if fields
+            .insert(name, CredentialField::Reference(reference))
+            .is_some()
+        {
+            return Err(Error::AccountRequired);
+        }
+    }
+    Ok(fields)
+}
+
+/// The values to send for an Account whose fields Coral holds. A field held in a
+/// Secret Store leaves no usable Account here, where no read can happen.
+fn field_values(row: &LoadedAccount, plaintext: &str) -> Result<CredentialValues, Error> {
+    let values = stored_fields(row, plaintext)?
+        .into_iter()
+        .map(|(name, field)| match field {
+            CredentialField::Value(secret) => Ok((name, secret)),
+            CredentialField::Reference(_) => Err(Error::AccountRequired),
+        })
+        .collect::<Result<_, _>>()?;
+    CredentialValues::new(values).map_err(|_invalid| Error::AccountInput)
+}
+
 impl AccountModule {
-    /// Resolves the retained authorization, refreshing expired OAuth material.
+    /// Resolves the retained authorization for one dispatch: refreshes expired
+    /// OAuth material, and reads any field a Secret Store holds, outside every lock.
+    /// Call this only after the Policy Enforcement Point permits the dispatch.
     /// The host supplies Unix nanoseconds. Accepted refresh survives request loss.
     /// # Errors
     /// Temporary failures preserve Account state. Permanent rejection requires
     /// reconnect. Explicit authorization changes reject the retained evidence.
+    /// A failed store read names the kind of failure, never the path.
     pub async fn credentials(
         &self,
         workspace: &WorkspaceId,
@@ -43,6 +95,37 @@ impl AccountModule {
         evidence: &CredentialEvidence,
         now: i64,
     ) -> Result<CredentialValues, Error> {
+        match self.settle(workspace, provider, evidence, now).await? {
+            SettledCredentials::Ready(values) => Ok(values),
+            SettledCredentials::StoreBacked(fields) => {
+                self.read_fields(&evidence.contract, fields).await
+            }
+        }
+    }
+
+    /// Renews what the retained authorization needs before the Policy Enforcement
+    /// Point decides. It reads no Secret Store, so a denied Invocation never does.
+    /// # Errors
+    /// The same failures as [`Self::credentials`], apart from a store read.
+    pub async fn prepare_dispatch(
+        &self,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        evidence: &CredentialEvidence,
+        now: i64,
+    ) -> Result<(), Error> {
+        self.settle(workspace, provider, evidence, now)
+            .await
+            .map(drop)
+    }
+
+    async fn settle(
+        &self,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        evidence: &CredentialEvidence,
+        now: i64,
+    ) -> Result<SettledCredentials, Error> {
         let started = std::time::Instant::now();
         let trace = coral_telemetry::TraceId::current_or_new();
         let mut pending = None;
@@ -72,7 +155,12 @@ impl AccountModule {
             .await
             .map_err(|_error| Error::CredentialRefreshFailed)??;
             match result {
-                CredentialResolution::Ready(secret) => return Ok(secret),
+                CredentialResolution::Ready(values) => {
+                    return Ok(SettledCredentials::Ready(values));
+                }
+                CredentialResolution::StoreBacked(fields) => {
+                    return Ok(SettledCredentials::StoreBacked(fields));
+                }
                 CredentialResolution::Refreshing(claim) => {
                     pending = Some(claim);
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -115,7 +203,7 @@ impl AccountModule {
             AuthenticationConfiguration::OAuthAuthorizationCode { .. }
                 | AuthenticationConfiguration::OAuthDeviceCode { .. }
         ) {
-            return repository::decode_values(&plaintext).map(Some);
+            return field_values(&row, &plaintext).map(Some);
         }
         let token = repository::decode_token(&plaintext)?;
         if row.refresh_attempt_id.is_some()
@@ -126,6 +214,30 @@ impl AccountModule {
         Ok(Some(CredentialValues::token(Secret::new(
             token.access_token,
         )?)))
+    }
+
+    /// Whether a Secret Store holds fields of the retained authorization, rechecked
+    /// while the caller holds its final lock. The value was read before that lock,
+    /// since no network work happens here.
+    /// # Errors
+    /// Rejects a changed authorization, a lost grant, and a store config removed.
+    pub(super) async fn recheck_store_backed_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        evidence: &CredentialEvidence,
+    ) -> Result<bool, Error> {
+        let row = retained_account(tx, workspace, provider, evidence).await?;
+        if row.secret_references.is_none() {
+            return Ok(false);
+        }
+        let plaintext = self.open_retained(&row)?;
+        Ok(matches!(
+            self.static_resolution(tx, workspace, &row, &plaintext)
+                .await?,
+            CredentialResolution::StoreBacked(_)
+        ))
     }
 
     async fn resolve_credentials(
@@ -175,10 +287,7 @@ impl AccountModule {
                 resource,
                 ..
             } => (token_url, scopes, resource.as_deref()),
-            _ => {
-                tx.commit().await?;
-                return repository::decode_values(&plaintext).map(CredentialResolution::Ready);
-            }
+            _ => return self.finish_static(tx, workspace, &row, &plaintext).await,
         };
         let token = repository::decode_token(&plaintext)?;
         if token.expires_at.is_none_or(|expires| now < expires) {
@@ -236,6 +345,46 @@ impl AccountModule {
             .await
             .map(CredentialValues::token)
             .map(CredentialResolution::Ready)
+    }
+
+    async fn finish_static(
+        &self,
+        mut tx: Transaction<'_>,
+        workspace: &WorkspaceId,
+        row: &LoadedAccount,
+        plaintext: &str,
+    ) -> Result<CredentialResolution, Error> {
+        let resolution = self
+            .static_resolution(&mut tx, workspace, row, plaintext)
+            .await;
+        tx.commit().await?;
+        resolution
+    }
+
+    /// An Account's typed fields, or its fields for a read once this transaction
+    /// ends. A store the Workspace lost, or config no longer defines, leaves no
+    /// usable Account, and Coral never falls back to a field it can read.
+    async fn static_resolution(
+        &self,
+        tx: &mut Transaction<'_>,
+        workspace: &WorkspaceId,
+        row: &LoadedAccount,
+        plaintext: &str,
+    ) -> Result<CredentialResolution, Error> {
+        let fields = stored_fields(row, plaintext)?;
+        let mut store_backed = false;
+        for field in fields.values() {
+            if let CredentialField::Reference(reference) = field {
+                store_backed = true;
+                if !self.store_usable(tx, workspace, reference).await? {
+                    return Err(Error::AccountRequired);
+                }
+            }
+        }
+        if store_backed {
+            return Ok(CredentialResolution::StoreBacked(fields));
+        }
+        field_values(row, plaintext).map(CredentialResolution::Ready)
     }
 
     async fn complete_refresh(

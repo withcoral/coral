@@ -6,8 +6,8 @@ mod encoding;
 mod intent;
 pub(super) use accounts::{ensure_account, scoped_account, scoped_account_locked};
 pub(super) use encoding::{
-    decode_device, decode_flow, decode_token, decode_values, encode_device, encode_flow,
-    encode_token, encode_values,
+    decode_device, decode_flow, decode_sealed_fields, decode_token, decode_values, encode_device,
+    encode_flow, encode_references, encode_sealed_fields, encode_token, encode_values,
 };
 
 use super::connection::{LoadedConnection, PendingConnection};
@@ -96,6 +96,7 @@ enum ProviderAccounts {
     RefreshDeadline,
     RequiresAuthorization,
     Retired,
+    SecretReferences,
     TokenExpiresAtUnixNanos,
     UserId,
     WorkspaceId,
@@ -294,6 +295,10 @@ pub(super) async fn retire_access_account(
                 (ProviderAccounts::Retired, Expr::val(1_i64)),
                 (ProviderAccounts::EncryptedCredentials, Expr::val("")),
                 (
+                    ProviderAccounts::SecretReferences,
+                    Expr::val(Option::<String>::None),
+                ),
+                (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
                     Expr::val(Option::<i64>::None),
                 ),
@@ -331,7 +336,7 @@ fn current_accounts() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-const ACCOUNT_COLUMNS: [ProviderAccounts; 15] = [
+const ACCOUNT_COLUMNS: [ProviderAccounts; 16] = [
     ProviderAccounts::Id,
     ProviderAccounts::ProviderId,
     ProviderAccounts::WorkspaceId,
@@ -339,6 +344,7 @@ const ACCOUNT_COLUMNS: [ProviderAccounts; 15] = [
     ProviderAccounts::AuthorizationVersion,
     ProviderAccounts::Contract,
     ProviderAccounts::EncryptedCredentials,
+    ProviderAccounts::SecretReferences,
     ProviderAccounts::UserId,
     ProviderAccounts::AgentId,
     ProviderAccounts::RequiresAuthorization,
@@ -737,6 +743,7 @@ pub(super) async fn insert_account(
                 ProviderAccounts::ConfiguredByUserId,
                 ProviderAccounts::Contract,
                 ProviderAccounts::EncryptedCredentials,
+                ProviderAccounts::SecretReferences,
                 ProviderAccounts::GrantedScope,
                 ProviderAccounts::AutomaticRefresh,
                 ProviderAccounts::TokenExpiresAtUnixNanos,
@@ -753,6 +760,7 @@ pub(super) async fn insert_account(
                 Expr::val(context.actor().user_id().as_str()),
                 Expr::val(account.contract.to_storage()?),
                 Expr::val(account.ciphertext),
+                Expr::val(account.secret_references),
                 Expr::val(account.granted_scope),
                 Expr::val(account.automatic_refresh.map(i64::from)),
                 Expr::val(account.token_expires_at_unix_nanos),
@@ -894,6 +902,7 @@ fn account_inspection_query() -> sea_query::SelectStatement {
             ProviderAccounts::RequiresAuthorization,
             ProviderAccounts::GrantedScope,
             ProviderAccounts::AutomaticRefresh,
+            ProviderAccounts::SecretReferences,
         ])
         // Decode the persistence tombstone without loading credential material,
         // private generations, or refresh bookkeeping into the inspection path.
@@ -920,6 +929,10 @@ pub(super) async fn disconnect_account(
             .table(ProviderAccounts::Table)
             .values([
                 (ProviderAccounts::EncryptedCredentials, Expr::val("")),
+                (
+                    ProviderAccounts::SecretReferences,
+                    Expr::val(Option::<String>::None),
+                ),
                 (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
                     Expr::val(Option::<i64>::None),
@@ -1012,6 +1025,10 @@ pub(super) async fn connect_account(
                     (
                         ProviderAccounts::EncryptedCredentials,
                         Expr::val(authorized.ciphertext),
+                    ),
+                    (
+                        ProviderAccounts::SecretReferences,
+                        Expr::val(authorized.secret_references),
                     ),
                     (
                         ProviderAccounts::TokenExpiresAtUnixNanos,
@@ -1472,6 +1489,7 @@ struct AccountInspectionRow {
     requires_authorization: i64,
     disconnected: i64,
     granted_scope: String,
+    secret_references: Option<String>,
 }
 
 impl AccountInspectionRow {
@@ -1489,6 +1507,13 @@ impl AccountInspectionRow {
             requires_authorization: self.requires_authorization != 0,
             disconnected: self.disconnected != 0,
             granted_scope: self.granted_scope,
+            // A reference that does not parse leaves no usable Account at dispatch.
+            // Inspection still opens, so a Workspace Owner can reconnect it.
+            secret_references: self
+                .secret_references
+                .as_deref()
+                .and_then(|stored| encoding::decode_references(stored).ok())
+                .unwrap_or_default(),
         })
     }
 }
@@ -1503,6 +1528,7 @@ struct AccountRow {
     authorization_version: String,
     contract: String,
     encrypted_credentials: String,
+    secret_references: Option<String>,
     user_id: Option<String>,
     agent_id: Option<String>,
     requires_authorization: i64,
@@ -1510,6 +1536,20 @@ struct AccountRow {
     refresh_attempt_id: Option<String>,
     refresh_deadline: Option<i64>,
     token_expires_at_unix_nanos: Option<i64>,
+}
+
+/// An Account's Secret References as stored, not yet decoded.
+pub(super) struct StoredReferences(String);
+
+impl StoredReferences {
+    /// Each field's reference, by field name.
+    /// # Errors
+    /// Rejects a value that is not a set of valid references.
+    pub(super) fn decode(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, coral_credentials::SecretReference>, Error> {
+        encoding::decode_references(&self.0)
+    }
 }
 
 impl AccountRow {
@@ -1524,6 +1564,7 @@ impl AccountRow {
             contract: ProviderCredentialContract::from_storage(&self.contract)?,
             disconnected: self.encrypted_credentials.is_empty(),
             encrypted_credentials: self.encrypted_credentials,
+            secret_references: self.secret_references.map(StoredReferences),
             user_id: self
                 .user_id
                 .as_deref()

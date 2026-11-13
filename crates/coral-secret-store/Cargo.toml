@@ -1,0 +1,22 @@
+[package]
+name = "coral-secret-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+coral-credentials.workspace = true
+coral-outbound.workspace = true
+serde.workspace = true
+serde_path_to_error.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
