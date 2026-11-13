@@ -51,10 +51,11 @@ jobs:
           # would have failed.
           predicate-quantifier: every
           filters: |
-            # Anything but documentation.
+            # Anything but documentation and license texts.
             code:
               - '**'
               - '!**/*.md'
+              - '!**/LICENSE'
               - '!docs/**'
               - '!apps/docs/**'
             # The Rust gates also ignore the apps, which no Rust test reads,
@@ -62,6 +63,7 @@ jobs:
             rust:
               - '**'
               - '!**/*.md'
+              - '!**/LICENSE'
               - '!docs/**'
               - '!apps/**/!(.node-version)'
             # Desktop's macOS and Windows jobs cost the most, so they are the
