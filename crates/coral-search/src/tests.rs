@@ -27,7 +27,7 @@ use coral_test_support::TestDatabase;
 use coral_tools::test_fixtures_repository as tool_faults;
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
-    PrivateToolPath, PrivateToolSave,
+    PrivateToolPath, PrivateToolSave, SharedToolModule, SharedToolPublish,
 };
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
@@ -3704,12 +3704,17 @@ fn credential_document() -> serde_json::Value {
     })
 }
 
+/// The source of a small Authored Tool whose one input is `limit`.
+const SMALL_TOOL_SOURCE: &str =
+    "export default function run(input: { limit: number }): number { return input.limit; }";
+
 struct TestModules {
     fixture: TestDatabase,
     workspaces: WorkspaceModule,
     providers: ProviderModule,
     policies: ToolPolicyModule,
     private_tools: PrivateToolModule,
+    shared_tools: SharedToolModule,
     search: UniversalSearchModule,
     index: crate::SearchIndex,
 }
@@ -3740,6 +3745,13 @@ impl TestModules {
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .expect("start Private Tool compiler");
+        let shared_tools = SharedToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .expect("start the Shared Tool compiler");
         let index = crate::SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
         let search = UniversalSearchModule::new(database, workspaces.clone());
         Self {
@@ -3748,6 +3760,7 @@ impl TestModules {
             providers,
             policies,
             private_tools,
+            shared_tools,
             search,
             index,
         }
@@ -3797,10 +3810,48 @@ impl TestModules {
             workspace_id,
             path,
             description,
-            "export default function run(input: { limit: number }): number { return input.limit; }",
+            SMALL_TOOL_SOURCE,
             occurred_at_unix_nanos,
         )
         .await
+    }
+
+    /// Publishes `review` as the Workspace Owner `owner`, and notifies
+    /// nothing. Returns the published Shared Tool.
+    async fn publish_shared_tool(
+        &self,
+        owner: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+        review: SharedToolPublish,
+    ) -> coral_tools::SharedTool {
+        self.shared_tools
+            .publish_as_reviewed(&change(owner.clone(), 60, '6'), workspace_id, review, None)
+            .await
+            .expect("publish the Shared Tool")
+            .published()
+            .expect("the published Shared Tool")
+            .clone()
+    }
+
+    /// Adds a new User, `id`, to the Workspace as a Member, as its Owner
+    /// `owner`.
+    async fn add_member(
+        &self,
+        owner: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+        id: &str,
+    ) -> AuthenticatedPrincipal {
+        let member = organization_user(self.search.database.clone(), id).await;
+        self.workspaces
+            .set_membership(
+                &change(owner.clone(), 50, '5'),
+                workspace_id,
+                &member,
+                coral_workspace::WorkspaceRole::Member,
+            )
+            .await
+            .expect("add the Member");
+        AuthenticatedPrincipal::user(member)
     }
 
     /// Saves `source` as the Private Tool at `path` with `description`.
