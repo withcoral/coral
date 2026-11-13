@@ -1,5 +1,6 @@
-# cargo-deny configuration. Run with: `make license-check`
-# (or `cargo deny check licenses` directly).
+# cargo-deny configuration. Run with: `make dependency-check`
+# (or `cargo deny check` directly). It checks each locked crate's licence,
+# its RustSec advisories, the bans below and where the crate comes from.
 #
 # Allow-list approach: anything not listed below fails by default. Anything
 # we haven't reviewed and accepted stays out of the supply chain. Add new
@@ -38,3 +39,36 @@ allow = [
 # (ADR 0033), which the allow-list above would otherwise reject.
 [licenses.private]
 ignore = true
+
+# A locked crate with a RustSec advisory, or one yanked from crates.io, fails.
+# cargo-deny reads the advisory database on every run, so this check can fail
+# with no change to the lockfile. `.github/workflows/dependencies.yml` runs it
+# daily for that reason.
+#
+# Prefer an update to an entry here. An entry says why Coral cannot update
+# yet, how far the advisory reaches Coral, and when to remove the entry.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0462", reason = "rmcp before 3.9 reads a response body without a limit in its built-in Streamable HTTP clients. Coral reaches an upstream MCP server through its own client (coral-upstream's McpHttpClient), which bounds every body it reads; only tests use the built-in client. rmcp 3.9 also changes transport and server behaviour, so the update is its own change. Remove with that update." },
+    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.39 bundles the fixed SQLite, and sqlx-sqlite 0.9.0, the latest, accepts only <0.38. The flaw needs a database file and -wal that a less trusted party wrote; Coral opens only the database at the operator's own path. Remove when sqlx accepts libsqlite3-sys 0.39." },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is archived. serde_yaml, itself deprecated, brings it in to parse Provider OpenAPI documents. Another YAML parser changes what Coral accepts, so the replacement is its own change. Remove with serde_yaml." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is archived, with no known flaw. tokenizers brings it in, and it is a proc macro, so it runs only at build time. Remove when tokenizers drops it." },
+]
+
+[bans]
+# A `*` requirement takes whatever version resolves. Coral's own crates name
+# each other by path with no version, which `allow-wildcard-paths` permits
+# between unpublished crates.
+wildcards = "deny"
+allow-wildcard-paths = true
+# A second version of a crate costs build time, not safety, and most of the
+# duplicates in the lockfile come from dependencies Coral does not choose.
+multiple-versions = "allow"
+
+# Every crate comes from crates.io. A git or other-registry source fails until
+# it is allowed here by name.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
