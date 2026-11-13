@@ -8,6 +8,7 @@ mod ranking;
 mod retrieval;
 mod shared_tools;
 mod storage;
+mod vector_retrieval;
 mod vector_storage;
 
 use coral_outbound::DestinationPolicy;
@@ -3755,6 +3756,31 @@ impl TestModules {
     /// Converges the search index on what the owners hold: one reconcile pass.
     async fn converge(&self) {
         self.index.reconcile().await;
+    }
+
+    /// Creates the vector table of the manifest's dimension, as boot does
+    /// with the vector side on.
+    async fn prepare_vectors(&self) {
+        crate::prepare_vector_table(
+            &self.search.database,
+            crate::VectorStorage::On {
+                dimension: coral_embed::MANIFEST.dimension,
+            },
+        )
+        .await
+        .expect("create the vector table");
+    }
+
+    /// An index whose Embedder embeds with `model`, ready at once, and
+    /// retries a failed batch after a short pause.
+    fn index_with(&self, model: std::sync::Arc<dyn coral_embed::Embed>) -> crate::SearchIndex {
+        let (_ready, model) = tokio::sync::watch::channel(Some(model));
+        crate::SearchIndex::new(
+            self.search.database.clone(),
+            std::time::Duration::from_mins(5),
+        )
+        .with_embedder(model)
+        .with_embedder_retry_pause(std::time::Duration::from_millis(10))
     }
 
     /// Saves one small Private Tool at `path` with `description`.

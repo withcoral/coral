@@ -22,6 +22,7 @@ use crate::indexer::authored_tools::{self, AuthoredToolIndexer, AuthoredToolSync
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
+pub(crate) use embedder::EmbedderModel;
 use embedder::EmbedderState;
 
 mod embedder;

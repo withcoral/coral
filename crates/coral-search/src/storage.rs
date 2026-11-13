@@ -16,6 +16,7 @@ mod tests;
 use coral_db::{Database, DatabaseSystem};
 
 use repository::VectorTable;
+pub(crate) use repository::vector_literal;
 
 /// A failure to prepare Universal Search's storage at boot.
 #[derive(Debug, thiserror::Error)]
