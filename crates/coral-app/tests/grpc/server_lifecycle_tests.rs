@@ -95,6 +95,43 @@ async fn bootstrap_publishes_the_companion_origin_to_private_workspace_responses
     server.shutdown().await.unwrap();
 }
 
+/// A client that keeps its Activity stream open, as Reef does, must not hold
+/// the process up: shutdown ends the stream, so the listener closes cleanly
+/// inside its grace period.
+#[tokio::test]
+async fn shutdown_completes_while_a_client_holds_an_activity_stream() {
+    use coral_grpc::coral::management::v1::{
+        WatchActivityRequest, activity_service_client::ActivityServiceClient,
+    };
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("config.toml"),
+        "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
+    )
+    .unwrap();
+    let server = ServerBuilder::new()
+        .with_config_dir(temp.path())
+        .start()
+        .await
+        .unwrap();
+    let mut client = ActivityServiceClient::connect(server.endpoint_uri().to_owned())
+        .await
+        .unwrap();
+    let mut request = tonic::Request::new(WatchActivityRequest {});
+    request
+        .metadata_mut()
+        .insert("coral-audience", "reef".parse().unwrap());
+    let mut stream = client.watch_activity(request).await.unwrap().into_inner();
+    assert!(stream.message().await.unwrap().unwrap().changed);
+
+    // The bound only fails the test; a clean shutdown takes milliseconds.
+    tokio::time::timeout(std::time::Duration::from_secs(4), server.shutdown())
+        .await
+        .expect("an open Activity stream does not hold shutdown")
+        .expect("the listener closes without its grace period running out");
+    drop(stream);
+}
+
 #[tokio::test]
 async fn prepared_startup_keeps_its_configuration_after_file_changes() {
     for remove_config in [false, true] {
