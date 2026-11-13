@@ -196,7 +196,7 @@ impl McpServer {
                     .map_err(task_failure)?;
                 let accepted = launched
                     .map_err(|error| started_task_failure(task_failure(error), task.id()))?;
-                (Some(task.id().clone()), accepted)
+                (Some(task), accepted)
             }
         };
         // The Run is accepted, so every answer from here names it. A caller
@@ -208,8 +208,12 @@ impl McpServer {
                 Err(error) => {
                     // The Run stays accepted, so report it as accepted; a
                     // later `wait` reads it again.
+                    let run_id = accepted.telemetry_id();
+                    let task_id = started.as_ref().map(coral_task::Task::telemetry_id);
                     tracing::warn!(
                         coral.workspace.id = safe::id(&self.workspace_id),
+                        coral.run.id = safe::id(&run_id),
+                        coral.task.id = task_id.as_ref().map(safe::id),
                         error.type = safe::kind(error.code()),
                         "failed to observe the Run that exec accepted"
                     );
@@ -218,12 +222,13 @@ impl McpServer {
             },
             None => None,
         };
+        let started = started.as_ref().map(coral_task::Task::id);
         self.run_update(
             observed.as_ref().unwrap_or(&accepted),
-            Reporter::Exec(started.as_ref()),
+            Reporter::Exec(started),
         )
         .map(Into::into)
-        .map_err(|failure| accepted_run_failure(failure, accepted.run_id(), started.as_ref()))
+        .map_err(|failure| accepted_run_failure(failure, accepted.run_id(), started))
     }
 
     async fn wait(
@@ -247,7 +252,7 @@ impl McpServer {
             let peek = RunObservation::immediate(cursor.clone(), RUN_EVENT_PAGE_MAX)
                 .map_err(invalid_input)?
                 .without_trace_link();
-            let current = self.observe(&run_id, &peek).await?;
+            let current = self.observe(&run_id, &peek).await.map_err(run_failure)?;
             if let Some(message) =
                 projection::handoff_progress(&current, &self.runtime.modules.human_interface)
             {
@@ -272,7 +277,10 @@ impl McpServer {
         observation: &RunObservation,
         reporter: Reporter<'_>,
     ) -> Result<CallToolResponse, DispatchError> {
-        let update = self.observe(run_id, observation).await?;
+        let update = self
+            .observe(run_id, observation)
+            .await
+            .map_err(run_failure)?;
         self.run_update(&update, reporter)
             .map(Into::into)
             .map_err(DispatchError::Tool)
@@ -282,7 +290,7 @@ impl McpServer {
         &self,
         run_id: &RunId,
         observation: &RunObservation,
-    ) -> Result<coral_run::RunUpdate, DispatchError> {
+    ) -> Result<coral_run::RunUpdate, coral_run::Error> {
         self.runtime
             .modules
             .runs
@@ -293,7 +301,6 @@ impl McpServer {
                 observation,
             )
             .await
-            .map_err(run_failure)
     }
 
     async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
@@ -714,16 +721,6 @@ impl Progress {
 enum DispatchError {
     Protocol(ErrorData),
     Tool(ToolFailure),
-}
-
-impl DispatchError {
-    /// The failure's stable code, as a log names it.
-    const fn code(&self) -> &'static str {
-        match self {
-            Self::Protocol(_) => "protocol_error",
-            Self::Tool(failure) => failure.code(),
-        }
-    }
 }
 
 impl From<ErrorData> for DispatchError {

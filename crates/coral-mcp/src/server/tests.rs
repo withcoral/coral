@@ -201,21 +201,22 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
     }
 }
 
-/// Calls `exec` and returns its structured Run Update.
-async fn exec(server: &McpServer, arguments: &Value) -> Value {
+/// Calls `tool` and returns its structured result, or its failure's code.
+async fn call(
+    server: &McpServer,
+    tool: &'static str,
+    arguments: &Value,
+) -> Result<Value, &'static str> {
     let request =
-        CallToolRequestParams::new("exec").with_arguments(arguments.as_object().unwrap().clone());
+        CallToolRequestParams::new(tool).with_arguments(arguments.as_object().unwrap().clone());
     match server.dispatch(request, None).await {
         Ok(CallToolResponse::Complete(result)) => {
             assert_ne!(result.is_error, Some(true));
-            result.structured_content.unwrap()
+            Ok(result.structured_content.unwrap())
         }
-        Ok(_) => panic!("exec completes"),
-        Err(super::DispatchError::Protocol(error)) => panic!("exec was refused: {error:?}"),
-        Err(super::DispatchError::Tool(failure)) => panic!(
-            "exec failed: {:?}",
-            crate::projection::failure(&failure, &TraceId::current_or_new()).structured_content
-        ),
+        Ok(_) => panic!("{tool} completes"),
+        Err(super::DispatchError::Protocol(error)) => panic!("{tool} was refused: {error:?}"),
+        Err(super::DispatchError::Tool(failure)) => Err(failure.code()),
     }
 }
 
@@ -225,9 +226,19 @@ async fn exec(server: &McpServer, arguments: &Value) -> Value {
 // the Program again in a second Task.
 #[tokio::test]
 async fn exec_reports_the_run_it_accepted_when_its_first_observation_fails() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
     // A Program that never ends: an observation reads a running Run's pending
     // approvals, and skips them once the Run has ended.
     const PROGRAM: &str = "while (true) {}";
+    const WARNING: &str = "failed to observe the Run that exec accepted";
+    // For the whole process: `set_default` misses a callsite another test's
+    // thread registered first. No other test here asserts on logs.
+    let exported = coral_telemetry::testing::ExportCapture::default();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(exported.log_layer()),
+    )
+    .unwrap();
     let (fixture, server) = workspace_server().await;
     // Acceptance and a Program that calls no Tool never read an approval, so
     // this fails only the observation.
@@ -235,32 +246,68 @@ async fn exec_reports_the_run_it_accepted_when_its_first_observation_fails() {
         .execute_fixture_sql("ALTER TABLE invocation_approvals RENAME TO approvals_away")
         .await
         .unwrap();
-    let started = exec(
+    let started = call(
         &server,
+        "exec",
         &json!({"goal": "Loop", "intent": "Start it", "program": PROGRAM}),
     )
-    .await;
+    .await
+    .unwrap();
     let task_id = started.get("task_id").and_then(Value::as_str);
     assert!(task_id.is_some(), "the call names the Task it started");
-    let continued = exec(
+    let continued = call(
         &server,
+        "exec",
         &json!({"task_id": task_id, "intent": "Start it again", "program": PROGRAM}),
     )
-    .await;
+    .await
+    .unwrap();
     assert_eq!(continued.get("task_id"), None);
+    assert_ne!(started.get("run_id"), continued.get("run_id"));
+    let runs = [&started, &continued].map(|accepted| json!({"run_id": accepted["run_id"]}));
+    // The fault is in force: an observation of each Run fails. Without it,
+    // `exec` reports a running Run whether or not it keeps the Run's id.
+    for (accepted, run) in [&started, &continued].into_iter().zip(&runs) {
+        assert_eq!(accepted.get("state"), Some(&json!("running")));
+        assert_eq!(call(&server, "wait", run).await, Err("internal_error"));
+    }
     fixture
         .execute_fixture_sql("ALTER TABLE approvals_away RENAME TO invocation_approvals")
         .await
         .unwrap();
 
-    assert_ne!(started.get("run_id"), continued.get("run_id"));
-    for accepted in [&started, &continued] {
-        assert_eq!(accepted.get("state"), Some(&json!("running")));
+    // Each `exec` logged the Run it could not observe, the Task it started,
+    // and the kind of the error, not the code its caller would have read.
+    let warnings = exported.log_records();
+    let warning = |run: &Value| {
+        let run_id = run["run_id"].as_str().unwrap();
+        warnings
+            .iter()
+            .find(|record| record.contains(WARNING) && record.contains(run_id))
+            .unwrap_or_else(|| panic!("no warning names Run {run_id}"))
+    };
+    let [first, second] = runs.each_ref().map(warning);
+    assert!(first.contains(task_id.unwrap()), "{first}");
+    assert!(!second.contains("coral.task.id"), "{second}");
+    for record in [first, second] {
+        assert!(record.contains("\"database\""), "{record}");
+    }
+
+    for run in &runs {
         // The caller reads the Run with the `run_id` the call reported.
-        let run_id = RunId::parse(accepted.get("run_id").and_then(Value::as_str).unwrap()).unwrap();
-        let observed = wait(&server, &run_id, None).await;
-        assert_eq!(observed.get("run_id"), accepted.get("run_id"));
+        let observed = call(&server, "wait", run).await.unwrap();
+        assert_eq!(observed.get("run_id"), run.get("run_id"));
         assert_eq!(observed.get("state"), Some(&json!("running")));
+        // Nothing else ends the Program before the Run's deadline.
+        while call(&server, "cancel", run).await == Err("run_request_not_yet_recorded") {}
+        let run_id = RunId::parse(run["run_id"].as_str().unwrap()).unwrap();
+        let ended = loop {
+            let update = wait(&server, &run_id, Some(json!(arguments::MAX_WAIT_MS))).await;
+            if update.get("state") != Some(&json!("running")) {
+                break update;
+            }
+        };
+        assert_eq!(ended.get("state"), Some(&json!("canceled")));
     }
 }
 
