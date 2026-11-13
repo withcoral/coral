@@ -163,10 +163,11 @@ coral-workspace = { path = "crates/coral-workspace" }
 # The v8 crate's build script downloads a prebuilt V8 archive from the
 # rusty_v8 release of the same version and links it. Cargo.lock covers the
 # crate's source, not that archive. The build script stops the build when
-# RUSTY_V8_ARCHIVE_SHA256 is set and the archive has another digest, so every
-# build that ships sets it to its target's row: Desktop's staging
+# RUSTY_V8_ARCHIVE_SHA256 is set and the archive has another digest. The
+# builds that Coral publishes set it to their target's row: Desktop's staging
 # (apps/desktop/scripts/runtime.mjs) reads this table, and docker/Dockerfile
-# repeats its Linux rows. xtask/tests/v8_archive.rs keeps them in step.
+# repeats its Linux rows. xtask/tests/v8_archive.rs keeps them in step. Other
+# builds, `make install` among them, do not check the archive.
 #
 # Each value is the SHA-256 of the release asset as downloaded, still gzipped:
 #   https://github.com/denoland/rusty_v8/releases/download/v<version>/librusty_v8_release_<target>.a.gz

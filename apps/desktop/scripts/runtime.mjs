@@ -84,7 +84,8 @@ function capture(command, args) {
     maxBuffer: 256 * 1024 * 1024,
   })
   if (result.status !== 0) {
-    throw new Error(`${command} ${args[0]} failed (${result.status ?? result.signal})`)
+    const cause = result.error?.message ?? result.status ?? result.signal
+    throw new Error(`${command} ${args[0]} failed (${cause})`)
   }
   return result.stdout
 }

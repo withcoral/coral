@@ -2,9 +2,11 @@
 //!
 //! The v8 crate's build script downloads a prebuilt archive and checks it
 //! against `RUSTY_V8_ARCHIVE_SHA256`. Desktop's staging reads the digests from
-//! `[workspace.metadata.v8-archive]`. The Dockerfile cannot read the table.
-//! It names the values again, and these tests keep the table, the v8 pin and
-//! the builds in step. Only a build proves that a digest is the archive's.
+//! `[workspace.metadata.v8-archive]`, and its own test proves that it passes
+//! them on: `apps/desktop/scripts/runtime.test.mjs`. The Dockerfile cannot
+//! read the table. It names the values again, and these tests keep the table,
+//! the v8 pin and the builds in step. Only a build proves that a digest is the
+//! archive's.
 
 #![allow(
     missing_docs,
@@ -144,14 +146,6 @@ fn the_table_has_a_row_for_every_target_a_shipping_workflow_builds() {
              [workspace.metadata.v8-archive.sha256]"
         );
     }
-
-    // Staging reads the table, so it needs no row of its own; it only has to
-    // keep asking for the digest.
-    let staging = read("apps/desktop/scripts/runtime.mjs");
-    assert!(
-        staging.contains("RUSTY_V8_ARCHIVE_SHA256") && staging.contains("'v8-archive'"),
-        "apps/desktop/scripts/runtime.mjs no longer sets RUSTY_V8_ARCHIVE_SHA256 from the table"
-    );
 }
 
 /// The target of a runner label. A label this test does not know stops it:

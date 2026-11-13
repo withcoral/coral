@@ -42,10 +42,11 @@
   signal timing and record metrics through `coral_telemetry::metric`.
   Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
-- A build whose binary ships sets `RUSTY_V8_ARCHIVE_SHA256` from
-  `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8 crate's build
-  script rejects a downloaded V8 archive with another digest. Desktop staging
-  and `docker/Dockerfile` do this; give a new build that ships the same pin.
+- A build that Coral publishes sets `RUSTY_V8_ARCHIVE_SHA256` to its target's
+  digest in `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8
+  crate's build script rejects a downloaded V8 archive with another digest.
+  Desktop staging reads the table and `docker/Dockerfile` repeats its Linux
+  rows; give a new published build the same pin.
 
 ### Enterprise code in `ee/`
 
