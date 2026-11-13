@@ -97,8 +97,9 @@ function workspaceOptions(workspaces: { name: string; displayName: string }[]) {
 type Change = { kind: 'grant' } | { kind: 'revoke'; workspace: GrantedWorkspace }
 
 /**
- * The workspaces that hold a grant, each with a button that revokes it, then a
- * button that grants the store to another workspace.
+ * The workspaces that hold a grant, each with a button that revokes it unless the
+ * workspace is archived. Then, when a workspace can still take the store, a button
+ * that grants it.
  */
 function WorkspaceGrants({
   store,

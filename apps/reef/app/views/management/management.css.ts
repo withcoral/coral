@@ -274,7 +274,7 @@ export const bulletList = style({
   listStyle: 'disc',
 })
 
-// A secret store's workspaces, each removable, then the button that adds one.
+// A secret store's workspaces, removable unless archived, then the button that adds one.
 export const grants = style({
   alignItems: 'center',
   display: 'flex',

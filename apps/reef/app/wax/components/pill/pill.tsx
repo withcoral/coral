@@ -96,7 +96,11 @@ export function Pill<T extends ElementType = 'div'>({
         <button
           aria-label={remove.label}
           className={styles.removeButton}
-          onClick={remove.onClick}
+          onClick={(event) => {
+            // The pill may have its own onClick; removing it should not run that too.
+            event.stopPropagation()
+            remove.onClick()
+          }}
           type="button"
         >
           <Icon color="inherit" name="X" size="14" />
