@@ -17,6 +17,7 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
 use super::periodic::{Passes, Schedule};
+use super::search_model::{Delivery, SearchModel};
 use super::server_config::{
     Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
 };
@@ -380,6 +381,20 @@ impl PreparedServerBuilder {
         let runtime_limits = deployment_config.runtime_limits()?;
         let config = builder.config;
         let vault = open_credential_vault(&deployment_config, state.credential_key_path())?;
+        // With the setting off, nothing looks for the model's files and
+        // nothing downloads them.
+        let search_model = deployment_config
+            .semantic_search_enabled()?
+            .then(|| {
+                coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
+                    .map(|client| Delivery::coral(state.state_dir(), client))
+                    .map_err(|_error| {
+                        AppError::FailedPrecondition(
+                            "search model download client initialization failed".into(),
+                        )
+                    })
+            })
+            .transpose()?;
         let (coral_db, state_lock) = state.into_parts();
         let mode = config.resolved_mode(&deployment_config)?;
         if session_auth.is_none() && !super::is_loopback_ip(mode.bind_addr().ip()) {
@@ -478,6 +493,7 @@ impl PreparedServerBuilder {
             policy,
             runtime_limits,
             reconcile_interval,
+            search_model,
             releases,
             usage,
             secret_stores,
@@ -602,6 +618,10 @@ pub struct RunningServer {
     run_recovery: AbortHandle,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
+    search_model: Option<SearchModel>,
+    search_model_delivery: Option<JoinHandle<()>>,
+    /// Loads the model for the Embedder; none while the vector side is off.
+    search_model_load: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
@@ -695,6 +715,12 @@ impl RunningServer {
         }
         self.passes.stop();
         self.search_reconcile.abort();
+        if let Some(delivery) = &self.search_model_delivery {
+            delivery.abort();
+        }
+        if let Some(load) = &self.search_model_load {
+            load.abort();
+        }
         if let Some(accounts) = &self.accounts
             && let Err(error) = accounts.stop_device_authorizations().await
         {
@@ -750,6 +776,14 @@ impl RunningServer {
         self.search_index.clone()
     }
 
+    /// The state of the search model's files. `None` when `[search]
+    /// semantic_search_enabled` is off: then nothing looks for the files
+    /// and nothing downloads them.
+    #[must_use]
+    pub fn search_model(&self) -> Option<SearchModel> {
+        self.search_model.clone()
+    }
+
     /// The readiness every listener of this process reports: database
     /// reachability, and not serving once shutdown begins.
     #[must_use]
@@ -792,6 +826,12 @@ impl Drop for RunningServer {
         }
         self.passes.stop();
         self.search_reconcile.abort();
+        if let Some(delivery) = &self.search_model_delivery {
+            delivery.abort();
+        }
+        if let Some(load) = &self.search_model_load {
+            load.abort();
+        }
         if let Some(accounts) = &self.accounts {
             accounts.abort_device_authorizations();
         }
@@ -880,6 +920,7 @@ pub(crate) async fn start_server(
     policy: coral_outbound::DestinationPolicy,
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
+    search_model: Option<Delivery>,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
     secret_stores: coral_secret_store::SecretStores,
@@ -915,6 +956,17 @@ pub(crate) async fn start_server(
     // reconcile task's first pass runs in the background, so neither boot nor
     // a request waits for it.
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
+    // Only Postgres keeps vectors yet, so only there does the Embedder need
+    // the model in memory. Every clone of the index is made after this, so
+    // each write wakes the Embedder; the model fills the slot once the
+    // delivery below finds the files.
+    let embedder_model = (search_model.is_some()
+        && database.system() == coral_db::DatabaseSystem::Postgres)
+        .then(|| watch::channel(None));
+    let search_index = match &embedder_model {
+        Some((_, model)) => search_index.with_embedder(model.clone()),
+        None => search_index,
+    };
     let provider_workflow =
         coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
     // Every Workspace has a Built-in Provider with this process's catalog,
@@ -1148,6 +1200,11 @@ pub(crate) async fn start_server(
         });
     }
     let search_reconcile = search_index.spawn_reconcile_task();
+    let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
+    let search_model_load = search_model
+        .as_ref()
+        .zip(embedder_model)
+        .map(|(files, (slot, _))| files.load_into(slot));
     Ok(RunningServer {
         providers,
         readiness,
@@ -1155,6 +1212,9 @@ pub(crate) async fn start_server(
         run_recovery,
         search_index,
         search_reconcile,
+        search_model,
+        search_model_delivery,
+        search_model_load,
         accounts,
         runs,
         compiler,
@@ -1263,5 +1323,29 @@ mod tests {
         })
         .await
         .expect("shutdown aborts the reconcile task");
+    }
+
+    #[tokio::test]
+    async fn the_search_model_is_not_looked_for_while_the_setting_is_off() {
+        // With the setting on, the delivery would request the real model
+        // from GitHub. `docker/image-test.sh` boots the image with the
+        // setting on, and the delivery's own tests use a local server.
+        for search in ["", "[search]\nsemantic_search_enabled = false\n"] {
+            let temp = TempDir::new().unwrap();
+            std::fs::write(
+                temp.path().join("config.toml"),
+                format!("[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n{search}"),
+            )
+            .unwrap();
+            let server = ServerBuilder::new()
+                .with_config_dir(temp.path())
+                .start()
+                .await
+                .unwrap();
+
+            assert!(server.search_model().is_none(), "{search:?}");
+
+            server.shutdown_inner().await.unwrap();
+        }
     }
 }

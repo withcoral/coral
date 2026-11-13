@@ -224,6 +224,14 @@ pub trait ProgramHost: Send + Sync {
         None
     }
 
+    /// Called once the Program's script is loaded into its fresh isolate,
+    /// before any of its JavaScript runs, and returns when it may run.
+    /// `false` ends it unrun with [`Error::ProgramHostTerminated`]. The CPU
+    /// budget is read after it returns.
+    fn start(&self) -> bool {
+        true
+    }
+
     /// Invokes one Tool by complete Call Path and native-JSON arguments.
     ///
     /// `location` is the authored call site captured before the call returns
@@ -243,7 +251,7 @@ pub trait ProgramHost: Send + Sync {
 
     /// Starts one call to a Tool that Coral performs by running its body in
     /// this Program, by complete Call Path and native-JSON arguments: the
-    /// array of the values it was called with. It settles once the call is
+    /// one object it was called with. It settles once the call is
     /// permitted, and only then does the body run; its outcome completes the
     /// call through the [`ToolCompletion`] this returns.
     ///
@@ -262,7 +270,7 @@ pub trait ProgramHost: Send + Sync {
     ) -> PermitFuture {
         Box::pin(async {
             Err(ToolHostError::Rejected {
-                code: "tool_unavailable",
+                code: "tool_unavailable".into(),
                 message: "Tool is unavailable".into(),
                 trace_id: None,
                 suggestions: Vec::new(),
@@ -337,7 +345,7 @@ pub enum ToolHostError {
     /// Reject with a known, safe Coral Failure after durable completion.
     Rejected {
         /// Domain-owned stable `snake_case` code, not an upstream error code.
-        code: &'static str,
+        code: std::borrow::Cow<'static, str>,
         /// Safe domain message, never an upstream or host diagnostic.
         message: std::borrow::Cow<'static, str>,
         /// Optional lowercase W3C trace identifier; grants no authority.
@@ -351,9 +359,9 @@ pub enum ToolHostError {
     /// `metadata` from the `ToolError`.
     Upstream {
         /// Domain-owned stable `snake_case` code, never a Coral Failure code.
-        code: &'static str,
+        code: std::borrow::Cow<'static, str>,
         /// Safe domain message, never an upstream diagnostic.
-        message: &'static str,
+        message: std::borrow::Cow<'static, str>,
         /// The encoded Tool Result the Program does not receive.
         outcome_json: String,
     },

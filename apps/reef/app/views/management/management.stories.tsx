@@ -1393,19 +1393,9 @@ export const GrantSecretStore: Story = {
   parameters: OrganizationSecretStores.parameters,
   play: async ({ canvas }) => {
     const body = within(document.body)
-    await userEvent.click(canvas.getByRole('button', { name: 'Actions for retired' }))
-    // A menu takes focus a frame after it opens, and Escape goes to the focused element.
-    // Wait for both, or the check passes before the menu opens and Escape closes nothing.
-    const retired = await body.findByRole('menu')
-    await waitFor(() => expect(retired).toContainElement(document.activeElement as HTMLElement))
-    await expect(
-      within(retired).queryByRole('menuitem', { name: 'Grant to a workspace' }),
-    ).toBeNull()
-    await userEvent.keyboard('{Escape}')
-    await waitFor(() => expect(body.queryByRole('menu')).toBeNull())
+    await expect(canvas.queryByRole('button', { name: 'Grant retired to a workspace' })).toBeNull()
 
-    await userEvent.click(canvas.getByRole('button', { name: 'Actions for platform' }))
-    await userEvent.click(await body.findByRole('menuitem', { name: 'Grant to a workspace' }))
+    await userEvent.click(canvas.getByRole('button', { name: 'Grant platform to a workspace' }))
     const dialog = within(await body.findByRole('dialog'))
     await expect(dialog.getByRole('button', { name: 'Grant' })).toBeDisabled()
     await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
@@ -1423,18 +1413,22 @@ export const GrantSecretStore: Story = {
     await expect(fields.get('workspace')).toBe('workspaces/b71e94d0-0000-4000-8000-000000000002')
   },
 }
-// Catches: a revocation offered for an archived workspace, which Coral refuses.
+// Catches: a revocation offered for an archived workspace, which Coral refuses, or a
+// form that submits the wrong store or workspace.
 export const RevokeSecretStore: Story = {
   render: OrganizationSecretStores.render,
   parameters: OrganizationSecretStores.parameters,
   play: async ({ canvas }) => {
     const body = within(document.body)
-    await userEvent.click(canvas.getByRole('button', { name: 'Actions for platform' }))
-    await userEvent.click(await body.findByRole('menuitem', { name: 'Revoke from a workspace' }))
+    await expect(canvas.queryByRole('button', { name: 'Revoke platform from Closed' })).toBeNull()
+    await userEvent.click(canvas.getByRole('button', { name: 'Revoke platform from Research' }))
     const dialog = within(await body.findByRole('dialog'))
-    await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
-    await body.findByRole('menuitemradio', { name: 'Research' })
-    await expect(body.queryByRole('menuitemradio', { name: 'Closed' })).toBeNull()
+    const submit = dialog.getByRole('button', { name: 'Revoke' })
+    await expect(submit).toBeEnabled()
+    const fields = new FormData((submit as HTMLButtonElement).form!)
+    await expect(fields.get('intent')).toBe('revoke')
+    await expect(fields.get('name')).toBe('secretStores/platform')
+    await expect(fields.get('workspace')).toBe('workspaces/research')
   },
 }
 

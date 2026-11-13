@@ -49,8 +49,8 @@ impl ToolCompletion for AtOnce {
     }
 
     fn complete(self: Box<Self>, outcome: ToolBodyOutcome) -> ToolFuture {
-        let rejected = |code, message| ToolHostError::Rejected {
-            code,
+        let rejected = |code: &'static str, message| ToolHostError::Rejected {
+            code: code.into(),
             message,
             trace_id: None,
             suggestions: Vec::new(),

@@ -36,6 +36,16 @@ pub(crate) fn evaluate_script<'s>(
     source_text: &str,
     resource_name: &str,
 ) -> Result<v8::Local<'s, v8::Value>, Error> {
+    let script = compile_script(scope, source_text, resource_name)?;
+    run_compiled(scope, script, resource_name)
+}
+
+/// Compiles one script into the current context without running it.
+pub(crate) fn compile_script<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    source_text: &str,
+    resource_name: &str,
+) -> Result<v8::Local<'s, v8::Script>, Error> {
     let try_catch = std::pin::pin!(v8::TryCatch::new(scope));
     let mut try_catch = try_catch.init();
     let source = v8::String::new(&try_catch, source_text)
@@ -56,7 +66,7 @@ pub(crate) fn evaluate_script<'s>(
         None,
     );
     let mut source = v8::script_compiler::Source::new(source, Some(&origin));
-    let script = v8::script_compiler::compile(
+    v8::script_compiler::compile(
         &try_catch,
         &mut source,
         v8::script_compiler::CompileOptions::NoCompileOptions,
@@ -65,7 +75,17 @@ pub(crate) fn evaluate_script<'s>(
     .ok_or_else(|| match try_catch.exception() {
         Some(exception) => Error::Engine(format_thrown_value(&mut try_catch, exception)),
         None => Error::Engine(format!("failed to compile {resource_name}")),
-    })?;
+    })
+}
+
+/// Runs one compiled script.
+pub(crate) fn run_compiled<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    script: v8::Local<'s, v8::Script>,
+    resource_name: &str,
+) -> Result<v8::Local<'s, v8::Value>, Error> {
+    let try_catch = std::pin::pin!(v8::TryCatch::new(scope));
+    let mut try_catch = try_catch.init();
     script
         .run(&try_catch)
         .ok_or_else(|| match try_catch.exception() {
