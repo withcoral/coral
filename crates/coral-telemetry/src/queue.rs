@@ -142,7 +142,7 @@ impl Gate {
     fn admit(&self) -> bool {
         let admitted = self
             .pending
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
                 (pending < self.capacity).then_some(pending + 1)
             })
             .is_ok();

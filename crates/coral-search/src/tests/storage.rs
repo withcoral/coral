@@ -30,10 +30,9 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
     );
 
     tracer.upsert_tool_row("Weekly summary").await;
-    assert!(
-        text_matches(&database, &tracer.workspace, "outlook")
-            .await
-            .is_empty()
+    assert_eq!(
+        text_matches(&database, &tracer.workspace, "outlook").await,
+        [] as [std::string::String; 0]
     );
     assert_eq!(
         text_matches(&database, &tracer.workspace, "summary").await,
@@ -49,10 +48,9 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
         )
         .await
         .expect("delete the Tool row");
-    assert!(
-        text_matches(&database, &tracer.workspace, "summary")
-            .await
-            .is_empty()
+    assert_eq!(
+        text_matches(&database, &tracer.workspace, "summary").await,
+        [] as [std::string::String; 0]
     );
 }
 
@@ -103,10 +101,9 @@ async fn sqlite_text_index_follows_a_private_tool_removal() {
         .sync_authored_tool(tracer.workspace.clone(), saved.id().clone());
     tracer.modules.index.settled().await;
 
-    assert!(
-        text_matches(&database, &tracer.workspace, "forecast")
-            .await
-            .is_empty()
+    assert_eq!(
+        text_matches(&database, &tracer.workspace, "forecast").await,
+        [] as [std::string::String; 0]
     );
 }
 
@@ -160,10 +157,9 @@ async fn sqlite_key_step_keeps_one_copy_of_each_row_indexed_before_it() {
         text_matches(&database, &workspace, "zebras").await,
         std::slice::from_ref(&comments)
     );
-    assert!(
-        text_matches(&database, &workspace, "stale")
-            .await
-            .is_empty()
+    assert_eq!(
+        text_matches(&database, &workspace, "stale").await,
+        [] as [std::string::String; 0]
     );
     assert_eq!(
         text_index_docs(&database, &workspace).await,

@@ -209,8 +209,7 @@ fn authentication(contract: AuthenticationConfiguration) -> WireAuthentication {
             scope_format: wire_scope_format(scope_format),
             oauth_client_id: client
                 .as_ref()
-                .map(|policy| policy.client_id.clone())
-                .unwrap_or_default(),
+                .map_or_default(|policy| policy.client_id.clone()),
             application: client.as_ref().map(application_view),
         }),
         AuthenticationConfiguration::OAuthAuthorizationCode {
@@ -228,8 +227,7 @@ fn authentication(contract: AuthenticationConfiguration) -> WireAuthentication {
                 scope_format: wire_scope_format(scope_format),
                 oauth_client_id: client
                     .as_ref()
-                    .map(|policy| policy.client_id.clone())
-                    .unwrap_or_default(),
+                    .map_or_default(|policy| policy.client_id.clone()),
                 application: client.as_ref().map(application_view),
             })
         }

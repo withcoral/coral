@@ -93,14 +93,12 @@ pub(super) fn agent(workspace: &WorkspaceId, principal: &coral_workspace::Princi
     }
 }
 pub(super) fn task_reference(submission: Option<&coral_task::TaskSubmission>) -> String {
-    submission
-        .map(|value| {
-            format!(
-                "workspaces/{}/tasks/{}",
-                value.task.workspace, value.task.task
-            )
-        })
-        .unwrap_or_default()
+    submission.map_or_default(|value| {
+        format!(
+            "workspaces/{}/tasks/{}",
+            value.task.workspace, value.task.task
+        )
+    })
 }
 pub(super) fn submission(value: &coral_task::TaskSubmission) -> wire::ActivityInteraction {
     super::interaction(&task_reference(Some(value)), &value.interaction)
@@ -121,8 +119,7 @@ pub(super) fn run(value: &coral_run::RunSummary) -> wire::ActivityRun {
                 next_action: page
                     .next_action
                     .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
+                    .map_or_default(ToString::to_string),
             }),
         actor_label: actor_label(&value.principal, value.agent_label.as_deref()),
         workspace_label: value.workspace_label.clone(),
@@ -270,7 +267,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             InvocationStatus::Ended => wire::ActivityInvocationState::Ended,
         }
         .into(),
-        outcome: value.outcome.map(outcome).unwrap_or_default(),
+        outcome: value.outcome.map_or_default(outcome),
         started_at_unix_nanos: value.started_at,
         ended_at_unix_nanos: value.ended_at,
         duration_nanos: value.duration,
@@ -368,11 +365,7 @@ fn program_error(value: &coral_run::ProgramError) -> wire::ActivityProgramError 
                 column: f.column,
             })
             .collect(),
-        tool_code: value
-            .tool
-            .as_ref()
-            .map(|o| o.code.clone())
-            .unwrap_or_default(),
+        tool_code: value.tool.as_ref().map_or_default(|o| o.code.clone()),
         tool_trace_id: value
             .tool
             .as_ref()
@@ -382,8 +375,7 @@ fn program_error(value: &coral_run::ProgramError) -> wire::ActivityProgramError 
             .tool
             .as_ref()
             .and_then(|o| o.status)
-            .map(u32::from)
-            .unwrap_or_default(),
+            .map_or_default(u32::from),
         tool_body: value
             .tool
             .as_ref()
@@ -520,13 +512,11 @@ pub(super) async fn inspect_run(
     summary.intent = history
         .submission
         .as_ref()
-        .map(|submission| submission.interaction.intent.as_str().to_owned())
-        .unwrap_or_default();
+        .map_or_default(|submission| submission.interaction.intent.as_str().to_owned());
     Ok(Response::new(wire::InspectRunResponse {
         account_connection: detail
             .account_connection
-            .map(|id| format!("workspaces/{workspace}/accountConnections/{id}"))
-            .unwrap_or_default(),
+            .map_or_default(|id| format!("workspaces/{workspace}/accountConnections/{id}")),
         submission: history.submission.as_ref().map(submission),
         run: Some(summary),
         submitted_source: detail.submitted_source,

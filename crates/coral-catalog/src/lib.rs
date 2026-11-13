@@ -63,8 +63,7 @@ pub async fn credential_fields_in_transaction(
 ) -> Result<std::collections::BTreeMap<String, CredentialField>, Error> {
     Ok(repository::load_configuration(transaction, generation_id)
         .await?
-        .map(|configuration| configuration.credential_fields)
-        .unwrap_or_default())
+        .map_or_default(|configuration| configuration.credential_fields))
 }
 
 /// Returns the exact pinned input for an owner-authorized settings-only Update.

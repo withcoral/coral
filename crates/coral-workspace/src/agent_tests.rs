@@ -26,13 +26,13 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
         .await
         .unwrap();
     let id = issued.agent.principal().id();
-    assert!(
+    assert_eq!(
         module
             .inspect_agent(&owner, w.id(), id)
             .await
             .unwrap()
-            .access_blockers(99)
-            .is_empty()
+            .access_blockers(99),
+        [] as [management::AgentAccessBlocker; 0]
     );
     module
         .set_agent_state(&context, w.id(), id, AgentState::Disabled)
@@ -439,13 +439,9 @@ async fn event_failure_rolls_back_agent_registration_and_initial_credential_toge
             .await,
         Err(Error::Database(_))
     ));
-    assert!(
-        module
-            .1
-            .list_agents(&owner, workspace.id())
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        module.1.list_agents(&owner, workspace.id()).await.unwrap(),
+        [] as [agent_types::Agent; 0]
     );
     assert_eq!(
         module

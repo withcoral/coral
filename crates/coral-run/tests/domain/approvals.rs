@@ -856,7 +856,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     )
     .await;
     assert_final_code(&terminal, "approval_expired");
-    assert!(terminal.required_actions().is_empty());
+    assert_eq!(terminal.required_actions(), []);
     let exact = fixture
         .runs
         .inspect_run(
@@ -1359,12 +1359,12 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
             account_id
         } else {
             wait_for_connection(&accounts, &tool).await;
-            assert!(
+            assert_eq!(
                 approvals
                     .list_for_run(&tool.principal, &tool.workspace_id, run.run_id())
                     .await
-                    .unwrap()
-                    .is_empty()
+                    .unwrap(),
+                [] as [crate::approval::ApprovalRequest; 0]
             );
             let authorization = accounts
                 .start_user_authorization(

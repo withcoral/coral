@@ -738,8 +738,7 @@ impl ToolInvoker {
             Ok(coral_search::Discovery::Exact(lookup)) => lookup
                 .missing()
                 .first()
-                .map(|missing| missing.suggestions().to_vec())
-                .unwrap_or_default(),
+                .map_or_default(|missing| missing.suggestions().to_vec()),
             Ok(coral_search::Discovery::Page(_)) => Vec::new(),
             Err(_error) => {
                 tracing::warn!(

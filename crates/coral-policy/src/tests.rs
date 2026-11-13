@@ -399,12 +399,12 @@ async fn bounded_policy_batch_is_atomic_and_rejects_duplicates() {
             .unwrap()
             .is_explicit()
     );
-    assert!(
+    assert_eq!(
         policies
             .list_lifecycle_events(&owner, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::AdministrativeLifecycleEvent; 0]
     );
     let oversized = (0..101)
         .map(|index| {
@@ -1170,12 +1170,12 @@ async fn rejected_and_repeated_updates_do_not_create_policy_or_lifecycle_evidenc
             .access_state(),
         ToolAccessState::ApprovalRequired
     );
-    assert!(
+    assert_eq!(
         policies
             .list_lifecycle_events(&owner, workspace.id())
             .await
-            .expect("no accepted policy Events")
-            .is_empty()
+            .expect("no accepted policy Events"),
+        [] as [crate::AdministrativeLifecycleEvent; 0]
     );
 
     policies
@@ -1460,7 +1460,10 @@ async fn policy_rejects_targets_from_another_workspace_and_writes_nothing() {
             .unwrap()
             .is_explicit()
     );
-    assert!(events(&in_first).await.is_empty());
+    assert_eq!(
+        events(&in_first).await,
+        [] as [crate::AdministrativeLifecycleEvent; 0]
+    );
     assert_eq!(
         policies
             .decision(&owner, &in_second)

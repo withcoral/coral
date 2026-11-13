@@ -500,8 +500,7 @@ fn materialize_tool(
     let presentation = tool_presentation(object, &summary, annotations.as_ref());
     let hints = annotations
         .as_ref()
-        .map(McpToolAnnotations::hints)
-        .unwrap_or_default();
+        .map_or_default(McpToolAnnotations::hints);
     let task_support = parse_task_support(object.get("execution"), &mut diagnostics);
     if task_support == Some(McpTaskSupport::Required) {
         diagnostics.push(diagnostic(

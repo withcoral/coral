@@ -1495,7 +1495,7 @@ async fn regeneration_atomically_replaces_the_active_search_generation() {
         )
         .await
         .expect("search after activation");
-    assert!(old.hits().is_empty());
+    assert_eq!(old.hits(), []);
     let current = fixture
         .search
         .search(
@@ -1793,7 +1793,7 @@ async fn oversized_complete_tool_description_is_unavailable_not_truncated() {
         .search(&principal, &workspace_id, &SearchRequest::list())
         .await
         .expect("list discovery");
-    assert!(page.hits().is_empty());
+    assert_eq!(page.hits(), []);
     assert!(matches!(
         fixture
             .search
@@ -1911,7 +1911,7 @@ async fn private_tool_projection_bounds_do_not_become_authoring_limits() {
         )
         .await
         .expect("failed per-function declaration lane does not fail metadata search");
-    assert!(declaration.hits().is_empty());
+    assert_eq!(declaration.hits(), []);
 }
 
 #[tokio::test]
@@ -2161,7 +2161,7 @@ async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page()
         )
         .await
         .expect("a later page reapplies current visibility");
-    assert!(after_visibility_change.hits().is_empty());
+    assert_eq!(after_visibility_change.hits(), []);
     assert_eq!(after_visibility_change.next_offset(), None);
 }
 
@@ -2447,7 +2447,10 @@ async fn agent_readiness_and_discovery_use_the_exact_agents_account() {
         .await
         .unwrap();
     let connected = inspect().await.unwrap().remove(0);
-    assert!(connected.readiness.blockers.is_empty());
+    assert_eq!(
+        connected.readiness.blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
     let AgentAccountUse::Separate(account) = connected.account else {
         panic!("separate Agent Account expected")
     };
@@ -2694,7 +2697,10 @@ async fn user_caller_discovery_does_not_wait_for_a_personal_account() {
     fixture
         .assert_discovery(principal, workspace, &[call_path], &[])
         .await;
-    assert!(readiness().await.unwrap().blockers.is_empty());
+    assert_eq!(
+        readiness().await.unwrap().blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
     // Another Workspace Owner needs no personal Account either.
     fixture
         .assert_discovery(
@@ -2710,7 +2716,10 @@ async fn user_caller_discovery_does_not_wait_for_a_personal_account() {
     fixture
         .assert_discovery(principal, workspace, &[call_path], &[])
         .await;
-    assert!(readiness().await.unwrap().blockers.is_empty());
+    assert_eq!(
+        readiness().await.unwrap().blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
 
     // Incompatible after the Provider's credential contract changes.
     let mut document = credential_document();
@@ -2754,7 +2763,10 @@ async fn user_caller_discovery_does_not_wait_for_a_personal_account() {
         )
         .await
         .unwrap();
-    assert!(readiness().await.unwrap().blockers.is_empty());
+    assert_eq!(
+        readiness().await.unwrap().blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
 
     // Disconnected.
     route
@@ -2765,7 +2777,10 @@ async fn user_caller_discovery_does_not_wait_for_a_personal_account() {
     fixture
         .assert_discovery(principal, workspace, &[call_path], &[])
         .await;
-    assert!(readiness().await.unwrap().blockers.is_empty());
+    assert_eq!(
+        readiness().await.unwrap().blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
 }
 
 #[tokio::test]
@@ -2789,7 +2804,7 @@ async fn user_caller_discovery_exposes_no_account_evidence_and_starts_no_connect
             .unwrap();
         assert!(!format!("{exact:?}").contains(&private_account_id));
     }
-    assert!(
+    assert_eq!(
         fixture
             .search
             .search(
@@ -2799,8 +2814,8 @@ async fn user_caller_discovery_exposes_no_account_evidence_and_starts_no_connect
             )
             .await
             .unwrap()
-            .hits()
-            .is_empty()
+            .hits(),
+        []
     );
     for actor in [&route.user, &route.owner] {
         assert!(
@@ -3005,7 +3020,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .collect::<Vec<_>>(),
         [second_path]
     );
-    assert!(
+    assert_eq!(
         fixture
             .search
             .search(
@@ -3015,8 +3030,8 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             )
             .await
             .unwrap()
-            .hits()
-            .is_empty()
+            .hits(),
+        []
     );
     let setup = fixture
         .providers
@@ -3509,7 +3524,10 @@ async fn exact_provider_readiness_does_not_read_unrelated_providers() {
         .await
         .expect("one Provider must not depend on an unrelated catalog");
     assert_eq!(exact.provider.id(), &wanted.provider_id);
-    assert!(exact.blockers.is_empty());
+    assert_eq!(
+        exact.blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
 }
 
 #[tokio::test]
@@ -3538,7 +3556,10 @@ async fn readiness_inspection_does_not_require_private_tool_persistence() {
         .await
         .expect("readiness never reads Private Tools");
     assert_eq!(inspections.len(), 1);
-    assert!(inspections.first().unwrap().blockers.is_empty());
+    assert_eq!(
+        inspections.first().unwrap().blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
     let agent = fixture
         .workspaces
         .create_agent(
@@ -3645,7 +3666,10 @@ async fn provider_inspection_reports_policy_and_lifecycle_blockers() {
         .expect("inspect Providers");
     assert_eq!(ready.len(), 1);
     assert_eq!(ready[0].provider.id(), &published.provider_id);
-    assert!(ready[0].blockers.is_empty());
+    assert_eq!(
+        ready[0].blockers,
+        [] as [coral_provider::access::ProviderBlocker; 0]
+    );
     assert!(!format!("{ready:?}").contains(ACCOUNT_LABEL_CANARY));
 
     // Disabling the only Tool leaves the Provider with nothing to call.

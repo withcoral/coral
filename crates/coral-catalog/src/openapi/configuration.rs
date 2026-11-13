@@ -575,8 +575,7 @@ fn validate_credential_fields(
     let bound = configuration
         .authentication
         .as_ref()
-        .map(AuthenticationConfiguration::credential_fields)
-        .unwrap_or_default();
+        .map_or_default(AuthenticationConfiguration::credential_fields);
     if bound.is_empty() {
         errors.push(field_error(
             "authentication.fields",

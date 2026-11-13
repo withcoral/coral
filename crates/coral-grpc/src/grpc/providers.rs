@@ -66,8 +66,7 @@ pub(super) fn provider_view(
         etag: provider.etag(),
         namespace: call_root
             .namespace()
-            .map(|namespace| namespace.as_str().into())
-            .unwrap_or_default(),
+            .map_or_default(|namespace| namespace.as_str().into()),
         call_root: call_root.as_str().into(),
         builtin: matches!(call_root, ProviderCallRoot::Builtin),
         icon_digest: provider.icon_digest().unwrap_or_default().into(),
@@ -467,8 +466,7 @@ impl GrpcServices {
             authorized: authentication.authorized,
             provisional_grant_id: authentication
                 .provisional_grant_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
+                .map_or_default(|id| id.to_string()),
             automatic_refresh: authentication.automatic_refresh,
             holds_secret_references: authentication.holds_secret_references,
             granted_scope: authentication.granted_scope,
@@ -867,8 +865,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                 diagnostic: publication.diagnostic().map(diagnostic),
                 provider: publication
                     .published_provider()
-                    .map(provider_name)
-                    .unwrap_or_default(),
+                    .map_or_default(provider_name),
             }
         };
         Ok(Response::new(view))

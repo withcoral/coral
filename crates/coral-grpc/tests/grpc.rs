@@ -565,8 +565,8 @@ async fn workspace_management_requires_a_membership_even_for_an_organization_own
         .unwrap()
         .into_inner();
     assert_eq!(created.display_name, "Alice's Workspace");
-    assert!(created.mcp_endpoint.is_empty());
-    assert!(created.organization_mcp_endpoint.is_empty());
+    assert_eq!(created.mcp_endpoint, "");
+    assert_eq!(created.organization_mcp_endpoint, "");
     assert_eq!(
         created.effective_role,
         management::WorkspaceRole::Owner as i32
@@ -594,7 +594,7 @@ async fn workspace_management_requires_a_membership_even_for_an_organization_own
         management::WorkspaceRole::Owner as i32
     );
     assert_eq!(inspected.current_user, "users/member");
-    assert!(!inspected.etag.is_empty());
+    assert_ne!(inspected.etag, "");
     let rename = management::UpdateWorkspaceRequest {
         workspace: Some(management::Workspace {
             display_name: "Renamed".into(),
@@ -1366,7 +1366,10 @@ async fn only_an_organization_owner_lists_the_defined_secret_stores() {
         .await
         .unwrap()
         .into_inner();
-    assert!(answer.secret_stores.is_empty());
+    assert_eq!(
+        answer.secret_stores,
+        [] as [coral_grpc::coral::management::v1::SecretStore; 0]
+    );
 }
 
 /// A deployment that defines only the `platform` store.
@@ -1507,7 +1510,7 @@ async fn grants_cross_the_wire_with_their_availability() {
         first.workspace_state,
         management::WorkspaceState::Active as i32
     );
-    assert!(!first.workspace_display_name.is_empty());
+    assert_ne!(first.workspace_display_name, "");
     assert_eq!(first.secret_store.as_ref(), Some(&platform));
     assert_eq!(second.secret_store.as_ref(), Some(&removed));
 

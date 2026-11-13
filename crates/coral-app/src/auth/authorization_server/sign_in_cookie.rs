@@ -211,7 +211,10 @@ mod tests {
             evicted_by_new_sign_in(&headers, true),
             vec![name("state-10", 10, true)]
         );
-        assert!(evicted_by_new_sign_in(&browser(held.get(..2).expect("two")), true).is_empty());
+        assert_eq!(
+            evicted_by_new_sign_in(&browser(held.get(..2).expect("two")), true),
+            [] as [std::string::String; 0]
+        );
         assert!(
             evicted_by_new_sign_in(&headers, false).is_empty(),
             "a loopback server reads only unprefixed names"

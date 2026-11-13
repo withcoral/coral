@@ -2467,7 +2467,7 @@ fn composed_reference_cycles_widen_to_strict_compiling_types() {
         .lines()
         .filter(|line| line.starts_with("type ") && !line.starts_with("type HttpResult<"))
         .collect::<Vec<_>>();
-    assert!(!aliases.is_empty());
+    assert_ne!(aliases, [] as [&str; 0]);
     assert!(
         aliases.iter().all(|alias| alias.ends_with(" = unknown;")),
         "reference-only cycle must widen instead of producing circular aliases: {aliases:?}"
@@ -3721,7 +3721,7 @@ fn server_user_information_is_rejected_without_echoing_it() {
     let Err(errors) = document.configure(configuration) else {
         panic!("a server URL with user information is not a destination");
     };
-    assert!(!errors.is_empty());
+    assert_ne!(errors, [] as [coral_catalog::ConfigurationFieldError; 0]);
     assert!(errors.iter().all(|error| !error.message.contains("canary")));
 }
 

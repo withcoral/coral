@@ -157,8 +157,7 @@ fn projected_media_type(media_type: &str) -> String {
     let essence = media_type
         .split(';')
         .next()
-        .map(str::trim)
-        .unwrap_or_default()
+        .map_or_default(str::trim)
         .to_ascii_lowercase();
     if essence.contains('*') {
         "string".to_string()

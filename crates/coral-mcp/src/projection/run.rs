@@ -381,7 +381,7 @@ pub(crate) fn handoff_progress(
         .find(|action| action.required_actor == RequiredActor::InvokingUser)?;
     let url = human_interface.page_url(&action.action_path);
     let label = action.provider_label.as_deref();
-    let provider = label.map(|label| format!(" ({label})")).unwrap_or_default();
+    let provider = label.map_or_default(|label| format!(" ({label})"));
     // The link comes first: a client that cuts the line keeps it whole.
     Some(match (&action.request, action.call_path.as_deref()) {
         (RequiredActionRequest::InvocationApproval(_), Some(tool)) => {

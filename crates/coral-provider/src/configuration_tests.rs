@@ -58,7 +58,10 @@ async fn configuration_preview_retains_each_tools_blocking_reasons() {
         .confirm_setup_configuration(&context, &owner, setup.id(), 0, values)
         .await
         .unwrap();
-    assert!(review.errors.is_empty());
+    assert_eq!(
+        review.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(review.tools.len(), catalog.tools().len());
     for (reviewed, tool) in review.tools.iter().zip(catalog.tools()) {
         assert_eq!(reviewed.key, tool.key().as_str());
@@ -140,7 +143,10 @@ async fn publication_configuration_race(aba: bool) {
         .confirm_setup_configuration(&context, &owner, setup.id(), 0, original.clone())
         .await
         .unwrap();
-    assert!(first.errors.is_empty());
+    assert_eq!(
+        first.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let gate = TestMaterializer::gated();
     let providers = ProviderModule::with_test_dependencies(
         h.database.clone(),
@@ -183,14 +189,20 @@ async fn publication_configuration_race(aba: bool) {
             )
             .await
             .unwrap();
-        assert!(changed.errors.is_empty());
+        assert_eq!(
+            changed.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         if aba {
             let restored = h
                 .providers
                 .confirm_setup_configuration(&context, &owner, setup.id(), 2, original)
                 .await
                 .unwrap();
-            assert!(restored.errors.is_empty());
+            assert_eq!(
+                restored.errors,
+                [] as [coral_catalog::ConfigurationFieldError; 0]
+            );
         }
     };
     let edited = tokio::time::timeout(Duration::from_secs(5), editing).await;
@@ -210,12 +222,12 @@ async fn publication_configuration_race(aba: bool) {
             .await,
         Err(Error::ProviderPublicationNotFound)
     ));
-    assert!(
+    assert_eq!(
         providers
             .inspect_providers(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     assert_eq!(
         providers
@@ -751,7 +763,10 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
         .confirm_setup_configuration(&context, &owner, setup.id(), 1, equivalent.clone())
         .await
         .unwrap();
-    assert!(unchanged.errors.is_empty());
+    assert_eq!(
+        unchanged.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(
         h.providers
             .setup_authentication(&actor, &owner, setup.id(), 11)
@@ -765,7 +780,10 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
         .confirm_setup_configuration(&context, &owner, setup.id(), unchanged.revision, equivalent)
         .await
         .unwrap();
-    assert!(edited.errors.is_empty());
+    assert_eq!(
+        edited.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     if let Some(exchange) = exchange {
         gate.release.notify_one();
         let result = tokio::time::timeout(Duration::from_secs(5), exchange)
@@ -784,7 +802,7 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
         .await
         .unwrap();
     assert!(!reset.authorized);
-    assert!(reset.granted_scope.is_empty());
+    assert_eq!(reset.granted_scope, "");
     assert_eq!(
         reset.authorization.as_ref().map(|flow| flow.state),
         Some(SetupAuthorizationState::Canceled)
@@ -876,12 +894,12 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
         assert_eq!(publication.diagnostic().unwrap().code(), "account_required");
         assert!(publication.published_provider().is_none());
-        assert!(
+        assert_eq!(
             h.providers
                 .inspect_providers(&actor, workspace.id())
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [crate::Provider; 0]
         );
         assert!(matches!(
             h.accounts
@@ -965,7 +983,10 @@ async fn incompatible_update_preserves_route_and_reconnect_repairs_only_the_exac
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let grant = h
         .accounts
         .authorize_setup(
@@ -1091,7 +1112,10 @@ async fn incompatible_update_preserves_route_and_reconnect_repairs_only_the_exac
         )
         .await
         .unwrap();
-    assert!(changed.errors.is_empty());
+    assert_eq!(
+        changed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(
         changed.interrupts_access == Some(true),
         "same-host base-path changes require fresh authorization"
@@ -1338,7 +1362,10 @@ async fn update_retains_saved_variables_and_exposes_changed_defaults_and_removed
         .confirm_setup_configuration(&context, &owner, setup.id(), 0, saved.clone())
         .await
         .unwrap();
-    assert!(confirmation.errors.is_empty());
+    assert_eq!(
+        confirmation.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let published = h
         .providers
         .publish_workspace_provider(
@@ -1428,7 +1455,10 @@ async fn update_retains_saved_variables_and_exposes_changed_defaults_and_removed
         )
         .await
         .unwrap();
-    assert!(confirmation.errors.is_empty());
+    assert_eq!(
+        confirmation.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(confirmation.confirmed, Some(resolved));
     assert_eq!(
         confirmation.destinations.get("getData").map(String::as_str),
@@ -1635,7 +1665,10 @@ async fn anonymous_and_normalized_destination_updates_do_not_warn_but_new_creden
             )
             .await
             .unwrap();
-        assert!(first.errors.is_empty());
+        assert_eq!(
+            first.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         let route = if initial_auth == AuthenticationConfiguration::None {
             CredentialRoute::None
         } else {
@@ -1684,7 +1717,10 @@ async fn anonymous_and_normalized_destination_updates_do_not_warn_but_new_creden
             )
             .await
             .unwrap();
-        assert!(confirmation.errors.is_empty());
+        assert_eq!(
+            confirmation.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         assert_eq!(confirmation.interrupts_access, Some(interrupts));
         let request = ProviderRegenerationRequest::new(
             crate::account_tests::authorization_request(),
@@ -1866,7 +1902,10 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
             .confirm_setup_configuration(&context, &owner, replacement.id(), review.revision, saved)
             .await
             .unwrap();
-        assert!(retained.errors.is_empty());
+        assert_eq!(
+            retained.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         assert!(
             retained.interrupts_access == Some(false),
             "a changed document default is not an accepted configuration edit"
@@ -1882,7 +1921,10 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
             )
             .await
             .unwrap();
-        assert!(adopted.errors.is_empty());
+        assert_eq!(
+            adopted.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         assert!(
             adopted.interrupts_access == Some(true),
             "{field} changes credential authority"
@@ -2151,7 +2193,10 @@ async fn normalized_confirmation_replay_is_event_free_and_stale_edits_are_reject
         )
         .await
         .unwrap();
-    assert!(first.errors.is_empty());
+    assert_eq!(
+        first.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(first.revision, 1);
     let replay = h
         .providers
@@ -2258,7 +2303,10 @@ async fn concurrent_distinct_confirmations_have_exactly_one_winner() {
         other => panic!("exactly one CAS must win: {other:?}"),
     };
     assert!(matches!(loser, Error::EtagMismatch));
-    assert!(winner.errors.is_empty());
+    assert_eq!(
+        winner.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(winner.revision, 1);
     assert_eq!(winner.confirmed, Some(expected));
     assert_eq!(
@@ -2412,7 +2460,10 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
             .confirm_setup_configuration(&context, &owner, setup.id(), 0, values.clone())
             .await
             .unwrap();
-        assert!(review.errors.is_empty());
+        assert_eq!(
+            review.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         assert_eq!(review.diagnostic.is_none(), *enabled);
         // The same persisted preview must follow the inspecting application's
         // permissions, including both enabling and revoking private access.
@@ -2437,7 +2488,10 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
                 !current_permission,
             );
             if !current_permission {
-                assert!(inspected.authentication.contract.destinations().is_empty());
+                assert_eq!(
+                    inspected.authentication.contract.destinations(),
+                    [] as [String; 0]
+                );
             }
             assert_eq!(
                 (count.analyses(), count.calls()),

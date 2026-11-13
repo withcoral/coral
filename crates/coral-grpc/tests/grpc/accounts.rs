@@ -85,7 +85,7 @@ async fn account_authorization_and_disconnection_project_the_members_private_acc
             .name
             .starts_with(&format!("{}/accountAuthorizations/", inspect.parent))
     );
-    assert!(pending.account.is_empty());
+    assert_eq!(pending.account, "");
     let unconnected = accounts
         .get_provider_account(request(inspect.clone(), &member, "reef"))
         .await
@@ -98,7 +98,7 @@ async fn account_authorization_and_disconnection_project_the_members_private_acc
         management::ProviderAccountState::Disconnected
     );
     assert!(unconnected.connected_time.is_none());
-    assert!(unconnected.configured_by_user.is_empty());
+    assert_eq!(unconnected.configured_by_user, "");
     // Workspace ownership does not reach a member's authorization.
     let hidden = accounts
         .get_provider_account_authorization(request(
@@ -290,7 +290,7 @@ async fn shared_publication_with_an_unreviewed_grant_fails_without_a_provider() 
         management::ProviderPublicationOutcome::Failed
     );
     assert_eq!(failed.diagnostic.as_ref().unwrap().code, "account_required");
-    assert!(failed.provider.is_empty());
+    assert_eq!(failed.provider, "");
     assert!(!format!("{failed:?}").contains(TOKEN));
 }
 

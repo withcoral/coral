@@ -156,7 +156,10 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
         make_retries_due(&fixture).await;
         index.reconcile().await;
         assert_eq!(indexed_paths(&fixture).await, ["answer"]);
-        assert!(private_tool_states(&fixture).await.is_empty());
+        assert_eq!(
+            private_tool_states(&fixture).await,
+            [] as [command_tests::search_index_tests::PrivateToolState; 0]
+        );
     }
 }
 
@@ -379,7 +382,10 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
             .unwrap();
         index.settled().await;
         assert_eq!(private_tool_rows(&fixture).await.len(), 1);
-        assert!(private_tool_states(&fixture).await.is_empty());
+        assert_eq!(
+            private_tool_states(&fixture).await,
+            [] as [command_tests::search_index_tests::PrivateToolState; 0]
+        );
     }
 }
 

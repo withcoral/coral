@@ -120,7 +120,7 @@ async fn historical_account_selection_verifies_the_original_run_reference() {
         .await
         .unwrap()
         .into_inner();
-    assert!(unassociated.account_connection.is_empty());
+    assert_eq!(unassociated.account_connection, "");
     let mismatched = client
         .inspect_run(request(
             wire::InspectRunRequest {
@@ -136,7 +136,7 @@ async fn historical_account_selection_verifies_the_original_run_reference() {
         .await
         .unwrap()
         .into_inner();
-    assert!(mismatched.account_connection.is_empty());
+    assert_eq!(mismatched.account_connection, "");
     assert_eq!(
         client
             .inspect_run(request(selection, &f.token(&f.owner, "reef"), "reef"))
@@ -287,7 +287,7 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
     assert!(review.actionable, "a denied decision changed nothing");
     assert_eq!(review.provider_label, "Evidence");
     assert_eq!(review.actor_label, "You");
-    assert!(review.approver_label.is_empty());
+    assert_eq!(review.approver_label, "");
     assert_eq!(review.deadline_at_unix_nanos, action.deadline_at_unix_nanos);
     assert!(review.arguments_json.contains("argument"));
     cancel(&f, &pending).await;
@@ -709,7 +709,7 @@ async fn action_queue_pages_by_cursor_and_a_run_rejects_a_malformed_action_curso
     let [first_action] = first.actions.as_slice() else {
         panic!("the queue pages requests: {first:?}")
     };
-    assert!(!first.next_after.is_empty());
+    assert_ne!(first.next_after, "");
     let token = f.token(&f.member, "reef");
     let mut client = f.activity();
     let second = client
@@ -729,7 +729,7 @@ async fn action_queue_pages_by_cursor_and_a_run_rejects_a_malformed_action_curso
         panic!("the cursor reaches the second request: {second:?}")
     };
     assert_eq!(second.action_count, 2);
-    assert!(second.next_after.is_empty());
+    assert_eq!(second.next_after, "");
     assert_ne!(
         second_action.action.as_ref().unwrap().request,
         first_action.action.as_ref().unwrap().request
@@ -838,12 +838,15 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
     let detail = terminal(&f, accepted.run_id()).await;
     let retained = detail.run.unwrap();
     let retained_page = retained.action_page.as_ref().unwrap();
-    assert!(retained_page.actions.is_empty());
+    assert_eq!(
+        retained_page.actions,
+        [] as [coral_grpc::coral::management::v1::ActivityActionSummary; 0]
+    );
     assert_eq!(retained.intent, group.intent);
     assert_eq!(retained.actor_label, group.actor_label);
     assert_eq!(retained.workspace_label, group.workspace_label);
     assert_eq!(retained_page.total, 0);
-    assert!(retained_page.next_action.is_empty());
+    assert_eq!(retained_page.next_action, "");
     let Some(wire::activity_request_reference::Request::Approval(name)) =
         first.request.as_ref().unwrap().request.as_ref()
     else {
@@ -871,7 +874,10 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
         .unwrap()
         .into_inner();
     assert_eq!(refreshed.action_count, 0);
-    assert!(refreshed.actions.is_empty());
+    assert_eq!(
+        refreshed.actions,
+        [] as [coral_grpc::coral::management::v1::ActivityRequiredAction; 0]
+    );
     let spans = format!("{:?}", capture.finished());
     assert!(spans.contains("ActivityService/DecideApproval"), "{spans}");
     assert!(!spans.contains("live-comment-canary"), "{spans}");
@@ -1085,7 +1091,7 @@ async fn required_actions_count_and_filter_by_kind() {
     let first = browse(&mut client, Kind::Approval, String::new(), 1).await;
     assert_eq!(first.action_count, after.approval_count);
     assert!(first.actions.iter().all(is_approval));
-    assert!(!first.next_after.is_empty());
+    assert_ne!(first.next_after, "");
     let rest = browse(&mut client, Kind::Approval, first.next_after, 100).await;
     assert_eq!(
         i64::try_from(1 + rest.actions.len()).unwrap(),
@@ -1545,7 +1551,7 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
         panic!("typed Coral Failure")
     };
     assert_eq!(failure.code, "tool_disabled");
-    assert!(!failure.message.is_empty());
+    assert_ne!(failure.message, "");
 }
 
 /// Asserts one exact location in the wire form a Reef reader receives.
@@ -2110,12 +2116,12 @@ async fn settled_approvals_follow_who_invoked_the_run() {
         .await
         .unwrap();
     let elsewhere = format!("workspaces/{}", other.id());
-    assert!(
+    assert_eq!(
         browse(&owner_token, elsewhere.clone(), String::new(), 100)
             .await
             .unwrap()
-            .approvals
-            .is_empty()
+            .approvals,
+        [] as [coral_grpc::coral::management::v1::ActivitySettledApproval; 0]
     );
     assert_eq!(
         browse(&member_token, elsewhere, String::new(), 100)

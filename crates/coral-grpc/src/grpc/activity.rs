@@ -90,13 +90,11 @@ fn action_run(context: &coral_task::ActionRun) -> wire::ActivityRun {
     run.intent = context
         .intent
         .as_ref()
-        .map(|intent| intent.as_str().to_owned())
-        .unwrap_or_default();
+        .map_or_default(|intent| intent.as_str().to_owned());
     run.task = context
         .task
         .as_ref()
-        .map(|task| format!("workspaces/{}/tasks/{}", task.workspace, task.task))
-        .unwrap_or_default();
+        .map_or_default(|task| format!("workspaces/{}/tasks/{}", task.workspace, task.task));
     run
 }
 
@@ -121,8 +119,7 @@ fn settled_approval(
     use wire::ActivityApprovalOutcome as W;
     let (approver, name) = settled
         .approver
-        .map(|approver| (Some(approver.principal), approver.name))
-        .unwrap_or_default();
+        .map_or_default(|approver| (Some(approver.principal), approver.name));
     wire::ActivitySettledApproval {
         name: format!(
             "workspaces/{}/approvals/{}",
@@ -136,9 +133,7 @@ fn settled_approval(
         .into(),
         settled_at_unix_nanos: settled.settled_at_unix_nanos,
         approver_label: approver_label(actor, approver.as_ref(), name),
-        approver: approver
-            .map(|approver| approver.id().to_string())
-            .unwrap_or_default(),
+        approver: approver.map_or_default(|approver| approver.id().to_string()),
         call_path: settled.call_path,
         provider_label: settled
             .provider_label
@@ -214,16 +209,12 @@ fn interaction(parent: &str, value: &coral_task::InteractionSummary) -> wire::Ac
         started_at_unix_nanos: value.started_at_unix_nanos,
         completed_at_unix_nanos: value.completed_at_unix_nanos,
         run: None,
-        accepted_run: value
-            .run
-            .as_ref()
-            .map(|id| {
-                format!(
-                    "{}/runs/{id}",
-                    parent.split("/tasks/").next().unwrap_or_default()
-                )
-            })
-            .unwrap_or_default(),
+        accepted_run: value.run.as_ref().map_or_default(|id| {
+            format!(
+                "{}/runs/{id}",
+                parent.split("/tasks/").next().unwrap_or_default()
+            )
+        }),
     }
 }
 
@@ -445,10 +436,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                     run: Some(action_run(&queued.run)),
                 })
                 .collect(),
-            next_after: page
-                .next
-                .map(|cursor| cursor.to_string())
-                .unwrap_or_default(),
+            next_after: page.next.map_or_default(|cursor| cursor.to_string()),
         }))
     }
     async fn browse_settled_approvals(
@@ -478,10 +466,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .await
             .map_err(error)?;
         Ok(Response::new(wire::BrowseSettledApprovalsResponse {
-            next_after: page
-                .next
-                .map(|cursor| cursor.to_string())
-                .unwrap_or_default(),
+            next_after: page.next.map_or_default(|cursor| cursor.to_string()),
             approvals: page
                 .approvals
                 .into_iter()
@@ -582,10 +567,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             state: approval_state(value.state).into(),
             actionable: value.actionable,
             deadline_at_unix_nanos: value.deadline_at_unix_nanos,
-            approver: value
-                .approver
-                .map(|p| p.id().to_string())
-                .unwrap_or_default(),
+            approver: value.approver.map_or_default(|p| p.id().to_string()),
             decided_at_unix_nanos: value.decided_at_unix_nanos,
             comment: value.comment,
         }))
@@ -628,8 +610,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .map_err(error)?;
         let next_after = page
             .next_after
-            .map(|id| format!("{}/interactions/{id}", input.name))
-            .unwrap_or_default();
+            .map_or_default(|id| format!("{}/interactions/{id}", input.name));
         Ok(Response::new(wire::InspectTaskResponse {
             feedback: page.task.feedback().map(str::to_owned),
             offset: page.offset,
