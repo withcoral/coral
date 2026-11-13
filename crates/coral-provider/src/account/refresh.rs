@@ -330,19 +330,23 @@ impl AccountModule {
         )
         .await;
         let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
-        if result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration)) {
-            self.record_client_result(
-                &workspace.clone(),
-                provider,
-                &evidence.contract,
-                client_secret.as_ref(),
-                result.is_err(),
-            )
-            .await?;
-        }
+        let client_failed = match &result {
+            Ok(_) => Some(false),
+            Err(Error::OAuthClientConfiguration) => Some(true),
+            Err(_) => None,
+        };
         let completed_at = now.saturating_add(elapsed);
-        self.complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
-            .await
+        let completion = self
+            .complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
+            .await;
+        if let Some(failed) = client_failed {
+            // Only after the renewed token is stored: a failed status write must
+            // not discard a rotated refresh token or leave the claim to lapse.
+            let used = client_secret.as_ref();
+            self.record_client_result_or_log(workspace, provider, &evidence.contract, used, failed)
+                .await;
+        }
+        completion
             .map(CredentialValues::token)
             .map(CredentialResolution::Ready)
     }

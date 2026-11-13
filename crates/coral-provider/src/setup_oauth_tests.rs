@@ -5139,10 +5139,6 @@ async fn automatic_bootstrap_preserves_parameters_and_settles_denied_consent() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one fault-injection journey verifies token persistence and replay"
-)]
 async fn successful_token_survives_application_status_write_failure() {
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
@@ -5196,26 +5192,7 @@ async fn successful_token_survives_application_status_write_failure() {
         .await
         .unwrap();
     // Fail only the diagnostic status write, after the token exchange is arranged.
-    let (install_fault, remove_fault) = match coral_test_support::selected_database().unwrap() {
-        coral_db::DatabaseSystem::Sqlite => (
-            "CREATE TRIGGER cubic_status_fault BEFORE UPDATE OF oauth_client_failure_code \
-             ON provider_records BEGIN SELECT RAISE(FAIL, 'cubic status write fault'); END",
-            "DROP TRIGGER cubic_status_fault",
-        ),
-        coral_db::DatabaseSystem::Postgres => (
-            "CREATE FUNCTION cubic_status_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
-             BEGIN RAISE EXCEPTION 'cubic status write fault'; END $$; \
-             CREATE TRIGGER cubic_status_fault BEFORE UPDATE OF oauth_client_failure_code \
-             ON provider_records FOR EACH ROW EXECUTE FUNCTION cubic_status_fault()",
-            "DROP TRIGGER cubic_status_fault ON provider_records; \
-             DROP FUNCTION cubic_status_fault()",
-        ),
-    };
-    harness
-        .fixture
-        .execute_fixture_sql(install_fault)
-        .await
-        .unwrap();
+    crate::tests::fail_application_status_writes(&harness.fixture, true).await;
     let state = state_of(authorization.authorization_url.as_deref().unwrap());
     let result = harness
         .accounts
@@ -5236,11 +5213,7 @@ async fn successful_token_survives_application_status_write_failure() {
         1,
         "upstream issued the token exactly once"
     );
-    harness
-        .fixture
-        .execute_fixture_sql(remove_fault)
-        .await
-        .unwrap();
+    crate::tests::fail_application_status_writes(&harness.fixture, false).await;
     let after = harness
         .accounts
         .get_authorization(&context, &owner, authorization.id)
