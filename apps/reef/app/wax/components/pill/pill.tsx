@@ -19,14 +19,15 @@ export type PillColor =
 
 export type PillProps<T extends ElementType = 'div'> = PillBaseProps &
   (T extends 'button'
-    ? Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'as' | keyof PillBaseProps> & {
-        // A button cannot hold another button.
-        remove?: never
-      }
-    : Omit<React.HTMLAttributes<HTMLDivElement>, 'as' | keyof PillBaseProps> & {
+    ? Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'as' | keyof PillBaseProps>
+    : Omit<React.HTMLAttributes<HTMLDivElement>, 'as' | keyof PillBaseProps>) &
+  // The remove button needs a host that is not interactive itself, such as a button or link.
+  (T extends 'div' | 'span'
+    ? {
         /** Adds a button after the text that removes the pill. */
         remove?: PillRemove
-      }) & {
+      }
+    : { remove?: never }) & {
     as?: T
   }
 
