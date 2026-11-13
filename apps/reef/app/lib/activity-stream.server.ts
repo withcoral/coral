@@ -63,16 +63,20 @@ export function activityStream<Value extends ActivityPageValue | ActivityCountVa
   const ended = new AbortController()
   const signal = AbortSignal.any([request.signal, closed.signal, expired.signal, ended.signal])
   async function* events(): AsyncGenerator<ActivityStreamEvent<Value>> {
-    const remaining = deadlines.endsAt * 1000 - Date.now()
+    // One reading of the clock sets both timers, so equal deadlines stay equal.
+    const now = Date.now()
+    const remaining = deadlines.endsAt * 1000 - now
     // An early timer only ends the stream sooner; the browser then reconnects.
     const expiry = Number.isFinite(remaining)
       ? setTimeout(() => expired.abort(), Math.min(Math.max(0, remaining), 2_147_483_647))
       : undefined
     // A stream also ends healthy when its access token does, so the browser's
-    // reconnect resolves the session into a fresh one.
+    // reconnect resolves the session into a fresh one. A token that ends with
+    // the session cannot be renewed, so only the session's expiry ends it.
+    const renewIn = deadlines.renewAt < deadlines.endsAt ? deadlines.renewAt * 1000 - now : Infinity
     const lifetime = setTimeout(
       () => ended.abort(),
-      Math.min(STREAM_LIFETIME_MS, Math.max(0, deadlines.renewAt * 1000 - Date.now())),
+      Math.min(STREAM_LIFETIME_MS, Math.max(0, renewIn)),
     )
     let previous: string | undefined
     let rejected = false

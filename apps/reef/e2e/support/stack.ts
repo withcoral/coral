@@ -12,7 +12,7 @@ import {
   type SessionLifetimes,
 } from './authenticated-target.ts'
 import { startInstanceControl } from './instance-control.ts'
-import { envSecretStore } from './secret-store-fixture.ts'
+import { envSecretStore, startSecretStoreFixture } from './secret-store-fixture.ts'
 import { startRoundRobinProxy, type Backend } from './round-robin-proxy.ts'
 
 export async function bounded<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
@@ -148,6 +148,7 @@ export async function startStack(options: {
     : [join(rootDir, 'coral')]
   const processes: ReturnType<typeof startProcess>[] = []
   let authentication: Awaited<ReturnType<typeof prepareAuthenticatedTarget>> | undefined
+  let secretStore: Awaited<ReturnType<typeof startSecretStoreFixture>> | undefined
   let localWeb: Awaited<ReturnType<typeof reservePort>> | undefined
   let proxy: Awaited<ReturnType<typeof startRoundRobinProxy>> | undefined
   let control: Awaited<ReturnType<typeof startInstanceControl>> | undefined
@@ -166,6 +167,7 @@ export async function startStack(options: {
         await control?.stop()
         await proxy?.stop()
         await authentication?.close()
+        await secretStore?.close()
         await localWeb?.release()
       } catch (error) {
         errors.push(error)
@@ -197,17 +199,20 @@ export async function startStack(options: {
     if (options.authenticated)
       authentication = await prepareAuthenticatedTarget(stateDirs, proxy, options.sessionLifetimes)
     else localWeb = await reservePort()
+    // The address provider fixtures use, so `[outbound]` treats the store as it treats them.
+    if (options.authenticated && options.fixtures)
+      secretStore = await startSecretStoreFixture(options.fixtures)
     // Instances share one credential key, or none could read what another sealed.
     const credentialKey = options.multiInstance ? randomBytes(32).toString('base64') : undefined
-    // An `env` Secret Store, which every build has. Granting it needs an organization owner.
-    const envStore = options.authenticated && options.fixtures ? envSecretStore : undefined
     const coralEnv = {
       ...childEnv,
       ...(localWeb ? { CORAL_LOCAL_WEB_URL: localWeb.url } : {}),
       ...(options.postgresURL ? { E2E_STACK_POSTGRES_URL: options.postgresURL } : {}),
       ...(credentialKey ? { E2E_CREDENTIAL_KEY: credentialKey } : {}),
       ...authentication?.coralEnv,
-      ...envStore?.env,
+      ...(secretStore
+        ? { E2E_SECRET_STORE_SECRET_ID: secretStore.secretId, ...envSecretStore.env }
+        : {}),
     }
     const instances: Backend[] = []
     for (const [index, stateDir] of stateDirs.entries()) {
@@ -223,7 +228,9 @@ export async function startStack(options: {
             ? "[database]\nbackend = 'postgres'\nurl_env = 'E2E_STACK_POSTGRES_URL'\n"
             : '') +
           (credentialKey ? "[credentials]\nkey_env = 'E2E_CREDENTIAL_KEY'\n" : '') +
-          (envStore?.config ?? '') +
+          (secretStore
+            ? secretStore.config('E2E_SECRET_STORE_SECRET_ID') + envSecretStore.config
+            : '') +
           (authentication?.config(index) ??
             `
 [listeners.grpc]
@@ -244,7 +251,7 @@ bind = '127.0.0.1:0'
           options.postgresURL ?? '',
           credentialKey ?? '',
           ...(authentication ? Object.values(authentication.coralEnv) : []),
-          ...Object.values(envStore?.env ?? {}),
+          ...(secretStore ? [secretStore.secretId, ...Object.values(envSecretStore.env)] : []),
         ],
       )
       processes.push(coral)

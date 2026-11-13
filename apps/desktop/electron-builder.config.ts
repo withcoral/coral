@@ -1,4 +1,5 @@
 import { accessSync, constants, existsSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
 import type { Configuration } from 'electron-builder'
@@ -52,6 +53,10 @@ export function createConfig(
       output: 'dist',
       buildResources: 'resources',
     },
+    // Electron's package pins each artifact's SHA-256. Without them,
+    // electron-builder fetches SHASUMS256.txt from GitHub on every package,
+    // even when the zip is cached, so a GitHub outage fails the build.
+    electronDownload: { checksums: electronChecksums() },
     files: ['out/**/*', 'package.json'],
     extraResources: [
       { from: 'resources/coral/', to: 'coral/' },
@@ -156,6 +161,11 @@ export function createConfig(
       allowElevation: false,
     },
   }
+}
+
+/** The SHA-256 of each artifact of the installed Electron, from its own package. */
+function electronChecksums(): Record<string, string> {
+  return createRequire(import.meta.url)('electron/checksums.json')
 }
 
 /** The values of `names`; throws naming the first that is empty or unset. */

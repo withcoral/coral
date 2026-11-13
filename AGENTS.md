@@ -228,7 +228,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   behavior that depends on browser APIs or a complete user journey. `npm test`
   runs every story's `play` function in Chromium, so an assertion there is a
   test; give each behavior one home, a story or a Vitest test, and query by role
-  and label with Testing Library in both. Styling and
+  and label with Testing Library in both. After a `click`, the pointer stays
+  on the element, so a `hover` on it does nothing: `unhover` it first. Wait
+  for an animated popup with `waitFor`, since `expect(await findBy…)` checks
+  it only once. Styling and
   static markup changes alone do not need Vitest coverage. Vitest coverage does
   not replace required product-journey or local/remote parity evidence.
 - Use vanilla-extract, not Tailwind.
@@ -239,6 +242,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Reef has one build for every deployment. Do not add a Desktop build marker
   or branch Reef on its host. Desktop's window behavior belongs in the
   `apps/desktop` main process.
+- Do not make CI download a GitHub release asset that it cannot restore from a
+  cache; GitHub's release downloads fail for minutes at a time. Packaging
+  downloads no Electron artifact once `npm ci` and
+  `.github/actions/electron-cache` have run: `electronDownload.checksums`
+  stops electron-builder fetching `SHASUMS256.txt`. electron-builder's own
+  tools (AppImage, NSIS, 7-Zip) still download on a fresh runner. Keep the
+  Electron path offline when you add a package target, and cache a new
+  downloaded tool.
 - Reef copy follows simplified technical English (ASD-STE100): address the
   reader as "you", give one instruction per sentence in the imperative, keep
   sentences under 20 words with one idea each, use the active voice and the
@@ -265,6 +276,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
+- In a unit or in-process test, drive time with fake timers or a test
+  clock, not real waits. An end-to-end journey whose subject is real elapsed
+  time, such as a session's renewal, keeps the real clocks. Read the clock
+  once per decision, in tests and product code alike: two readings can
+  differ, and a millisecond then decides which of two equal timers fires
+  first.
 - Inject faults through the owning crate's API or
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is

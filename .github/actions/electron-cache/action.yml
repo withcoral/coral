@@ -1,0 +1,41 @@
+name: Electron download cache
+description: >-
+  Keeps the Electron zip that electron-builder packages, so a package job does
+  not download it from GitHub releases, which fail at times. Run it with
+  `restore` after `npm ci` and with `save` after packaging. Every run restores;
+  pull requests never save, so untrusted code cannot poison what later runs
+  restore. A restored zip is still checked against the SHA-256 that the
+  `electron` package pins (electronDownload.checksums in
+  apps/desktop/electron-builder.config.ts), so a bad zip is downloaded again.
+
+inputs:
+  mode:
+    description: "`restore` before packaging, `save` after it."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # @electron/get's default cache folder, which electron-builder uses.
+    - name: Find the Electron cache
+      id: plan
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in
+          Linux) dir="$HOME/.cache/electron" ;;
+          macOS) dir="$HOME/Library/Caches/electron" ;;
+          Windows) dir="$LOCALAPPDATA\\electron\\Cache" ;;
+        esac
+        echo "path=$dir" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ inputs.mode == 'restore' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.plan.outputs.path }}
+        key: electron-${{ runner.os }}-${{ hashFiles('apps/desktop/node_modules/electron/checksums.json') }}
+
+    - if: ${{ inputs.mode == 'save' && github.event_name != 'pull_request' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.plan.outputs.path }}
+        key: electron-${{ runner.os }}-${{ hashFiles('apps/desktop/node_modules/electron/checksums.json') }}

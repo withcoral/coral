@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module'
+
 import { describe, expect, it } from 'vitest'
 
 import { createConfig } from './electron-builder.config.ts'
@@ -110,5 +112,24 @@ describe('release signing', () => {
     const env = { ...RELEASE_ENV.darwin, APPLE_API_KEY: '/nonexistent/AuthKey.p8' }
 
     expect(() => createConfig(env, 'darwin')).toThrow('APPLE_API_KEY')
+  })
+})
+
+// Catches a config that lets electron-builder fetch SHASUMS256.txt from GitHub
+// on every package, which failed every package job during a GitHub outage.
+describe('the Electron download', () => {
+  it.each([
+    ['darwin', 'arm64'],
+    ['linux', 'x64'],
+    ['win32', 'x64'],
+  ] as const)('pins the SHA-256 of the zip a %s %s package unpacks', (platform, arch) => {
+    const { version } = createRequire(import.meta.url)('electron/package.json')
+    const download = createConfig({}, platform).electronDownload as {
+      checksums?: Record<string, string>
+    }
+
+    expect(download.checksums?.[`electron-v${version}-${platform}-${arch}.zip`]).toMatch(
+      /^[0-9a-f]{64}$/,
+    )
   })
 })

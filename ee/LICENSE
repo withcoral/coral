@@ -1,9 +1,45 @@
-Copyright 2026 Phoebe Technology Limited. All rights reserved.
+The Coral Enterprise Edition (EE) license (the "EE License")
+Copyright (c) 2026-present Phoebe Technology Limited ("Coral")
 
-The files in this directory (ee/) are not licensed under the Apache License,
-Version 2.0, that covers most of this repository; NOTICE says which licence
-covers which files. They are source-available for reading only. You may not use, copy, modify, merge, publish, distribute,
-sublicense or sell them, or software built from them, without a written
-agreement with Phoebe Technology Limited.
+With regard to the Coral Software:
 
-This is a placeholder. An enterprise licence will replace it.
+This software and associated documentation files (the "Software") may only be
+used in production, if you (and any entity that you represent) have agreed to,
+and are in compliance with, the Coral Terms of Service, available at
+https://withcoral.com/terms (the "EE Terms"), or other agreement governing the
+use of the Software, as agreed by you and Coral, and otherwise have a valid
+Coral Enterprise Edition subscription that covers your use. Subject to the
+foregoing sentence, you are free to modify this Software and publish patches to
+the Software. You agree that Coral and/or its licensors (as applicable) retain
+all right, title and interest in and to all such modifications and/or patches,
+and all such modifications and/or patches may only be used, copied, modified,
+displayed, distributed, or otherwise exploited with a valid Coral Enterprise
+Edition subscription that covers your use. Notwithstanding the foregoing, you
+may copy and modify the Software for development and testing purposes, without
+requiring a subscription. You agree that Coral and/or its licensors (as
+applicable) retain all right, title and interest in and to all such
+modifications. You are not granted any other rights beyond what is expressly
+stated herein. Subject to the foregoing, it is forbidden to copy, merge,
+publish, distribute, sublicense, and/or sell the Software.
+
+This EE License applies only to the files in the ee/ directory of this
+repository and to the parts of a build that are compiled from them. All other
+files in this repository are licensed under the Apache License, Version 2.0,
+except third-party files that carry their own license notice. You may use, copy
+and distribute an unmodified build that Coral has released, in production and
+without a subscription, for as long as it runs as the Coral Community Edition,
+with no feature of the Coral Enterprise Edition enabled. The full text of this
+EE License shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+For all third party components incorporated into the Coral Software, those
+components are licensed under the original license provided by the owner of the
+applicable component.

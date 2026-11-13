@@ -811,6 +811,27 @@ version = "1.7.0"
 dependencies = [
  "coral",
  "coral-app",
+ "coral-edition",
+ "coral-ee-secret-stores",
+ "coral-secret-store",
+]
+
+[[package]]
+name = "coral-ee-secret-stores"
+version = "1.7.0"
+dependencies = [
+ "async-trait",
+ "coral-edition",
+ "coral-outbound",
+ "coral-secret-store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "url",
+ "wiremock",
+ "zeroize",
 ]
 
 [[package]]
