@@ -54,12 +54,12 @@ async fn parking(
     (coral, call, retire, parked)
 }
 
-fn compiled(source: &str) -> RunPackage {
-    compiled_with(source, &[])
+async fn compiled(source: &str) -> RunPackage {
+    compiled_with(source, &[]).await
 }
 
 /// `source` compiled with each linked Tool, each named by its snapshot.
-fn compiled_with(source: &str, linked: &[(LinkedToolSource, LinkedSnapshot)]) -> RunPackage {
+async fn compiled_with(source: &str, linked: &[(LinkedToolSource, LinkedSnapshot)]) -> RunPackage {
     let compiler = InProcessCompiler::new(coral_v8::IsolateLimits::defaults()).unwrap();
     let sources: Vec<_> = linked.iter().map(|(source, _)| source.clone()).collect();
     let program = compiler
@@ -70,6 +70,7 @@ fn compiled_with(source: &str, linked: &[(LinkedToolSource, LinkedSnapshot)]) ->
             &coral_v8::BuiltinTools::default(),
             None,
         )
+        .await
         .unwrap();
     RunPackage {
         linked_snapshots: linked
@@ -194,7 +195,7 @@ async fn a_program_invokes_emits_logs_and_returns_in_numbered_order() {
 await coral.emit(issue.title);
 console.warn("seen", missing);
 return issue.id;"#;
-    let mut run = started(&mut coral, compiled(source), None).await;
+    let mut run = started(&mut coral, compiled(source).await, None).await;
     for (expected, id, line) in [(1, 7, 2), (2, 8, 3)] {
         let (number, kind) = next_request(&mut run).await;
         let request::Kind::Invoke(Invoke {
@@ -273,12 +274,14 @@ async fn an_invocation_result_settles_its_request_by_its_outcome() {
     let invokes = compiled(
         r"try { return await coral.providers.tracker.issues.get({ id: 7 }); }
 catch (error) { return error.code; }",
-    );
+    )
+    .await;
     let performs = compiled_with(
         r"try { return await coral.private.notes.title({ id: 7 }); }
 catch (error) { return error.code; }",
         &[notes_title()],
-    );
+    )
+    .await;
     let denied = CoralFailure {
         code: "policy_denied".to_owned(),
         message: "Policy denied the call".to_owned(),
@@ -344,7 +347,7 @@ async fn a_private_tool_call_is_permitted_then_its_body_runs_and_completes() {
 }",
     );
     let source = "return await coral.private.notes.loud({ id: 7 });";
-    let package = compiled_with(source, &[notes_title(), loud]);
+    let package = compiled_with(source, &[notes_title(), loud]).await;
     let mut run = started(&mut coral, package, None).await;
     let permitted = || invocation_result::Outcome::Permitted(Permitted {});
     let (number, kind) = next_request(&mut run).await;
@@ -441,7 +444,7 @@ async fn an_answer_of_the_wrong_kind_closes_the_stream() {
     ];
     for (case, source, tools, answer) in cases {
         let (mut coral, mut call, _retire) = linked(APPLIED_CAP_BYTES).await;
-        let package = compiled_with(source, &tools);
+        let package = compiled_with(source, &tools).await;
         let mut run = started(&mut coral, package, None).await;
         let (number, _kind) = next_request(&mut run).await;
         run.send(result(number, 0, answer)).await;
@@ -462,7 +465,7 @@ async fn a_value_over_its_limit_throws_at_the_call() {
 try { await coral.emit("x".repeat(100)); } catch (error) { caught.push((error as Error).name); }
 try { console.log("y".repeat(70_000)); } catch (error) { caught.push((error as Error).name); }
 return caught;"#;
-    let mut package = compiled(source);
+    let mut package = compiled(source).await;
     package.value_limits.as_mut().unwrap().host_bytes = 64;
     let mut run = started(&mut coral, package, None).await;
     let value = finish(finish::Completion::ValueJson(
@@ -480,7 +483,7 @@ async fn output_over_the_run_output_budget_ends_the_run() {
 await coral.emit("12345");
 try { await coral.emit("1234567890"); } catch { return "caught"; }
 return "kept";"#;
-    let mut package = compiled(source);
+    let mut package = compiled(source).await;
     package.value_limits.as_mut().unwrap().run_output_bytes = 20;
     let mut run = started(&mut coral, package, None).await;
     assert_eq!(next_request(&mut run).await.0, 1);
@@ -501,7 +504,7 @@ return "kept";"#;
 /// byte short.
 #[tokio::test]
 async fn a_final_value_counts_against_the_run_output_budget() {
-    let program = compiled("await coral.emit(\"12345\");\nreturn \"1234567\";");
+    let program = compiled("await coral.emit(\"12345\");\nreturn \"1234567\";").await;
     let value = finish(finish::Completion::ValueJson(r#""1234567""#.to_owned()));
     // The Emission's 7 bytes and the Final Value's 9 fill 16 exactly.
     for (budget, expected) in [(16, value), (15, finish_end(FinishEnd::OutputBudget))] {
@@ -529,7 +532,7 @@ await coral.emit("123456789");
 console.info("next");
 await coral.emit("123456789");
 return 1;"#;
-    let mut run = started(&mut coral, compiled(source), None).await;
+    let mut run = started(&mut coral, compiled(source).await, None).await;
     // Each Invoke is longer than the cap of 8, but counts no output: none waits.
     for number in 1..=3 {
         let (sent, kind) = next_request(&mut run).await;
@@ -586,7 +589,7 @@ try { console.info("held"); } finally { await coral.emit("finally"); }"#,
         ),
     ] {
         let (mut coral, _call, _retire, mut parked) = parking(8).await;
-        let mut run = started(&mut coral, compiled(source), None).await;
+        let mut run = started(&mut coral, compiled(source).await, None).await;
         assert_eq!(next_request(&mut run).await.0, 1, "{waits_on}");
         if let Some(number) = waits {
             assert_eq!(
@@ -611,7 +614,7 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
     let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
 
     // A script the isolate cannot compile: Finish in place of Loaded.
-    let mut broken = compiled("return 1;");
+    let mut broken = compiled("return 1;").await;
     broken.script = "return (".to_owned();
     broken.sha256 =
         crate::compile_wire::package_sha256(&broken.script, &broken.source_map).to_vec();
@@ -632,7 +635,12 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
     );
 
     // A Terminate after Loaded: Finish in place of Started.
-    let mut run = loaded(&mut coral, "run-2", compiled(r#"await coral.emit("ran");"#)).await;
+    let mut run = loaded(
+        &mut coral,
+        "run-2",
+        compiled(r#"await coral.emit("ran");"#).await,
+    )
+    .await;
     let terminate = Terminate {
         reason: TerminateReason::Canceled.into(),
     };
@@ -653,8 +661,13 @@ async fn a_panicked_stream_task_stops_its_program() {
     let freed = Arc::new(Notify::new());
     let unit = HeldUnit::take(&held, &freed);
     let (outbound, mut requests) = mpsc::unbounded_channel();
-    let (host, exited) = load(compiled("return 1;"), outbound, RunLimits::default(), unit)
-        .expect("the package loads");
+    let (host, exited) = load(
+        compiled("return 1;").await,
+        outbound,
+        RunLimits::default(),
+        unit,
+    )
+    .expect("the package loads");
     let loaded = requests.recv().await.and_then(|request| request.message);
     assert_eq!(loaded, Some(run_request::Message::Loaded(Loaded {})));
     // The Program waits for a Started that never comes.
@@ -681,7 +694,7 @@ type Breaks = fn(&mut RunPackage);
 #[tokio::test]
 async fn a_package_that_breaks_the_protocol_closes_the_stream() {
     let (mut coral, mut call, _retire) = linked(APPLIED_CAP_BYTES).await;
-    let loadable = compiled("return 1;");
+    let loadable = compiled("return 1;").await;
     let cases: [(&str, Breaks); 5] = [
         ("a digest that is not the package's", |package| {
             package.script.insert_str(0, "globalThis.changed = true; ");
@@ -717,7 +730,7 @@ async fn a_package_that_breaks_the_protocol_closes_the_stream() {
 #[tokio::test]
 async fn a_spent_cpu_budget_finishes_with_the_cpu_end() {
     let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
-    let mut run = started(&mut coral, compiled("while (true) {}"), Some(100)).await;
+    let mut run = started(&mut coral, compiled("while (true) {}").await, Some(100)).await;
     let end = finish_end(FinishEnd::CpuBudget);
     assert_eq!(next_request(&mut run).await, (1, end));
 }

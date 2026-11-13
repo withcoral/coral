@@ -470,13 +470,11 @@ async fn a_held_run_and_a_compile_share_the_room() {
     let mut call = coral.next_call().await;
     coral.take("run-1", "claim-1");
     let run = coral.next_run().await;
-    let remote = Arc::clone(&call.compiler);
-    let compiled = tokio::task::spawn_blocking(move || {
-        let none = BuiltinTools::default();
-        remote.compile(TEST_COMPILATION_TIMEOUT, "return 1;", &[], &none, None)
-    })
-    .await
-    .unwrap();
+    let none = BuiltinTools::default();
+    let compiled = call
+        .compiler
+        .compile(TEST_COMPILATION_TIMEOUT, "return 1;", &[], &none, None)
+        .await;
     assert!(compiled.is_ok(), "{compiled:?}");
     assert_eq!(call.rooms.recv().await, Some(7), "the Run holds its unit");
     drop(run);
