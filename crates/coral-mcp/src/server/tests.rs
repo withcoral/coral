@@ -12,7 +12,8 @@ use coral_workspace::{
 use super::*;
 use serde_json::{Value, json};
 
-/// A Run Module over `database`. No test here launches a Run's execution.
+/// A Run Module over `database`. Only a test that calls `exec` launches a
+/// Run's execution.
 fn run_module(database: &Arc<coral_db::Database>, workspaces: &WorkspaceModule) -> RunModule {
     RunModule::new(
         coral_outbound::DestinationPolicy::default(),
@@ -58,7 +59,8 @@ fn server_on(
     )
 }
 
-async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
+/// The local owner's MCP server on a new Workspace.
+async fn workspace_server() -> (TestDatabase, McpServer) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let user = local_organization_owner();
@@ -74,12 +76,19 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         .unwrap();
     let actor = AuthenticatedPrincipal::user(user);
     let runs = run_module(&database, &workspaces);
+    let server = server_on(&database, workspaces, runs, actor, workspace.id().clone());
+    (fixture, server)
+}
+
+async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
+    let (fixture, server) = workspace_server().await;
+    let runs = &server.runtime.modules.runs;
     // Commit acceptance without launching execution. There can be no authored output,
     // human actions, or terminal transition to wake the observation early.
     let prepared = runs
         .prepare(
-            &actor,
-            workspace.id(),
+            &server.runtime.principal,
+            &server.workspace_id,
             RunSubmission::new(
                 ProgramSource::parse("return 1;").unwrap(),
                 RunTimeout::from_millis(60_000).unwrap(),
@@ -87,14 +96,15 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         )
         .await
         .unwrap();
+    let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
     let staged = runs
         .accept_in_transaction(&mut transaction, prepared)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    let server = server_on(&database, workspaces, runs, actor, workspace.id().clone());
-    (fixture, server, staged.run_id().clone())
+    let run_id = staged.run_id().clone();
+    (fixture, server, run_id)
 }
 
 // Catches: a caller that lost the Workspace being served the tools without
@@ -191,6 +201,69 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
     }
 }
 
+/// Calls `exec` and returns its structured Run Update.
+async fn exec(server: &McpServer, arguments: &Value) -> Value {
+    let request =
+        CallToolRequestParams::new("exec").with_arguments(arguments.as_object().unwrap().clone());
+    match server.dispatch(request, None).await {
+        Ok(CallToolResponse::Complete(result)) => {
+            assert_ne!(result.is_error, Some(true));
+            result.structured_content.unwrap()
+        }
+        Ok(_) => panic!("exec completes"),
+        Err(super::DispatchError::Protocol(error)) => panic!("exec was refused: {error:?}"),
+        Err(super::DispatchError::Tool(failure)) => panic!(
+            "exec failed: {:?}",
+            crate::projection::failure(&failure, &TraceId::current_or_new()).structured_content
+        ),
+    }
+}
+
+// Catches: an `exec` whose first observation fails answering with a failure
+// that names neither the Run it accepted nor the Task it started. The caller
+// can then neither read nor cancel that Run, and its retry with `goal` runs
+// the Program again in a second Task.
+#[tokio::test]
+async fn exec_reports_the_run_it_accepted_when_its_first_observation_fails() {
+    // A Program that never ends: an observation reads a running Run's pending
+    // approvals, and skips them once the Run has ended.
+    const PROGRAM: &str = "while (true) {}";
+    let (fixture, server) = workspace_server().await;
+    // Acceptance and a Program that calls no Tool never read an approval, so
+    // this fails only the observation.
+    fixture
+        .execute_fixture_sql("ALTER TABLE invocation_approvals RENAME TO approvals_away")
+        .await
+        .unwrap();
+    let started = exec(
+        &server,
+        &json!({"goal": "Loop", "intent": "Start it", "program": PROGRAM}),
+    )
+    .await;
+    let task_id = started.get("task_id").and_then(Value::as_str);
+    assert!(task_id.is_some(), "the call names the Task it started");
+    let continued = exec(
+        &server,
+        &json!({"task_id": task_id, "intent": "Start it again", "program": PROGRAM}),
+    )
+    .await;
+    assert_eq!(continued.get("task_id"), None);
+    fixture
+        .execute_fixture_sql("ALTER TABLE approvals_away RENAME TO invocation_approvals")
+        .await
+        .unwrap();
+
+    assert_ne!(started.get("run_id"), continued.get("run_id"));
+    for accepted in [&started, &continued] {
+        assert_eq!(accepted.get("state"), Some(&json!("running")));
+        // The caller reads the Run with the `run_id` the call reported.
+        let run_id = RunId::parse(accepted.get("run_id").and_then(Value::as_str).unwrap()).unwrap();
+        let observed = wait(&server, &run_id, None).await;
+        assert_eq!(observed.get("run_id"), accepted.get("run_id"));
+        assert_eq!(observed.get("state"), Some(&json!("running")));
+    }
+}
+
 /// A Run Owner that stopped before answering and a request not yet recorded
 /// by its owner each project one stable code; neither is an internal error.
 #[test]
@@ -252,4 +325,41 @@ fn a_failure_after_goal_started_its_task_names_the_task() {
             "Coral could not complete the tool call. This call started Task alpha-bravo-charlie-delta: pass it as `task_id` to later calls instead of `goal`."
         )
     );
+}
+
+/// A projection that fails after `exec` accepted its Run keeps the failure's
+/// code and names the Run, and the Task when the call started it, so the
+/// agent reads that Run with `wait` instead of running the Program again.
+#[test]
+fn a_failure_after_exec_accepted_its_run_names_the_run_and_the_started_task() {
+    let run = RunId::parse("height-word-database-library").unwrap();
+    let task = TaskId::parse("alpha-bravo-charlie-delta").unwrap();
+    let cases = [
+        (
+            None,
+            "Coral could not complete the tool call. This call started Run height-word-database-library: pass it as `run_id` to `wait` instead of calling `exec` again.",
+        ),
+        (
+            Some(&task),
+            "Coral could not complete the tool call. This call started Run height-word-database-library: pass it as `run_id` to `wait` instead of calling `exec` again. This call started Task alpha-bravo-charlie-delta: pass it as `task_id` to later calls instead of `goal`.",
+        ),
+    ];
+    for (started, message) in cases {
+        let super::DispatchError::Tool(failure) =
+            super::accepted_run_failure(ToolFailure::internal(), &run, started)
+        else {
+            panic!("a tool failure, not a protocol error");
+        };
+        let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
+            .structured_content
+            .expect("structured failure");
+        assert_eq!(
+            projected.get("code").and_then(Value::as_str),
+            Some("internal_error")
+        );
+        assert_eq!(
+            projected.get("message").and_then(Value::as_str),
+            Some(message)
+        );
+    }
 }
