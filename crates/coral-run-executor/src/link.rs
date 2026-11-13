@@ -4,7 +4,6 @@
 use std::future::{Future, pending};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use coral_credentials::Secret;
@@ -18,6 +17,7 @@ use tonic::metadata::AsciiMetadataValue;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Server};
+use tonic::{Code, Streaming};
 use tonic_health::ServingStatus;
 
 use crate::compile_wire::{self, ProtocolError};
@@ -32,6 +32,8 @@ use crate::{CompilerClient, InProcessCompiler};
 /// A client of Coral on one connection: every call carries the bearer
 /// credential.
 pub(crate) type Client = LinkServiceClient<InterceptedService<Channel, Bearer>>;
+/// The Run Executor's side of a pull stream.
+type Outbound = mpsc::Sender<PullRequest>;
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
@@ -91,16 +93,21 @@ pub enum RunError {
     /// The health listener failed.
     #[error("the health listener failed")]
     Health(#[source] tonic::transport::Error),
+    /// Coral refused the token, so the Run Executor retired.
+    #[error("Coral refused the Run Executor's token")]
+    Refused,
 }
 
-/// Warms the Program Compiler, then holds the link to Coral until `retire`
-/// completes. Serves the gRPC health service on `health`, when given, until
-/// then.
+/// Warms the Program Compiler, then holds the link to Coral until it has
+/// retired: once `retire` completes, Coral refuses its token, or a Program
+/// misses its stop, it reports no room and returns after its last Run ends.
+/// Serves the gRPC health service on `health`, when given, until then.
 ///
 /// # Errors
 ///
-/// Returns a compiler that cannot start, before any dial, or the health
-/// listener's failure.
+/// Returns a compiler that cannot start, before any dial, the health
+/// listener's failure, or [`RunError::Refused`] once retired after Coral
+/// refused the token.
 pub async fn run(
     config: RunExecutorConfig,
     health: Option<TcpListener>,
@@ -120,12 +127,19 @@ pub async fn run(
     let link = Link::new(config, Arc::new(compiler), linked);
     let health = async {
         match health {
-            Some(listener) => serve_health(listener, linked_rx).await,
+            Some(listener) => {
+                serve_health(listener, linked_rx, link.runs.holding.subscribe()).await
+            }
             None => pending().await,
         }
     };
+    let retire = async {
+        retire.await;
+        link.runs.retire();
+        pending::<()>().await;
+    };
     tokio::select! {
-        () = link.hold() => Ok(()),
+        held = link.hold() => held,
         result = health => result.map_err(RunError::Health),
         () = retire => Ok(()),
     }
@@ -219,6 +233,10 @@ pub(crate) enum End {
     Moved,
     /// Anything else: redial after the back-off.
     Failed,
+    /// Coral refused the token: retire, and dial no more.
+    Refused,
+    /// The Run Executor retired and holds nothing: exit.
+    Retired,
 }
 
 struct Link {
@@ -232,37 +250,109 @@ struct Link {
     #[cfg(test)]
     on_queued: Option<mpsc::UnboundedSender<()>>,
     run_limits: RunLimits,
-    /// The Runs held, each from its `Taken` to its stream's end.
-    held: Arc<AtomicU32>,
-    /// A held Run's stream ended, so a unit freed.
-    freed: Arc<Notify>,
+    runs: Arc<Runs>,
     /// The client of the connection Coral welcomed the pull stream on, while
     /// it holds: every Run stream opens on it.
     current: watch::Sender<Option<Client>>,
 }
 
+/// The Runs a Run Executor holds, and whether it retires.
+#[derive(Default)]
+pub(crate) struct Runs {
+    pub(crate) holding: watch::Sender<Holding>,
+    /// A held Run's unit freed.
+    freed: Notify,
+}
+
+/// What [`Runs`] counts.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Holding {
+    /// Units of room held, each from its `Taken` until its isolate is gone.
+    held: u32,
+    /// Run streams waited for, each from its `Taken` until it ends or its
+    /// isolate misses its stop.
+    streams: u32,
+    /// The Run Executor retires.
+    retiring: bool,
+}
+
+impl Holding {
+    /// Retiring, with no Run stream to wait for.
+    fn drained(&self) -> bool {
+        self.retiring && self.streams == 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> u32 {
+        self.held
+    }
+}
+
+impl Runs {
+    /// Orders the Run Executor to retire.
+    pub(crate) fn retire(&self) {
+        self.holding
+            .send_if_modified(|holding| !std::mem::replace(&mut holding.retiring, true));
+    }
+
+    /// Once the Run Executor retired and holds nothing.
+    async fn drained(&self) {
+        let mut holding = self.holding.subscribe();
+        // The sender lives as long as `self`. The read lock drops at once.
+        drop(holding.wait_for(Holding::drained).await);
+    }
+}
+
+/// One Run's hold on the Run Executor: its unit of room and its stream.
+pub(crate) struct HeldRun {
+    pub(crate) unit: HeldUnit,
+    pub(crate) stream: HeldRunStream,
+}
+
 /// One unit of room a held Run takes. It frees when dropped: by the Run's
 /// Program thread once its isolate is gone, or by the Run's stream task when
 /// no Program started, even by a panic.
-pub(crate) struct HeldRun {
-    held: Arc<AtomicU32>,
-    freed: Arc<Notify>,
+pub(crate) struct HeldUnit(Arc<Runs>);
+
+/// One Run stream a retiring Run Executor waits for, until the Run's stream
+/// task drops it.
+pub(crate) struct HeldRunStream(Arc<Runs>);
+
+impl HeldRunStream {
+    /// The Run's isolate missed its stop: the Run Executor retires, and no
+    /// longer waits for this Run.
+    pub(crate) fn abandon(self) {
+        self.0.retire();
+    }
 }
 
 impl HeldRun {
-    pub(crate) fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
-        held.fetch_add(1, Ordering::SeqCst);
+    pub(crate) fn take(runs: &Arc<Runs>) -> Self {
+        runs.holding.send_modify(|holding| {
+            holding.held = holding.held.saturating_add(1);
+            holding.streams = holding.streams.saturating_add(1);
+        });
         Self {
-            held: held.clone(),
-            freed: freed.clone(),
+            unit: HeldUnit(runs.clone()),
+            stream: HeldRunStream(runs.clone()),
         }
     }
 }
 
-impl Drop for HeldRun {
+impl Drop for HeldUnit {
     fn drop(&mut self) {
-        self.held.fetch_sub(1, Ordering::SeqCst);
-        self.freed.notify_one();
+        self.0
+            .holding
+            .send_modify(|holding| holding.held = holding.held.saturating_sub(1));
+        self.0.freed.notify_one();
+    }
+}
+
+impl Drop for HeldRunStream {
+    fn drop(&mut self) {
+        self.0
+            .holding
+            .send_modify(|holding| holding.streams = holding.streams.saturating_sub(1));
     }
 }
 
@@ -292,8 +382,7 @@ impl Link {
             compiler,
             linked,
             run_limits: config.run_limits,
-            held: Arc::default(),
-            freed: Arc::default(),
+            runs: Arc::default(),
             current: watch::Sender::new(None),
             #[cfg(test)]
             on_queued: None,
@@ -301,17 +390,21 @@ impl Link {
     }
 
     /// The units of room free while this stream's `compiling` compiles hold
-    /// a unit each. A `Taken` or a `Compile` that crossed a report of none
-    /// holds a unit above the room.
+    /// a unit each: none while it retires. A `Taken` or a `Compile` that
+    /// crossed a report of none holds a unit above the room.
     fn free(&self, compiling: u32) -> u32 {
+        let holding = *self.runs.holding.borrow();
+        if holding.retiring {
+            return 0;
+        }
         self.hello
             .free
-            .saturating_sub(self.held.load(Ordering::SeqCst))
+            .saturating_sub(holding.held)
             .saturating_sub(compiling)
     }
 
-    /// Opens the pull stream again each time it ends, forever.
-    async fn hold(&self) {
+    /// Opens the pull stream again each time it ends, until it has retired.
+    async fn hold(&self) -> Result<(), RunError> {
         let mut backoff = Backoff::default();
         loop {
             let end = self.pull().await;
@@ -323,8 +416,21 @@ impl Link {
                 // Coral welcomed the stream that ended.
                 backoff.reset();
             }
+            match end {
+                End::Retired => return Ok(()),
+                End::Refused => {
+                    tracing::warn!("Coral refused the Run Executor's token; retiring");
+                    self.runs.retire();
+                    self.runs.drained().await;
+                    return Err(RunError::Refused);
+                }
+                End::Moved | End::Failed => {}
+            }
             if let Some(delay) = backoff.after(&end) {
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = self.runs.drained() => return Ok(()),
+                }
             }
         }
     }
@@ -338,15 +444,20 @@ impl Link {
 
     /// Holds one Run Coral took, from its unit of room to its end.
     fn hold_run(&self, taken: TakenRun) {
-        let unit = HeldRun::take(&self.held, &self.freed);
+        let held = HeldRun::take(&self.runs);
         let connection = self.current.subscribe();
-        tokio::spawn(run::hold(connection, taken, self.run_limits, unit));
+        tokio::spawn(run::hold(connection, taken, self.run_limits, held));
     }
 
-    /// Dials a fresh connection and holds the pull stream on it until it ends.
-    async fn pull(&self) -> End {
-        let Ok(channel) = self.endpoint.connect().await else {
-            return End::Failed;
+    /// Dials a fresh connection and opens the pull stream on it with Hello,
+    /// unless the Run Executor retired and holds nothing first.
+    async fn open(&self) -> Result<(Client, Outbound, Streaming<PullResponse>), End> {
+        let connected = tokio::select! {
+            connected = self.endpoint.connect() => connected,
+            () = self.runs.drained() => return Err(End::Retired),
+        };
+        let Ok(channel) = connected else {
+            return Err(End::Failed);
         };
         let mut client = LinkServiceClient::with_interceptor(channel, Bearer(self.token.clone()))
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
@@ -364,12 +475,55 @@ impl Link {
             })),
         };
         if outbound.try_send(hello).is_err() {
-            return End::Failed;
+            return Err(End::Failed);
         }
-        let Ok(response) = client.pull(ReceiverStream::new(requests)).await else {
-            return End::Failed;
+        let response = tokio::select! {
+            response = client.pull(ReceiverStream::new(requests)) => response,
+            () = self.runs.drained() => return Err(End::Retired),
         };
-        let mut inbound = response.into_inner();
+        match response {
+            Ok(response) => Ok((client, outbound, response.into_inner())),
+            Err(status) if status.code() == Code::Unauthenticated => Err(End::Refused),
+            Err(_) => Err(End::Failed),
+        }
+    }
+
+    /// Retiring is a report of none, sent once the stream is welcomed.
+    /// `End::Retired` once it holds no Run and no compile: it closes the
+    /// stream.
+    async fn retiring(
+        &self,
+        outbound: &Outbound,
+        welcomed: bool,
+        compiling: u32,
+        reported: &mut bool,
+    ) -> Option<End> {
+        if self.runs.holding.borrow().drained() && compiling == 0 {
+            return Some(End::Retired);
+        }
+        if welcomed && !*reported {
+            let room = PullRequest {
+                message: Some(pull_request::Message::Room(Room { free: 0 })),
+            };
+            if outbound.send(room).await.is_err() {
+                return Some(End::Failed);
+            }
+            *reported = true;
+        }
+        None
+    }
+
+    /// Holds a fresh pull stream until it ends, or until the Run Executor
+    /// retired and holds nothing.
+    async fn pull(&self) -> End {
+        let mut holding = self.runs.holding.subscribe();
+        let (client, outbound, mut inbound) = match self.open().await {
+            Ok(opened) => opened,
+            Err(end) => return end,
+        };
+        // Whether this stream reported the retire. A Hello while it retires
+        // reported none already, so a second report repeats it.
+        let mut reported = false;
         let (queue, queued) = mpsc::unbounded_channel();
         let (answered, mut answers) = mpsc::unbounded_channel();
         tokio::spawn(serve(Arc::clone(&self.compiler), queued, answered));
@@ -377,11 +531,21 @@ impl Link {
         let mut compiling: u32 = 0;
         loop {
             let welcomed = *self.linked.borrow();
+            let retiring = holding.borrow_and_update().retiring;
+            if retiring
+                && let Some(end) = self
+                    .retiring(&outbound, welcomed, compiling, &mut reported)
+                    .await
+            {
+                return end;
+            }
             tokio::select! {
+                // The order to retire, and each Run that ends.
+                _ = holding.changed() => {}
                 // A Run that freed before Hello leaves a permit here too, so
                 // a Room may repeat the room Hello reported. A free between
                 // Hello and Welcome reaches Coral only this way.
-                () = self.freed.notified(), if welcomed => {
+                () = self.runs.freed.notified(), if welcomed && !retiring => {
                     let room = PullRequest {
                         message: Some(pull_request::Message::Room(Room {
                             free: self.free(compiling),
@@ -423,6 +587,7 @@ impl Link {
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Taken(taken)),
                     })) if welcomed => {
+                        // A Run that crossed a report of none is honored.
                         for taken in taken.runs {
                             self.hold_run(taken);
                         }
@@ -443,6 +608,7 @@ impl Link {
                         None => return End::Failed,
                     };
                     compiling = compiling.saturating_sub(1);
+                    // While it retires, the room stays none.
                     let free = self.free(compiling);
                     for message in [
                         pull_request::Message::Compiled(compiled),
@@ -497,7 +663,7 @@ impl Backoff {
     /// The wait before the next dial after `end`: none after a move, which
     /// leaves the back-off where it is.
     pub(crate) fn after(&mut self, end: &End) -> Option<Duration> {
-        if let End::Moved = end {
+        if let End::Moved | End::Refused | End::Retired = end {
             return None;
         }
         let ceiling = self.next;
@@ -515,21 +681,30 @@ impl Backoff {
 }
 
 /// Serves the standard gRPC health service on `listener`: the readiness
-/// service serves while `linked` holds.
+/// service serves while `linked` holds and the Run Executor does not retire.
 async fn serve_health(
     listener: TcpListener,
     mut linked: watch::Receiver<bool>,
+    mut holding: watch::Receiver<Holding>,
 ) -> Result<(), tonic::transport::Error> {
     let (reporter, service) = tonic_health::server::health_reporter();
     let report = async move {
         loop {
-            let status = if *linked.borrow_and_update() {
+            let retiring = holding.borrow_and_update().retiring;
+            let status = if *linked.borrow_and_update() && !retiring {
                 ServingStatus::Serving
             } else {
                 ServingStatus::NotServing
             };
             reporter.set_service_status(READINESS_SERVICE, status).await;
-            if linked.changed().await.is_err() {
+            // Retiring never ends, so it is told once.
+            let changed = tokio::select! {
+                changed = linked.changed() => changed,
+                retired = holding.wait_for(|holding| holding.retiring), if !retiring => {
+                    retired.map(drop)
+                }
+            };
+            if changed.is_err() {
                 break;
             }
         }
@@ -539,7 +714,7 @@ async fn serve_health(
         .serve_with_incoming(TcpIncoming::from(listener));
     tokio::select! {
         result = serve => result,
-        // `linked` closes only as `run` returns.
+        // `linked` and `holding` close only as `run` returns.
         () = report => pending().await,
     }
 }
