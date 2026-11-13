@@ -129,7 +129,8 @@ impl RunHost {
     /// Settles the request `result` answers, and counts its bytes against
     /// the Run Output Budget. `false` when it breaks the protocol: no
     /// outcome, no request waits for it while the Program runs, a permit for
-    /// an Invoke or a Complete, or a value for a Perform.
+    /// an Invoke or a Complete, or a value or an Upstream Outcome for a
+    /// Perform.
     pub(super) fn invocation_result(&self, result: InvocationResult) -> bool {
         /// What an answer gives short of a rejection.
         enum Answer {
@@ -173,14 +174,16 @@ impl RunHost {
             return state.stopped;
         };
         let reply = match (awaiting, answer) {
+            // Answers of the wrong kind. A Perform dispatches nothing, so no
+            // upstream answers it.
+            (Awaiting::Value(_), Ok(Answer::Permitted))
+            | (Awaiting::Permit(_), Ok(Answer::Value(_)) | Err(ToolHostError::Upstream { .. })) => {
+                return false;
+            }
             (Awaiting::Value(sender), Ok(Answer::Value(json))) => Reply::Value(sender, Ok(json)),
             (Awaiting::Permit(sender), Ok(Answer::Permitted)) => Reply::Permit(sender, Ok(())),
             (Awaiting::Value(sender), Err(error)) => Reply::Value(sender, Err(error)),
             (Awaiting::Permit(sender), Err(error)) => Reply::Permit(sender, Err(error)),
-            (Awaiting::Value(_), Ok(Answer::Permitted))
-            | (Awaiting::Permit(_), Ok(Answer::Value(_))) => {
-                return false;
-            }
         };
         let bytes = usize::try_from(result.bytes).unwrap_or(usize::MAX);
         let over_budget = !self.fits(&state, bytes);

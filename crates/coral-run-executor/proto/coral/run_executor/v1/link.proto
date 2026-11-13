@@ -697,7 +697,9 @@ enum FinishEnd {
 }
 
 // The answer to one Invoke or Complete, at Applied, or to one Perform, once
-// the call is decided.
+// the call is decided. An Invoke and a Complete get `result_json`,
+// `coral_failure`, `upstream_outcome` or `fatal`. A Perform gets `permitted`,
+// `coral_failure` or `fatal`. Any other outcome breaks the protocol.
 message InvocationResult {
   // The request number it answers.
   uint64 number = 1;

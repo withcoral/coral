@@ -879,7 +879,9 @@ pub struct Failure {
     pub error_json: ::prost::alloc::string::String,
 }
 /// The answer to one Invoke or Complete, at Applied, or to one Perform, once
-/// the call is decided.
+/// the call is decided. An Invoke and a Complete get `result_json`,
+/// `coral_failure`, `upstream_outcome` or `fatal`. A Perform gets `permitted`,
+/// `coral_failure` or `fatal`. Any other outcome breaks the protocol.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InvocationResult {
     /// The request number it answers.
