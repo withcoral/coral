@@ -14,7 +14,8 @@ use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
 use crate::testing::{
-    Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, run_executor_config, start_run_executor,
+    Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, retired, run_executor_config, spawn_run_executor,
+    start_run_executor,
 };
 use crate::wire::v1::{Ended, RunEnd, run_response};
 use crate::{AnalysisError, CompileError, PullStreamCompiler};
@@ -78,7 +79,6 @@ async fn hello_carries_the_token_and_a_move_reopens_on_a_fresh_connection() {
 async fn every_other_end_redials_with_the_backoff() {
     for answer in [
         Answer::Refuse(Code::Unavailable),
-        Answer::Refuse(Code::Unauthenticated),
         Answer::Refuse(Code::FailedPrecondition),
         Answer::Welcome(PROTOCOL_LEVEL + 2),
         Answer::Close,
@@ -163,6 +163,70 @@ async fn readiness_serves_only_while_a_pull_stream_is_linked() {
     wait_for(&mut health, ServingStatus::Serving).await;
     coral.release();
     wait_for(&mut health, ServingStatus::NotServing).await;
+}
+
+/// Catches: a retiring Run Executor that reports room, drops a Run that
+/// crossed its report, serves readiness, or exits before its last Run ends.
+#[tokio::test]
+async fn a_retiring_run_executor_reports_no_room_and_exits_after_its_last_run() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let health = format!("http://{}", listener.local_addr().unwrap());
+    let (retire, task) = spawn_run_executor(&coral, 8, RunLimits::default(), Some(listener));
+    let mut health = HealthClient::new(Endpoint::from_shared(health).unwrap().connect_lazy());
+    let mut call = coral.next_call().await;
+    wait_for(&mut health, ServingStatus::Serving).await;
+    coral.take("run-1", "claim-1");
+    let first = coral.next_run().await;
+
+    drop(retire);
+    assert_eq!(call.rooms.recv().await, Some(0), "retiring reports zero");
+    wait_for(&mut health, ServingStatus::NotServing).await;
+    // A take that crossed the report.
+    coral.take("run-2", "claim-2");
+    let second = coral.next_run().await;
+    assert_eq!(second.open.run_id, "run-2", "the crossed take is honored");
+    let ended = || {
+        let end = RunEnd::Succeeded.into();
+        run_response::Message::Ended(Ended { end })
+    };
+    first.send(ended()).await;
+    second.send(ended()).await;
+    retired(task).await;
+    assert_eq!(
+        call.rooms.recv().await,
+        None,
+        "no more room is reported, and the stream closes after the last Run"
+    );
+}
+
+/// Catches: a Run Executor that holds nothing and keeps its stream, or
+/// keeps redialing, after the order to retire.
+#[tokio::test]
+async fn a_run_executor_that_holds_nothing_exits_at_once_when_it_retires() {
+    for answer in [
+        Answer::Welcome(PROTOCOL_LEVEL),
+        // Every dial after it is refused, so it waits out back-offs.
+        Answer::Refuse(Code::Unavailable),
+    ] {
+        let mut coral = ScriptedCoral::start([answer]).await;
+        let (retire, task) = spawn_run_executor(&coral, 8, RunLimits::default(), None);
+        coral.next_call().await;
+        drop(retire);
+        retired(task).await;
+    }
+}
+
+/// Catches: a refused token that redials, or that ends the Run Executor
+/// without the refusal.
+#[tokio::test]
+async fn a_refused_token_retires_the_run_executor() {
+    let mut coral = ScriptedCoral::start([Answer::Refuse(Code::Unauthenticated); 2]).await;
+    let (_retire, task) = spawn_run_executor(&coral, 8, RunLimits::default(), None);
+    coral.next_call().await;
+    let retired = tokio::time::timeout(Duration::from_secs(10), task).await;
+    assert!(matches!(retired, Ok(Ok(Err(RunError::Refused)))));
+    assert!(coral.try_next_call().is_none(), "it dials no more");
 }
 
 async fn wait_for(health: &mut HealthClient<tonic::transport::Channel>, status: ServingStatus) {

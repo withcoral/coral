@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::PROTOCOL_LEVEL;
-use crate::link::{Backoff, Client, End, HeldRun, compatible};
+use crate::link::{Backoff, Client, End, HeldRun, HeldRunStream, HeldUnit, compatible};
 use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
@@ -37,6 +37,13 @@ pub struct RunLimits {
     /// The held cap, [`HELD_CAP_REQUESTS`] outside tests; zero counts as
     /// one.
     pub held_cap: usize,
+    /// How long a stopped Program's isolate has to go before the Run
+    /// Executor retires: 5 s outside tests.
+    pub stop_grace: Duration,
+    /// Holds each stopped Program's thread before it sends `Finish` while a
+    /// test holds the lock, as an isolate that ignores termination.
+    #[cfg(test)]
+    pub(crate) stall: Option<&'static std::sync::RwLock<()>>,
     /// Told the number of each request that parks on a cap, so a test can
     /// wait for it.
     #[cfg(test)]
@@ -49,6 +56,9 @@ impl Default for RunLimits {
             isolate: coral_v8::IsolateLimits::defaults(),
             applied_cap_bytes: APPLIED_CAP_BYTES,
             held_cap: HELD_CAP_REQUESTS,
+            stop_grace: Duration::from_secs(5),
+            #[cfg(test)]
+            stall: None,
             #[cfg(test)]
             on_parked: None,
         }
@@ -81,6 +91,7 @@ fn value_limits(limits: &ValueLimits) -> Option<coral_value::ValueLimits> {
 }
 
 /// A Run's id, kept only when it has the form Coral mints Run ids in.
+#[derive(Clone)]
 struct RunId(Option<String>);
 
 impl RunId {
@@ -102,8 +113,9 @@ impl safe::Identifier for RunId {}
 /// A Run's Program, once its package loaded here.
 struct Program {
     host: StopsOnDrop,
-    /// Completes once the isolate is gone.
-    exited: oneshot::Receiver<()>,
+    /// Ends once the isolate is gone, with the Run's stream hold, or once
+    /// it missed its stop.
+    stopped: tokio::task::JoinHandle<Option<HeldRunStream>>,
     /// The loaded package's digest.
     sha256: Vec<u8>,
 }
@@ -114,7 +126,10 @@ struct Run {
     open: Open,
     limits: RunLimits,
     /// The unit of room, until the Program's thread holds it.
-    unit: Option<HeldRun>,
+    unit: Option<HeldUnit>,
+    /// What a retiring Run Executor waits for, until the Program's stop is
+    /// watched.
+    stream: Option<HeldRunStream>,
     program: Option<Program>,
     /// Ends the Program at the deadline; aborted when the Run ends.
     deadline: Option<tokio::task::JoinHandle<()>>,
@@ -136,7 +151,7 @@ pub(crate) async fn hold(
     mut connection: watch::Receiver<Option<Client>>,
     taken: TakenRun,
     limits: RunLimits,
-    unit: HeldRun,
+    held: HeldRun,
 ) {
     let mut run = Run {
         id: RunId::new(&taken.run_id),
@@ -146,7 +161,8 @@ pub(crate) async fn hold(
             protocol_level: PROTOCOL_LEVEL,
         },
         limits,
-        unit: Some(unit),
+        unit: Some(held.unit),
+        stream: Some(held.stream),
         program: None,
         deadline: None,
     };
@@ -174,10 +190,37 @@ pub(crate) async fn hold(
         deadline.abort();
     }
     // The unit frees once the isolate is gone.
-    if let Some(Program { host, exited, .. }) = run.program {
+    if let Some(Program { host, stopped, .. }) = run.program {
         drop(host);
-        drop(exited.await);
+        drop(stopped.await);
     }
+}
+
+/// Waits until the Program's thread has discarded its isolate, and gives
+/// back the Run's `stream`. When it has not `grace` after the Program was
+/// stopped, the Run Executor retires and no longer waits for this Run.
+async fn watch_stop(
+    mut stopping: watch::Receiver<bool>,
+    exited: oneshot::Receiver<()>,
+    grace: Duration,
+    stream: HeldRunStream,
+    run: RunId,
+) -> Option<HeldRunStream> {
+    let mut exited = std::pin::pin!(exited);
+    tokio::select! {
+        _ = &mut exited => return Some(stream),
+        // An error: the host is gone, so the thread is too.
+        _ = stopping.wait_for(|stopping| *stopping) => {}
+    }
+    if tokio::time::timeout(grace, &mut exited).await.is_ok() {
+        return Some(stream);
+    }
+    tracing::warn!(
+        coral.run.id = safe::id(&run),
+        "a stopped Program's isolate is still running past its grace; retiring the Run Executor"
+    );
+    stream.abandon();
+    None
 }
 
 impl Run {
@@ -256,10 +299,10 @@ impl Run {
     ) -> bool {
         match (first, &self.program) {
             (run_response::Message::Package(package), None) => {
-                let Some(unit) = self.unit.take() else {
+                let (Some(unit), Some(stream)) = (self.unit.take(), self.stream.take()) else {
                     return false;
                 };
-                self.program = load(package, outbound, self.limits, unit, &self.id);
+                self.program = load(package, outbound, self.limits, unit, &self.id, stream);
                 self.program.is_some()
             }
             // Loaded here before: the digest names the package, so the
@@ -316,14 +359,16 @@ impl Drop for StopsOnDrop {
 }
 
 /// Checks `package` and starts its Program's thread, which loads it and
-/// holds `unit` until its isolate is gone. `None` when the package breaks
-/// the protocol: the stream closes, with no reopen.
+/// holds `unit` until its isolate is gone, and the task that watches its
+/// stop with `stream`. `None` when the package breaks the protocol: the
+/// stream closes, with no reopen.
 fn load(
     package: RunPackage,
     outbound: mpsc::UnboundedSender<RunRequest>,
     limits: RunLimits,
-    unit: HeldRun,
+    unit: HeldUnit,
     run: &RunId,
+    stream: HeldRunStream,
 ) -> Option<Program> {
     if !compatible(package.protocol_level) {
         tracing::warn!(
@@ -376,16 +421,19 @@ fn load(
     ));
     let sha256 = package.sha256;
     let program = coral_v8::CompiledProgram::restore(package.script, package.source_map);
-    let Ok(exited) = host.spawn(program, limits.isolate, unit) else {
+    let Ok(exited) = host.spawn(program, limits, unit) else {
         tracing::warn!(
             coral.run.id = safe::id(run),
             "the Run's thread could not start; closing the Run stream"
         );
         return None;
     };
+    let stopping = host.stopping.subscribe();
+    let grace = limits.stop_grace;
+    let stopped = tokio::spawn(watch_stop(stopping, exited, grace, stream, run.clone()));
     Some(Program {
         host: StopsOnDrop(host),
-        exited,
+        stopped,
         sha256,
     })
 }

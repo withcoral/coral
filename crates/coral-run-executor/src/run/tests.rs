@@ -1,14 +1,13 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
 use coral_v8::LinkedToolSource;
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
 use super::*;
-use crate::link::HeldRun;
+use crate::link::{HeldRun, Runs};
 use crate::testing::{Answer, PullCall, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
     Committed, Complete, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult,
@@ -151,6 +150,9 @@ async fn started(
     start(&run, 60_000, cpu_budget_ms).await;
     run
 }
+
+/// A Program that waits on an Invoke.
+const WAITS: &str = "await coral.providers.tracker.issues.list({});";
 
 /// Sends `Started` with the time to the deadline and the CPU budget.
 async fn start(run: &RunCall, deadline_ms: u64, cpu_budget_ms: Option<u64>) {
@@ -664,16 +666,16 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
 /// forever, or a unit of room it never frees.
 #[tokio::test]
 async fn a_panicked_stream_task_stops_its_program() {
-    let held = Arc::new(AtomicU32::new(0));
-    let freed = Arc::new(Notify::new());
-    let unit = HeldRun::take(&held, &freed);
+    let runs = Arc::new(Runs::default());
+    let HeldRun { unit, stream } = HeldRun::take(&runs);
     let (outbound, mut requests) = mpsc::unbounded_channel();
-    let Program { host, exited, .. } = load(
+    let Program { host, stopped, .. } = load(
         compiled("return 1;").await,
         outbound,
         RunLimits::default(),
         unit,
         &RunId::new("run-1"),
+        stream,
     )
     .expect("the package loads");
     let loaded = requests.recv().await.and_then(|request| request.message);
@@ -685,13 +687,15 @@ async fn a_panicked_stream_task_stops_its_program() {
     });
     assert!(task.await.unwrap_err().is_panic());
     // The thread drops its sender as it ends.
-    let _ended = tokio::time::timeout(Duration::from_secs(10), exited)
+    let _ended = tokio::time::timeout(Duration::from_secs(10), stopped)
         .await
         .expect("the Program's thread ends");
-    tokio::time::timeout(Duration::from_secs(10), freed.notified())
+    let mut holding = runs.holding.subscribe();
+    let freed = holding.wait_for(|holding| holding.held() == 0);
+    tokio::time::timeout(Duration::from_secs(10), freed)
         .await
-        .expect("the unit frees");
-    assert_eq!(held.load(Ordering::SeqCst), 0);
+        .expect("the unit frees")
+        .unwrap();
 }
 
 /// How a case breaks a loadable package.
@@ -945,5 +949,53 @@ async fn a_lost_run_keeps_running_up_to_a_cap_then_waits() {
             matches!((number, &kind), (n, request::Kind::Log(_)) if n == parks_at),
             "{case}: {kind:?}"
         );
+    }
+}
+
+/// Catches: a Run Executor that waits forever for an isolate that ignores
+/// termination, or one that leaves its other Runs behind when it retires.
+#[tokio::test]
+async fn an_isolate_that_misses_its_stop_retires_the_run_executor() {
+    for with_another_run in [false, true] {
+        let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+        let stall = &*Box::leak(Box::new(std::sync::RwLock::new(())));
+        // Held for good: the stopped isolate never goes.
+        Box::leak(Box::new(stall.write().unwrap()));
+        let limits = RunLimits {
+            stop_grace: Duration::from_millis(100),
+            stall: Some(stall),
+            ..RunLimits::default()
+        };
+        let (_retire, task) = crate::testing::spawn_run_executor(&coral, 2, limits, None);
+        let mut call = coral.next_call().await;
+        let waits = compiled(WAITS).await;
+        let mut other = None;
+        if with_another_run {
+            let mut run = loaded(&mut coral, "run-2", waits.clone()).await;
+            start(&run, 60_000, None).await;
+            assert_eq!(next_request(&mut run).await.0, 1);
+            other = Some(run);
+        }
+        let mut stuck = started(&mut coral, waits, None).await;
+        assert_eq!(next_request(&mut stuck).await.0, 1);
+        let reason = TerminateReason::Canceled.into();
+        let terminate = run_response::Message::Terminate(Terminate { reason });
+        stuck.send(terminate).await;
+
+        // Alone, the stuck Run leaves nothing to wait for: it reports none,
+        // then closes the stream at once.
+        assert_eq!(call.rooms.recv().await, Some(0), "it retires");
+        if let Some(mut run) = other {
+            assert!(!task.is_finished(), "it waits for its other Run");
+            let json = invocation_result::Outcome::ResultJson("[]".to_owned());
+            run.send(result(1, 2, json)).await;
+            let end = finish_end(FinishEnd::Absent);
+            assert_eq!(next_request(&mut run).await, (2, end));
+            run.send(run_response::Message::Ended(Ended {
+                end: RunEnd::Succeeded.into(),
+            }))
+            .await;
+        }
+        crate::testing::retired(task).await;
     }
 }

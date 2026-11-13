@@ -32,8 +32,8 @@ use crate::wire::v1::{
     Welcome, pull_request, pull_response, run_request, run_response,
 };
 use crate::{
-    MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, PullStreams, RunExecutorConfig,
-    RunLimits, Token, compile_wire,
+    MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, PullStreams, RunError,
+    RunExecutorConfig, RunLimits, Token, compile_wire,
 };
 
 /// How the scripted Coral answers one pull stream.
@@ -152,12 +152,33 @@ pub fn start_run_executor(
     run_limits: RunLimits,
     health: Option<TcpListener>,
 ) -> oneshot::Sender<()> {
+    spawn_run_executor(coral, max_runs_held, run_limits, health).0
+}
+
+/// [`start_run_executor`], with the task that ends once the Run Executor
+/// has retired.
+#[must_use]
+pub fn spawn_run_executor(
+    coral: &ScriptedCoral,
+    max_runs_held: u32,
+    run_limits: RunLimits,
+    health: Option<TcpListener>,
+) -> (
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), RunError>>,
+) {
     let config = run_executor_config(coral, max_runs_held, run_limits);
     let (retire, retired) = oneshot::channel::<()>();
-    tokio::spawn(crate::run(config, health, async {
+    let task = tokio::spawn(crate::run(config, health, async {
         drop(retired.await);
     }));
-    retire
+    (retire, task)
+}
+
+/// Waits up to 10 s for the Run Executor to retire with no error.
+pub async fn retired(task: tokio::task::JoinHandle<Result<(), RunError>>) {
+    let retired = tokio::time::timeout(Duration::from_secs(10), task).await;
+    assert!(matches!(retired, Ok(Ok(Ok(())))), "{retired:?}");
 }
 
 /// The package of `script` and `source_map` with the default value limits.

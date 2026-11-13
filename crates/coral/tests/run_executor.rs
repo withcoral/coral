@@ -75,6 +75,78 @@ async fn a_local_child_says_hello_with_its_stdin_token_and_retires_when_stdin_cl
     assert!(status.success(), "{status}");
 }
 
+/// Catches: a Run Executor that exits on SIGTERM while it holds a Run, or
+/// one that never exits once that Run ends.
+#[cfg(unix)]
+#[tokio::test]
+async fn after_sigterm_the_run_executor_exits_once_its_run_ends() {
+    use coral_run_executor::testing::package;
+    use coral_run_executor::wire::v1::{
+        Ended, InvocationResult, RunEnd, Started, invocation_result, run_request, run_response,
+    };
+    use coral_run_executor::{BuiltinTools, CompilerClient as _, InProcessCompiler, RunLimits};
+
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let mut child = spawn(&coral, |command| {
+        command.env("CORAL_RUN_EXECUTOR_TOKEN", "dialing-token");
+    });
+    let mut call = coral.next_call().await;
+    let compiler = InProcessCompiler::new(RunLimits::default().isolate).unwrap();
+    let program = compiler
+        .compile(
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+            "await coral.providers.tracker.issues.list({}); return 1;",
+            &[],
+            &BuiltinTools::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    coral.take("run-1", "claim-1");
+    let mut run = coral.next_run().await;
+    let package = package(program.javascript(), program.source_map());
+    run.send(run_response::Message::Package(package)).await;
+    let loaded = run.next().await;
+    assert!(matches!(loaded, Some(run_request::Message::Loaded(_))));
+    let started = Started {
+        deadline_ms: 60_000,
+        cpu_budget_ms: None,
+    };
+    run.send(run_response::Message::Started(started)).await;
+    let number = |message: Option<run_request::Message>| match message {
+        Some(run_request::Message::Request(request)) => request.number,
+        other => panic!("expected a request, got {other:?}"),
+    };
+    assert_eq!(number(run.next().await), 1, "the Invoke");
+
+    let pid = child.id().expect("the Run Executor's pid").to_string();
+    let kill = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status();
+    assert!(kill.expect("send SIGTERM").success());
+    assert_eq!(call.rooms.recv().await, Some(0), "it retires");
+    run.send(run_response::Message::InvocationResult(InvocationResult {
+        number: 1,
+        bytes: 2,
+        outcome: Some(invocation_result::Outcome::ResultJson("[]".to_owned())),
+    }))
+    .await;
+    assert_eq!(number(run.next().await), 2, "the Finish");
+    assert!(
+        child.try_wait().expect("poll the Run Executor").is_none(),
+        "the Run Executor holds the Run until it ends"
+    );
+    run.send(run_response::Message::Ended(Ended {
+        end: RunEnd::Succeeded.into(),
+    }))
+    .await;
+    let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
+        .await
+        .expect("the Run Executor exits once its Run ends")
+        .expect("wait for the Run Executor");
+    assert!(status.success(), "{status}");
+}
+
 #[tokio::test]
 async fn a_dialing_run_executor_takes_its_token_from_the_environment() {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;

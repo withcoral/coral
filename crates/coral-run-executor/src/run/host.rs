@@ -12,10 +12,10 @@ use coral_v8::{
     AuthoredLocation, AuthoredSource, ConsoleLevel, PermitFuture, ProgramExecutionControl,
     ProgramOutputHostError, ToolBodyOutcome, ToolCalls, ToolCompletion, ToolFuture, ToolHostError,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
-use crate::link::HeldRun;
+use crate::link::HeldUnit;
 use crate::wire::v1::{
     Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location,
     Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete, finish,
@@ -34,6 +34,8 @@ enum Awaiting {
 pub(super) struct RunHost {
     state: Mutex<State>,
     changed: Condvar,
+    /// Turns true once the Program is stopped.
+    pub(super) stopping: watch::Sender<bool>,
     control: ProgramExecutionControl,
     value_limits: coral_value::ValueLimits,
     applied_cap_bytes: usize,
@@ -147,6 +149,7 @@ impl RunHost {
         Self {
             state: Mutex::new(state),
             changed: Condvar::new(),
+            stopping: watch::Sender::new(false),
             control: ProgramExecutionControl::new(),
             value_limits,
             applied_cap_bytes: limits.applied_cap_bytes,
@@ -166,8 +169,8 @@ impl RunHost {
     pub(super) fn spawn(
         self: &Arc<Self>,
         program: coral_v8::CompiledProgram,
-        isolate: coral_v8::IsolateLimits,
-        unit: HeldRun,
+        limits: super::RunLimits,
+        unit: HeldUnit,
     ) -> std::io::Result<oneshot::Receiver<()>> {
         let host = self.clone();
         let (exiting, exited) = oneshot::channel();
@@ -180,9 +183,15 @@ impl RunHost {
                 let _unit = unit;
                 let _exiting = exiting;
                 let _dispatch = tracing::dispatcher::set_default(&dispatch);
-                let executor = coral_v8::ProgramExecutor::new(isolate);
+                let executor = coral_v8::ProgramExecutor::new(limits.isolate);
                 let result =
                     executor.execute_with_host_control(&program, host.clone(), &host.control);
+                #[cfg(test)]
+                if let Some(stall) = limits.stall
+                    && host.state().stopped
+                {
+                    drop(stall.read());
+                }
                 host.finish(host.completion(result));
             })?;
         Ok(exited)
@@ -355,6 +364,7 @@ impl RunHost {
         drop(state);
         self.changed.notify_all();
         let _installed = self.control.terminate();
+        self.stopping.send_replace(true);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
