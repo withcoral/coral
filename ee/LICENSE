@@ -9,7 +9,8 @@ In this EE License:
   files in the ee/ directory of this repository, and the parts of any build
   compiled from them.
 * "Enterprise Edition subscription" means a paid subscription from Coral that
-  permits use of the Enterprise Edition, including any continued use permitted under the EE Terms after a subscription ends.
+  permits use of the Enterprise Edition, including any continued use permitted
+  under the EE Terms after a subscription ends.
 * "Community Edition" means any build of the Coral software that runs with no
   Enterprise Edition feature enabled.
 
