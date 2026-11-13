@@ -59,8 +59,15 @@ enum Scope<'a> {
         excluded: &'a [(String, String)],
         named: &'a [String],
     },
-    /// The Authored Tools of one kind that the Principal can discover.
+    /// The Authored Tools of one kind that the Principal can discover, in
+    /// the entity table.
     AuthoredTools {
+        workspace_id: &'a WorkspaceId,
+        tools: AuthoredToolScope<'a>,
+    },
+    /// The same Authored Tools in the vector table. That table names no
+    /// Principal, so their ids alone hold the Principal's rule.
+    AuthoredToolVectors {
         workspace_id: &'a WorkspaceId,
         tools: AuthoredToolScope<'a>,
     },
@@ -68,11 +75,15 @@ enum Scope<'a> {
 
 /// The Authored Tools one statement may read: the Private Tools of
 /// `principal` alone, or every Shared Tool of the Workspace, whose rows name
-/// no Principal.
+/// no Principal. Of these, only `ids` rank.
 #[derive(Clone, Copy)]
 pub(super) struct AuthoredToolScope<'a> {
     pub(super) kind: AuthoredToolKind,
     pub(super) principal: &'a Principal,
+    /// The Tools of the kind that the caller discovers and that policy
+    /// lets it call now. A row that a delete left, or that policy hides,
+    /// takes no place in either list.
+    pub(super) ids: &'a [AuthoredToolId],
 }
 
 impl AuthoredToolScope<'_> {
@@ -84,14 +95,19 @@ impl AuthoredToolScope<'_> {
             AuthoredToolKind::Shared => None,
         }
     }
+
+    /// The rows' keys: an Authored Tool's row is keyed by its id.
+    fn doc_ids(&self) -> Vec<String> {
+        self.ids.iter().map(ToString::to_string).collect()
+    }
 }
 
 impl Scope<'_> {
     const fn workspace_id(&self) -> &WorkspaceId {
         match self {
-            Self::Tools { workspace_id, .. } | Self::AuthoredTools { workspace_id, .. } => {
-                workspace_id
-            }
+            Self::Tools { workspace_id, .. }
+            | Self::AuthoredTools { workspace_id, .. }
+            | Self::AuthoredToolVectors { workspace_id, .. } => workspace_id,
         }
     }
 
@@ -105,26 +121,18 @@ impl Scope<'_> {
                 excluded,
                 ..
             } => {
-                let providers = binds.push(json(provider_ids));
-                let generations = binds.push(json(generation_ids));
+                let providers = binds.list(provider_ids);
+                let generations = binds.list(generation_ids);
                 let excluded = binds.push(json(excluded));
-                let (providers, generations, excluded) = match binds.system {
-                    DatabaseSystem::Postgres => (
-                        format!("SELECT jsonb_array_elements_text({providers}::jsonb)"),
-                        format!("SELECT jsonb_array_elements_text({generations}::jsonb)"),
-                        format!(
-                            "SELECT 1 FROM jsonb_array_elements({excluded}::jsonb) AS x(v) \
-                             WHERE x.v->>0 = d.provider_id AND x.v->>1 = d.tool_key"
-                        ),
+                let excluded = match binds.system {
+                    DatabaseSystem::Postgres => format!(
+                        "SELECT 1 FROM jsonb_array_elements({excluded}::jsonb) AS x(v) \
+                         WHERE x.v->>0 = d.provider_id AND x.v->>1 = d.tool_key"
                     ),
-                    DatabaseSystem::Sqlite => (
-                        format!("SELECT value FROM json_each({providers})"),
-                        format!("SELECT value FROM json_each({generations})"),
-                        format!(
-                            "SELECT 1 FROM json_each({excluded}) AS x \
-                             WHERE json_extract(x.value, '$[0]') = d.provider_id \
-                             AND json_extract(x.value, '$[1]') = d.tool_key"
-                        ),
+                    DatabaseSystem::Sqlite => format!(
+                        "SELECT 1 FROM json_each({excluded}) AS x \
+                         WHERE json_extract(x.value, '$[0]') = d.provider_id \
+                         AND json_extract(x.value, '$[1]') = d.tool_key"
                     ),
                 };
                 // The Generation condition keeps only each Provider's active
@@ -141,15 +149,28 @@ impl Scope<'_> {
             }
             Self::AuthoredTools { tools, .. } => {
                 let kind = crate::EntityKind::authored(tools.kind).as_str();
+                let ids = binds.list(&tools.doc_ids());
                 let Some(principal) = tools.owner() else {
-                    return format!("d.workspace_id = {workspace} AND d.kind = '{kind}'");
+                    return format!(
+                        "d.workspace_id = {workspace} AND d.kind = '{kind}' \
+                         AND d.doc_id IN ({ids})"
+                    );
                 };
                 let principal_id = binds.push(principal.id().as_str().to_string());
                 let principal_kind = binds.push(principal.kind().as_storage_str().to_string());
                 format!(
                     "d.workspace_id = {workspace} AND d.kind = '{kind}' \
                      AND d.principal_id = {principal_id} \
-                     AND d.principal_kind = {principal_kind}"
+                     AND d.principal_kind = {principal_kind} \
+                     AND d.doc_id IN ({ids})"
+                )
+            }
+            Self::AuthoredToolVectors { tools, .. } => {
+                let kind = crate::EntityKind::authored(tools.kind).as_str();
+                let ids = binds.list(&tools.doc_ids());
+                format!(
+                    "d.workspace_id = {workspace} AND d.kind = '{kind}' \
+                     AND d.doc_id IN ({ids})"
                 )
             }
         }
@@ -164,11 +185,7 @@ impl Scope<'_> {
         if named.is_empty() {
             return String::new();
         }
-        let named = binds.push(json(named));
-        let named = match binds.system {
-            DatabaseSystem::Postgres => format!("SELECT jsonb_array_elements_text({named}::jsonb)"),
-            DatabaseSystem::Sqlite => format!("SELECT value FROM json_each({named})"),
-        };
+        let named = binds.list(named);
         format!("(CASE WHEN {alias}.provider_id IN ({named}) THEN 1 ELSE 0 END) DESC, ")
     }
 }
@@ -257,7 +274,41 @@ pub(super) async fn nearest_tools(
     limit: usize,
 ) -> Result<Vec<NearestVector>, Error> {
     let binds = ToolBinds::new(tools);
-    let (sql, values) = nearest_statement(&binds.scope(workspace_id), revision, vector, limit);
+    nearest(
+        transaction,
+        &binds.scope(workspace_id),
+        revision,
+        vector,
+        limit,
+    )
+    .await
+}
+
+/// The vector list of the Authored Tools of the scope, as [`nearest_tools`]
+/// gives the vector list of Tools.
+pub(super) async fn nearest_authored_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    tools: AuthoredToolScope<'_>,
+    revision: &str,
+    vector: &[f32],
+    limit: usize,
+) -> Result<Vec<NearestVector>, Error> {
+    let scope = Scope::AuthoredToolVectors {
+        workspace_id,
+        tools,
+    };
+    nearest(transaction, &scope, revision, vector, limit).await
+}
+
+async fn nearest(
+    transaction: &mut Transaction<'_>,
+    scope: &Scope<'_>,
+    revision: &str,
+    vector: &[f32],
+    limit: usize,
+) -> Result<Vec<NearestVector>, Error> {
+    let (sql, values) = nearest_statement(scope, revision, vector, limit);
     let rows: Vec<(String, i64)> = transaction.fetch_all_sql(&sql, values).await?;
     Ok(rows
         .into_iter()
@@ -278,6 +329,33 @@ pub(super) async fn current_tools(
     plan: &QueryPlan,
     doc_ids: &[&str],
 ) -> Result<HashMap<String, CurrentRow<RankedTool>>, RetrievalError> {
+    current_rows(transaction, workspace_id, plan, doc_ids, ranked_tool).await
+}
+
+/// The Workspace's Authored Tool rows of `kind` among `doc_ids`, as
+/// [`current_tools`] reads Tool rows.
+pub(super) async fn current_authored_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    kind: AuthoredToolKind,
+    plan: &QueryPlan,
+    doc_ids: &[&str],
+) -> Result<HashMap<String, CurrentRow<RankedAuthoredTool>>, RetrievalError> {
+    current_rows(transaction, workspace_id, plan, doc_ids, |row| {
+        ranked_authored_tool(kind, row)
+    })
+    .await
+}
+
+/// The rows among `doc_ids` by key, each with its stamp, decoded by
+/// `decode`.
+async fn current_rows<T>(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    plan: &QueryPlan,
+    doc_ids: &[&str],
+    decode: impl Fn(RankedRow) -> Result<T, RetrievalError>,
+) -> Result<HashMap<String, CurrentRow<T>>, RetrievalError> {
     #[derive(sqlx::FromRow)]
     struct StampedRow {
         indexed_at_unix_nanos: i64,
@@ -287,22 +365,20 @@ pub(super) async fn current_tools(
     let mut binds = Binds::new(DatabaseSystem::Postgres);
     let workspace = binds.push(workspace_id.to_string());
     let columns = ranked_columns(&mut binds, "d", plan);
-    let doc_ids = binds.push(json(doc_ids));
+    let doc_ids = binds.list(doc_ids);
     let sql = format!(
         "SELECT {columns}, d.indexed_at_unix_nanos \
          FROM search_entities AS d \
-         WHERE d.workspace_id = {workspace} \
-         AND d.doc_id IN (SELECT jsonb_array_elements_text({doc_ids}::jsonb))"
+         WHERE d.workspace_id = {workspace} AND d.doc_id IN ({doc_ids})"
     );
     let rows: Vec<StampedRow> = transaction.fetch_all_sql(&sql, binds.values).await?;
     rows.into_iter()
         .map(|stamped| {
-            let tool = ranked_tool(stamped.row)?;
             Ok((
-                tool.doc_id.clone(),
+                stamped.row.doc_id.clone(),
                 CurrentRow {
                     indexed_at_unix_nanos: stamped.indexed_at_unix_nanos,
-                    entry: tool,
+                    entry: decode(stamped.row)?,
                 },
             ))
         })
@@ -355,7 +431,34 @@ pub(super) async fn explain_nearest_tools(
     vector: &[f32],
 ) -> Result<Vec<String>, Error> {
     let binds = ToolBinds::new(tools);
-    let (sql, values) = nearest_statement(&binds.scope(workspace_id), revision, vector, 100);
+    explain_nearest(transaction, &binds.scope(workspace_id), revision, vector).await
+}
+
+/// The Postgres plan of the vector query over the Authored Tools of the
+/// scope, one line per row, for the same test.
+#[cfg(test)]
+pub(super) async fn explain_nearest_authored_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    tools: AuthoredToolScope<'_>,
+    revision: &str,
+    vector: &[f32],
+) -> Result<Vec<String>, Error> {
+    let scope = Scope::AuthoredToolVectors {
+        workspace_id,
+        tools,
+    };
+    explain_nearest(transaction, &scope, revision, vector).await
+}
+
+#[cfg(test)]
+async fn explain_nearest(
+    transaction: &mut Transaction<'_>,
+    scope: &Scope<'_>,
+    revision: &str,
+    vector: &[f32],
+) -> Result<Vec<String>, Error> {
+    let (sql, values) = nearest_statement(scope, revision, vector, 100);
     let plan: Vec<(String,)> = transaction
         .fetch_all_sql(&format!("EXPLAIN {sql}"), values)
         .await?;
@@ -426,18 +529,23 @@ pub(super) async fn rank_authored_tools(
     rank(transaction, &scope, plan, limit)
         .await?
         .into_iter()
-        .map(|row| {
-            let id = row.authored_tool_id.ok_or(RetrievalError::Corrupt(
-                "an Authored Tool row has no Tool id",
-            ))?;
-            Ok(RankedAuthoredTool {
-                id: AuthoredToolId::parse(tools.kind, &id)
-                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Authored Tool id"))?,
-                call_path: call_path(&row.call_path)?,
-                matched: row.matched,
-            })
-        })
+        .map(|row| ranked_authored_tool(tools.kind, row))
         .collect()
+}
+
+fn ranked_authored_tool(
+    kind: AuthoredToolKind,
+    row: RankedRow,
+) -> Result<RankedAuthoredTool, RetrievalError> {
+    let id = row.authored_tool_id.ok_or(RetrievalError::Corrupt(
+        "an Authored Tool row has no Tool id",
+    ))?;
+    Ok(RankedAuthoredTool {
+        id: AuthoredToolId::parse(kind, &id)
+            .map_err(|_invalid| RetrievalError::Corrupt("invalid Authored Tool id"))?,
+        call_path: call_path(&row.call_path)?,
+        matched: row.matched,
+    })
 }
 
 fn call_path(value: &str) -> Result<CallPath, RetrievalError> {
@@ -879,6 +987,16 @@ impl Binds {
         match self.system {
             DatabaseSystem::Postgres => format!("${position}"),
             DatabaseSystem::Sqlite => format!("?{position}"),
+        }
+    }
+
+    /// Adds `values` as one bind and returns a subquery that gives each
+    /// value as a row, for an `IN` condition.
+    fn list(&mut self, values: &[impl serde::Serialize]) -> String {
+        let list = self.push(json(values));
+        match self.system {
+            DatabaseSystem::Postgres => format!("SELECT jsonb_array_elements_text({list}::jsonb)"),
+            DatabaseSystem::Sqlite => format!("SELECT value FROM json_each({list})"),
         }
     }
 }

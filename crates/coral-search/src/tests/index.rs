@@ -1251,18 +1251,17 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
-    world
-        .modules
-        .save_private_tool(
-            &principal,
-            &world.workspace,
-            "internal.summarizeTides",
-            "Summarize the tides",
-            60,
-        )
-        .await;
+    for (path, description, at) in [
+        ("internal.summarizeTides", "Summarize the tides", 60),
+        ("internal.tideTables", "Tables of the tides", 65),
+    ] {
+        world
+            .modules
+            .save_private_tool(&principal, &world.workspace, path, description, at)
+            .await;
+    }
     world.index.reconcile().await;
-    let hits = async || {
+    let search = async || {
         world
             .modules
             .search
@@ -1273,10 +1272,8 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
             )
             .await
             .expect("search the Workspace")
-            .hits()
-            .len()
     };
-    assert_eq!(hits().await, 1);
+    assert_eq!(search().await.hits().len(), 2);
 
     world
         .modules
@@ -1285,12 +1282,28 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
 
     assert_eq!(
         world.private_tool_rows().await,
-        1,
+        2,
         "the row outlives the function"
     );
-    assert_eq!(hits().await, 0);
+    let page = search().await;
+    assert_eq!(
+        page.hits()
+            .iter()
+            .map(|hit| hit.call_path().as_str())
+            .collect::<Vec<_>>(),
+        ["coral.private.internal.tideTables"]
+    );
+    // The row of the deleted Tool takes no place in the ranked list, so the
+    // retriever does not fail on it.
+    assert_eq!(
+        page.retriever_statuses()
+            .iter()
+            .find(|status| status.retriever() == crate::EntityKind::PrivateTool)
+            .map(crate::RetrieverStatus::state),
+        Some(crate::RetrieverState::ResultsFound)
+    );
     world.index.reconcile().await;
-    assert_eq!(world.private_tool_rows().await, 0);
+    assert_eq!(world.private_tool_rows().await, 1);
 }
 
 #[tokio::test]
