@@ -735,10 +735,11 @@ pub struct Invoke {
     pub parent: ::core::option::Option<u64>,
 }
 /// One call to a Private or Shared Tool, which Coral performs by running its
-/// body in the Program. Its InvocationResult is `permitted` when the body may
-/// run; a rejection settles the call, and the body never runs. A permitted
-/// Perform with no Complete before Finish was abandoned: the Program ended
-/// while its body still ran.
+/// body in the Program: ADR 0027's code-performed Invoke. Its InvocationResult
+/// comes once admission, approval and enforcement decide the call, not at
+/// Applied: `permitted` when the body may run, or a rejection, which settles
+/// the call before the body runs. A permitted Perform with no Complete before
+/// Finish was abandoned: the Program ended while its body still ran.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Perform {
     /// The Tool's complete Call Path, under coral.private or coral.shared.
@@ -756,8 +757,8 @@ pub struct Perform {
     #[prost(uint64, optional, tag = "4")]
     pub parent: ::core::option::Option<u64>,
 }
-/// How the body of one permitted Perform ended. Its InvocationResult carries
-/// the value the call's caller receives, or a rejection. A body that threw a
+/// How the body of one permitted Perform ended. Its InvocationResult, at
+/// Applied, carries the value the call's caller receives, or a rejection. A body that threw a
 /// Tool Error rejects its caller with that error whatever rejection answers.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Complete {
@@ -880,7 +881,8 @@ pub struct Failure {
     #[prost(string, tag = "3")]
     pub error_json: ::prost::alloc::string::String,
 }
-/// The answer to one Invoke, Perform or Complete, at Applied.
+/// The answer to one Invoke or Complete, at Applied, or to one Perform, once
+/// the call is decided.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InvocationResult {
     /// The request number it answers.

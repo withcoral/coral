@@ -561,10 +561,11 @@ message Invoke {
 }
 
 // One call to a Private or Shared Tool, which Coral performs by running its
-// body in the Program. Its InvocationResult is `permitted` when the body may
-// run; a rejection settles the call, and the body never runs. A permitted
-// Perform with no Complete before Finish was abandoned: the Program ended
-// while its body still ran.
+// body in the Program: ADR 0027's code-performed Invoke. Its InvocationResult
+// comes once admission, approval and enforcement decide the call, not at
+// Applied: `permitted` when the body may run, or a rejection, which settles
+// the call before the body runs. A permitted Perform with no Complete before
+// Finish was abandoned: the Program ended while its body still ran.
 message Perform {
   // The Tool's complete Call Path, under coral.private or coral.shared.
   string call_path = 1;
@@ -578,8 +579,8 @@ message Perform {
   optional uint64 parent = 4;
 }
 
-// How the body of one permitted Perform ended. Its InvocationResult carries
-// the value the call's caller receives, or a rejection. A body that threw a
+// How the body of one permitted Perform ended. Its InvocationResult, at
+// Applied, carries the value the call's caller receives, or a rejection. A body that threw a
 // Tool Error rejects its caller with that error whatever rejection answers.
 message Complete {
   // The Perform's request number.
@@ -697,7 +698,8 @@ enum FinishEnd {
   FINISH_END_DEADLINE_REACHED = 6;
 }
 
-// The answer to one Invoke, Perform or Complete, at Applied.
+// The answer to one Invoke or Complete, at Applied, or to one Perform, once
+// the call is decided.
 message InvocationResult {
   // The request number it answers.
   uint64 number = 1;

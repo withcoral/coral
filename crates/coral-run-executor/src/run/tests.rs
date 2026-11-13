@@ -269,22 +269,30 @@ catch (error) { return error.code; }",
         outcome_json: r#"{"status":404,"data":{},"metadata":{}}"#.to_owned(),
     };
     let caught = |code: &str| finish(finish::Completion::ValueJson(format!(r#""{code}""#)));
-    for (case, package, outcome, end) in [
+    let kind_of = |kind: &request::Kind| match kind {
+        request::Kind::Invoke(_) => "an Invoke",
+        request::Kind::Perform(_) => "a Perform",
+        _ => "another request",
+    };
+    for (case, package, first, outcome, end) in [
         (
             "an Upstream Outcome",
             &invokes,
+            "an Invoke",
             invocation_result::Outcome::UpstreamOutcome(upstream),
             caught("upstream_not_found"),
         ),
         (
             "a host failure",
             &invokes,
+            "an Invoke",
             invocation_result::Outcome::Fatal(Fatal {}),
             finish_end(FinishEnd::HostTerminated),
         ),
         (
             "a rejected Perform",
             &performs,
+            "a Perform",
             invocation_result::Outcome::CoralFailure(denied),
             caught("policy_denied"),
         ),
@@ -292,7 +300,7 @@ catch (error) { return error.code; }",
         let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
         let mut run = started(&mut coral, package.clone(), None).await;
         let (number, kind) = next_request(&mut run).await;
-        assert_eq!(number, 1, "{case}: {kind:?}");
+        assert_eq!((number, kind_of(&kind)), (1, first), "{case}");
         run.send(result(1, 0, outcome)).await;
         // The next request is the Program's end: a rejected body never ran.
         assert_eq!(next_request(&mut run).await, (2, end), "{case}");
