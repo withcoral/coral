@@ -1,14 +1,57 @@
 //! What a retriever does with its vector list before the engine sees it
-//! (ADR 0035, "The vector list"): it drops each vector entry made from
-//! other text than its Search Entity holds now, then merges the list with
-//! its lexical list by reciprocal rank. Nothing here names a Search Entity
-//! kind, so each retriever uses it with its own entries.
+//! (ADR 0035, "The vector list"). It reads the list in its own savepoint.
+//! It drops each vector that the Embedder made from other text than the
+//! Search Entity holds now. Then it merges the list with its lexical list
+//! by reciprocal rank. Nothing here reads the rows of one kind, so each
+//! retriever uses it with its own entries.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::Hash;
 
+use coral_db::Transaction;
 use coral_embed::{MANIFEST, Merge};
+use coral_telemetry::safe;
+use coral_workspace::WorkspaceId;
+
+use super::{QueryError, RetrievalError, repository};
+use crate::EntityKind;
+
+/// The vector list that `read` gives, read in its own savepoint. `None`
+/// when `read` fails: the savepoint rolls back, so the snapshot stays
+/// usable, the retriever of `kind` ranks by words alone, and the page does
+/// not say so. Only a failure to open, keep or undo the savepoint is the
+/// retriever's error.
+pub(crate) async fn vector_side<T>(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    kind: EntityKind,
+    read: impl AsyncFnOnce(&mut Transaction<'_>) -> Result<VectorList<T>, RetrievalError>,
+) -> Result<Option<VectorList<T>>, QueryError> {
+    repository::begin_vector_query(transaction)
+        .await
+        .map_err(QueryError::retrieval)?;
+    match read(transaction).await {
+        Ok(list) => {
+            repository::end_vector_query(transaction)
+                .await
+                .map_err(QueryError::retrieval)?;
+            Ok(Some(list))
+        }
+        Err(error) => {
+            repository::abandon_vector_query(transaction)
+                .await
+                .map_err(QueryError::retrieval)?;
+            tracing::warn!(
+                coral.search.retriever = safe::kind(kind.as_str()),
+                coral.workspace.id = safe::id(workspace_id),
+                error.type = safe::kind(error.code()),
+                "a retriever's vector query failed; it ranks by words alone"
+            );
+            Ok(None)
+        }
+    }
+}
 
 /// One entry of the vector list as the vector query found it: the Search
 /// Entity's key and the source stamp the vector was made from.

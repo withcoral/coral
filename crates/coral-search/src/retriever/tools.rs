@@ -15,7 +15,6 @@ use coral_db::Transaction;
 use coral_embed::MANIFEST;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
-use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
@@ -286,54 +285,27 @@ async fn lexical_and_vector_lists(
             .map_err(QueryError::Retriever)?;
     let vector = match request.vector {
         Some(vector) => {
-            vector_side(
+            vector_list::vector_side(
                 transaction,
                 workspace_id,
-                scope,
-                plan,
-                vector,
-                request.window,
+                EntityKind::ProviderTool,
+                async |transaction| {
+                    nearest_current_tools(
+                        transaction,
+                        workspace_id,
+                        scope,
+                        plan,
+                        vector,
+                        request.window,
+                    )
+                    .await
+                },
             )
             .await?
         }
         None => None,
     };
     Ok((lexical, vector))
-}
-
-/// The vector list, read in its own savepoint. `None` when the vector side
-/// fails: the savepoint rolls back, the retriever ranks by words alone, and
-/// the page does not say so.
-async fn vector_side(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    scope: &repository::ToolScope<'_>,
-    plan: &QueryPlan,
-    vector: &[f32],
-    window: usize,
-) -> Result<Option<VectorList<repository::RankedTool>>, QueryError> {
-    repository::begin_vector_query(transaction)
-        .await
-        .map_err(QueryError::retrieval)?;
-    match nearest_current_tools(transaction, workspace_id, scope, plan, vector, window).await {
-        Ok(tools) => {
-            repository::end_vector_query(transaction)
-                .await
-                .map_err(QueryError::retrieval)?;
-            Ok(Some(tools))
-        }
-        Err(error) => {
-            repository::abandon_vector_query(transaction)
-                .await
-                .map_err(QueryError::retrieval)?;
-            tracing::warn!(
-                coral.workspace.id = safe::id(workspace_id),
-                error.type = safe::kind(error.code()),
-                "the Tool retriever's vector query failed; it ranks by words alone"
-            );
-            Ok(None)
-        }
-    }
 }
 
 /// The vector list: the `window` Tools of the scope whose vectors of the
