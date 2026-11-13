@@ -24,7 +24,8 @@ use crate::compile_wire::{self, ProtocolError};
 use crate::run::{self, RunLimits};
 use crate::wire::v1::link_service_client::LinkServiceClient;
 use crate::wire::v1::{
-    Compile, Compiled, Hello, Limits, PullRequest, PullResponse, Room, pull_request, pull_response,
+    Compile, Compiled, Hello, Limits, PullRequest, PullResponse, Room, TakenRun, pull_request,
+    pull_response,
 };
 use crate::{CompilerClient, InProcessCompiler};
 
@@ -211,10 +212,10 @@ impl tonic::service::Interceptor for Bearer {
     }
 }
 
-/// How a pull stream ended.
-enum End {
-    /// Coral ended its side cleanly after Welcome, to move the stream (the
-    /// go-away): reopen at once.
+/// How a pull stream or a Run stream ended.
+pub(crate) enum End {
+    /// Coral ended its side cleanly after its first answer, to move the
+    /// stream (the go-away): reopen at once.
     Moved,
     /// Anything else: redial after the back-off.
     Failed,
@@ -235,6 +236,9 @@ struct Link {
     held: Arc<AtomicU32>,
     /// A held Run's stream ended, so a unit freed.
     freed: Arc<Notify>,
+    /// The client of the connection Coral welcomed the pull stream on, while
+    /// it holds: every Run stream opens on it.
+    current: watch::Sender<Option<Client>>,
 }
 
 /// One unit of room a held Run takes. It frees when dropped: by the Run's
@@ -290,6 +294,7 @@ impl Link {
             run_limits: config.run_limits,
             held: Arc::default(),
             freed: Arc::default(),
+            current: watch::Sender::new(None),
             #[cfg(test)]
             on_queued: None,
         }
@@ -310,6 +315,7 @@ impl Link {
         let mut backoff = Backoff::default();
         loop {
             let end = self.pull().await;
+            self.current.send_replace(None);
             if self
                 .linked
                 .send_if_modified(|linked| std::mem::replace(linked, false))
@@ -321,6 +327,20 @@ impl Link {
                 tokio::time::sleep(delay).await;
             }
         }
+    }
+
+    /// Coral welcomed the pull stream on `client`'s connection: every Run
+    /// stream opens on it while it holds.
+    fn welcomed(&self, client: &Client) {
+        self.linked.send_replace(true);
+        self.current.send_replace(Some(client.clone()));
+    }
+
+    /// Holds one Run Coral took, from its unit of room to its end.
+    fn hold_run(&self, taken: TakenRun) {
+        let unit = HeldRun::take(&self.held, &self.freed);
+        let connection = self.current.subscribe();
+        tokio::spawn(run::hold(connection, taken, self.run_limits, unit));
     }
 
     /// Dials a fresh connection and holds the pull stream on it until it ends.
@@ -385,7 +405,7 @@ impl Link {
                             );
                             return End::Failed;
                         }
-                        self.linked.send_replace(true);
+                        self.welcomed(&client);
                     }
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Compile(compile)),
@@ -403,10 +423,8 @@ impl Link {
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Taken(taken)),
                     })) if welcomed => {
-                        // Each Run's stream rides this connection.
                         for taken in taken.runs {
-                            let unit = HeldRun::take(&self.held, &self.freed);
-                            tokio::spawn(run::hold(client.clone(), taken, self.run_limits, unit));
+                            self.hold_run(taken);
                         }
                     }
                     // Anything else breaks the protocol. A clean end before
@@ -461,8 +479,9 @@ async fn serve(
 }
 
 /// The redial delay: 100 ms doubling to 5 s, each jittered down by up to
-/// half, and reset once a pull stream Coral welcomed ends.
-struct Backoff {
+/// half, and reset once a stream Coral answered ends. The pull stream and
+/// each Run stream keep one.
+pub(crate) struct Backoff {
     next: Duration,
 }
 
@@ -477,7 +496,7 @@ impl Default for Backoff {
 impl Backoff {
     /// The wait before the next dial after `end`: none after a move, which
     /// leaves the back-off where it is.
-    fn after(&mut self, end: &End) -> Option<Duration> {
+    pub(crate) fn after(&mut self, end: &End) -> Option<Duration> {
         if let End::Moved = end {
             return None;
         }
@@ -490,7 +509,7 @@ impl Backoff {
         Some(half + Duration::from_nanos(random % spread.saturating_add(1)))
     }
 
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.next = FIRST_BACKOFF;
     }
 }
