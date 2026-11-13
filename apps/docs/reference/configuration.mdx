@@ -108,7 +108,16 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 | Key                          | Description                                                                                                                 | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval on which provider tool, private tool, and shared tool search indexing is executed. Must be greater than 0. | No       | `300`   |
-| `semantic_search_enabled`    | Prepares the database for search by meaning. Search still matches by words only. On Postgres, `true` needs pgvector 0.7 or later with its `halfvec` type on Coral's search path. When that is missing, Coral creates the `vector` extension if its database role may, and otherwise does not start. Coral reads the setting at startup. With `true`, Coral looks for the search model in `/opt/coral/models` on Linux, then in `models` in its state directory. When neither folder holds it, Coral downloads it (133 MB) from GitHub into `models`. Then Coral deletes the other model folders in `models`. When a downloaded file does not match, Coral tries again at its next start. On an x86-64 CPU without the x86-64-v3 features, Coral does not download the model. | No       | `false` |
+| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. Coral reads it at startup. | No       | `true`  |
+
+With `semantic_search_enabled = true`:
+
+- **Postgres needs pgvector 0.7 or later.** At startup, Coral creates the `vector` extension when pgvector is installed and Coral's database role is a superuser. If the extension is not available, Coral does not start, and the error names the `vector extension`. SQLite needs no extension.
+- **Coral needs the model files.** The `ghcr.io/withcoral/coral` image holds them. Without the image, Coral looks in `/opt/coral/models/bge-small-en-v1.5/` on Linux, then in `models/bge-small-en-v1.5/` in the configuration folder. If neither folder holds the files, Coral downloads them (133 MB) from GitHub into `models` in the configuration folder. Then Coral deletes the other model folders in `models`. On a host without network access, put the files in one of these folders, or set `semantic_search_enabled = false`.
+- **Semantic search has a cost.** Coral uses up to about 360 MiB more memory while it embeds tools, on one background thread at low priority. A new provider with about 20,000 tools matches by words only for about 12 minutes on one x86 vCPU.
+- **An x86-64 CPU needs the x86-64-v3 features, such as AVX2.** On an older CPU, search matches by words only.
+
+With `false`, Coral loads no model, downloads nothing and does not check for pgvector. See [Semantic search](/getting-started/self-host#semantic-search) for the details.
 
 ### `[updates]`
 
