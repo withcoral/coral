@@ -108,12 +108,13 @@ fn contains_only_bootstrap_configuration(
     // publishes the marker. The lock file holds no state.
     let lock_file = lock_file_path(layout.config_dir());
     // An operator may put the search model's files in the root before the
-    // first start. Coral 0.x never wrote a folder with this name.
+    // first start, also as a link to a folder elsewhere: `metadata` follows
+    // the link. Coral 0.x never wrote anything with this name.
     let models_dir = coral_embed::state_models_dir(layout.config_dir());
     for entry in entries {
         if entry.path() == layout.config_file()
             || (entry.path() == lock_file && entry.file_type()?.is_file())
-            || (entry.path() == models_dir && entry.file_type()?.is_dir())
+            || (entry.path() == models_dir && std::fs::metadata(&models_dir)?.is_dir())
         {
             continue;
         }
@@ -258,24 +259,53 @@ mod tests {
     }
 
     /// An operator may put the search model's files in the root before the
-    /// first start, where Coral looks for them.
+    /// first start, where Coral looks for them, also through a link to a
+    /// folder elsewhere. The folder does not make other old state fresh.
     #[test]
     fn a_fresh_root_may_hold_the_search_model_folder() {
         const CONFIG: &str = "[search]\nsemantic_search_enabled = true\n";
-        for (case, models_is_folder, fresh) in [
-            ("a models folder with a model", true, true),
-            ("a models file", false, false),
-        ] {
+        #[derive(Debug, Clone, Copy)]
+        enum Models {
+            Folder,
+            File,
+            LinkToFolder,
+            FolderBesideOldState,
+        }
+        let mut cases = vec![
+            ("a models folder with a model", Models::Folder, true),
+            ("a models file", Models::File, false),
+            (
+                "a models folder beside pre-v1 state",
+                Models::FolderBesideOldState,
+                false,
+            ),
+        ];
+        if cfg!(unix) {
+            cases.push(("a link to a models folder", Models::LinkToFolder, true));
+        }
+        for (case, models_kind, fresh) in cases {
             let temp = tempfile::tempdir().unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
             let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
             std::fs::write(layout.config_file(), CONFIG).unwrap();
             let models = coral_embed::state_models_dir(temp.path());
-            if models_is_folder {
+            let put_model = |models: &std::path::Path| {
                 let model = models.join(coral_embed::MANIFEST.model_id);
                 std::fs::create_dir_all(&model).unwrap();
                 std::fs::write(model.join("model.onnx"), b"model").unwrap();
-            } else {
-                std::fs::write(&models, b"").unwrap();
+            };
+            match models_kind {
+                Models::Folder => put_model(&models),
+                Models::File => std::fs::write(&models, b"").unwrap(),
+                Models::FolderBesideOldState => {
+                    put_model(&models);
+                    std::fs::write(temp.path().join("catalog.json"), b"{}").unwrap();
+                }
+                Models::LinkToFolder => {
+                    put_model(elsewhere.path());
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(elsewhere.path(), &models).unwrap();
+                }
             }
 
             let result = validate_state_root(&layout, CONFIG);

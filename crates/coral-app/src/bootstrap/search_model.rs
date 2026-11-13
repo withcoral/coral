@@ -230,7 +230,8 @@ async fn deliver(delivery: Delivery, state: watch::Sender<SearchModelState>) {
     };
     let model_id = manifest.model_id;
     // The removal ends before the state turns ready, so a reader of the
-    // ready state never sees the other folders.
+    // ready state sees no folder that the removal could remove. A folder it
+    // could not remove stays until the next start retries.
     if tokio::task::spawn_blocking(move || remove_other_models(&download_dir, model_id))
         .await
         .is_err()
