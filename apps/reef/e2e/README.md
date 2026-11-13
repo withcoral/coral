@@ -691,13 +691,17 @@ with synthetic data: traces include requests, cookies, tokens and source; videos
 may show one-time credentials; logs and screenshots can expose private content.
 The viewer binds only to loopback, rejects unrelated Host headers and serves only
 files inside the results root. Remote viewing requires the explicit origin setting
-above and a reviewed tailnet access policy. Do not publish evidence without review.
+above and a reviewed tailnet access policy. Do not publish evidence from your own
+machine without review; CI's upload of a failed run, below, is the one exception.
 Local evidence is not automatically pruned; delete old run directories when no
 longer needed.
 
 The opt-in **Reel** GitHub Actions workflow builds the real stack, runs the
 harness self-check and records the selected suite. Its default is `main` on
-SQLite; select Postgres to run the same journeys with that database. It uploads artifacts even after failures,
-with seven-day retention, **only while the repository is private**. Public-repo
-uploads are deliberately disabled; the final automatic CI matrix is later work.
+SQLite; select Postgres to run the same journeys with that database. A failed
+job uploads its run directory, Coral and Reef logs included, with seven-day
+retention, and in this public repository anyone can download it. That is safe
+only because a CI run's tokens belong to its own Coral, which ends with the job,
+and no workflow secret reaches the suite: never pass one to `reel.yml`. A private
+repository also uploads passing runs.
 No recordings or traces are published to Pages or a public trace viewer.
