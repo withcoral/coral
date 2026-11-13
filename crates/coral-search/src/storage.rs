@@ -48,9 +48,8 @@ pub enum StorageError {
         /// The manifest's vector length.
         expected_dimension: usize,
     },
-    /// On `SQLite`, the vector tables are not the two that Coral creates: the
-    /// key table and the sqlite-vec table of cosine vectors. Boot keeps them
-    /// as they are.
+    /// On `SQLite`, one of the two vector tables alone, or a sqlite-vec
+    /// table that Coral did not create. Boot keeps them as they are.
     #[error(
         "search vector tables search_entity_embeddings and search_entity_embedding_vectors \
          are not the ones Coral creates for vectors of {expected_dimension} dimensions; \
@@ -261,7 +260,8 @@ pub enum VectorStorage {
 /// Returns [`StorageError::UnexpectedVectorTable`] and keeps the table when
 /// its `embedding` column is missing or is not a `halfvec` of a fixed
 /// dimension, [`StorageError::UnexpectedSqliteVectorTables`] and keeps them
-/// when the `SQLite` tables are not the ones Coral creates, and
+/// when one `SQLite` table is alone or the sqlite-vec table is not Coral's,
+/// and
 /// [`StorageError::Database`] when the table cannot be read, dropped or
 /// created.
 pub async fn prepare_vector_table(

@@ -124,8 +124,9 @@ same rows; the write checks staleness, so this costs CPU only.
 
 ## Storage
 
-One vector table per backend, keyed like the entity table, with the revision and source stamp beside each vector. Coral
-creates it at boot from the manifest, before the Embedder starts, and drops and recreates it when the dimension changes. It lives outside
+One vector table per backend (on SQLite, the pair of tables below), keyed like the entity table, with the revision and
+source stamp beside each vector.
+Coral creates it at boot from the manifest, before the Embedder starts, and drops and recreates it when the dimension changes. It lives outside
 the migration chain, the one exception to that rule: a migration with a vector column fails on a Postgres without
 pgvector, and Coral with the vector side off must start there.
 

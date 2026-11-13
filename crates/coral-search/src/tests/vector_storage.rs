@@ -159,6 +159,37 @@ async fn sqlite_vector_tables_coral_did_not_create_stop_the_boot_and_stay() {
 }
 
 #[tokio::test]
+async fn a_table_of_the_manifests_dimension_keeps_any_other_change_to_its_shape() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    prepare_vector_table(&database, VectorStorage::On { dimension: 3 })
+        .await
+        .expect("create the vector table");
+    store_vector(&fixture, "[0.5,0.25,1]").await;
+    fixture
+        .execute_fixture_sql("ALTER TABLE search_entity_embeddings ADD COLUMN kept_note TEXT")
+        .await
+        .expect("change the table's shape");
+    let stored = stored_vectors(&database).await;
+
+    prepare_vector_table(&database, VectorStorage::On { dimension: 3 })
+        .await
+        .expect("boot with the same manifest");
+
+    let notes: Vec<(Option<String>,)> = database
+        .fetch_all(
+            Query::select()
+                .column(sea_query::Alias::new("kept_note"))
+                .from(sea_query::Alias::new("search_entity_embeddings"))
+                .to_owned(),
+        )
+        .await
+        .expect("the added column stays");
+    assert_eq!(notes, [(None,)]);
+    assert_eq!(stored_vectors(&database).await, stored);
+}
+
+#[tokio::test]
 async fn coral_instances_that_boot_at_once_all_start() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let peer = fixture.connect_peer().await.expect("open a second pool");

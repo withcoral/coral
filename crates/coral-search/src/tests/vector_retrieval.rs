@@ -550,7 +550,8 @@ async fn the_vector_query_reads_the_vector_table_alone() {
         .begin_read_snapshot()
         .await
         .unwrap();
-    let (providers, generations) = searched(&mut transaction, &world.workspace).await;
+    let (providers, generations) =
+        searched_providers_and_generations(&mut transaction, &world.workspace).await;
     let excluded = [(
         world.weather.clone(),
         ToolKey::parse("getForecast").unwrap(),
@@ -645,7 +646,8 @@ async fn on_sqlite_the_vector_query_gives_the_eligibility_filter_to_sqlite_vec()
         world.weather.clone(),
         ToolKey::parse("getForecast").unwrap(),
     )];
-    let (providers, generations) = searched(&mut transaction, &world.workspace).await;
+    let (providers, generations) =
+        searched_providers_and_generations(&mut transaction, &world.workspace).await;
 
     let plan = crate::retriever::tools::explain_vector_query(
         &mut transaction,
@@ -680,7 +682,7 @@ async fn on_sqlite_the_vector_query_gives_the_eligibility_filter_to_sqlite_vec()
 }
 
 /// The Providers and active Generations of the Workspace's Tool rows.
-async fn searched(
+async fn searched_providers_and_generations(
     transaction: &mut coral_db::Transaction<'_>,
     workspace: &WorkspaceId,
 ) -> (Vec<ProviderId>, Vec<coral_catalog::ProviderGenerationId>) {

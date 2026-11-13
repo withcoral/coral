@@ -187,7 +187,7 @@ async fn connect_sqlite(path: &Path, writer_wait: Duration) -> Result<Database, 
         .busy_timeout(writer_wait)
         // `REGEXP` lets a statement use the pattern it gives Postgres's `~`.
         .with_regexp();
-    load_sqlite_vec()?;
+    register_sqlite_vec()?;
     // Connect the writer first: it may switch a new file to WAL, which a
     // query-only reader cannot do.
     let writes = SqlitePoolOptions::new()
@@ -219,7 +219,7 @@ async fn connect_read_only_sqlite(path: &Path) -> Result<ReadOnlyDatabase, Error
         .foreign_keys(true)
         .busy_timeout(SQLITE_BUSY_TIMEOUT)
         .with_regexp();
-    load_sqlite_vec()?;
+    register_sqlite_vec()?;
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
@@ -238,7 +238,7 @@ async fn connect_read_only_sqlite(path: &Path) -> Result<ReadOnlyDatabase, Error
 /// Makes every `SQLite` connection this process opens from now on load
 /// sqlite-vec, which Universal Search's vector table needs. Each pool calls
 /// it before it connects; only the first call registers the extension.
-fn load_sqlite_vec() -> Result<(), Error> {
+fn register_sqlite_vec() -> Result<(), Error> {
     coral_sqlite_vec::register()
         .map_err(|error| Error::Sqlx(sqlx::Error::Configuration(Box::new(error))))
 }

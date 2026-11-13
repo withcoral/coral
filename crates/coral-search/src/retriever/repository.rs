@@ -406,8 +406,10 @@ fn ranked_columns(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
 /// On `SQLite` the scope's conditions select, through the key table, the
 /// rowids of the current revision's vectors, and `rowid IN (...)` hands
 /// them to sqlite-vec, which scans only those, exactly, before it keeps the
-/// nearest `limit`. A tie at that cut keeps the lower rowid; the result
-/// orders ties by key, as on Postgres.
+/// nearest `limit`. The result orders ties by key, as on Postgres, but a tie
+/// across that cut keeps the vector sqlite-vec scanned first, not the lower
+/// key: its order of chunks and slots, the same for every request while the
+/// index does not change.
 fn nearest_statement(
     system: DatabaseSystem,
     scope: &Scope<'_>,

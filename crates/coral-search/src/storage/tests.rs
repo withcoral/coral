@@ -94,11 +94,6 @@ fn a_missing_sqlite_feature_fails_boot_naming_the_feature_and_its_cause() {
 
     for (case, result, expected) in [
         (
-            "SQLite with FTS5 and the trigram tokenizer",
-            sqlite(FeatureProbe::Present, FeatureProbe::Present, None),
-            None,
-        ),
-        (
             "SQLite with FTS5, the trigram tokenizer and sqlite-vec",
             sqlite(
                 FeatureProbe::Present,
@@ -108,7 +103,7 @@ fn a_missing_sqlite_feature_fails_boot_naming_the_feature_and_its_cause() {
             None,
         ),
         (
-            "SQLite without sqlite-vec, vector side off",
+            "SQLite with FTS5 and the trigram tokenizer, vector side off",
             sqlite(FeatureProbe::Present, FeatureProbe::Present, None),
             None,
         ),

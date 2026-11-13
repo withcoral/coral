@@ -197,7 +197,6 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   Search vector table, which
   [ADR 0035](docs/adr/0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)
   keeps out of the chain so that a Postgres without pgvector still runs it.
-  On SQLite it is two tables: a key table and a sqlite-vec `vec0` table.
 - Change a schema only by adding a migration. Never delete a migration that
   is on `main`, or change its file name or bytes: databases created from an
   earlier `main` must keep booting.
@@ -209,17 +208,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
   check it at boot before the chain runs, as `coral_search::prepare_storage`
   does. The check names the feature and what the operator can do about it.
-- Universal Search's vector table is the one table outside the chain, so a
-  Postgres without pgvector still runs the chain. While
+- Universal Search's vector table (on SQLite, a key table and a sqlite-vec
+  table) is the one table outside the chain, so a Postgres without pgvector
+  still runs the chain. While
   `[search] semantic_search_enabled` is on, boot needs pgvector on Postgres
   and sqlite-vec on SQLite, and `coral_search::prepare_vector_table` creates
   the table at boot and recreates it only when the manifest's dimension
   changes: an existing table keeps any other change to its shape.
   `scripts/check-migrations.sh` rejects a migration that names pgvector.
-- Coral's own code holds one `unsafe` block, in `crates/coral-sqlite-vec`,
-  which hands sqlite-vec to SQLite. Cargo cannot change one inherited lint, so
-  that crate copies `[workspace.lints]` with `unsafe_code = "deny"`: change
-  both tables together.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.

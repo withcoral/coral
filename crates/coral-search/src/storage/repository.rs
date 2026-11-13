@@ -87,8 +87,8 @@ pub(super) enum VectorTable {
         /// has no such column.
         column_type: Option<String>,
     },
-    /// On `SQLite`, one of the two tables alone, or a table that is not the
-    /// one Coral creates.
+    /// On `SQLite`, one of the two tables alone, or a sqlite-vec table that
+    /// Coral did not create.
     UnexpectedSqliteTables,
 }
 
@@ -107,25 +107,26 @@ const SQLITE_KEY_TABLE: &str = "CREATE TABLE search_entity_embeddings (\
     CONSTRAINT search_entity_embeddings_key UNIQUE (workspace_id, doc_id)\
 )";
 
-/// The start and end of the statement that creates the sqlite-vec table
-/// of vectors, around their dimension.
-const SQLITE_VECTOR_TABLE: (&str, &str) = (
-    "CREATE VIRTUAL TABLE search_entity_embedding_vectors USING vec0(embedding float[",
-    "] distance_metric=cosine)",
-);
+/// The statement that creates the sqlite-vec table of vectors, up to their
+/// dimension.
+const SQLITE_VECTOR_TABLE_BEFORE_DIMENSION: &str =
+    "CREATE VIRTUAL TABLE search_entity_embedding_vectors USING vec0(embedding float[";
+
+/// The rest of that statement, after the dimension.
+const SQLITE_VECTOR_TABLE_AFTER_DIMENSION: &str = "] distance_metric=cosine)";
 
 fn sqlite_vector_table_statement(dimension: usize) -> String {
-    let (start, end) = SQLITE_VECTOR_TABLE;
-    format!("{start}{dimension}{end}")
+    format!(
+        "{SQLITE_VECTOR_TABLE_BEFORE_DIMENSION}{dimension}{SQLITE_VECTOR_TABLE_AFTER_DIMENSION}"
+    )
 }
 
 /// The dimension of a sqlite-vec table that Coral created with `statement`,
 /// or `None` for any other statement.
 fn sqlite_vector_dimension(statement: &str) -> Option<usize> {
-    let (start, end) = SQLITE_VECTOR_TABLE;
     let dimension = statement
-        .strip_prefix(start)?
-        .strip_suffix(end)?
+        .strip_prefix(SQLITE_VECTOR_TABLE_BEFORE_DIMENSION)?
+        .strip_suffix(SQLITE_VECTOR_TABLE_AFTER_DIMENSION)?
         .parse::<usize>()
         .ok()?;
     (sqlite_vector_table_statement(dimension) == statement).then_some(dimension)
@@ -220,9 +221,11 @@ async fn postgres_vector_table(
     })
 }
 
-/// Reads the two `SQLite` vector tables: Coral's key table beside a
-/// sqlite-vec table that Coral created for some dimension, both absent, or
-/// anything else.
+/// Reads the two `SQLite` vector tables. The sqlite-vec table decides, as
+/// the `embedding` column does on Postgres: one that Coral created has the
+/// same or another dimension, and any other is unexpected. A key table
+/// beside it keeps any other change to its shape. One of the two alone is
+/// unexpected.
 async fn sqlite_vector_tables(
     transaction: &mut Transaction<'_>,
     dimension: usize,
@@ -246,14 +249,12 @@ async fn sqlite_vector_tables(
             statement("search_entity_embedding_vectors"),
         ) {
             (None, None) => VectorTable::Absent,
-            (Some(keys), Some(vectors)) if keys == SQLITE_KEY_TABLE => {
-                match sqlite_vector_dimension(vectors) {
-                    Some(stored) if stored == dimension => VectorTable::SameDimension,
-                    Some(_) => VectorTable::OtherDimension,
-                    None => VectorTable::UnexpectedSqliteTables,
-                }
-            }
-            _ => VectorTable::UnexpectedSqliteTables,
+            (Some(_keys), Some(vectors)) => match sqlite_vector_dimension(vectors) {
+                Some(stored) if stored == dimension => VectorTable::SameDimension,
+                Some(_) => VectorTable::OtherDimension,
+                None => VectorTable::UnexpectedSqliteTables,
+            },
+            (Some(_), None) | (None, Some(_)) => VectorTable::UnexpectedSqliteTables,
         },
     )
 }
