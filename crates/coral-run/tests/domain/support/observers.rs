@@ -530,6 +530,8 @@ pub(crate) struct CommitProbe {
     /// everything sent meanwhile is applied in one mailbox drain after it.
     hold_message: Mutex<Option<mpsc::Receiver<()>>>,
     message_held: AtomicBool,
+    /// Outside requests the Run Inbox reader has put in an owner's mailbox.
+    delivered: AtomicUsize,
 }
 
 impl CommitProbe {
@@ -544,6 +546,7 @@ impl CommitProbe {
             panic_on_next_message: AtomicBool::new(false),
             hold_message: Mutex::new(None),
             message_held: AtomicBool::new(false),
+            delivered: AtomicUsize::new(0),
         })
     }
 
@@ -603,6 +606,12 @@ impl CommitProbe {
     pub(crate) fn message_held(&self) -> bool {
         self.message_held.load(Ordering::SeqCst)
     }
+
+    /// Outside requests (a cancel, a decision) delivered to an owner's
+    /// mailbox so far.
+    pub(crate) fn delivered(&self) -> usize {
+        self.delivered.load(Ordering::SeqCst)
+    }
 }
 
 #[async_trait]
@@ -648,5 +657,9 @@ impl ExecutionObserver for CommitProbe {
             // than one worker thread.
             let _released = release.recv();
         }
+    }
+
+    fn inbox_delivered(&self) {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
     }
 }

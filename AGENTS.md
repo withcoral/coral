@@ -293,6 +293,15 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is
   one production runs.
+- Before a test asserts that something did not happen, switch off every path
+  that could make it happen. Two owner paths record an Approval Request's
+  expiry: its timer, and the periodic precheck of parked waits
+  (`ExecutionPolicy::with_wakeups`), which wakes the parked Invocation so its
+  held recheck finds the deadline passed and records it.
+- Do not race a real timer against database work: the database is slower on
+  CI, most of all on Postgres. Give the Run a long real deadline and send the
+  timer's message to the owner yourself. Order messages by waiting on an
+  observer signal, such as `CommitProbe::delivered`, never on `sleep`.
 
 ### Credentials
 
