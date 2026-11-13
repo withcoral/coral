@@ -24,6 +24,10 @@ pub enum AppError {
     /// Background server task failed to join cleanly.
     #[error(transparent)]
     TaskJoin(#[from] tokio::task::JoinError),
+    /// A `gRPC` connection stayed open past the shutdown grace period and
+    /// the listener task was aborted.
+    #[error("gRPC listener shutdown timed out; task aborted")]
+    ShutdownTimedOut,
     /// Durable app-state database access failed.
     #[error("database error: {0}")]
     Database(String),
