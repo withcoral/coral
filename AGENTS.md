@@ -242,6 +242,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Reef has one build for every deployment. Do not add a Desktop build marker
   or branch Reef on its host. Desktop's window behavior belongs in the
   `apps/desktop` main process.
+- Do not make CI download a GitHub release asset that it cannot restore from a
+  cache; GitHub's release downloads fail for minutes at a time. Packaging
+  downloads no Electron artifact once `npm ci` and
+  `.github/actions/electron-cache` have run: `electronDownload.checksums`
+  stops electron-builder fetching `SHASUMS256.txt`. electron-builder's own
+  tools (AppImage, NSIS, 7-Zip) still download on a fresh runner. Keep the
+  Electron path offline when you add a package target, and cache a new
+  downloaded tool.
 - Reef copy follows simplified technical English (ASD-STE100): address the
   reader as "you", give one instruction per sentence in the imperative, keep
   sentences under 20 words with one idea each, use the active voice and the
