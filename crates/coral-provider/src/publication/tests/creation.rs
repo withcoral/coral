@@ -442,72 +442,43 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one publication journey proves the failed read changes nothing and the retry promotes the grant"
-)]
 async fn unreadable_setup_credential_records_no_outcome_and_leaves_setup_reusable() {
-    use coral_credentials::Secret;
-
-    let (fixture, workspaces, providers) = test_modules().await;
+    let harness = crate::tests::Harness::new().await;
+    let (fixture, providers, accounts) = (&harness.fixture, &harness.providers, &harness.accounts);
     let actor = organization_user(
-        fixture.database(),
+        harness.database.clone(),
         "user:unreadable-setup-credential",
         OrganizationRole::Owner,
     )
     .await;
     let context = change_context(actor.clone(), 20, '1');
-    let owner = workspaces
+    let workspace = harness
+        .workspaces
         .create(&context, WorkspaceDisplayName::parse("Unreadable").unwrap())
         .await
-        .unwrap()
-        .id()
-        .clone();
-    let directory = tempfile::tempdir().unwrap();
-    let accounts = crate::tests::accounts_for(&providers, directory.path());
-    let setup = providers
-        .prepare_openapi_fixture(
-            &context,
-            &owner,
-            OpenApiDocument::parse(CREDENTIAL_FREE_OPENAPI).unwrap(),
-        )
-        .await
         .unwrap();
-    let review = providers
-        .review_setup_configuration(&actor, &owner, setup.id())
-        .await
-        .unwrap();
-    let mut values = review.confirmed.unwrap();
-    values.authentication = Some(AuthenticationConfiguration::Bearer);
-    let confirmed = providers
-        .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, values)
-        .await
-        .unwrap();
-    assert_eq!(
-        confirmed.errors,
-        [] as [coral_catalog::ConfigurationFieldError; 0]
-    );
-    let grant = accounts
-        .authorize_setup(
-            &context,
-            &owner,
-            setup.id(),
-            confirmed.revision,
-            coral_credentials::CredentialValues::token(
-                Secret::new("unreadable-setup-canary".into()).unwrap(),
-            ),
-        )
-        .await
-        .unwrap()
-        .provisional_grant_id
-        .unwrap();
-    let request = retention_request(&setup, CredentialRoute::Fixed).with_account_grant(grant);
-    let events_before = terminal_event_count(&providers, &actor, &owner).await;
+    let owner = workspace.id();
+    let setup = crate::tests::authorized_bearer_setup(
+        &harness,
+        &context,
+        owner,
+        OpenApiDocument::parse(CREDENTIAL_FREE_OPENAPI).unwrap(),
+    )
+    .await;
+    let request = publication_request(
+        owner,
+        &setup.id,
+        "retention",
+        CredentialRoute::Fixed,
+        "30000000-0000-4000-8000-000000000002",
+    )
+    .with_account_grant(setup.grant);
+    let id = &setup.id;
+    let events_before = terminal_event_count(providers, &actor, owner).await;
     // The stored row no longer decodes, so Publication cannot read the grant.
     fixture
         .execute_fixture_sql(&format!(
-            "UPDATE provider_setup_credentials SET oauth_client = '{{' WHERE setup_id = '{}'",
-            setup.id()
+            "UPDATE provider_setup_credentials SET oauth_client = '{{' WHERE setup_id = '{id}'"
         ))
         .await
         .unwrap();
@@ -523,36 +494,36 @@ async fn unreadable_setup_credential_records_no_outcome_and_leaves_setup_reusabl
     );
     assert!(matches!(
         providers
-            .get_publication(&actor, &owner, request.request_id())
+            .get_publication(&actor, owner, request.request_id())
             .await,
         Err(Error::ProviderPublicationNotFound)
     ));
     assert_eq!(
-        crate::tests::stored_setup(&providers.database, &owner, setup.id())
+        providers
+            .get_setup(&actor, owner, &setup.id)
             .await
-            .setup
+            .unwrap()
             .state(),
         ProviderSetupState::Ready
     );
     assert_eq!(
-        providers.inspect_providers(&actor, &owner).await.unwrap(),
+        providers.inspect_providers(&actor, owner).await.unwrap(),
         [] as [crate::Provider; 0]
     );
     assert_eq!(
-        terminal_event_count(&providers, &actor, &owner).await,
+        terminal_event_count(providers, &actor, owner).await,
         events_before
     );
 
     fixture
         .execute_fixture_sql(&format!(
-            "UPDATE provider_setup_credentials SET oauth_client = NULL WHERE setup_id = '{}'",
-            setup.id()
+            "UPDATE provider_setup_credentials SET oauth_client = NULL WHERE setup_id = '{id}'"
         ))
         .await
         .unwrap();
     assert!(
         providers
-            .setup_authentication(&actor, &owner, setup.id(), 21)
+            .setup_authentication(&actor, owner, &setup.id, 21)
             .await
             .unwrap()
             .authorized,
@@ -567,14 +538,14 @@ async fn unreadable_setup_credential_records_no_outcome_and_leaves_setup_reusabl
     let shared = accounts
         .get_account(
             &context,
-            &owner,
+            owner,
             publication.published_provider().unwrap().id(),
             &crate::account::AccountScope::Shared,
         )
         .await
         .unwrap()
         .account;
-    assert_eq!(shared.map(|account| account.id), Some(grant));
+    assert_eq!(shared.map(|account| account.id), Some(setup.grant));
 }
 
 #[tokio::test]
