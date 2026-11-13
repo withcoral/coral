@@ -157,6 +157,36 @@ pub fn invoker_active(
     )
 }
 
+/// Whether the retained invoking Principal is a User who holds the Owner role
+/// in the Workspace now. It is a fact for the invoker's own policy: it does
+/// not say the invoker can still act, which [`invoker_active`] decides, and it
+/// does not authorize the observer.
+#[must_use]
+pub fn invoker_is_owner(
+    workspace: sea_query::ColumnRef,
+    principal: sea_query::ColumnRef,
+    kind: sea_query::ColumnRef,
+) -> SimpleExpr {
+    use coral_db::col;
+    Expr::col(kind)
+        .eq(crate::PrincipalKind::User.as_storage_str())
+        .and(Expr::exists(
+            Query::select()
+                .expr(Expr::val(1_i64))
+                .from_as(
+                    Alias::new("workspace_memberships"),
+                    Alias::new("owner_membership"),
+                )
+                .and_where(col("owner_membership", "workspace_id").eq(Expr::col(workspace)))
+                .and_where(col("owner_membership", "user_id").eq(Expr::col(principal)))
+                .and_where(
+                    col("owner_membership", "role")
+                        .eq(crate::WorkspaceRole::Owner.as_storage_str()),
+                )
+                .to_owned(),
+        ))
+}
+
 /// Restricts an owning repository's selection to the exact Principal and currently
 /// authorized Workspaces. Call in the same snapshot that resolved `authority`.
 /// Column names are supplied by the owning repository; Workspace storage stays here.

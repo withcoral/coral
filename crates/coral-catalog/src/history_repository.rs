@@ -1,7 +1,17 @@
 //! Payload-free retained Tool facts for owning execution repositories.
 use sea_query::{Alias, ColumnRef, Expr, ExprTrait as _, Query, SimpleExpr};
 
-use crate::HttpMethod;
+use crate::{AuthoredToolKind, HttpMethod};
+
+/// Whether the retained Call Path names a Tool of `kind`, as
+/// [`AuthoredToolKind::of_call_path`] decides: a path under the kind's Call
+/// Root.
+#[must_use]
+pub fn names_authored_tool(kind: AuthoredToolKind, call_path: ColumnRef) -> SimpleExpr {
+    // `_%` is the one character or more under the Call Root. SQLite's LIKE
+    // ignores ASCII case, and no two Call Roots differ only in case.
+    Expr::col(call_path).like(format!("{}._%", kind.call_root()))
+}
 
 /// Whether the exact retained Tool declared that it changes nothing.
 /// The caller supplies a trusted Generation reference after Workspace authorization.

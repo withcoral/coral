@@ -4,9 +4,7 @@
 
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, PrincipalKind, TraceId, WorkspaceId};
-use sea_query::{
-    Alias, Expr, ExprTrait as _, Iden, IntoColumnRef as _, JoinType, Order, Query, SimpleExpr,
-};
+use sea_query::{Alias, Expr, ExprTrait as _, Iden, JoinType, Order, Query, SimpleExpr};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -236,19 +234,43 @@ pub(super) async fn find_for_run_invocation(
 /// clock.
 pub(super) fn pending_invocation() -> SimpleExpr {
     use coral_db::col;
-    let column = |field: &str| (Alias::new("i"), Alias::new(field)).into_column_ref();
     col("a", "workspace_id")
         .eq(col("i", "workspace_id"))
         .and(col("a", "invocation_id").eq(col("i", "id")))
         .and(col("a", "run_id").eq(col("i", "run_id")))
         .and(crate::history_repository::invocation_pending())
         .and(col("a", "state").eq(ApprovalState::Pending.storage()))
-        .and(coral_policy::history_repository::approval_required(
-            column("workspace_id"),
-            column("provider_id"),
-            column("provider_generation_id"),
-            column("tool_key"),
-        ))
+        .and(approval_required())
+}
+
+/// Whether the policy of the Invocation `i` asks for a decision now, as the
+/// Policy Enforcement Point decides it for the Principal that invoked its
+/// Run. The match reads that Run itself, so a query needs no Run of its own.
+fn approval_required() -> SimpleExpr {
+    use coral_db::{col, column};
+    Expr::exists(
+        Query::select()
+            .expr(Expr::val(1_i64))
+            .from_as(
+                Alias::new("program_run_records"),
+                Alias::new("invoking_run"),
+            )
+            .and_where(col("invoking_run", "workspace_id").eq(col("i", "workspace_id")))
+            .and_where(col("invoking_run", "id").eq(col("i", "run_id")))
+            .and_where(coral_policy::history_repository::approval_required(
+                coral_policy::history_repository::InvocationColumns {
+                    workspace: column("i", "workspace_id"),
+                    provider: column("i", "provider_id"),
+                    generation: column("i", "provider_generation_id"),
+                    tool: column("i", "tool_key"),
+                    call_path: column("i", "call_path"),
+                    declared_default: column("i", "declared_default_access_state"),
+                    principal: column("invoking_run", "principal_id"),
+                    principal_kind: column("invoking_run", "principal_kind"),
+                },
+            ))
+            .to_owned(),
+    )
 }
 
 // Agents' summaries must not load arguments, Account metadata, or comments.
