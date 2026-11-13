@@ -187,6 +187,22 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     let url_path = coral_mcp::WORKSPACE_MCP_ROUTE;
     println!("Coral MCP HTTP server serving each Workspace at http://{address}{url_path}");
     println!("Press Ctrl-C to stop the server.");
+    if let Some(search_model) = server.search_model() {
+        tokio::spawn(async move {
+            match search_model.lookup().await {
+                coral_app::SearchModelState::Ready(dir) => {
+                    println!("Coral search model ready in {}", dir.display());
+                }
+                coral_app::SearchModelState::Absent => {
+                    println!("Coral search model absent: search matches by words only");
+                }
+                coral_app::SearchModelState::Unreadable(reason) => println!(
+                    "Coral search model unreadable: {reason}. Search matches by words only until Coral starts with a file it can read."
+                ),
+                coral_app::SearchModelState::Looking => {}
+            }
+        });
+    }
 
     let wait = wait_for_shutdown_signal_or_server_exit(
         server.wait_for_exit(),

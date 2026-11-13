@@ -311,6 +311,13 @@ impl RunningRuntime {
         self.grpc_authentication_enabled
     }
 
+    /// The state of the search model's files. `None` when `[search]
+    /// semantic_search_enabled` is off: then nothing looks for the files.
+    #[must_use]
+    pub fn search_model(&self) -> Option<super::SearchModel> {
+        self.grpc.search_model()
+    }
+
     /// Completes when the runtime stops serving on its own.
     pub async fn wait_for_exit(&self) {
         self.grpc.wait_for_exit().await;
