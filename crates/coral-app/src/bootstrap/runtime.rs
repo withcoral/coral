@@ -32,7 +32,15 @@ use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthori
 pub struct Extensions {
     /// Decides the deployment's Edition. The default is always Community.
     pub edition: coral_edition::EditionCheck,
+    /// The Secret Store kinds this binary adds to the `env` kind every build
+    /// has. A store of any other kind shows as a kind the build lacks.
+    pub secret_store_kinds: coral_secret_store::SecretStoreKinds,
 }
+
+pub use coral_db::MigrationProgress;
+
+/// Where startup reports each database migration step it applies.
+pub type MigrationReport = std::sync::Arc<dyn Fn(MigrationProgress<'_>) + Send + Sync + 'static>;
 
 /// What the launching process says about this launch.
 ///
@@ -56,6 +64,9 @@ pub struct Launch {
     pub usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral.
     pub extensions: Extensions,
+    /// Where startup reports each database migration step it applies. They
+    /// run before telemetry starts, so without this a long step is silent.
+    pub migration_report: Option<MigrationReport>,
 }
 
 impl Launch {
@@ -76,6 +87,10 @@ impl Launch {
         };
         let builder = match self.usage_environment {
             Some(environment) => builder.with_usage_environment(environment),
+            None => builder,
+        };
+        let builder = match self.migration_report {
+            Some(report) => builder.with_migration_report(report),
             None => builder,
         };
         if self.desktop {

@@ -50,6 +50,7 @@ function render(props: {
     <WorkspaceOverview
       workspace={{ ...workspace, ...props.workspace }}
       agents={props.agents ?? []}
+      secretStores={[]}
       providers={props.providers ?? []}
       owners={
         props.owners === undefined

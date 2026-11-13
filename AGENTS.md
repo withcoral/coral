@@ -25,7 +25,14 @@
   not hold state between a client's requests in the Adapter, and do not send a
   client anything outside the response to its own request.
 - Read process environment only at process bootstrap. Pass explicit values to
-  domain code.
+  domain code. The `env` Secret Store is the one exception: bootstrap hands it
+  a reader, and it reads only under its guarded prefix (ADR 0036).
+- A sweep, a check or a cleanup that the server runs on a cadence is a
+  periodic pass. Its module exposes the pass as one function, and bootstrap
+  schedules it with `Passes` (`crates/coral-app/src/bootstrap/periodic.rs`); do
+  not give a new pass its own timer loop. Search reconciliation keeps its own
+  supervisor. A timer that belongs to one connection, stream or child process,
+  such as a keepalive or a lease renewal, is not a pass.
 - Route untrusted outbound HTTP through `coral-outbound::Client`. Pass the
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See
@@ -148,8 +155,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   after three, constants in `crates/coral-run/src/execution.rs`), and the
   supervisor of a panicked owner task writes the same one Interrupted chunk.
 - A write to a source never touches the Universal Search tables, and they keep
-  no foreign key to a source but the Workspace. Notify `SearchIndex` after the
-  commit with ids alone; its reconcile pass repairs what a notification missed
+  no foreign key to a source but the Workspace (the vector table keeps none).
+  Notify `SearchIndex` after the commit with ids alone; its reconcile pass
+  repairs what a notification missed
   ([ADR 0017](docs/adr/0017-universal-search-never-gates-the-catalog.md)).
 - The transaction that removes a Private or a Shared Tool also removes its
   exact rules: the caller that owns the transaction joins
@@ -166,7 +174,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Add every schema migration to `crates/coral-db/migrations`, the one shared
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to
-  both `postgres/` and `sqlite/` instead.
+  both `postgres/` and `sqlite/` instead. The one exception is the Universal
+  Search vector table, which
+  [ADR 0035](docs/adr/0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)
+  keeps out of the chain so that a Postgres without pgvector still runs it.
 - Change a schema only by adding a migration. Never delete a migration that
   is on `main`, or change its file name or bytes: databases created from an
   earlier `main` must keep booting.
@@ -217,7 +228,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   behavior that depends on browser APIs or a complete user journey. `npm test`
   runs every story's `play` function in Chromium, so an assertion there is a
   test; give each behavior one home, a story or a Vitest test, and query by role
-  and label with Testing Library in both. Styling and
+  and label with Testing Library in both. After a `click`, the pointer stays
+  on the element, so a `hover` on it does nothing: `unhover` it first. Wait
+  for an animated popup with `waitFor`, since `expect(await findBy…)` checks
+  it only once. Styling and
   static markup changes alone do not need Vitest coverage. Vitest coverage does
   not replace required product-journey or local/remote parity evidence.
 - Use vanilla-extract, not Tailwind.
@@ -228,6 +242,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Reef has one build for every deployment. Do not add a Desktop build marker
   or branch Reef on its host. Desktop's window behavior belongs in the
   `apps/desktop` main process.
+- Do not make CI download a GitHub release asset that it cannot restore from a
+  cache; GitHub's release downloads fail for minutes at a time. Packaging
+  downloads no Electron artifact once `npm ci` and
+  `.github/actions/electron-cache` have run: `electronDownload.checksums`
+  stops electron-builder fetching `SHASUMS256.txt`. electron-builder's own
+  tools (AppImage, NSIS, 7-Zip) still download on a fresh runner. Keep the
+  Electron path offline when you add a package target, and cache a new
+  downloaded tool.
 - Reef copy follows simplified technical English (ASD-STE100): address the
   reader as "you", give one instruction per sentence in the imperative, keep
   sentences under 20 words with one idea each, use the active voice and the
@@ -254,6 +276,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
+- In a unit or in-process test, drive time with fake timers or a test
+  clock, not real waits. An end-to-end journey whose subject is real elapsed
+  time, such as a session's renewal, keeps the real clocks. Read the clock
+  once per decision, in tests and product code alike: two readings can
+  differ, and a millisecond then decides which of two equal timers fires
+  first.
 - Inject faults through the owning crate's API or
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is

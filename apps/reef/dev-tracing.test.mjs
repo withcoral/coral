@@ -81,16 +81,24 @@ test('runs the next handler in a span that ends with the response', async () => 
   assert.equal(openWhenAnswered, true)
 })
 
-test('a caller that leaves does not fail the span', async () => {
+// A span that never ends fails here instead of holding the run.
+test('a caller that leaves does not fail the span', { timeout: 10_000 }, async () => {
+  let handling
+  const handled = new Promise((resolve) => (handling = resolve))
   const spans = await served(
-    () => undefined,
-    (origin) =>
-      new Promise((resolve) => {
-        const call = httpRequest(`${origin}/workspaces/42`)
-        call.on('error', resolve)
-        call.end()
-        setTimeout(() => call.destroy(), 50)
-      }),
+    () => handling(trace.getActiveSpan()),
+    async (origin) => {
+      const call = httpRequest(`${origin}/workspaces/42`)
+      call.on('error', () => undefined)
+      call.end()
+      // Leave once the server handles the request, and wait until the server
+      // sees it and ends the span. Fixed delays raced both on a busy machine:
+      // a caller that left too soon opened no span, and tracing could stop
+      // before the span ended.
+      const span = await handled
+      call.destroy()
+      while (span.isRecording()) await new Promise((resolve) => setImmediate(resolve))
+    },
   )
 
   assert.equal(spans.length, 1)

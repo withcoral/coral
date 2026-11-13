@@ -117,6 +117,107 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 | ------- | -------------------------------------------------- | -------- | ------- |
 | `check` | Check GitHub for a newer Coral release when `true` | No       | `false` |
 
+### `[[secret_stores]]`
+
+Defines a connection to a secrets system you run. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name, kind and status in the account menu, under **Secret stores**. There they grant a store to a workspace, or revoke that grant. An archived workspace keeps its grants, and you cannot change them until you restore it. A grant whose store you remove from this file shows as **Removed from config**.
+
+The `kv-v2` kind connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. It needs the Enterprise Edition. Under the Community Edition, the store shows as **Needs Enterprise** and every read from it fails. Coral deletes nothing, and the store works again once the Edition is Enterprise.
+
+```toml
+[[secret_stores]]
+name = "platform"
+kind = "kv-v2"
+address = "https://vault.example.com:8200"
+mount = "secret"
+
+[secret_stores.auth]
+method = "approle"
+role_id = "c6f7a0e2-..."
+secret_id_env = "CORAL_PLATFORM_SECRET_ID"
+```
+
+| Key                  | Description                                                                                                | Required | Default   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- | -------- | --------- |
+| `name`               | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit | Yes      | N/A       |
+| `kind`               | The secrets system, such as `kv-v2` or `env`. The other keys depend on the kind; those below are `kv-v2`'s. | Yes      | N/A       |
+| `address`            | Origin of the store's API, http or https. May include a port; must not include a path.                     | Yes      | N/A       |
+| `mount`              | Where the KV engine is mounted                                                                             | Yes      | N/A       |
+| `auth.method`        | How Coral signs in. Must be `approle`.                                                                     | Yes      | N/A       |
+| `auth.mount`         | Where the AppRole auth method is mounted                                                                   | No       | `approle` |
+| `auth.role_id`       | The role's ID                                                                                              | Yes      | N/A       |
+| `auth.secret_id_env` | Name of the environment variable that holds the role's secret ID                                           | Yes      | N/A       |
+
+A store's name stands for one trust boundary. To move the same store to a new host, change its `address`. To point at a different store, add a new store under a new name.
+
+Coral reads this section when it starts, and stores no credential for a store in its database.
+
+- A malformed store, or a secret ID variable that is not set, stops Coral from starting. The error names the store and the field.
+- An unreachable store does not stop Coral from starting.
+- A store whose kind your build of Coral cannot read does not stop Coral from starting. Coral logs a warning, shows the store as **Not in this build**, and every read from it fails. Its grants and references stay.
+- Coral logs in when it first needs a token. When it next needs a value, it renews a renewable token past half of its lease. It logs in again when a tenth of the lease is left, and never later than ten seconds before its end, or when the store refuses the renewal. So a one-hour lease logs in again with six minutes left. A lease of ten seconds or less logs in again at half its length. If the store does not answer a renewal, Coral keeps using the token until it nears its end, and tries the renewal again after five seconds. A store that is idle for a whole lease therefore costs one more login.
+- Each login uses the role's secret ID, so do not limit the role with `secret_id_num_uses`, or give the secret ID a TTL shorter than you can replace it in.
+
+A workspace owner uses a granted store when they connect a shared account: for each field, they choose **Use a secret store**, pick the store, and enter what its kind asks for. Coral reads the value once to check it, then reads it again for each call and keeps no copy.
+
+#### Read from environment variables
+
+The `env` kind reads each value from an environment variable of the Coral process. Use it when your platform injects secrets into the environment, for example from Kubernetes Secrets. The `env` kind is available in both Community and Enterprise editions. 
+
+```toml
+[[secret_stores]]
+name = "env"
+kind = "env"
+prefix = "MYCO_"
+```
+
+| Key      | Description                                                                         | Required | Default |
+| -------- | ----------------------------------------------------------------------------------- | -------- | ------- |
+| `prefix` | The start of every variable name the store can read: letters, digits and `_` only | Yes      | N/A     |
+
+A workspace owner who chooses an `env` store enters one **Variable name**, such as `MYCO_API_KEY`. The form shows the prefix the name must start with. Coral reads only a name that starts with the prefix and holds letters, digits and `_` only, so a reference can never name a variable outside the prefix. Coral reads the variable each time it needs the value. A variable that is not set fails as an entry the store does not have, so Coral refuses to save a reference to it.
+
+A grant of an `env` store to a workspace covers every variable under its prefix. So pick a prefix that holds only the secrets you mean to share. Coral refuses to start, and names the setting, when a prefix:
+
+- is empty, or is the start of `CORAL_`, such as `C` or `CORAL`,
+- starts with `CORAL_`, because those variables are Coral's own,
+- covers a variable that another setting names, such as `credentials.key_env`, `database.url_env` or a store's `auth.secret_id_env`. Coral checks every setting whose name ends in `_env`.
+
+Coral compares names without regard to case.
+
+#### Limit what each store can read
+
+The store's own policy is the security boundary, and Coral adds no check of its own. **A grant of a store to a workspace covers everything that store's role can read.** So give each store its own read-only role, with the least access that works, and use separate stores for workspaces that must not see each other's secrets.
+
+Coral only reads. For KV version 2, a policy like this one is enough:
+
+```hcl
+path "secret/data/coral/platform/*" {
+  capabilities = ["read"]
+}
+```
+
+Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's `default` policy on the role, unless you grant `update` on `auth/token/renew-self` and `read` on `auth/token/lookup-self` another way: Coral uses them to renew its token and to tell a revoked token from a denied read.
+
+#### Allow Coral to reach the store
+
+The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable.
+
+| Where the store is | Setting |
+| --- | --- |
+| Public address, https | None |
+| Private network, https | `private_networks = "https"` |
+| Private network, http, such as `http://vault:8200` in Docker Compose | `private_networks = "http-and-https"` |
+| This machine, https | `loopback = "https"` |
+| This machine, http | `loopback = "http-and-https"` |
+
+Coral never reaches a public address over http.
+
+These settings apply to all outbound traffic, so they also let Provider calls reach those networks.
+
+<Warning>
+Over http, Coral sends the role's secret ID, its token and the secret values unencrypted. Use http only for local development, or on a network you trust.
+</Warning>
+
 ### `[otel]`
 
 Controls telemetry export to an OpenTelemetry endpoint.
@@ -129,7 +230,7 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`     | Base URL of an OTLP over HTTP endpoint. Coral sends to `/v1/traces`, `/v1/logs` and `/v1/metrics` under it. | No       | N/A                                                                                                                                     |
 | `headers`      | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                    |
-| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
+| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info`                                             |
 | `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 | `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
@@ -198,7 +299,10 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                                  |
 | `coral.output.size`                      | Histogram | `output.kind`                                                                |
 | `coral.output.rejections`                | Counter   | `output.kind`                                                                |
+| `coral.secret_store.read.duration`       | Histogram | `secret_store.kind`, `outcome`                                               |
 | `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                                 |
+
+No metric names a Secret Store. To find the store behind a slow or failing read, use the log records: each read logs `coral.secret_store.name`, `coral.secret_store.kind` and `coral.secret_store.read_ms`. A failed read logs at `warn` and adds `error.type`.
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 

@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
+import { SecretStoreState } from '@/generated/coral/management/v1/secret_store_pb'
 import { fakeManagementTransport } from '@/lib/management.test-support'
 import { loader } from './workspace'
 
@@ -17,13 +18,14 @@ const parent = `workspaces/${workspace}`
 function fakeCoral(
   summaries: number[] = [],
   summarize: () => Promise<object> = () => new Promise(() => {}),
+  role = WorkspaceRole.OWNER,
 ) {
   coral.transport = fakeManagementTransport({
     workspaces: {
       getWorkspace: ({ name }) => ({
         name,
         displayName: 'Overview',
-        effectiveRole: WorkspaceRole.OWNER,
+        effectiveRole: role,
         state: WorkspaceState.ACTIVE,
       }),
     },
@@ -48,7 +50,23 @@ function fakeCoral(
         ],
       }),
     },
-    memberships: { listWorkspaceOwners: () => ({ owners: [] }) },
+    memberships: {
+      listWorkspaceOwners: () => ({ owners: [] }),
+      getWorkspaceMembership: ({ name }) => ({ name }),
+    },
+    secretStores: {
+      listWorkspaceSecretStores: () => {
+        if (role !== WorkspaceRole.OWNER)
+          throw new ConnectError('permission denied', Code.PermissionDenied)
+        return {
+          secretStores: [
+            { name: 'secretStores/platform', state: SecretStoreState.AVAILABLE },
+            { name: 'secretStores/licensed', state: SecretStoreState.NEEDS_ENTERPRISE },
+            { name: 'secretStores/removed', state: SecretStoreState.REMOVED },
+          ],
+        }
+      },
+    },
     privateTools: { listPrivateTools: () => ({ privateTools: [] }) },
     activity: {
       browseActivityRoots: () => ({ roots: [] }),
@@ -74,6 +92,26 @@ it('leaves the Built-in Provider out of the providers card, but not out of the s
     'coral',
     'coral.providers.weather',
   ])
+})
+
+// Catches: an owner shown a resource name, or a store Coral cannot read shown as usable.
+it('shows an owner the granted secret stores and why Coral cannot read them', async () => {
+  fakeCoral()
+  const result = await overview()
+  if (result instanceof Response) throw new Error('The workspace page renders')
+  expect(result.data.secretStores).toEqual([
+    { name: 'platform', blockers: [] },
+    { name: 'licensed', blockers: ['Needs Enterprise'] },
+    { name: 'removed', blockers: ['Removed from config'] },
+  ])
+})
+
+// Catches: the page failing for a member, whom Coral refuses this list.
+it('does not ask for the secret stores for a member', async () => {
+  fakeCoral([], undefined, WorkspaceRole.MEMBER)
+  const result = await overview()
+  if (result instanceof Response) throw new Error('The workspace page renders')
+  expect(result.data.secretStores).toEqual([])
 })
 
 // Catches: an overview that waits for a slow summary, or a reload showing another period

@@ -21,3 +21,6 @@ workspace = true
 [dependencies]
 coral.workspace = true
 coral-app.workspace = true
+coral-edition.workspace = true
+coral-ee-secret-stores = { path = "../coral-ee-secret-stores" }
+coral-secret-store.workspace = true

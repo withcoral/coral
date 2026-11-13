@@ -40,6 +40,15 @@ pub enum Error {
     /// Invalid or unsupported Account authorization input.
     #[error("invalid Provider Account authorization input")]
     AccountInput,
+    /// Only a shared Account can hold a Secret Reference.
+    #[error("this Provider Account cannot hold a Secret Reference")]
+    SecretReferenceNotAllowed,
+    /// The Workspace holds no grant for the store, or config does not define it.
+    #[error("the Secret Store is not granted to this Workspace")]
+    SecretStoreNotGranted,
+    /// A Secret Store gave up no value. This never names the path or key.
+    #[error("Secret Store read failed: {0}")]
+    SecretStoreRead(coral_secret_store::Error),
     /// A temporary refresh failure leaves the Account unchanged.
     #[error("credential refresh failed")]
     CredentialRefreshFailed,
@@ -156,6 +165,9 @@ impl Error {
             Self::ClientMetadataNotPublic { .. } => "client_metadata_not_public",
             Self::ClientMetadataUnresolved { .. } => "client_metadata_unresolved",
             Self::AccountInput { .. } => "account_input",
+            Self::SecretReferenceNotAllowed { .. } => "secret_reference_not_allowed",
+            Self::SecretStoreNotGranted { .. } => "secret_store_not_granted",
+            Self::SecretStoreRead { .. } => "secret_store_read",
             Self::CredentialRefreshFailed { .. } => "credential_refresh_failed",
             Self::OAuthTokenExchange { .. } => "oauth_token_exchange",
             Self::OAuthClientConfiguration { .. } => "oauth_client_configuration",

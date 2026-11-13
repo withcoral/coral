@@ -3556,3 +3556,365 @@ async fn anonymous_catalog_for_tenant(server: &MockServer, tenant: &str) {
         .mount(server)
         .await;
 }
+
+/// A store that runs one change the first time a read reaches it once armed, as
+/// another request could between that read and the final lock.
+#[derive(Default)]
+struct InterferingStore {
+    inner: coral_test_support::InMemorySecretStore,
+    change: std::sync::Mutex<Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>>,
+}
+
+#[async_trait::async_trait]
+impl coral_secret_store::SecretStore for InterferingStore {
+    async fn read(
+        &self,
+        reference: &coral_secret_store::SecretReference,
+    ) -> Result<Secret, coral_secret_store::Error> {
+        let value = self.inner.read(reference).await;
+        let change = self.change.lock().unwrap().take();
+        if let Some(change) = change {
+            change.await;
+        }
+        value
+    }
+    fn reference_form(&self) -> coral_secret_store::ReferenceForm {
+        self.inner.reference_form()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreBackedDiscovery {
+    Reads,
+    StoreFails,
+    GrantRevokedAfterRead,
+    AccountDisconnectedAfterRead,
+}
+
+/// Discovery with a store-backed Account reads before its final lock, and what
+/// changed since that read decides under the lock.
+#[tokio::test]
+async fn store_backed_discovery_reads_before_the_lock_and_rechecks_under_it() {
+    for scenario in [
+        StoreBackedDiscovery::Reads,
+        StoreBackedDiscovery::StoreFails,
+        StoreBackedDiscovery::GrantRevokedAfterRead,
+        StoreBackedDiscovery::AccountDisconnectedAfterRead,
+    ] {
+        Box::pin(store_backed_discovery(scenario)).await;
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one discovery journey arranges a published store-backed Account and its update"
+)]
+async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
+    let harness = harness().await;
+    let (actor, workspace) = workspace_owner(&harness, "user:store-update").await;
+    let context = change_context(actor.clone(), 10, '2');
+    let owner = workspace.id().clone();
+    let governor = change_context(
+        organization_user(
+            harness.database.clone(),
+            "user:governor",
+            OrganizationRole::Owner,
+        )
+        .await,
+        10,
+        '3',
+    );
+    harness
+        .workspaces
+        .grant_secret_store(&governor, &owner, "team")
+        .await
+        .unwrap();
+    let store = std::sync::Arc::new(InterferingStore::default());
+    store.inner.set("team/mcp", "token", TOKEN);
+    let accounts = harness
+        .accounts
+        .clone()
+        .with_secret_stores(coral_test_support::secret_stores([(
+            "team",
+            std::sync::Arc::clone(&store) as _,
+        )]));
+    let server = mcp_server(TOKEN).await;
+    let initial = accounts
+        .prepare_remote_fixture(
+            &context,
+            &owner,
+            crate::tests::mcp_url(server.uri()),
+            Some(Secret::new(TOKEN.into()).unwrap()),
+        )
+        .await
+        .unwrap();
+    let grant_id = harness
+        .providers
+        .setup_authentication(&actor, &owner, initial.id(), 11)
+        .await
+        .unwrap()
+        .provisional_grant_id
+        .unwrap();
+    let publication = harness
+        .providers
+        .publish_workspace_provider(
+            &context,
+            publication_request(
+                workspace.id(),
+                initial.id(),
+                "store_update",
+                CredentialRoute::Fixed,
+                "a0000000-0000-4000-8000-000000000097",
+            )
+            .with_account_grant(grant_id),
+        )
+        .await
+        .unwrap()
+        .skip_search();
+    let provider = publication.published_provider().unwrap();
+    let account = accounts
+        .get_account(&context, &owner, provider.id(), &AccountScope::Shared)
+        .await
+        .unwrap()
+        .account
+        .unwrap()
+        .id;
+    let reconnect = accounts
+        .start_reconnect(
+            &context,
+            &owner,
+            provider.id(),
+            account,
+            authorization_request(),
+            None,
+        )
+        .await
+        .unwrap();
+    accounts
+        .submit_fields(
+            &context,
+            &owner,
+            reconnect.id,
+            std::collections::BTreeMap::from([(
+                CredentialValues::TOKEN.to_owned(),
+                coral_credentials::CredentialField::Reference(
+                    coral_credentials::SecretReference::new(
+                        "team".into(),
+                        "team/mcp".into(),
+                        Some("token".into()),
+                    )
+                    .unwrap(),
+                ),
+            )]),
+        )
+        .await
+        .unwrap();
+    let replacement = harness
+        .providers
+        .prepare_setup(
+            &context,
+            &owner,
+            crate::tests::mcp_url(server.uri()),
+            Some(provider.id()),
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, replacement.id())
+        .await
+        .unwrap();
+    let confirmation = harness
+        .providers
+        .confirm_setup_configuration(
+            &context,
+            &owner,
+            replacement.id(),
+            review.revision,
+            review.confirmed.unwrap(),
+        )
+        .await
+        .unwrap();
+    let reads = store.inner.reads();
+    match scenario {
+        StoreBackedDiscovery::Reads => {}
+        StoreBackedDiscovery::StoreFails => store
+            .inner
+            .fail_with(Some(coral_secret_store::Error::PermissionDenied)),
+        StoreBackedDiscovery::GrantRevokedAfterRead => {
+            let workspaces = harness.workspaces.clone();
+            let (governor, owner) = (governor.clone(), owner.clone());
+            *store.change.lock().unwrap() = Some(Box::pin(async move {
+                workspaces
+                    .revoke_secret_store(&governor, &owner, "team")
+                    .await
+                    .unwrap();
+            }));
+        }
+        StoreBackedDiscovery::AccountDisconnectedAfterRead => {
+            let module = accounts.clone();
+            let (context, owner, provider) =
+                (context.clone(), owner.clone(), provider.id().clone());
+            *store.change.lock().unwrap() = Some(Box::pin(async move {
+                module
+                    .disconnect(&context, &owner, &provider, account)
+                    .await
+                    .unwrap();
+            }));
+        }
+    }
+
+    let setup_before = harness
+        .providers
+        .get_setup(&actor, &owner, replacement.id())
+        .await
+        .unwrap();
+    let shared = || {
+        accounts.get_account(
+            &context,
+            &owner,
+            provider.id(),
+            &crate::account::AccountScope::Shared,
+        )
+    };
+    let account_before = shared().await.unwrap();
+
+    let result = accounts
+        .discover_setup_with_account(&context, &owner, replacement.id(), confirmation.revision)
+        .await;
+
+    match scenario {
+        StoreBackedDiscovery::Reads => {
+            result.unwrap();
+        }
+        StoreBackedDiscovery::StoreFails => assert!(
+            matches!(
+                result,
+                Err(Error::SecretStoreRead(
+                    coral_secret_store::Error::PermissionDenied
+                ))
+            ),
+            "{result:?}"
+        ),
+        StoreBackedDiscovery::GrantRevokedAfterRead
+        | StoreBackedDiscovery::AccountDisconnectedAfterRead => {
+            assert!(
+                matches!(result, Err(Error::AccountRequired)),
+                "{scenario:?}: {result:?}"
+            );
+        }
+    }
+    assert_eq!(store.inner.reads(), reads + 1, "{scenario:?} reads once");
+    if !matches!(scenario, StoreBackedDiscovery::Reads) {
+        // Discovery claims the Setup before it reads any credentials, and a
+        // refusal leaves it there to try again; the Account stays as the
+        // injected change left it.
+        let setup_after = harness
+            .providers
+            .get_setup(&actor, &owner, replacement.id())
+            .await
+            .unwrap();
+        assert_eq!(
+            setup_before.state(),
+            crate::ProviderSetupState::AwaitingAuthorization
+        );
+        assert_eq!(
+            setup_after.state(),
+            crate::ProviderSetupState::AwaitingDiscovery,
+            "{scenario:?}"
+        );
+        if !matches!(scenario, StoreBackedDiscovery::AccountDisconnectedAfterRead) {
+            assert_eq!(shared().await.unwrap(), account_before, "{scenario:?}");
+        }
+    }
+}
+
+/// A grant revoked between a Setup's check read and its save stops the save, as
+/// the Account authorization page's lock does.
+#[tokio::test]
+async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
+    let harness = harness().await;
+    let (actor, workspace) = workspace_owner(&harness, "user:store-setup").await;
+    let context = change_context(actor.clone(), 10, '2');
+    let owner = workspace.id().clone();
+    let governor = change_context(
+        organization_user(
+            harness.database.clone(),
+            "user:setup-governor",
+            OrganizationRole::Owner,
+        )
+        .await,
+        10,
+        '3',
+    );
+    harness
+        .workspaces
+        .grant_secret_store(&governor, &owner, "team")
+        .await
+        .unwrap();
+    let store = std::sync::Arc::new(InterferingStore::default());
+    store.inner.set("team/api", "token", TOKEN);
+    let accounts = harness
+        .accounts
+        .clone()
+        .with_secret_stores(coral_test_support::secret_stores([(
+            "team",
+            std::sync::Arc::clone(&store) as _,
+        )]));
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(
+            &context,
+            &owner,
+            crate::OpenApiDocument::parse(crate::account_tests::CREDENTIAL_REQUIRED_OPENAPI)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap();
+    let workspaces = harness.workspaces.clone();
+    let revoker = (governor.clone(), owner.clone());
+    *store.change.lock().unwrap() = Some(Box::pin(async move {
+        workspaces
+            .revoke_secret_store(&revoker.0, &revoker.1, "team")
+            .await
+            .unwrap();
+    }));
+
+    let result = accounts
+        .authorize_setup_fields(
+            &context,
+            &owner,
+            setup.id(),
+            review.revision,
+            std::collections::BTreeMap::from([(
+                CredentialValues::TOKEN.to_owned(),
+                coral_credentials::CredentialField::Reference(
+                    coral_credentials::SecretReference::new(
+                        "team".into(),
+                        "team/api".into(),
+                        Some("token".into()),
+                    )
+                    .unwrap(),
+                ),
+            )]),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::SecretStoreNotGranted)),
+        "{result:?}"
+    );
+    // The refusal saved neither a typed value nor a reference.
+    let authentication = harness
+        .providers
+        .setup_authentication(&actor, &owner, setup.id(), 11)
+        .await
+        .unwrap();
+    assert!(!authentication.authorized);
+    assert!(!authentication.holds_secret_references);
+}

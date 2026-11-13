@@ -96,6 +96,62 @@ impl CredentialValues {
     }
 }
 
+/// The address of one Credential Field's value in a Secret Store, deliberately
+/// without serialization. It is not a secret, but it reveals where the customer
+/// keeps one, so diagnostic formatting redacts it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretReference {
+    store: String,
+    path: String,
+    key: Option<String>,
+}
+impl std::fmt::Debug for SecretReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretReference([redacted])")
+    }
+}
+impl SecretReference {
+    /// The longest store name, path or key, in bytes.
+    pub const MAX_LEN: usize = 1024;
+
+    /// Accepts a nonempty bounded store, path and key without control characters.
+    /// # Errors
+    /// Rejects an empty or oversized part, or one with a control character.
+    pub fn new(store: String, path: String, key: Option<String>) -> Result<Self, Error> {
+        let valid = |part: &str| {
+            !part.is_empty() && part.len() <= Self::MAX_LEN && !part.chars().any(char::is_control)
+        };
+        if !valid(&store) || !valid(&path) || !key.as_deref().is_none_or(valid) {
+            return Err(Error::InvalidSecretReference);
+        }
+        Ok(Self { store, path, key })
+    }
+    /// The name of the Secret Store.
+    #[must_use]
+    pub fn store(&self) -> &str {
+        &self.store
+    }
+    /// Where the value lives in the store.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    /// The key within the entry, where the store has keys.
+    #[must_use]
+    pub fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+}
+
+/// Where one Credential Field of an Account gets its value.
+#[derive(Debug)]
+pub enum CredentialField {
+    /// A value Coral holds encrypted.
+    Value(Secret),
+    /// A value a Secret Store holds.
+    Reference(SecretReference),
+}
+
 /// Filesystem-key-backed authenticated encryption used by the host.
 #[derive(Clone)]
 pub struct CredentialVault(Arc<aead::LessSafeKey>);
@@ -227,6 +283,9 @@ pub enum Error {
     /// Invalid secret input.
     #[error("invalid credential material")]
     InvalidSecret,
+    /// Invalid Secret Reference; never names the reference.
+    #[error("invalid secret reference")]
+    InvalidSecretReference,
     /// Invalid or unsafe persisted key.
     #[error("invalid filesystem credential key")]
     InvalidKey,
@@ -240,11 +299,59 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{CredentialVault, Error, STANDARD};
+    use super::{CredentialField, CredentialVault, Error, STANDARD, SecretReference};
     use base64::Engine as _;
 
     fn vault(dir: &tempfile::TempDir, name: &str) -> CredentialVault {
         CredentialVault::open(&dir.path().join(name)).expect("open vault")
+    }
+
+    /// Diagnostics reveal neither a reference nor why one was rejected.
+    #[test]
+    fn a_secret_reference_stays_out_of_diagnostics() {
+        let reference = SecretReference::new(
+            "canary-store".into(),
+            "canary/path".into(),
+            Some("canary-key".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            (reference.store(), reference.path(), reference.key()),
+            ("canary-store", "canary/path", Some("canary-key"))
+        );
+        let formatted = format!("{:?}", CredentialField::Reference(reference));
+        assert!(!formatted.contains("canary"), "{formatted}");
+
+        let rejected =
+            SecretReference::new("canary-store".into(), String::new(), None).unwrap_err();
+        assert!(!format!("{rejected} {rejected:?}").contains("canary"));
+    }
+
+    #[test]
+    fn a_secret_reference_is_nonempty_bounded_and_free_of_control_characters() {
+        let longest = "a".repeat(SecretReference::MAX_LEN);
+        SecretReference::new(longest.clone(), longest.clone(), Some(longest)).unwrap();
+        SecretReference::new("store".into(), "path".into(), None).unwrap();
+        let too_long = "a".repeat(SecretReference::MAX_LEN + 1);
+        for (store, path, key) in [
+            ("", "path", None),
+            ("store", "", None),
+            ("store", "path", Some("")),
+            (too_long.as_str(), "path", None),
+            ("store", too_long.as_str(), None),
+            ("store", "path", Some(too_long.as_str())),
+            ("st\nore", "path", None),
+            ("store", "pa\nth", None),
+            ("store", "path", Some("k\ney")),
+        ] {
+            assert!(
+                matches!(
+                    SecretReference::new(store.into(), path.into(), key.map(str::to_owned)),
+                    Err(Error::InvalidSecretReference)
+                ),
+                "{store:?} {path:?} {key:?}"
+            );
+        }
     }
 
     #[test]

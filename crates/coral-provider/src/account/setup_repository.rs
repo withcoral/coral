@@ -35,6 +35,7 @@ enum ProviderSetupCredentials {
     CallbackFingerprint,
     FailureCode,
     CallbackStateDigest,
+    SecretReferences,
 }
 
 #[derive(sqlx::FromRow)]
@@ -45,6 +46,7 @@ struct ProvisionalRow {
     contract: String,
     credential_generation: String,
     encrypted_credentials: Option<String>,
+    secret_references: Option<String>,
     token_expires_at_unix_nanos: Option<i64>,
     granted_scope: String,
     expires_at_unix_nanos: i64,
@@ -77,6 +79,7 @@ pub(crate) async fn load(
                     ProviderSetupCredentials::Contract,
                     ProviderSetupCredentials::CredentialGeneration,
                     ProviderSetupCredentials::EncryptedCredentials,
+                    ProviderSetupCredentials::SecretReferences,
                     ProviderSetupCredentials::TokenExpiresAtUnixNanos,
                     ProviderSetupCredentials::GrantedScope,
                     ProviderSetupCredentials::AutomaticRefresh,
@@ -147,6 +150,7 @@ pub(crate) async fn insert(
                 ProviderSetupCredentials::Contract,
                 ProviderSetupCredentials::CredentialGeneration,
                 ProviderSetupCredentials::EncryptedCredentials,
+                ProviderSetupCredentials::SecretReferences,
                 ProviderSetupCredentials::GrantedScope,
                 ProviderSetupCredentials::ExpiresAtUnixNanos,
             ])
@@ -158,6 +162,7 @@ pub(crate) async fn insert(
                 sealed.contract.to_storage()?.into(),
                 sealed.credential_generation.as_str().into(),
                 Some(sealed.ciphertext.clone()).into(),
+                sealed.secret_references.clone().into(),
                 sealed.granted_scope.clone().into(),
                 sealed.expires_at_unix_nanos.into(),
             ])
@@ -196,6 +201,10 @@ pub(crate) async fn scrub(
                 Option::<String>::None,
             )
             .value(
+                ProviderSetupCredentials::SecretReferences,
+                Option::<String>::None,
+            )
+            .value(
                 ProviderSetupCredentials::TokenExpiresAtUnixNanos,
                 Option::<i64>::None,
             )
@@ -226,6 +235,7 @@ impl ProvisionalRow {
             contract: ProviderCredentialContract::from_storage(&self.contract)?,
             credential_generation: self.credential_generation,
             encrypted_credentials: self.encrypted_credentials,
+            secret_references: self.secret_references,
             token_expires_at_unix_nanos: self.token_expires_at_unix_nanos,
             granted_scope: self.granted_scope,
             expires_at_unix_nanos: self.expires_at_unix_nanos,

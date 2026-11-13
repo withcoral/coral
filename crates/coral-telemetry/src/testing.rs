@@ -187,6 +187,23 @@ impl ExportCapture {
         let logs = self.logs.get_emitted_logs().expect("read exported logs");
         format!("{spans:?}{logs:?}")
     }
+
+    /// Every log record that has left so far, each as text to search, so a
+    /// test can read one record's message beside its own attributes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the in-memory exporter fails.
+    #[must_use]
+    pub fn log_records(&self) -> Vec<String> {
+        self.logger.force_flush().expect("flush exported logs");
+        self.logs
+            .get_emitted_logs()
+            .expect("read exported logs")
+            .iter()
+            .map(|record| format!("{record:?}"))
+            .collect()
+    }
 }
 
 /// The value of `span`'s attribute `key`, as text.

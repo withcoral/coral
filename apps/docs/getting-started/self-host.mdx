@@ -26,6 +26,22 @@ In this guide, we will walk you through setting up Coral with either Docker Comp
 
 Make sure you can configure the names to point to your Coral deployment (details in the deployment guides) and that you can create valid TLS certificates for these domains.
 
+## Upgrade Coral
+
+Coral updates its own database when a new version starts. You don't run a separate migration step.
+
+To upgrade:
+
+1. Read the [release notes](https://github.com/withcoral/coral/releases) for the versions between yours and the new one.
+2. Back up Coral's state:
+   - **SQLite.** Stop Coral, then copy the volume mounted at `/var/lib/coral`. It holds the database and the credentials key.
+   - **Postgres.** Take a dump or a snapshot of the database. Keep the value of `CORAL_CREDENTIALS_KEY` with it.
+3. Start the new `coral` and `coral-web` images. Upgrade both to the same version.
+
+To return to an earlier version, restore the backup and start that version.
+
+The [Docker Compose](/getting-started/self-host/docker-compose#upgrade) and [Kubernetes](/getting-started/self-host/kubernetes#upgrade) guides have the commands.
+
 ## Upgrade from Coral 0.x
 
 Coral 1.0 is a ground-up rewrite. Your agents now write TypeScript programs that call your providers, where 0.x ran SQL queries over sources. You manage Coral in the Coral UI instead of with `coral` commands, and your agents connect to the MCP server over HTTP instead of stdio.

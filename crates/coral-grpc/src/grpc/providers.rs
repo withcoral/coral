@@ -281,6 +281,25 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::BuiltinProviderManaged => (Code::FailedPrecondition, "BUILTIN_PROVIDER_MANAGED"),
         E::OAuthClientConfiguration => (Code::FailedPrecondition, "OAUTH_CLIENT_CONFIGURATION"),
         E::AccountRequired => (Code::FailedPrecondition, "ACCOUNT_REQUIRED"),
+        E::SecretReferenceNotAllowed => (Code::FailedPrecondition, "SECRET_REFERENCE_NOT_ALLOWED"),
+        E::SecretStoreNotGranted => (Code::FailedPrecondition, "SECRET_STORE_NOT_GRANTED"),
+        E::SecretStoreRead(read) => (
+            // A store that did not answer may answer a retry.
+            if read == coral_secret_store::Error::Unreachable {
+                Code::Unavailable
+            } else {
+                Code::FailedPrecondition
+            },
+            match read {
+                coral_secret_store::Error::Unreachable => "SECRET_STORE_UNREACHABLE",
+                coral_secret_store::Error::EntryNotFound => "SECRET_ENTRY_NOT_FOUND",
+                coral_secret_store::Error::KeyNotFound => "SECRET_KEY_NOT_FOUND",
+                coral_secret_store::Error::PermissionDenied => "SECRET_STORE_PERMISSION_DENIED",
+                coral_secret_store::Error::MalformedResponse => "SECRET_STORE_MALFORMED_RESPONSE",
+                coral_secret_store::Error::NeedsEnterprise => "SECRET_STORE_NEEDS_ENTERPRISE",
+                coral_secret_store::Error::KindMissing => "SECRET_STORE_KIND_MISSING",
+            },
+        ),
         E::RequestIdConflict => (Code::AlreadyExists, "REQUEST_ID_CONFLICT"),
         E::PendingAuthorizationLimit => (Code::ResourceExhausted, "PENDING_AUTHORIZATION_LIMIT"),
         E::ProviderChangedDuringPublication | E::CredentialRouteChanged => {
@@ -330,20 +349,6 @@ pub(super) const fn wire_method(kind: AuthenticationKind) -> wire::CredentialMet
             wire::CredentialMethod::OauthAuthorizationCode
         }
     }
-}
-
-/// Write-only field values from one request, bounded like every other secret.
-pub(super) fn credential_values(
-    values: std::collections::HashMap<String, String>,
-) -> Result<coral_credentials::CredentialValues, Status> {
-    let values = values
-        .into_iter()
-        .map(|(name, value)| coral_credentials::Secret::new(value).map(|secret| (name, secret)))
-        .collect::<Result<_, _>>()
-        .and_then(coral_credentials::CredentialValues::new)
-        .map_err(domain::Error::from)
-        .map_err(error)?;
-    Ok(values)
 }
 
 pub(super) fn credential_fields(
@@ -465,6 +470,7 @@ impl GrpcServices {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             automatic_refresh: authentication.automatic_refresh,
+            holds_secret_references: authentication.holds_secret_references,
             granted_scope: authentication.granted_scope,
             credential_expire_time: authentication.expires_at_unix_nanos.map(timestamp),
             publication,
@@ -710,12 +716,12 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let id = ProviderSetupId::parse(id).map_err(error)?;
         let authentication = self
             .accounts()?
-            .authorize_setup(
+            .authorize_setup_fields(
                 &context,
                 &owner,
                 &id,
                 req.configuration_revision,
-                credential_values(req.credential_values)?,
+                super::accounts::credential_fields(req.credential_values, req.secret_references)?,
             )
             .await
             .map_err(error)?;

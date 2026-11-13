@@ -635,6 +635,58 @@ describe('secret entry', () => {
     expect(request.configurationRevision).toBe(2n)
   })
 
+  const reference = (account: string) => {
+    const form = entry([])
+    form.set('account', account)
+    form.set('reference.token.store', 'platform')
+    form.set('reference.token.path', 'team/forecast')
+    form.set('reference.token.key', 'token')
+    return form
+  }
+
+  // Catches: the shared dialog's reference dropped, so a blank value reaches Coral.
+  it('sends a shared account reference by field name', async () => {
+    authorizeProviderSetup.mockResolvedValue({})
+
+    await submit(reference('fixed'))
+
+    const [request] = authorizeProviderSetup.mock.calls[0]
+    expect(request.credentialValues).toEqual({})
+    expect(request.secretReferences).toMatchObject({
+      token: { secretStore: 'secretStores/platform', path: 'team/forecast', key: 'token' },
+    })
+  })
+
+  // Catches: a reference sent from the own-account dialog or a discovery prompt.
+  it.each(['caller', ''])('takes no reference with account choice "%s"', async (account) => {
+    const form = reference(account)
+    form.set('credential.token', 'typed-canary')
+    if (!account) form.delete('account')
+    authorizeProviderSetup.mockResolvedValue({})
+
+    await submit(form)
+
+    const [request] = authorizeProviderSetup.mock.calls[0]
+    expect(request.secretReferences).toEqual({})
+    expect(request.credentialValues).toEqual({ token: 'typed-canary' })
+  })
+
+  // Catches: the setup dialog saying less than the authorization page does.
+  it('says what to do when the store refuses a reference', async () => {
+    authorizeProviderSetup.mockRejectedValue(
+      new ConnectError('SECRET_ENTRY_NOT_FOUND', Code.FailedPrecondition),
+    )
+
+    const result = await submit(reference('fixed'))
+
+    expect(result).toMatchObject({
+      data: {
+        error: 'The secret store has no secret at this reference. Check the path or variable name.',
+        connecting: 'fixed',
+      },
+    })
+  })
+
   // Repeating one field would otherwise carry values past the field bound.
   it('refuses a form that repeats one Credential Field', async () => {
     await expect(

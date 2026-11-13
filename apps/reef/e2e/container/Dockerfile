@@ -15,9 +15,21 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 RUN npx playwright install --with-deps chromium
 # The desktop suite packages Electron. The install keeps Electron's download in
 # its cache, where packaging finds it. npm may skip the install script.
+# A release bumps package.json and so rebuilds this layer; the cache mount keeps
+# the zip, so a rebuild does not download it from GitHub again.
 WORKDIR /workspace/apps/desktop
 COPY apps/desktop/package*.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci && node node_modules/electron/install.js
+# Both installs, npm's lifecycle script and the explicit one, use the mount.
+RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,id=reel-electron,target=/var/cache/electron \
+    export electron_config_cache=/var/cache/electron \
+ && npm ci \
+ && node node_modules/electron/install.js \
+ && version=$(node -p "require('./node_modules/electron/package.json').version") \
+ && for zip in /var/cache/electron/*/electron-v"$version"-*.zip; do \
+      mkdir -p "/root/.cache/electron/$(basename "$(dirname "$zip")")" \
+      && cp "$zip" "/root/.cache/electron/$(basename "$(dirname "$zip")")/"; \
+    done
 WORKDIR /workspace
 COPY . .
 ARG TARGETARCH

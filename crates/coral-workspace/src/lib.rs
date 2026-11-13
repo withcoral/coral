@@ -52,14 +52,17 @@
 //!   projections through the same authority rules.
 //! - [`WorkspaceModule::list_organization_workspaces`] and
 //!   [`WorkspaceModule::assign_owner`] are the Organization Owner's governance
-//!   surface, and [`WorkspaceModule::list_governance_events`] reads its Events; with archive and restore they are the only actions that need no
-//!   Workspace Membership.
+//!   surface, and [`WorkspaceModule::list_governance_events`] reads its Events; with archive, restore,
+//!   [`WorkspaceModule::list_secret_store_grants`], [`WorkspaceModule::grant_secret_store`] and
+//!   [`WorkspaceModule::revoke_secret_store`] they are the only actions that need no Workspace
+//!   Membership.
 //!
 //! # Invariants
 //!
 //! Every Workspace role requires a Workspace Membership and a current
 //! Organization Membership. An Organization Owner without a Membership can only
-//! list Workspaces, assign a designated Owner, archive, and restore. No
+//! list Workspaces and their Secret Store grants, assign a designated Owner,
+//! archive, restore, and grant or revoke a Secret Store. No
 //! Workspace-level action removes the last designated Owner, whatever that
 //! Owner's Organization Membership state. Archived Workspaces reject configuration,
 //! new Runs, and later dispatch while allowing restoration and safe reads.
@@ -106,6 +109,9 @@ mod organization_tests;
 mod principal;
 mod principal_authority;
 mod repository;
+mod secret_store_grant_repository;
+mod secret_store_grants;
+pub use secret_store_grants::SecretStoreGrant;
 mod types;
 pub mod usage_repository;
 

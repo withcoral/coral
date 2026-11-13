@@ -10,8 +10,10 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 coral-credentials.workspace = true
 coral-db = { workspace = true, features = ["test-support"] }
+coral-secret-store.workspace = true
 coral-workspace.workspace = true
 ring.workspace = true
 sqlx.workspace = true
@@ -21,4 +23,4 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

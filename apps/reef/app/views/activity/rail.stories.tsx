@@ -272,7 +272,8 @@ export const PointerAndHistory: Story = {
     await waitFor(() => expect(rail()).toBeNull())
     // Closing returns focus to the table, the one Tab stop of its records.
     await waitFor(() => expect(table).toHaveFocus())
-    await expect(address()).not.toContain('record=')
+    // The rail closes at once; the address follows when the navigation commits.
+    await waitFor(() => expect(address()).not.toContain('record='))
   },
 }
 

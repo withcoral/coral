@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.7.0](https://github.com/withcoral/coral/compare/v1.6.0...v1.7.0) (2026-11-12)
+
+
+### Features
+
+* print each database migration while an upgrade applies it ([#3085](https://github.com/withcoral/coral/issues/3085)) ([9bb9fcd](https://github.com/withcoral/coral/commit/9bb9fcdbe0148e7b428c673b784a5b6b4ceb38fd))
+* **run:** compile on a Run Executor over its pull stream ([#2952](https://github.com/withcoral/coral/issues/2952)) ([dc76180](https://github.com/withcoral/coral/commit/dc76180f32722c4731c951078af20e9171af7d43)), closes [#2894](https://github.com/withcoral/coral/issues/2894)
+* **run:** start local Run Executors as children of coral ([#3074](https://github.com/withcoral/coral/issues/3074)) ([025d0a2](https://github.com/withcoral/coral/commit/025d0a2f66d56d2f3f0c81aa20f7605fef06002f)), closes [#2893](https://github.com/withcoral/coral/issues/2893)
+* share tools across a workspace, with every callable a Tool ([#3081](https://github.com/withcoral/coral/issues/3081)) ([8b09898](https://github.com/withcoral/coral/commit/8b098984c6e4bd1816466b432956308c61972a50))
+
+
+### Bug Fixes
+
+* **mcp:** tell the assistant that search finds tools, not records ([#3071](https://github.com/withcoral/coral/issues/3071)) ([af84fd6](https://github.com/withcoral/coral/commit/af84fd6837e593c4730d187856e1b1f8176450af))
+* **providers:** accept MCP servers that answer 401 to OAuth metadata lookups ([#3066](https://github.com/withcoral/coral/issues/3066)) ([0adedc2](https://github.com/withcoral/coral/commit/0adedc22f6565406b86a59b855e03dce953e165a))
+* **search:** keep health checks answering while the search index rebuilds ([#3084](https://github.com/withcoral/coral/issues/3084)) ([0ed4aef](https://github.com/withcoral/coral/commit/0ed4aef133c40233d8758cf7b35fcd649cd98529))
+* **ui:** simplify provider icon upload ([#3019](https://github.com/withcoral/coral/issues/3019)) ([ecc4600](https://github.com/withcoral/coral/commit/ecc460022196411b1b846bf69b5cdc0f890d8a6f))
+
+
+### Performance Improvements
+
+* **ui:** load workspace activity independently ([#3039](https://github.com/withcoral/coral/issues/3039)) ([9d71bbb](https://github.com/withcoral/coral/commit/9d71bbb7c54867dbd187165ae4082feb0697dd1d))
+
 ## [1.6.0](https://github.com/withcoral/coral/compare/v1.5.0...v1.6.0) (2026-11-10)
 
 

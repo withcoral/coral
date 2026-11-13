@@ -131,7 +131,8 @@ impl WorkspaceModule {
     }
 
     /// Lists the Events that Organization Owner governance authorized in any
-    /// Workspace: Owner assignment, archive, restore, and ownership transfer.
+    /// Workspace: Owner assignment, archive, restore, ownership transfer, and
+    /// Secret Store grants and revocations.
     /// Every other Workspace Event needs a Membership there.
     ///
     /// # Errors

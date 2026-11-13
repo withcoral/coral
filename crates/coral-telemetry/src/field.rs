@@ -36,6 +36,8 @@ const CORAL: &[&str] = &[
     "coral.run.last_commit_age_ms",
     // How many Runs an expired-lease sweep recovered.
     "coral.run.recovered",
+    // The periodic pass a log record is about, by its fixed name.
+    "coral.periodic.pass",
     // How many Runs were still live when the Shutdown Drain ran out, and how
     // long it lasted, in milliseconds.
     "coral.shutdown.live_runs",
@@ -61,6 +63,11 @@ const CORAL: &[&str] = &[
     // The Shared Tool and its Call Path.
     "coral.shared_tool.id",
     "coral.shared_tool.call_path",
+    // A Secret Store: the name the operator gave it, its kind and how long a
+    // read took, in milliseconds. Never a metric attribute.
+    "coral.secret_store.name",
+    "coral.secret_store.kind",
+    "coral.secret_store.read_ms",
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
     // A Run Executor's protocol level and its peer's, when a link refuses

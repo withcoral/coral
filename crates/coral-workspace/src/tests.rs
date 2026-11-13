@@ -2,6 +2,8 @@
 mod agents;
 #[path = "management_tests.rs"]
 mod management;
+#[path = "secret_store_grant_tests.rs"]
+mod secret_store_grants;
 
 use coral_test_support::TestDatabase;
 

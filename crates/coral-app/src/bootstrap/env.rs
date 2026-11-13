@@ -166,6 +166,7 @@ impl Launch {
             }),
             // The launching binary supplies these, never the environment.
             extensions: super::runtime::Extensions::default(),
+            migration_report: None,
         })
     }
 }

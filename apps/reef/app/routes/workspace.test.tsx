@@ -85,6 +85,7 @@ async function renderOverview(entry = path) {
     agents: { listAgents: () => ({ agents: [] }) },
     providers: { listProviders: () => ({ providers: [] }) },
     memberships: { listWorkspaceOwners: () => ({ owners: [] }) },
+    secretStores: { listWorkspaceSecretStores: () => ({ secretStores: [] }) },
     activity: {
       summarizeActivity: ({ days }) =>
         new Promise<Summary>((resolve, reject) =>
