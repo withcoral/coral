@@ -11,6 +11,7 @@ use coral_workspace::WorkspaceId;
 use sea_query::{Value, Values};
 
 use crate::indexer::IndexError;
+use crate::storage::vector_literal;
 use crate::types::EntityKind;
 
 /// One Search Entity without a current vector: its key and the stamp of its
@@ -214,17 +215,4 @@ pub(super) async fn delete_orphaned_vectors(
             Values(Vec::new()),
         )
         .await
-}
-
-/// A vector as pgvector reads it: `[0.5,0.25,1]`.
-fn vector_literal(vector: &[f32]) -> String {
-    let mut literal = String::from("[");
-    for (position, value) in vector.iter().enumerate() {
-        if position > 0 {
-            literal.push(',');
-        }
-        write!(literal, "{value}").expect("writing to a String does not fail");
-    }
-    literal.push(']');
-    literal
 }

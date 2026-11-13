@@ -1043,6 +1043,14 @@ pub(crate) async fn start_server(
             local_run_executors.clone(),
         ))
     };
+    // The one search module of the process. Its engine embeds queries with
+    // the Embedder's model, so a query waits for at most the one document
+    // the Embedder runs.
+    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
+    let search = match &embedder_model {
+        Some((_, model)) => search.with_model(model.clone()),
+        None => search,
+    };
     // updateProvider renames through the same workflow as Reef.
     let mut runs = coral_run::RunModule::with_compiler_client(
         policy,
@@ -1055,7 +1063,8 @@ pub(crate) async fn start_server(
         coral_run::RunInbox::table(database.clone()),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-    .with_provider_renamer(Arc::new(provider_workflow.clone()));
+    .with_provider_renamer(Arc::new(provider_workflow.clone()))
+    .with_search(search.clone());
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }
@@ -1074,7 +1083,6 @@ pub(crate) async fn start_server(
         compiler.clone(),
         runtime_limits.compilation_timeout(),
     );
-    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {

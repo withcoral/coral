@@ -11,12 +11,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_db::Transaction;
+use coral_db::{DatabaseSystem, Transaction};
+use coral_embed::MANIFEST;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
+use coral_telemetry::safe;
+use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
+use super::vector_list::{self, VectorList};
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
     RequestContext, RetrievalError, ToolRef, WindowEntry, count,
@@ -149,39 +153,40 @@ impl EntityRetriever for ToolRetriever {
             );
         }
         let named = named_providers(&plan, &searched);
-        let ranked = if searched.is_empty() {
-            Vec::new()
-        } else {
-            let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
-            let generation_ids = searched
-                .values()
-                .map(|provider| provider.generation_id().clone())
-                .collect::<Vec<_>>();
-            repository::rank_tools(
-                transaction,
-                context.workspace_id,
-                &repository::ToolScope {
-                    providers: &provider_ids,
-                    generations: &generation_ids,
-                    excluded: &excluded,
-                    named: &named,
-                },
-                &plan,
-                request.window + 1,
-            )
-            .await
-            .map_err(QueryError::Retriever)?
+        let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
+        let generation_ids = searched
+            .values()
+            .map(|provider| provider.generation_id().clone())
+            .collect::<Vec<_>>();
+        let scope = repository::ToolScope {
+            providers: &provider_ids,
+            generations: &generation_ids,
+            excluded: &excluded,
+            named: &named,
         };
-        let has_more = ranked.len() > request.window;
+        let (lexical, vector) = if searched.is_empty() {
+            (Vec::new(), None)
+        } else {
+            rank_both(transaction, context.workspace_id, &scope, &plan, request).await?
+        };
+        let (merged, has_more) = vector_list::window(
+            lexical,
+            vector,
+            |tool: &repository::RankedTool| tool.doc_id.clone(),
+            request.window,
+        );
         let mut window = Vec::new();
-        for tool in ranked.into_iter().take(request.window) {
+        for merged in merged {
+            let strong_by_vector = merged.strong_by_vector();
+            let tool = merged.entry;
             let provider = searched
                 .get(&tool.provider_id)
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
                     "a ranked Tool's Provider was not searched",
                 )))?;
             window.push(WindowEntry {
-                strong: strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
+                strong: strong_by_vector
+                    || strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
                 entity: EntityRef::Tool(ToolRef {
                     provider: Arc::clone(provider),
                     tool_key: tool.tool_key,
@@ -257,6 +262,139 @@ impl EntityRetriever for ToolRetriever {
                 .map(ExactAuthoringDescription::tool),
         )
     }
+}
+
+/// The lexical list, with one row past the window, and the vector list when
+/// the request carries a vector and the vector side answers.
+async fn rank_both(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: &repository::ToolScope<'_>,
+    plan: &QueryPlan,
+    request: &QueryRequest<'_>,
+) -> Result<
+    (
+        Vec<repository::RankedTool>,
+        Option<VectorList<repository::RankedTool>>,
+    ),
+    QueryError,
+> {
+    let lexical =
+        repository::rank_tools(transaction, workspace_id, scope, plan, request.window + 1)
+            .await
+            .map_err(QueryError::Retriever)?;
+    let vector = match request.vector {
+        Some(vector) => {
+            vector_tools(
+                transaction,
+                workspace_id,
+                scope,
+                plan,
+                vector,
+                request.window,
+            )
+            .await?
+        }
+        None => None,
+    };
+    Ok((lexical, vector))
+}
+
+/// The vector list: the `window` Tools of the scope whose vectors of the
+/// current Embedder revision are nearest to `vector`, less each whose vector
+/// was made from other text than its row holds now. `None` when the vector
+/// side fails, or on `SQLite`, which keeps no vectors yet: the retriever
+/// then ranks by words alone, and the page does not say so.
+async fn vector_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: &repository::ToolScope<'_>,
+    plan: &QueryPlan,
+    vector: &[f32],
+    window: usize,
+) -> Result<Option<VectorList<repository::RankedTool>>, QueryError> {
+    if transaction.system() != DatabaseSystem::Postgres {
+        return Ok(None);
+    }
+    repository::begin_vector_query(transaction)
+        .await
+        .map_err(QueryError::retrieval)?;
+    match read_vector_tools(transaction, workspace_id, scope, plan, vector, window).await {
+        Ok(tools) => {
+            repository::end_vector_query(transaction)
+                .await
+                .map_err(QueryError::retrieval)?;
+            Ok(Some(tools))
+        }
+        Err(error) => {
+            repository::abandon_vector_query(transaction)
+                .await
+                .map_err(QueryError::retrieval)?;
+            tracing::warn!(
+                coral.workspace.id = safe::id(workspace_id),
+                error.type = safe::kind(error.code()),
+                "the Tool retriever's vector query failed; it ranks by words alone"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn read_vector_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: &repository::ToolScope<'_>,
+    plan: &QueryPlan,
+    vector: &[f32],
+    window: usize,
+) -> Result<VectorList<repository::RankedTool>, RetrievalError> {
+    let revision = MANIFEST.embedder_revision();
+    let mut nearest = repository::nearest_tools(
+        transaction,
+        workspace_id,
+        scope,
+        revision.as_str(),
+        vector,
+        window + 1,
+    )
+    .await?;
+    let has_more = nearest.len() > window;
+    nearest.truncate(window);
+    let doc_ids = nearest
+        .iter()
+        .map(|vector| vector.doc_id.as_str())
+        .collect::<Vec<_>>();
+    let rows = repository::current_tools(transaction, workspace_id, plan, &doc_ids).await?;
+    Ok(VectorList {
+        entries: vector_list::current(nearest, rows),
+        has_more,
+    })
+}
+
+/// The Postgres plan of the vector query over the Tools of `providers`'
+/// `generations`, less `excluded`, one line per row.
+#[cfg(test)]
+pub(crate) async fn explain_vector_query(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    providers: &[ProviderId],
+    generations: &[coral_catalog::ProviderGenerationId],
+    excluded: &[(ProviderId, coral_catalog::ToolKey)],
+) -> Result<Vec<String>, coral_db::Error> {
+    let vector = vec![0.5; MANIFEST.dimension];
+    repository::explain_nearest_tools(
+        transaction,
+        workspace_id,
+        &repository::ToolScope {
+            providers,
+            generations,
+            excluded,
+            named: &[],
+        },
+        MANIFEST.embedder_revision().as_str(),
+        &vector,
+    )
+    .await
 }
 
 /// Whether a ranked Tool is a strong match, by the Tool retriever's own

@@ -5,7 +5,7 @@
 //! crate: what the owners decide arrives as binds. Every function joins the
 //! caller's read snapshot. Query text travels only as binds.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use coral_catalog::{AuthoredToolKind, ProviderGenerationId, ToolKey};
 use coral_db::{DatabaseSystem, Error, Transaction};
@@ -18,6 +18,7 @@ use super::RetrievalError;
 use super::plan::{
     QueryPlan, ScoringPlan, Statistics, WordStatistics, contains_pattern, prefix_pattern,
 };
+use super::vector_list::NearestVector;
 use crate::CallPath;
 
 /// The `search_entities` columns the coverage reads name, for sea-query.
@@ -172,11 +173,12 @@ impl Scope<'_> {
     }
 }
 
-/// One ranked row as the statement returns it: the Call Path, the owner
-/// keys its kind sets, its phrase points, and its name and title. Decoded
-/// here into a typed ranked Entity.
+/// One ranked row as the statement returns it: its key, the Call Path, the
+/// owner keys its kind sets, its phrase points, and its name and title.
+/// Decoded here into a typed ranked Entity.
 #[derive(sqlx::FromRow)]
 struct RankedRow {
+    doc_id: String,
     call_path: String,
     provider_id: Option<String>,
     tool_key: Option<String>,
@@ -196,9 +198,10 @@ pub(super) struct RowMatch {
     pub(super) title: String,
 }
 
-/// One ranked Tool: its Provider, its key, its Call Path, and what its
-/// statement saw.
+/// One ranked Tool: its Search Entity key, its Provider, its Tool Key, its
+/// Call Path, and what its statement saw.
 pub(super) struct RankedTool {
+    pub(super) doc_id: String,
     pub(super) provider_id: ProviderId,
     pub(super) tool_key: ToolKey,
     pub(super) call_path: CallPath,
@@ -233,49 +236,163 @@ pub(super) async fn rank_tools(
     plan: &QueryPlan,
     limit: usize,
 ) -> Result<Vec<RankedTool>, RetrievalError> {
-    let ToolScope {
-        providers,
-        generations,
-        excluded,
-        named,
-    } = tools;
-    let provider_ids = providers
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let generation_ids = generations
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let excluded = excluded
-        .iter()
-        .map(|(provider, key)| (provider.to_string(), key.as_str().to_string()))
-        .collect::<Vec<_>>();
-    let named = named.iter().map(ToString::to_string).collect::<Vec<_>>();
-    let scope = Scope::Tools {
-        workspace_id,
-        provider_ids: &provider_ids,
-        generation_ids: &generation_ids,
-        excluded: &excluded,
-        named: &named,
-    };
-    rank(transaction, &scope, plan, limit)
+    let binds = ToolBinds::new(tools);
+    rank(transaction, &binds.scope(workspace_id), plan, limit)
         .await?
         .into_iter()
-        .map(|row| {
-            let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
-                return Err(RetrievalError::Corrupt("a Tool row has no owner keys"));
-            };
-            Ok(RankedTool {
-                provider_id: ProviderId::parse(&provider_id)
-                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Provider id"))?,
-                tool_key: ToolKey::parse(&tool_key)
-                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Tool Key"))?,
-                call_path: call_path(&row.call_path)?,
-                matched: row.matched,
-            })
+        .map(ranked_tool)
+        .collect()
+}
+
+/// The vector list of the Tools of the scope: the Search Entity key and
+/// source stamp of each vector of `revision`, nearest to `vector` first, at
+/// most `limit`. It reads the vector table alone, whose columns carry the
+/// scope's conditions. Ties break by key.
+pub(super) async fn nearest_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    tools: &ToolScope<'_>,
+    revision: &str,
+    vector: &[f32],
+    limit: usize,
+) -> Result<Vec<NearestVector>, Error> {
+    let binds = ToolBinds::new(tools);
+    let (sql, values) = nearest_statement(&binds.scope(workspace_id), revision, vector, limit);
+    let rows: Vec<(String, i64)> = transaction.fetch_all_sql(&sql, values).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(doc_id, source_indexed_at_unix_nanos)| NearestVector {
+            doc_id,
+            source_indexed_at_unix_nanos,
+        })
+        .collect())
+}
+
+/// The Workspace's Tool rows among `doc_ids`, each by its key with its
+/// row's stamp, and what the plan's strong rule reads from it, as the ranked
+/// statement would see it. One keyed read of the entity table: the vector
+/// query already kept only the rows the scope may rank.
+pub(super) async fn current_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    plan: &QueryPlan,
+    doc_ids: &[&str],
+) -> Result<HashMap<String, (i64, RankedTool)>, RetrievalError> {
+    #[derive(sqlx::FromRow)]
+    struct CurrentRow {
+        indexed_at_unix_nanos: i64,
+        #[sqlx(flatten)]
+        row: RankedRow,
+    }
+    let mut binds = Binds::new(DatabaseSystem::Postgres);
+    let workspace = binds.push(workspace_id.to_string());
+    let phrase = phrase_points(&mut binds, "d", plan);
+    let doc_ids = binds.push(json(doc_ids));
+    let sql = format!(
+        "SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.authored_tool_id, \
+                d.qualified_name, d.title, d.indexed_at_unix_nanos, \
+                CAST({phrase} AS BIGINT) AS phrase_points \
+         FROM search_entities AS d \
+         WHERE d.workspace_id = {workspace} \
+         AND d.doc_id IN (SELECT jsonb_array_elements_text({doc_ids}::jsonb))"
+    );
+    let rows: Vec<CurrentRow> = transaction.fetch_all_sql(&sql, binds.values).await?;
+    rows.into_iter()
+        .map(|current| {
+            let tool = ranked_tool(current.row)?;
+            Ok((tool.doc_id.clone(), (current.indexed_at_unix_nanos, tool)))
         })
         .collect()
+}
+
+/// The vector query over the scope, with its binds. The vector binds as
+/// `halfvec`, the column's type, so the distance needs no cast per row, and
+/// the scan is exact: the table has no vector index.
+fn nearest_statement(
+    scope: &Scope<'_>,
+    revision: &str,
+    vector: &[f32],
+    limit: usize,
+) -> (String, sea_query::Values) {
+    let mut binds = Binds::new(DatabaseSystem::Postgres);
+    let conditions = scope.sql(&mut binds);
+    let revision = binds.push(revision.to_owned());
+    let vector = binds.push(crate::storage::vector_literal(vector));
+    let limit = binds.push(limit_value(limit));
+    let sql = format!(
+        "SELECT d.doc_id, d.source_indexed_at_unix_nanos \
+         FROM search_entity_embeddings AS d \
+         WHERE {conditions} AND d.embedder_revision = {revision} \
+         ORDER BY d.embedding <=> CAST({vector} AS halfvec), d.doc_id COLLATE \"C\" ASC \
+         LIMIT {limit}"
+    );
+    (sql, binds.values)
+}
+
+/// The Postgres plan of the vector query over `tools`, one line per row,
+/// for a test that checks which tables it reads.
+#[cfg(test)]
+pub(super) async fn explain_nearest_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    tools: &ToolScope<'_>,
+    revision: &str,
+    vector: &[f32],
+) -> Result<Vec<String>, Error> {
+    let binds = ToolBinds::new(tools);
+    let (sql, values) = nearest_statement(&binds.scope(workspace_id), revision, vector, 100);
+    let plan: Vec<(String,)> = transaction
+        .fetch_all_sql(&format!("EXPLAIN {sql}"), values)
+        .await?;
+    Ok(plan.into_iter().map(|(line,)| line).collect())
+}
+
+/// A [`ToolScope`]'s values as the statements bind them.
+struct ToolBinds {
+    provider_ids: Vec<String>,
+    generation_ids: Vec<String>,
+    excluded: Vec<(String, String)>,
+    named: Vec<String>,
+}
+
+impl ToolBinds {
+    fn new(tools: &ToolScope<'_>) -> Self {
+        Self {
+            provider_ids: tools.providers.iter().map(ToString::to_string).collect(),
+            generation_ids: tools.generations.iter().map(ToString::to_string).collect(),
+            excluded: tools
+                .excluded
+                .iter()
+                .map(|(provider, key)| (provider.to_string(), key.as_str().to_string()))
+                .collect(),
+            named: tools.named.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    fn scope<'a>(&'a self, workspace_id: &'a WorkspaceId) -> Scope<'a> {
+        Scope::Tools {
+            workspace_id,
+            provider_ids: &self.provider_ids,
+            generation_ids: &self.generation_ids,
+            excluded: &self.excluded,
+            named: &self.named,
+        }
+    }
+}
+
+fn ranked_tool(row: RankedRow) -> Result<RankedTool, RetrievalError> {
+    let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
+        return Err(RetrievalError::Corrupt("a Tool row has no owner keys"));
+    };
+    Ok(RankedTool {
+        doc_id: row.doc_id,
+        provider_id: ProviderId::parse(&provider_id)
+            .map_err(|_invalid| RetrievalError::Corrupt("invalid Provider id"))?,
+        tool_key: ToolKey::parse(&tool_key)
+            .map_err(|_invalid| RetrievalError::Corrupt("invalid Tool Key"))?,
+        call_path: call_path(&row.call_path)?,
+        matched: row.matched,
+    })
 }
 
 /// Ranks the Authored Tools of the scope for the plan, best first, at most
@@ -361,7 +478,7 @@ async fn rank_postgres(
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
-         SELECT c.call_path, c.provider_id, c.tool_key, c.authored_tool_id, \
+         SELECT c.doc_id, c.call_path, c.provider_id, c.tool_key, c.authored_tool_id, \
                 c.qualified_name, c.title, CAST({phrase} AS BIGINT) AS phrase_points \
          FROM candidates AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
@@ -494,7 +611,7 @@ async fn rank_sqlite(
     let named = scope.named_key(&mut binds, "d");
     let limit = binds.push(limit_value(limit));
     let sql = format!(
-        "SELECT d.call_path, d.provider_id, d.tool_key, d.authored_tool_id, \
+        "SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.authored_tool_id, \
                 d.qualified_name, d.title, CAST({phrase} AS BIGINT) AS phrase_points \
          FROM search_entities_fts AS f \
          JOIN search_entities AS d ON d.workspace_id = f.workspace_id AND d.doc_id = f.doc_id \
@@ -647,6 +764,27 @@ pub(crate) async fn end_query(transaction: &mut Transaction<'_>) -> Result<(), E
 pub(crate) async fn abandon_query(transaction: &mut Transaction<'_>) -> Result<(), Error> {
     transaction
         .execute_script("ROLLBACK TO SAVEPOINT search_retriever")
+        .await
+}
+
+/// Opens the savepoint the vector side of one retriever's query runs in,
+/// inside the retriever's own. A failed vector query rolls back to it, so
+/// the retriever keeps its lexical list and the snapshot stays usable.
+pub(super) async fn begin_vector_query(transaction: &mut Transaction<'_>) -> Result<(), Error> {
+    transaction.execute_script("SAVEPOINT search_vector").await
+}
+
+/// Keeps what the vector side read.
+pub(super) async fn end_vector_query(transaction: &mut Transaction<'_>) -> Result<(), Error> {
+    transaction
+        .execute_script("RELEASE SAVEPOINT search_vector")
+        .await
+}
+
+/// Undoes the failed vector side back to its savepoint.
+pub(super) async fn abandon_vector_query(transaction: &mut Transaction<'_>) -> Result<(), Error> {
+    transaction
+        .execute_script("ROLLBACK TO SAVEPOINT search_vector")
         .await
 }
 

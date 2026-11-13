@@ -8,6 +8,7 @@ mod ranking;
 mod retrieval;
 mod shared_tools;
 mod storage;
+mod vector_retrieval;
 mod vector_storage;
 
 use coral_outbound::DestinationPolicy;

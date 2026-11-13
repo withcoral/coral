@@ -99,6 +99,8 @@ pub(crate) async fn suggestions(
             context,
             &QueryRequest {
                 terms: &terms,
+                // A path near a missing one is near by its words.
+                vector: None,
                 provider_filter: &provider_filter,
                 window: SUGGESTIONS_MAX * 2,
             },
