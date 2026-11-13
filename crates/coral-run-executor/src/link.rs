@@ -488,9 +488,26 @@ impl Link {
         }
     }
 
-    /// Retiring is a report of none, sent once the stream is welcomed.
-    /// `End::Retired` once it holds no Run and no compile: it closes the
-    /// stream.
+    /// Closes a retiring pull stream that holds nothing: ends its side, so
+    /// its report of none goes out, and reads until Coral ends its own.
+    /// Each Run Coral took before then is held, and waited for.
+    async fn close(&self, outbound: Outbound, mut inbound: Streaming<PullResponse>) -> End {
+        drop(outbound);
+        while let Ok(Some(response)) = inbound.message().await {
+            if let Some(pull_response::Message::Taken(taken)) = response.message {
+                taken
+                    .runs
+                    .into_iter()
+                    .for_each(|taken| self.hold_run(taken));
+            }
+        }
+        self.runs.drained().await;
+        End::Retired
+    }
+
+    /// Retiring is a report of none, sent once the stream is welcomed, even
+    /// when it holds nothing. `End::Retired` once it holds no Run and no
+    /// compile: the stream closes.
     async fn retiring(
         &self,
         outbound: &Outbound,
@@ -498,9 +515,6 @@ impl Link {
         compiling: u32,
         reported: &mut bool,
     ) -> Option<End> {
-        if self.runs.holding.borrow().drained() && compiling == 0 {
-            return Some(End::Retired);
-        }
         if welcomed && !*reported {
             let room = PullRequest {
                 message: Some(pull_request::Message::Room(Room { free: 0 })),
@@ -510,7 +524,8 @@ impl Link {
             }
             *reported = true;
         }
-        None
+        let drained = self.runs.holding.borrow().drained();
+        (drained && compiling == 0).then_some(End::Retired)
     }
 
     /// Holds a fresh pull stream until it ends, or until the Run Executor
@@ -532,12 +547,15 @@ impl Link {
         loop {
             let welcomed = *self.linked.borrow();
             let retiring = holding.borrow_and_update().retiring;
-            if retiring
-                && let Some(end) = self
+            if retiring {
+                match self
                     .retiring(&outbound, welcomed, compiling, &mut reported)
                     .await
-            {
-                return end;
+                {
+                    Some(End::Retired) => return self.close(outbound, inbound).await,
+                    Some(end) => return end,
+                    None => {}
+                }
             }
             tokio::select! {
                 // The order to retire, and each Run that ends.
@@ -587,7 +605,8 @@ impl Link {
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Taken(taken)),
                     })) if welcomed => {
-                        // A Run that crossed a report of none is honored.
+                        // A Run that crossed a report of none is honored, as
+                        // is one that crossed the stream's close.
                         for taken in taken.runs {
                             self.hold_run(taken);
                         }

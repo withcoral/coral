@@ -981,10 +981,9 @@ async fn an_isolate_that_misses_its_stop_retires_the_run_executor() {
         let terminate = run_response::Message::Terminate(Terminate { reason });
         stuck.send(terminate).await;
 
-        // Alone, the stuck Run leaves nothing to wait for: it closes the
-        // stream at once.
-        let report = with_another_run.then_some(0);
-        assert_eq!(call.rooms.recv().await, report, "it retires");
+        // Alone, the stuck Run leaves nothing to wait for: it reports none,
+        // then closes the stream at once.
+        assert_eq!(call.rooms.recv().await, Some(0), "it retires");
         if let Some(mut run) = other {
             assert!(!task.is_finished(), "it waits for its other Run");
             let json = invocation_result::Outcome::ResultJson("[]".to_owned());
