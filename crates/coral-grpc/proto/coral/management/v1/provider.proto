@@ -11,7 +11,9 @@ service ProviderSetupService {
   // Pins one exact input, acquiring a remote source once; never refetched at Publication.
   rpc CreateProviderSetup(CreateProviderSetupRequest) returns (ProviderSetup);
   // Inspects safe Setup progress for the inspecting User.
-  rpc GetProviderSetup(GetProviderSetupRequest) returns (ProviderSetup);
+  rpc GetProviderSetup(GetProviderSetupRequest) returns (ProviderSetup) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Confirms secret-free configuration before account authorization.
   rpc ConfirmProviderSetupConfiguration(ConfirmProviderSetupConfigurationRequest) returns (ProviderSetup);
   // Saves this Setup's Credential Fields for this User: seals the typed values and keeps
@@ -34,23 +36,33 @@ service ProviderSetupService {
 // Workspace-owned Providers. Every mutation requires current Owner authority.
 service ProviderService {
   // Reads safe OAuth application settings without its secret.
-  rpc GetProviderOAuthClient(GetProviderOAuthClientRequest) returns (ProviderOAuthClient);
+  rpc GetProviderOAuthClient(GetProviderOAuthClientRequest) returns (ProviderOAuthClient) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Replaces only the write-only application secret, not account authorization.
   rpc RotateProviderOAuthClientSecret(RotateProviderOAuthClientSecretRequest) returns (google.protobuf.Empty);
   // Builds outside the write transaction and atomically commits one exact request outcome.
   rpc PublishProvider(PublishProviderRequest) returns (ProviderPublication);
   // Lists the Workspace's Providers with caller-specific readiness.
-  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Inspects one exact Workspace Provider.
-  rpc GetProvider(GetProviderRequest) returns (Provider);
+  rpc GetProvider(GetProviderRequest) returns (Provider) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Reads source provenance for the current Workspace Owner only.
   // The Built-in Provider has no source and fails with FailedPrecondition.
-  rpc GetProviderSource(GetProviderSourceRequest) returns (ProviderSource);
+  rpc GetProviderSource(GetProviderSourceRequest) returns (ProviderSource) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Changes display metadata without changing identity or namespace.
   rpc UpdateProvider(UpdateProviderRequest) returns (Provider);
   // Reads the icon an Owner uploaded. Fails with NotFound when the Provider
   // has none.
-  rpc GetProviderIcon(GetProviderIconRequest) returns (ProviderIcon);
+  rpc GetProviderIcon(GetProviderIconRequest) returns (ProviderIcon) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Replaces the Provider's icon. The Built-in Provider keeps Coral's mark and
   // fails with FailedPrecondition.
   rpc SetProviderIcon(SetProviderIconRequest) returns (Provider);
@@ -63,9 +75,13 @@ service ProviderService {
   // Removes current configuration and credentials, preserving retained history.
   rpc DeleteProvider(DeleteProviderRequest) returns (google.protobuf.Empty);
   // Lists current catalog metadata, including unavailable Tools.
-  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Reads one current Tool by its path, with its full prose.
-  rpc GetTool(GetToolRequest) returns (ProviderTool);
+  rpc GetTool(GetToolRequest) returns (ProviderTool) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // Reversible lifecycle, separate from caller-specific readiness.

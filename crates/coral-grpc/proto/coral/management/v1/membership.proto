@@ -9,9 +9,13 @@ import "google/protobuf/timestamp.proto";
 // Workspace Membership management. A Membership is the only source of Workspace authority.
 service WorkspaceMembershipService {
   // Owner-only listing of Memberships.
-  rpc ListWorkspaceMemberships(ListWorkspaceMembershipsRequest) returns (ListWorkspaceMembershipsResponse);
+  rpc ListWorkspaceMemberships(ListWorkspaceMembershipsRequest) returns (ListWorkspaceMembershipsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // A Member may inspect only their own Membership.
-  rpc GetWorkspaceMembership(GetWorkspaceMembershipRequest) returns (WorkspaceMembership);
+  rpc GetWorkspaceMembership(GetWorkspaceMembershipRequest) returns (WorkspaceMembership) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Adds an eligible User as a designated Member or Owner.
   rpc CreateWorkspaceMembership(CreateWorkspaceMembershipRequest) returns (WorkspaceMembership);
   // Changes the designated role with an exact etag.
@@ -20,7 +24,9 @@ service WorkspaceMembershipService {
   // The last designated Owner cannot leave, be removed, or be demoted.
   rpc DeleteWorkspaceMembership(DeleteWorkspaceMembershipRequest) returns (google.protobuf.Empty);
   // Safe directory of designated Owners, available to Members.
-  rpc ListWorkspaceOwners(ListWorkspaceOwnersRequest) returns (ListWorkspaceOwnersResponse);
+  rpc ListWorkspaceOwners(ListWorkspaceOwnersRequest) returns (ListWorkspaceOwnersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // One designated Membership.
