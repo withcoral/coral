@@ -540,6 +540,36 @@ async fn a_renewed_token_survives_an_application_status_write_failure() {
     )
     .await
     .unwrap();
+    let application_failure = || async {
+        accounts
+            .oauth_client_status(&context, workspace.id(), provider.id())
+            .await
+            .unwrap()
+            .failure_code
+    };
+    // The service first rejects the application, which records a failed status.
+    // The renewal after it would clear that status, so a status that is still
+    // failed shows that the injected fault failed the write.
+    server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_json(serde_json::json!({"error": "invalid_client"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        accounts
+            .credentials(workspace.id(), provider.id(), &evidence, 2_000_000_000)
+            .await,
+        Err(crate::Error::OAuthClientConfiguration)
+    ));
+    assert_eq!(
+        application_failure().await.as_deref(),
+        Some("oauth_client_configuration")
+    );
     server.reset().await;
     renewal("refresh-canary", "renewed-canary", "rotated-canary")
         .mount(&server)
@@ -559,6 +589,11 @@ async fn a_renewed_token_survives_an_application_status_write_failure() {
         "renewed-canary",
         "a failed status write does not discard the renewed token"
     );
+    assert_eq!(
+        application_failure().await.as_deref(),
+        Some("oauth_client_configuration"),
+        "the injected fault failed the status write"
+    );
     // The service rotated the refresh token, so only the stored replacement
     // renews again. The time is past the first claim's deadline.
     server.reset().await;
@@ -574,6 +609,11 @@ async fn a_renewed_token_survives_an_application_status_write_failure() {
             .unwrap()
             .expose(),
         "second-canary"
+    );
+    assert_eq!(
+        application_failure().await,
+        None,
+        "with the fault removed, a renewal clears the failed status"
     );
     let status = accounts
         .credential_status(&context, workspace.id(), provider.id(), account_id)
