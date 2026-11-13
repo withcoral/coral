@@ -3,15 +3,17 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
+use coral_v8::LinkedToolSource;
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::*;
 use crate::link::HeldUnit;
 use crate::testing::{Answer, PullCall, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
-    Committed, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult, Invoke,
-    Loaded, Location, Log, LogLevel, Request, RunEnd, Started, Terminate, TerminateReason,
-    UpstreamOutcome, finish, invocation_result, request,
+    Committed, Complete, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult,
+    Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request,
+    RunEnd, Started, Terminate, TerminateReason, UpstreamOutcome, complete, finish,
+    invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
@@ -29,17 +31,56 @@ async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, PullCall, oneshot::
 }
 
 fn compiled(source: &str) -> RunPackage {
+    compiled_with(source, &[])
+}
+
+/// `source` compiled with each linked Tool, each named by its snapshot.
+fn compiled_with(source: &str, linked: &[(LinkedToolSource, LinkedSnapshot)]) -> RunPackage {
     let compiler = InProcessCompiler::new(coral_v8::IsolateLimits::defaults()).unwrap();
+    let sources: Vec<_> = linked.iter().map(|(source, _)| source.clone()).collect();
     let program = compiler
         .compile(
             TEST_COMPILATION_TIMEOUT,
             source,
-            &[],
+            &sources,
             &coral_v8::BuiltinTools::default(),
             None,
         )
         .unwrap();
-    package(program.javascript(), program.source_map())
+    RunPackage {
+        linked_snapshots: linked
+            .iter()
+            .map(|(_, snapshot)| snapshot.clone())
+            .collect(),
+        ..package(program.javascript(), program.source_map())
+    }
+}
+
+/// The Private Tool at `path`, linked as snapshot `tool_id`.
+fn private_tool(path: &str, tool_id: &str, source: &str) -> (LinkedToolSource, LinkedSnapshot) {
+    let segments = path.split('.').map(str::to_owned).collect();
+    let snapshot = LinkedSnapshot {
+        path: path.to_owned(),
+        tool_id: tool_id.to_owned(),
+        root: LinkedToolRoot::Private.into(),
+    };
+    (
+        LinkedToolSource::private(segments, source.to_owned()),
+        snapshot,
+    )
+}
+
+/// The Private Tool `notes.title`, snapshot `tool-7`, which reads an
+/// issue's title.
+fn notes_title() -> (LinkedToolSource, LinkedSnapshot) {
+    private_tool(
+        "notes.title",
+        "tool-7",
+        r"export default async function title({ id }: { id: number }) {
+  const issue = await coral.providers.tracker.issues.get({ id });
+  return issue.title;
+}",
+    )
 }
 
 /// Takes Run `run_id` and answers its Open with `package`, which loads.
@@ -137,6 +178,7 @@ return issue.id;"#;
             call_path,
             arguments_json,
             location,
+            parent: None,
         }) = kind
         else {
             panic!("expected an Invoke, got {kind:?}");
@@ -202,40 +244,183 @@ return issue.id;"#;
 }
 
 /// Catches: an Upstream Outcome that does not reach the Program as a
-/// catchable `ToolError`, or a host failure that does.
+/// catchable `ToolError`, a host failure that does, or a rejected Perform
+/// whose body runs.
 #[tokio::test]
-async fn an_invocation_result_settles_its_invoke_by_its_outcome() {
-    let source = r"try { return await coral.providers.tracker.issues.get({ id: 7 }); }
-catch (error) { return error.code; }";
+async fn an_invocation_result_settles_its_request_by_its_outcome() {
+    let invokes = compiled(
+        r"try { return await coral.providers.tracker.issues.get({ id: 7 }); }
+catch (error) { return error.code; }",
+    );
+    let performs = compiled_with(
+        r"try { return await coral.private.notes.title({ id: 7 }); }
+catch (error) { return error.code; }",
+        &[notes_title()],
+    );
+    let denied = CoralFailure {
+        code: "policy_denied".to_owned(),
+        message: "Policy denied the call".to_owned(),
+        trace_id: String::new(),
+        suggestions: Vec::new(),
+    };
     let upstream = UpstreamOutcome {
         code: "upstream_not_found".to_owned(),
         message: "The Tool's upstream answered 404".to_owned(),
         outcome_json: r#"{"status":404,"data":{},"metadata":{}}"#.to_owned(),
     };
-    let caught = finish(finish::Completion::ValueJson(
-        r#""upstream_not_found""#.to_owned(),
-    ));
-    for (case, outcome, end) in [
+    let caught = |code: &str| finish(finish::Completion::ValueJson(format!(r#""{code}""#)));
+    for (case, package, outcome, end) in [
         (
             "an Upstream Outcome",
+            &invokes,
             invocation_result::Outcome::UpstreamOutcome(upstream),
-            caught,
+            caught("upstream_not_found"),
         ),
         (
             "a host failure",
+            &invokes,
             invocation_result::Outcome::Fatal(Fatal {}),
             finish_end(FinishEnd::HostTerminated),
         ),
+        (
+            "a rejected Perform",
+            &performs,
+            invocation_result::Outcome::CoralFailure(denied),
+            caught("policy_denied"),
+        ),
     ] {
         let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
-        let mut run = started(&mut coral, compiled(source), None).await;
+        let mut run = started(&mut coral, package.clone(), None).await;
         let (number, kind) = next_request(&mut run).await;
-        assert!(
-            matches!((number, &kind), (1, request::Kind::Invoke(_))),
-            "{case}: {kind:?}"
-        );
+        assert_eq!(number, 1, "{case}: {kind:?}");
         run.send(result(1, 0, outcome)).await;
+        // The next request is the Program's end: a rejected body never ran.
         assert_eq!(next_request(&mut run).await, (2, end), "{case}");
+    }
+}
+
+/// Catches: a body call sent without its parent Perform or its Tool's call
+/// site, a Complete for another Perform, or a Complete's value that does not
+/// reach the caller.
+#[tokio::test]
+async fn a_private_tool_call_is_permitted_then_its_body_runs_and_completes() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    // `notes.loud` calls `notes.title`, whose body calls the tracker.
+    let loud = private_tool(
+        "notes.loud",
+        "tool-8",
+        r"export default async function loud({ id }: { id: number }) {
+  return (await coral.private.notes.title({ id })).toUpperCase();
+}",
+    );
+    let source = "return await coral.private.notes.loud({ id: 7 });";
+    let package = compiled_with(source, &[notes_title(), loud]);
+    let mut run = started(&mut coral, package, None).await;
+    let permitted = || invocation_result::Outcome::Permitted(Permitted {});
+    let (number, kind) = next_request(&mut run).await;
+    let request::Kind::Perform(perform) = kind else {
+        panic!("expected a Perform, got {kind:?}");
+    };
+    assert_eq!(
+        (
+            number,
+            perform.call_path.as_str(),
+            perform.arguments_json.as_str(),
+            perform.parent
+        ),
+        (1, "coral.private.notes.loud", r#"{"id":7}"#, None)
+    );
+    run.send(result(1, 0, permitted())).await;
+    let (number, kind) = next_request(&mut run).await;
+    let request::Kind::Perform(perform) = kind else {
+        panic!("expected a Perform, got {kind:?}");
+    };
+    let at = perform.location.map(|at| (at.root(), at.line, at.tool_id));
+    assert_eq!(
+        (number, perform.call_path.as_str(), perform.parent, at),
+        (
+            2,
+            "coral.private.notes.title",
+            Some(1),
+            Some((LinkedToolRoot::Private, 2, "tool-8".to_owned()))
+        )
+    );
+    run.send(result(2, 0, permitted())).await;
+    let invoke = request::Kind::Invoke(Invoke {
+        call_path: "coral.providers.tracker.issues.get".to_owned(),
+        arguments_json: r#"{"id":7}"#.to_owned(),
+        location: Some(Location {
+            tool_id: "tool-7".to_owned(),
+            line: 2,
+            column: 54,
+            root: LinkedToolRoot::Private.into(),
+        }),
+        parent: Some(2),
+    });
+    assert_eq!(next_request(&mut run).await, (3, invoke));
+    let issue = r#"{"id":7,"title":"Ship it"}"#.to_owned();
+    run.send(result(3, 26, invocation_result::Outcome::ResultJson(issue)))
+        .await;
+    let completes = |perform, json: &str| {
+        request::Kind::Complete(Complete {
+            perform,
+            outcome: Some(complete::Outcome::ReturnedJson(json.to_owned())),
+        })
+    };
+    assert_eq!(
+        next_request(&mut run).await,
+        (4, completes(2, r#""Ship it""#))
+    );
+    // The caller receives Coral's answer, not the body's return value.
+    let title = r#""Ship this""#.to_owned();
+    run.send(result(4, 0, invocation_result::Outcome::ResultJson(title)))
+        .await;
+    assert_eq!(
+        next_request(&mut run).await,
+        (5, completes(1, r#""SHIP THIS""#))
+    );
+    let value = r#""SHIP IT""#.to_owned();
+    run.send(result(
+        5,
+        0,
+        invocation_result::Outcome::ResultJson(value.clone()),
+    ))
+    .await;
+    assert_eq!(
+        next_request(&mut run).await,
+        (6, finish(finish::Completion::ValueJson(value)))
+    );
+}
+
+/// Catches: a permit taken as an Invoke's value, or a value taken as a
+/// Perform's permit, instead of closing the stream.
+#[tokio::test]
+async fn an_answer_of_the_wrong_kind_closes_the_stream() {
+    let cases = [
+        (
+            "a value for a Perform",
+            "return await coral.private.notes.title({ id: 7 });",
+            vec![notes_title()],
+            invocation_result::Outcome::ResultJson("1".to_owned()),
+        ),
+        (
+            "a permit for an Invoke",
+            "return await coral.providers.tracker.issues.get({ id: 7 });",
+            Vec::new(),
+            invocation_result::Outcome::Permitted(Permitted {}),
+        ),
+    ];
+    for (case, source, tools, answer) in cases {
+        let (mut coral, mut call, _retire) = linked(APPLIED_CAP_BYTES).await;
+        let package = compiled_with(source, &tools);
+        let mut run = started(&mut coral, package, None).await;
+        let (number, _kind) = next_request(&mut run).await;
+        run.send(result(number, 0, answer)).await;
+        // No Ended: the Run Executor closes the stream itself, maybe after
+        // the stopped Program's Finish. `next` fails on a stream that stays
+        // open.
+        while run.next().await.is_some() {}
+        assert_eq!(call.rooms.recv().await, Some(2), "{case}: the unit frees");
     }
 }
 

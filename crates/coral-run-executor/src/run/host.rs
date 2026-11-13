@@ -1,25 +1,32 @@
 //! The Program's host on a Run Executor. It numbers the Program's requests
 //! and sends them on the Run stream. It settles Emissions and Logs itself,
-//! and holds each Invoke until its `InvocationResult`.
+//! and holds each Invoke, Perform and Complete until its `InvocationResult`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use coral_v8::{
-    AuthoredLocation, AuthoredSource, ConsoleLevel, ProgramExecutionControl,
-    ProgramOutputHostError, ToolFuture, ToolHostError,
+    AuthoredLocation, AuthoredSource, ConsoleLevel, PermitFuture, ProgramExecutionControl,
+    ProgramOutputHostError, ToolBodyOutcome, ToolCalls, ToolCompletion, ToolFuture, ToolHostError,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
 use crate::link::HeldUnit;
 use crate::wire::v1::{
-    Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location, Log,
-    LogLevel, Request, RunRequest, Started, finish, invocation_result, request, run_request,
+    Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location,
+    Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete, finish,
+    invocation_result, request, run_request,
 };
 
-type Answer = oneshot::Sender<Result<String, ToolHostError>>;
+/// What Coral's answer settles for one request.
+enum Awaiting {
+    /// An Invoke's or a Complete's value, as native JSON.
+    Value(oneshot::Sender<Result<String, ToolHostError>>),
+    /// A Perform's permit.
+    Permit(oneshot::Sender<Result<(), ToolHostError>>),
+}
 
 /// One Run's Program host, shared by the Program's thread and its stream.
 pub(super) struct RunHost {
@@ -49,12 +56,13 @@ struct State {
     /// The Run Output Budget bytes counted.
     output: usize,
     /// Each request above the committed watermark, with its weight under
-    /// the Applied cap: its output bytes, which are zero for an Invoke.
+    /// the Applied cap: its output bytes, which are zero for a request Coral
+    /// answers.
     unconfirmed: BTreeMap<u64, usize>,
     /// The sum of `unconfirmed`'s weights.
     unconfirmed_bytes: usize,
-    /// Each Invoke that waits for its `InvocationResult`.
-    invocations: HashMap<u64, Answer>,
+    /// Each request that waits for its `InvocationResult`.
+    invocations: HashMap<u64, Awaiting>,
 }
 
 impl RunHost {
@@ -114,47 +122,71 @@ impl RunHost {
         self.changed.notify_all();
     }
 
-    /// Settles the Invoke `result` answers, and counts its bytes against the
-    /// Run Output Budget. `false` when it breaks the protocol: no outcome, or
-    /// no Invoke waits for it while the Program runs.
+    /// Settles the request `result` answers, and counts its bytes against
+    /// the Run Output Budget. `false` when it breaks the protocol: no
+    /// outcome, no request waits for it while the Program runs, a permit for
+    /// an Invoke or a Complete, or a value for a Perform.
     pub(super) fn invocation_result(&self, result: InvocationResult) -> bool {
-        let mut state = self.state();
-        let Some(outcome) = result.outcome else {
-            return false;
+        /// A successful answer, or the rejection any request takes.
+        enum Answer {
+            Value(String),
+            Permitted,
+            Rejected(ToolHostError),
+        }
+        let answer = match result.outcome {
+            None => return false,
+            Some(invocation_result::Outcome::ResultJson(json)) => Answer::Value(json),
+            Some(invocation_result::Outcome::Permitted(_)) => Answer::Permitted,
+            Some(invocation_result::Outcome::CoralFailure(rejection)) => {
+                Answer::Rejected(ToolHostError::Rejected {
+                    code: rejection.code.into(),
+                    message: rejection.message.into(),
+                    trace_id: Some(rejection.trace_id).filter(|id| !id.is_empty()),
+                    suggestions: rejection.suggestions,
+                })
+            }
+            Some(invocation_result::Outcome::UpstreamOutcome(upstream)) => {
+                Answer::Rejected(ToolHostError::Upstream {
+                    code: upstream.code.into(),
+                    message: upstream.message.into(),
+                    outcome_json: upstream.outcome_json,
+                })
+            }
+            Some(invocation_result::Outcome::Fatal(_)) => Answer::Rejected(ToolHostError::Fatal),
         };
-        let Some(answer) = state.invocations.remove(&result.number) else {
+        let mut state = self.state();
+        let Some(awaiting) = state.invocations.remove(&result.number) else {
             return state.stopped;
         };
+        if matches!(
+            (&awaiting, &answer),
+            (Awaiting::Value(_), Answer::Permitted) | (Awaiting::Permit(_), Answer::Value(_))
+        ) {
+            return false;
+        }
         let bytes = usize::try_from(result.bytes).unwrap_or(usize::MAX);
         let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
         state.over_budget |= over_budget;
         drop(state);
-        let settled = match outcome {
-            _ if over_budget => {
-                self.stop();
-                Err(ToolHostError::Fatal)
-            }
-            invocation_result::Outcome::ResultJson(json) => Ok(json),
-            invocation_result::Outcome::CoralFailure(rejection) => Err(ToolHostError::Rejected {
-                code: rejection.code.into(),
-                message: rejection.message.into(),
-                trace_id: Some(rejection.trace_id).filter(|id| !id.is_empty()),
-                suggestions: rejection.suggestions,
-            }),
-            invocation_result::Outcome::UpstreamOutcome(upstream) => Err(ToolHostError::Upstream {
-                code: upstream.code.into(),
-                message: upstream.message.into(),
-                outcome_json: upstream.outcome_json,
-            }),
-            invocation_result::Outcome::Fatal(_) => {
-                // The Program may be running JavaScript that never polls
-                // this Tool.
-                self.stop();
-                Err(ToolHostError::Fatal)
-            }
+        let answer = if over_budget {
+            Answer::Rejected(ToolHostError::Fatal)
+        } else {
+            answer
         };
-        drop(answer.send(settled));
+        if matches!(answer, Answer::Rejected(ToolHostError::Fatal)) {
+            // The Program may be running JavaScript that never polls this
+            // Tool.
+            self.stop();
+        }
+        match (awaiting, answer) {
+            (Awaiting::Value(sender), Answer::Value(json)) => drop(sender.send(Ok(json))),
+            (Awaiting::Permit(sender), Answer::Permitted) => drop(sender.send(Ok(()))),
+            (Awaiting::Value(sender), Answer::Rejected(error)) => drop(sender.send(Err(error))),
+            (Awaiting::Permit(sender), Answer::Rejected(error)) => drop(sender.send(Err(error))),
+            // Refused above.
+            (Awaiting::Value(_), Answer::Permitted) | (Awaiting::Permit(_), Answer::Value(_)) => {}
+        }
         true
     }
 
@@ -187,29 +219,87 @@ impl RunHost {
 
     /// Numbers and sends one of the Program's requests once no more than the
     /// Applied cap is above the committed watermark, and counts its output
-    /// `bytes` against the Run Output Budget and the Applied cap. `false` when
-    /// the Program must stop instead.
-    fn send(&self, kind: request::Kind, bytes: usize, answer: Option<Answer>) -> bool {
+    /// `bytes` against the Run Output Budget and the Applied cap. Its number,
+    /// or `None` when the Program must stop instead.
+    fn send(&self, kind: request::Kind, bytes: usize, awaiting: Option<Awaiting>) -> Option<u64> {
         let mut state = self.below_applied_cap();
         if state.stopped {
-            return false;
+            return None;
         }
         if !self.fits(&state, bytes) {
             state.over_budget = true;
             drop(state);
             self.stop();
-            return false;
+            return None;
         }
         state.output = state.output.saturating_add(bytes);
         let number = state.last.saturating_add(1);
         state.last = number;
         state.unconfirmed.insert(number, bytes);
         state.unconfirmed_bytes = state.unconfirmed_bytes.saturating_add(bytes);
-        if let Some(answer) = answer {
-            state.invocations.insert(number, answer);
+        if let Some(awaiting) = awaiting {
+            state.invocations.insert(number, awaiting);
         }
         self.transmit(number, kind);
-        true
+        Some(number)
+    }
+
+    /// Sends `kind`, an Invoke or a Complete, at once, and settles with the
+    /// value Coral answers.
+    fn value(&self, kind: request::Kind) -> ToolFuture {
+        let (answer, answered) = oneshot::channel();
+        let sent = self.send(kind, 0, Some(Awaiting::Value(answer)));
+        Box::pin(async move {
+            sent.ok_or(ToolHostError::Fatal)?;
+            answered.await.unwrap_or(Err(ToolHostError::Fatal))
+        })
+    }
+
+    /// [`coral_v8::ProgramHost::invoke`] for a call that the body of
+    /// permitted Perform `parent` makes, or the Program's own when `None`.
+    fn invoke_as(
+        &self,
+        parent: Option<u64>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> ToolFuture {
+        self.value(request::Kind::Invoke(Invoke {
+            call_path,
+            arguments_json,
+            location: self.location(location),
+            parent,
+        }))
+    }
+
+    /// [`coral_v8::ProgramHost::perform`] for a call that the body of
+    /// permitted Perform `parent` makes, or the Program's own when `None`.
+    fn perform_as(
+        self: &Arc<Self>,
+        parent: Option<u64>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> PermitFuture {
+        let (answer, answered) = oneshot::channel();
+        let perform = Perform {
+            call_path,
+            arguments_json,
+            location: self.location(location),
+            parent,
+        };
+        let sent = self.send(
+            request::Kind::Perform(perform),
+            0,
+            Some(Awaiting::Permit(answer)),
+        );
+        let host = self.clone();
+        Box::pin(async move {
+            let perform = sent.ok_or(ToolHostError::Fatal)?;
+            answered.await.unwrap_or(Err(ToolHostError::Fatal))?;
+            Ok(Box::new(Performed(Arc::new(BodyCalls { host, perform })))
+                as Box<dyn ToolCompletion>)
+        })
     }
 
     /// The state once no more than the Applied cap is above the committed
@@ -288,11 +378,9 @@ impl RunHost {
     }
 
     fn output(&self, kind: request::Kind, bytes: usize) -> Result<(), ProgramOutputHostError> {
-        if self.send(kind, bytes, None) {
-            Ok(())
-        } else {
-            Err(ProgramOutputHostError::Fatal)
-        }
+        self.send(kind, bytes, None)
+            .map(|_number| ())
+            .ok_or(ProgramOutputHostError::Fatal)
     }
 
     /// How the Program ended, as `Finish` carries it. The codes are the Run
@@ -370,19 +458,16 @@ impl coral_v8::ProgramHost for RunHost {
         arguments_json: String,
         location: Option<AuthoredLocation>,
     ) -> ToolFuture {
-        let (answer, answered) = oneshot::channel();
-        let invoke = request::Kind::Invoke(Invoke {
-            call_path,
-            arguments_json,
-            location: self.location(location),
-        });
-        let sent = self.send(invoke, 0, Some(answer));
-        Box::pin(async move {
-            if !sent {
-                return Err(ToolHostError::Fatal);
-            }
-            answered.await.unwrap_or(Err(ToolHostError::Fatal))
-        })
+        self.invoke_as(None, call_path, arguments_json, location)
+    }
+
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> PermitFuture {
+        self.perform_as(None, call_path, arguments_json, location)
     }
 
     fn emit(
@@ -419,5 +504,66 @@ impl coral_v8::ProgramHost for RunHost {
             location: self.location(location),
         });
         self.output(log, message.len())
+    }
+}
+
+/// The Tool calls the body of one permitted Perform makes, each its child.
+struct BodyCalls {
+    host: Arc<RunHost>,
+    /// The Perform's request number.
+    perform: u64,
+}
+
+impl ToolCalls for BodyCalls {
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> ToolFuture {
+        self.host
+            .invoke_as(Some(self.perform), call_path, arguments_json, location)
+    }
+
+    fn perform(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> PermitFuture {
+        self.host
+            .perform_as(Some(self.perform), call_path, arguments_json, location)
+    }
+}
+
+/// Completes one permitted Perform. One the Program drops uncompleted sends
+/// nothing: its `Finish` tells Coral the body never ended.
+struct Performed(Arc<BodyCalls>);
+
+impl ToolCompletion for Performed {
+    fn body_calls(&self) -> Arc<dyn ToolCalls> {
+        self.0.clone()
+    }
+
+    fn complete(self: Box<Self>, outcome: ToolBodyOutcome) -> ToolFuture {
+        let outcome = match outcome {
+            ToolBodyOutcome::Returned(json) => complete::Outcome::ReturnedJson(json),
+            ToolBodyOutcome::NotData { field, reason } => {
+                complete::Outcome::NotData(NotData { field, reason })
+            }
+            ToolBodyOutcome::Threw {
+                message,
+                tool_error,
+            } => complete::Outcome::Threw(Threw {
+                message,
+                tool_error,
+            }),
+        };
+        // Sent here, on the Program's thread, so the body has ended before
+        // any later call of its leftover work.
+        self.0.host.value(request::Kind::Complete(Complete {
+            perform: self.0.perform,
+            outcome: Some(outcome),
+        }))
     }
 }

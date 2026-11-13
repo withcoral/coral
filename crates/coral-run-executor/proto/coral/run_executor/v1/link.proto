@@ -538,6 +538,11 @@ message Request {
     Log log = 4;
     // The Program's end, the last request.
     Finish finish = 5;
+    // A call to a Private or Shared Tool, which InvocationResult answers.
+    Perform perform = 6;
+    // How the body of a permitted Perform ended, which InvocationResult
+    // answers.
+    Complete complete = 7;
   }
 }
 
@@ -549,6 +554,61 @@ message Invoke {
   string arguments_json = 2;
   // The authored call site. Unset: none.
   Location location = 3;
+  // The number of the permitted Perform whose body makes the call: its
+  // parent Invocation. Unset: the Program's own call, or one a module's
+  // top-level initialization makes.
+  optional uint64 parent = 4;
+}
+
+// One call to a Private or Shared Tool, which Coral performs by running its
+// body in the Program. Its InvocationResult is `permitted` when the body may
+// run; a rejection settles the call, and the body never runs. A permitted
+// Perform with no Complete before Finish was abandoned: the Program ended
+// while its body still ran.
+message Perform {
+  // The Tool's complete Call Path, under coral.private or coral.shared.
+  string call_path = 1;
+  // The one object it was called with, as native JSON.
+  string arguments_json = 2;
+  // The authored call site. Unset: none.
+  Location location = 3;
+  // The number of the permitted Perform whose body makes the call. Unset:
+  // the Program's own call, or one a module's top-level initialization
+  // makes.
+  optional uint64 parent = 4;
+}
+
+// How the body of one permitted Perform ended. Its InvocationResult carries
+// the value the call's caller receives, or a rejection. A body that threw a
+// Tool Error rejects its caller with that error whatever rejection answers.
+message Complete {
+  // The Perform's request number.
+  uint64 perform = 1;
+  // How the body ended.
+  oneof outcome {
+    // It returned this value, as native JSON. `undefined` is `null`.
+    string returned_json = 2;
+    // It returned a value that is not data.
+    NotData not_data = 3;
+    // It threw.
+    Threw threw = 4;
+  }
+}
+
+// A body's return value that is not data.
+message NotData {
+  // Where the value is, as a path from `result`.
+  string field = 1;
+  // Why it is not data. Empty: no reason given.
+  string reason = 2;
+}
+
+// A body that threw.
+message Threw {
+  // The thrown Error's message, or the thrown value as text.
+  string message = 1;
+  // The code of the Tool Error the body threw. Unset: it threw no Tool Error.
+  optional string tool_error = 2;
 }
 
 // One Program Emission.
@@ -637,9 +697,9 @@ enum FinishEnd {
   FINISH_END_DEADLINE_REACHED = 6;
 }
 
-// The answer to one Invoke, at Applied.
+// The answer to one Invoke, Perform or Complete, at Applied.
 message InvocationResult {
-  // The Invoke's request number.
+  // The request number it answers.
   uint64 number = 1;
   // The Run Output Budget bytes Coral counted for the result.
   uint64 bytes = 2;
@@ -653,8 +713,13 @@ message InvocationResult {
     UpstreamOutcome upstream_outcome = 5;
     // A host failure: the Program stops without a catchable result.
     Fatal fatal = 6;
+    // The Perform is permitted, and its body runs. Only a Perform gets it.
+    Permitted permitted = 7;
   }
 }
+
+// A Perform's body may run.
+message Permitted {}
 
 // A Coral Failure the Program catches as a `ToolError`.
 message CoralFailure {

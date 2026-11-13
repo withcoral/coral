@@ -687,7 +687,7 @@ pub struct Request {
     #[prost(uint64, tag = "1")]
     pub number: u64,
     /// What the Program asks.
-    #[prost(oneof = "request::Kind", tags = "2, 3, 4, 5")]
+    #[prost(oneof = "request::Kind", tags = "2, 3, 4, 5, 6, 7")]
     pub kind: ::core::option::Option<request::Kind>,
 }
 /// Nested message and enum types in `Request`.
@@ -707,6 +707,13 @@ pub mod request {
         /// The Program's end, the last request.
         #[prost(message, tag = "5")]
         Finish(super::Finish),
+        /// A call to a Private or Shared Tool, which InvocationResult answers.
+        #[prost(message, tag = "6")]
+        Perform(super::Perform),
+        /// How the body of a permitted Perform ended, which InvocationResult
+        /// answers.
+        #[prost(message, tag = "7")]
+        Complete(super::Complete),
     }
 }
 /// One Tool Invocation.
@@ -721,6 +728,81 @@ pub struct Invoke {
     /// The authored call site. Unset: none.
     #[prost(message, optional, tag = "3")]
     pub location: ::core::option::Option<Location>,
+    /// The number of the permitted Perform whose body makes the call: its
+    /// parent Invocation. Unset: the Program's own call, or one a module's
+    /// top-level initialization makes.
+    #[prost(uint64, optional, tag = "4")]
+    pub parent: ::core::option::Option<u64>,
+}
+/// One call to a Private or Shared Tool, which Coral performs by running its
+/// body in the Program. Its InvocationResult is `permitted` when the body may
+/// run; a rejection settles the call, and the body never runs. A permitted
+/// Perform with no Complete before Finish was abandoned: the Program ended
+/// while its body still ran.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Perform {
+    /// The Tool's complete Call Path, under coral.private or coral.shared.
+    #[prost(string, tag = "1")]
+    pub call_path: ::prost::alloc::string::String,
+    /// The one object it was called with, as native JSON.
+    #[prost(string, tag = "2")]
+    pub arguments_json: ::prost::alloc::string::String,
+    /// The authored call site. Unset: none.
+    #[prost(message, optional, tag = "3")]
+    pub location: ::core::option::Option<Location>,
+    /// The number of the permitted Perform whose body makes the call. Unset:
+    /// the Program's own call, or one a module's top-level initialization
+    /// makes.
+    #[prost(uint64, optional, tag = "4")]
+    pub parent: ::core::option::Option<u64>,
+}
+/// How the body of one permitted Perform ended. Its InvocationResult carries
+/// the value the call's caller receives, or a rejection. A body that threw a
+/// Tool Error rejects its caller with that error whatever rejection answers.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Complete {
+    /// The Perform's request number.
+    #[prost(uint64, tag = "1")]
+    pub perform: u64,
+    /// How the body ended.
+    #[prost(oneof = "complete::Outcome", tags = "2, 3, 4")]
+    pub outcome: ::core::option::Option<complete::Outcome>,
+}
+/// Nested message and enum types in `Complete`.
+pub mod complete {
+    /// How the body ended.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Outcome {
+        /// It returned this value, as native JSON. `undefined` is `null`.
+        #[prost(string, tag = "2")]
+        ReturnedJson(::prost::alloc::string::String),
+        /// It returned a value that is not data.
+        #[prost(message, tag = "3")]
+        NotData(super::NotData),
+        /// It threw.
+        #[prost(message, tag = "4")]
+        Threw(super::Threw),
+    }
+}
+/// A body's return value that is not data.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NotData {
+    /// Where the value is, as a path from `result`.
+    #[prost(string, tag = "1")]
+    pub field: ::prost::alloc::string::String,
+    /// Why it is not data. Empty: no reason given.
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+/// A body that threw.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Threw {
+    /// The thrown Error's message, or the thrown value as text.
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
+    /// The code of the Tool Error the body threw. Unset: it threw no Tool Error.
+    #[prost(string, optional, tag = "2")]
+    pub tool_error: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// One Program Emission.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -798,17 +880,17 @@ pub struct Failure {
     #[prost(string, tag = "3")]
     pub error_json: ::prost::alloc::string::String,
 }
-/// The answer to one Invoke, at Applied.
+/// The answer to one Invoke, Perform or Complete, at Applied.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InvocationResult {
-    /// The Invoke's request number.
+    /// The request number it answers.
     #[prost(uint64, tag = "1")]
     pub number: u64,
     /// The Run Output Budget bytes Coral counted for the result.
     #[prost(uint64, tag = "2")]
     pub bytes: u64,
     /// The outcome.
-    #[prost(oneof = "invocation_result::Outcome", tags = "3, 4, 5, 6")]
+    #[prost(oneof = "invocation_result::Outcome", tags = "3, 4, 5, 6, 7")]
     pub outcome: ::core::option::Option<invocation_result::Outcome>,
 }
 /// Nested message and enum types in `InvocationResult`.
@@ -828,8 +910,14 @@ pub mod invocation_result {
         /// A host failure: the Program stops without a catchable result.
         #[prost(message, tag = "6")]
         Fatal(super::Fatal),
+        /// The Perform is permitted, and its body runs. Only a Perform gets it.
+        #[prost(message, tag = "7")]
+        Permitted(super::Permitted),
     }
 }
+/// A Perform's body may run.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Permitted {}
 /// A Coral Failure the Program catches as a `ToolError`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CoralFailure {

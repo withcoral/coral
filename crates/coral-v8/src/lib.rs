@@ -251,7 +251,7 @@ pub trait ProgramHost: Send + Sync {
 
     /// Starts one call to a Tool that Coral performs by running its body in
     /// this Program, by complete Call Path and native-JSON arguments: the
-    /// array of the values it was called with. It settles once the call is
+    /// one object it was called with. It settles once the call is
     /// permitted, and only then does the body run; its outcome completes the
     /// call through the [`ToolCompletion`] this returns.
     ///
