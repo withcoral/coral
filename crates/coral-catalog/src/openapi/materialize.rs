@@ -1255,8 +1255,7 @@ pub(super) fn validate_credential_contract(
         if !compatible {
             let previous = first
                 .as_ref()
-                .map(|first| first.slots.as_slice())
-                .unwrap_or_default();
+                .map_or_default(|first| first.slots.as_slice());
             return Err(diagnostic(
                 "credentials_not_supported",
                 "the Provider's Tools require different credential contracts",
@@ -1322,8 +1321,7 @@ impl FirstSelection {
         let scheme_name = self
             .slots
             .first()
-            .map(|slot| slot.scheme_name().to_owned())
-            .unwrap_or_default();
+            .map_or_default(|slot| slot.scheme_name().to_owned());
         vec![crate::HttpCredentialSlot::new(
             scheme_name,
             std::sync::Arc::new(
@@ -1918,7 +1916,7 @@ fn optional_safe_string(
 }
 
 fn validate_media_type(value: &str) -> Result<(), CatalogDiagnostic> {
-    let essence = value.split(';').next().map(str::trim).unwrap_or_default();
+    let essence = value.split(';').next().map_or_default(str::trim);
     let mut parts = essence.split('/');
     let valid = parts
         .next()
@@ -1960,13 +1958,12 @@ fn operation_presentation(operation: &Map<String, Value>, summary: &str) -> Tool
         .get("tags")
         .and_then(Value::as_array)
         .filter(|tags| tags.len() <= 64)
-        .map(|tags| {
+        .map_or_default(|tags| {
             tags.iter()
                 .map(|tag| safe_presentation_text(Some(tag)).map(str::to_string))
                 .collect::<Option<Vec<_>>>()
                 .unwrap_or_default()
-        })
-        .unwrap_or_default();
+        });
     let guidance = operation
         .get("externalDocs")
         .and_then(Value::as_object)
@@ -2006,8 +2003,7 @@ fn media_type_essence(media_type: &str) -> String {
     media_type
         .split(';')
         .next()
-        .map(str::trim)
-        .unwrap_or_default()
+        .map_or_default(str::trim)
         .to_ascii_lowercase()
 }
 

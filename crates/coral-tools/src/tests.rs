@@ -1294,12 +1294,12 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
             .await,
         Err(Error::NotFound(AuthoredToolKind::Private))
     ));
-    assert!(
+    assert_eq!(
         blocked_private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
-            .expect("list rejected authoring evidence")
-            .is_empty()
+            .expect("list rejected authoring evidence"),
+        [] as [crate::AdministrativeLifecycleEvent; 0]
     );
 }
 
@@ -1596,13 +1596,13 @@ async fn private_tool_save_rejects_missing_and_computed_dependencies_atomically(
             .await,
         Err(Error::NotFound(AuthoredToolKind::Private))
     ));
-    assert!(
+    assert_eq!(
         fixture
             .private_tools
             .list_lifecycle_events(&principal, &workspace_id)
             .await
-            .expect("list lifecycle evidence")
-            .is_empty()
+            .expect("list lifecycle evidence"),
+        [] as [crate::AdministrativeLifecycleEvent; 0]
     );
 }
 

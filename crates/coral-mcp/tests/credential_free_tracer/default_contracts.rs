@@ -56,11 +56,12 @@ return { exact: exact.data.descriptions[0], pages };"#,
         .await;
     let found = &found;
     let exact = &found["exact"];
-    assert!(
-        !exact["diagnostics"]
+    assert_ne!(
+        exact["diagnostics"]
             .as_array()
             .expect("advisory diagnostics")
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
     assert!(
         exact["source"]

@@ -1754,7 +1754,7 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
     assert!(!hits.is_empty(), "{found}");
     for hit in hits {
         let [call_path, signature_line, description_snippet] =
-            hit.as_array().map(Vec::as_slice).unwrap_or_default()
+            hit.as_array().map_or_default(Vec::as_slice)
         else {
             panic!("three fields of a hit: {hit}");
         };

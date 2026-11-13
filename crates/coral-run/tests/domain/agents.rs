@@ -47,13 +47,13 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         .delete_agent(&context, &workspace, agent.principal().id())
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         fixture
             .workspaces
             .list_agents(context.actor(), &workspace)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_workspace::Agent; 0]
     );
     assert!(matches!(
         fixture

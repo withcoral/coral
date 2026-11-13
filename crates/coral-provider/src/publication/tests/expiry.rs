@@ -80,12 +80,12 @@ async fn account_grant_expiring_during_materialization_is_not_promoted() {
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(result.diagnostic().unwrap().code(), "setup_expired");
     assert!(result.published_provider().is_none());
-    assert!(
+    assert_eq!(
         providers
             .inspect_providers(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     let events = providers
         .list_lifecycle_events(&actor, workspace.id())

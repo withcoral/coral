@@ -60,8 +60,7 @@ fn tool_access(parent: &str, listed: &coral_policy::ListedTool) -> wire::ToolAcc
         agent: listed
             .agent
             .as_ref()
-            .map(|agent| format!("{workspace}/agents/{agent}"))
-            .unwrap_or_default(),
+            .map_or_default(|agent| format!("{workspace}/agents/{agent}")),
     }
 }
 impl GrpcServices {

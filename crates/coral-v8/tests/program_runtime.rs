@@ -106,7 +106,7 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
         )
         .expect("prepare a module that calls a Shared Tool");
     assert_eq!(reference_paths(module.shared_references()), ["mail.send"]);
-    assert!(module.references().is_empty());
+    assert_eq!(module.references(), []);
     assert_eq!(module.tools().called_paths(), ["coral.providers.demo.get"]);
     assert_eq!(
         module.tools().runtime_built_paths(),
@@ -493,21 +493,21 @@ fn private_tool_reference_analysis_is_static_and_runtime_only() {
         "function erased(value = coral.private.types.overloadOnly()): void; export default function compose() { return 42; }",
         )
         .expect("ignore an erased overload declaration");
-    assert!(erased_overload.is_empty());
+    assert_eq!(erased_overload, [] as [coral_v8::LinkedToolReference; 0]);
 
     let shadowed_global = program_private_tools(
         &compiler,
         "const globalThis = { coral: { private: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
         )
         .expect("ignore a local globalThis binding");
-    assert!(shadowed_global.is_empty());
+    assert_eq!(shadowed_global, [] as [coral_v8::LinkedToolReference; 0]);
 
     let shadowed = compiler
         .prepare_authored_tool(compilation_deadline(),
             "export default function local(coral: { private: { local: { value(): number } } }): number { return coral.private.local.value(); }",
         )
         .expect("prepare a callable with a local coral parameter");
-    assert!(shadowed.references().is_empty());
+    assert_eq!(shadowed.references(), []);
 
     for source in [
         "const key = 'one'; return coral.private.alpha[key]();",
@@ -548,7 +548,7 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
     let source = "type __coralModel = number; const __coralValue: __coralModel = 1; let global = globalThis; return global[\"JSON\"].stringify(__coralValue);";
     let ordinary_globals = program_private_tools(&compiler, source)
         .expect("ordinary globals and local compiler-prefix names remain available");
-    assert!(ordinary_globals.is_empty());
+    assert_eq!(ordinary_globals, [] as [coral_v8::LinkedToolReference; 0]);
     compiler
         .compile(compilation_deadline(), source)
         .expect("compile ordinary globals and local compiler-prefix names");

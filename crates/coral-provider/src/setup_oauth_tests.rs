@@ -685,7 +685,10 @@ async fn transient_discovery_failure_after_consent_retries_without_re_consent() 
         )
         .await
         .unwrap();
-    assert!(after_rename.errors.is_empty());
+    assert_eq!(
+        after_rename.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(after_rename.configuration_confirmed);
     assert_eq!(
         harness
@@ -1045,7 +1048,7 @@ async fn a_scope_challenge_during_discovery_returns_to_authorization_with_the_ne
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(confirmed.errors, []);
     // Nothing is re-requested automatically; confirmation precedes fresh consent.
     assert_eq!(upstream.knobs.tokens.load(Ordering::SeqCst), 1);
     upstream.knobs.demand_admin.store(false, Ordering::SeqCst);
@@ -2670,7 +2673,7 @@ async fn a_rejected_code_exchange_seals_nothing_and_the_setup_restarts() {
     );
     // `authorized` is live only over sealed material, so nothing was sealed.
     assert!(!authentication.authorized);
-    assert!(authentication.granted_scope.is_empty());
+    assert_eq!(authentication.granted_scope, "");
     assert_eq!(
         harness
             .providers
@@ -3188,7 +3191,10 @@ async fn anonymous_catalog_discovery_still_inspects_available_oauth_metadata() {
         .confirm_setup_configuration(&context, &scope, setup.id(), review.revision, values)
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(
         !confirmed.discovery_authorization_required,
         "caller Add does not need authorization for an already public catalog"
@@ -3310,7 +3316,10 @@ async fn automatic_public_client_configuration_is_durable_before_account_consent
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let policy = confirmed
         .confirmed
         .as_ref()
@@ -3700,7 +3709,10 @@ async fn confidential_application_lifecycle(organization: bool) {
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let mut invalid = confirmed.confirmed.clone().unwrap();
     let Some(AuthenticationConfiguration::OAuthAuthorizationCode { token_url, .. }) =
         &mut invalid.authentication
@@ -3731,7 +3743,10 @@ async fn confidential_application_lifecycle(organization: bool) {
         )
         .await
         .unwrap();
-    assert!(!rejected.errors.is_empty());
+    assert_ne!(
+        rejected.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(rejected.revision, confirmed.revision);
     assert_eq!(rejected.confirmed, confirmed.confirmed);
     let restarted = harness.restarted_accounts();
@@ -3840,7 +3855,10 @@ async fn confidential_application_lifecycle(organization: bool) {
             )
             .await
             .unwrap();
-        assert!(confirmed.errors.is_empty());
+        assert_eq!(
+            confirmed.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         harness
             .accounts
             .cancel_setup(&context, &owner, update.id())
@@ -4297,7 +4315,10 @@ async fn rotation_preserves_consent_but_contract_edits_cancel_pending_and_dispat
         )
         .await
         .unwrap();
-    assert!(configured.errors.is_empty());
+    assert_eq!(
+        configured.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let published = harness
         .providers
         .publish_workspace_provider(
@@ -4649,7 +4670,10 @@ async fn configure_publication_application(
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     confirmed.revision
 }
 

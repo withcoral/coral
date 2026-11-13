@@ -1107,15 +1107,15 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                     .unwrap(),
                 before.3
             );
-            assert!(
+            assert_eq!(
                 private_tools
                     .list_lifecycle_events(
                         &AuthenticatedPrincipal::user(owner.clone()),
                         workspace.id()
                     )
                     .await
-                    .unwrap()
-                    .is_empty()
+                    .unwrap(),
+                [] as [coral_tools::AdministrativeLifecycleEvent; 0]
             );
         }
         assert_eq!(
@@ -1154,12 +1154,12 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
             )
             .await
             .unwrap();
-        assert!(
+        assert_eq!(
             private_tools
                 .list_lifecycle_events(&AuthenticatedPrincipal::user(owner.clone()), workspace.id())
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [coral_tools::AdministrativeLifecycleEvent; 0]
         );
     }
     lifecycle
@@ -1472,12 +1472,12 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
             coral_provider::account::AuthorizationState::Canceled
         );
     }
-    assert!(
+    assert_eq!(
         workspaces
             .list_agents(&owner, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_workspace::Agent; 0]
     );
 }
 

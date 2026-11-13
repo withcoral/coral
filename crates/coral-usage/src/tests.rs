@@ -629,13 +629,19 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_counts_from_then() {
         .set_sharing(&fixture.owner, false, at(9, 12))
         .await
         .expect("off");
-    assert!(fixture.reports().await.is_empty());
+    assert_eq!(
+        fixture.reports().await,
+        [] as [(std::string::String, std::option::Option<i64>); 0]
+    );
 
     usage
         .make_due_reports(at(12, 12))
         .await
         .expect("reports while off");
-    assert!(fixture.reports().await.is_empty());
+    assert_eq!(
+        fixture.reports().await,
+        [] as [(std::string::String, std::option::Option<i64>); 0]
+    );
 
     usage
         .set_sharing(&fixture.owner, true, at(12, 12))

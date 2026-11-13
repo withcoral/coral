@@ -882,7 +882,10 @@ async fn configuration_review_precedes_credentials_and_refuses_early_authorizati
     assert!(review.discovery_authorization_required);
     assert!(!review.automatic_client_available);
     // No route suits a configuration nobody has confirmed.
-    assert!(setup.allowed_credential_routes.is_empty());
+    assert_eq!(
+        setup.allowed_credential_routes,
+        [] as [coral_grpc::coral::management::v1::CredentialRoute; 0]
+    );
     assert!(review.issuer.is_none());
     assert!(review.resource.is_none());
     let refused = setups
@@ -987,7 +990,10 @@ async fn update_projects_saved_differences_and_requires_exact_interruption_accep
     assert!(review.updating);
     assert!(!review.configuration_confirmed);
     assert_eq!(review.interrupts_access, None);
-    assert!(!review.differences.is_empty());
+    assert_ne!(
+        review.differences,
+        [] as [coral_grpc::coral::management::v1::ProviderConfigurationDifference; 0]
+    );
     let mut choices = review.confirmed.clone().unwrap();
     assert_eq!(choices.authentication, Some(Authentication::Bearer(())));
     let compatible = setups
@@ -1180,7 +1186,7 @@ async fn mcp_url_with_a_discovery_credential_publishes_a_fixed_route_without_ech
         management::CredentialMethod::Bearer
     );
     assert!(setup.authorized);
-    assert!(!setup.provisional_grant_id.is_empty());
+    assert_ne!(setup.provisional_grant_id, "");
     assert!(setup.credential_expire_time.is_some());
     assert!(!format!("{setup:?}").contains(TOKEN));
     let mut providers = f.providers();
@@ -1288,7 +1294,7 @@ async fn workspace_owner_publishes_with_explicit_shared_or_self_account_retentio
             .unwrap()
             .into_inner();
         assert!(authorized.authorized);
-        assert!(!authorized.provisional_grant_id.is_empty());
+        assert_ne!(authorized.provisional_grant_id, "");
         assert!(!format!("{authorized:?}").contains(TOKEN));
         let publication = f
             .providers()
@@ -1394,7 +1400,7 @@ async fn concurrent_secret_authorizations_return_their_own_grants() {
     while let Some(result) = requests.join_next().await {
         let receipt = result.unwrap();
         assert!(receipt.authorized);
-        assert!(!receipt.provisional_grant_id.is_empty());
+        assert_ne!(receipt.provisional_grant_id, "");
         assert!(
             grants.insert(receipt.provisional_grant_id),
             "a command must not substitute a concurrent command's grant during response inspection"
@@ -1572,7 +1578,7 @@ async fn tool_reads_project_the_catalog_and_bound_their_pages() {
         .into_inner();
     let tool_name = format!("{parent}/tools/Z2V0Rm9yZWNhc3Q");
     assert_eq!(tool.name, tool_name);
-    assert!(!tool.summary.is_empty());
+    assert_ne!(tool.summary, "");
     let missing = f
         .providers()
         .get_tool(request(
@@ -2064,7 +2070,7 @@ async fn provider_pages_round_trip_and_bind_their_token() {
         panic!("one Provider per page: {second:?}")
     };
     assert!(one.name < two.name, "name order without repeats");
-    assert!(second.next_page_token.is_empty());
+    assert_eq!(second.next_page_token, "");
     let foreign = list(&f.token(&f.member, "reef"), first.next_page_token)
         .await
         .unwrap_err();
@@ -2113,7 +2119,7 @@ async fn list_tools_projects_each_tool() {
         tool.description,
         "Get the **daily forecast**.\n\nResults use the location's time zone."
     );
-    assert!(page.next_page_token.is_empty());
+    assert_eq!(page.next_page_token, "");
 }
 
 #[tokio::test]
@@ -2181,7 +2187,7 @@ async fn an_icon_is_set_read_and_deleted_through_its_provider() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
     let provider = published_weather(&f, &token).await;
-    assert!(provider.icon_digest.is_empty());
+    assert_eq!(provider.icon_digest, "");
     let mut providers = f.providers();
     let get = || management::GetProviderIconRequest {
         name: provider.name.clone(),
@@ -2225,7 +2231,7 @@ async fn an_icon_is_set_read_and_deleted_through_its_provider() {
         .await
         .unwrap()
         .into_inner();
-    assert!(!set.icon_digest.is_empty());
+    assert_ne!(set.icon_digest, "");
     let icon = providers
         .get_provider_icon(request(get(), &token, "reef"))
         .await
@@ -2252,7 +2258,7 @@ async fn an_icon_is_set_read_and_deleted_through_its_provider() {
         .await
         .unwrap()
         .into_inner();
-    assert!(deleted.icon_digest.is_empty());
+    assert_eq!(deleted.icon_digest, "");
     let gone = providers
         .get_provider_icon(request(get(), &token, "reef"))
         .await
@@ -2407,7 +2413,7 @@ async fn workspace_providers_are_independent_and_require_exact_scope_and_owner_m
         duplicate.outcome(),
         management::ProviderPublicationOutcome::Failed
     );
-    assert!(duplicate.provider.is_empty());
+    assert_eq!(duplicate.provider, "");
     assert_eq!(
         duplicate.diagnostic.unwrap().code,
         "provider_namespace_conflict"
@@ -2430,7 +2436,7 @@ async fn workspace_providers_are_independent_and_require_exact_scope_and_owner_m
     let provider = &visible.providers[0];
     assert_eq!(provider.name, local.provider);
     assert_eq!(provider.namespace, "weather");
-    assert!(provider.blockers.is_empty());
+    assert_eq!(provider.blockers, [] as [i32; 0]);
 
     // Even a Workspace Owner cannot address an existing ID through another Workspace.
     let misaddressed = format!(
@@ -2775,7 +2781,7 @@ async fn oauth_challenge_setup_completes_through_the_contract_without_echoing_se
     assert_eq!(completed.state(), management::ProviderSetupState::Ready);
     assert!(completed.authorized);
     assert_eq!(completed.granted_scope, "read");
-    assert!(!completed.provisional_grant_id.is_empty());
+    assert_ne!(completed.provisional_grant_id, "");
     assert_eq!(
         completed.authorization.as_ref().unwrap().state(),
         management::SetupAuthorizationState::Succeeded
@@ -3214,7 +3220,7 @@ async fn openapi_oauth_document_signs_in_through_an_explicit_application_from_st
     assert_eq!(completed.state(), management::ProviderSetupState::Ready);
     assert!(completed.authorized);
     assert_eq!(completed.granted_scope, "read");
-    assert!(!completed.provisional_grant_id.is_empty());
+    assert_ne!(completed.provisional_grant_id, "");
     assert_eq!(
         completed.authorization.as_ref().unwrap().state(),
         management::SetupAuthorizationState::Succeeded

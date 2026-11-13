@@ -43,7 +43,7 @@ RUN set -eu; \
     mkdir -p /state/coral; \
     chmod 0775 /state/coral
 
-FROM rust:1.98-trixie AS source
+FROM rust:1.100-trixie AS source
 ARG TARGETARCH
 ARG CORAL_GIT_SHA
 # The release workflow passes 1: only a release build sends usage data.

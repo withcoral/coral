@@ -479,13 +479,13 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
             ))
         ));
     }
-    assert!(
+    assert_eq!(
         fixture
             .tasks
             .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [interaction::InteractionSummary; 0]
     );
 }
 
@@ -724,7 +724,7 @@ async fn real_run_acceptance_is_not_goal_success_and_admission_failures_have_no_
             panic!("known rejection")
         };
         assert!(failure.message.len() <= 4096);
-        assert!(!failure.message.is_empty());
+        assert_ne!(failure.message, "");
     }
     let update = fixture.wait_for_terminal(accepted.run_id()).await;
     assert_eq!(update.state(), coral_run::RunState::Failed);
@@ -841,13 +841,13 @@ async fn completion_feedback_creates_no_interaction() {
         )
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         fixture
             .tasks
             .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [interaction::InteractionSummary; 0]
     );
 }
 
@@ -1243,13 +1243,13 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
         )
         .await
         .unwrap();
-    assert!(
-        !fixture
+    assert_ne!(
+        fixture
             .functions
             .list_lifecycle_events(&fixture.actor, &fixture.workspace)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_tools::AdministrativeLifecycleEvent; 0]
     );
 }
 
@@ -1497,13 +1497,13 @@ async fn standalone_runs_use_terminal_completion_and_create_no_goals_or_attempts
     .terminal_at_unix_nanos()
     .unwrap();
     transaction.rollback().await.unwrap();
-    assert!(
+    assert_eq!(
         fixture
             .tasks
             .list(&fixture.actor, &fixture.workspace)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [types::Task; 0]
     );
     assert!(
         !fixture
@@ -2038,7 +2038,7 @@ async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit()
         )
         .await
         .unwrap();
-    assert!(page.hits().is_empty());
+    assert_eq!(page.hits(), []);
     let history = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -2082,8 +2082,8 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
             .commands
             .search(&call, coral_search::SearchInput::default()),
     );
-    assert!(left.unwrap().hits().is_empty());
-    assert!(right.unwrap().hits().is_empty());
+    assert_eq!(left.unwrap().hits(), []);
+    assert_eq!(right.unwrap().hits(), []);
     let history = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)

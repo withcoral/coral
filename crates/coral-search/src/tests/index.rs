@@ -120,7 +120,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         world.index.settled().await;
         assert_eq!(samples(), first);
 
-        assert!(recovery().is_empty());
+        assert_eq!(recovery(), [] as [coral_telemetry::testing::MetricPoint; 0]);
         world.set_outage_start(1).await;
 
         if rename {
@@ -193,7 +193,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         restarted.settled().await;
         assert_eq!(samples(), first);
         let recovery = recovery();
-        assert!(!recovery.is_empty());
+        assert_ne!(recovery, [] as [coral_telemetry::testing::MetricPoint; 0]);
         assert!(
             recovery
                 .iter()
@@ -264,15 +264,13 @@ async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_
         .index
         .index_active_generation(world.workspace.clone(), world.tracer.clone());
     world.index.settled().await;
-    assert!(
-        metrics
-            .named("coral.search.publication.visibility.duration")
-            .is_empty()
+    assert_eq!(
+        metrics.named("coral.search.publication.visibility.duration"),
+        [] as [coral_telemetry::testing::MetricPoint; 0]
     );
-    assert!(
-        metrics
-            .named("coral.search.index.recovery.duration")
-            .is_empty()
+    assert_eq!(
+        metrics.named("coral.search.index.recovery.duration"),
+        [] as [coral_telemetry::testing::MetricPoint; 0]
     );
 }
 
@@ -301,10 +299,9 @@ async fn legacy_failed_projections_keep_visibility_unknown_until_a_successful_co
             .iter()
             .any(|value| *value >= 1.0)
     );
-    assert!(
-        metrics
-            .named("coral.search.index.first_visibility.age")
-            .is_empty()
+    assert_eq!(
+        metrics.named("coral.search.index.first_visibility.age"),
+        [] as [coral_telemetry::testing::MetricPoint; 0]
     );
     background.abort();
     let _stopped = background.await;
@@ -499,10 +496,9 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
         .unwrap();
     world.reconcile_and_settle().await;
     wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
-    assert!(
-        metrics
-            .named("coral.search.index.first_visibility.age")
-            .is_empty()
+    assert_eq!(
+        metrics.named("coral.search.index.first_visibility.age"),
+        [] as [coral_telemetry::testing::MetricPoint; 0]
     );
     assert!(
         logs.events()
@@ -1599,7 +1595,7 @@ async fn a_generation_without_tools_indexes_only_a_complete_state() {
     notify(&world.index, &entries);
     world.index.settled().await;
 
-    assert!(world.tool_rows().await.is_empty());
+    assert_eq!(world.tool_rows().await, [] as [ToolRow; 0]);
     assert_eq!(
         world.states().await,
         [StateRow::complete(
@@ -1766,8 +1762,8 @@ async fn a_notice_for_a_replaced_generation_writes_nothing() {
 
     let write = world.traced_notice(|index| notify(index, &replaced)).await;
 
-    assert!(world.tool_rows().await.is_empty());
-    assert!(world.states().await.is_empty());
+    assert_eq!(world.tool_rows().await, [] as [ToolRow; 0]);
+    assert_eq!(world.states().await, [] as [StateRow; 0]);
     assert_eq!(
         attribute(&write, "coral.search.skipped").as_deref(),
         Some("generation_replaced")
@@ -1947,7 +1943,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         if indexed_before {
             notify(&world.index, &entries);
             world.index.settled().await;
-            assert!(!world.tool_rows().await.is_empty());
+            assert_ne!(world.tool_rows().await, [] as [ToolRow; 0]);
             // A rename is what rewrites an indexed Generation.
             world
                 .modules
@@ -2095,7 +2091,7 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
     let entries = world.stored_entries(&world.tracer).await;
     notify(&world.index, &entries);
     world.index.settled().await;
-    assert!(!world.tool_rows().await.is_empty());
+    assert_ne!(world.tool_rows().await, [] as [ToolRow; 0]);
 
     let generation_id = entries.generation_id().clone();
     world
@@ -2105,7 +2101,7 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
         .expect("write the Generation without its Tools");
     world.index.settled().await;
 
-    assert!(world.tool_rows().await.is_empty());
+    assert_eq!(world.tool_rows().await, [] as [ToolRow; 0]);
     assert_eq!(
         world.states().await,
         [StateRow::complete(
@@ -2177,8 +2173,8 @@ async fn notified_writes_land_in_notification_order() {
     }
     world.index.settled().await;
 
-    assert!(world.tool_rows().await.is_empty());
-    assert!(world.states().await.is_empty());
+    assert_eq!(world.tool_rows().await, [] as [ToolRow; 0]);
+    assert_eq!(world.states().await, [] as [StateRow; 0]);
 }
 
 #[tokio::test]
@@ -2579,7 +2575,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     index.settled().await;
     blocker.rollback().await.expect("release the writer");
 
-    assert!(world.tool_rows().await.is_empty());
+    assert_eq!(world.tool_rows().await, [] as [ToolRow; 0]);
     let first = logs
         .events()
         .into_iter()

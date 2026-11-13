@@ -190,11 +190,11 @@ async fn a_member_cannot_install_the_builtin_provider() {
         ),
         "{denied:?}"
     );
-    assert!(
+    assert_eq!(
         crate::active_providers_in_transaction(&mut transaction, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::ActiveProvider; 0]
     );
     transaction.rollback().await.unwrap();
 }
@@ -1143,7 +1143,7 @@ async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_
     }
 
     // A second boot finds every Workspace complete.
-    assert!(boot_installs(&arranged.providers, 21).await.is_empty());
+    assert_eq!(boot_installs(&arranged.providers, 21).await, []);
     assert_eq!(events(complete).await.len(), before);
     let recorded = events(earlier).await;
     for provider in CoralDefinedProvider::ALL {

@@ -319,12 +319,12 @@ mod tests {
             ))
         ));
 
-        assert!(
+        assert_eq!(
             f.workspaces
                 .list_workspace_secret_stores(&f.owner, id)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [std::string::String; 0]
         );
         assert_eq!(
             f.workspaces

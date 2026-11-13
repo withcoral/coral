@@ -55,7 +55,10 @@ async fn request_cpu_is_attributed_to_the_named_operation_without_counting_await
     let cpu = metrics.named("coral.request.cpu.duration");
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         assert!(cpu.is_empty(), "unsupported CPU clocks omit the signal");
-        assert!(!metrics.named("coral.request.duration").is_empty());
+        assert_ne!(
+            metrics.named("coral.request.duration"),
+            [] as [MetricPoint; 0]
+        );
         return;
     }
     assert_eq!(cpu.len(), 1, "one CPU measurement per completed request");

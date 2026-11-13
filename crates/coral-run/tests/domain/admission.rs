@@ -938,7 +938,7 @@ async fn admission_executes_one_durable_package_and_preserves_final_value_presen
         .await
         .expect("accept no-value Program");
     assert_eq!(absent.state(), RunState::Running);
-    assert!(absent.events().is_empty());
+    assert_eq!(absent.events(), []);
     let absent = wait_for_terminal(&fixture.runs, &principal, &workspace_id, absent.run_id()).await;
     assert!(matches!(
         absent.terminal_outcome(),

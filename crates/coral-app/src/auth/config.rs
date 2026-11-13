@@ -1257,7 +1257,7 @@ mod tests {
     fn loopback_web_navigation_does_not_register_an_audience_or_trust_a_client() {
         for origin in ["http://localhost:5173", "http://127.0.0.1:49152"] {
             let raw = valid("") + &format!("\n[listeners.web]\npublic_url = '{origin}'\n");
-            assert!(parse(&raw).allowed_audiences().is_empty());
+            assert_eq!(parse(&raw).allowed_audiences(), [] as [String; 0]);
             assert!(!resolved(&raw).authorization_server().is_trusted_client(
                 &format!("{origin}/.well-known/oauth-client"),
                 &format!("{origin}/auth/callback")

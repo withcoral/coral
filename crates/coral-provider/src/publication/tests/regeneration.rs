@@ -146,13 +146,13 @@ async fn rejected_regeneration(change: InterveningChange) {
                         url: "https://weather.example/changed".into(),
                     },
                 );
-                assert!(
+                assert_eq!(
                     providers
                         .confirm_setup_configuration(&context, &owner, setup.id(), 1, configuration)
                         .await
                         .unwrap()
-                        .errors
-                        .is_empty()
+                        .errors,
+                    [] as [coral_catalog::ConfigurationFieldError; 0]
                 );
             }
         }

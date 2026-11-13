@@ -58,7 +58,10 @@ async fn preparation_is_reused_by_reads_replays_invalid_edits_and_restarts() {
         .confirm_setup_configuration(&context, &owner, setup.id(), 0, values.clone())
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(
         confirmed.destinations.get("getData").map(String::as_str),
         Some("https://api.example.test/")
@@ -82,7 +85,10 @@ async fn preparation_is_reused_by_reads_replays_invalid_edits_and_restarts() {
         .confirm_setup_configuration(&context, &owner, setup.id(), 1, invalid)
         .await
         .unwrap();
-    assert!(!rejected.errors.is_empty());
+    assert_ne!(
+        rejected.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(rejected.revision, 1);
     assert_eq!(rejected.destinations, confirmed.destinations);
     assert_eq!(count.calls(), 1);
@@ -215,7 +221,10 @@ async fn update_compatibility_is_unknown_until_prepared_and_survives_restart() {
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(confirmed.interrupts_access, Some(false));
     assert_eq!(confirmed.destinations.len(), 1);
     assert_eq!(count.calls(), 1);
@@ -243,7 +252,10 @@ async fn update_compatibility_is_unknown_until_prepared_and_survives_restart() {
         )
         .await
         .unwrap();
-    assert!(incompatible.errors.is_empty());
+    assert_eq!(
+        incompatible.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert_eq!(incompatible.interrupts_access, Some(true));
     assert_eq!(
         restarted
@@ -294,7 +306,10 @@ async fn failed_preparation_accepts_nothing_and_can_be_retried() {
         .confirm_setup_configuration(&context, &owner, setup.id(), 0, values)
         .await
         .unwrap();
-    assert!(retry.errors.is_empty());
+    assert_eq!(
+        retry.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(retry.configuration_confirmed);
     assert_eq!(retry.revision, 1);
 }
@@ -379,7 +394,10 @@ async fn preparation_race(archive: bool) {
     let completed = completed
         .expect("preparation must hold no database transaction")
         .unwrap();
-    assert!(completed.errors.is_empty());
+    assert_eq!(
+        completed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(matches!(
         confirming.await.unwrap(),
         Err(Error::EtagMismatch)
@@ -444,7 +462,10 @@ async fn a_different_host_policy_cannot_reuse_prepared_authority() {
         Some("outbound_destination_rejected")
     );
     assert!(inspected.configuration.destinations.is_empty());
-    assert!(inspected.authentication.contract.destinations().is_empty());
+    assert_eq!(
+        inspected.authentication.contract.destinations(),
+        [] as [String; 0]
+    );
     assert_eq!(
         h.providers
             .review_setup_configuration(&actor, &owner, setup.id())

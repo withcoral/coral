@@ -537,7 +537,7 @@ async fn management_pagination_replay_and_archived_configuration_are_bounded() {
         .unwrap()
         .into_inner();
     assert_eq!(first.workspaces.len(), 1);
-    assert!(!first.next_page_token.is_empty());
+    assert_ne!(first.next_page_token, "");
     let second = client
         .list_workspaces(request(
             management::ListWorkspacesRequest {
@@ -551,7 +551,7 @@ async fn management_pagination_replay_and_archived_configuration_are_bounded() {
         .unwrap()
         .into_inner();
     assert_eq!(second.workspaces.len(), 1);
-    assert!(second.next_page_token.is_empty());
+    assert_eq!(second.next_page_token, "");
     assert_eq!(
         [&first, &second].map(|page| page.workspaces.first().unwrap().display_name.as_str()),
         [long_name.as_str(), "private"],
@@ -903,7 +903,7 @@ async fn agent_and_organization_membership_pages_round_trip_and_bind_their_token
     let (second, last) = agents(&f.owner, token.clone()).await.unwrap();
     assert_eq!((first.len(), second.len()), (1, 1));
     assert!(first < second, "name order without repeats");
-    assert!(last.is_empty());
+    assert_eq!(last, "");
     let foreign = agents(&other, token).await.unwrap_err();
     assert_eq!(
         (foreign.code(), error_reason(&foreign).as_str()),

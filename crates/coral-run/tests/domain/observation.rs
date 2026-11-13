@@ -55,7 +55,7 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
         .await
         .unwrap();
     assert!(started.elapsed() >= Duration::from_millis(100));
-    assert!(expired.events().is_empty());
+    assert_eq!(expired.events(), []);
     assert_eq!(expired.state(), RunState::Running);
 
     let initial = RunObservation::initial(Duration::from_secs(2)).unwrap();
@@ -273,7 +273,7 @@ async fn authored_pages_skip_internal_records_without_losing_order_or_replay() {
         .observe(actor, workspace, accepted.run_id(), &immediate(cursor, 1))
         .await
         .unwrap();
-    assert!(finished.events().is_empty());
+    assert_eq!(finished.events(), []);
     assert!(!finished.has_more());
     assert!(
         matches!(finished.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
@@ -302,7 +302,7 @@ async fn waiting_observation_wakes_on_a_committed_change() {
         .await
         .expect("the decision wakes the wait long before its deadline")
         .unwrap();
-    assert!(update.required_actions().is_empty());
+    assert_eq!(update.required_actions(), []);
 }
 
 /// An action's expiry is a commit of the Run Owner's timer: the wait wakes
@@ -322,7 +322,7 @@ async fn waiting_observation_wakes_when_the_owner_records_an_actions_expiry() {
         .await
         .expect("the owner's expiry chunk ends the wait long before its deadline")
         .unwrap();
-    assert!(update.required_actions().is_empty());
+    assert_eq!(update.required_actions(), []);
 }
 
 /// Notifications are only hints. Losing them degrades the wait to polling, not an error.
@@ -348,7 +348,7 @@ async fn waiting_observation_falls_back_to_polling_during_a_notification_outage(
         .await
         .expect("polling observes the decision")
         .expect("an outage does not fail the wait");
-    assert!(update.required_actions().is_empty());
+    assert_eq!(update.required_actions(), []);
 }
 
 /// A Program that threw gets the shapes of the Tool Results it received with

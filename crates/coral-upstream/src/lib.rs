@@ -33,8 +33,7 @@ fn media_type_essence(value: &str) -> String {
     value
         .split(';')
         .next()
-        .map(str::trim)
-        .unwrap_or_default()
+        .map_or_default(str::trim)
         .to_ascii_lowercase()
 }
 

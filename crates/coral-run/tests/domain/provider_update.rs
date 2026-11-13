@@ -150,8 +150,14 @@ async fn a_rename_alone_keeps_the_generation() {
     );
     *expected.pointer_mut("/data/displayName").unwrap() = serde_json::json!("Forecasts");
     assert_eq!(saved(&scope, "weather").await, expected);
-    assert!(scope.setups_created_since(&before_setups).await.is_empty());
-    assert!(publications_since(&scope, &before).await.is_empty());
+    assert_eq!(
+        scope.setups_created_since(&before_setups).await,
+        [] as [coral_provider::ProviderSetupId; 0]
+    );
+    assert_eq!(
+        publications_since(&scope, &before).await,
+        [] as [coral_provider::AdministrativeLifecycleEvent; 0]
+    );
 }
 
 // Catches: a refresh that reads a URL other than the one saved when the call

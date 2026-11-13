@@ -199,12 +199,12 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
             .len(),
         events_before
     );
-    assert!(
+    assert_eq!(
         private_tools
             .list_lifecycle_events(&AuthenticatedPrincipal::user(owner), workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_tools::AdministrativeLifecycleEvent; 0]
     );
 }
 

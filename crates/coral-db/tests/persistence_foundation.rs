@@ -1157,10 +1157,9 @@ async fn canceling_queued_acquisitions_releases_waiters_without_open_transaction
             point.attributes.get("operation").map(String::as_str),
             Some(operation)
         );
-        assert!(
-            metrics
-                .named("coral.persistence.transaction.duration")
-                .is_empty()
+        assert_eq!(
+            metrics.named("coral.persistence.transaction.duration"),
+            [] as [coral_telemetry::testing::MetricPoint; 0]
         );
         drop(measured);
         for holder in holders {
@@ -1195,7 +1194,7 @@ async fn direct_queries_record_acquisition_separately_from_execution_and_closed_
     let row: Option<Record> = database.fetch_optional(query.clone()).await.unwrap();
     assert_eq!(row, None);
     let rows: Vec<Record> = database.fetch_all(query.clone()).await.unwrap();
-    assert!(rows.is_empty());
+    assert_eq!(rows, [] as [Record; 0]);
     database.ping().await.unwrap();
     for operation in ["execute", "fetch_optional", "fetch_all", "ping"] {
         let points = metrics.named("coral.persistence.acquisition.duration");

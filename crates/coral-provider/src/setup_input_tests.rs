@@ -100,12 +100,12 @@ async fn wrong_owner_update_target_is_concealed_without_fetching_or_creating_a_s
         .await;
     assert!(matches!(result, Err(Error::ProviderNotFound)));
     assert!(server.received_requests().await.unwrap().is_empty());
-    assert!(
+    assert_eq!(
         h.providers
             .list_lifecycle_events(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::AdministrativeLifecycleEvent; 0]
     );
 }
 
@@ -278,11 +278,11 @@ async fn missing_update_target_rejects_every_input_without_acquisition_or_setup_
         ));
     }
     assert!(server.received_requests().await.unwrap().is_empty());
-    assert!(
+    assert_eq!(
         h.providers
             .list_lifecycle_events(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::AdministrativeLifecycleEvent; 0]
     );
 }

@@ -754,7 +754,7 @@ mod tests {
         );
 
         assert!(indexed_paths(&prepared.entries).contains("result.data.structuredContent.name"));
-        assert!(!prepared.warnings.is_empty());
+        assert_ne!(prepared.warnings, [] as [CatalogDiagnostic; 0]);
     }
 
     #[test]
@@ -810,7 +810,7 @@ mod tests {
 
         // The root, its ten properties, and its open index signature.
         assert_eq!(prepared.entries.len(), 12);
-        assert!(prepared.warnings.is_empty());
+        assert_eq!(prepared.warnings, [] as [CatalogDiagnostic; 0]);
     }
 
     #[test]
@@ -836,6 +836,6 @@ mod tests {
             .find(|field| field.path().as_str() == "input")
             .expect("the root field is indexed");
         assert!(field.text().len() > 256 * 1024);
-        assert!(prepared.warnings.is_empty());
+        assert_eq!(prepared.warnings, [] as [CatalogDiagnostic; 0]);
     }
 }
