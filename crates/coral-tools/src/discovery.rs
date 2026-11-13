@@ -278,23 +278,6 @@ pub async fn authored_tool_search_material_in_transaction(
     discovery_repository::list_search_material(transaction, workspace_id, principal, kind).await
 }
 
-/// Loads the declaration fields of the Authored Tool at `path` that
-/// `principal` can discover, for the evidence of one search hit. Empty when
-/// no such Tool is there, or when its stored projection is unreadable:
-/// projection corruption stays isolated to its one Tool.
-///
-/// # Errors
-///
-/// Returns a shared persistence failure.
-pub async fn authored_tool_declaration_fields_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    principal: &Principal,
-    path: &AuthoredToolPath,
-) -> Result<Vec<AuthoredToolDeclarationField>, Error> {
-    discovery_repository::declaration_fields(transaction, workspace_id, principal, path).await
-}
-
 /// Hydrates one current ranked Authored Tool without reading its source.
 /// `None` when `principal` can no longer discover `target`.
 ///

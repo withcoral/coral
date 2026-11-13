@@ -93,7 +93,7 @@ pub(crate) const MIXED_MCP: &str = r#"{
 }"#;
 
 #[tokio::test]
-async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
+async fn every_indexed_tool_hydrates_from_the_stored_generation() {
     let (fixture, workspaces, providers) = test_modules().await;
     let owner =
         organization_user(fixture.database(), "user:entries", OrganizationRole::Owner).await;
@@ -138,8 +138,6 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
         .expect("published MCP Provider")
         .clone();
 
-    // One request's scope serves both Generations, as a search page does.
-    let loaded = crate::LoadedGenerations::default();
     let mut entries = Vec::new();
     for provider in [&cities, &mixed] {
         let mut transaction = providers.database.begin().await.unwrap();
@@ -152,7 +150,7 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
         .expect("rebuild entries from the stored Generation")
         .expect("the Provider exists");
         transaction.rollback().await.unwrap();
-        assert_hits_hydrate_their_indexed_fields(&providers, &stored, &loaded).await;
+        assert_indexed_tools_hydrate(&providers, &stored).await;
         entries.push(stored);
     }
 
@@ -175,12 +173,12 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
     );
 }
 
-/// Hydrates every entry of `prepared` as a search hit through `loaded` and
-/// checks each hit carries the declaration fields its entry indexed.
-async fn assert_hits_hydrate_their_indexed_fields(
+/// Hydrates every entry of `prepared` as a search hit and checks each one
+/// gives the material of its own Tool: the path and the presentation its
+/// entry indexed.
+async fn assert_indexed_tools_hydrate(
     providers: &crate::ProviderModule,
     prepared: &crate::GenerationEntries,
-    loaded: &crate::LoadedGenerations,
 ) {
     let mut transaction = providers.database.begin_read_snapshot().await.unwrap();
     let active = crate::active_providers_in_transaction(&mut transaction, prepared.workspace_id())
@@ -191,15 +189,31 @@ async fn assert_hits_hydrate_their_indexed_fields(
         .expect("the Provider is active");
     for tool in prepared.tools() {
         let tool = tool.unwrap();
-        let hydrated =
-            crate::hydrate_tool_in_transaction(&mut transaction, loaded, &active, tool.key())
-                .await
-                .unwrap()
-                .expect("an indexed Tool hydrates");
+        let material = crate::tool_material_in_transaction(&mut transaction, &active, tool.key())
+            .await
+            .unwrap()
+            .expect("an indexed Tool hydrates");
+        let presentation = material.presentation();
         assert_eq!(
-            hydrated.declaration_fields(),
-            tool.declaration_fields(),
-            "a hit hydrates the fields its entry indexed: {}",
+            (
+                material.tool_key(),
+                material.relative_path(),
+                presentation.title(),
+                presentation.description(),
+                presentation.tags(),
+                presentation.guidance(),
+                presentation.deprecated(),
+            ),
+            (
+                tool.key(),
+                tool.relative_path(),
+                tool.title(),
+                tool.description(),
+                tool.tags(),
+                tool.guidance(),
+                tool.deprecated(),
+            ),
+            "a hit hydrates the material its entry indexed: {}",
             tool.key().as_str()
         );
     }

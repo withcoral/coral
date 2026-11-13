@@ -270,25 +270,6 @@ pub(crate) async fn list_search_material(
         .collect()
 }
 
-pub(crate) async fn declaration_fields(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    principal: &Principal,
-    path: &AuthoredToolPath,
-) -> Result<Vec<AuthoredToolDeclarationField>, Error> {
-    let kind = path.kind();
-    let row: Option<DeclarationFieldsRow> = transaction
-        .fetch_optional(
-            discovered(kind, workspace_id, principal, &DECLARATION_FIELDS)
-                .and_where(stored(kind, Definition::Path).eq(path.relative_path()))
-                .to_owned(),
-        )
-        .await?;
-    Ok(row
-        .and_then(DeclarationFieldsRow::decode)
-        .unwrap_or_default())
-}
-
 #[derive(Debug, FromRow)]
 struct AuthoringRow {
     path: String,

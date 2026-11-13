@@ -10,7 +10,10 @@
  *   purpose. Its diagnostic is real.
  *
  * Built from those captures, to show each branch:
- * - `complete`: the captured page as Coral writes it now.
+ * - `complete`: the captured page as Coral wrote it after the trim, while hits
+ *   still said why they matched.
+ * - `current`: the same page as Coral writes it now: no hit says why it matched,
+ *   and each description snippet is the start of the description.
  * - `mixed`: a Private Tool hit, a guidance match, a matched input, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
  * - `sparse`: a Private Tool hit, then a hit whose signature and description are empty.
@@ -166,8 +169,8 @@ interface UntrimmedHit {
   [key: string]: unknown
 }
 /**
- * One captured hit as Coral writes it now. It drops what the Call Path, the
- * rank, or describe states, and the flags and hints that are not set.
+ * One captured hit as Coral wrote it after the trim. It drops what the Call
+ * Path, the rank, or describe states, and the flags and hints that are not set.
  */
 function trimmed({
   kind: _kind,
@@ -222,6 +225,30 @@ const untrimmed = {
 const complete = {
   hits: githubHits.map(trimmed),
   next_offset: 5,
+}
+
+/**
+ * The snippets Coral writes now for the two captured descriptions longer than
+ * 512 bytes: the start of the description, not the window around a match. Cut
+ * from the GitHub provider's descriptions on 2026-11-13. The other descriptions
+ * fit, so their captured snippets are whole.
+ */
+const descriptionStarts: Record<string, string> = {
+  'coral.providers.github.pulls.merge':
+    '> [!NOTE]\n> We recommend using the [asynchronous merge API](https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously) instead. This endpoint does not support stacked pull requests or merging with a merge queue.\n\nMerges a pull request into the base branch.\n\nThis endpoint triggers [notifications](https://docs.github.com/github/managing-subscriptions-and-notifications-on-github/about-notifications).\nCreating content too quickly using this endpoint may result in secondary rate limiting.…',
+  'coral.providers.github.pulls.getMergeAsyncResult':
+    "Fetches the current result of an asynchronous merge request, identified by the UUID that was returned when the merge was requested.\n\nWhile the request's status is `pending`, the response includes the UUID, merge method, merge action, and expected head SHA of the request. Once the asynchronous request completes, its status is one of:\n\n- `merged`: The pull request was merged into the base branch. The response includes the merge commit OID.\n- `enqueued`: The pull request was added to a merge queue.\n-…",
+}
+
+/** The captured page as Coral writes it now, without why each hit matched. */
+const current = {
+  hits: githubHits.map(({ matched_tags: _tags, ...hit }) =>
+    trimmed({
+      ...hit,
+      description_snippet: descriptionStarts[hit.call_path] ?? hit.description_snippet,
+    }),
+  ),
+  next_offset: complete.next_offset,
 }
 
 /** A trimmed page as Coral retained it before pages had an offset. */
@@ -327,6 +354,7 @@ const describePrivateTool = {
 /** Each response as the stored JSON text. */
 export const stored = {
   complete: JSON.stringify(complete),
+  current: JSON.stringify(current),
   withCursor: JSON.stringify(withCursor),
   untrimmed: JSON.stringify(untrimmed),
   mixed: JSON.stringify(mixed),

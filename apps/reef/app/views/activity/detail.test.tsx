@@ -1139,6 +1139,7 @@ it("links a result to today's catalog with a labelled icon beside its call path,
 it.each([
   ['tools', stored.complete],
   ['tools and private tools', stored.mixed],
+  ['tools that carry no evidence', stored.current],
 ])('shows each %s result as one compact row in its retained order', (_, response) => {
   const view = discoveryView(searchContext, response)
   if (view.kind !== 'search') throw new Error('expected a search page')
@@ -1154,6 +1155,7 @@ it.each([
     expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'private tool')
     if (hit.matched.fields.length + hit.matched.tags.length > 0)
       expect(row).toHaveTextContent('Matched in')
+    else expect(row.textContent).not.toContain('Matched in')
     // Approval shows as the Tools page's Ask hand, named, never as a text badge.
     const approval = row.querySelector('[role="img"][aria-label^="Ask"]')
     expect(Boolean(approval)).toBe(Boolean(hit.tool?.approvalRequired))

@@ -213,13 +213,6 @@ pub(super) struct RankedAuthoredTool {
     pub(super) matched: RowMatch,
 }
 
-/// What one ranked statement found: its Entities, best first, and the
-/// catalog words it matched as near-spellings of query words.
-pub(super) struct Ranking<T> {
-    pub(super) entities: Vec<T>,
-    pub(super) near_spellings: Vec<String>,
-}
-
 /// The Tools a ranked statement may rank, and the Providers the query names.
 pub(super) struct ToolScope<'a> {
     /// The searched Providers.
@@ -239,7 +232,7 @@ pub(super) async fn rank_tools(
     tools: &ToolScope<'_>,
     plan: &QueryPlan,
     limit: usize,
-) -> Result<Ranking<RankedTool>, RetrievalError> {
+) -> Result<Vec<RankedTool>, RetrievalError> {
     let ToolScope {
         providers,
         generations,
@@ -266,8 +259,8 @@ pub(super) async fn rank_tools(
         excluded: &excluded,
         named: &named,
     };
-    let (rows, near_spellings) = rank(transaction, &scope, plan, limit).await?;
-    let entities = rows
+    rank(transaction, &scope, plan, limit)
+        .await?
         .into_iter()
         .map(|row| {
             let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
@@ -282,11 +275,7 @@ pub(super) async fn rank_tools(
                 matched: row.matched,
             })
         })
-        .collect::<Result<_, RetrievalError>>()?;
-    Ok(Ranking {
-        entities,
-        near_spellings,
-    })
+        .collect()
 }
 
 /// Ranks the Authored Tools of the scope for the plan, best first, at most
@@ -297,13 +286,13 @@ pub(super) async fn rank_authored_tools(
     tools: AuthoredToolScope<'_>,
     plan: &QueryPlan,
     limit: usize,
-) -> Result<Ranking<RankedAuthoredTool>, RetrievalError> {
+) -> Result<Vec<RankedAuthoredTool>, RetrievalError> {
     let scope = Scope::AuthoredTools {
         workspace_id,
         tools,
     };
-    let (rows, near_spellings) = rank(transaction, &scope, plan, limit).await?;
-    let entities = rows
+    rank(transaction, &scope, plan, limit)
+        .await?
         .into_iter()
         .map(|row| {
             let id = row.authored_tool_id.ok_or(RetrievalError::Corrupt(
@@ -316,31 +305,23 @@ pub(super) async fn rank_authored_tools(
                 matched: row.matched,
             })
         })
-        .collect::<Result<_, RetrievalError>>()?;
-    Ok(Ranking {
-        entities,
-        near_spellings,
-    })
+        .collect()
 }
 
 fn call_path(value: &str) -> Result<CallPath, RetrievalError> {
     CallPath::parse(value).map_err(|_invalid| RetrievalError::Corrupt("invalid Call Path"))
 }
 
-/// Ranks the scope's rows for the plan, best first, at most `limit` rows,
-/// with the near-spellings the statement matched. `SQLite` matches none.
+/// Ranks the scope's rows for the plan, best first, at most `limit` rows.
 async fn rank(
     transaction: &mut Transaction<'_>,
     scope: &Scope<'_>,
     plan: &QueryPlan,
     limit: usize,
-) -> Result<(Vec<RankedRow>, Vec<String>), Error> {
+) -> Result<Vec<RankedRow>, Error> {
     match transaction.system() {
         DatabaseSystem::Postgres => rank_postgres(transaction, scope, plan, limit).await,
-        DatabaseSystem::Sqlite => Ok((
-            rank_sqlite(transaction, scope, plan, limit).await?,
-            Vec::new(),
-        )),
+        DatabaseSystem::Sqlite => rank_sqlite(transaction, scope, plan, limit).await,
     }
 }
 
@@ -359,11 +340,11 @@ async fn rank_postgres(
     scope: &Scope<'_>,
     plan: &QueryPlan,
     limit: usize,
-) -> Result<(Vec<RankedRow>, Vec<String>), Error> {
+) -> Result<Vec<RankedRow>, Error> {
     let statistics = statistics(transaction, scope.workspace_id(), plan).await?;
     let scoring = plan.scoring(&statistics);
     if scoring.words.is_empty() && plan.wordless.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(Vec::new());
     }
 
     let mut binds = Binds::new(DatabaseSystem::Postgres);
@@ -391,8 +372,7 @@ async fn rank_postgres(
              c.doc_id COLLATE \"C\" ASC \
          LIMIT {limit}"
     );
-    let rows = transaction.fetch_all_sql(&sql, binds.values).await?;
-    Ok((rows, scoring.near_spellings()))
+    transaction.fetch_all_sql(&sql, binds.values).await
 }
 
 /// The candidate disjuncts over the alias `d`: the prefix `tsquery` over the

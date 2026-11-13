@@ -34,20 +34,15 @@ const retrieverCoverage = z.object({
   returned_count: count,
   has_more: z.boolean(),
 })
-export const searchPageSchema = z.object({
-  hits: z.array(
-    z.object({
-      call_path: z.string(),
-      signature_line: z.string(),
-      description_snippet: z.string(),
-      guidance_snippet: z.string().nullish(),
-      matched_tags: z.array(z.string()).optional(),
-      matched_inputs: z.array(z.string()).optional(),
-      hints: hints.optional(),
-      approval_required: z.boolean().optional(),
-      deprecated: z.boolean().optional(),
-    }),
-  ),
+const hitFields = {
+  call_path: z.string(),
+  signature_line: z.string(),
+  description_snippet: z.string(),
+  hints: hints.optional(),
+  approval_required: z.boolean().optional(),
+  deprecated: z.boolean().optional(),
+}
+const pageFields = {
   // A trimmed page retained before pages had an offset has `has_more` and
   // `next_cursor` instead; it reads as a page with no more results.
   next_offset: count.optional(),
@@ -60,6 +55,25 @@ export const searchPageSchema = z.object({
       }),
     )
     .optional(),
+}
+export const searchPageSchema = z.object({ hits: z.array(z.object(hitFields)), ...pageFields })
+
+/*
+ * A trimmed page that Coral retained before Search Hits lost their evidence
+ * (ADR 0035) also holds why each hit matched. Coral no longer writes these
+ * keys, so no advertised schema checks them. Keep them while Activity can
+ * hold such pages.
+ */
+const evidenceSearchPageSchema = z.object({
+  hits: z.array(
+    z.object({
+      ...hitFields,
+      guidance_snippet: z.string().nullish(),
+      matched_tags: z.array(z.string()).optional(),
+      matched_inputs: z.array(z.string()).optional(),
+    }),
+  ),
+  ...pageFields,
 })
 
 /*
@@ -195,7 +209,7 @@ function searchCoverage({
   }
 }
 
-function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
+function searchPage(value: z.infer<typeof evidenceSearchPageSchema>): SearchPage {
   return {
     hits: value.hits.map((hit): SearchHit => {
       const kind = kindOf(hit.call_path)
@@ -277,10 +291,10 @@ export function discoveryView(context: DiscoveryContext, response: string): Disc
     return { kind: 'raw' }
   }
   if (context.kind === 'search') {
-    // The current schema drops keys it does not read, so it could take an untrimmed page and lose its titles.
+    // The trimmed schema drops keys it does not read, so it could take an untrimmed page and lose its titles.
     const untrimmed = untrimmedSearchPageSchema.safeParse(value)
     if (untrimmed.success) return { kind: 'search', page: untrimmedSearchPage(untrimmed.data) }
-    const page = searchPageSchema.safeParse(value)
+    const page = evidenceSearchPageSchema.safeParse(value)
     if (page.success) return { kind: 'search', page: searchPage(page.data) }
   }
   if (context.kind === 'describe') {
