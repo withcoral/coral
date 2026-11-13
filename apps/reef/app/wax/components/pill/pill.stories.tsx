@@ -224,6 +224,20 @@ export const Interactive: Story = {
   ),
 }
 
+export const Removable: Story = {
+  render: () => (
+    <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+      <Pill remove={{ label: 'Remove Research', onClick: () => {} }}>Research</Pill>
+      <Pill color="blue" remove={{ label: 'Remove Support', onClick: () => {} }}>
+        Support
+      </Pill>
+      <Pill size="large" remove={{ label: 'Remove Operations', onClick: () => {} }}>
+        Operations
+      </Pill>
+    </div>
+  ),
+}
+
 export const Active: Story = {
   render: () => (
     <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>

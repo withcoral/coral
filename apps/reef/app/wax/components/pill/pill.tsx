@@ -2,6 +2,8 @@ import classNames from 'classnames'
 import React, { Children, isValidElement } from 'react'
 import type { ElementType } from 'react'
 
+import { Icon } from '@/wax/components/icon'
+
 import * as styles from './pill.css'
 
 export type PillColor =
@@ -17,10 +19,21 @@ export type PillColor =
 
 export type PillProps<T extends ElementType = 'div'> = PillBaseProps &
   (T extends 'button'
-    ? Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'as' | keyof PillBaseProps>
-    : Omit<React.HTMLAttributes<HTMLDivElement>, 'as' | keyof PillBaseProps>) & {
+    ? Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'as' | keyof PillBaseProps> & {
+        // A button cannot hold another button.
+        remove?: never
+      }
+    : Omit<React.HTMLAttributes<HTMLDivElement>, 'as' | keyof PillBaseProps> & {
+        /** Adds a button after the text that removes the pill. */
+        remove?: PillRemove
+      }) & {
     as?: T
   }
+
+export interface PillRemove {
+  label: string
+  onClick: () => void
+}
 
 export type PillSize = 'small' | 'default' | 'large'
 
@@ -42,6 +55,7 @@ export function Pill<T extends ElementType = 'div'>({
   className,
   color = 'gray',
   isActive,
+  remove,
   size = 'default',
   title,
   variant = 'filled',
@@ -78,6 +92,16 @@ export function Pill<T extends ElementType = 'div'>({
     >
       {icons}
       {textParts.length > 0 && <span className={styles.textContent}>{textParts}</span>}
+      {remove && (
+        <button
+          aria-label={remove.label}
+          className={styles.removeButton}
+          onClick={remove.onClick}
+          type="button"
+        >
+          <Icon color="inherit" name="X" size="14" />
+        </button>
+      )}
     </Component>
   )
 }

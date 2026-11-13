@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react'
-import { TruncatedList } from '@/components/truncated-list'
-import { Button, Menu, Table, Typography } from '@/wax/components'
+import { Button, Table, Typography } from '@/wax/components'
 import { Picker } from '@/wax/components/picker'
 import { Pill } from '@/wax/components/pill'
 import { Status } from '@/wax/components/status'
@@ -54,7 +53,6 @@ export function OrganizationSecretStoresPage({
           { label: 'Kind', width: 'fill' },
           { label: 'Status', width: 'fill' },
           { label: 'Workspaces', width: { fill: 2 } },
-          { ariaLabel: 'Actions', width: 48 },
         ]}
       >
         <Table.Head />
@@ -69,15 +67,8 @@ export function OrganizationSecretStoresPage({
               <Table.Cell>
                 <Status blockers={store.blockers} ready="Available" />
               </Table.Cell>
-              <Table.Cell>
-                {store.workspaces.length === 0 ? (
-                  'No workspaces'
-                ) : (
-                  <WorkspacePills workspaces={store.workspaces} />
-                )}
-              </Table.Cell>
-              <Table.Cell actions>
-                <GrantActions store={store} workspaces={workspaces} form={form} />
+              <Table.Cell wrap>
+                <WorkspaceGrants store={store} workspaces={workspaces} form={form} />
               </Table.Cell>
             </Table.Row>
           ))}
@@ -103,27 +94,13 @@ function workspaceOptions(workspaces: { name: string; displayName: string }[]) {
   }))
 }
 
-/** The workspaces on one line. Workspaces that do not fit move to a "+N" tooltip. */
-function WorkspacePills({ workspaces }: { workspaces: GrantedWorkspace[] }) {
-  const pill = (w: GrantedWorkspace) => (
-    <Pill key={w.name}>{w.archived ? `${w.displayName} · Archived` : w.displayName}</Pill>
-  )
-  return (
-    <TruncatedList
-      items={workspaces}
-      getKey={(w) => w.name}
-      renderItem={pill}
-      renderOverflowContent={(hidden) => hidden.map(pill)}
-      renderOverflowTrigger={(count) => (
-        <Pill as="button" aria-label={`${count} more workspaces`}>
-          +{count}
-        </Pill>
-      )}
-    />
-  )
-}
+type Change = { kind: 'grant' } | { kind: 'revoke'; workspace: GrantedWorkspace }
 
-function GrantActions({
+/**
+ * The workspaces that hold a grant, each with a button that revokes it, then a
+ * button that grants the store to another workspace.
+ */
+function WorkspaceGrants({
   store,
   workspaces,
   form,
@@ -132,85 +109,83 @@ function GrantActions({
   workspaces: ActiveWorkspace[]
   form: FormContext
 }) {
-  const [action, setAction] = useState<'grant' | 'revoke' | null>(null)
+  const [change, setChange] = useState<Change | null>(null)
   const [chosen, setChosen] = useState('')
-  const trigger = useRef<HTMLButtonElement>(null)
+  const grantButton = useRef<HTMLButtonElement>(null)
   const granted = new Set(store.workspaces.map((w) => w.name))
   // Coral refuses a store config does not define, and any change to an archived workspace.
   const grantable = store.kind !== null ? workspaces.filter((w) => !granted.has(w.name)) : []
-  const revocable = store.workspaces.filter((w) => !w.archived)
-  if (grantable.length === 0 && revocable.length === 0) return null
-  const open = (next: 'grant' | 'revoke') => {
-    setChosen('')
-    setAction(next)
-  }
-  const dialog = {
-    grant: {
-      title: 'Grant secret store',
-      intent: 'grant',
-      description: `Choose a workspace to grant ${store.name} to.`,
-      submit: 'Grant',
-      choices: grantable,
-    },
-    revoke: {
-      title: 'Revoke grant',
-      intent: 'revoke',
-      description: `Choose a workspace to revoke ${store.name} from.`,
-      submit: 'Revoke',
-      choices: revocable,
-    },
-  }[action ?? 'grant']
+  const labels = new Map(workspaceOptions(store.workspaces).map((o) => [o.value, o.label]))
+  const label = (w: GrantedWorkspace) => labels.get(w.name) ?? w.displayName
+  const revoking = change?.kind === 'revoke' ? change.workspace : null
+  if (store.workspaces.length === 0 && grantable.length === 0) return 'No workspaces'
   return (
-    <>
-      <Menu.Container>
-        <Menu.Trigger
-          render={
-            <Button.IconButton
-              ref={trigger}
-              name="Ellipsis"
-              ariaLabel={`Actions for ${store.name}`}
-              variant="bare"
-            />
-          }
+    <div className={styles.grants}>
+      {store.workspaces.map((w) =>
+        w.archived ? (
+          <Pill key={w.name}>{`${label(w)} · Archived`}</Pill>
+        ) : (
+          <Pill
+            key={w.name}
+            remove={{
+              label: `Revoke ${store.name} from ${label(w)}`,
+              onClick: () => setChange({ kind: 'revoke', workspace: w }),
+            }}
+          >
+            {label(w)}
+          </Pill>
+        ),
+      )}
+      {grantable.length > 0 && (
+        <Button.Container
+          ref={grantButton}
+          ariaLabel={`Grant ${store.name} to a workspace`}
+          size="22"
+          variant="bare"
+          onClick={() => {
+            setChosen('')
+            setChange({ kind: 'grant' })
+          }}
         >
-          {null}
-        </Menu.Trigger>
-        <Menu.Content>
-          {grantable.length > 0 && (
-            <Menu.Item onClick={() => open('grant')}>Grant to a workspace</Menu.Item>
-          )}
-          {revocable.length > 0 && (
-            <Menu.Item onClick={() => open('revoke')}>Revoke from a workspace</Menu.Item>
-          )}
-        </Menu.Content>
-      </Menu.Container>
+          <Button.Icon name="Plus" />
+          <Button.Text>Grant</Button.Text>
+        </Button.Container>
+      )}
       <ActionDialog
-        open={action !== null}
+        open={change !== null}
         onOpenChange={(next) => {
-          if (!next) setAction(null)
+          if (!next) setChange(null)
         }}
-        finalFocus={trigger}
-        title={dialog.title}
-        description={dialog.description}
-        submit={dialog.submit}
-        intent={dialog.intent}
+        finalFocus={revoking ? undefined : grantButton}
+        title={revoking ? 'Revoke grant' : 'Grant secret store'}
+        description={
+          revoking
+            ? `${label(revoking)} loses access to ${store.name}.`
+            : `Choose a workspace to grant ${store.name} to.`
+        }
+        submit={revoking ? 'Revoke' : 'Grant'}
+        intent={revoking ? 'revoke' : 'grant'}
         name={`secretStores/${store.name}`}
         form={form}
-        destructive={action === 'revoke'}
-        disabled={chosen === ''}
+        destructive={revoking !== null}
+        disabled={revoking === null && chosen === ''}
       >
-        <div className={styles.field}>
-          <Typography.BodySmallStrong as="span">Workspace</Typography.BodySmallStrong>
-          <input type="hidden" name="workspace" value={chosen} />
-          <Picker
-            ariaLabel="Workspace"
-            placeholder="Choose a workspace"
-            options={workspaceOptions(dialog.choices)}
-            value={chosen}
-            onChange={setChosen}
-          />
-        </div>
+        {revoking ? (
+          <input type="hidden" name="workspace" value={revoking.name} />
+        ) : (
+          <div className={styles.field}>
+            <Typography.BodySmallStrong as="span">Workspace</Typography.BodySmallStrong>
+            <input type="hidden" name="workspace" value={chosen} />
+            <Picker
+              ariaLabel="Workspace"
+              placeholder="Choose a workspace"
+              options={workspaceOptions(grantable)}
+              value={chosen}
+              onChange={setChosen}
+            />
+          </div>
+        )}
       </ActionDialog>
-    </>
+    </div>
   )
 }
