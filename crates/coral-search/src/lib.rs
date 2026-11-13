@@ -60,6 +60,7 @@ mod evidence;
 mod hit;
 mod index;
 mod index_state;
+mod index_text;
 mod indexer;
 mod page;
 pub mod projection;
