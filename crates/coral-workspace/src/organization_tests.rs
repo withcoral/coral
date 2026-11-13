@@ -186,3 +186,69 @@ async fn login_preserves_coral_role_and_disablement() {
         3
     );
 }
+
+/// Removal must not lift a disablement: the next sign-in brings the Membership
+/// back in the enabled or disabled state it had when it was removed.
+#[tokio::test]
+async fn rejoin_after_removal_keeps_the_recorded_disablement() {
+    for enabled_when_removed in [true, false] {
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+        let organization = OrganizationModule::new(fixture.database());
+        let workspaces = crate::WorkspaceModule::new(fixture.database());
+        let owner = context("owner", OrganizationRole::Owner);
+        let member = context("member", OrganizationRole::Member);
+        let member_id = member.actor().user_id();
+        organization.provision_login(&owner).await.unwrap();
+        let mut current = organization.provision_login(&member).await.unwrap();
+        if !enabled_when_removed {
+            current = organization
+                .set_enabled(&owner, member_id, current.revision(), false)
+                .await
+                .unwrap();
+        }
+        let removal = crate::AccessRemovalTarget::OrganizationMember {
+            user: member_id,
+            revision: current.revision(),
+            transfer_to: None,
+        };
+        crate::tests::remove_access(&workspaces, &owner, removal)
+            .await
+            .unwrap();
+        let listed = organization.list_memberships(owner.actor()).await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .all(|(listed, _)| listed.user_id() != member_id),
+            "enabled_when_removed={enabled_when_removed}: removal leaves no current Membership"
+        );
+
+        let rejoined = organization.provision_login(&member).await.unwrap();
+
+        assert_eq!(
+            rejoined.enabled(),
+            enabled_when_removed,
+            "enabled_when_removed={enabled_when_removed}: rejoin keeps the recorded state"
+        );
+        assert_eq!(rejoined.role(), OrganizationRole::Member);
+        let listed = organization.list_memberships(owner.actor()).await.unwrap();
+        assert!(
+            listed.iter().any(|(listed, _)| listed == &rejoined),
+            "enabled_when_removed={enabled_when_removed}: rejoin restores the Membership"
+        );
+        let authority = organization.resolve_user_authority(member_id).await;
+        if enabled_when_removed {
+            assert_eq!(
+                authority.unwrap().organization_role(),
+                Some(OrganizationRole::Member)
+            );
+        } else {
+            assert!(
+                matches!(
+                    authority,
+                    Err(crate::Error::PermissionDenied("User is disabled"))
+                ),
+                "a rejoined disabled Membership holds no authority: {authority:?}"
+            );
+        }
+    }
+}

@@ -459,6 +459,99 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
 }
 
 #[tokio::test]
+async fn a_refreshed_token_survives_an_application_status_write_failure() {
+    use wiremock::matchers::body_string_contains;
+    let server = MockServer::start().await;
+    let h = crate::setup_tests::harness().await;
+    let (actor, workspace) =
+        crate::setup_tests::workspace_owner(&h, "user:refresh-status-fault").await;
+    let context = change_context(actor.clone(), 10, 'a');
+    let owner = workspace.id();
+    let principal = crate::setup_tests::user_principal(&actor);
+    let provider = publish_provider(
+        &h.providers,
+        &context,
+        owner,
+        &oauth_document(&server),
+        "oauth",
+        CredentialRoute::Caller,
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "original-canary", "token_type": "Bearer", "expires_in": 1,
+            "refresh_token": "refresh-canary"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let pending = h
+        .accounts
+        .start_user_authorization(
+            &context,
+            owner,
+            provider.id(),
+            authorization_request(),
+            Some(client()),
+        )
+        .await
+        .unwrap();
+    let account_id = callback(&h.accounts, &context, owner, &pending)
+        .await
+        .account_id
+        .unwrap();
+    let evidence = credential_evidence(&h.database, owner, "oauth", "getData", &principal)
+        .await
+        .unwrap();
+    server.reset().await;
+    // The Upstream Service rotates the refresh token, so a discarded response is not repeatable.
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("refresh_token=refresh-canary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "replacement-canary", "token_type": "Bearer",
+            "refresh_token": "rotated-canary"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Fail only the diagnostic status write that follows the exchange.
+    let (install_fault, _) = crate::tests::application_status_write_fault();
+    h.fixture.execute_fixture_sql(install_fault).await.unwrap();
+    let token = async |now: i64| {
+        h.accounts
+            .credentials(owner, provider.id(), &evidence, now)
+            .await
+            .map(|values| {
+                values
+                    .get(coral_credentials::CredentialValues::TOKEN)
+                    .unwrap()
+                    .expose()
+                    .to_owned()
+            })
+    };
+    assert_eq!(
+        token(2_000_000_000).await.unwrap(),
+        "replacement-canary",
+        "the caller receives the renewed token"
+    );
+    // A claim left unreleased requires reconnection once its sixty seconds pass.
+    assert_eq!(
+        token(62_000_000_001).await.unwrap(),
+        "replacement-canary",
+        "the renewed token is stored and the refresh claim released"
+    );
+    assert!(
+        !h.accounts
+            .credential_status(&context, owner, provider.id(), account_id)
+            .await
+            .unwrap()
+            .requires_authorization
+    );
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one journey follows a permanently rejected refresh through the connection request that reconnect satisfies and Disconnect ends"

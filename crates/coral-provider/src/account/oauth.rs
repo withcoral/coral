@@ -445,9 +445,7 @@ impl AccountModule {
         .await;
         let elapsed =
             i64::try_from(started.elapsed().as_nanos()).map_err(|_error| Error::AccountInput)?;
-        let record_status =
-            result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration));
-        let client_failed = result.is_err();
+        let shown = super::oauth_client::ApplicationEvidence::of(&result);
         let context = ChangeContext::new(
             context.actor().clone(),
             context.occurred_at_unix_nanos().saturating_add(elapsed),
@@ -469,20 +467,14 @@ impl AccountModule {
                 .await
             }
         };
-        if record_status {
-            // Application diagnostics must never discard a one-use token or prevent
-            // the authorization from reaching its durable terminal state.
-            drop(
-                self.record_client_result(
-                    owner,
-                    &row.provider_id,
-                    &row.contract,
-                    client_secret.as_ref(),
-                    client_failed,
-                )
-                .await,
-            );
-        }
+        self.note_application_result(
+            owner,
+            &row.provider_id,
+            &row.contract,
+            client_secret.as_ref(),
+            shown,
+        )
+        .await;
         completion
     }
 }

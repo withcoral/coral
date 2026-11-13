@@ -347,6 +347,28 @@ pub(crate) fn accounts_for(providers: &ProviderModule, dir: &std::path::Path) ->
     )
 }
 
+/// Fixture SQL that fails every write of a Provider's OAuth application status,
+/// and the SQL that removes the fault. Secret rotation and Provider publication
+/// write that column too: install the fault only around a token exchange, where
+/// the application diagnostics are its one writer.
+pub(crate) fn application_status_write_fault() -> (&'static str, &'static str) {
+    match coral_test_support::selected_database().expect("selected test database") {
+        coral_db::DatabaseSystem::Sqlite => (
+            "CREATE TRIGGER application_status_fault BEFORE UPDATE OF oauth_client_failure_code \
+             ON provider_records BEGIN SELECT RAISE(FAIL, 'application status write fault'); END",
+            "DROP TRIGGER application_status_fault",
+        ),
+        coral_db::DatabaseSystem::Postgres => (
+            "CREATE FUNCTION application_status_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN RAISE EXCEPTION 'application status write fault'; END $$; \
+             CREATE TRIGGER application_status_fault BEFORE UPDATE OF oauth_client_failure_code \
+             ON provider_records FOR EACH ROW EXECUTE FUNCTION application_status_fault()",
+            "DROP TRIGGER application_status_fault ON provider_records; \
+             DROP FUNCTION application_status_fault()",
+        ),
+    }
+}
+
 pub(crate) fn change_context(
     actor: AuthenticatedUser,
     occurred_at_unix_nanos: i64,

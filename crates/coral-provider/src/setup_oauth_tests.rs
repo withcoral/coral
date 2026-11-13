@@ -5172,21 +5172,7 @@ async fn successful_token_survives_application_status_write_failure() {
         .await
         .unwrap();
     // Fail only the diagnostic status write, after the token exchange is arranged.
-    let (install_fault, remove_fault) = match coral_test_support::selected_database().unwrap() {
-        coral_db::DatabaseSystem::Sqlite => (
-            "CREATE TRIGGER cubic_status_fault BEFORE UPDATE OF oauth_client_failure_code \
-             ON provider_records BEGIN SELECT RAISE(FAIL, 'cubic status write fault'); END",
-            "DROP TRIGGER cubic_status_fault",
-        ),
-        coral_db::DatabaseSystem::Postgres => (
-            "CREATE FUNCTION cubic_status_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
-             BEGIN RAISE EXCEPTION 'cubic status write fault'; END $$; \
-             CREATE TRIGGER cubic_status_fault BEFORE UPDATE OF oauth_client_failure_code \
-             ON provider_records FOR EACH ROW EXECUTE FUNCTION cubic_status_fault()",
-            "DROP TRIGGER cubic_status_fault ON provider_records; \
-             DROP FUNCTION cubic_status_fault()",
-        ),
-    };
+    let (install_fault, remove_fault) = super::tests::application_status_write_fault();
     harness
         .fixture
         .execute_fixture_sql(install_fault)

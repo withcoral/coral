@@ -11,6 +11,27 @@ use coral_credentials::Secret;
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
+/// What a finished token exchange shows about the application.
+#[derive(Clone, Copy)]
+pub(super) enum ApplicationEvidence {
+    /// The exchange succeeded, so the application works.
+    Works,
+    /// The client was refused, so the application fails.
+    Refused,
+    /// Any other failure shows nothing about the application.
+    Nothing,
+}
+
+impl ApplicationEvidence {
+    pub(super) const fn of<T>(exchange: &Result<T, Error>) -> Self {
+        match exchange {
+            Ok(_) => Self::Works,
+            Err(Error::OAuthClientConfiguration) => Self::Refused,
+            Err(_) => Self::Nothing,
+        }
+    }
+}
+
 /// Application authentication input. Only confidential methods can carry a secret.
 #[derive(Debug)]
 pub enum OAuthClientAuthentication {
@@ -136,7 +157,30 @@ impl AccountModule {
         Ok(status)
     }
 
-    pub(super) async fn record_client_result(
+    /// Records what a token exchange showed about the application, if anything.
+    /// Call it after the exchange's own durable write. It is best effort: these
+    /// diagnostics must never discard a one-use token or a renewed one, nor keep
+    /// an exchange from reaching its durable end.
+    pub(super) async fn note_application_result(
+        &self,
+        account_workspace: &WorkspaceId,
+        provider: &crate::ProviderId,
+        contract: &coral_catalog::ProviderCredentialContract,
+        used: Option<&Secret>,
+        shown: ApplicationEvidence,
+    ) {
+        let failed = match shown {
+            ApplicationEvidence::Works => false,
+            ApplicationEvidence::Refused => true,
+            ApplicationEvidence::Nothing => return,
+        };
+        drop(
+            self.record_client_result(account_workspace, provider, contract, used, failed)
+                .await,
+        );
+    }
+
+    async fn record_client_result(
         &self,
         account_workspace: &WorkspaceId,
         provider: &crate::ProviderId,
