@@ -169,3 +169,72 @@ async fn cancellations(
         .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
         .count()
 }
+
+/// A cancel whose record does not land within its requester's wait leaves a
+/// log on each side: the requester logs its wait running out, and the reader
+/// logs a delivery that reaches the owner late. Together they say whether
+/// delivery or the owner was slow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_outside_request_is_logged_by_its_requester_and_a_late_delivery() {
+    let telemetry = super::trace::telemetry();
+    let engine = Arc::new(StopAwareEngine::default());
+    let (probe, release) = InboxProbe::holding_the_first_commit();
+    let fixture = TestModules::with_execution_adapters(
+        engine.clone(),
+        Arc::new(RejectingUpstream),
+        Arc::new(NoopInvocationObserver),
+        probe.clone(),
+    )
+    .await;
+    let (workspace_id, principal, run_id) = running_run(&fixture, &engine, "user:inbox-slow").await;
+    let owner = fixture.runs.owners.get(&run_id).expect("live owner");
+
+    // The owner applies the cancel, but its chunk is held: the requester's
+    // wait (the shutdown grace and the settle margin) runs out.
+    let waited = fixture
+        .next_process()
+        .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
+        .await;
+    assert!(
+        matches!(waited, Err(Error::RunRequestNotYetRecorded)),
+        "{waited:?}"
+    );
+    assert!(owner.is_stopping() && probe.entered());
+    let requester = telemetry.logs_holding(&workspace_id.to_string());
+    assert!(
+        matches!(requester.as_slice(), [log]
+            if log.contains("within its requester's wait") && log.contains("cancel")),
+        "one requester warning names the request's kind: {requester:?}"
+    );
+
+    // Two seconds later on the Run Module's clock, the reader delivers the
+    // waiting row again: late.
+    fixture
+        .clock
+        .next
+        .fetch_add(2_000_000_000, Ordering::SeqCst);
+    let delivered = probe.delivered();
+    fixture
+        .runs
+        .start(&principal, &workspace_id, submission("ring"))
+        .await
+        .expect("accept another Program");
+    wait_until(|| probe.delivered() > delivered).await;
+    let late = telemetry.logs_holding(run_id.as_str());
+    assert!(
+        late.iter().any(
+            |log| log.contains("delivered a request to its Run Owner late")
+                && log.contains("cancel")
+                && log.contains("delay_ms")
+        ),
+        "the reader warns of a late delivery: {late:?}"
+    );
+
+    release.send(()).expect("land the held chunk");
+    let ended = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
+    assert_eq!(ended.state(), RunState::Canceled);
+    assert_eq!(
+        cancellations(&fixture, &principal, &workspace_id, &run_id).await,
+        1
+    );
+}

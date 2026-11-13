@@ -28,8 +28,10 @@ use coral_workspace::{Principal, WorkspaceId};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{Instant, sleep_until};
 
+use crate::engine::Clock;
 use crate::observation::read_until;
 use crate::owner::{DecisionRequest, Message, Owners};
+use crate::types::HeldRunId;
 use crate::{CoralInstanceId, Error, RunId, run_repository};
 
 /// The shortest gap between two reads of the Run Inbox.
@@ -37,6 +39,9 @@ const READ_GAP: Duration = Duration::from_millis(250);
 /// The longest gap between two reads: the backstop for a change signal
 /// that does not ring.
 const BACKSTOP: Duration = Duration::from_secs(15);
+/// A request that reaches its Run Owner later than this after it was
+/// submitted is logged, so a slow delivery can be told from a slow owner.
+const LATE_DELIVERY: Duration = Duration::from_secs(1);
 
 /// One outside Run Request as the Run Inbox carries it, addressed to its Run.
 #[derive(Debug, Clone)]
@@ -55,6 +60,16 @@ pub(crate) enum OutsideRequest {
     Decide(DecisionRequest),
 }
 
+impl OutsideRequest {
+    /// The request's kind, for logs.
+    pub(crate) const fn kind(&self) -> &'static str {
+        match self {
+            Self::Cancel(_) => "cancel",
+            Self::Decide(_) => "decision",
+        }
+    }
+}
+
 /// The row that carried one delivered request: the owner removes it by this
 /// identity, and knows by it a request delivered again.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,12 +80,14 @@ pub(crate) struct InboxRow(pub(crate) String);
 pub(crate) struct Delivery {
     pub(crate) row: InboxRow,
     pub(crate) request: InboxRequest,
+    /// When the requester put it in the Run Inbox, on the Run Module's clock.
+    pub(crate) submitted_at_unix_nanos: i64,
 }
 
 impl Delivery {
     /// The message that hands the request to its Run Owner.
     pub(crate) fn into_message(self) -> Message {
-        let Self { row, request } = self;
+        let Self { row, request, .. } = self;
         match request.request {
             OutsideRequest::Cancel(requester) => Message::Cancel { requester, row },
             OutsideRequest::Decide(request) => Message::Decide { request, row },
@@ -158,12 +175,27 @@ impl RunInbox {
             .await
     }
 
+    /// Waits until `until` for the submitted `request` to be Recorded. A
+    /// wait that runs out is logged: with the Run Inbox reader's late-delivery
+    /// log, or its absence, it says whether delivery or the owner was slow.
     pub(crate) async fn recorded(
         &self,
         request: &InboxRequest,
         until: Instant,
     ) -> Result<bool, Error> {
-        self.inbox.recorded(request, until).await
+        let waiting = Instant::now();
+        let recorded = self.inbox.recorded(request, until).await?;
+        if !recorded {
+            let waited = waiting.elapsed().as_millis();
+            tracing::warn!(
+                coral.workspace.id = safe::id(&request.workspace_id),
+                coral.run.request.kind = safe::kind(request.request.kind()),
+                coral.run.request.delay_ms =
+                    safe::number(i64::try_from(waited).unwrap_or(i64::MAX)),
+                "Run Owner did not record an outside request within its requester's wait"
+            );
+        }
+        Ok(recorded)
     }
 
     /// The requests waiting for the running Run `run_id`, in insert order,
@@ -211,6 +243,7 @@ impl RunInbox {
         &self,
         owners: &Owners,
         instance: &CoralInstanceId,
+        clock: &Arc<dyn Clock>,
         #[cfg(test)] observer: &Arc<dyn crate::execution::ExecutionObserver>,
     ) {
         let reader = self.reader.get_or_init(|| {
@@ -218,6 +251,7 @@ impl RunInbox {
                 self.inbox.clone(),
                 owners.clone(),
                 instance.clone(),
+                clock.clone(),
                 #[cfg(test)]
                 observer.clone(),
             )
@@ -242,6 +276,7 @@ impl Reader {
         inbox: Arc<dyn Inbox>,
         owners: Owners,
         instance: CoralInstanceId,
+        clock: Arc<dyn Clock>,
         #[cfg(test)] observer: Arc<dyn crate::execution::ExecutionObserver>,
     ) -> Self {
         let holding = Arc::new(AtomicBool::new(false));
@@ -259,6 +294,7 @@ impl Reader {
                         holds = true;
                         continue;
                     };
+                    warn_if_late(clock.as_ref(), owner.held_id(), &delivery);
                     owner.send(delivery.into_message());
                     #[cfg(test)]
                     observer.inbox_delivered();
@@ -374,6 +410,25 @@ impl Inbox for TableInbox {
         rows: &[InboxRow],
     ) -> Result<(), Error> {
         run_repository::delete_inbox_rows(transaction, workspace_id, run_id, rows).await
+    }
+}
+
+/// Logs a request that reached its Run Owner later than [`LATE_DELIVERY`]
+/// after it was submitted. Its requester waits a few seconds for the record;
+/// this tells a slow delivery from a slow owner when that wait runs out.
+/// Between hosts the gap also holds their clocks' difference.
+fn warn_if_late(clock: &dyn Clock, run: &HeldRunId, delivery: &Delivery) {
+    let Ok(now) = clock.now_unix_nanos() else {
+        return;
+    };
+    let delay_ms = now.saturating_sub(delivery.submitted_at_unix_nanos) / 1_000_000;
+    if delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX) {
+        tracing::warn!(
+            coral.run.id = safe::id(run),
+            coral.run.request.kind = safe::kind(delivery.request.request.kind()),
+            coral.run.request.delay_ms = safe::number(delay_ms),
+            "Run Inbox delivered a request to its Run Owner late"
+        );
     }
 }
 
