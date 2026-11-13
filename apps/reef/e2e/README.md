@@ -692,7 +692,8 @@ may show one-time credentials; logs and screenshots can expose private content.
 The viewer binds only to loopback, rejects unrelated Host headers and serves only
 files inside the results root. Remote viewing requires the explicit origin setting
 above and a reviewed tailnet access policy. Do not publish evidence from your own
-machine without review; CI's upload of a failed run, below, is the one exception.
+machine without review; CI's upload of a failed or cancelled run, below, is the
+one exception.
 Local evidence is not automatically pruned; delete old run directories when no
 longer needed.
 
