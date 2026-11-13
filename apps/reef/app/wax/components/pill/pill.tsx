@@ -2,6 +2,8 @@ import classNames from 'classnames'
 import React, { Children, isValidElement } from 'react'
 import type { ElementType } from 'react'
 
+import { Icon } from '@/wax/components/icon'
+
 import * as styles from './pill.css'
 
 export type PillColor =
@@ -18,9 +20,21 @@ export type PillColor =
 export type PillProps<T extends ElementType = 'div'> = PillBaseProps &
   (T extends 'button'
     ? Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'as' | keyof PillBaseProps>
-    : Omit<React.HTMLAttributes<HTMLDivElement>, 'as' | keyof PillBaseProps>) & {
+    : Omit<React.HTMLAttributes<HTMLDivElement>, 'as' | keyof PillBaseProps>) &
+  // The remove button needs a host that is not interactive itself, such as a button or link.
+  (T extends 'div' | 'span'
+    ? {
+        /** Adds a button after the text that removes the pill. */
+        remove?: PillRemove
+      }
+    : { remove?: never }) & {
     as?: T
   }
+
+export interface PillRemove {
+  label: string
+  onClick: () => void
+}
 
 export type PillSize = 'small' | 'default' | 'large'
 
@@ -42,6 +56,7 @@ export function Pill<T extends ElementType = 'div'>({
   className,
   color = 'gray',
   isActive,
+  remove,
   size = 'default',
   title,
   variant = 'filled',
@@ -78,6 +93,20 @@ export function Pill<T extends ElementType = 'div'>({
     >
       {icons}
       {textParts.length > 0 && <span className={styles.textContent}>{textParts}</span>}
+      {remove && (
+        <button
+          aria-label={remove.label}
+          className={styles.removeButton}
+          onClick={(event) => {
+            // The pill may have its own onClick; removing it should not run that too.
+            event.stopPropagation()
+            remove.onClick()
+          }}
+          type="button"
+        >
+          <Icon color="inherit" name="X" size="14" />
+        </button>
+      )}
     </Component>
   )
 }
