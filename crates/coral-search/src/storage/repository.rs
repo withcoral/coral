@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use coral_db::{Error, Transaction};
+use coral_db::{DatabaseSystem, Error, Transaction};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
 use super::{Extension, FeatureProbe};
@@ -80,13 +80,55 @@ pub(super) enum VectorTable {
     SameDimension,
     /// A table whose vectors have another dimension.
     OtherDimension,
-    /// A table with no `embedding` column, or one that is not a `halfvec`
-    /// of a fixed dimension.
+    /// On Postgres, a table with no `embedding` column, or one that is not
+    /// a `halfvec` of a fixed dimension.
     UnexpectedEmbedding {
         /// The column's type as Postgres names it, or `None` when the table
         /// has no such column.
         column_type: Option<String>,
     },
+    /// On `SQLite`, one of the two tables alone, or a table that is not the
+    /// one Coral creates.
+    UnexpectedSqliteTables,
+}
+
+/// The `SQLite` table that keys each vector: a Search Entity's key, the
+/// rowid of its vector in the `vec0` table, and what the vector was made
+/// from. The vector query's eligibility subquery joins it to
+/// `search_entities` and gives `vec0` the rowids. `vector_rowid` is an
+/// `INTEGER PRIMARY KEY`, so `VACUUM` keeps it; `search_entities` has none.
+/// No foreign key: the reconcile pass removes orphans, as on Postgres.
+const SQLITE_KEY_TABLE: &str = "CREATE TABLE search_entity_embeddings (\
+    vector_rowid INTEGER PRIMARY KEY, \
+    workspace_id TEXT NOT NULL, \
+    doc_id TEXT NOT NULL, \
+    embedder_revision TEXT NOT NULL, \
+    source_indexed_at_unix_nanos INTEGER NOT NULL, \
+    CONSTRAINT search_entity_embeddings_key UNIQUE (workspace_id, doc_id)\
+)";
+
+/// The start and end of the statement that creates the sqlite-vec table
+/// of vectors, around their dimension.
+const SQLITE_VECTOR_TABLE: (&str, &str) = (
+    "CREATE VIRTUAL TABLE search_entity_embedding_vectors USING vec0(embedding float[",
+    "] distance_metric=cosine)",
+);
+
+fn sqlite_vector_table_statement(dimension: usize) -> String {
+    let (start, end) = SQLITE_VECTOR_TABLE;
+    format!("{start}{dimension}{end}")
+}
+
+/// The dimension of a sqlite-vec table that Coral created with `statement`,
+/// or `None` for any other statement.
+fn sqlite_vector_dimension(statement: &str) -> Option<usize> {
+    let (start, end) = SQLITE_VECTOR_TABLE;
+    let dimension = statement
+        .strip_prefix(start)?
+        .strip_suffix(end)?
+        .parse::<usize>()
+        .ok()?;
+    (sqlite_vector_table_statement(dimension) == statement).then_some(dimension)
 }
 
 /// The statement that creates the vector table for vectors of `dimension`.
@@ -115,19 +157,38 @@ fn vector_table_statement(dimension: usize) -> String {
 }
 
 /// Holds, until the transaction ends, the lock that makes concurrent boots
-/// prepare the vector table one at a time.
+/// prepare the vector table one at a time. On `SQLite` the transaction
+/// already holds the one writer.
 pub(super) async fn lock_vector_table(transaction: &mut Transaction<'_>) -> Result<(), Error> {
-    transaction
-        .execute_script(
-            "SELECT pg_advisory_xact_lock(hashtextextended('coral.search_entity_embeddings', 0))",
-        )
-        .await
+    match transaction.system() {
+        DatabaseSystem::Postgres => {
+            transaction
+                .execute_script(
+                    "SELECT pg_advisory_xact_lock(\
+                     hashtextextended('coral.search_entity_embeddings', 0))",
+                )
+                .await
+        }
+        DatabaseSystem::Sqlite => Ok(()),
+    }
+}
+
+/// Reads what the database holds under the vector tables' names, measured
+/// against vectors of `dimension`.
+pub(super) async fn vector_table(
+    transaction: &mut Transaction<'_>,
+    dimension: usize,
+) -> Result<VectorTable, Error> {
+    match transaction.system() {
+        DatabaseSystem::Postgres => postgres_vector_table(transaction, dimension).await,
+        DatabaseSystem::Sqlite => sqlite_vector_tables(transaction, dimension).await,
+    }
 }
 
 /// Reads the dimension of the vector table in the first schema on the
 /// search path. pgvector keeps a `halfvec` column's dimension as its type
 /// modifier.
-pub(super) async fn vector_table(
+async fn postgres_vector_table(
     transaction: &mut Transaction<'_>,
     dimension: usize,
 ) -> Result<VectorTable, Error> {
@@ -159,19 +220,71 @@ pub(super) async fn vector_table(
     })
 }
 
+/// Reads the two `SQLite` vector tables: Coral's key table beside a
+/// sqlite-vec table that Coral created for some dimension, both absent, or
+/// anything else.
+async fn sqlite_vector_tables(
+    transaction: &mut Transaction<'_>,
+    dimension: usize,
+) -> Result<VectorTable, Error> {
+    let tables: Vec<(String, String)> = transaction
+        .fetch_all_sql(
+            "SELECT name, sql FROM sqlite_schema WHERE type = 'table' \
+             AND name IN ('search_entity_embeddings', 'search_entity_embedding_vectors')",
+            sea_query::Values(Vec::new()),
+        )
+        .await?;
+    let statement = |table: &str| {
+        tables
+            .iter()
+            .find(|(name, _statement)| name == table)
+            .map(|(_name, statement)| statement.as_str())
+    };
+    Ok(
+        match (
+            statement("search_entity_embeddings"),
+            statement("search_entity_embedding_vectors"),
+        ) {
+            (None, None) => VectorTable::Absent,
+            (Some(keys), Some(vectors)) if keys == SQLITE_KEY_TABLE => {
+                match sqlite_vector_dimension(vectors) {
+                    Some(stored) if stored == dimension => VectorTable::SameDimension,
+                    Some(_) => VectorTable::OtherDimension,
+                    None => VectorTable::UnexpectedSqliteTables,
+                }
+            }
+            _ => VectorTable::UnexpectedSqliteTables,
+        },
+    )
+}
+
 pub(super) async fn drop_vector_table(transaction: &mut Transaction<'_>) -> Result<(), Error> {
-    transaction
-        .execute_script("DROP TABLE search_entity_embeddings")
-        .await
+    let statement = match transaction.system() {
+        DatabaseSystem::Postgres => "DROP TABLE search_entity_embeddings",
+        DatabaseSystem::Sqlite => {
+            "DROP TABLE search_entity_embedding_vectors; DROP TABLE search_entity_embeddings"
+        }
+    };
+    transaction.execute_script(statement).await
 }
 
 pub(super) async fn create_vector_table(
     transaction: &mut Transaction<'_>,
     dimension: usize,
 ) -> Result<(), Error> {
-    transaction
-        .execute_script(&vector_table_statement(dimension))
-        .await
+    match transaction.system() {
+        DatabaseSystem::Postgres => {
+            transaction
+                .execute_script(&vector_table_statement(dimension))
+                .await
+        }
+        DatabaseSystem::Sqlite => {
+            transaction.execute_script(SQLITE_KEY_TABLE).await?;
+            transaction
+                .execute_script(&sqlite_vector_table_statement(dimension))
+                .await
+        }
+    }
 }
 
 pub(super) async fn sqlite_version(transaction: &mut Transaction<'_>) -> Result<String, Error> {
@@ -201,6 +314,16 @@ pub(super) async fn probe_trigram_tokenizer(
         transaction,
         "CREATE VIRTUAL TABLE temp.coral_search_trigram_probe \
          USING fts5(value, tokenize = 'trigram')",
+    )
+    .await
+}
+
+/// Probes sqlite-vec, which Coral's build compiles in and registers for
+/// every connection.
+pub(super) async fn probe_vec0(transaction: &mut Transaction<'_>) -> Result<FeatureProbe, Error> {
+    probe_sqlite(
+        transaction,
+        "CREATE VIRTUAL TABLE temp.coral_search_vec0_probe USING vec0(embedding float[1])",
     )
     .await
 }

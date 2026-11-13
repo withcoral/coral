@@ -11,7 +11,7 @@ fn missing(cause: &str) -> FeatureProbe {
 }
 
 #[test]
-fn a_missing_feature_fails_boot_naming_the_feature_and_its_cause() {
+fn a_missing_postgres_feature_fails_boot_naming_the_feature_and_its_cause() {
     let postgres = |pg_trgm, vector| {
         check_postgres_features(PostgresFeatures {
             server_version: "17.10".to_string(),
@@ -24,14 +24,6 @@ fn a_missing_feature_fails_boot_naming_the_feature_and_its_cause() {
          (permission denied to create extension \"pg_trgm\"); install pg_trgm in a \
          schema on Coral's search path, or let Coral's database role create it",
     );
-    let sqlite = |fts5, trigram_tokenizer| {
-        check_sqlite_features(SqliteFeatures {
-            version: "3.33.0".to_string(),
-            fts5,
-            trigram_tokenizer,
-        })
-    };
-
     for (case, result, expected) in [
         (
             "Postgres with pg_trgm and pgvector",
@@ -80,16 +72,65 @@ fn a_missing_feature_fails_boot_naming_the_feature_and_its_cause() {
                  it, or set `[search] semantic_search_enabled = false`",
             ),
         ),
+    ] {
+        assert_eq!(
+            result.err().map(|error| error.to_string()),
+            expected.map(str::to_string),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_sqlite_feature_fails_boot_naming_the_feature_and_its_cause() {
+    let sqlite = |fts5, trigram_tokenizer, vec0| {
+        check_sqlite_features(SqliteFeatures {
+            version: "3.33.0".to_string(),
+            fts5,
+            trigram_tokenizer,
+            vec0,
+        })
+    };
+
+    for (case, result, expected) in [
         (
             "SQLite with FTS5 and the trigram tokenizer",
-            sqlite(FeatureProbe::Present, FeatureProbe::Present),
+            sqlite(FeatureProbe::Present, FeatureProbe::Present, None),
             None,
+        ),
+        (
+            "SQLite with FTS5, the trigram tokenizer and sqlite-vec",
+            sqlite(
+                FeatureProbe::Present,
+                FeatureProbe::Present,
+                Some(FeatureProbe::Present),
+            ),
+            None,
+        ),
+        (
+            "SQLite without sqlite-vec, vector side off",
+            sqlite(FeatureProbe::Present, FeatureProbe::Present, None),
+            None,
+        ),
+        (
+            "SQLite without sqlite-vec",
+            sqlite(
+                FeatureProbe::Present,
+                FeatureProbe::Present,
+                Some(missing("no such module: vec0")),
+            ),
+            Some(
+                "SQLite 3.33.0 does not provide required search feature: sqlite-vec (no such \
+                 module: vec0); use a Coral build whose SQLite includes sqlite-vec, or set \
+                 `[search] semantic_search_enabled = false`",
+            ),
         ),
         (
             "SQLite without FTS5",
             sqlite(
                 missing("no such module: fts5"),
                 missing("no such module: fts5"),
+                Some(FeatureProbe::Present),
             ),
             Some(
                 "SQLite 3.33.0 does not provide required search feature: FTS5 (no such module: \
@@ -98,7 +139,11 @@ fn a_missing_feature_fails_boot_naming_the_feature_and_its_cause() {
         ),
         (
             "SQLite without the trigram tokenizer",
-            sqlite(FeatureProbe::Present, missing("no such tokenizer: trigram")),
+            sqlite(
+                FeatureProbe::Present,
+                missing("no such tokenizer: trigram"),
+                None,
+            ),
             Some(
                 "SQLite 3.33.0 does not provide required search feature: FTS5 trigram tokenizer \
                  (no such tokenizer: trigram); use a Coral build whose SQLite includes FTS5 with \

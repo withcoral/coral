@@ -187,6 +187,7 @@ async fn connect_sqlite(path: &Path, writer_wait: Duration) -> Result<Database, 
         .busy_timeout(writer_wait)
         // `REGEXP` lets a statement use the pattern it gives Postgres's `~`.
         .with_regexp();
+    load_sqlite_vec()?;
     // Connect the writer first: it may switch a new file to WAL, which a
     // query-only reader cannot do.
     let writes = SqlitePoolOptions::new()
@@ -218,6 +219,7 @@ async fn connect_read_only_sqlite(path: &Path) -> Result<ReadOnlyDatabase, Error
         .foreign_keys(true)
         .busy_timeout(SQLITE_BUSY_TIMEOUT)
         .with_regexp();
+    load_sqlite_vec()?;
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
@@ -231,6 +233,14 @@ async fn connect_read_only_sqlite(path: &Path) -> Result<ReadOnlyDatabase, Error
         access: ReadOnly,
         pool_metric: std::sync::OnceLock::new(),
     })
+}
+
+/// Makes every `SQLite` connection this process opens from now on load
+/// sqlite-vec, which Universal Search's vector table needs. Each pool calls
+/// it before it connects; only the first call registers the extension.
+fn load_sqlite_vec() -> Result<(), Error> {
+    coral_sqlite_vec::register()
+        .map_err(|error| Error::Sqlx(sqlx::Error::Configuration(Box::new(error))))
 }
 
 async fn connect_postgres(url: &str, keepalive: Duration) -> Result<Database, Error> {
@@ -424,6 +434,41 @@ mod tests {
             drop(held);
             reader.close().await;
             writer.close().await;
+        }
+
+        /// Universal Search's vector table needs sqlite-vec on the writer that
+        /// creates and fills it, on the query-only readers that search it, and
+        /// on a read-only handle that opens a file which holds it.
+        #[tokio::test]
+        async fn every_sqlite_connection_has_sqlite_vec() {
+            coral_test_support::database_only!(Sqlite);
+            let temp = tempfile::tempdir().unwrap();
+            let options = DatabaseOptions::Sqlite {
+                path: temp.path().join("coral.db"),
+            };
+            let version = || {
+                sea_query::Query::select()
+                    .expr(sea_query::Expr::cust("vec_version()"))
+                    .to_owned()
+            };
+            let database = Database::connect(options.clone()).await.unwrap();
+            let mut writer = database.begin().await.unwrap();
+            let written: Option<(String,)> = writer.fetch_optional(version()).await.unwrap();
+            writer.rollback().await.unwrap();
+            let mut snapshot = database.begin_read_snapshot().await.unwrap();
+            let read: Option<(String,)> = snapshot.fetch_optional(version()).await.unwrap();
+            snapshot.rollback().await.unwrap();
+            let reader = super::super::ReadOnlyDatabase::connect_read_only(options)
+                .await
+                .unwrap();
+            let inspected: Vec<(String,)> = reader.fetch_all(version()).await.unwrap();
+            reader.close().await;
+            database.close().await;
+
+            let pinned = "v0.1.9".to_owned();
+            assert_eq!(written, Some((pinned.clone(),)), "the writer");
+            assert_eq!(read, Some((pinned.clone(),)), "a query-only reader");
+            assert_eq!(inspected, [(pinned,)], "a read-only handle");
         }
 
         #[tokio::test]

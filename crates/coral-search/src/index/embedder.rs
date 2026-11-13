@@ -1,6 +1,6 @@
 //! The Embedder: the third background task of [`SearchIndex`], beside the
 //! backlog observer and the reconcile task. It gives each Search Entity a
-//! vector of its text on Postgres (ADR 0035, "The Embedder").
+//! vector of its text (ADR 0035, "The Embedder").
 //!
 //! It drains a predicate, not a queue: a Search Entity needs a vector when it
 //! has none, or one of another Embedder revision, or one made from another
@@ -462,8 +462,8 @@ enum BatchOutcome {
     Down,
 }
 
-/// Whether `vector` holds only finite numbers. pgvector refuses any other;
-/// that is the text's failure, not the database's.
+/// Whether `vector` holds only finite numbers. pgvector and sqlite-vec
+/// refuse any other; that is the text's failure, not the database's.
 fn finite(vector: &[f32]) -> bool {
     vector.iter().all(|value| value.is_finite())
 }

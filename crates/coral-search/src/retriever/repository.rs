@@ -263,8 +263,9 @@ pub(super) async fn rank_tools(
 
 /// The vector list of the Tools of the scope: the Search Entity key and
 /// source stamp of each vector of `revision`, nearest to `vector` first, at
-/// most `limit`. It reads the vector table alone, whose columns carry the
-/// scope's conditions. Ties break by key.
+/// most `limit`. Ties break by key. On Postgres it reads the vector table
+/// alone, whose columns carry the scope's conditions; on `SQLite` the
+/// scope's conditions pick the rowids that sqlite-vec scans.
 pub(super) async fn nearest_tools(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -308,7 +309,7 @@ async fn nearest(
     vector: &[f32],
     limit: usize,
 ) -> Result<Vec<NearestVector>, Error> {
-    let (sql, values) = nearest_statement(scope, revision, vector, limit);
+    let (sql, values) = nearest_statement(transaction.system(), scope, revision, vector, limit);
     let rows: Vec<(String, i64)> = transaction.fetch_all_sql(&sql, values).await?;
     Ok(rows
         .into_iter()
@@ -362,7 +363,7 @@ async fn current_rows<T>(
         #[sqlx(flatten)]
         row: RankedRow,
     }
-    let mut binds = Binds::new(DatabaseSystem::Postgres);
+    let mut binds = Binds::new(transaction.system());
     let workspace = binds.push(workspace_id.to_string());
     let columns = ranked_columns(&mut binds, "d", plan);
     let doc_ids = binds.list(doc_ids);
@@ -396,32 +397,59 @@ fn ranked_columns(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     )
 }
 
-/// The vector query over the scope, with its binds. The vector binds as
-/// `halfvec`, the column's type, so the distance needs no cast per row, and
-/// the scan is exact: the table has no approximate (HNSW) index.
+/// The vector query over the scope, with its binds.
+///
+/// On Postgres the vector binds as `halfvec`, the column's type, so the
+/// distance needs no cast per row, and the scan is exact: the table has no
+/// approximate (HNSW) index.
+///
+/// On `SQLite` the scope's conditions select, through the key table, the
+/// rowids of the current revision's vectors, and `rowid IN (...)` hands
+/// them to sqlite-vec, which scans only those, exactly, before it keeps the
+/// nearest `limit`. A tie at that cut keeps the lower rowid; the result
+/// orders ties by key, as on Postgres.
 fn nearest_statement(
+    system: DatabaseSystem,
     scope: &Scope<'_>,
     revision: &str,
     vector: &[f32],
     limit: usize,
 ) -> (String, sea_query::Values) {
-    let mut binds = Binds::new(DatabaseSystem::Postgres);
+    let mut binds = Binds::new(system);
     let conditions = scope.sql(&mut binds);
     let revision = binds.push(revision.to_owned());
     let vector = binds.push(crate::storage::vector_literal(vector));
     let limit = binds.push(limit_value(limit));
-    let sql = format!(
-        "SELECT d.doc_id, d.source_indexed_at_unix_nanos \
-         FROM search_entity_embeddings AS d \
-         WHERE {conditions} AND d.embedder_revision = {revision} \
-         ORDER BY d.embedding <=> CAST({vector} AS halfvec), d.doc_id COLLATE \"C\" ASC \
-         LIMIT {limit}"
-    );
+    let sql = match system {
+        DatabaseSystem::Postgres => format!(
+            "SELECT d.doc_id, d.source_indexed_at_unix_nanos \
+             FROM search_entity_embeddings AS d \
+             WHERE {conditions} AND d.embedder_revision = {revision} \
+             ORDER BY d.embedding <=> CAST({vector} AS halfvec), d.doc_id COLLATE \"C\" ASC \
+             LIMIT {limit}"
+        ),
+        DatabaseSystem::Sqlite => format!(
+            "WITH nearest AS MATERIALIZED (\
+                SELECT v.rowid AS vector_rowid, v.distance \
+                FROM search_entity_embedding_vectors AS v \
+                WHERE v.embedding MATCH {vector} AND v.k = {limit} \
+                AND v.rowid IN (\
+                    SELECT e.vector_rowid FROM search_entity_embeddings AS e \
+                    JOIN search_entities AS d \
+                        ON d.workspace_id = e.workspace_id AND d.doc_id = e.doc_id \
+                    WHERE {conditions} AND e.embedder_revision = {revision})) \
+             SELECT e.doc_id, e.source_indexed_at_unix_nanos \
+             FROM nearest AS n \
+             JOIN search_entity_embeddings AS e ON e.vector_rowid = n.vector_rowid \
+             ORDER BY n.distance, e.doc_id"
+        ),
+    };
     (sql, binds.values)
 }
 
-/// The Postgres plan of the vector query over `tools`, one line per row,
-/// for a test that checks which tables it reads.
+/// The plan of the vector query over `tools`, one line per row, for a
+/// test that checks which tables it reads (Postgres) or what sqlite-vec
+/// receives (`SQLite`).
 #[cfg(test)]
 pub(super) async fn explain_nearest_tools(
     transaction: &mut Transaction<'_>,
@@ -434,8 +462,8 @@ pub(super) async fn explain_nearest_tools(
     explain_nearest(transaction, &binds.scope(workspace_id), revision, vector).await
 }
 
-/// The Postgres plan of the vector query over the Authored Tools of the
-/// scope, one line per row, for the same test.
+/// The plan of the vector query over the Authored Tools of the scope, one
+/// line per row, for the same tests.
 #[cfg(test)]
 pub(super) async fn explain_nearest_authored_tools(
     transaction: &mut Transaction<'_>,
@@ -458,11 +486,22 @@ async fn explain_nearest(
     revision: &str,
     vector: &[f32],
 ) -> Result<Vec<String>, Error> {
-    let (sql, values) = nearest_statement(scope, revision, vector, 100);
-    let plan: Vec<(String,)> = transaction
-        .fetch_all_sql(&format!("EXPLAIN {sql}"), values)
-        .await?;
-    Ok(plan.into_iter().map(|(line,)| line).collect())
+    let system = transaction.system();
+    let (sql, values) = nearest_statement(system, scope, revision, vector, 100);
+    Ok(match system {
+        DatabaseSystem::Postgres => {
+            let plan: Vec<(String,)> = transaction
+                .fetch_all_sql(&format!("EXPLAIN {sql}"), values)
+                .await?;
+            plan.into_iter().map(|(line,)| line).collect()
+        }
+        DatabaseSystem::Sqlite => {
+            let plan: Vec<(i64, i64, i64, String)> = transaction
+                .fetch_all_sql(&format!("EXPLAIN QUERY PLAN {sql}"), values)
+                .await?;
+            plan.into_iter().map(|(_, _, _, line)| line).collect()
+        }
+    })
 }
 
 /// A [`ToolScope`]'s values as the statements bind them.

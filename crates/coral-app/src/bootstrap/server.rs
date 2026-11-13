@@ -966,13 +966,10 @@ pub(crate) async fn start_server(
     // reconcile task's first pass runs in the background, so neither boot nor
     // a request waits for it.
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
-    // Only Postgres keeps vectors yet, so only there does the Embedder need
-    // the model in memory. Every clone of the index is made after this, so
-    // each write wakes the Embedder; the model fills the slot once the
-    // delivery below finds the files.
-    let embedder_model = (search_model.is_some()
-        && database.system() == coral_db::DatabaseSystem::Postgres)
-        .then(|| watch::channel(None));
+    // Every clone of the index is made after this, so each write wakes the
+    // Embedder; the model fills the slot once the delivery below finds the
+    // files.
+    let embedder_model = search_model.is_some().then(|| watch::channel(None));
     let search_index = match &embedder_model {
         Some((_, model)) => search_index.with_embedder(model.clone()),
         None => search_index,

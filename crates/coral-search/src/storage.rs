@@ -5,9 +5,10 @@
 //! and statistics tables on Postgres, an FTS5 table and its triggers on
 //! `SQLite`. Those objects need database features that a migration cannot
 //! ensure or explain. [`prepare_storage`] checks them before the chain runs,
-//! and pgvector too while the vector side is on. [`prepare_vector_table`]
-//! keeps the pgvector table of Search Entity embeddings on Postgres after the
-//! chain runs.
+//! and pgvector or sqlite-vec too while the vector side is on.
+//! [`prepare_vector_table`] keeps the table of Search Entity embeddings after
+//! the chain runs: a pgvector table on Postgres; on `SQLite`, a key table
+//! beside a sqlite-vec `vec0` table of the vectors.
 
 mod repository;
 #[cfg(test)]
@@ -47,6 +48,18 @@ pub enum StorageError {
         /// The manifest's vector length.
         expected_dimension: usize,
     },
+    /// On `SQLite`, the vector tables are not the two that Coral creates: the
+    /// key table and the sqlite-vec table of cosine vectors. Boot keeps them
+    /// as they are.
+    #[error(
+        "search vector tables search_entity_embeddings and search_entity_embedding_vectors \
+         are not the ones Coral creates for vectors of {expected_dimension} dimensions; \
+         drop both and the next boot creates them again"
+    )]
+    UnexpectedSqliteVectorTables {
+        /// The manifest's vector length.
+        expected_dimension: usize,
+    },
     /// Database access failed.
     #[error(transparent)]
     Database(#[from] coral_db::Error),
@@ -57,14 +70,14 @@ pub enum StorageError {
 /// and this role may.
 ///
 /// Process bootstrap calls this once, right before the shared migration
-/// chain, whose search steps use these features. On `SQLite` the vector side
-/// changes nothing yet.
+/// chain, whose search steps use these features. On `SQLite`, while the
+/// vector side is on, it checks that sqlite-vec is loaded.
 ///
 /// # Errors
 ///
 /// Returns [`StorageError::MissingFeature`] naming the feature when `pg_trgm`,
-/// `vector` while the vector side is on, FTS5 or its trigram tokenizer is
-/// missing.
+/// FTS5 or its trigram tokenizer is missing, or, while the vector side is
+/// on, `vector` or sqlite-vec.
 pub async fn prepare_storage(
     database: &Database,
     vector_storage: VectorStorage,
@@ -73,7 +86,9 @@ pub async fn prepare_storage(
         DatabaseSystem::Postgres => {
             check_postgres_features(probe_postgres(database, vector_storage).await?)
         }
-        DatabaseSystem::Sqlite => check_sqlite_features(probe_sqlite(database).await?),
+        DatabaseSystem::Sqlite => {
+            check_sqlite_features(probe_sqlite(database, vector_storage).await?)
+        }
     }
 }
 
@@ -230,9 +245,10 @@ pub enum VectorStorage {
     },
 }
 
-/// Creates the vector table on Postgres, or drops and creates it again when
-/// the manifest's dimension changes. A table of the manifest's dimension is
-/// kept with its vectors.
+/// Creates the vector table, or drops and creates it again when the
+/// manifest's dimension changes. A table of the manifest's dimension is
+/// kept with its vectors. On `SQLite` the vector table is two: the key table
+/// and the sqlite-vec table, created and dropped together.
 ///
 /// The table lives outside the migration chain: a migration that names a
 /// vector type fails on a Postgres without pgvector, where Coral with the
@@ -244,8 +260,10 @@ pub enum VectorStorage {
 ///
 /// Returns [`StorageError::UnexpectedVectorTable`] and keeps the table when
 /// its `embedding` column is missing or is not a `halfvec` of a fixed
-/// dimension, and [`StorageError::Database`] when the table cannot be read,
-/// dropped or created.
+/// dimension, [`StorageError::UnexpectedSqliteVectorTables`] and keeps them
+/// when the `SQLite` tables are not the ones Coral creates, and
+/// [`StorageError::Database`] when the table cannot be read, dropped or
+/// created.
 pub async fn prepare_vector_table(
     database: &Database,
     vector_storage: VectorStorage,
@@ -253,9 +271,6 @@ pub async fn prepare_vector_table(
     let VectorStorage::On { dimension } = vector_storage else {
         return Ok(());
     };
-    if database.system() != DatabaseSystem::Postgres {
-        return Ok(());
-    }
     let mut transaction = database.begin().await?;
     // Read committed: the read below sees what a boot that held the lock
     // first committed.
@@ -278,6 +293,12 @@ pub async fn prepare_vector_table(
                 expected_dimension: dimension,
             });
         }
+        VectorTable::UnexpectedSqliteTables => {
+            transaction.rollback().await?;
+            return Err(StorageError::UnexpectedSqliteVectorTables {
+                expected_dimension: dimension,
+            });
+        }
         VectorTable::Absent => {}
     }
     repository::create_vector_table(&mut transaction, dimension).await?;
@@ -285,40 +306,61 @@ pub async fn prepare_vector_table(
     Ok(())
 }
 
-/// What the `SQLite` probes found out about FTS5 and its trigram tokenizer.
+/// What the `SQLite` probes found out about FTS5, its trigram tokenizer,
+/// and sqlite-vec.
 struct SqliteFeatures {
     version: String,
     fts5: FeatureProbe,
     trigram_tokenizer: FeatureProbe,
+    /// `None` when the vector side is off and nothing probed it.
+    vec0: Option<FeatureProbe>,
 }
 
-/// Probes FTS5 and its trigram tokenizer on temporary virtual tables, then
-/// rolls them back.
-async fn probe_sqlite(database: &Database) -> Result<SqliteFeatures, StorageError> {
+/// Probes FTS5, its trigram tokenizer, and sqlite-vec while the vector side
+/// is on, on temporary virtual tables, then rolls them back.
+async fn probe_sqlite(
+    database: &Database,
+    vector_storage: VectorStorage,
+) -> Result<SqliteFeatures, StorageError> {
     let mut transaction = database.begin().await?;
     let version = repository::sqlite_version(&mut transaction).await?;
     let fts5 = repository::probe_fts5(&mut transaction).await?;
     let trigram_tokenizer = repository::probe_trigram_tokenizer(&mut transaction).await?;
+    let vec0 = match vector_storage {
+        VectorStorage::Off => None,
+        VectorStorage::On { .. } => Some(repository::probe_vec0(&mut transaction).await?),
+    };
     transaction.rollback().await?;
     Ok(SqliteFeatures {
         version,
         fts5,
         trigram_tokenizer,
+        vec0,
     })
 }
 
 fn check_sqlite_features(probe: SqliteFeatures) -> Result<(), StorageError> {
-    let (feature, cause) = match (probe.fts5, probe.trigram_tokenizer) {
-        (FeatureProbe::Present, FeatureProbe::Present) => return Ok(()),
-        (FeatureProbe::Missing { cause }, _) => ("FTS5", cause),
-        (FeatureProbe::Present, FeatureProbe::Missing { cause }) => {
-            ("FTS5 trigram tokenizer", cause)
+    const TEXT_REMEDY: &str =
+        "use a Coral build whose SQLite includes FTS5 with the trigram tokenizer";
+    let (feature, cause, remedy) = match (probe.fts5, probe.trigram_tokenizer, probe.vec0) {
+        (FeatureProbe::Missing { cause }, _, _) => ("FTS5", cause, TEXT_REMEDY),
+        (FeatureProbe::Present, FeatureProbe::Missing { cause }, _) => {
+            ("FTS5 trigram tokenizer", cause, TEXT_REMEDY)
+        }
+        (FeatureProbe::Present, FeatureProbe::Present, Some(FeatureProbe::Missing { cause })) => (
+            "sqlite-vec",
+            cause,
+            "use a Coral build whose SQLite includes sqlite-vec, or set \
+             `[search] semantic_search_enabled = false`",
+        ),
+        (FeatureProbe::Present, FeatureProbe::Present, None | Some(FeatureProbe::Present)) => {
+            return Ok(());
         }
     };
     Err(StorageError::MissingFeature {
         database: format!("SQLite {}", probe.version),
         feature,
         cause,
-        remedy: "use a Coral build whose SQLite includes FTS5 with the trigram tokenizer",
+        remedy,
     })
 }

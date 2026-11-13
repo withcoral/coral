@@ -139,9 +139,12 @@ pgvector, and Coral with the vector side off must start there.
   role may (the RDS master user may, as for `pg_trgm`) and otherwise refuses to start with a one-line remedy. With the
   setting off it checks nothing.
 - **SQLite:** a sqlite-vec `vec0` table of `float[384]` (sqlite-vec has no fp16 type), version pinned, registered for
-  the whole process before coral-db opens its first pool. The vector query takes the eligibility SQL through `rowid IN
-  (subquery)`. sqlite-vec is best effort: if `EXPLAIN QUERY PLAN` shows the filter does not reach `vec0`, SQLite stays
-  lexical, with no BLOB scan or other workaround.
+  the whole process before coral-db opens its first pool. The registration is one `unsafe` call, so it lives in a crate
+  of its own and every other crate keeps `unsafe` code forbidden. `vec0` finds a vector by an integer rowid, and the
+  entity table has no integer key that `VACUUM` keeps, so a plain key table beside it holds each vector's rowid with
+  its revision and source stamp; the two are created and dropped together. The vector query takes the eligibility SQL
+  through `rowid IN (subquery)`. sqlite-vec is best effort: if `EXPLAIN QUERY PLAN` shows the filter does not reach
+  `vec0`, SQLite stays lexical, with no BLOB scan or other workaround.
 - **No foreign keys**, not even to `workspace_records`. A `vec0` table cannot hold one, and a cascade from a source
   makes a delete wait for the index ([#2684](https://github.com/withcoral/coral/issues/2684)). The Reconcile task removes
   vectors whose Search Entity or Workspace is gone. Retrieval reads only live sources

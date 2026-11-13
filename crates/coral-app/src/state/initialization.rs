@@ -201,18 +201,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_postgres_boots_with_a_vector_table_only_while_the_setting_is_on() {
-        coral_test_support::database_only!(Postgres);
+    async fn a_fresh_database_boots_with_a_vector_table_only_while_the_setting_is_on() {
+        let system = coral_test_support::selected_database().expect("a test database");
         for (vector_storage, expected) in [
             (coral_search::VectorStorage::On { dimension: 3 }, true),
             (coral_search::VectorStorage::Off, false),
         ] {
-            let options = coral_test_support::empty_postgres_schema(
-                coral_test_support::SearchPath::WithPublic,
-            )
-            .await
-            .expect("create an empty schema");
             let temp = TempDir::new().unwrap();
+            let options = match system {
+                coral_db::DatabaseSystem::Postgres => coral_test_support::empty_postgres_schema(
+                    coral_test_support::SearchPath::WithPublic,
+                )
+                .await
+                .expect("create an empty schema"),
+                coral_db::DatabaseSystem::Sqlite => coral_db::DatabaseOptions::Sqlite {
+                    path: temp.path().join("coral.db"),
+                },
+            };
             let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
 
             let state = super::initialize(
@@ -226,15 +231,23 @@ mod tests {
             .unwrap_or_else(|error| panic!("{vector_storage:?}: boot: {error}"));
 
             let (database, _lock) = state.into_parts();
+            // On SQLite the vectors live in a sqlite-vec table.
+            let vector_table = match system {
+                coral_db::DatabaseSystem::Postgres => {
+                    "EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
+                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = current_schema() \
+                     AND c.relname = 'search_entity_embeddings')"
+                }
+                coral_db::DatabaseSystem::Sqlite => {
+                    "EXISTS (SELECT 1 FROM sqlite_schema \
+                     WHERE name = 'search_entity_embedding_vectors')"
+                }
+            };
             let (vector_table,): (bool,) = database
                 .fetch_optional(
                     sea_query::Query::select()
-                        .expr(sea_query::Expr::cust(
-                            "EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
-                             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                             WHERE n.nspname = current_schema() \
-                             AND c.relname = 'search_entity_embeddings')",
-                        ))
+                        .expr(sea_query::Expr::cust(vector_table))
                         .to_owned(),
                 )
                 .await
