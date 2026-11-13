@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.0.0](https://github.com/withcoral/coral/compare/v1.8.0...v2.0.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **search:** Search Hits carry no evidence ([#3102](https://github.com/withcoral/coral/issues/3102))
+
+### Features
+
+* **run:** compile Programs on local Run Executors ([#3077](https://github.com/withcoral/coral/issues/3077)) ([7a1d364](https://github.com/withcoral/coral/commit/7a1d3644007a303ac603eb6b44d3947e04a8a395))
+* **run:** log an outside request to a Run that is slow to be recorded ([#3122](https://github.com/withcoral/coral/issues/3122)) ([4002283](https://github.com/withcoral/coral/commit/4002283d8b566b7d05031972790f54a19f19f46d))
+* **search:** add the semantic_search_enabled setting and the Postgres vector table ([#3072](https://github.com/withcoral/coral/issues/3072)) ([888fa75](https://github.com/withcoral/coral/commit/888fa75a2ccd5cb702dee1f79696b4217af8d399))
+* **search:** download the search model when no folder holds it ([#3095](https://github.com/withcoral/coral/issues/3095)) ([b1b7b9d](https://github.com/withcoral/coral/commit/b1b7b9de63d190d20b41301e980da1e52aa8bbf9))
+* **search:** find the search model at /opt/coral/models and bundle it in the server image ([#3083](https://github.com/withcoral/coral/issues/3083)) ([9bdf776](https://github.com/withcoral/coral/commit/9bdf776233ede42e95e42ebc4cf4fe2e43c82755))
+* **search:** give each Search Entity a vector in the background on Postgres ([#3103](https://github.com/withcoral/coral/issues/3103)) ([3d726c0](https://github.com/withcoral/coral/commit/3d726c099d772ee8664f5e0dc36addba625310b0))
+* **search:** Search Hits carry no evidence ([#3102](https://github.com/withcoral/coral/issues/3102)) ([5b6681d](https://github.com/withcoral/coral/commit/5b6681dcc8cefc8531fd8bc5ac3cb57a5483c0f7))
+
+
+### Bug Fixes
+
+* **run:** close the Run stream on an Upstream Outcome for a Perform ([#3130](https://github.com/withcoral/coral/issues/3130)) ([06e7c17](https://github.com/withcoral/coral/commit/06e7c17b6c566d415c58ea831005ffc434d30203))
+* **ui:** grant and revoke secret stores from the workspace list ([#3131](https://github.com/withcoral/coral/issues/3131)) ([9f6b0ce](https://github.com/withcoral/coral/commit/9f6b0ce8ff4d0d3eb463259ba2df76290083d447))
+* **ui:** keep pages loading when Coral drops Reef's connection ([#3104](https://github.com/withcoral/coral/issues/3104)) ([9f6161f](https://github.com/withcoral/coral/commit/9f6161fef52e323a572a4ffe4ff459959afe40d5))
+
 ## [1.8.0](https://github.com/withcoral/coral/compare/v1.7.0...v1.8.0) (2026-11-13)
 
 
