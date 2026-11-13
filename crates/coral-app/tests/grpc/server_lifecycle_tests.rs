@@ -95,9 +95,9 @@ async fn bootstrap_publishes_the_companion_origin_to_private_workspace_responses
     server.shutdown().await.unwrap();
 }
 
-/// A client that keeps its Activity stream open, as Reef does, must not hold
-/// the process up: shutdown ends the stream, so the listener closes cleanly
-/// inside its grace period.
+/// A client that keeps its activity stream open, as Reef does, does not hold
+/// the process up: shutdown ends the stream, so the listener closes before
+/// its grace period runs out.
 #[tokio::test]
 async fn shutdown_completes_while_a_client_holds_an_activity_stream() {
     use coral_grpc::coral::management::v1::{
@@ -124,12 +124,22 @@ async fn shutdown_completes_while_a_client_holds_an_activity_stream() {
     let mut stream = client.watch_activity(request).await.unwrap().into_inner();
     assert!(stream.message().await.unwrap().unwrap().changed);
 
-    // The bound only fails the test; a clean shutdown takes milliseconds.
-    tokio::time::timeout(std::time::Duration::from_secs(4), server.shutdown())
-        .await
-        .expect("an open Activity stream does not hold shutdown")
-        .expect("the listener closes without its grace period running out");
-    drop(stream);
+    // A shutdown that waited for the stream would run out its grace period
+    // and return `AppError::ShutdownTimedOut`, so this needs no timer.
+    let stopped = server.shutdown().await;
+    assert!(
+        matches!(stopped, Ok(())),
+        "an open activity stream held the listener: {stopped:?}"
+    );
+    // A write that shutdown made can reach the stream as a change first.
+    let ended = loop {
+        match stream.message().await {
+            Ok(Some(_change)) => {}
+            Ok(None) => panic!("shutdown must not end the stream as if it were complete"),
+            Err(status) => break status,
+        }
+    };
+    assert_eq!(ended.code(), tonic::Code::Unavailable);
 }
 
 #[tokio::test]
