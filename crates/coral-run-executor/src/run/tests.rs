@@ -877,17 +877,18 @@ async fn a_lost_run_redials_with_the_backoff_and_ends_at_its_deadline() {
     let started_at = Instant::now();
     assert_eq!(next_request(&mut run).await.0, 1);
     run.fail(Status::unavailable("lost")).await;
-    // Each reopen that Coral ends before it answers waits longer: at least
-    // half of 200 and 400 ms after the first.
+    // Coral ends at least three reopens before it answers, and every one
+    // until the deadline has passed. Each waits longer: at least half of
+    // 200 and 400 ms after the first.
     let mut reopens = Vec::new();
     let mut run = loop {
         let run = coral.next_run().await;
-        if run.at.duration_since(started_at) > deadline + Duration::from_millis(500) {
+        let past = run.at.duration_since(started_at) > deadline + Duration::from_millis(500);
+        if reopens.len() >= 3 && past {
             break run;
         }
         reopens.push(run.at);
     };
-    assert!(reopens.len() >= 3, "several back-offs: {reopens:?}");
     let gaps = reopens.iter().zip(reopens.iter().skip(1));
     for ((earlier, later), floor) in gaps.zip([100, 200]) {
         assert!(

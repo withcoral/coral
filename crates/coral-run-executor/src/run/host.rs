@@ -150,7 +150,8 @@ impl RunHost {
             control: ProgramExecutionControl::new(),
             value_limits,
             applied_cap_bytes: limits.applied_cap_bytes,
-            held_cap: limits.held_cap,
+            // A cap of zero would hold the first request forever.
+            held_cap: limits.held_cap.max(1),
             #[cfg(test)]
             on_parked: limits.on_parked,
             linked,

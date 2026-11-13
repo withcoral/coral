@@ -215,7 +215,7 @@ impl tonic::service::Interceptor for Bearer {
 /// How a pull stream or a Run stream ended.
 pub(crate) enum End {
     /// Coral ended its side cleanly after its first answer, to move the
-    /// stream (the go-away): reopen at once.
+    /// stream: reopen at once.
     Moved,
     /// Anything else: redial after the back-off.
     Failed,
