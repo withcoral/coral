@@ -7,7 +7,7 @@ use coral_v8::LinkedToolSource;
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::*;
-use crate::link::HeldUnit;
+use crate::link::HeldRun;
 use crate::testing::{Answer, PullCall, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
     Committed, Complete, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult,
@@ -659,7 +659,7 @@ async fn a_run_that_never_starts_finishes_as_request_one() {
 async fn a_panicked_stream_task_stops_its_program() {
     let held = Arc::new(AtomicU32::new(0));
     let freed = Arc::new(Notify::new());
-    let unit = HeldUnit::take(&held, &freed);
+    let unit = HeldRun::take(&held, &freed);
     let (outbound, mut requests) = mpsc::unbounded_channel();
     let (host, exited) = load(
         compiled("return 1;").await,

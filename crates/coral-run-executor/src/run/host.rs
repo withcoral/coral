@@ -13,7 +13,7 @@ use coral_v8::{
 use tokio::sync::{mpsc, oneshot};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
-use crate::link::HeldUnit;
+use crate::link::HeldRun;
 use crate::wire::v1::{
     Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location,
     Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete, finish,
@@ -97,7 +97,7 @@ impl RunHost {
         self: &Arc<Self>,
         program: coral_v8::CompiledProgram,
         isolate: coral_v8::IsolateLimits,
-        unit: HeldUnit,
+        unit: HeldRun,
     ) -> std::io::Result<oneshot::Receiver<()>> {
         let host = self.clone();
         let (exiting, exited) = oneshot::channel();

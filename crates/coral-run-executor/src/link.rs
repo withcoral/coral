@@ -240,12 +240,12 @@ struct Link {
 /// One unit of room a held Run takes. It frees when dropped: by the Run's
 /// Program thread once its isolate is gone, or by the Run's stream task when
 /// no Program started, even by a panic.
-pub(crate) struct HeldUnit {
+pub(crate) struct HeldRun {
     held: Arc<AtomicU32>,
     freed: Arc<Notify>,
 }
 
-impl HeldUnit {
+impl HeldRun {
     pub(crate) fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
         held.fetch_add(1, Ordering::SeqCst);
         Self {
@@ -255,7 +255,7 @@ impl HeldUnit {
     }
 }
 
-impl Drop for HeldUnit {
+impl Drop for HeldRun {
     fn drop(&mut self) {
         self.held.fetch_sub(1, Ordering::SeqCst);
         self.freed.notify_one();
@@ -405,7 +405,7 @@ impl Link {
                     })) if welcomed => {
                         // Each Run's stream rides this connection.
                         for taken in taken.runs {
-                            let unit = HeldUnit::take(&self.held, &self.freed);
+                            let unit = HeldRun::take(&self.held, &self.freed);
                             tokio::spawn(run::hold(client.clone(), taken, self.run_limits, unit));
                         }
                     }

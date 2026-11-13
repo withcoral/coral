@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::PROTOCOL_LEVEL;
-use crate::link::{Client, HeldUnit, compatible};
+use crate::link::{Client, HeldRun, compatible};
 use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
@@ -73,7 +73,7 @@ fn value_limits(limits: &ValueLimits) -> Option<coral_value::ValueLimits> {
 }
 
 /// Holds one Run Coral took for this Run Executor until its stream ends.
-pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits, unit: HeldUnit) {
+pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits, unit: HeldRun) {
     let (outbound, requests) = mpsc::unbounded_channel();
     let open = Open {
         run_id: taken.run_id,
@@ -149,7 +149,7 @@ fn load(
     package: RunPackage,
     outbound: mpsc::UnboundedSender<RunRequest>,
     limits: RunLimits,
-    unit: HeldUnit,
+    unit: HeldRun,
 ) -> Option<(Arc<RunHost>, oneshot::Receiver<()>)> {
     if !compatible(package.protocol_level) {
         tracing::warn!(
