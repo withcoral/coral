@@ -91,6 +91,8 @@ function startProcess(
         const match = output.match(pattern)
         if (match) return match[1]
         if (child.exitCode !== null || child.signalCode !== null) {
+          // 'exit' can come before the pipes drain; 'close' brings the last lines.
+          await Promise.race([exited, delay(1000)])
           const end = child.exitCode ?? child.signalCode
           throw new Error(`Process exited (${end}) during startup. ${ending()}`)
         }
