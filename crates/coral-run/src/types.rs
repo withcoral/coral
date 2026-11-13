@@ -216,6 +216,11 @@ impl RunTimeout {
     pub(crate) const fn nanoseconds(self) -> i64 {
         self.nanoseconds
     }
+
+    /// The time limit as a duration, counted from the Run's start.
+    pub(crate) const fn duration(self) -> Duration {
+        Duration::from_nanos(self.nanoseconds.unsigned_abs())
+    }
 }
 
 /// Complete caller submission needed for core Program admission.
@@ -1065,14 +1070,13 @@ impl RunUpdate {
     }
 }
 
-/// Exact immutable attribution, deadline and claim retained by a durable Run.
+/// Exact immutable attribution, limits and claim retained by a durable Run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AcceptedRun {
     pub(crate) id: RunId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) principal: Principal,
     pub(crate) accepted_at_unix_nanos: i64,
-    pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) shutdown_grace_nanos: i64,
     pub(crate) value_limits: coral_value::ValueLimits,
     /// The Run Owner's claim, written as the worker claim by acceptance.
@@ -1114,11 +1118,6 @@ impl AcceptedRun {
     /// The Run's ID as a span field.
     pub(crate) fn held_id(&self) -> HeldRunId {
         HeldRunId(self.id.clone())
-    }
-
-    /// The Run's time limit: from its acceptance to its deadline.
-    pub(crate) fn time_limit(&self) -> Duration {
-        crate::duration_until(self.deadline_at_unix_nanos, self.accepted_at_unix_nanos)
     }
 }
 

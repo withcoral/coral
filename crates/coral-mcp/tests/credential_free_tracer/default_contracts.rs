@@ -160,7 +160,12 @@ pub(super) async fn check_exec_defaults(
             )
             .await
             .expect("accepted Run detail");
-        assert_eq!(deadline - detail.summary.started_at, expected_nanos);
+        // The time limit counts from the start, a moment after acceptance.
+        let from_acceptance = deadline - detail.summary.started_at;
+        assert!(
+            (expected_nanos..expected_nanos + 1_000_000_000).contains(&from_acceptance),
+            "{from_acceptance} ns from acceptance for a {expected_nanos} ns time limit"
+        );
         let canceled = super::call(client, "cancel", json!({"run_id":run_id.to_string()})).await;
         assert_eq!(
             super::structured(&canceled).get("state"),
