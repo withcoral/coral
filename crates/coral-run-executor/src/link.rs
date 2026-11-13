@@ -491,14 +491,29 @@ impl Link {
     /// Closes a retiring pull stream that holds nothing: ends its side, so
     /// its report of none goes out, and reads until Coral ends its own.
     /// Each Run Coral took before then is held, and waited for.
-    async fn close(&self, outbound: Outbound, mut inbound: Streaming<PullResponse>) -> End {
+    async fn close(
+        &self,
+        client: &Client,
+        outbound: Outbound,
+        mut inbound: Streaming<PullResponse>,
+    ) -> End {
         drop(outbound);
         while let Ok(Some(response)) = inbound.message().await {
-            if let Some(pull_response::Message::Taken(taken)) = response.message {
-                taken
-                    .runs
-                    .into_iter()
-                    .for_each(|taken| self.hold_run(taken));
+            match response.message {
+                // A Welcome that crossed the close: its Runs ride this
+                // connection.
+                Some(pull_response::Message::Welcome(welcome))
+                    if !*self.linked.borrow() && compatible(welcome.protocol_level) =>
+                {
+                    self.welcomed(client);
+                }
+                Some(pull_response::Message::Taken(taken)) if *self.linked.borrow() => {
+                    taken
+                        .runs
+                        .into_iter()
+                        .for_each(|taken| self.hold_run(taken));
+                }
+                _ => {}
             }
         }
         self.runs.drained().await;
@@ -552,7 +567,7 @@ impl Link {
                     .retiring(&outbound, welcomed, compiling, &mut reported)
                     .await
                 {
-                    Some(End::Retired) => return self.close(outbound, inbound).await,
+                    Some(End::Retired) => return self.close(&client, outbound, inbound).await,
                     Some(end) => return end,
                     None => {}
                 }
