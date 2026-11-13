@@ -15,6 +15,7 @@ const counted = (total: string, approvals = `revision-${total}`) => ({
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 it('subscribes before the initial read and refreshes on changes, not heartbeats', async () => {
@@ -151,7 +152,14 @@ it('keeps healthy observation open beyond the ordinary unary RPC deadline', asyn
   }
 })
 
+// Catches a stream that reports an expired session as a reconnect when its
+// access token ends at the same moment: which timer fired first used to decide,
+// and the clock moving 1 ms between two reads of it chose the reconnect.
 it('expires an idle session without reloading its count or waiting for a mutation', async () => {
+  vi.useFakeTimers()
+  const at = Date.now()
+  let ticks = 0
+  vi.spyOn(Date, 'now').mockImplementation(() => at + ticks++)
   const changes = activityChanges()
   let reads = 0
   const api = {
@@ -170,14 +178,16 @@ it('expires an idle session without reloading its count or waiting for a mutatio
         reads++
         return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
       },
-      { endsAt: Date.now() / 1000 + 0.05, renewAt: Date.now() / 1000 + 0.05 },
+      { endsAt: (at + 50) / 1000, renewAt: (at + 50) / 1000 },
     ),
   )
   expect((await events.next()).value).toEqual({
     kind: 'count',
     counts: { '/workspaces/w': counted('1') },
   })
-  expect((await events.next()).value).toEqual({ kind: 'sessionExpired' })
+  const end = events.next()
+  await vi.advanceTimersByTimeAsync(50)
+  expect((await end).value).toEqual({ kind: 'sessionExpired' })
   expect(reads).toBe(1)
   expect((await events.next()).done).toBe(true)
 })
