@@ -236,7 +236,11 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
         }
     }
     by_module.sort();
-    let by_sql = approval_required_by_sql(&fixture, workspace.id()).await;
+    let by_sql = approval_required_by_sql(
+        &fixture,
+        provider_tool_calls(workspace.id(), &AuthenticatedPrincipal::user(owner.clone())),
+    )
+    .await;
     assert_eq!(
         by_sql,
         [
@@ -256,49 +260,239 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
     assert_eq!(by_sql, by_module);
 }
 
-/// Tool Keys of one Workspace's current Providers that the SQL mirror
-/// selects as approval-required, read the way pending-approval queries read.
+/// The names a row source gives the columns an Invocation and its Run give
+/// the SQL mirror.
+mod call_column {
+    pub(super) const WORKSPACE: &str = "workspace_id";
+    pub(super) const PROVIDER: &str = "provider_id";
+    pub(super) const GENERATION: &str = "provider_generation_id";
+    pub(super) const TOOL: &str = "tool_key";
+    pub(super) const CALL_PATH: &str = "call_path";
+    pub(super) const DECLARED_DEFAULT: &str = "declared_default";
+    pub(super) const PRINCIPAL: &str = "principal_id";
+    pub(super) const PRINCIPAL_KIND: &str = "principal_kind";
+}
+
+/// The Tool Keys of the rows of `calls` that the SQL mirror selects as
+/// approval-required, read the way pending-approval queries read. `calls`
+/// selects each column of [`call_column`].
 async fn approval_required_by_sql(
     fixture: &TestDatabase,
-    workspace_id: &coral_workspace::WorkspaceId,
+    calls: sea_query::SelectStatement,
 ) -> Vec<String> {
-    use sea_query::{Alias, Expr, ExprTrait as _, IntoColumnRef as _, JoinType, Order, Query};
+    use sea_query::{Alias, IntoColumnRef as _, Order, Query};
 
     #[derive(sqlx::FromRow)]
     struct Row {
         tool_key: String,
     }
-    let column = |table: &str, name: &str| (Alias::new(table), Alias::new(name)).into_column_ref();
+    let column = |name: &str| (Alias::new("call"), Alias::new(name)).into_column_ref();
     let database = fixture.database();
     let mut transaction = database.begin_read_snapshot().await.expect("begin read");
     let rows: Vec<Row> = transaction
         .fetch_all(
             Query::select()
-                .column(column("tool", "tool_key"))
-                .from_as(Alias::new("provider_records"), Alias::new("provider"))
-                .join_as(
-                    JoinType::InnerJoin,
-                    Alias::new("materialized_tools"),
-                    Alias::new("tool"),
-                    Expr::col(column("tool", "provider_generation_id"))
-                        .equals(column("provider", "active_generation_id")),
-                )
-                .and_where(
-                    Expr::col(column("provider", "workspace_id")).eq(workspace_id.to_string()),
-                )
+                .column(column(call_column::TOOL))
+                .from_subquery(calls, Alias::new("call"))
                 .and_where(crate::history_repository::approval_required(
-                    column("provider", "workspace_id"),
-                    column("provider", "id"),
-                    column("tool", "provider_generation_id"),
-                    column("tool", "tool_key"),
+                    crate::history_repository::InvocationColumns {
+                        workspace: column(call_column::WORKSPACE),
+                        provider: column(call_column::PROVIDER),
+                        generation: column(call_column::GENERATION),
+                        tool: column(call_column::TOOL),
+                        call_path: column(call_column::CALL_PATH),
+                        declared_default: column(call_column::DECLARED_DEFAULT),
+                        principal: column(call_column::PRINCIPAL),
+                        principal_kind: column(call_column::PRINCIPAL_KIND),
+                    },
                 ))
-                .order_by(column("tool", "tool_key"), Order::Asc)
+                .order_by(column(call_column::TOOL), Order::Asc)
                 .to_owned(),
         )
         .await
         .expect("select approval-required Tools");
     transaction.rollback().await.expect("finish read");
     rows.into_iter().map(|row| row.tool_key).collect()
+}
+
+/// One call by `caller` of each Tool of the Workspace's current Providers.
+/// A Provider Tool's Call Path is under neither authored Call Root, and its
+/// Invocation retains no declared default.
+fn provider_tool_calls(
+    workspace_id: &coral_workspace::WorkspaceId,
+    caller: &AuthenticatedPrincipal,
+) -> sea_query::SelectStatement {
+    use sea_query::{Alias, Expr, ExprTrait as _, IntoColumnRef as _, JoinType, Query};
+
+    let column = |table: &str, name: &str| (Alias::new(table), Alias::new(name)).into_column_ref();
+    Query::select()
+        .expr_as(
+            Expr::col(column("provider", "workspace_id")),
+            Alias::new(call_column::WORKSPACE),
+        )
+        .expr_as(
+            Expr::col(column("provider", "id")),
+            Alias::new(call_column::PROVIDER),
+        )
+        .expr_as(
+            Expr::col(column("tool", "provider_generation_id")),
+            Alias::new(call_column::GENERATION),
+        )
+        .expr_as(
+            Expr::col(column("tool", "tool_key")),
+            Alias::new(call_column::TOOL),
+        )
+        .expr_as(
+            Expr::val("coral.providers.any.tool"),
+            Alias::new(call_column::CALL_PATH),
+        )
+        .expr_as(
+            Expr::val(Option::<String>::None),
+            Alias::new(call_column::DECLARED_DEFAULT),
+        )
+        .expr_as(
+            Expr::val(caller.principal().id().as_str()),
+            Alias::new(call_column::PRINCIPAL),
+        )
+        .expr_as(
+            Expr::val(caller.principal().kind().as_storage_str()),
+            Alias::new(call_column::PRINCIPAL_KIND),
+        )
+        .from_as(Alias::new("provider_records"), Alias::new("provider"))
+        .join_as(
+            JoinType::InnerJoin,
+            Alias::new("materialized_tools"),
+            Alias::new("tool"),
+            Expr::col(column("tool", "provider_generation_id"))
+                .equals(column("provider", "active_generation_id")),
+        )
+        .and_where(Expr::col(column("provider", "workspace_id")).eq(workspace_id.to_string()))
+        .to_owned()
+}
+
+/// One call by `caller` of the Private or Shared Tool at `target`, whose
+/// Invocation retains `call_path` and the default `declared`.
+fn authored_tool_call(
+    target: &ToolPolicyTarget,
+    call_path: &str,
+    declared: ToolAccessState,
+    caller: &AuthenticatedPrincipal,
+) -> sea_query::SelectStatement {
+    use sea_query::{Alias, Expr, Query};
+
+    let mut call = Query::select();
+    for (name, value) in [
+        (call_column::WORKSPACE, target.workspace_id().to_string()),
+        (call_column::PROVIDER, target.provider_id().to_string()),
+        // No Generation stores a Private or Shared Tool.
+        (call_column::GENERATION, "no-generation".to_owned()),
+        (call_column::TOOL, target.tool_key().as_str().to_owned()),
+        (call_column::CALL_PATH, call_path.to_owned()),
+        (
+            call_column::DECLARED_DEFAULT,
+            declared.as_storage_str().to_owned(),
+        ),
+        (
+            call_column::PRINCIPAL,
+            caller.principal().id().as_str().to_owned(),
+        ),
+        (
+            call_column::PRINCIPAL_KIND,
+            caller.principal().kind().as_storage_str().to_owned(),
+        ),
+    ] {
+        call.expr_as(Expr::val(value), Alias::new(name));
+    }
+    call
+}
+
+// Catches: a pending-approval read that decides a call of a Private or
+// Shared Tool otherwise than its Invocation is decided: by a rule on a
+// Member's Private Tool, without the rule on an Owner's or an Agent's
+// Private Tool or on a Shared Tool, or by a default other than the one the
+// Invocation retained.
+#[tokio::test]
+async fn the_sql_mirror_decides_a_private_or_shared_tools_call_as_its_invocation_is_decided() {
+    use crate::PrivateToolOwner;
+    use coral_catalog::AuthoredToolKind::{Private, Shared};
+
+    let tools = SharedTools::new().await;
+    let base = &tools.base;
+    let shared_tool = tools
+        .publish("mail.remind", ToolAccessState::Enabled, 0)
+        .await;
+    let targets = [
+        (
+            Private,
+            base.target(&base.owners_tool),
+            Private.call_path("people.greet"),
+        ),
+        (
+            Shared,
+            tools.target(&shared_tool),
+            Shared.call_path("mail.remind"),
+        ),
+    ];
+    let user = |user: &AuthenticatedUser| AuthenticatedPrincipal::user(user.clone());
+    let callers = [
+        (user(&base.owner), PrivateToolOwner::Owner),
+        (user(&base.member), PrivateToolOwner::Member),
+        (base.agent.clone(), PrivateToolOwner::Agent),
+    ];
+    let states = [
+        ToolAccessState::Enabled,
+        ToolAccessState::ApprovalRequired,
+        ToolAccessState::Disabled,
+    ];
+    // No rule on either Tool, then each rule in turn.
+    for (at, rule) in (70..).zip(std::iter::once(None).chain(states.map(Some))) {
+        if let Some(rule) = rule {
+            base.policies
+                .set_access_states(
+                    &change(base.owner.clone(), at, 'b'),
+                    targets
+                        .iter()
+                        .map(|(_, target, _)| (target.clone(), rule))
+                        .collect(),
+                )
+                .await
+                .expect("set the Owner's rules");
+        }
+        for (kind, target, call_path) in &targets {
+            for declared in states {
+                for (caller, standing) in &callers {
+                    let label = format!("{kind:?} {rule:?} {declared:?} {standing:?}");
+                    let mut transaction = base
+                        .policies
+                        .database
+                        .begin_read_snapshot()
+                        .await
+                        .expect("begin read");
+                    let decision = crate::authored_tool_decision_in_transaction(
+                        &mut transaction,
+                        target,
+                        *kind,
+                        declared,
+                        *standing,
+                        coral_db::RowLock::None,
+                    )
+                    .await
+                    .expect("decide the call");
+                    transaction.rollback().await.expect("finish read");
+                    let by_sql = approval_required_by_sql(
+                        &base.fixture,
+                        authored_tool_call(target, call_path, declared, caller),
+                    )
+                    .await;
+                    assert_eq!(
+                        !by_sql.is_empty(),
+                        decision.access_state() == ToolAccessState::ApprovalRequired,
+                        "{label}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]
