@@ -19,10 +19,12 @@ RUN npx playwright install --with-deps chromium
 # the zip, so a rebuild does not download it from GitHub again.
 WORKDIR /workspace/apps/desktop
 COPY apps/desktop/package*.json ./
+# Both installs, npm's lifecycle script and the explicit one, use the mount.
 RUN --mount=type=cache,target=/root/.npm \
     --mount=type=cache,id=reel-electron,target=/var/cache/electron \
-    npm ci \
- && electron_config_cache=/var/cache/electron node node_modules/electron/install.js \
+    export electron_config_cache=/var/cache/electron \
+ && npm ci \
+ && node node_modules/electron/install.js \
  && version=$(node -p "require('./node_modules/electron/package.json').version") \
  && for zip in /var/cache/electron/*/electron-v"$version"-*.zip; do \
       mkdir -p "/root/.cache/electron/$(basename "$(dirname "$zip")")" \
