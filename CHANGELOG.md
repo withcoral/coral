@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.8.0](https://github.com/withcoral/coral/compare/v1.7.0...v1.8.0) (2026-11-13)
+
+
+### Features
+
+* **credentials:** let operators define Secret Stores ([#2934](https://github.com/withcoral/coral/issues/2934)) ([4bb1f75](https://github.com/withcoral/coral/commit/4bb1f75d70b2250661f45cd7b54ccdd9f0c5d464))
+* **credentials:** let Organization Owners grant Secret Stores to Workspaces ([#2955](https://github.com/withcoral/coral/issues/2955)) ([bbe8ba7](https://github.com/withcoral/coral/commit/bbe8ba713679613886b2d035eac727c656f34050))
+* **credentials:** read a shared Account's Credential Fields from a Secret Store ([#2956](https://github.com/withcoral/coral/issues/2956)) ([9b4502e](https://github.com/withcoral/coral/commit/9b4502e171f720ea6bd26e38ed24124f7247ea66))
+* **credentials:** read Credential Fields from a Vault or OpenBao KV v2 Secret Store ([#3082](https://github.com/withcoral/coral/issues/3082)) ([f551581](https://github.com/withcoral/coral/commit/f55158181d3cdf31fd24ccd8a7d3019afb80a317))
+* **credentials:** read Credential Fields from environment variables with an env Secret Store ([#3080](https://github.com/withcoral/coral/issues/3080)) ([b8d236f](https://github.com/withcoral/coral/commit/b8d236f94b054932a2431f5e8375743ab503b28e))
+* **credentials:** show saved Secret References, and set them when adding a Provider ([#2964](https://github.com/withcoral/coral/issues/2964)) ([1147b4f](https://github.com/withcoral/coral/commit/1147b4fb5569f81a96277b301fb575ec367858a3))
+
+
+### Bug Fixes
+
+* **ui:** make the Accounts table sortable ([#3111](https://github.com/withcoral/coral/issues/3111)) ([8973f20](https://github.com/withcoral/coral/commit/8973f20dd09122f6f20675c0cebd069feb528484))
+* **ui:** report an expired session when its access token ends with it ([#3107](https://github.com/withcoral/coral/issues/3107)) ([50aeb98](https://github.com/withcoral/coral/commit/50aeb98e6744852cc6ecf5428e853b496af784e4))
+
 ## [1.7.0](https://github.com/withcoral/coral/compare/v1.6.0...v1.7.0) (2026-11-12)
 
 
