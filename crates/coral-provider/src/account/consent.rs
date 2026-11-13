@@ -7,19 +7,27 @@ use std::{net::IpAddr, sync::Arc, time::Duration};
 /// Evidence that the Provider authorization Module screened this initial navigation.
 /// It is not persistent authority or a guarantee about browser DNS or later redirects.
 /// Adapters serialize it immediately; reuse must read authorization through the Module again.
-/// There is no raw-URL constructor or deserializer.
-///
-/// ```compile_fail
-/// use coral_provider::account::ConsentNavigation;
-/// let navigation: ConsentNavigation = "http://public.example/authorize".parse().unwrap();
-/// ```
-///
-/// ```compile_fail
-/// use coral_provider::account::ConsentNavigation;
-/// let restored: ConsentNavigation = serde_json::from_str(r#""http://public.example/authorize""#).unwrap();
-/// ```
+/// There is no raw-URL constructor or deserializer: it implements neither
+/// `FromStr`, so a string cannot `parse` into one, nor `Deserialize`, so stored
+/// or received data cannot restore one. The build fails if it gains either.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConsentNavigation(String);
+
+// The proof of the rule above. `Absent<_>` has one impl for every type and one
+// more for each forbidden trait, so the compiler can infer the marker only
+// while `ConsentNavigation` implements neither trait. An impl of either one
+// stops the build here with E0283, "type annotations needed".
+const _: () = {
+    enum ViaFromStr {}
+    enum ViaDeserialize {}
+    trait Absent<Marker> {
+        fn proof() {}
+    }
+    impl<T> Absent<()> for T {}
+    impl<T: std::str::FromStr> Absent<ViaFromStr> for T {}
+    impl<T: serde::Deserialize<'static>> Absent<ViaDeserialize> for T {}
+    let _ = <ConsentNavigation as Absent<_>>::proof;
+};
 
 impl ConsentNavigation {
     /// Consumes fresh issuance evidence for immediate transport projection.
