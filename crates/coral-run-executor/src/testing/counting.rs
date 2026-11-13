@@ -47,17 +47,18 @@ impl CountingCompiler {
     }
 }
 
+#[tonic::async_trait]
 impl CompilerClient for CountingCompiler {
-    fn analyze(
+    async fn analyze(
         &self,
         time_left: Duration,
         sources: &[AnalyzedSource],
     ) -> Result<Vec<SourceReferences>, AnalysisError> {
         self.record(|calls| calls.analyze.push(sources.len()));
-        self.inner.analyze(time_left, sources)
+        self.inner.analyze(time_left, sources).await
     }
 
-    fn compile(
+    async fn compile(
         &self,
         time_left: Duration,
         source: &str,
@@ -68,9 +69,10 @@ impl CompilerClient for CountingCompiler {
         self.record(|calls| calls.compile += 1);
         self.inner
             .compile(time_left, source, linked_tools, builtin_tools, callable)
+            .await
     }
 
-    fn prepare(
+    async fn prepare(
         &self,
         time_left: Duration,
         source: &str,
@@ -80,5 +82,6 @@ impl CompilerClient for CountingCompiler {
         self.record(|calls| calls.prepare += 1);
         self.inner
             .prepare(time_left, source, builtin_tools, declarations)
+            .await
     }
 }

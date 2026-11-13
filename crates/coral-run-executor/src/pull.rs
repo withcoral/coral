@@ -3,16 +3,17 @@
 
 use std::collections::HashMap;
 use std::future::{Future, pending};
+use std::hash::{BuildHasher as _, RandomState};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc as sync_mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_db::Database;
 use coral_telemetry::safe;
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior, Sleep, interval_at, sleep_until, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Server;
@@ -204,6 +205,8 @@ pub enum Refused {
 #[derive(Clone, Default)]
 pub struct PullStreams {
     held: Arc<Mutex<HashMap<StreamId, Held>>>,
+    /// Signalled when a stream opens or reports its room.
+    room_signal: Arc<tokio::sync::Notify>,
     next: Arc<AtomicU64>,
 }
 
@@ -214,6 +217,9 @@ struct Held {
     closing: bool,
     outbound: mpsc::UnboundedSender<Result<PullResponse, Status>>,
     compiles_sent: u64,
+    /// Units held for callers that wait for room, until each sends its
+    /// first compile or lets the unit go. `free` leaves them out.
+    kept_for_callers: u32,
     /// Each compile in flight, by number.
     compiles: HashMap<u64, InFlight>,
 }
@@ -225,7 +231,7 @@ struct InFlight {
     /// The answers it accepts.
     takes: Takes,
     /// Where its answer goes: a channel of one, sent on once.
-    answered: sync_mpsc::SyncSender<Read>,
+    answered: oneshot::Sender<Read>,
 }
 
 impl Held {
@@ -244,6 +250,12 @@ impl Held {
     }
 }
 
+/// Whether a stream that takes sends has room.
+fn has_room(held: &HashMap<StreamId, Held>) -> bool {
+    held.values()
+        .any(|held| !held.closing && held.view.free > 0)
+}
+
 impl PullStreams {
     /// The pull streams that take sends now, each with its room.
     #[must_use]
@@ -253,6 +265,35 @@ impl PullStreams {
             .filter(|held| !held.closing)
             .map(|held| held.view.clone())
             .collect()
+    }
+
+    /// The stream that takes sends with the most room, ties at random, or
+    /// none when no stream has room.
+    pub(crate) fn most_room(&self) -> Option<StreamId> {
+        let random = RandomState::new();
+        lock(&self.held)
+            .values()
+            .filter(|held| !held.closing && held.view.free > 0)
+            .max_by_key(|held| (held.view.free, random.hash_one(held.view.stream)))
+            .map(|held| held.view.stream)
+    }
+
+    /// Waits until a stream opens or reports its room, or for `wait`,
+    /// holding no thread.
+    pub(crate) async fn room_signalled(&self, wait: Duration) {
+        let signalled = self.room_signal.notified();
+        tokio::pin!(signalled);
+        // Registered before the look, so a signal after it is not missed.
+        signalled.as_mut().enable();
+        if has_room(&lock(&self.held)) {
+            return;
+        }
+        drop(tokio::time::timeout(wait, signalled).await);
+    }
+
+    /// Wakes every caller that waits for room.
+    fn signal_room(&self) {
+        self.room_signal.notify_waiters();
     }
 
     /// Sends `runs` on `stream`, one unit each; none sends nothing.
@@ -286,27 +327,74 @@ impl PullStreams {
         stream: StreamId,
         time_left_ms: u32,
         call: Call,
-    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
-        let takes = Takes::of(&call);
-        // Sized with the longest number, before the lock. Sent, a message
-        // past the bound would end the stream and every compile on it.
-        let mut message = pull_response::Message::Compile(Compile {
-            number: u64::MAX,
-            time_left_ms,
-            call: Some(call),
-        });
-        if message.encoded_len() > MESSAGE_MAX_BYTES {
-            return Err(Refused::TooLarge);
-        }
+    ) -> Result<oneshot::Receiver<Read>, Refused> {
+        self.send_compile(stream, time_left_ms, call, false)
+    }
+
+    /// Holds one unit of `stream`'s room for a caller: no other send takes
+    /// it until [`Self::compile_held`] spends it or [`Self::let_go`] frees it.
+    pub(crate) fn hold(&self, stream: StreamId) -> Result<(), Refused> {
         let mut held = lock(&self.held);
         let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
         held.spend(1)?;
+        held.kept_for_callers += 1;
+        Ok(())
+    }
+
+    /// Frees a unit [`Self::hold`] held and no compile spent.
+    pub(crate) fn let_go(&self, stream: StreamId) {
+        if let Some(held) = lock(&self.held).get_mut(&stream)
+            && held.kept_for_callers > 0
+        {
+            held.kept_for_callers -= 1;
+            held.view.free += 1;
+            self.signal_room();
+        }
+    }
+
+    /// [`Self::compile`] on a unit [`Self::hold`] held, which it spends.
+    pub(crate) fn compile_held(
+        &self,
+        stream: StreamId,
+        time_left_ms: u32,
+        call: Call,
+    ) -> Result<oneshot::Receiver<Read>, Refused> {
+        self.send_compile(stream, time_left_ms, call, true)
+    }
+
+    fn send_compile(
+        &self,
+        stream: StreamId,
+        time_left_ms: u32,
+        call: Call,
+        on_held_unit: bool,
+    ) -> Result<oneshot::Receiver<Read>, Refused> {
+        if too_large(&call) {
+            return Err(Refused::TooLarge);
+        }
+        let takes = Takes::of(&call);
+        let mut message = pull_response::Message::Compile(Compile {
+            number: 0,
+            time_left_ms,
+            call: Some(call),
+        });
+        let mut held = lock(&self.held);
+        let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
+        if on_held_unit {
+            if held.closing || held.kept_for_callers == 0 {
+                return Err(Refused::Closed);
+            }
+            held.kept_for_callers -= 1;
+            held.view.last_work = Some(Instant::now());
+        } else {
+            held.spend(1)?;
+        }
         held.compiles_sent += 1;
         let number = held.compiles_sent;
         if let pull_response::Message::Compile(compile) = &mut message {
             compile.number = number;
         }
-        let (answered, answer) = sync_mpsc::sync_channel(1);
+        let (answered, answer) = oneshot::channel();
         let in_flight = InFlight {
             due: Instant::now() + Duration::from_millis(time_left_ms.into()),
             takes,
@@ -338,9 +426,11 @@ impl PullStreams {
             closing: false,
             outbound,
             compiles_sent: 0,
+            kept_for_callers: 0,
             compiles: HashMap::new(),
         };
         lock(&self.held).insert(stream, held);
+        self.signal_room();
         stream
     }
 
@@ -351,8 +441,12 @@ impl PullStreams {
         match request.message {
             Some(pull_request::Message::Room(room)) => {
                 if let Some(held) = lock(&self.held).get_mut(&stream) {
-                    held.view.free = room.free;
+                    held.view.free = room.free.saturating_sub(held.kept_for_callers);
                     held.view.last_work = Some(Instant::now());
+                }
+                // Only room wakes the calls that wait for it.
+                if room.free > 0 {
+                    self.signal_room();
                 }
                 Ok(())
             }
@@ -384,12 +478,14 @@ impl PullStreams {
             .ok()
             .filter(|read| read.answers(takes))
             .ok_or_else(|| Status::invalid_argument("Compiled breaks the protocol"))?;
-        let answered = lock(&self.held)
-            .get_mut(&stream)
-            .and_then(|held| held.compiles.remove(&compiled.number));
+        let answered = lock(&self.held).get_mut(&stream).and_then(|held| {
+            // An answer is work, as the room report after it is.
+            held.view.last_work = Some(Instant::now());
+            held.compiles.remove(&compiled.number)
+        });
         if let Some(in_flight) = answered {
             // An answer nobody waits for any more is dropped.
-            drop(in_flight.answered.try_send(read));
+            drop(in_flight.answered.send(read));
         }
         Ok(())
     }
@@ -422,6 +518,18 @@ impl PullStreams {
             drop(held.outbound.send(Err(violation)));
         }
     }
+}
+
+/// Whether `call`, sent as a `Compile`, passes [`MESSAGE_MAX_BYTES`]. Sent,
+/// such a message would end the stream and every compile on it.
+pub(crate) fn too_large(call: &Call) -> bool {
+    use prost::encoding::encoded_len_varint;
+    // The `Compile`: its call, its longest number and its longest time left,
+    // each a key byte and a varint.
+    let compile = call.encoded_len() + 1 + 10 + 1 + 5;
+    // The `PullResponse` around it: a key byte and a length.
+    let response = 1 + encoded_len_varint(compile as u64) + compile;
+    response > MESSAGE_MAX_BYTES
 }
 
 /// Coral's side of the link: the pull streams it holds, the credentials it

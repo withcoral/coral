@@ -2,9 +2,10 @@
 //!
 //! On Coral's side it holds the compiler client that Program Admission and
 //! Private Tool save share. [`CompilerClient`] is the one interface.
+//! [`PullStreamCompiler`] sends each call down the held pull stream with the
+//! most room, to a Run Executor, and waits for one when none has room.
 //! [`InProcessCompiler`] runs one warm Program Compiler on its own thread in
-//! this process. [`PullStreamCompiler`] sends each call down one held pull
-//! stream to a Run Executor.
+//! this process, for tests.
 //!
 //! On the Run Executor's side, [`run`] warms its compiler, dials Coral, holds
 //! the pull stream that the [`wire`] contract defines, and serves the

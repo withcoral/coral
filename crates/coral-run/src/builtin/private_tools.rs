@@ -290,7 +290,8 @@ fn failure(field: &str, error: coral_tools::Error) -> Error {
         | E::NotData(AuthoredToolKind::Private, _) => {
             Error::InvocationRejected(Rejection::invalid_inputs(vec![problem(field, &error)]))
         }
-        E::CompilationTimedOut(AuthoredToolKind::Private) | E::CompilerBusy => {
+        // Nothing judged the source: the Program may call again.
+        E::CompilationTimedOut(AuthoredToolKind::Private) | E::CompilerBusy | E::NoCompiler => {
             Error::InvocationRejected(Rejection::naming(
                 CoralFailure::ToolUnavailable,
                 vec![problem(field, &error)],
@@ -301,5 +302,30 @@ fn failure(field: &str, error: coral_tools::Error) -> Error {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         other => other.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthoredToolKind, CoralFailure, Error, failure};
+
+    // Catches: a save no compiler judged that ends the Run instead of
+    // failing the call as retryable.
+    #[test]
+    fn a_save_no_compiler_judged_is_a_retryable_tool_failure() {
+        use coral_tools::Error as E;
+        for error in [
+            E::CompilationTimedOut(AuthoredToolKind::Private),
+            E::CompilerBusy,
+            E::NoCompiler,
+        ] {
+            let code = error.code();
+            match failure("source", error) {
+                Error::InvocationRejected(rejection) => {
+                    assert_eq!(rejection.failure(), CoralFailure::ToolUnavailable, "{code}");
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
     }
 }

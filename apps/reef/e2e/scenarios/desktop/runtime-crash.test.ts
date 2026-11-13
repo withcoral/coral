@@ -4,6 +4,7 @@ import {
   copyMcpEndpoint,
   desktopProfile,
   desktopProcesses,
+  processExists,
   withDesktopApp,
 } from '../../support/desktop-app.ts'
 import { openApiDocument } from '../../support/provider-fixtures.ts'
@@ -18,6 +19,16 @@ test('Desktop shows a runtime crash, then restarts Coral at the same addresses',
   const name = 'Desktop crash'
   await withDesktopApp(context, profile, async ({ page, app, reef, target, step }) => {
     let endpoint = ''
+    const search = (taskIntent: string) => {
+      const workspace = new URL(endpoint).pathname.split('/')[2]
+      const runner = programRunner(
+        page,
+        { ...target, mcpURL: new URL(endpoint).origin },
+        workspace,
+        { taskIntent },
+      )
+      return runner.search('Look up a record')
+    }
     await step('Create a workspace with a provider', async () => {
       const workspace = await createWorkspaceViaUi(page, name)
       await addProviderFromFile(
@@ -28,11 +39,20 @@ test('Desktop shows a runtime crash, then restarts Coral at the same addresses',
       )
       endpoint = await copyMcpEndpoint(page, app, name)
     })
+    await step('Run a Program, which starts a local Run Executor', async () => {
+      expect((await search('Desktop crash first goal')).isError).not.toBe(true)
+    })
     const before = await desktopProcesses(app)
     expect(before.runtime).toHaveLength(1)
+    expect(before.runExecutors).toHaveLength(1)
     await step('Kill the runtime, and see the window report it', async () => {
       process.kill(before.runtime[0], 'SIGKILL')
       await page.getByRole('heading', { name: 'Coral stopped', exact: true }).waitFor()
+    })
+    await step('The local Run Executor exits with the runtime', async () => {
+      await expect
+        .poll(() => processExists(before.runExecutors[0]), { timeout: 30_000 })
+        .toBe(false)
     })
     await step('Coral restarts by itself and Reef returns at the same address', async () => {
       await page.waitForURL((url) => url.origin === reef, { timeout: 60_000 })
@@ -46,16 +66,7 @@ test('Desktop shows a runtime crash, then restarts Coral at the same addresses',
       expect(after.reef[0]).not.toBe(before.reef[0])
     })
     await step('The same MCP endpoint answers', async () => {
-      const workspace = new URL(endpoint).pathname.split('/')[2]
-      const runner = programRunner(
-        page,
-        { ...target, mcpURL: new URL(endpoint).origin },
-        workspace,
-        {
-          taskIntent: 'Desktop crash goal',
-        },
-      )
-      const found = await runner.search('Look up a record')
+      const found = await search('Desktop crash goal')
       expect(found.isError).not.toBe(true)
       expect(found.structuredContent.hits.map((hit) => hit.call_path)).toContain(
         'coral.providers.records.lookup',

@@ -189,6 +189,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
   check it at boot before the chain runs, as `coral_search::prepare_storage`
   does. The check names the feature and what the operator can do about it.
+- Universal Search's vector table is the one table outside the chain, so a
+  Postgres without pgvector still runs the chain. While
+  `[search] semantic_search_enabled` is on, boot needs pgvector, and
+  `coral_search::prepare_vector_table` creates the table at boot and
+  recreates it only when the manifest's dimension changes: an existing table
+  keeps any other change to its shape. `scripts/check-migrations.sh` rejects a
+  migration that names pgvector.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.
@@ -286,6 +293,15 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is
   one production runs.
+- Before a test asserts that something did not happen, switch off every path
+  that could make it happen. Two owner paths record an Approval Request's
+  expiry: its timer, and the periodic precheck of parked waits
+  (`ExecutionPolicy::with_wakeups`), which wakes the parked Invocation so its
+  held recheck finds the deadline passed and records it.
+- Do not race a real timer against database work: the database is slower on
+  CI, most of all on Postgres. Give the Run a long real deadline and send the
+  timer's message to the owner yourself. Order messages by waiting on an
+  observer signal, such as `CommitProbe::delivered`, never on `sleep`.
 
 ### Credentials
 

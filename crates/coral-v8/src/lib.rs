@@ -1108,7 +1108,8 @@ pub enum Error {
     /// The compiler worker stopped before returning a result.
     #[error("TypeScript compiler is unavailable")]
     CompilerUnavailable,
-    /// The bounded compiler queue cannot accept more work.
+    /// The compiler had no room for the work. Nothing produces it since
+    /// the queue lost its bound (#2961 removes it).
     #[error("TypeScript compiler is busy")]
     CompilerBusy,
     /// The compiler deadline expired; active compilation is terminated.
@@ -1262,6 +1263,13 @@ pub enum CompileFailure {
     /// The compiler failed for a reason the source did not cause, with the
     /// failure's bounded kind and none of its private text.
     Failed(&'static str),
+    /// No compiler could take the request within the wait for one.
+    NoCompiler,
+}
+
+impl CompileFailure {
+    /// What the caller reads when no compiler could take its request.
+    pub const NO_COMPILER_MESSAGE: &str = "No program compiler is available. Try again later.";
 }
 
 impl From<Error> for CompileFailure {

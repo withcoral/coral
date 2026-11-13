@@ -321,9 +321,13 @@ async fn serve_with_mcp_client(
     coral_workspace::WorkspaceId,
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
 ) {
-    let server = start(ServerBuilder::new().with_config_dir(dir))
-        .await
-        .expect("start composed server");
+    let server = start(
+        ServerBuilder::new()
+            .with_config_dir(dir)
+            .with_in_process_compiler(),
+    )
+    .await
+    .expect("start composed server");
     let workspace = WorkspaceModule::new(server.grpc.database())
         .create(
             &ChangeContext::new(

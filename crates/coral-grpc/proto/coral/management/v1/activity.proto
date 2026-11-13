@@ -9,34 +9,56 @@ service ActivityService {
   // Streams hints that activity changed, with no content.
   rpc WatchActivity(WatchActivityRequest) returns (stream WatchActivityResponse);
   // Lists top-level activity (Tasks and standalone Runs), newest first.
-  rpc BrowseActivityRoots(BrowseActivityRootsRequest) returns (BrowseActivityRootsResponse);
+  rpc BrowseActivityRoots(BrowseActivityRootsRequest) returns (BrowseActivityRootsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Lists one Run's Tools and Events in order, as summaries. The Final Value is not a child.
-  rpc BrowseRunEntries(BrowseRunEntriesRequest) returns (BrowseRunEntriesResponse);
+  rpc BrowseRunEntries(BrowseRunEntriesRequest) returns (BrowseRunEntriesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Gets one Event of a Run by its sequence number.
-  rpc InspectRunEvent(InspectRunEventRequest) returns (InspectRunEventResponse);
+  rpc InspectRunEvent(InspectRunEventRequest) returns (InspectRunEventResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Gets an Agent's name and label for its history, even after the Agent is deleted.
-  rpc InspectAgentHistory(InspectAgentHistoryRequest) returns (InspectAgentHistoryResponse);
+  rpc InspectAgentHistory(InspectAgentHistoryRequest) returns (InspectAgentHistoryResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Gets one Run with a page of its Events and its current pending actions.
-  rpc InspectRun(InspectRunRequest) returns (InspectRunResponse);
+  rpc InspectRun(InspectRunRequest) returns (InspectRunResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Gets one Tool call: its arguments, its outcome and any approval or connection requests.
-  rpc InspectInvocation(InspectInvocationRequest) returns (InspectInvocationResponse);
+  rpc InspectInvocation(InspectInvocationRequest) returns (InspectInvocationResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Gets one approval request and whether it can still be decided. Use DecideApproval to decide it.
-  rpc InspectApproval(InspectApprovalRequest) returns (InspectApprovalResponse);
+  rpc InspectApproval(InspectApprovalRequest) returns (InspectApprovalResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Lists pending requests that wait on the caller, most urgent first: the caller's
   // own, plus Agent approvals in Workspaces the caller owns. A connection request
   // shared by several Runs appears once.
-  rpc BrowseRequiredActions(BrowseRequiredActionsRequest) returns (BrowseRequiredActionsResponse);
+  rpc BrowseRequiredActions(BrowseRequiredActionsRequest) returns (BrowseRequiredActionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Counts pending requests. A connection request shared by several Runs counts once.
-  rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse);
+  rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Lists one Workspace's approved, declined and expired approval requests, newest
   // first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
   // never include arguments or comments; read those with InspectApproval.
-  rpc BrowseSettledApprovals(BrowseSettledApprovalsRequest) returns (BrowseSettledApprovalsResponse);
+  rpc BrowseSettledApprovals(BrowseSettledApprovalsRequest) returns (BrowseSettledApprovalsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Sums the caller's recent work in one Workspace: call outcomes, stopped and
   // busiest Tools, approval decisions, and context impact. Counts the caller's
   // own work and, in a Workspace the caller owns, its Agents' work, like the
   // pending-request queue. Other Users' work is never counted.
-  rpc SummarizeActivity(SummarizeActivityRequest) returns (SummarizeActivityResponse);
+  rpc SummarizeActivity(SummarizeActivityRequest) returns (SummarizeActivityResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Approves or declines one request. The first decision wins; the response gives
   // the resulting state, which may not be the caller's decision.
   rpc DecideApproval(DecideApprovalRequest) returns (DecideApprovalResponse);
@@ -44,9 +66,13 @@ service ActivityService {
   // already have ended another way; the response gives its current state.
   rpc CancelActivityRun(CancelActivityRunRequest) returns (CancelActivityRunResponse);
   // Gets one Task and a page of its interactions in order.
-  rpc InspectTask(InspectTaskRequest) returns (InspectTaskResponse);
+  rpc InspectTask(InspectTaskRequest) returns (InspectTaskResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Gets one interaction exactly as recorded, not rebuilt from current definitions.
-  rpc InspectTaskInteraction(InspectTaskInteractionRequest) returns (InspectTaskInteractionResponse);
+  rpc InspectTaskInteraction(InspectTaskInteractionRequest) returns (InspectTaskInteractionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // Watches the calling User's activity. The request has no options.

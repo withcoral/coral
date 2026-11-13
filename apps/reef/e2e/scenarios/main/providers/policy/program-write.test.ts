@@ -65,7 +65,9 @@ test("An owner's Program changes an added provider's policy once the owner appro
       })
     })
     await step('The provider page shows the policy the Program set', async () => {
-      await page.goto(`/${provider}`)
+      // An error page renders at once; without this check the failure reads as
+      // a missing radio button.
+      expect((await page.goto(`/${provider}`))?.status()).toBe(200)
       await expectPolicy(page, 'lookup', 'Block')
       await expectPolicy(page, 'remove', 'Allow')
     })

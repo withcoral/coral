@@ -1,6 +1,7 @@
 import type { RequestAuth } from '@/auth/types'
 
-import { createClient } from '@connectrpc/connect'
+import { MethodOptions_IdempotencyLevel } from '@bufbuild/protobuf/wkt'
+import { ConnectError, createClient, type Interceptor } from '@connectrpc/connect'
 import { createGrpcTransport, Http2SessionManager } from '@connectrpc/connect-node'
 
 import { Health } from '@/generated/grpc/health/v1/health_pb'
@@ -42,8 +43,37 @@ export function managementTransportForRequest(
         if (auth.accessToken) call.header.set('authorization', `Bearer ${auth.accessToken}`)
         return next(call)
       },
+      resendAfterLostSession,
     ],
   })
+}
+
+/**
+ * Coral can end the shared HTTP/2 session under any call: on a restart, or
+ * when h2's rapid-reset guard sees a burst of cancelled calls. Node then fails
+ * every call on that session with the same error, so Reef cannot tell which
+ * calls Coral applied. Send a call once more only when its proto method
+ * declares an `idempotency_level`, which says repeating it is safe.
+ */
+const resendAfterLostSession: Interceptor = (next) => async (call) => {
+  try {
+    return await next(call)
+  } catch (error) {
+    if (
+      call.stream ||
+      call.signal.aborted ||
+      call.method.idempotency === MethodOptions_IdempotencyLevel.IDEMPOTENCY_UNKNOWN ||
+      !sessionLost(error)
+    ) {
+      throw error
+    }
+    return next(call)
+  }
+}
+
+function sessionLost(error: unknown): boolean {
+  const cause = error instanceof ConnectError ? error.cause : undefined
+  return cause instanceof Error && 'code' in cause && cause.code === 'ERR_HTTP2_SESSION_ERROR'
 }
 
 const warnedCleartextOrigins = new Set<string>()

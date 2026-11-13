@@ -11,9 +11,13 @@ service AgentService {
   // Atomic Agent, Registration and one-time credential issuance.
   rpc CreateAgent(CreateAgentRequest) returns (IssuedAgentCredential);
   // Owner-only safe current Agent listing.
-  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Exact safe Agent inspection.
-  rpc GetAgent(GetAgentRequest) returns (Agent);
+  rpc GetAgent(GetAgentRequest) returns (Agent) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Changes enabled state without removing history.
   rpc UpdateAgent(UpdateAgentRequest) returns (Agent);
   // Deletes current authority and authoring, retaining historical attribution.
@@ -23,7 +27,9 @@ service AgentService {
 // Single host-owned Registration lifecycle.
 service AgentRegistrationService {
   // Requires current Workspace Owner authority.
-  rpc GetAgentRegistration(GetAgentRegistrationRequest) returns (AgentRegistration);
+  rpc GetAgentRegistration(GetAgentRegistrationRequest) returns (AgentRegistration) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Replaces only masked enablement or expiration, not identity or Workspace.
   rpc UpdateAgentRegistration(UpdateAgentRegistrationRequest) returns (AgentRegistration);
   // Returns a fresh credential once. Repeated requests never rotate again.

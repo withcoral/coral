@@ -20,6 +20,7 @@ const STATE_LOCKED_EXIT_CODE: i32 = 75;
 /// A runtime process started on loopback listeners, killed if a test fails.
 struct Runtime {
     child: Child,
+    grpc_endpoint: String,
     mcp_origin: String,
 }
 
@@ -58,6 +59,7 @@ impl Runtime {
         });
         let mut runtime = Self {
             child,
+            grpc_endpoint: String::new(),
             mcp_origin: String::new(),
         };
         let deadline = Instant::now() + STARTUP_TIMEOUT;
@@ -66,6 +68,9 @@ impl Runtime {
             let line = lines_rx
                 .recv_timeout(remaining)
                 .expect("runtime reports its MCP listener");
+            if let Some(endpoint) = line.strip_prefix("Coral gRPC server listening on ") {
+                endpoint.clone_into(&mut runtime.grpc_endpoint);
+            }
             if let Some(rest) =
                 line.strip_prefix("Coral MCP HTTP server serving each Workspace at ")
                 && let Some((origin, _route)) = rest.split_once("/workspaces")
@@ -356,4 +361,101 @@ fn second_runtime_on_a_held_state_root_exits_temporarily() {
         .exit_within(EXIT_TIMEOUT)
         .expect("first runtime stops after stdin closes");
     assert_eq!(status.code(), Some(0), "{status}");
+}
+
+/// A Workspace created over the runtime's gRPC listener: its MCP URL.
+fn workspace_mcp_url(runtime: &Runtime) -> String {
+    use coral_grpc::coral::management::v1::CreateWorkspaceRequest;
+    use coral_grpc::coral::management::v1::workspace_service_client::WorkspaceServiceClient;
+
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a Tokio runtime");
+    let workspace = tokio.block_on(async {
+        let mut client = WorkspaceServiceClient::connect(runtime.grpc_endpoint.clone())
+            .await
+            .expect("connect gRPC");
+        let mut request = tonic::Request::new(CreateWorkspaceRequest {
+            display_name: "Children".into(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+        });
+        request
+            .metadata_mut()
+            .insert("coral-audience", "reef".parse().expect("metadata"));
+        client
+            .create_workspace(request)
+            .await
+            .expect("create a Workspace")
+            .into_inner()
+    });
+    let id = workspace
+        .name
+        .strip_prefix("workspaces/")
+        .expect("a Workspace name");
+    format!("{}/workspaces/{id}/mcp", runtime.mcp_origin)
+}
+
+/// The ids of `parent`'s child processes that run `coral run-executor`.
+#[cfg(unix)]
+fn run_executor_children(parent: u32) -> Vec<String> {
+    let found = std::process::Command::new("pgrep")
+        .args(["-P", &parent.to_string(), "-f", "run-executor"])
+        .output()
+        .expect("run pgrep");
+    String::from_utf8_lossy(&found.stdout)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether process `pid` still runs; a zombie has exited.
+#[cfg(unix)]
+fn runs(pid: &str) -> bool {
+    let status = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("run ps");
+    let state = String::from_utf8_lossy(&status.stdout);
+    status.status.success() && !state.trim().is_empty() && !state.trim().starts_with('Z')
+}
+
+/// A Program run over MCP compiles on a local Run Executor that the runtime
+/// starts as its child with no Run Executor configuration, and a runtime
+/// killed with SIGKILL leaves no child behind.
+#[cfg(unix)]
+#[test]
+fn a_program_compiles_on_a_local_child_that_exits_when_the_runtime_is_killed() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mut runtime = Runtime::start(&local_state_root(&temp), false);
+    let url = workspace_mcp_url(&runtime);
+    let exec = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec","arguments":{"goal":"Compile on a child","intent":"Compile on a child","program":"return 40 + 2;"}}}"#;
+    let response = reqwest::blocking::Client::builder()
+        .timeout(STARTUP_TIMEOUT)
+        .build()
+        .expect("an HTTP client")
+        .post(url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .body(exec)
+        .send()
+        .expect("call exec");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response.text().expect("the exec answer");
+    assert!(
+        body.contains(r#""final_value":{"kind":"value","value":42}"#),
+        "{body}"
+    );
+
+    let children = run_executor_children(runtime.child.id());
+    let [child] = children.as_slice() else {
+        panic!("one local child: {children:?}");
+    };
+    runtime.child.kill().expect("kill the runtime");
+    runtime.child.wait().expect("reap the runtime");
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while runs(child) {
+        assert!(Instant::now() < deadline, "the child outlives the runtime");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

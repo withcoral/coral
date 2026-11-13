@@ -6,7 +6,9 @@ import "coral/management/v1/provider.proto";
 // Reef-only exact Tool policy. No Principal, pattern, glob, or route dimension.
 service ToolPolicyService {
   // Lists a Provider's Tools with their decisions, from one read per page.
-  rpc ListToolAccess(ListToolAccessRequest) returns (ListToolAccessResponse);
+  rpc ListToolAccess(ListToolAccessRequest) returns (ListToolAccessResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
   rpc UpdateToolPolicies(UpdateToolPoliciesRequest) returns (UpdateToolPoliciesResponse);
 }

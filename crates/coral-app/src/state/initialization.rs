@@ -3,16 +3,19 @@
 //! The [`initialize`] Interface is the only production path from a discovered
 //! state layout to a migration-ready database. It first performs every
 //! filesystem and database inspection without mutation. Only after both stores
-//! are accepted does it publish the filesystem marker, create the layout, run
-//! the embedded database migration, and prepare Universal Search's
-//! backend-specific storage on top of it. Rejected state is therefore unchanged.
+//! are accepted does it publish the filesystem marker, create the layout, check
+//! Universal Search's database features, run the embedded database migration,
+//! and prepare Universal Search's vector table on top of it. Rejected state is
+//! therefore unchanged.
 //!
 //! Bootstrap supplies one captured configuration document. Database
 //! configuration resolution is injected because process bootstrap owns
 //! environment access. The resolver is called only after the filesystem
 //! fence accepts the state root. Configuration validation is injected too and
 //! runs after both inspections and before the first write, so retired state is
-//! reported first and invalid configuration leaves a fresh root unchanged.
+//! reported first and invalid configuration leaves a fresh root unchanged. It
+//! returns the one setting storage preparation reads: Universal Search's
+//! vector side.
 //!
 //! The Module also makes one runtime the state root's only user. Once the
 //! filesystem root is accepted, it locks the root's existing lock file, so a
@@ -71,13 +74,13 @@ pub(crate) async fn initialize<F, V>(
 ) -> Result<InitializedState, AppError>
 where
     F: FnOnce(&AppStateLayout, &str) -> Result<DatabaseOptions, AppError>,
-    V: FnOnce() -> Result<(), AppError>,
+    V: FnOnce() -> Result<coral_search::VectorStorage, AppError>,
 {
     validate_state_root(&layout, config)?;
     let held = StateLock::acquire_existing(&layout)?;
     let database_config = resolve_database(&layout, config)?;
     validate_database_state(&database_config).await?;
-    validate_config()?;
+    let vector_storage = validate_config()?;
 
     let lock = if let Some(lock) = held {
         lock
@@ -92,8 +95,11 @@ where
     layout.ensure()?;
     let database = Database::connect(database_config).await?;
     // The chain's search steps need the features this checks.
-    coral_search::prepare_storage(&database).await?;
+    coral_search::prepare_storage(&database, vector_storage).await?;
     super::migrations::migrate_current(&database, report_migration).await?;
+    // After the chain: a table in a schema without the state marker reads
+    // as pre-v1 state at the next boot.
+    coral_search::prepare_vector_table(&database, vector_storage).await?;
 
     Ok(InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),
@@ -183,6 +189,51 @@ mod tests {
                 }))
                 .collect();
             assert_eq!(*reported.lock().unwrap(), expected, "{boot}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_postgres_boots_with_a_vector_table_only_while_the_setting_is_on() {
+        coral_test_support::database_only!(Postgres);
+        for (vector_storage, expected) in [
+            (coral_search::VectorStorage::On { dimension: 3 }, true),
+            (coral_search::VectorStorage::Off, false),
+        ] {
+            let options = coral_test_support::empty_postgres_schema(
+                coral_test_support::SearchPath::WithPublic,
+            )
+            .await
+            .expect("create an empty schema");
+            let temp = TempDir::new().unwrap();
+            let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
+
+            let state = super::initialize(
+                layout,
+                "",
+                |_, _| Ok(options),
+                || Ok(vector_storage),
+                &|_| {},
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{vector_storage:?}: boot: {error}"));
+
+            let (database, _lock) = state.into_parts();
+            let (vector_table,): (bool,) = database
+                .fetch_optional(
+                    sea_query::Query::select()
+                        .expr(sea_query::Expr::cust(
+                            "EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
+                             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                             WHERE n.nspname = current_schema() \
+                             AND c.relname = 'search_entity_embeddings')",
+                        ))
+                        .to_owned(),
+                )
+                .await
+                .expect("read the schema")
+                .expect("EXISTS returns one row");
+            database.close().await;
+            assert_eq!(vector_table, expected, "{vector_storage:?}");
         }
     }
 
