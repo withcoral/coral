@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use coral_test_support::TestDatabase;
 use hyper_util::rt::TokioIo;
@@ -86,6 +87,21 @@ pub(crate) fn up(compiled: Compiled) -> PullRequest {
     PullRequest {
         message: Some(Up::Compiled(compiled)),
     }
+}
+
+/// What Coral sends on a stream.
+pub(crate) type Sent = mpsc::UnboundedReceiver<Result<PullResponse, Status>>;
+
+/// A dialed stream with `free` units of room, and what Coral sends on it.
+pub(crate) fn dialed_stream(streams: &PullStreams, free: u32) -> (StreamId, Sent) {
+    let (outbound, sent) = mpsc::unbounded_channel();
+    let stream = streams.insert(
+        "a-run-executor".to_owned(),
+        dialed_admission(),
+        free,
+        outbound,
+    );
+    (stream, sent)
 }
 
 /// What `answer` receives, or an error once its stream ends unanswered.

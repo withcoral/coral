@@ -55,23 +55,16 @@ pub(crate) async fn serve(
     compile: Compile,
 ) -> Result<Compiled, ProtocolError> {
     let time_left = time_left(received + Duration::from_millis(compile.time_left_ms.into()));
-    let answer = match compile.call.ok_or(ProtocolError)? {
+    let read = match compile.call.ok_or(ProtocolError)? {
         Call::Analyze(wire::Analyze { sources }) => {
             let sources = sources
                 .into_iter()
                 .map(analyzed_source)
                 .collect::<Result<Vec<_>, _>>()?;
-            match compiler.analyze(time_left, &sources).await {
-                Ok(analyzed) => Answer::Analyzed(wire::Analyzed {
-                    sources: analyzed.iter().map(source_references_wire).collect(),
-                }),
-                Err(AnalysisError { index, error }) => {
-                    Answer::AnalysisFailure(wire::AnalysisFailure {
-                        index: u64::try_from(index).unwrap_or(u64::MAX),
-                        failure: Some(failure(error)),
-                    })
-                }
-            }
+            compiler
+                .analyze(time_left, &sources)
+                .await
+                .map_or_else(Read::AnalysisFailure, Read::Analyzed)
         }
         Call::Compile(wire::ProgramSource {
             source,
@@ -85,18 +78,16 @@ pub(crate) async fn serve(
                 .collect::<Result<Vec<_>, _>>()?;
             let callable = callable.map(|callable| callable.call_paths);
             let builtin_tools = BuiltinTools::new(builtin_tools);
-            answer(
-                compiler
-                    .compile(
-                        time_left,
-                        &source,
-                        &linked,
-                        &builtin_tools,
-                        callable.as_deref(),
-                    )
-                    .await,
-                |program| Answer::Package(package(program)),
-            )
+            compiler
+                .compile(
+                    time_left,
+                    &source,
+                    &linked,
+                    &builtin_tools,
+                    callable.as_deref(),
+                )
+                .await
+                .map_or_else(Read::Failure, Read::Package)
         }
         Call::Prepare(wire::AuthoredToolSource {
             source,
@@ -105,17 +96,15 @@ pub(crate) async fn serve(
         }) => {
             let declarations = declarations.map(coral_declarations).transpose()?;
             let builtin_tools = BuiltinTools::new(builtin_tools);
-            answer(
-                compiler
-                    .prepare(time_left, &source, &builtin_tools, declarations.as_ref())
-                    .await,
-                |prepared| Answer::Prepared(prepared_answer(&prepared)),
-            )
+            compiler
+                .prepare(time_left, &source, &builtin_tools, declarations.as_ref())
+                .await
+                .map_or_else(Read::Failure, Read::Prepared)
         }
     };
     Ok(Compiled {
         number: compile.number,
-        answer: Some(answer),
+        answer: Some(read.into_answer()),
     })
 }
 
@@ -156,13 +145,6 @@ pub(crate) fn prepare_call(
         declarations: declarations.map(declarations_wire),
         builtin_tools: builtin_tools.keys().to_vec(),
     })
-}
-
-fn answer<T>(result: Result<T, CompileError>, encode: impl FnOnce(T) -> Answer) -> Answer {
-    match result {
-        Ok(value) => encode(value),
-        Err(error) => Answer::Failure(failure(error)),
-    }
 }
 
 pub(crate) fn failure(error: CompileError) -> wire::CompileFailure {
@@ -551,6 +533,25 @@ impl Read {
             Answer::Prepared(prepared) => Self::Prepared(authored_tool_compilation(prepared)?),
             Answer::Failure(failure) => Self::Failure(compile_error(failure)?),
         })
+    }
+
+    /// This answer as the wire carries it: on the pull stream, and through
+    /// the database for a relayed compile.
+    pub(crate) fn into_answer(self) -> Answer {
+        match self {
+            Self::Analyzed(analyzed) => Answer::Analyzed(wire::Analyzed {
+                sources: analyzed.iter().map(source_references_wire).collect(),
+            }),
+            Self::AnalysisFailure(AnalysisError { index, error }) => {
+                Answer::AnalysisFailure(wire::AnalysisFailure {
+                    index: u64::try_from(index).unwrap_or(u64::MAX),
+                    failure: Some(failure(error)),
+                })
+            }
+            Self::Package(program) => Answer::Package(package(program)),
+            Self::Prepared(prepared) => Answer::Prepared(prepared_answer(&prepared)),
+            Self::Failure(error) => Answer::Failure(failure(error)),
+        }
     }
 
     /// Whether this answers a call that `takes` it: analysis answers with one

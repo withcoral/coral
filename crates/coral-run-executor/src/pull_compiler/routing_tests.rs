@@ -10,24 +10,10 @@ use tokio::task::JoinHandle;
 
 use super::{COMPILE_WAIT, PullStreamCompiler, ROOM_WAIT_RESERVE};
 use crate::local::tests::FakeStarter;
-use crate::pull::tests::{compiled, up};
-use crate::pull::{Credentials, dialed_admission};
+use crate::pull::Credentials;
+use crate::pull::tests::{Sent, compiled, dialed_stream as open, up};
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
 use crate::{CompileError, CompilerClient, LocalRunExecutors, PullStreams, StreamId, Unavailable};
-
-type Sent = mpsc::UnboundedReceiver<Result<PullResponse, tonic::Status>>;
-
-/// A dialed stream with `free` units of room, and what Coral sends on it.
-fn open(streams: &PullStreams, free: u32) -> (StreamId, Sent) {
-    let (outbound, sent) = mpsc::unbounded_channel();
-    let stream = streams.insert(
-        "a-run-executor".to_owned(),
-        dialed_admission(),
-        free,
-        outbound,
-    );
-    (stream, sent)
-}
 
 /// Answers the next `Compile` sent on `stream`, as a Run Executor does,
 /// then reports `free` when there is any to report.
