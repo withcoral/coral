@@ -442,6 +442,113 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
 }
 
 #[tokio::test]
+async fn unreadable_setup_credential_records_no_outcome_and_leaves_setup_reusable() {
+    let harness = crate::tests::Harness::new().await;
+    let (fixture, providers, accounts) = (&harness.fixture, &harness.providers, &harness.accounts);
+    let actor = organization_user(
+        harness.database.clone(),
+        "user:unreadable-setup-credential",
+        OrganizationRole::Owner,
+    )
+    .await;
+    let context = change_context(actor.clone(), 20, '1');
+    let workspace = harness
+        .workspaces
+        .create(&context, WorkspaceDisplayName::parse("Unreadable").unwrap())
+        .await
+        .unwrap();
+    let owner = workspace.id();
+    let setup = crate::tests::authorized_bearer_setup(
+        &harness,
+        &context,
+        owner,
+        OpenApiDocument::parse(CREDENTIAL_FREE_OPENAPI).unwrap(),
+    )
+    .await;
+    let request = publication_request(
+        owner,
+        &setup.id,
+        "retention",
+        CredentialRoute::Fixed,
+        "30000000-0000-4000-8000-000000000002",
+    )
+    .with_account_grant(setup.grant);
+    let id = &setup.id;
+    let events_before = terminal_event_count(providers, &actor, owner).await;
+    // The stored row no longer decodes, so Publication cannot read the grant.
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_setup_credentials SET oauth_client = '{{' WHERE setup_id = '{id}'"
+        ))
+        .await
+        .unwrap();
+
+    let error = providers
+        .publish_workspace_provider(&context, request.clone())
+        .await
+        .expect_err("an unreadable setup credential is not a terminal Publication");
+
+    assert!(
+        matches!(&error, Error::CorruptData(reason) if reason == "invalid setup OAuth client"),
+        "{error:?}"
+    );
+    assert!(matches!(
+        providers
+            .get_publication(&actor, owner, request.request_id())
+            .await,
+        Err(Error::ProviderPublicationNotFound)
+    ));
+    assert_eq!(
+        providers
+            .get_setup(&actor, owner, &setup.id)
+            .await
+            .unwrap()
+            .state(),
+        ProviderSetupState::Ready
+    );
+    assert_eq!(
+        providers.inspect_providers(&actor, owner).await.unwrap(),
+        [] as [crate::Provider; 0]
+    );
+    assert_eq!(
+        terminal_event_count(providers, &actor, owner).await,
+        events_before
+    );
+
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_setup_credentials SET oauth_client = NULL WHERE setup_id = '{id}'"
+        ))
+        .await
+        .unwrap();
+    assert!(
+        providers
+            .setup_authentication(&actor, owner, &setup.id, 21)
+            .await
+            .unwrap()
+            .authorized,
+        "the failed attempt kept the sealed grant"
+    );
+    let publication = providers
+        .publish_workspace_provider(&context, request)
+        .await
+        .unwrap()
+        .skip_search();
+    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
+    let shared = accounts
+        .get_account(
+            &context,
+            owner,
+            publication.published_provider().unwrap().id(),
+            &crate::account::AccountScope::Shared,
+        )
+        .await
+        .unwrap()
+        .account;
+    assert_eq!(shared.map(|account| account.id), Some(setup.grant));
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one controlled publication race verifies rollback, evidence, and successful retry"

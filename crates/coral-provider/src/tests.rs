@@ -347,6 +347,64 @@ pub(crate) fn accounts_for(providers: &ProviderModule, dir: &std::path::Path) ->
     )
 }
 
+/// A ready Setup whose starter sealed a Bearer credential for it.
+pub(crate) struct AuthorizedSetup {
+    pub(crate) id: crate::ProviderSetupId,
+    pub(crate) revision: i64,
+    pub(crate) grant: crate::account::ProviderAccountId,
+}
+
+/// Prepares a Setup from `document`, confirms Bearer authentication and
+/// authorizes it with a token.
+pub(crate) async fn authorized_bearer_setup(
+    harness: &Harness,
+    context: &ChangeContext,
+    owner: &WorkspaceId,
+    document: OpenApiDocument,
+) -> AuthorizedSetup {
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(context, owner, document)
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(context.actor(), owner, setup.id())
+        .await
+        .unwrap();
+    let mut values = review.confirmed.unwrap();
+    values.authentication = Some(coral_catalog::AuthenticationConfiguration::Bearer);
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(context, owner, setup.id(), review.revision, values)
+        .await
+        .unwrap();
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
+    let grant = harness
+        .accounts
+        .authorize_setup(
+            context,
+            owner,
+            setup.id(),
+            confirmed.revision,
+            coral_credentials::CredentialValues::token(
+                coral_credentials::Secret::new("reviewed-account".into()).unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .provisional_grant_id
+        .unwrap();
+    AuthorizedSetup {
+        id: setup.id().clone(),
+        revision: confirmed.revision,
+        grant,
+    }
+}
+
 pub(crate) fn change_context(
     actor: AuthenticatedUser,
     occurred_at_unix_nanos: i64,

@@ -1092,7 +1092,7 @@ impl ProviderModule {
                         request.account_grant(),
                         &contract,
                     )
-                    .await
+                    .await?
                     {
                         Ok(promotion) => Ok((prepared, provider_access, promotion)),
                         Err(diagnostic) => Err(diagnostic),
@@ -1254,7 +1254,7 @@ impl ProviderModule {
                         request.account_grant(),
                         &replacement_contract,
                     )
-                    .await
+                    .await?
                     {
                         Ok(promotion) => Some(promotion),
                         Err(diagnostic) => {
