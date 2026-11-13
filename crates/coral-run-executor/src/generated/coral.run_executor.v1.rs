@@ -567,13 +567,16 @@ pub mod run_response {
     /// The message.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
-        /// The Run's package, the answer to Open for a held Run not started.
+        /// The Run's package, the answer to Open for a held Run not started. A Run
+        /// Executor that loaded it on an earlier stream names it by its digest
+        /// and sends Loaded again.
         #[prost(message, tag = "1")]
         Package(super::RunPackage),
         /// The Run started: the Program may run.
         #[prost(message, tag = "2")]
         Started(super::Started),
-        /// The highest request number committed.
+        /// The highest request number committed, also the answer to Open for a
+        /// started Run: the Run Executor resends every request above it, in order.
         #[prost(message, tag = "3")]
         Committed(super::Committed),
         /// The answer to one Invoke.
@@ -587,7 +590,9 @@ pub mod run_response {
         Ended(super::Ended),
     }
 }
-/// Opens a Run stream for one taken Run.
+/// Opens a Run stream for one taken Run. A stream that ends without Ended
+/// reopens with the same Open: at once after a clean end that followed
+/// Coral's answer to Open, otherwise after the connection's back-off.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Open {
     /// The Run's id.
@@ -881,7 +886,9 @@ pub struct Failure {
 /// The answer to one Invoke or Complete, at Applied, or to one Perform, once
 /// the call is decided. An Invoke and a Complete get `result_json`,
 /// `coral_failure`, `upstream_outcome` or `fatal`. A Perform gets `permitted`,
-/// `coral_failure` or `fatal`. Any other outcome breaks the protocol.
+/// `coral_failure` or `fatal`. Any other outcome breaks the protocol. A
+/// second answer to a resent request, still above the watermark, repeats the
+/// first and changes nothing.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InvocationResult {
     /// The request number it answers.

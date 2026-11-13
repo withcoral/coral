@@ -81,6 +81,8 @@ pub struct ScriptedCoral {
 
 /// One Run stream a Run Executor opened, which the test answers.
 pub struct RunCall {
+    /// When it arrived.
+    pub at: Instant,
     /// Its first message.
     pub open: Open,
     inbound: Streaming<RunRequest>,
@@ -97,6 +99,12 @@ impl RunCall {
             .send(Ok(response))
             .await
             .expect("the Run stream is open");
+    }
+
+    /// Ends Coral's side of the stream with `status`. Dropping the call
+    /// ends it cleanly instead.
+    pub async fn fail(self, status: Status) {
+        drop(self.outbound.send(Err(status)).await);
     }
 
     /// The Run Executor's next message within 10 s, or `None` once its side
@@ -278,6 +286,7 @@ impl LinkService for Script {
         &self,
         request: Request<Streaming<RunRequest>>,
     ) -> Result<Response<Self::RunStream>, Status> {
+        let at = Instant::now();
         let mut inbound = request.into_inner();
         let Ok(Some(RunRequest {
             message: Some(run_request::Message::Open(open)),
@@ -287,6 +296,7 @@ impl LinkService for Script {
         };
         let (outbound, stream) = mpsc::channel(16);
         drop(self.runs.send(RunCall {
+            at,
             open,
             inbound,
             outbound,

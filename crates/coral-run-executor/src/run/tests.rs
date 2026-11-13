@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
 use coral_v8::LinkedToolSource;
 use tokio::sync::{Notify, mpsc, oneshot};
+use tonic::Status;
 
 use super::*;
 use crate::link::HeldRun;
@@ -28,14 +29,15 @@ async fn parks(parked: &mut mpsc::UnboundedReceiver<u64>) -> u64 {
 /// A scripted Coral and a Run Executor that holds two Runs, linked, with
 /// its pull stream. The Run Executor retires when the sender drops.
 async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, PullCall, oneshot::Sender<()>) {
-    let (coral, call, retire, _parked) = parking(applied_cap_bytes).await;
+    let (coral, call, retire, _parked) = parking(applied_cap_bytes, HELD_CAP_REQUESTS).await;
     (coral, call, retire)
 }
 
-/// [`linked`], with the number of each request that parks on the Applied
-/// cap.
+/// [`linked`] with a held cap, and the number of each request that parks on
+/// a cap.
 async fn parking(
     applied_cap_bytes: usize,
+    held_cap: usize,
 ) -> (
     ScriptedCoral,
     PullCall,
@@ -46,6 +48,7 @@ async fn parking(
     let (on_parked, parked) = mpsc::unbounded_channel();
     let limits = RunLimits {
         applied_cap_bytes,
+        held_cap,
         on_parked: Some(Box::leak(Box::new(on_parked))),
         ..RunLimits::default()
     };
@@ -145,12 +148,17 @@ async fn started(
     cpu_budget_ms: Option<u64>,
 ) -> RunCall {
     let run = loaded(coral, "run-1", package).await;
+    start(&run, 60_000, cpu_budget_ms).await;
+    run
+}
+
+/// Sends `Started` with the time to the deadline and the CPU budget.
+async fn start(run: &RunCall, deadline_ms: u64, cpu_budget_ms: Option<u64>) {
     let started = Started {
-        deadline_ms: 60_000,
+        deadline_ms,
         cpu_budget_ms,
     };
     run.send(run_response::Message::Started(started)).await;
-    run
 }
 
 async fn next_request(run: &mut RunCall) -> (u64, request::Kind) {
@@ -260,14 +268,8 @@ return issue.id;"#;
     assert_eq!(next_request(&mut run).await, (4, log));
     let value = finish(finish::Completion::ValueJson("7".to_owned()));
     assert_eq!(next_request(&mut run).await, (5, value));
-    run.send(run_response::Message::Committed(Committed {
-        request_number: 5,
-    }))
-    .await;
-    let ended = Ended {
-        end: RunEnd::Succeeded.into(),
-    };
-    run.send(run_response::Message::Ended(ended)).await;
+    run.send(committed(5)).await;
+    run.send(ended()).await;
     assert_eq!(
         call.rooms.recv().await,
         Some(2),
@@ -536,7 +538,7 @@ async fn a_final_value_counts_against_the_run_output_budget() {
 /// (its Finish included), or one that a Committed never releases.
 #[tokio::test]
 async fn the_applied_cap_holds_the_next_request_until_committed() {
-    let (mut coral, _call, _retire, mut parked) = parking(8).await;
+    let (mut coral, _call, _retire, mut parked) = parking(8, HELD_CAP_REQUESTS).await;
     let source = r#"await Promise.all([1, 2, 3].map((id) =>
   coral.providers.tracker.issues.get({ id, note: "longer than the cap" })));
 await coral.emit("123456789");
@@ -561,10 +563,7 @@ return 1;"#;
     assert_eq!(next_request(&mut run).await, (4, emit(r#""123456789""#, 3)));
     // 11 output bytes above the watermark, more than the cap: the Log waits.
     assert_eq!(parks(&mut parked).await, 5, "the Log waits");
-    run.send(run_response::Message::Committed(Committed {
-        request_number: 4,
-    }))
-    .await;
+    run.send(committed(4)).await;
     let (number, kind) = next_request(&mut run).await;
     assert!(
         matches!((number, &kind), (5, request::Kind::Log(log)) if log.message == "next"),
@@ -573,10 +572,7 @@ return 1;"#;
     assert_eq!(next_request(&mut run).await, (6, emit(r#""123456789""#, 5)));
     // Finish waits for the cap like any other request.
     assert_eq!(parks(&mut parked).await, 7, "Finish waits");
-    run.send(run_response::Message::Committed(Committed {
-        request_number: 6,
-    }))
-    .await;
+    run.send(committed(6)).await;
     let value = finish(finish::Completion::ValueJson("1".to_owned()));
     assert_eq!(next_request(&mut run).await, (7, value));
 }
@@ -599,7 +595,7 @@ try { console.info("held"); } finally { await coral.emit("finally"); }"#,
             Some(2),
         ),
     ] {
-        let (mut coral, _call, _retire, mut parked) = parking(8).await;
+        let (mut coral, _call, _retire, mut parked) = parking(8, HELD_CAP_REQUESTS).await;
         let mut run = started(&mut coral, compiled(source).await, None).await;
         assert_eq!(next_request(&mut run).await.0, 1, "{waits_on}");
         if let Some(number) = waits {
@@ -672,18 +668,19 @@ async fn a_panicked_stream_task_stops_its_program() {
     let freed = Arc::new(Notify::new());
     let unit = HeldRun::take(&held, &freed);
     let (outbound, mut requests) = mpsc::unbounded_channel();
-    let (host, exited) = load(
+    let Program { host, exited, .. } = load(
         compiled("return 1;").await,
         outbound,
         RunLimits::default(),
         unit,
+        &RunId::new("run-1"),
     )
     .expect("the package loads");
     let loaded = requests.recv().await.and_then(|request| request.message);
     assert_eq!(loaded, Some(run_request::Message::Loaded(Loaded {})));
     // The Program waits for a Started that never comes.
     let task = tokio::spawn(async move {
-        let _host = StopsOnDrop(host);
+        let _host = host;
         panic!("the Run stream task panics");
     });
     assert!(task.await.unwrap_err().is_panic());
@@ -744,4 +741,209 @@ async fn a_spent_cpu_budget_finishes_with_the_cpu_end() {
     let mut run = started(&mut coral, compiled("while (true) {}").await, Some(100)).await;
     let end = finish_end(FinishEnd::CpuBudget);
     assert_eq!(next_request(&mut run).await, (1, end));
+}
+
+fn committed(request_number: u64) -> run_response::Message {
+    run_response::Message::Committed(Committed { request_number })
+}
+
+fn ended() -> run_response::Message {
+    run_response::Message::Ended(Ended {
+        end: RunEnd::Succeeded.into(),
+    })
+}
+
+fn title(number: u64, title: &str) -> run_response::Message {
+    let json = format!(r#"{{"title":"{title}"}}"#);
+    result(number, 0, invocation_result::Outcome::ResultJson(json))
+}
+
+/// Catches: a reopen that resends what `Committed` covers, sends a request
+/// twice or out of order, loses the `Invoke` in flight or the `Finish`, or
+/// closes the stream on Coral's repeat answer to a resent request.
+#[tokio::test]
+async fn a_lost_stream_reopens_and_resends_what_is_above_the_watermark_once() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let source = r"const first = await coral.providers.tracker.issues.get({ id: 1 });
+await coral.emit(first.title);
+const second = await coral.providers.tracker.issues.get({ id: 2 });
+return second.title;";
+    let mut run = started(&mut coral, compiled(source).await, None).await;
+    let open = run.open.clone();
+    assert_eq!(next_request(&mut run).await.0, 1);
+    run.send(title(1, "a")).await;
+    assert_eq!(next_request(&mut run).await, (2, emit(r#""a""#, 2)));
+    let (number, invoke) = next_request(&mut run).await;
+    assert_eq!(number, 3);
+    // The Invoke is in flight when the stream fails.
+    run.fail(Status::unavailable("lost")).await;
+    let mut run = coral.next_run().await;
+    assert_eq!(run.open, open, "the same Open");
+    run.send(committed(0)).await;
+    assert!(matches!(
+        next_request(&mut run).await,
+        (1, request::Kind::Invoke(_))
+    ));
+    assert_eq!(next_request(&mut run).await, (2, emit(r#""a""#, 2)));
+    assert_eq!(next_request(&mut run).await, (3, invoke.clone()));
+    // Coral answers the resent Invoke 1 again: the stream stays open.
+    run.send(title(1, "a")).await;
+    run.send(title(3, "b")).await;
+    let value = finish(finish::Completion::ValueJson(r#""b""#.to_owned()));
+    assert_eq!(next_request(&mut run).await, (4, value.clone()));
+    // A clean end moves the stream: it reopens at once.
+    drop(run);
+    let mut run = coral.next_run().await;
+    run.send(committed(2)).await;
+    assert_eq!(next_request(&mut run).await, (3, invoke));
+    assert_eq!(next_request(&mut run).await, (4, value));
+    run.send(committed(4)).await;
+    run.send(ended()).await;
+    assert_eq!(
+        run.next().await,
+        None,
+        "nothing more, and the stream closes"
+    );
+}
+
+/// Catches: a reopen that loads the package again instead of naming it by
+/// its digest, or one that never sends `Loaded` again.
+#[tokio::test]
+async fn a_reopen_skips_the_load_by_the_digest() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let package = compiled(r#"await coral.emit("ran");"#).await;
+    let run = loaded(&mut coral, "run-1", package.clone()).await;
+    drop(run);
+    let mut run = coral.next_run().await;
+    // Not this script's digest: a load would close the stream.
+    let again = RunPackage {
+        script: "return 2;".to_owned(),
+        ..package
+    };
+    run.send(run_response::Message::Package(again)).await;
+    assert_eq!(
+        run.next().await,
+        Some(run_request::Message::Loaded(Loaded {}))
+    );
+    start(&run, 60_000, None).await;
+    assert_eq!(next_request(&mut run).await, (1, emit(r#""ran""#, 1)));
+}
+
+/// How a case answers the reopen of a Run.
+type Reanswer = fn(RunPackage) -> run_response::Message;
+
+/// Catches: a Program that outlives `Ended` on a reopen, or a reopen
+/// answered by a package that breaks the protocol and keeps its Program.
+#[tokio::test]
+async fn a_reopen_answered_by_ended_or_a_wrong_package_ends_the_program() {
+    let cases: [(&str, bool, Reanswer); 3] = [
+        ("Ended", true, |_package| ended()),
+        ("a package for a Run that started", true, |package| {
+            run_response::Message::Package(package)
+        }),
+        ("a package that is not the one loaded", false, |package| {
+            let mut other = package.clone();
+            other.sha256 = vec![0; 32];
+            run_response::Message::Package(other)
+        }),
+    ];
+    let source = "await coral.providers.tracker.issues.list({});";
+    for (case, starts, reanswer) in cases {
+        let (mut coral, mut call, _retire) = linked(APPLIED_CAP_BYTES).await;
+        let package = compiled(source).await;
+        let mut run = loaded(&mut coral, "run-1", package.clone()).await;
+        if starts {
+            start(&run, 60_000, None).await;
+            assert_eq!(next_request(&mut run).await.0, 1, "{case}");
+        }
+        run.fail(Status::unavailable("lost")).await;
+        let mut run = coral.next_run().await;
+        run.send(reanswer(package)).await;
+        assert_eq!(run.next().await, None, "{case}: the stream closes");
+        assert_eq!(call.rooms.recv().await, Some(2), "{case}: the unit frees");
+    }
+}
+
+/// Catches: a lost Run that stops redialing, redials without the back-off,
+/// or ends its Program before the deadline, or a `Finish` at the deadline
+/// that does not wait for the next stream.
+#[tokio::test]
+async fn a_lost_run_redials_with_the_backoff_and_ends_at_its_deadline() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let source = "await coral.providers.tracker.issues.list({});";
+    let mut run = loaded(&mut coral, "run-1", compiled(source).await).await;
+    let deadline = Duration::from_secs(1);
+    start(&run, 1_000, None).await;
+    let started_at = Instant::now();
+    assert_eq!(next_request(&mut run).await.0, 1);
+    run.fail(Status::unavailable("lost")).await;
+    // Coral ends at least three reopens before it answers, and every one
+    // until the deadline has passed. Each waits longer: at least half of
+    // 200 and 400 ms after the first.
+    let mut reopens = Vec::new();
+    let mut run = loop {
+        let run = coral.next_run().await;
+        let past = run.at.duration_since(started_at) > deadline + Duration::from_millis(500);
+        if reopens.len() >= 3 && past {
+            break run;
+        }
+        reopens.push(run.at);
+    };
+    let gaps = reopens.iter().zip(reopens.iter().skip(1));
+    for ((earlier, later), floor) in gaps.zip([100, 200]) {
+        assert!(
+            later.duration_since(*earlier) >= Duration::from_millis(floor),
+            "{reopens:?}"
+        );
+    }
+    run.send(committed(1)).await;
+    let end = finish_end(FinishEnd::DeadlineReached);
+    assert_eq!(
+        next_request(&mut run).await,
+        (2, end),
+        "kept for this stream"
+    );
+    run.send(committed(2)).await;
+    run.send(ended()).await;
+    assert_eq!(run.next().await, None);
+}
+
+/// Catches: a lost Run that runs past a cap, or one whose parked request
+/// never goes once `Committed` makes room on the reopened stream.
+#[tokio::test]
+async fn a_lost_run_keeps_running_up_to_a_cap_then_waits() {
+    let cases = [
+        (
+            "the Applied cap",
+            8,
+            HELD_CAP_REQUESTS,
+            r#"await coral.emit("123456789"); console.info("next");"#,
+            2,
+        ),
+        (
+            "the held cap",
+            APPLIED_CAP_BYTES,
+            2,
+            r#"await coral.emit("a"); await coral.emit("b"); console.info("next");"#,
+            3,
+        ),
+    ];
+    for (case, applied_cap_bytes, held_cap, source, parks_at) in cases {
+        let (mut coral, _call, _retire, mut parked) = parking(applied_cap_bytes, held_cap).await;
+        let run = loaded(&mut coral, "run-1", compiled(source).await).await;
+        start(&run, 60_000, None).await;
+        run.fail(Status::unavailable("lost")).await;
+        assert_eq!(parks(&mut parked).await, parks_at, "{case}");
+        let mut run = coral.next_run().await;
+        run.send(committed(0)).await;
+        for number in 1..parks_at {
+            assert_eq!(next_request(&mut run).await.0, number, "{case}: resent");
+        }
+        run.send(committed(parks_at - 1)).await;
+        let (number, kind) = next_request(&mut run).await;
+        assert!(
+            matches!((number, &kind), (n, request::Kind::Log(_)) if n == parks_at),
+            "{case}: {kind:?}"
+        );
+    }
 }

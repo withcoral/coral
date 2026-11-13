@@ -1069,6 +1069,7 @@ version = "1.8.0"
 dependencies = [
  "coral-credentials",
  "coral-db",
+ "coral-identifier",
  "coral-telemetry",
  "coral-test-support",
  "coral-v8",
