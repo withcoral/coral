@@ -74,6 +74,9 @@ pub struct TransportContext {
     pub mcp_origin: Arc<std::sync::OnceLock<String>>,
     /// Application-owned readiness calculation, including caching and bounded waiting.
     pub readiness: crate::ReadinessProbe,
+    /// True once the application stops the listener; a dropped sender reads
+    /// the same. A stream ends on it, so no client holds the listener open.
+    pub stopping: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Constructs the complete private route set without binding a listener.
@@ -87,6 +90,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         organization: dependencies.organization,
         authentication: context.authentication,
         mcp_origin: context.mcp_origin,
+        stopping: context.stopping,
         workspaces: dependencies.workspaces,
         providers: dependencies.providers,
         provider_workflow: dependencies.provider_workflow,
@@ -188,6 +192,7 @@ struct GrpcServices {
     organization: coral_workspace::OrganizationModule,
     authentication: PrincipalAuthentication,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
+    stopping: tokio::sync::watch::Receiver<bool>,
     workspaces: WorkspaceModule,
     providers: coral_provider::ProviderModule,
     provider_workflow: coral_administration::ProviderWorkflow,
