@@ -102,10 +102,10 @@ impl EmbedderState {
     async fn ready_model(&self) -> Arc<dyn Embed> {
         let mut model = self.model.clone();
         let ready = model
-            .wait_for(|model| model.ready().is_some())
+            .wait_for(|model| model.model().is_ok())
             .await
             .ok()
-            .and_then(|model| model.ready());
+            .and_then(|model| model.model().ok());
         match ready {
             Some(model) => model,
             None => std::future::pending().await,
@@ -414,26 +414,19 @@ impl SearchIndex {
 
     /// The Embedder's work for the backlog observer: the rows that need a
     /// vector, and the rows on the skip list. `None` while the vector side
-    /// is off, or when the count fails, such as while a rolling update
-    /// leaves no vector table.
+    /// is off.
     pub(super) async fn embedder_backlog(
         &self,
         transaction: &mut coral_db::Transaction<'_>,
-    ) -> Option<metric::EmbedderBacklog> {
-        let embedder = self.embedder.as_ref()?;
-        match repository::count_stale(transaction, MANIFEST.embedder_revision().as_str()).await {
-            Ok(stale) => Some(metric::EmbedderBacklog {
-                stale,
-                skipped: embedder.skipped_count(),
-            }),
-            Err(error) => {
-                tracing::warn!(
-                    error.type = safe::kind(error.code()),
-                    "search Embedder backlog read failed"
-                );
-                None
-            }
-        }
+    ) -> Result<Option<metric::EmbedderBacklog>, IndexError> {
+        let Some(embedder) = &self.embedder else {
+            return Ok(None);
+        };
+        Ok(Some(metric::EmbedderBacklog {
+            stale: repository::count_stale(transaction, MANIFEST.embedder_revision().as_str())
+                .await?,
+            skipped: embedder.skipped_count(),
+        }))
     }
 
     /// Removes each vector whose Search Entity or Workspace is gone. The

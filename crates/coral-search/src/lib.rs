@@ -268,7 +268,7 @@ impl UniversalSearchModule {
     ) -> Result<SearchPage, Error> {
         // Embedded before the snapshot opens, so the embedding holds no
         // connection.
-        let query = match request.search_query() {
+        let ranking = match request.search_query() {
             Some(query) => Some((query_terms(query.as_str()), self.query_vector(query).await)),
             None => None,
         };
@@ -282,7 +282,7 @@ impl UniversalSearchModule {
             authority: &authority,
             workspace_id,
         };
-        let (ranked, statuses) = match &query {
+        let (ranked, statuses) = match &ranking {
             None => {
                 self.list_in_transaction(&mut transaction, context, request.provider())
                     .await?
@@ -324,12 +324,7 @@ impl UniversalSearchModule {
         let Some(model) = &self.model else {
             return Err(LexicalReason::Disabled);
         };
-        let model = match &*model.borrow() {
-            ModelLoad::Ready(model) => Arc::clone(model),
-            ModelLoad::Pending => return Err(LexicalReason::ModelAbsent),
-            ModelLoad::Failed => return Err(LexicalReason::ModelFailed),
-            ModelLoad::CpuTooOld => return Err(LexicalReason::CpuFloor),
-        };
+        let model = model.borrow().model()?;
         let span = tracing::info_span!("coral.search.embed_query", error.type = Empty);
         let text = query.as_str().to_owned();
         let embedded = tokio::task::spawn_blocking(move || model.embed_query(&text))

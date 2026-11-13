@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use coral_embed::Embed;
 
+use crate::retriever::LexicalReason;
+
 /// The search model as this Coral Instance has it.
 #[derive(Clone)]
 pub enum ModelLoad {
@@ -22,11 +24,13 @@ pub enum ModelLoad {
 }
 
 impl ModelLoad {
-    /// The loaded model, when there is one.
-    pub(crate) fn ready(&self) -> Option<Arc<dyn Embed>> {
+    /// The loaded model, or why a search ranks by words alone without it.
+    pub(crate) fn model(&self) -> Result<Arc<dyn Embed>, LexicalReason> {
         match self {
-            Self::Ready(model) => Some(Arc::clone(model)),
-            Self::Pending | Self::Failed | Self::CpuTooOld => None,
+            Self::Ready(model) => Ok(Arc::clone(model)),
+            Self::Pending => Err(LexicalReason::ModelAbsent),
+            Self::Failed => Err(LexicalReason::ModelFailed),
+            Self::CpuTooOld => Err(LexicalReason::CpuFloor),
         }
     }
 }

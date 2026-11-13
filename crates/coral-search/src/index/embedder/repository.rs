@@ -43,15 +43,12 @@ pub(super) struct EntityVector<'a> {
     pub(super) vector: &'a [f32],
 }
 
-/// The Search Entities whose vector is missing, of another revision than
-/// `revision`, or of another source stamp than the row's, at most `limit`,
-/// oldest write first. A row whose field names an older indexer did not
-/// write, or did not update with the rest of the row, waits until a
+/// The FROM and WHERE clauses that select, as `s`, the Search Entities
+/// whose vector is missing, of another revision than `$1`, or of another
+/// source stamp than the row's. A row whose field names an older indexer
+/// did not write, or did not update with the rest of the row, waits until a
 /// reconcile pass indexes it again.
-/// The Search Entities that need a vector, as `s`: rows an older Coral
-/// wrote without field names wait for a pass that indexes them again. `$1`
-/// is the current Embedder revision.
-const STALE: &str = "FROM search_entities s \
+const FROM_STALE_ENTITIES: &str = "FROM search_entities s \
      LEFT JOIN search_entity_embeddings e \
          ON e.workspace_id = s.workspace_id AND e.doc_id = s.doc_id \
      WHERE s.field_names_fingerprint = s.fingerprint \
@@ -59,14 +56,15 @@ const STALE: &str = "FROM search_entities s \
          OR e.embedder_revision <> $1 \
          OR e.source_indexed_at_unix_nanos <> s.indexed_at_unix_nanos)";
 
-/// How many Search Entities need a vector of `revision`.
+/// How many Search Entities need a vector of `revision`. The count reads
+/// the entity table and the vector table whole.
 pub(super) async fn count_stale(
     transaction: &mut Transaction<'_>,
     revision: &str,
 ) -> Result<u64, IndexError> {
     let rows: Vec<(i64,)> = transaction
         .fetch_all_sql(
-            &format!("SELECT count(*) {STALE}"),
+            &format!("SELECT count(*) {FROM_STALE_ENTITIES}"),
             Values(vec![revision.into()]),
         )
         .await?;
@@ -76,6 +74,8 @@ pub(super) async fn count_stale(
     u64::try_from(*stale).map_err(|_negative| IndexError::Corrupt("a negative count"))
 }
 
+/// The Search Entities that need a vector of `revision`, at most `limit`,
+/// oldest write first.
 pub(super) async fn stale_entities(
     transaction: &mut Transaction<'_>,
     revision: &str,
@@ -84,7 +84,7 @@ pub(super) async fn stale_entities(
     let rows: Vec<(String, String, i64)> = transaction
         .fetch_all_sql(
             &format!(
-                "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos {STALE} \
+                "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos {FROM_STALE_ENTITIES} \
                  ORDER BY s.indexed_at_unix_nanos, s.workspace_id, s.doc_id \
                  LIMIT $2"
             ),

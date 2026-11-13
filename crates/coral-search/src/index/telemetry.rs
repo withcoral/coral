@@ -116,9 +116,7 @@ impl SearchIndex {
             } else {
                 None
             };
-            // Last, so a vector table that is missing during a rolling
-            // update leaves the counts above known.
-            let embedder = self.embedder_backlog(&mut tx).await;
+            let embedder = self.embedder_backlog(&mut tx).await?;
             tx.rollback().await?;
             Ok::<_, crate::indexer::IndexError>(Snapshot {
                 backlog: metric::SearchBacklog {

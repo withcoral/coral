@@ -353,38 +353,6 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
 }
 
 #[tokio::test]
-async fn a_search_while_the_model_is_absent_exports_the_tool_retriever_as_lexical_only() {
-    coral_test_support::database_only!(Postgres);
-    let world = World::new().await;
-    let exported = ExportCapture::default();
-    let spans = SpanCapture::exporting_to(&exported);
-    let _traced = tracing::subscriber::set_default(spans.subscriber());
-
-    world
-        .search(&world.with_model(ModelLoad::Pending), "rain issues")
-        .await;
-
-    let rank = exported_tool_rank(&exported);
-    assert_eq!(
-        attribute(&rank, "coral.search.semantic").as_deref(),
-        Some("lexical_only")
-    );
-    assert_eq!(
-        attribute(&rank, "coral.search.lexical_only.reason").as_deref(),
-        Some("model_absent")
-    );
-    assert_eq!(
-        coral_keys(&rank),
-        [
-            "coral.search.lexical_only.reason",
-            "coral.search.retriever",
-            "coral.search.semantic",
-        ],
-        "the export filter passes the new fields and nothing else new"
-    );
-}
-
-#[tokio::test]
 async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_search() {
     coral_test_support::database_only!(Postgres);
     let world = World::new().await;
@@ -409,7 +377,7 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
     };
     assert_eq!(embed.parent_span_id, search.span_context.span_id());
     assert!(
-        coral_keys(embed).is_empty() && coral_keys(search).is_empty(),
+        exported_keys(embed).is_empty() && exported_keys(search).is_empty(),
         "neither span carries a field: {embed:#?} {search:#?}"
     );
     let ranks = named("coral.search.rank");
@@ -422,74 +390,89 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
 }
 
 #[tokio::test]
-async fn each_reason_the_tool_retriever_ranks_by_words_alone_is_on_its_span() {
-    coral_test_support::database_only!(Postgres);
+async fn each_reason_the_tool_retriever_ranks_by_words_alone_leaves_the_host_on_its_span() {
     let world = World::new().await;
+    let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
     let exported = ExportCapture::default();
     let spans = SpanCapture::exporting_to(&exported);
     let _traced = tracing::subscriber::set_default(spans.subscriber());
-
+    // Each case's reason on Postgres; `None` is a fused search.
     let cases = [
-        ("fused", world.by_meaning(), None, "fused", None),
+        ("a fused search", world.by_meaning(), None, None),
+        ("the setting off", world.by_words(), None, Some("disabled")),
         (
-            "the setting off",
-            world.by_words(),
+            "the model not ready yet",
+            world.with_model(ModelLoad::Pending),
             None,
-            "lexical_only",
-            Some("disabled"),
+            Some("model_absent"),
         ),
         (
             "the model failed to load",
             world.with_model(ModelLoad::Failed),
             None,
-            "lexical_only",
             Some("model_failed"),
         ),
         (
             "a CPU below the floor",
             world.with_model(ModelLoad::CpuTooOld),
             None,
-            "lexical_only",
             Some("cpu_floor"),
         ),
         (
             "the model fails on the query",
             world.with_model(ModelLoad::Ready(Arc::new(FailingQueries))),
             None,
-            "lexical_only",
             Some("embed_failed"),
         ),
         (
             "the vector query fails",
             world.with_model(ModelLoad::Ready(Arc::new(ShortQueries))),
             None,
-            "lexical_only",
             Some("vector_query_failed"),
         ),
         // During a rolling update, an older Coral may have dropped the table.
         (
             "the vector table is missing",
             world.by_meaning(),
-            Some("DROP TABLE search_entity_embeddings"),
-            "lexical_only",
+            postgres.then_some("DROP TABLE search_entity_embeddings"),
             Some("vector_query_failed"),
         ),
     ];
-    for (case, search, change, semantic, reason) in cases {
+    for (case, search, change, reason) in cases {
         if let Some(change) = change {
             world.execute(change).await;
         }
+        let before = exported.spans().len();
 
         world.search(&search, "rain issues").await;
 
-        let rank = exported_tool_rank(&exported);
+        // SQLite keeps no vectors yet, so its vector side is off.
+        let reason = if postgres { reason } else { Some("disabled") };
+        let exported = exported.spans();
+        let rank = tool_rank(&exported[before..], case);
         assert_eq!(
             (
-                attribute(&rank, "coral.search.semantic").as_deref(),
-                attribute(&rank, "coral.search.lexical_only.reason").as_deref(),
+                attribute(rank, "coral.search.semantic").as_deref(),
+                attribute(rank, "coral.search.lexical_only.reason").as_deref(),
             ),
-            (Some(semantic), reason),
+            (
+                Some(if reason.is_some() {
+                    "lexical_only"
+                } else {
+                    "fused"
+                }),
+                reason
+            ),
             "{case}"
+        );
+        let mut keys = vec!["coral.search.retriever", "coral.search.semantic"];
+        if reason.is_some() {
+            keys.insert(0, "coral.search.lexical_only.reason");
+        }
+        assert_eq!(
+            exported_keys(rank),
+            keys,
+            "{case}: the export filter passes the new fields and nothing else new"
         );
     }
 }
@@ -548,22 +531,24 @@ async fn the_vector_query_reads_the_vector_table_alone() {
     );
 }
 
-/// The Tool retriever's span of the last search, as it left the host.
-fn exported_tool_rank(exported: &ExportCapture) -> SpanData {
-    exported
-        .spans()
-        .into_iter()
-        .rev()
-        .find(|span| {
+/// The one span of the Tool retriever among `spans`.
+fn tool_rank<'a>(spans: &'a [SpanData], case: &str) -> &'a SpanData {
+    let ranks = spans
+        .iter()
+        .filter(|span| {
             span.name == "coral.search.rank"
                 && attribute(span, "coral.search.retriever").as_deref() == Some("provider_tool")
         })
-        .expect("the Tool retriever's span left the host")
+        .collect::<Vec<_>>();
+    let [rank] = ranks[..] else {
+        panic!("{case}: one Tool retriever span left the host, not {ranks:#?}");
+    };
+    rank
 }
 
 /// The keys of an exported span, in order, less the `code.*` and `thread.*`
 /// keys the tracing bridge adds to every span.
-fn coral_keys(span: &SpanData) -> Vec<&str> {
+fn exported_keys(span: &SpanData) -> Vec<&str> {
     let mut keys = span
         .attributes
         .iter()

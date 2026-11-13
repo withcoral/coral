@@ -4220,3 +4220,25 @@ async fn organization_user(
 }
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
+
+/// Waits until `ready` holds: the backlog observer samples in the
+/// background.
+async fn wait_for_observation(ready: impl Fn() -> bool) {
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || ready()).await,
+        "background backlog observation converges"
+    );
+}
+
+/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
+/// whether it held: what a background write or observation leaves shows a
+/// moment after the call that starts it returns.
+async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
+    tokio::time::timeout(limit, async {
+        while !ready().await {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}

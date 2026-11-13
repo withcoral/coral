@@ -15,7 +15,7 @@ use sea_query::{Alias, Expr, ExprTrait as _, Query};
 use tokio::sync::watch;
 use wiremock::MockServer;
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, organization_user, wait_for_observation};
 use crate::{ModelLoad, SearchIndex};
 
 const USER: &str = "user:search-embedder";
@@ -369,12 +369,12 @@ async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
     index.index_active_generation(world.workspace.clone(), world.tracer.clone());
     index.settled().await;
     let backlog = || gauge(&metrics, "coral.search.embed.backlog");
-    observed(|| backlog().is_some_and(|stale| stale >= 1.0)).await;
+    wait_for_observation(|| backlog().is_some_and(|stale| stale >= 1.0)).await;
 
     model.send_replace(ModelLoad::Ready(Arc::new(FixedVectors::default())));
     index.embedded().await;
 
-    observed(|| backlog() == Some(0.0)).await;
+    wait_for_observation(|| backlog() == Some(0.0)).await;
 }
 
 #[tokio::test]
@@ -397,7 +397,7 @@ async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_faile
     index.settled().await;
     index.embedded().await;
 
-    observed(|| {
+    wait_for_observation(|| {
         gauge(&metrics, "coral.search.embed.skipped") == Some(1.0)
             && gauge(&metrics, "coral.search.embed.backlog") == Some(1.0)
     })
@@ -417,18 +417,6 @@ async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_faile
 /// The last value of the gauge `name`, when one was observed.
 fn gauge(metrics: &MetricCapture, name: &str) -> Option<f64> {
     metrics.values(name).last().copied()
-}
-
-/// Waits until `ready` holds: the backlog observer samples in the
-/// background.
-async fn observed(ready: impl Fn() -> bool) {
-    let waited = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !ready() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    assert!(waited.is_ok(), "the backlog observation converges");
 }
 
 #[tokio::test]

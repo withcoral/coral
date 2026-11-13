@@ -153,15 +153,29 @@ impl SearchModel {
     /// Waits until the files are ready and returns their folder. Returns
     /// `None` when the delivery stops without them.
     pub async fn ready(&self) -> Option<PathBuf> {
+        self.ended().await?.ok()
+    }
+
+    /// Waits until the delivery ends: the files' folder, or why it stopped
+    /// without them. `None` when it ends with the runtime.
+    async fn ended(&self) -> Option<Result<PathBuf, SearchModelStop>> {
         let mut state = self.state.clone();
-        let ready = state
-            .wait_for(|state| matches!(state, SearchModelState::Ready(_)))
+        let ended = state
+            .wait_for(|state| {
+                matches!(
+                    state,
+                    SearchModelState::Ready(_) | SearchModelState::Stopped(_)
+                )
+            })
             .await
             .ok()?;
-        let SearchModelState::Ready(dir) = &*ready else {
-            return None;
-        };
-        Some(dir.clone())
+        match &*ended {
+            SearchModelState::Ready(dir) => Some(Ok(dir.clone())),
+            SearchModelState::Stopped(stop) => Some(Err(stop.clone())),
+            SearchModelState::Looking
+            | SearchModelState::Downloading
+            | SearchModelState::Retrying { .. } => None,
+        }
     }
 
     /// Loads the model into `slot` once its files are ready, on a blocking
@@ -172,24 +186,17 @@ impl SearchModel {
         let files = self.clone();
         tokio::spawn(async move {
             let dir = match files.ended().await {
-                Some(SearchModelState::Ready(dir)) => dir,
-                Some(SearchModelState::Stopped(SearchModelStop::CpuTooOld(_))) => {
+                Some(Ok(dir)) => dir,
+                Some(Err(SearchModelStop::CpuTooOld(_))) => {
                     slot.send_replace(ModelLoad::CpuTooOld);
                     return;
                 }
-                Some(SearchModelState::Stopped(
-                    SearchModelStop::WrongFile | SearchModelStop::Unreadable(_),
-                )) => {
+                Some(Err(SearchModelStop::WrongFile | SearchModelStop::Unreadable(_))) => {
                     slot.send_replace(ModelLoad::Failed);
                     return;
                 }
                 // The delivery ends with the runtime.
-                Some(
-                    SearchModelState::Looking
-                    | SearchModelState::Downloading
-                    | SearchModelState::Retrying { .. },
-                )
-                | None => return,
+                None => return,
             };
             let load = match tokio::task::spawn_blocking(move || Model::load(&dir)).await {
                 Ok(Ok(model)) => {
@@ -222,22 +229,6 @@ impl SearchModel {
             };
             slot.send_replace(load);
         })
-    }
-
-    /// Waits until the delivery ends, ready or stopped, and returns how.
-    /// Returns `None` when it ends with the runtime.
-    async fn ended(&self) -> Option<SearchModelState> {
-        let mut state = self.state.clone();
-        let ended = state
-            .wait_for(|state| {
-                matches!(
-                    state,
-                    SearchModelState::Ready(_) | SearchModelState::Stopped(_)
-                )
-            })
-            .await
-            .ok()?;
-        Some(ended.clone())
     }
 }
 
