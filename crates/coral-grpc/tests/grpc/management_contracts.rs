@@ -937,12 +937,16 @@ async fn agent_and_organization_membership_pages_round_trip_and_bind_their_token
     );
 }
 
-/// Reef sends a call again after Coral drops the shared HTTP/2 session only
-/// when its method declares an `idempotency_level`. A read without one fails
-/// the page whenever a session ends under it.
+/// Reef sends a unary call again after Coral drops the shared HTTP/2
+/// session only when its method declares that repeating it is safe. A read
+/// without that fails the page whenever a session ends under it.
 #[test]
 fn every_read_method_declares_that_repeating_it_is_safe() {
     const READS: [&str; 6] = ["Get", "List", "Browse", "Count", "Inspect", "Summarize"];
+    const SAFE: [&str; 2] = [
+        "idempotency_level = NO_SIDE_EFFECTS;",
+        "idempotency_level = IDEMPOTENT;",
+    ];
     let mut undeclared = Vec::new();
     let mut pending = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proto/coral")];
     while let Some(path) = pending.pop() {
@@ -955,15 +959,26 @@ fn every_read_method_declares_that_repeating_it_is_safe() {
             continue;
         }
         let source = std::fs::read_to_string(&path).unwrap();
-        let mut lines = source.lines().map(str::trim).peekable();
-        while let Some(line) = lines.next() {
-            let Some(name) = line.strip_prefix("rpc ") else {
-                continue;
+        // Each method runs from `rpc` to its `;` or the `}` that closes its
+        // options, so comments and other options inside it do not matter.
+        for method in source.split("rpc ").skip(1) {
+            let name = method.split('(').next().unwrap().trim();
+            // `rpc X(..) returns (..) { option ...; }` keeps its options
+            // in braces; `rpc X(..) returns (..);` has none.
+            let has_options = method
+                .find('{')
+                .is_some_and(|open| method.find(';').is_some_and(|end| open < end));
+            let block = if has_options {
+                method.split_once('{').unwrap().1.split_once('}').unwrap().0
+            } else {
+                ""
             };
-            let name = name.split('(').next().unwrap();
-            let declared = lines
-                .peek()
-                .is_some_and(|next| next.starts_with("option idempotency_level = "));
+            let declared = SAFE.iter().any(|level| {
+                block
+                    .lines()
+                    .map(|line| line.split("//").next().unwrap().trim())
+                    .any(|line| line.ends_with(level) && line.starts_with("option "))
+            });
             if READS.iter().any(|read| name.starts_with(read)) && !declared {
                 undeclared.push(name.to_owned());
             }

@@ -15,11 +15,11 @@ import { managementTransportForRequest } from './coral-request.server'
  */
 async function serverThatDropsItsFirstSession() {
   const received: string[] = []
-  let sessions = 0
+  const sessions: http2.ServerHttp2Session[] = []
   const server = http2.createServer()
   server.on('session', (session) => {
-    sessions += 1
-    const first = sessions === 1
+    sessions.push(session)
+    const first = sessions.length === 1
     session.on('stream', (stream, headers) => {
       received.push(String(headers[':path']))
       stream.on('error', () => undefined)
@@ -42,7 +42,12 @@ async function serverThatDropsItsFirstSession() {
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     received,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    // The client keeps its new session open, and close waits for every session.
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve())
+        for (const session of sessions) session.destroy()
+      }),
   }
 }
 

@@ -18,7 +18,7 @@ service ProviderAccountService {
   }
   // Inspects one exact Provider Account scope.
   rpc GetProviderAccount(GetProviderAccountRequest) returns (GetProviderAccountResponse) {
-    option idempotency_level = IDEMPOTENT;
+    option idempotency_level = NO_SIDE_EFFECTS;
   }
   // Starts durable secret entry or host-owned OAuth against the target's contract.
   rpc StartProviderAccountAuthorization(StartProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization);

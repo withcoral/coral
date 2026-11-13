@@ -10,5 +10,5 @@
 - Give each method that is safe to repeat an `idempotency_level`:
   `NO_SIDE_EFFECTS` for a pure read, `IDEMPOTENT` for one that also records
   state, such as an expiry. After Coral drops Reef's HTTP/2 session, Reef sends
-  those methods again and no others, so never mark a change that is unsafe to
-  repeat. A test fails a read-named method without one.
+  a unary call to one of those methods again, and nothing else, so never mark a
+  change that is unsafe to repeat. A test fails a read-named method without one.

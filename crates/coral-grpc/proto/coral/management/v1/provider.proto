@@ -37,7 +37,7 @@ service ProviderSetupService {
 service ProviderService {
   // Reads safe OAuth application settings without its secret.
   rpc GetProviderOAuthClient(GetProviderOAuthClientRequest) returns (ProviderOAuthClient) {
-    option idempotency_level = IDEMPOTENT;
+    option idempotency_level = NO_SIDE_EFFECTS;
   }
   // Replaces only the write-only application secret, not account authorization.
   rpc RotateProviderOAuthClientSecret(RotateProviderOAuthClientSecretRequest) returns (google.protobuf.Empty);
