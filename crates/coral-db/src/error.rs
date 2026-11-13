@@ -67,16 +67,19 @@ impl Error {
     }
 
     /// Reports whether the backend gave no answer to a write: the connection
-    /// or pool failed, or a lock or serialization race left the statement
-    /// unapplied. The write may be retried; whether it took effect is for the
-    /// caller to read back. Every other error is the backend's definite
-    /// answer, a constraint violation included.
+    /// or pool failed, the backend ended or refused the session, or a lock or
+    /// serialization race left the statement unapplied. The write may be
+    /// retried; whether it took effect is for the caller to read back. Every
+    /// other error is the backend's definite answer, a constraint violation
+    /// included.
     #[must_use]
     pub fn is_unanswered(&self) -> bool {
         match self {
             Self::WriterBusy => true,
             Self::Sqlx(error) => match error {
-                sqlx::Error::Database(_) => sqlx_error_is_serialization_conflict(error),
+                sqlx::Error::Database(error) => {
+                    error.code().is_some_and(|code| is_unanswered_code(&code))
+                }
                 sqlx::Error::Io(_)
                 | sqlx::Error::Tls(_)
                 | sqlx::Error::Protocol(_)
@@ -121,9 +124,37 @@ fn is_conflict_code(code: &str) -> bool {
         .is_ok_and(|code| matches!(code & 0xFF, SQLITE_BUSY | SQLITE_LOCKED))
 }
 
+/// Reports whether a backend error code leaves a write unanswered.
+///
+/// Postgres sends every error it can still deliver as a database error, a
+/// session it is ending included, so only the SQLSTATE tells an ended session
+/// from a rejected statement. This table is wider than [`is_conflict_code`]:
+/// a conflict is one kind of unanswered write.
+fn is_unanswered_code(code: &str) -> bool {
+    if code.len() != 5 {
+        // `SQLite` runs in this process: only a busy or locked writer.
+        return is_conflict_code(code);
+    }
+    matches!(
+        code,
+        // The session failed or was never established. `08P01` is left out:
+        // it is the server's answer to a message it could not accept.
+        "08000" | "08001" | "08003" | "08004" | "08006" | "08007"
+        // A lost serialization race, a statement whose completion the
+        // server does not know, a deadlock.
+        | "40001" | "40003" | "40P01"
+        // No connection slot was free, so no statement was read.
+        | "53300"
+        // The server ended or refused the session: a shutdown, a crash of
+        // another backend, a server that is starting up or shutting down,
+        // an idle session's timeout.
+        | "57P01" | "57P02" | "57P03" | "57P05"
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Error, is_conflict_code};
+    use super::{Error, is_conflict_code, is_unanswered_code};
 
     #[test]
     fn an_unanswered_write_is_a_lost_connection_or_a_race_never_a_rejection() {
@@ -189,6 +220,35 @@ mod tests {
         }
         for code in ["23505", "57014", "40003", "1", "", "not-a-code"] {
             assert!(!is_conflict_code(code), "{code} must not be a conflict");
+        }
+    }
+
+    /// An ended or refused session is unanswered beside every conflict; a
+    /// statement the server ran and refused is its definite answer.
+    #[test]
+    fn unanswered_codes_are_conflicts_and_ended_or_refused_sessions() {
+        let conflicts = ["40001", "40P01", "5", "6", "517", "261", "262"];
+        let sessions = [
+            "08000", "08001", "08003", "08004", "08006", "08007", "40003", "53300", "57P01",
+            "57P02", "57P03", "57P05",
+        ];
+        for code in conflicts {
+            assert!(is_unanswered_code(code), "{code} must be unanswered");
+        }
+        for code in sessions {
+            assert!(is_unanswered_code(code), "{code} must be unanswered");
+            assert!(!is_conflict_code(code), "{code} must not be a conflict");
+        }
+        // A constraint, a syntax error, an aborted transaction; a protocol
+        // violation, a rollback for a constraint or for no named cause; a
+        // statement that ran out of a resource; a canceled statement, a
+        // dropped database; `SQLite` errors other than a busy or locked writer.
+        let definite = [
+            "23505", "23503", "42601", "25P02", "08P01", "40000", "40002", "53000", "53100",
+            "53200", "53400", "57000", "57014", "57P04", "1", "19", "2067", "",
+        ];
+        for code in definite {
+            assert!(!is_unanswered_code(code), "{code} must be definite");
         }
     }
 }
