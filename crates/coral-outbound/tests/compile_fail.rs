@@ -11,7 +11,8 @@
 //! ```
 //!
 //! trybuild checks the dependencies in `target/tests/trybuild`, apart from the
-//! workspace's own build, so the first run takes minutes.
+//! workspace's own build. The first run there takes about 20 s in CI; later
+//! runs take under a second.
 #![cfg(feature = "transport")]
 #![allow(
     unused_crate_dependencies,
