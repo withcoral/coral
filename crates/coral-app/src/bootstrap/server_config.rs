@@ -54,6 +54,8 @@ pub(crate) struct Launcher {
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral, such as its Edition check.
     pub(crate) extensions: super::runtime::Extensions,
+    /// Compile in this process: a test that starts Coral in its own process.
+    pub(crate) compile_in_process: bool,
     /// Where startup reports each database migration step it applies.
     pub(crate) migration_report: Option<super::runtime::MigrationReport>,
 }

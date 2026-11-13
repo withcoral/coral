@@ -30,6 +30,9 @@ coral-run-executor.workspace = true
 
 [dev-dependencies]
 coral-db.workspace = true
+coral-grpc.workspace = true
+tonic.workspace = true
+uuid.workspace = true
 coral-run-executor = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 reqwest.workspace = true

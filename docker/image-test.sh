@@ -268,12 +268,81 @@ test_reef() {
     assert_log "$container" 'CORAL_ENDPOINT must use HTTPS or explicit-loopback HTTP'
 }
 
+# run_program <reef container>: creates a Workspace over gRPC, with
+# Node's HTTP/2 client and a hand-encoded request, and runs a Program in it
+# over MCP. It fails unless the Program returns 42.
+run_program() {
+    "$ENGINE" exec "$1" node -e '
+const http2 = require("node:http2");
+const field = (number, text) => {
+  const bytes = Buffer.from(text);
+  return Buffer.concat([Buffer.from([(number << 3) | 2, bytes.length]), bytes]);
+};
+const message = Buffer.concat([field(1, "Children"), field(2, crypto.randomUUID())]);
+const header = Buffer.alloc(5);
+header.writeUInt32BE(message.length, 1);
+const client = http2.connect("http://127.0.0.1:14555");
+const stalled = setTimeout(() => {
+  console.error("CreateWorkspace timed out");
+  client.destroy();
+  process.exit(1);
+}, 30000);
+const request = client.request({
+  ":method": "POST",
+  ":path": "/coral.management.v1.WorkspaceService/CreateWorkspace",
+  "content-type": "application/grpc",
+  te: "trailers",
+  "coral-audience": "reef",
+});
+const chunks = [];
+request.on("data", (chunk) => chunks.push(chunk));
+request.on("trailers", (trailers) => {
+  if (trailers["grpc-status"] !== "0") console.error("CreateWorkspace:", trailers);
+});
+request.on("end", async () => {
+  clearTimeout(stalled);
+  client.close();
+  // The frame header, then Workspace.name: field 1, one length byte.
+  const workspace = Buffer.concat(chunks).subarray(5);
+  if (workspace[0] !== 0x0a) process.exit(1);
+  const id = workspace.subarray(2, 2 + workspace[1]).toString().replace("workspaces/", "");
+  const exec = { name: "exec", arguments: { goal: "Compile", intent: "Compile", program: "return 40 + 2;" } };
+  const response = await fetch(`http://127.0.0.1:14556/workspaces/${id}/mcp`, {
+    method: "POST",
+    headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: exec }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const text = await response.text();
+  if (!text.includes(String.raw`"final_value":{"kind":"value","value":42}`)) {
+    console.error(text);
+    process.exit(1);
+  }
+});
+request.end(Buffer.concat([header, message]));
+'
+}
+
+# The user id of each `coral run-executor` process in <container>.
+run_executor_users() {
+    "$ENGINE" exec "$1" /bin/sh -c '
+for status in /proc/[0-9]*/status; do
+    dir=${status%/status}
+    if tr "\0" " " < "$dir/cmdline" 2>/dev/null | grep -q "^/usr/local/bin/coral run-executor "; then
+        sed -n "s/^Uid:[[:space:]]*\([0-9]*\).*/\1/p" "$status"
+    fi
+done'
+}
+
 # A first start: the runtime on its starter config, and Reef in its network
 # namespace with sign-in off. Reef's readiness follows its Coral dependency,
-# so its /readyz proves the pair is wired.
+# so its /readyz proves the pair is wired. A Program then compiles on a
+# local Run Executor that the runtime starts with no Run Executor
+# configuration, as the image's user, on a read-only root filesystem.
 test_pair() {
     new_volume pair
-    start pair-coral "$CORAL_IMAGE" -v "$volume:/var/lib/coral"
+    # SQLite writes its temporary files to /tmp.
+    start pair-coral "$CORAL_IMAGE" -v "$volume:/var/lib/coral" --read-only --tmpfs /tmp
     coral=$container
     wait_healthy "$coral"
     start_reef pair-reef disabled http://127.0.0.1:14555 --network "container:$coral"
@@ -283,6 +352,10 @@ test_pair() {
         assert_status "$reef" "$origin/healthz" 200
         assert_status "$reef" "$origin/readyz" 200
     done
+    [ -z "$(run_executor_users "$coral")" ] || fail 'a local Run Executor started before any work'
+    run_program "$reef" || fail 'a Program did not compile and run'
+    [ "$(run_executor_users "$coral")" = 65532 ] ||
+        fail "the local Run Executors run as '$(run_executor_users "$coral")', expected one as 65532"
     remove "$reef"
     remove "$coral"
 }

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use coral_telemetry::metric::CompilerRole;
@@ -8,14 +9,21 @@ use coral_v8::{
     UnknownToolCall,
 };
 
+use crate::compiler::STOPPED;
 use crate::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, tool_check_deadline,
 };
 
 /// The compiler client's in-process adapter: one warm Program Compiler on its
 /// own thread, which measures each request by the caller it serves. Analysis
-/// serves both callers and is measured as Program Admission's.
+/// serves both callers and is measured as Program Admission's. A call waits
+/// for its answer on a blocking worker, so its caller holds no async worker.
 pub struct InProcessCompiler {
+    warm: Arc<Warm>,
+}
+
+/// The warm compiler's two handles, which block until each answers.
+struct Warm {
     /// Program Admission's handle.
     run: ProgramCompiler,
     /// Private Tool save's handle on the same thread and queue.
@@ -32,9 +40,86 @@ impl InProcessCompiler {
     pub fn new(isolate_limits: IsolateLimits) -> Result<Self, coral_v8::Error> {
         let run = ProgramCompiler::new(isolate_limits, CompilerRole::Run)?;
         let authoring = run.with_role(CompilerRole::Authoring);
-        Ok(Self { run, authoring })
+        Ok(Self {
+            warm: Arc::new(Warm { run, authoring }),
+        })
     }
 
+    /// Runs `work` on the warm compiler from a blocking worker, or `None`
+    /// when the worker stopped before it answered.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Warm) -> T + Send + 'static,
+    ) -> Option<T> {
+        let warm = Arc::clone(&self.warm);
+        tokio::task::spawn_blocking(move || work(&warm)).await.ok()
+    }
+}
+
+#[tonic::async_trait]
+impl CompilerClient for InProcessCompiler {
+    async fn analyze(
+        &self,
+        time_left: Duration,
+        sources: &[AnalyzedSource],
+    ) -> Result<Vec<SourceReferences>, AnalysisError> {
+        let deadline = deadline(time_left);
+        let sources = sources.to_vec();
+        self.blocking(move |warm| warm.analyze(deadline, &sources))
+            .await
+            .unwrap_or(Err(AnalysisError {
+                index: 0,
+                error: STOPPED,
+            }))
+    }
+
+    async fn compile(
+        &self,
+        time_left: Duration,
+        source: &str,
+        linked_tools: &[LinkedToolSource],
+        builtin_tools: &BuiltinTools,
+        callable: Option<&[String]>,
+    ) -> Result<CompiledProgram, CompileError> {
+        let deadline = deadline(time_left);
+        let (source, linked_tools, builtin_tools) = (
+            source.to_owned(),
+            linked_tools.to_vec(),
+            builtin_tools.clone(),
+        );
+        let callable = callable.map(<[String]>::to_vec);
+        self.blocking(move |warm| {
+            warm.compile(
+                deadline,
+                &source,
+                &linked_tools,
+                &builtin_tools,
+                callable.as_deref(),
+            )
+        })
+        .await
+        .unwrap_or(Err(STOPPED))
+    }
+
+    async fn prepare(
+        &self,
+        time_left: Duration,
+        source: &str,
+        builtin_tools: &BuiltinTools,
+        declarations: Option<&CoralDeclarations>,
+    ) -> Result<AuthoredToolCompilation, CompileError> {
+        let deadline = deadline(time_left);
+        let (source, builtin_tools) = (source.to_owned(), builtin_tools.clone());
+        let declarations = declarations.cloned();
+        self.blocking(move |warm| {
+            warm.prepare(deadline, &source, &builtin_tools, declarations.as_ref())
+        })
+        .await
+        .unwrap_or(Err(STOPPED))
+    }
+}
+
+impl Warm {
     /// The called chains of `source` that name no Tool among `callable`,
     /// or none when the check fails or has no time left before the reserve.
     fn unknown_tool_calls(
@@ -63,15 +148,12 @@ impl InProcessCompiler {
             }
         }
     }
-}
 
-impl CompilerClient for InProcessCompiler {
     fn analyze(
         &self,
-        time_left: Duration,
+        deadline: Instant,
         sources: &[AnalyzedSource],
     ) -> Result<Vec<SourceReferences>, AnalysisError> {
-        let deadline = deadline(time_left);
         // One request per source, so a source that faults the isolate has it
         // rebuilt before the next.
         sources
@@ -90,13 +172,12 @@ impl CompilerClient for InProcessCompiler {
 
     fn compile(
         &self,
-        time_left: Duration,
+        deadline: Instant,
         source: &str,
         linked_tools: &[LinkedToolSource],
         builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<CompiledProgram, CompileError> {
-        let deadline = deadline(time_left);
         if let Some(callable) = callable {
             let program = AnalyzedSource::Program(source.to_string());
             let sources = std::iter::once((None, program)).chain(
@@ -128,12 +209,11 @@ impl CompilerClient for InProcessCompiler {
 
     fn prepare(
         &self,
-        time_left: Duration,
+        deadline: Instant,
         source: &str,
         builtin_tools: &BuiltinTools,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<AuthoredToolCompilation, CompileError> {
-        let deadline = deadline(time_left);
         let authoring = self.authoring.with_builtin_tools(builtin_tools);
         match declarations {
             Some(declarations) => {
@@ -170,6 +250,7 @@ fn compile_error(error: coral_v8::Error) -> CompileError {
                 CompileFailure::TimedOut => CompileError::TimedOut,
                 CompileFailure::Busy => CompileError::Unavailable(Unavailable::Busy),
                 CompileFailure::Stopped => CompileError::Unavailable(Unavailable::Stopped),
+                CompileFailure::NoCompiler => CompileError::Unavailable(Unavailable::NoCompiler),
                 CompileFailure::Failed(failed) => {
                     CompileError::Unavailable(Unavailable::Failed(failed))
                 }
@@ -265,8 +346,8 @@ mod tests {
 
     // Catches: an analysis that loses which source failed, or that answers
     // out of order.
-    #[test]
-    fn analysis_answers_each_source_in_order_and_names_the_first_that_fails() {
+    #[tokio::test]
+    async fn analysis_answers_each_source_in_order_and_names_the_first_that_fails() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         let program = AnalyzedSource::Program(
             "await coral.providers.github.repos.get({});\nreturn coral.private.math.add({});"
@@ -280,6 +361,7 @@ mod tests {
         );
         let analyzed = compiler
             .analyze(TEST_COMPILATION_TIMEOUT, &[program.clone(), module.clone()])
+            .await
             .expect("analyze both sources");
         assert_eq!(
             analyzed
@@ -305,7 +387,9 @@ mod tests {
                 (vec!["math.double"], Vec::new()),
             ]
         );
-        let failed = compiler.analyze(TEST_COMPILATION_TIMEOUT, &[program, computed, module]);
+        let failed = compiler
+            .analyze(TEST_COMPILATION_TIMEOUT, &[program, computed, module])
+            .await;
         assert!(
             matches!(
                 &failed,
@@ -322,8 +406,8 @@ mod tests {
     // Program whose every call names a Tool, skips a linked Tool's calls, or
     // names the wrong source. The unknown-Tool rule itself is tested in
     // coral-v8.
-    #[test]
-    fn compile_checks_the_called_tools_of_each_source_only_against_a_callable_list() {
+    #[tokio::test]
+    async fn compile_checks_the_called_tools_of_each_source_only_against_a_callable_list() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         let source = "await coral.providers.github.repos.get({});\n\
             return await coral.private.reports.page({});";
@@ -340,13 +424,15 @@ mod tests {
             (Some(vec![page]), Some(None)),
         ];
         for (callable, refused) in cases {
-            let outcome = compiler.compile(
-                TEST_COMPILATION_TIMEOUT,
-                source,
-                &linked,
-                &BuiltinTools::default(),
-                callable.as_deref(),
-            );
+            let outcome = compiler
+                .compile(
+                    TEST_COMPILATION_TIMEOUT,
+                    source,
+                    &linked,
+                    &BuiltinTools::default(),
+                    callable.as_deref(),
+                )
+                .await;
             match refused {
                 Some(source) => assert!(
                     matches!(
@@ -364,8 +450,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_call_with_no_time_left_times_out() {
+    // Catches: a blocking worker that stops before it answers and takes its
+    // caller down with it, instead of returning no answer, which each call
+    // reports as a stopped compiler.
+    #[tokio::test]
+    async fn a_worker_that_stops_before_it_answers_returns_no_answer() {
+        let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
+        let stopped = compiler
+            .blocking(|_warm| -> u8 { panic!("the worker stops") })
+            .await;
+        assert_eq!(stopped, None);
+        assert_eq!(compiler.blocking(|_warm| 1_u8).await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_call_with_no_time_left_times_out() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
         assert_eq!(
             compiler
@@ -376,6 +475,7 @@ mod tests {
                     &BuiltinTools::default(),
                     None,
                 )
+                .await
                 .map(drop),
             Err(CompileError::TimedOut)
         );
@@ -387,6 +487,7 @@ mod tests {
                 &BuiltinTools::default(),
                 None,
             )
+            .await
             .expect("a call with time left compiles");
     }
 }

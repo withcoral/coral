@@ -215,6 +215,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Compiles in this process instead of on Run Executors, for a test
+    /// that starts Coral in its own process: its binary is no `coral`, so
+    /// it cannot start a local child.
+    #[must_use]
+    pub fn with_in_process_compiler(mut self) -> Self {
+        self.launcher.compile_in_process = true;
+        self
+    }
+
     /// Supplies where startup reports each database migration step it
     /// applies. Migrations run before telemetry starts and before any
     /// listener, so this is the one sign of a long step. Without it, startup
@@ -477,6 +486,7 @@ impl PreparedServerBuilder {
             instance,
             run_executor_listener,
             local_children,
+            builder.launcher.compile_in_process,
         )
         .await?;
         server.authorization_server = authorization_server
@@ -878,6 +888,7 @@ pub(crate) async fn start_server(
     instance: coral_run::CoralInstanceId,
     run_executor_listener: RunExecutorListener,
     local_children: Option<LocalChildren>,
+    compile_in_process: bool,
 ) -> Result<RunningServer, AppError> {
     let coral_instance_id = instance.to_string();
     let mut passes = Passes::default();
@@ -926,12 +937,60 @@ pub(crate) async fn start_server(
         .map_err(|error| {
             AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
         })?;
-    // Program Admission and Private Tool save share one warm compiler.
-    let compiler: Arc<dyn coral_run_executor::CompilerClient> = Arc::new(
-        coral_run_executor::InProcessCompiler::new(runtime_limits.isolate()).map_err(|error| {
-            AppError::FailedPrecondition(format!("Program runtime is unavailable: {error}"))
-        })?,
+    let run_executor_credentials =
+        coral_run_executor::Credentials::new(run_executor_listener.tokens);
+    let run_executors = (
+        TcpListener::bind(run_executor_listener.bind).await?,
+        coral_run_executor::LinkServer::new(
+            run_executor_credentials.clone(),
+            database.clone(),
+            coral_instance_id,
+        ),
     );
+    let local_run_executors = match local_children {
+        Some(children) => {
+            // A local child dials this host: loopback, unless the listener
+            // is bound to one address.
+            let mut address = run_executors.0.local_addr()?;
+            if address.ip().is_unspecified() {
+                address.set_ip(match address {
+                    SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                    SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+                });
+            }
+            let command = coral_run_executor::ChildCommand {
+                program: children.program,
+                coral_address: format!("http://{address}"),
+                max_runs_held: children.settings.max_runs_held,
+                compiler_heap_bytes: runtime_limits.isolate().compiler_heap_bytes(),
+                environment: children.environment,
+            };
+            Some(coral_run_executor::LocalRunExecutors::start(
+                command,
+                children.settings.limit,
+                run_executor_credentials,
+                run_executors.1.streams(),
+            ))
+        }
+        None => None,
+    };
+    // Program Admission and Private Tool save share one compiler client:
+    // the Run Executors' pull streams, or a warm compiler in this process
+    // for a test that starts Coral in its own process.
+    let compiler: Arc<dyn coral_run_executor::CompilerClient> = if compile_in_process {
+        Arc::new(
+            coral_run_executor::InProcessCompiler::new(runtime_limits.isolate()).map_err(
+                |error| {
+                    AppError::FailedPrecondition(format!("Program runtime is unavailable: {error}"))
+                },
+            )?,
+        )
+    } else {
+        Arc::new(coral_run_executor::PullStreamCompiler::new(
+            run_executors.1.streams(),
+            local_run_executors.clone(),
+        ))
+    };
     // updateProvider renames through the same workflow as Reef.
     let mut runs = coral_run::RunModule::with_compiler_client(
         policy,
@@ -1011,7 +1070,8 @@ pub(crate) async fn start_server(
         },
     );
 
-    // The expired-lease sweep's first pass runs before any listener binds:
+    // The expired-lease sweep's first pass runs before any listener serves,
+    // and before any but the Run Executor listener binds:
     // when it succeeds, a Run whose lease lapsed before boot has its owner
     // back before the first request. A pass that fails is logged, the
     // listeners bind anyway, and the next pass, a half lease later, reads
@@ -1025,43 +1085,6 @@ pub(crate) async fn start_server(
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
-    let run_executor_credentials =
-        coral_run_executor::Credentials::new(run_executor_listener.tokens);
-    let run_executors = (
-        TcpListener::bind(run_executor_listener.bind).await?,
-        coral_run_executor::LinkServer::new(
-            run_executor_credentials.clone(),
-            database.clone(),
-            coral_instance_id,
-        ),
-    );
-    let local_run_executors = match local_children {
-        Some(children) => {
-            // A local child dials this host: loopback, unless the listener
-            // is bound to one address.
-            let mut address = run_executors.0.local_addr()?;
-            if address.ip().is_unspecified() {
-                address.set_ip(match address {
-                    SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
-                    SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
-                });
-            }
-            let command = coral_run_executor::ChildCommand {
-                program: children.program,
-                coral_address: format!("http://{address}"),
-                max_runs_held: children.settings.max_runs_held,
-                compiler_heap_bytes: runtime_limits.isolate().compiler_heap_bytes(),
-                environment: children.environment,
-            };
-            Some(coral_run_executor::LocalRunExecutors::start(
-                command,
-                children.settings.limit,
-                run_executor_credentials,
-                run_executors.1.streams(),
-            ))
-        }
-        None => None,
-    };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (task_finished_tx, task_finished) = watch::channel(false);
 

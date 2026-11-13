@@ -362,13 +362,7 @@ async fn serve(
         if answered.is_closed() {
             return;
         }
-        let compiler = Arc::clone(&compiler);
-        let served = tokio::task::spawn_blocking(move || {
-            compile_wire::serve(compiler.as_ref(), received, compile)
-        });
-        let Ok(answer) = served.await else {
-            return;
-        };
+        let answer = compile_wire::serve(compiler.as_ref(), received, compile).await;
         if answered.send(answer).is_err() {
             return;
         }

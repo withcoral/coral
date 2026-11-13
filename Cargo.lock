@@ -616,6 +616,7 @@ dependencies = [
  "coral-app",
  "coral-db",
  "coral-embed",
+ "coral-grpc",
  "coral-mcp",
  "coral-run-executor",
  "coral-test-support",
@@ -624,7 +625,9 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tonic",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

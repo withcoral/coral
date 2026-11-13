@@ -88,14 +88,23 @@ pub(crate) struct Typing<'a> {
     pub(crate) tools: Option<&'a dyn ToolDeclarationReader>,
 }
 
+#[async_trait::async_trait]
 pub(crate) trait AuthoredToolCompiler: Send + Sync {
+    /// Waits until a compiler can take a call, for at most the compiler
+    /// client's own bound. The compilation deadline starts after it. `Some`
+    /// is a compiler that holds room for this save's first call, which goes
+    /// through it; `None`: this compiler as it is.
+    async fn ready(&self) -> Result<Option<Arc<dyn AuthoredToolCompiler>>, CompileFailure> {
+        Ok(None)
+    }
+
     /// Finds the Call Paths to type by `deadline`. `None` leaves the source
     /// untyped, so `prepare` reports any failure of a source this cannot
     /// analyze.
-    fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences>;
+    async fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences>;
 
     /// Prepares `source`, typed by `declarations` when there are any.
-    fn prepare(
+    async fn prepare(
         &self,
         deadline: Instant,
         source: &str,
@@ -111,13 +120,25 @@ struct V8AuthoredToolCompiler {
     builtin_tools: coral_run_executor::BuiltinTools,
 }
 
+#[async_trait::async_trait]
 impl AuthoredToolCompiler for V8AuthoredToolCompiler {
-    fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences> {
+    async fn ready(&self) -> Result<Option<Arc<dyn AuthoredToolCompiler>>, CompileFailure> {
+        let held = self.compiler.ready().await.map_err(CompileFailure::from)?;
+        Ok(held.map(|compiler| {
+            Arc::new(Self {
+                compiler,
+                builtin_tools: self.builtin_tools.clone(),
+            }) as Arc<dyn AuthoredToolCompiler>
+        }))
+    }
+
+    async fn analyze(&self, deadline: Instant, source: &str) -> Option<SourceReferences> {
         self.compiler
             .analyze(
                 time_left(deadline),
                 &[AnalyzedSource::AuthoredTool(source.to_string())],
             )
+            .await
             .inspect_err(|failure| {
                 tracing::debug!(
                     error.type = safe::kind(failure.error.code()),
@@ -128,18 +149,21 @@ impl AuthoredToolCompiler for V8AuthoredToolCompiler {
             .pop()
     }
 
-    fn prepare(
+    async fn prepare(
         &self,
         deadline: Instant,
         source: &str,
         declarations: Option<&CoralDeclarations>,
     ) -> Result<PreparedAuthoredTool, CompileFailure> {
-        let compiled = self.compiler.prepare(
-            time_left(deadline),
-            source,
-            &self.builtin_tools,
-            declarations,
-        )?;
+        let compiled = self
+            .compiler
+            .prepare(
+                time_left(deadline),
+                source,
+                &self.builtin_tools,
+                declarations,
+            )
+            .await?;
         let declaration = AuthoredToolDeclaration::from_compiler(compiled.declaration())?;
         let declaration_field_projection =
             AuthoredToolDeclarationFieldProjection::from_compiler(compiled.declaration_fields());
@@ -221,12 +245,20 @@ impl Authoring {
         typing: Typing<'_>,
     ) -> Result<PreparedAuthoredTool, Error> {
         let kind = path.kind();
+        let compiler = self
+            .compiler
+            .ready()
+            .await
+            .map_err(|_none| Error::NoCompiler)?
+            .unwrap_or_else(|| self.compiler.clone());
+        // The wait for a compiler takes none of the compile's time.
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
-                .declarations(workspace_id, path, source, typing, deadline)
+                .declarations(&compiler, workspace_id, path, source, typing, deadline)
                 .await?;
-            self.compile(deadline, path, source, declarations).await
+            self.compile(&compiler, deadline, path, source, declarations)
+                .await
         };
         timeout_at(deadline.into(), preparation)
             .await
@@ -238,6 +270,7 @@ impl Authoring {
     /// Provider and Built-in Tools it names. `None` leaves it untyped.
     async fn declarations(
         &self,
+        compiler: &Arc<dyn AuthoredToolCompiler>,
         workspace_id: &WorkspaceId,
         path: &AuthoredToolPath,
         source: &str,
@@ -249,13 +282,7 @@ impl Authoring {
             return Ok(None);
         };
         let typed = async {
-            let compiler = self.compiler.clone();
-            let analyzed = source.to_string();
-            let Some(named) =
-                tokio::task::spawn_blocking(move || compiler.analyze(typing_deadline, &analyzed))
-                    .await
-                    .map_err(|_join_error| Error::CompilerWorkerStopped)?
-            else {
+            let Some(named) = compiler.analyze(typing_deadline, source).await else {
                 return Ok(None);
             };
             let Ok(linked) =
@@ -392,6 +419,7 @@ impl Authoring {
     /// `deadline`.
     async fn compile(
         &self,
+        compiler: &Arc<dyn AuthoredToolCompiler>,
         deadline: Instant,
         path: &AuthoredToolPath,
         source: &str,
@@ -400,17 +428,10 @@ impl Authoring {
         let kind = path.kind();
         // The error names the kind, so its reason names the path alone.
         let call_path = path.call_path();
-        let compile = {
-            let compiler = self.compiler.clone();
-            let source = source.to_string();
-            tokio::task::spawn_blocking(move || {
-                compiler.prepare(deadline, &source, declarations.as_ref())
-            })
-        };
+        let compile = compiler.prepare(deadline, source, declarations.as_ref());
         let prepared = timeout_at(deadline.into(), compile)
             .await
             .map_err(|_elapsed| Error::CompilationTimedOut(kind))?
-            .map_err(|_join_error| Error::CompilerWorkerStopped)?
             .map_err(|failure| match failure {
                 CompileFailure::Rejected(message) => {
                     Error::Admission(kind, format!("{call_path}: {message}"))
@@ -418,6 +439,7 @@ impl Authoring {
                 CompileFailure::Busy => Error::CompilerBusy,
                 CompileFailure::TimedOut => Error::CompilationTimedOut(kind),
                 CompileFailure::Stopped => Error::CompilerWorkerStopped,
+                CompileFailure::NoCompiler => Error::NoCompiler,
                 CompileFailure::Failed(failure_kind) => {
                     tracing::warn!(
                         error.type = safe::kind(failure_kind),
