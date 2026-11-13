@@ -37,6 +37,8 @@
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See
   [ADR 0008](docs/adr/0008-outbound-network-permissions.md) for composition defaults.
+  That policy is for Providers. Fetch a client metadata URL through
+  `coral_outbound::MetadataClient`, which resolves public addresses only.
 - Keep cross-crate W3C propagation, safe telemetry fields, the `coral.*`
   metric catalog, and export filtering in `coral-telemetry`. Domain modules own
   signal timing and record metrics through `coral_telemetry::metric`.

@@ -19,10 +19,11 @@
 //!   admits a native app's reverse-domain URI scheme.
 //!
 //! The raw-client helpers [`EndpointUrl::get`] and [`EndpointUrl::post`] exist
-//! only for operator-authored [`Configured`] endpoints. Untrusted source and
-//! metadata URLs must use the guarded `Client` with the bootstrap-selected
-//! destination policy. URL validation alone cannot enforce DNS destination
-//! checks at connection time.
+//! only for operator-authored [`Configured`] endpoints. Untrusted source URLs
+//! must use the guarded `Client` with the bootstrap-selected destination
+//! policy, and a [`ClientMetadata`] URL must use `MetadataClient`, which
+//! resolves public addresses only. URL validation alone cannot enforce DNS
+//! destination checks at connection time.
 //!
 //! [`ResourceIdentifier`] and [`BrowserRedirect`] describe URLs Coral never
 //! fetches. A wrapper exposes its underlying [`Url`], so callers still own the
@@ -37,7 +38,7 @@ pub use destination::{
 #[cfg(feature = "transport")]
 mod transport;
 #[cfg(feature = "transport")]
-pub use transport::{Client, FetchError};
+pub use transport::{Client, FetchError, MetadataClient};
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -381,6 +382,8 @@ impl SelfContainedPolicy for PublicMetadata {
 /// Plain HTTP is admitted only for an explicit-loopback client ID that exactly
 /// matches one derived from an operator-registered loopback resource, and only
 /// when the authorization-server issuer itself uses explicit-loopback HTTP.
+///
+/// Fetch one with `MetadataClient`, which resolves public addresses only.
 pub struct ClientMetadata;
 
 impl UrlPolicy for ClientMetadata {
