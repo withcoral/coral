@@ -18,28 +18,40 @@ RUN apt-get update \
 # values repeat coral_embed::MANIFEST. A test keeps them equal:
 # crates/coral-embed/tests/server_image.rs. A file with another digest stops
 # the build.
-RUN set -eu; \
+#
+# Both downloads stay in a cache mount. A builder that keeps its mounts, as
+# CI's does, rebuilds these layers without GitHub's release downloads, which
+# fail at times. A kept file passes the same digest check as a new one.
+RUN --mount=type=cache,id=coral-downloads,target=/var/cache/coral-downloads,sharing=locked \
+    set -eu; \
     url=https://github.com/withcoral/coral-releases/releases/download/model-bge-small-en-v1.5-5c38ec7; \
     dir=/opt/coral/models/bge-small-en-v1.5; \
-    mkdir -p "$dir"; \
-    cd "$dir"; \
-    for file in model.onnx tokenizer.json; do \
+    kept="/var/cache/coral-downloads/${url##*/}"; \
+    check() { \
+        printf '%s\n' \
+            '828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35  model.onnx' \
+            'd241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66  tokenizer.json' \
+            | sha256sum -c -; \
+    }; \
+    mkdir -p "$dir" "$kept"; \
+    cd "$kept"; \
+    check >/dev/null 2>&1 || for file in model.onnx tokenizer.json; do \
         curl -fsSL --retry 3 -o "$file" "$url/$file"; \
     done; \
-    printf '%s\n' \
-        '828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35  model.onnx' \
-        'd241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66  tokenizer.json' \
-        | sha256sum -c -; \
-    chmod 0644 model.onnx tokenizer.json
-RUN set -eu; \
+    check; \
+    install -m 0644 model.onnx tokenizer.json "$dir/"
+RUN --mount=type=cache,id=coral-downloads,target=/var/cache/coral-downloads,sharing=locked \
+    set -eu; \
     case "$TARGETARCH" in \
     amd64) probe_sha=e25b2f7e50176a909b9036e2c7598d8997b524a87d24af81d92b796e6dfb4897 ;; \
     arm64) probe_sha=bc77dba74822d2b00c2585d225b77048cdb044407a0541ebf4c12711c2fdf779 ;; \
     *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /grpc_health_probe "https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH}"; \
-    echo "${probe_sha}  /grpc_health_probe" | sha256sum -c -; \
-    chmod 0755 /grpc_health_probe; \
+    kept="/var/cache/coral-downloads/grpc_health_probe-${GRPC_HEALTH_PROBE_VERSION}-linux-${TARGETARCH}"; \
+    echo "${probe_sha}  ${kept}" | sha256sum -c - >/dev/null 2>&1 \
+        || curl -fsSL -o "$kept" "https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH}"; \
+    echo "${probe_sha}  ${kept}" | sha256sum -c -; \
+    install -m 0755 "$kept" /grpc_health_probe; \
     mkdir -p /state/coral; \
     chmod 0775 /state/coral
 

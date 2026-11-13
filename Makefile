@@ -11,8 +11,10 @@ DOCKER_NO_CACHE ?= 0
 RUST_WORKSPACE_TESTS = cargo nextest run --workspace --all-targets --locked --no-fail-fast
 
 # Podman drops HEALTHCHECK unless it writes the Docker image format. Docker
-# needs --load so an image built by a container builder reaches the local
-# store; Podman does not accept that flag.
+# builds with `buildx build`: plain `docker build` ignores the builder that
+# `docker buildx use` selects, which is how CI supplies a cached one. It needs
+# --load so an image built by a container builder reaches the local store;
+# Podman does not accept that flag.
 define image_build
 set -eu; \
 case "$(DOCKER_NO_CACHE)" in \
@@ -21,11 +23,11 @@ case "$(DOCKER_NO_CACHE)" in \
   *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
 esac; \
 if $(CONTAINER_ENGINE) --version | grep -qi podman; then \
-  set -- "$$@" --format docker; \
+  set -- build "$$@" --format docker; \
 else \
-  set -- "$$@" --load; \
+  set -- buildx build "$$@" --load; \
 fi; \
-$(CONTAINER_ENGINE) build "$$@"
+$(CONTAINER_ENGINE) "$$@"
 endef
 
 # Installs the released binary, built from ee/crates/coral-ee, as `coral`.
