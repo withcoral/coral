@@ -450,6 +450,19 @@ mod tests {
         }
     }
 
+    // Catches: a blocking worker that stops before it answers and takes its
+    // caller down with it, instead of returning no answer, which each call
+    // reports as a stopped compiler.
+    #[tokio::test]
+    async fn a_worker_that_stops_before_it_answers_returns_no_answer() {
+        let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");
+        let stopped = compiler
+            .blocking(|_warm| -> u8 { panic!("the worker stops") })
+            .await;
+        assert_eq!(stopped, None);
+        assert_eq!(compiler.blocking(|_warm| 1_u8).await, Some(1));
+    }
+
     #[tokio::test]
     async fn a_call_with_no_time_left_times_out() {
         let compiler = InProcessCompiler::new(IsolateLimits::default()).expect("compiler");

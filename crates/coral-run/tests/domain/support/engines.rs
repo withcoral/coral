@@ -30,18 +30,8 @@ impl ProgramEngine for ClosureReadGateEngine {
     ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
         let root_v1 = |source: &AdmissionSource| matches!(source, AdmissionSource::Linked { source, .. } if source.contains("root-v1"));
         if sources.iter().any(root_v1) {
-            // The gate blocks, so it waits on a blocking worker.
             self.reading_root.store(true, Ordering::SeqCst);
-            let release = Arc::clone(&self.release);
-            tokio::task::spawn_blocking(move || {
-                release
-                    .lock()
-                    .map_err(|error| error.to_string())?
-                    .recv()
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .map_err(|_join_error| CompileFailure::Stopped)??;
+            wait_for_release(&self.release).await?;
         }
         analyze_each(sources, |source| match source {
             AdmissionSource::Program(_) => {
@@ -522,6 +512,22 @@ impl ProgramEngine for BlockingEngine {
     }
 }
 
+/// Waits until `release` takes a message. The wait blocks, so it runs on a
+/// blocking worker, as a compiler's own work does.
+async fn wait_for_release(release: &Arc<Mutex<mpsc::Receiver<()>>>) -> Result<(), CompileFailure> {
+    let release = Arc::clone(release);
+    tokio::task::spawn_blocking(move || {
+        release
+            .lock()
+            .map_err(|error| error.to_string())?
+            .recv()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_join_error| CompileFailure::Stopped)?
+    .map_err(CompileFailure::from)
+}
+
 #[derive(Clone)]
 pub(crate) struct CompileGateEngine {
     pub(crate) compiling: Arc<AtomicBool>,
@@ -554,17 +560,7 @@ impl ProgramEngine for CompileGateEngine {
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         self.compiling.store(true, Ordering::SeqCst);
-        // The gate blocks, so it waits on a blocking worker.
-        let release = Arc::clone(&self.release);
-        tokio::task::spawn_blocking(move || {
-            release
-                .lock()
-                .map_err(|error| CompileFailure::Rejected(error.to_string()))?
-                .recv()
-                .map_err(|error| CompileFailure::Rejected(error.to_string()))
-        })
-        .await
-        .map_err(|_join_error| CompileFailure::Stopped)??;
+        wait_for_release(&self.release).await?;
         Ok(ProgramPackage::scripted(source))
     }
 
