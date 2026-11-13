@@ -70,7 +70,8 @@ impl Drop for HeldUnit {
 #[derive(Clone)]
 enum Target {
     /// Every call goes to this stream, and fails as a busy compiler when it
-    /// has no room.
+    /// has no room. Only tests send to one stream alone.
+    #[cfg(any(test, feature = "test-support"))]
     Stream(StreamId),
     /// Each call goes to the stream with the most room, and waits for one
     /// when none has room, asking the local children for room.
@@ -82,7 +83,8 @@ enum Target {
 
 impl fmt::Debug for PullStreamCompiler {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let stream = match &self.target {
+        let stream: Option<&StreamId> = match &self.target {
+            #[cfg(any(test, feature = "test-support"))]
             Target::Stream(stream) => Some(stream),
             Target::MostRoom { .. } => None,
         };
@@ -118,6 +120,7 @@ impl PullStreamCompiler {
     }
 
     /// The client for `stream`, one of `streams`, alone.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub(crate) const fn for_stream(streams: PullStreams, stream: StreamId) -> Self {
         Self {
@@ -149,6 +152,7 @@ impl PullStreamCompiler {
     /// `until`. It waits on its thread.
     fn room(&self, until: Instant) -> Option<StreamId> {
         let children = match &self.target {
+            #[cfg(any(test, feature = "test-support"))]
             Target::Stream(stream) => return Some(*stream),
             Target::MostRoom { children, .. } => children.as_ref(),
         };
