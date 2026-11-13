@@ -62,12 +62,22 @@ ARG CORAL_GIT_SHA
 ARG CORAL_RELEASE_BUILD=
 WORKDIR /src
 COPY . .
+# The v8 crate's build script downloads a prebuilt V8 archive, and stops the
+# build when the archive has another digest than RUSTY_V8_ARCHIVE_SHA256. The
+# values repeat [workspace.metadata.v8-archive] in Cargo.toml. A test keeps
+# them equal: xtask/tests/v8_archive.rs.
 RUN --mount=type=cache,id=coral-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=coral-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=coral-cargo-target-${TARGETARCH},target=/src/target,sharing=locked \
-    test -n "$CORAL_GIT_SHA" \
-    && cargo build --locked --release -p coral-ee --bin coral-ee \
-    && install -D -m 0755 target/release/coral-ee /coral
+    set -eu; \
+    test -n "$CORAL_GIT_SHA"; \
+    case "$TARGETARCH" in \
+    amd64) v8_sha=b6683e9afcb77fbd8cb2c3acf45d34d52029ab216b332522c95179c12f0fed3c ;; \
+    arm64) v8_sha=c40196bbf182532e583f65b7daf0196fdbb3354e6fac59b31d0539c20f931f3d ;; \
+    *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    RUSTY_V8_ARCHIVE_SHA256="$v8_sha" cargo build --locked --release -p coral-ee --bin coral-ee; \
+    install -D -m 0755 target/release/coral-ee /coral
 
 FROM scratch AS prebuilt
 ARG TARGETARCH

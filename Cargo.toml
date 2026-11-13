@@ -124,6 +124,8 @@ urlencoding = "2"
 unicode-general-category = "1.1"
 unicode-id-start = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
+# The build downloads V8 as a prebuilt archive. A new version needs new
+# digests in [workspace.metadata.v8-archive] below.
 v8 = "=152.2.0"
 wiremock = "0.6"
 zeroize = "1.9"
@@ -157,6 +159,28 @@ coral-upstream = { path = "crates/coral-upstream" }
 coral-v8 = { path = "crates/coral-v8" }
 coral-value = { path = "crates/coral-value" }
 coral-workspace = { path = "crates/coral-workspace" }
+
+# The v8 crate's build script downloads a prebuilt V8 archive from the
+# rusty_v8 release of the same version and links it. Cargo.lock covers the
+# crate's source, not that archive. The build script stops the build when
+# RUSTY_V8_ARCHIVE_SHA256 is set and the archive has another digest. The
+# builds that Coral publishes set it to their target's row: Desktop's staging
+# (apps/desktop/scripts/runtime.mjs) reads this table, and docker/Dockerfile
+# repeats its Linux rows. xtask/tests/v8_archive.rs keeps them in step. Other
+# builds, `make install` among them, do not check the archive.
+#
+# Each value is the SHA-256 of the release asset as downloaded, still gzipped:
+#   https://github.com/denoland/rusty_v8/releases/download/v<version>/librusty_v8_release_<target>.a.gz
+# The Windows asset is rusty_v8_release_<target>.lib.gz. The build script
+# links the `release` archive under every Cargo profile.
+[workspace.metadata.v8-archive]
+version = "152.2.0"
+
+[workspace.metadata.v8-archive.sha256]
+aarch64-apple-darwin = "a4a5484444ad4b5f10dc7bed141236dd9dbeabf2006d14520f19b935d4db4227"
+aarch64-unknown-linux-gnu = "c40196bbf182532e583f65b7daf0196fdbb3354e6fac59b31d0539c20f931f3d"
+x86_64-pc-windows-msvc = "0b17ca072bae37dd4ff00e6014d2b413becb031c9342ee11cb8226a5881f62b2"
+x86_64-unknown-linux-gnu = "b6683e9afcb77fbd8cb2c3acf45d34d52029ab216b332522c95179c12f0fed3c"
 
 [profile.dev]
 debug = 1
