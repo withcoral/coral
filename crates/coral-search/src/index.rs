@@ -707,13 +707,12 @@ impl SearchIndex {
     /// the process, which every other write waits for, so the text work must
     /// not hold it. The wait to begin and to take the lock has a limit of its
     /// own, so a write that waited long for another writer still has its
-    /// whole write limit. A write that overruns
-    /// its wait fails as [`IndexError::WriterBusy`], which may pass on a
-    /// later try. A write that overruns after it takes the lock fails as
-    /// [`IndexError::Overran`], which repeats until something changes. A
-    /// write that took the lock records how long it waited and wrote on its
-    /// write span. Once it commits, it schedules the Workspace's statistics
-    /// recount. Returns the rows it wrote.
+    /// whole write limit. A write that overruns its wait fails as
+    /// [`IndexError::WriterBusy`], and a write that overruns after it takes
+    /// the lock fails as [`IndexError::Overran`]. Either may pass on a later
+    /// try. A write that took the lock records how long it waited and wrote
+    /// on its write span. Once it commits, it schedules the Workspace's
+    /// statistics recount. Returns the rows it wrote.
     async fn write<'e, I: EntityIndexer + 'e>(
         &self,
         indexer: &I,

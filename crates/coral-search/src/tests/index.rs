@@ -809,9 +809,16 @@ async fn a_transient_failure_waits_twice_as_long_after_each_attempt() {
 }
 
 #[tokio::test]
-async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
-    // `NULL` is the version of a row written before Coral recorded one.
-    for older_version in ["'0.0.0'", "NULL"] {
+async fn a_write_that_overran_after_the_workspace_lock_is_retried_once_due() {
+    // The limit measures database work, so a slow commit overruns it as a
+    // Generation too large to write does. The failure is due once its retry
+    // time has passed, or at once under a newer Coral version; `NULL` is the
+    // version of a row written before Coral recorded one.
+    for due in [
+        "retry_after_unix_nanos = 0",
+        "failed_coral_version = '0.0.0'",
+        "failed_coral_version = NULL",
+    ] {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
         let entries = world.stored_entries(&world.tracer).await;
@@ -827,25 +834,22 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
         assert_eq!(state.state, "failed");
         let error = state.error.expect("a failed state carries its error");
         assert!(error.contains("ran past its"), "{error}");
-        assert_eq!(world.retries().await, [Retry::on_new_version(1)]);
+        assert_eq!(world.retries().await, [Retry::after(1, RECONCILE_INTERVAL)]);
 
-        world.make_retries_due().await;
         let stamps = world.attempt_stamps().await;
         world.index.reconcile().await;
         assert_eq!(
             world.attempt_stamps().await,
             stamps,
-            "a pass under the same Coral version leaves the failure"
+            "a pass before the retry time leaves the failure"
         );
 
         world
             .modules
             .fixture
-            .execute_fixture_sql(&format!(
-                "UPDATE search_index_states SET failed_coral_version = {older_version}"
-            ))
+            .execute_fixture_sql(&format!("UPDATE search_index_states SET {due}"))
             .await
-            .expect("record an older Coral version");
+            .expect("make the failure due");
         world.index.reconcile().await;
         assert_eq!(
             world.states().await,
@@ -854,7 +858,7 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
                 &entries.generation_id().to_string(),
                 "Weather Tracer"
             )],
-            "older version: {older_version}"
+            "due: {due}"
         );
     }
 }
@@ -3592,15 +3596,6 @@ impl Retry {
         Self {
             attempts: Some(attempts),
             wait_nanos: Some(i64::try_from(wait.as_nanos()).expect("a short wait")),
-            version_recorded: true,
-        }
-    }
-
-    /// A failure a pass retries only under another Coral version.
-    const fn on_new_version(attempts: i64) -> Self {
-        Self {
-            attempts: Some(attempts),
-            wait_nanos: None,
             version_recorded: true,
         }
     }

@@ -164,11 +164,13 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
 }
 
 #[tokio::test]
-async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
-    // A newer Coral version, a row written before Coral recorded one, or a
-    // failure of another revision, such as one whose save notification was
-    // lost, each make the failure due.
+async fn a_private_tool_whose_write_overran_its_limit_is_retried_once_due() {
+    // A retry time that has passed, a newer Coral version, a row written
+    // before Coral recorded one, or a failure of another revision, such as
+    // one whose save notification was lost, each make the failure due. The
+    // retry time passes only on a failure that recorded one.
     for change in [
+        "retry_after_unix_nanos = 0 WHERE retry_after_unix_nanos IS NOT NULL",
         "failed_coral_version = '0.0.0'",
         "failed_coral_version = NULL",
         "failed_authored_tool_revision = 0",
@@ -196,7 +198,6 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
         assert_eq!(state.state, "failed");
         assert!(state.error.contains("ran past its"), "{}", state.error);
 
-        make_retries_due(&fixture).await;
         fixture.index.reconcile().await;
         assert_eq!(
             (
@@ -204,7 +205,7 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
                 indexed_paths(&fixture).await
             ),
             (failed, Vec::<String>::new()),
-            "a pass under the same Coral version leaves the failure"
+            "a pass before the retry time leaves the failure"
         );
 
         fixture

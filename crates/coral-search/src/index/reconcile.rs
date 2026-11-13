@@ -176,8 +176,10 @@ impl SearchIndex {
     ///
     /// The retry module's rule decides when a failure is due. A failure that
     /// repeats until something changes waits for a newer Coral version, or,
-    /// for an Authored Tool, for another revision, so a pass does not spend
-    /// its turn at the writer on it pass after pass.
+    /// for an Authored Tool, for another revision. Any other failure, such as
+    /// a write that overran its limit, waits longer after each try, up to an
+    /// hour. Either way, a pass does not spend its turn at the writer on it
+    /// pass after pass.
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span, all at debug level: almost every pass finds nothing
