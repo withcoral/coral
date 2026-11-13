@@ -18,7 +18,7 @@ use super::RetrievalError;
 use super::plan::{
     QueryPlan, ScoringPlan, Statistics, WordStatistics, contains_pattern, prefix_pattern,
 };
-use super::vector_list::NearestVector;
+use super::vector_list::{CurrentRow, NearestVector};
 use crate::CallPath;
 
 /// The `search_entities` columns the coverage reads name, for sea-query.
@@ -277,37 +277,52 @@ pub(super) async fn current_tools(
     workspace_id: &WorkspaceId,
     plan: &QueryPlan,
     doc_ids: &[&str],
-) -> Result<HashMap<String, (i64, RankedTool)>, RetrievalError> {
+) -> Result<HashMap<String, CurrentRow<RankedTool>>, RetrievalError> {
     #[derive(sqlx::FromRow)]
-    struct CurrentRow {
+    struct StampedRow {
         indexed_at_unix_nanos: i64,
         #[sqlx(flatten)]
         row: RankedRow,
     }
     let mut binds = Binds::new(DatabaseSystem::Postgres);
     let workspace = binds.push(workspace_id.to_string());
-    let phrase = phrase_points(&mut binds, "d", plan);
+    let columns = ranked_columns(&mut binds, "d", plan);
     let doc_ids = binds.push(json(doc_ids));
     let sql = format!(
-        "SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.authored_tool_id, \
-                d.qualified_name, d.title, d.indexed_at_unix_nanos, \
-                CAST({phrase} AS BIGINT) AS phrase_points \
+        "SELECT {columns}, d.indexed_at_unix_nanos \
          FROM search_entities AS d \
          WHERE d.workspace_id = {workspace} \
          AND d.doc_id IN (SELECT jsonb_array_elements_text({doc_ids}::jsonb))"
     );
-    let rows: Vec<CurrentRow> = transaction.fetch_all_sql(&sql, binds.values).await?;
+    let rows: Vec<StampedRow> = transaction.fetch_all_sql(&sql, binds.values).await?;
     rows.into_iter()
-        .map(|current| {
-            let tool = ranked_tool(current.row)?;
-            Ok((tool.doc_id.clone(), (current.indexed_at_unix_nanos, tool)))
+        .map(|stamped| {
+            let tool = ranked_tool(stamped.row)?;
+            Ok((
+                tool.doc_id.clone(),
+                CurrentRow {
+                    indexed_at_unix_nanos: stamped.indexed_at_unix_nanos,
+                    entry: tool,
+                },
+            ))
         })
         .collect()
 }
 
+/// The columns a [`RankedRow`] reads, over `alias`: its key, its Call Path,
+/// its owner keys, its name and title, and its phrase points for the plan.
+fn ranked_columns(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
+    let phrase = phrase_points(binds, alias, plan);
+    format!(
+        "{alias}.doc_id, {alias}.call_path, {alias}.provider_id, {alias}.tool_key, \
+         {alias}.authored_tool_id, {alias}.qualified_name, {alias}.title, \
+         CAST({phrase} AS BIGINT) AS phrase_points"
+    )
+}
+
 /// The vector query over the scope, with its binds. The vector binds as
 /// `halfvec`, the column's type, so the distance needs no cast per row, and
-/// the scan is exact: the table has no vector index.
+/// the scan is exact: the table has no approximate (HNSW) index.
 fn nearest_statement(
     scope: &Scope<'_>,
     revision: &str,
@@ -468,7 +483,7 @@ async fn rank_postgres(
     let conditions = scope.sql(&mut binds);
     let matches = postgres_candidates(&mut binds, plan, &scoring);
     let score_sql = postgres_score(&mut binds, &scoring);
-    let phrase = phrase_points(&mut binds, "c", plan);
+    let columns = ranked_columns(&mut binds, "c", plan);
     let named = scope.named_key(&mut binds, "c");
     let limit = binds.push(limit_value(limit));
     let sql = format!(
@@ -478,8 +493,7 @@ async fn rank_postgres(
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
-         SELECT c.doc_id, c.call_path, c.provider_id, c.tool_key, c.authored_tool_id, \
-                c.qualified_name, c.title, CAST({phrase} AS BIGINT) AS phrase_points \
+         SELECT {columns} \
          FROM candidates AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
          ORDER BY \
@@ -607,12 +621,11 @@ async fn rank_sqlite(
             .collect::<Vec<_>>()
             .join(" OR "),
     );
-    let phrase = phrase_points(&mut binds, "d", plan);
+    let columns = ranked_columns(&mut binds, "d", plan);
     let named = scope.named_key(&mut binds, "d");
     let limit = binds.push(limit_value(limit));
     let sql = format!(
-        "SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.authored_tool_id, \
-                d.qualified_name, d.title, CAST({phrase} AS BIGINT) AS phrase_points \
+        "SELECT {columns} \
          FROM search_entities_fts AS f \
          JOIN search_entities AS d ON d.workspace_id = f.workspace_id AND d.doc_id = f.doc_id \
          WHERE f.workspace_id = d.workspace_id AND search_entities_fts MATCH {match_query} \

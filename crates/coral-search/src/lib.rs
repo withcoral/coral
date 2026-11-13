@@ -120,7 +120,7 @@ pub struct UniversalSearchModule {
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
     /// The model the engine embeds each query with, when the vector side
     /// is on; the slot is empty until the model is ready.
-    model: Option<tokio::sync::watch::Receiver<Option<Arc<dyn coral_embed::Embed>>>>,
+    model: Option<index::EmbedderModel>,
 }
 
 /// The most type names one `describe` call may request.
@@ -141,8 +141,8 @@ impl UniversalSearchModule {
     }
 
     /// Turns the vector side on, on Postgres: once `model` holds a model,
-    /// the engine embeds each query with it and every retriever merges a
-    /// vector list with its lexical list. Give it the receiver the
+    /// the engine embeds each query with it, and each retriever that keeps
+    /// vectors merges a vector list with its lexical list. Give it the receiver the
     /// [`SearchIndex`]'s Embedder takes, so a query shares the Embedder's
     /// model and waits for at most the one document that runs. On `SQLite`,
     /// which keeps no vectors yet, nothing changes.

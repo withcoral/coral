@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_db::{DatabaseSystem, Transaction};
+use coral_db::Transaction;
 use coral_embed::MANIFEST;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
@@ -167,18 +167,19 @@ impl EntityRetriever for ToolRetriever {
         let (lexical, vector) = if searched.is_empty() {
             (Vec::new(), None)
         } else {
-            rank_both(transaction, context.workspace_id, &scope, &plan, request).await?
+            lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
+                .await?
         };
-        let (merged, has_more) = vector_list::window(
+        let (merged, has_more) = vector_list::merged_window(
             lexical,
             vector,
             |tool: &repository::RankedTool| tool.doc_id.clone(),
             request.window,
         );
         let mut window = Vec::new();
-        for merged in merged {
-            let strong_by_vector = merged.strong_by_vector();
-            let tool = merged.entry;
+        for entry in merged {
+            let strong_by_vector = entry.strong_by_vector();
+            let tool = entry.entry;
             let provider = searched
                 .get(&tool.provider_id)
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
@@ -266,7 +267,7 @@ impl EntityRetriever for ToolRetriever {
 
 /// The lexical list, with one row past the window, and the vector list when
 /// the request carries a vector and the vector side answers.
-async fn rank_both(
+async fn lexical_and_vector_lists(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     scope: &repository::ToolScope<'_>,
@@ -285,7 +286,7 @@ async fn rank_both(
             .map_err(QueryError::Retriever)?;
     let vector = match request.vector {
         Some(vector) => {
-            vector_tools(
+            vector_side(
                 transaction,
                 workspace_id,
                 scope,
@@ -300,12 +301,10 @@ async fn rank_both(
     Ok((lexical, vector))
 }
 
-/// The vector list: the `window` Tools of the scope whose vectors of the
-/// current Embedder revision are nearest to `vector`, less each whose vector
-/// was made from other text than its row holds now. `None` when the vector
-/// side fails, or on `SQLite`, which keeps no vectors yet: the retriever
-/// then ranks by words alone, and the page does not say so.
-async fn vector_tools(
+/// The vector list, read in its own savepoint. `None` when the vector side
+/// fails: the savepoint rolls back, the retriever ranks by words alone, and
+/// the page does not say so.
+async fn vector_side(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     scope: &repository::ToolScope<'_>,
@@ -313,13 +312,10 @@ async fn vector_tools(
     vector: &[f32],
     window: usize,
 ) -> Result<Option<VectorList<repository::RankedTool>>, QueryError> {
-    if transaction.system() != DatabaseSystem::Postgres {
-        return Ok(None);
-    }
     repository::begin_vector_query(transaction)
         .await
         .map_err(QueryError::retrieval)?;
-    match read_vector_tools(transaction, workspace_id, scope, plan, vector, window).await {
+    match nearest_current_tools(transaction, workspace_id, scope, plan, vector, window).await {
         Ok(tools) => {
             repository::end_vector_query(transaction)
                 .await
@@ -340,7 +336,10 @@ async fn vector_tools(
     }
 }
 
-async fn read_vector_tools(
+/// The vector list: the `window` Tools of the scope whose vectors of the
+/// current Embedder revision are nearest to `vector`, less each whose vector
+/// was made from other text than its row holds now.
+async fn nearest_current_tools(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     scope: &repository::ToolScope<'_>,
@@ -366,7 +365,7 @@ async fn read_vector_tools(
         .collect::<Vec<_>>();
     let rows = repository::current_tools(transaction, workspace_id, plan, &doc_ids).await?;
     Ok(VectorList {
-        entries: vector_list::current(nearest, rows),
+        entries: vector_list::keep_current(nearest, rows),
         has_more,
     })
 }

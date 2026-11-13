@@ -17,19 +17,27 @@ pub(crate) struct NearestVector {
     pub(crate) source_indexed_at_unix_nanos: i64,
 }
 
-/// The entries of `nearest`, in order, whose Search Entity is in `rows`
-/// with the stamp its vector was made from. `rows` holds each current row
-/// by key with its stamp. A vector of old text, or of a row that is gone or
-/// that the caller may not see, leaves the list, so that Entity ranks by
-/// its words alone.
-pub(crate) fn current<T>(
+/// One Search Entity's row as it stands now: its source stamp, and the
+/// retriever's entry for it.
+pub(crate) struct CurrentRow<T> {
+    pub(crate) indexed_at_unix_nanos: i64,
+    pub(crate) entry: T,
+}
+
+/// The entries of `nearest`, in order, whose Search Entity is in `rows`, by
+/// key, with the stamp its vector was made from. A vector of old text, or of
+/// a row that is gone, leaves the list, so that Entity ranks by its words
+/// alone.
+pub(crate) fn keep_current<T>(
     nearest: Vec<NearestVector>,
-    mut rows: HashMap<String, (i64, T)>,
+    mut rows: HashMap<String, CurrentRow<T>>,
 ) -> Vec<T> {
     nearest
         .into_iter()
         .filter_map(|vector| match rows.remove(&vector.doc_id) {
-            Some((stamp, entry)) if stamp == vector.source_indexed_at_unix_nanos => Some(entry),
+            Some(row) if row.indexed_at_unix_nanos == vector.source_indexed_at_unix_nanos => {
+                Some(row.entry)
+            }
             Some(_) | None => None,
         })
         .collect()
@@ -64,7 +72,7 @@ impl<T> Merged<T> {
 /// first with one past the window, and `vector`, its vector list when the
 /// vector side answered: the two merged by the manifest's weights, or
 /// `lexical` alone, cut to `window`. Also whether more ranked past it.
-pub(crate) fn window<T, K: Eq + Hash>(
+pub(crate) fn merged_window<T, K: Eq + Hash>(
     mut lexical: Vec<T>,
     vector: Option<VectorList<T>>,
     key: impl Fn(&T) -> K,

@@ -19,8 +19,7 @@ use tokio::sync::watch;
 
 use super::{TestModules, change, organization_user, paths};
 use crate::{
-    EntityKind, SearchIndex, SearchLimit, SearchPage, SearchQuery, SearchRequest,
-    UniversalSearchModule, VectorStorage, prepare_vector_table,
+    EntityKind, SearchLimit, SearchPage, SearchQuery, SearchRequest, UniversalSearchModule,
 };
 
 const USER: &str = "user:search-vector-retrieval";
@@ -180,8 +179,8 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
     );
     assert_eq!(
         tools_returned(&page),
-        2,
-        "the hidden Tool is not in the window either: hydration would drop it"
+        paths(&page).len() as u64,
+        "hydration dropped no Tool: the hidden one was never in the window"
     );
     assert_eq!(
         paths(&world.request(&by_meaning, &agent, rain()).await),
@@ -256,8 +255,19 @@ async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    assert_eq!(all.len(), 14, "{all:?}");
-    for limit in 1..=14 {
+    let mut published = (1..=12)
+        .map(|number| format!("coral.providers.notes.listNotes{number:02}"))
+        .chain([
+            "coral.providers.github.issues.list".to_owned(),
+            "coral.providers.weather.getForecast".to_owned(),
+        ])
+        .collect::<Vec<_>>();
+    published.sort();
+    let mut found = all.clone();
+    found.sort();
+    assert_eq!(found, published, "one page holds every Tool");
+    let tools = u16::try_from(all.len()).unwrap();
+    for limit in 1..=tools {
         assert_eq!(
             paths(
                 &world
@@ -272,7 +282,7 @@ async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
         );
     }
     let mut paged = Vec::new();
-    for offset in (0..14).step_by(3) {
+    for offset in (0..u32::from(tools)).step_by(3) {
         paged.extend(
             paths(
                 &world
@@ -532,14 +542,7 @@ impl World {
         modules
             .publish_openapi(&user, &workspace, GITHUB, "github", 30)
             .await;
-        prepare_vector_table(
-            &modules.search.database,
-            VectorStorage::On {
-                dimension: MANIFEST.dimension,
-            },
-        )
-        .await
-        .expect("create the vector table");
+        modules.prepare_vectors().await;
         let world = Self {
             modules,
             user,
@@ -556,12 +559,7 @@ impl World {
     /// vector. The Embedder stops then, so a test's change to the vector
     /// table stays.
     async fn index_and_embed(&self) {
-        let (_ready, model) = watch::channel(Some(Arc::clone(&self.model)));
-        let index = SearchIndex::new(
-            self.modules.search.database.clone(),
-            std::time::Duration::from_mins(5),
-        )
-        .with_embedder(model);
+        let index = self.modules.index_with(Arc::clone(&self.model));
         let background = index.spawn_reconcile_task();
         index.reconcile().await;
         index.settled().await;

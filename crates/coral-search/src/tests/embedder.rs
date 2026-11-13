@@ -12,11 +12,10 @@ use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_telemetry::testing::{SpanCapture, attribute};
 use coral_workspace::{AuthenticatedUser, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
-use tokio::sync::watch;
 use wiremock::MockServer;
 
 use super::{TestModules, change, organization_user};
-use crate::{SearchIndex, VectorStorage, prepare_vector_table};
+use crate::SearchIndex;
 
 const USER: &str = "user:search-embedder";
 
@@ -645,14 +644,7 @@ impl World {
             .publish_tracer(&user, &workspace, &upstream.uri())
             .await
             .provider_id;
-        prepare_vector_table(
-            &modules.search.database,
-            VectorStorage::On {
-                dimension: MANIFEST.dimension,
-            },
-        )
-        .await
-        .expect("create the vector table");
+        modules.prepare_vectors().await;
         Self {
             modules,
             workspace,
@@ -806,11 +798,7 @@ impl World {
 
     /// An index whose Embedder embeds with `model`, ready at once.
     fn index_with(&self, model: &(impl Embed + Clone + 'static)) -> SearchIndex {
-        let model: Arc<dyn Embed> = Arc::new(model.clone());
-        let (_ready, model) = watch::channel(Some(model));
-        SearchIndex::new(self.modules.search.database.clone(), RECONCILE_INTERVAL)
-            .with_embedder(model)
-            .with_embedder_retry_pause(std::time::Duration::from_millis(10))
+        self.modules.index_with(Arc::new(model.clone()))
     }
 
     /// Each Search Entity of the Workspace with its source stamp.
