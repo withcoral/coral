@@ -128,28 +128,24 @@ fn is_conflict_code(code: &str) -> bool {
 ///
 /// Postgres sends every error it can still deliver as a database error, a
 /// session it is ending included, so only the SQLSTATE tells an ended session
-/// from a rejected statement. This table is wider than [`is_conflict_code`]:
-/// a conflict is one kind of unanswered write.
+/// from a rejected statement. A conflict is one kind of unanswered write; the
+/// rest are Postgres codes, since `SQLite` runs in this process.
 fn is_unanswered_code(code: &str) -> bool {
-    if code.len() != 5 {
-        // `SQLite` runs in this process: only a busy or locked writer.
-        return is_conflict_code(code);
-    }
-    matches!(
-        code,
-        // The session failed or was never established. `08P01` is left out:
-        // it is the server's answer to a message it could not accept.
-        "08000" | "08001" | "08003" | "08004" | "08006" | "08007"
-        // A lost serialization race, a statement whose completion the
-        // server does not know, a deadlock.
-        | "40001" | "40003" | "40P01"
-        // No connection slot was free, so no statement was read.
-        | "53300"
-        // The server ended or refused the session: a shutdown, a crash of
-        // another backend, a server that is starting up or shutting down,
-        // an idle session's timeout.
-        | "57P01" | "57P02" | "57P03" | "57P05"
-    )
+    is_conflict_code(code)
+        || matches!(
+            code,
+            // The session failed or was never established. `08P01` is left
+            // out: it is the server's answer to a message it could not accept.
+            "08000" | "08001" | "08003" | "08004" | "08006" | "08007"
+            // The server does not know whether the statement completed.
+            | "40003"
+            // No connection slot was free, so no statement was read.
+            | "53300"
+            // The server ended or refused the session: a shutdown, a crash of
+            // another backend, a server that is starting up or shutting down,
+            // an idle session's timeout.
+            | "57P01" | "57P02" | "57P03" | "57P05"
+        )
 }
 
 #[cfg(test)]
@@ -223,18 +219,17 @@ mod tests {
         }
     }
 
-    /// An ended or refused session is unanswered beside every conflict; a
-    /// statement the server ran and refused is its definite answer.
+    /// A conflict, an ended or refused session and an unknown completion are
+    /// unanswered; a statement the server ran and refused is its definite
+    /// answer.
     #[test]
-    fn unanswered_codes_are_conflicts_and_ended_or_refused_sessions() {
-        let conflicts = ["40001", "40P01", "5", "6", "517", "261", "262"];
+    fn unanswered_codes_add_ended_and_refused_sessions_to_the_conflicts() {
+        assert!(is_unanswered_code("40P01"), "a conflict is unanswered");
+        assert!(is_unanswered_code("40003"), "an unknown completion");
         let sessions = [
-            "08000", "08001", "08003", "08004", "08006", "08007", "40003", "53300", "57P01",
-            "57P02", "57P03", "57P05",
+            "08000", "08001", "08003", "08004", "08006", "08007", "53300", "57P01", "57P02",
+            "57P03", "57P05",
         ];
-        for code in conflicts {
-            assert!(is_unanswered_code(code), "{code} must be unanswered");
-        }
         for code in sessions {
             assert!(is_unanswered_code(code), "{code} must be unanswered");
             assert!(!is_conflict_code(code), "{code} must not be a conflict");

@@ -142,12 +142,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   have the request model (requests keyed by the entity they decide, the
   first wins).
 - A Run Owner's write ends on the database's answer, never on the clock: an
-  unanswered write (`Error::is_operational`: a lost connection, a pool
-  timeout, a lock race) means a reread and a retry with bounded backoff until
-  the answer comes or the owner has retired, and a definite answer (a
-  rejection, a claim mismatch, an ended Run, a corrupt head) stops it; the
-  Interrupted record alone retries every answer but a claim mismatch or an
-  ended Run. The worker lease is ownership between Coral Instances, renewed
+  unanswered write (`Error::is_operational`: a lost connection, a session the
+  database ended or refused, a pool timeout, a lock race) means a reread and
+  a retry with bounded backoff until the answer comes or the owner has
+  retired, and a definite answer (a rejection, a claim mismatch, an ended
+  Run, a corrupt head) stops it; the Interrupted record alone retries every
+  answer but a claim mismatch or an ended Run. The worker lease is ownership between Coral Instances, renewed
   by every commit: never write a Run whose live lease another Coral Instance
   holds, except to insert an outside request into its Run Inbox.
   The lease never ends a Run from inside its own Coral Instance. The owner's
