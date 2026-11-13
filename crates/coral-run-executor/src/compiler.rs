@@ -37,10 +37,12 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
 /// compilation deadline. A call ends [`CompileError::TimedOut`] once that
 /// time runs out, while it waits or while it compiles. A call carries source
 /// and no authority.
+#[tonic::async_trait]
 pub trait CompilerClient: Send + Sync {
-    /// Blocks until a compiler can take a call, for at most the client's
-    /// own bound. A caller starts its compilation deadline after it, so the
-    /// wait for a compiler takes none of the compile's time.
+    /// Waits until a compiler can take a call, for at most the client's
+    /// own bound, holding no thread. A caller starts its compilation
+    /// deadline after it, so the wait for a compiler takes none of the
+    /// compile's time.
     ///
     /// `Some` is a client that holds one unit of room for this caller: its
     /// first call spends it, so no other caller takes it meanwhile, and
@@ -52,7 +54,7 @@ pub trait CompilerClient: Send + Sync {
     ///
     /// Returns [`Unavailable::NoCompiler`] when none can take a call by the
     /// bound.
-    fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
+    async fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
         Ok(None)
     }
 

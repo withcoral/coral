@@ -102,12 +102,14 @@ impl From<CompileFailure> for PackageFailure {
     }
 }
 
+#[async_trait::async_trait]
 pub(crate) trait ProgramEngine: Send + Sync {
-    /// Blocks until a compiler can take a call, for at most the compiler
-    /// client's own bound. The compilation deadline starts after it.
-    /// `Some` is an engine that holds room for this admission's first call,
-    /// which compiles through it; `None`: this engine as it is.
-    fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
+    /// Waits until a compiler can take a call, for at most the compiler
+    /// client's own bound, holding no thread. The compilation deadline
+    /// starts after it. `Some` is an engine that holds room for this
+    /// admission's first call, which compiles through it; `None`: this
+    /// engine as it is.
+    async fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
         Ok(None)
     }
 
@@ -187,9 +189,10 @@ impl V8ProgramEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for V8ProgramEngine {
-    fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
-        let held = self.compiler.ready().map_err(CompileFailure::from)?;
+    async fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
+        let held = self.compiler.ready().await.map_err(CompileFailure::from)?;
         Ok(held.map(|compiler| {
             Arc::new(Self {
                 compiler,

@@ -744,14 +744,12 @@ impl RunModule {
         Ok(callable)
     }
 
-    /// Waits on a blocking worker until a compiler can take a call: the
-    /// engine that this admission compiles through.
+    /// Waits until a compiler can take a call: the engine that this
+    /// admission compiles through. A dropped admission stops waiting.
     async fn ready(&self) -> Result<Arc<dyn ProgramEngine>, Error> {
-        let engine = self.engine.clone();
-        match tokio::task::spawn_blocking(move || engine.ready()).await {
-            Err(_join_error) => Err(Error::ProgramWorkerStopped),
-            Ok(Ok(held)) => Ok(held.unwrap_or_else(|| self.engine.clone())),
-            Ok(Err(failure)) => Err(domain_error(failure)),
+        match self.engine.ready().await {
+            Ok(held) => Ok(held.unwrap_or_else(|| self.engine.clone())),
+            Err(failure) => Err(domain_error(failure)),
         }
     }
 

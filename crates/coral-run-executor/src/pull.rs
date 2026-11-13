@@ -205,8 +205,11 @@ pub enum Refused {
 #[derive(Clone, Default)]
 pub struct PullStreams {
     held: Arc<Mutex<HashMap<StreamId, Held>>>,
-    /// Signalled when a stream opens or reports its room.
+    /// Signalled when a stream opens or reports its room, for a call that
+    /// waits on a blocking thread.
     roomed: Arc<Condvar>,
+    /// The same signal, for a caller that waits asynchronously.
+    room_signal: Arc<tokio::sync::Notify>,
     next: Arc<AtomicU64>,
 }
 
@@ -250,6 +253,12 @@ impl Held {
     }
 }
 
+/// Whether a stream that takes sends has room.
+fn has_room(held: &HashMap<StreamId, Held>) -> bool {
+    held.values()
+        .any(|held| !held.closing && held.view.free > 0)
+}
+
 impl PullStreams {
     /// The pull streams that take sends now, each with its room.
     #[must_use]
@@ -275,10 +284,7 @@ impl PullStreams {
     /// Blocks until a stream opens or reports its room, or for `wait`.
     pub(crate) fn wait_for_room(&self, wait: Duration) {
         let held = lock(&self.held);
-        if held
-            .values()
-            .any(|held| !held.closing && held.view.free > 0)
-        {
+        if has_room(&held) {
             return;
         }
         drop(
@@ -286,6 +292,25 @@ impl PullStreams {
                 .wait_timeout(held, wait)
                 .unwrap_or_else(PoisonError::into_inner),
         );
+    }
+
+    /// Waits until a stream opens or reports its room, or for `wait`,
+    /// holding no thread.
+    pub(crate) async fn room_signalled(&self, wait: Duration) {
+        let signalled = self.room_signal.notified();
+        tokio::pin!(signalled);
+        // Registered before the look, so a signal after it is not missed.
+        signalled.as_mut().enable();
+        if has_room(&lock(&self.held)) {
+            return;
+        }
+        drop(tokio::time::timeout(wait, signalled).await);
+    }
+
+    /// Wakes every caller that waits for room.
+    fn signal_room(&self) {
+        self.roomed.notify_all();
+        self.room_signal.notify_waiters();
     }
 
     /// Sends `runs` on `stream`, one unit each; none sends nothing.
@@ -340,7 +365,7 @@ impl PullStreams {
         {
             held.kept_for_callers -= 1;
             held.view.free += 1;
-            self.roomed.notify_all();
+            self.signal_room();
         }
     }
 
@@ -422,7 +447,7 @@ impl PullStreams {
             compiles: HashMap::new(),
         };
         lock(&self.held).insert(stream, held);
-        self.roomed.notify_all();
+        self.signal_room();
         stream
     }
 
@@ -438,7 +463,7 @@ impl PullStreams {
                 }
                 // Only room wakes the calls that wait for it.
                 if room.free > 0 {
-                    self.roomed.notify_all();
+                    self.signal_room();
                 }
                 Ok(())
             }

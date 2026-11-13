@@ -127,25 +127,37 @@ impl PullStreamCompiler {
         }
     }
 
+    /// One look for room: the stream with the most room, or else how long
+    /// to wait for room before the next look (`None` at `until`). A look
+    /// that finds none asks the local children for room again.
+    fn look(
+        &self,
+        children: Option<&LocalRunExecutors>,
+        until: Instant,
+    ) -> Result<StreamId, Option<Duration>> {
+        if let Some(stream) = self.streams.most_room() {
+            return Ok(stream);
+        }
+        if let Some(children) = children {
+            children.request_room();
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        Err((!left.is_zero()).then(|| left.min(ASK_AGAIN)))
+    }
+
     /// The stream with the most room, once one has room, or none at
-    /// `until`. Each look asks the local children for room again.
+    /// `until`. It waits on its thread.
     fn room(&self, until: Instant) -> Option<StreamId> {
         let children = match &self.target {
             Target::Stream(stream) => return Some(*stream),
-            Target::MostRoom { children, .. } => children,
+            Target::MostRoom { children, .. } => children.as_ref(),
         };
         loop {
-            if let Some(stream) = self.streams.most_room() {
-                return Some(stream);
+            match self.look(children, until) {
+                Ok(stream) => return Some(stream),
+                Err(None) => return None,
+                Err(Some(wait)) => self.streams.wait_for_room(wait),
             }
-            if let Some(children) = children {
-                children.request_room();
-            }
-            let left = until.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return None;
-            }
-            self.streams.wait_for_room(left.min(ASK_AGAIN));
         }
     }
 
@@ -223,17 +235,23 @@ impl PullStreamCompiler {
     }
 }
 
+#[tonic::async_trait]
 impl CompilerClient for PullStreamCompiler {
-    fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
-        let wait = match &self.target {
-            Target::MostRoom { wait, .. } if self.held.is_none() => *wait,
+    async fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
+        let (children, wait) = match &self.target {
+            Target::MostRoom { children, wait } if self.held.is_none() => (children, *wait),
             _ => return Ok(None),
         };
         let until = Instant::now() + wait;
         loop {
-            let stream = self
-                .room(until)
-                .ok_or(CompileError::Unavailable(Unavailable::NoCompiler))?;
+            let stream = match self.look(children.as_ref(), until) {
+                Ok(stream) => stream,
+                Err(None) => return Err(CompileError::Unavailable(Unavailable::NoCompiler)),
+                Err(Some(wait)) => {
+                    self.streams.room_signalled(wait).await;
+                    continue;
+                }
+            };
             // Another caller took the room first: look again.
             if self.streams.hold(stream).is_ok() {
                 let held = HeldUnit {

@@ -61,10 +61,23 @@ fn compile(caller: &dyn CompilerClient) -> Result<String, CompileError> {
     Ok(program.javascript().to_owned())
 }
 
+/// Waits for a compiler from a blocking thread, as a test caller does.
+fn ready(caller: &PullStreamCompiler) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(caller.ready()),
+        // A runtime that does not start is a compiler that stopped.
+        Err(_none) => tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(|_io| CompileError::Unavailable(Unavailable::Stopped))?
+            .block_on(caller.ready()),
+    }
+}
+
 /// Waits for a compiler as admission does, then compiles through the
 /// client `ready` returns.
 fn ready_then_compile(caller: &PullStreamCompiler) -> Result<String, CompileError> {
-    match caller.ready()? {
+    match ready(caller)? {
         Some(held) => compile(held.as_ref()),
         None => compile(caller),
     }
@@ -124,7 +137,7 @@ fn a_call_waits_for_a_pull_stream_and_fails_past_the_bound() {
     let streams = PullStreams::default();
     let (_full, _sent) = open(&streams, 0);
     let caller = PullStreamCompiler::waiting(streams, None, Duration::from_millis(200));
-    let none = caller.ready().map(|held| held.is_some());
+    let none = ready(&caller).map(|held| held.is_some());
     assert_eq!(
         none,
         Err(CompileError::Unavailable(Unavailable::NoCompiler))
@@ -209,13 +222,13 @@ fn ready_holds_the_unit_for_its_caller_until_its_first_call() {
     let streams = PullStreams::default();
     let (stream, mut sent) = open(&streams, 1);
     let caller = PullStreamCompiler::new(streams.clone(), None);
-    let first = caller.ready().unwrap().expect("a held unit");
+    let first = ready(&caller).unwrap().expect("a held unit");
     assert_eq!(free(&streams, stream), 0, "held for the first caller");
 
     // A second caller waits for room: the held unit is not its.
     let second = caller.clone();
     let waiting = thread::spawn(move || {
-        let held = second.ready()?.expect("a held unit");
+        let held = ready(&second)?.expect("a held unit");
         compile(held.as_ref())
     });
     thread::sleep(Duration::from_millis(100));
@@ -230,8 +243,24 @@ fn ready_holds_the_unit_for_its_caller_until_its_first_call() {
     assert_eq!(waiting.join().unwrap().as_deref(), Ok("42"));
 
     // A held unit no call spends is freed when its client drops.
-    let unused = caller.ready().unwrap().expect("a held unit");
+    let unused = ready(&caller).unwrap().expect("a held unit");
     assert_eq!(free(&streams, stream), 0);
     drop(unused);
     assert_eq!(free(&streams, stream), 1);
+}
+
+// Catches: a wait for a compiler that blocks its thread, so nothing else on
+// it runs until the wait ends.
+#[tokio::test(flavor = "current_thread")]
+async fn ready_waits_for_room_without_holding_its_thread() {
+    let streams = PullStreams::default();
+    let caller = PullStreamCompiler::new(streams.clone(), None);
+    // The stream opens on the thread the wait runs on.
+    let opening = async {
+        tokio::task::yield_now().await;
+        open(&streams, 1)
+    };
+    let (held, (stream, _sent)) = tokio::join!(caller.ready(), opening);
+    let _held = held.expect("a compiler").expect("a held unit");
+    assert_eq!(free(&streams, stream), 0);
 }

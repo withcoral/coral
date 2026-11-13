@@ -88,12 +88,14 @@ pub(crate) struct Typing<'a> {
     pub(crate) tools: Option<&'a dyn ToolDeclarationReader>,
 }
 
+#[async_trait::async_trait]
 pub(crate) trait AuthoredToolCompiler: Send + Sync {
-    /// Blocks until a compiler can take a call, for at most the compiler
-    /// client's own bound. The compilation deadline starts after it.
+    /// Waits until a compiler can take a call, for at most the compiler
+    /// client's own bound, holding no thread. The compilation deadline
+    /// starts after it.
     /// `Some` is a compiler that holds room for this save's first call,
     /// which goes through it; `None`: this compiler as it is.
-    fn ready(&self) -> Result<Option<Arc<dyn AuthoredToolCompiler>>, CompileFailure> {
+    async fn ready(&self) -> Result<Option<Arc<dyn AuthoredToolCompiler>>, CompileFailure> {
         Ok(None)
     }
 
@@ -119,9 +121,10 @@ struct V8AuthoredToolCompiler {
     builtin_tools: coral_run_executor::BuiltinTools,
 }
 
+#[async_trait::async_trait]
 impl AuthoredToolCompiler for V8AuthoredToolCompiler {
-    fn ready(&self) -> Result<Option<Arc<dyn AuthoredToolCompiler>>, CompileFailure> {
-        let held = self.compiler.ready().map_err(CompileFailure::from)?;
+    async fn ready(&self) -> Result<Option<Arc<dyn AuthoredToolCompiler>>, CompileFailure> {
+        let held = self.compiler.ready().await.map_err(CompileFailure::from)?;
         Ok(held.map(|compiler| {
             Arc::new(Self {
                 compiler,
@@ -239,10 +242,10 @@ impl Authoring {
         typing: Typing<'_>,
     ) -> Result<PreparedAuthoredTool, Error> {
         let kind = path.kind();
-        let compiler = self.compiler.clone();
-        let compiler = tokio::task::spawn_blocking(move || compiler.ready())
+        let compiler = self
+            .compiler
+            .ready()
             .await
-            .map_err(|_join_error| Error::CompilerWorkerStopped)?
             .map_err(|_none| Error::NoCompiler)?
             .unwrap_or_else(|| self.compiler.clone());
         // The wait for a compiler takes none of the compile's time.
