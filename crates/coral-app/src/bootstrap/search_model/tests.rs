@@ -444,6 +444,45 @@ async fn files_on_disk_are_ready_without_a_request() {
     }
 }
 
+/// A file that the operator put in place but that Coral cannot read stops
+/// the delivery with its path: a download over it would hide the cause.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_on_disk_that_cannot_be_read_stops_the_delivery_with_its_path() {
+    let server = MockServer::start().await;
+    serve(&server, "model.onnx", MODEL).await;
+    serve(&server, "tokenizer.json", TOKENIZER).await;
+    let dirs = Dirs::new();
+    place_files(&dirs.system);
+    // A link to itself: no user can open it, root included.
+    let model_file = dirs.system.join(MODEL_ID).join("model.onnx");
+    std::fs::remove_file(&model_file).expect("remove the model");
+    std::os::unix::fs::symlink(&model_file, &model_file).expect("link the model to itself");
+
+    let model = start(&server, &dirs);
+
+    assert_eq!(
+        ready(&model).await,
+        None,
+        "the delivery ends without the files"
+    );
+    let SearchModelState::Stopped(SearchModelStop::Unreadable(reason)) = model.state() else {
+        panic!(
+            "expected a stop at the unreadable file: {:?}",
+            model.state()
+        );
+    };
+    assert!(
+        reason.contains(&model_file.display().to_string()),
+        "{reason}"
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap_or_default().len(),
+        0
+    );
+    assert!(!dirs.downloaded().exists(), "a model folder was made");
+}
+
 #[tokio::test]
 async fn other_model_folders_are_removed_once_the_model_is_ready_and_not_before() {
     let server = MockServer::start().await;
