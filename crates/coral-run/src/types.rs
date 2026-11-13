@@ -84,7 +84,7 @@ impl fmt::Display for RunId {
 /// read from the row. A [`RunId`] a request names is caller text until Coral
 /// finds its Run, so only a Run's record makes one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HeldRunId(RunId);
+pub struct HeldRunId(RunId);
 
 impl HeldRunId {
     pub(crate) const fn run_id(&self) -> &RunId {
@@ -983,6 +983,13 @@ impl RunUpdate {
     #[must_use]
     pub const fn run_id(&self) -> &RunId {
         &self.run_id
+    }
+
+    /// The Run's ID as a span or log field. Only a Run's record makes a Run
+    /// Update, so Coral holds the Run it names.
+    #[must_use]
+    pub fn telemetry_id(&self) -> HeldRunId {
+        HeldRunId(self.run_id.clone())
     }
 
     /// Keeps a complete prefix without acknowledging omitted Emissions/Logs.
