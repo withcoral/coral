@@ -1,8 +1,9 @@
 //! The Description Snippet of a Search Hit.
 //!
 //! A snippet is the beginning of the description, at most
-//! [`SNIPPET_MAX_BYTES`]. A cut text ends at its last whole word, and a
-//! marker shows where it was cut.
+//! [`SNIPPET_MAX_BYTES`]. A cut text ends at its last whole word, or at a
+//! character boundary when no whitespace comes before the bound. A marker shows
+//! where it was cut.
 
 use crate::hit::{CUT_MARKER, floor_char_boundary};
 
