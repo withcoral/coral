@@ -1,0 +1,28 @@
+name: Dependencies
+
+# The dependency scan of `make rust-checks`, once a day. A new RustSec advisory
+# or a yanked release fails the scan with no change to Cargo.lock. Without
+# this run, the next pull request that touches Rust is the first to find out.
+on:
+  schedule:
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Dependency scan
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # `cargo metadata` needs the toolchain, not a build cache.
+      - run: rustup show
+      - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-deny
+      - run: make dependency-check
