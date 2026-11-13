@@ -2,6 +2,7 @@
 //! write transactions, and atomic acceptance of one complete package.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Instant;
 
 use coral_catalog::SEARCH_PATHS_MAX;
@@ -15,7 +16,9 @@ use uuid::Uuid;
 
 use coral_run_executor::tool_check_deadline;
 
-use crate::engine::{AdmissionReferences, AdmissionSource, PackageFailure, ProgramPackage};
+use crate::engine::{
+    AdmissionReferences, AdmissionSource, PackageFailure, ProgramEngine, ProgramPackage,
+};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
@@ -314,19 +317,26 @@ impl RunModule {
     ) -> Result<(ProgramPackage, Vec<LinkedToolSelection>), Error> {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
-        let compiled = self
-            .compile_package(
-                actor,
-                workspace_id,
-                submitted_source,
-                compilation_started + self.compilation_timeout,
-            )
-            .await;
+        let compiled = match self.ready().await {
+            // The wait for a compiler takes none of the compile's time.
+            Ok(engine) => {
+                self.compile_package(
+                    &engine,
+                    actor,
+                    workspace_id,
+                    submitted_source,
+                    Instant::now() + self.compilation_timeout,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         let outcome = match &compiled {
             Ok(_) => CompileOutcome::Ok,
             Err(Error::CompilationTimedOut) => CompileOutcome::TimedOut,
             Err(
                 Error::CompilerBusy
+                | Error::CompilerUnavailable
                 | Error::ProgramWorkerStopped
                 | Error::ProgramRuntimeUnavailable(_)
                 | Error::CorruptData(_),
@@ -340,6 +350,7 @@ impl RunModule {
 
     async fn compile_package(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
@@ -347,11 +358,11 @@ impl RunModule {
     ) -> Result<(ProgramPackage, Vec<LinkedToolSelection>), Error> {
         let source = submitted_source.as_str().to_string();
         let named = self
-            .analyze_program(source.clone(), compilation_deadline)
+            .analyze_program(engine, source.clone(), compilation_deadline)
             .await?;
         let roots = pending_references(&ReferenceSource::SubmittedProgram, &named).collect();
         let (linked, mut candidates) = self
-            .read_source_closure(actor, workspace_id, roots, compilation_deadline)
+            .read_source_closure(engine, actor, workspace_id, roots, compilation_deadline)
             .await?;
         validate_source_closure(
             &source,
@@ -366,24 +377,19 @@ impl RunModule {
             .callable_tool_paths(actor, workspace_id, &candidates, compilation_deadline)
             .await;
         let builtin_tools = self.builtin_tools(workspace_id).await?;
-        let engine = self.engine.clone();
-        let compile_linked = linked.clone();
-        let compile = tokio::task::spawn_blocking(move || {
-            engine.compile(
-                compilation_deadline,
-                &source,
-                &compile_linked,
-                &builtin_tools,
-                callable.as_deref(),
-            )
-        });
+        let compile = engine.compile(
+            compilation_deadline,
+            &source,
+            &linked,
+            &builtin_tools,
+            callable.as_deref(),
+        );
         let package = match timeout_at(compilation_deadline.into(), compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
-            Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(PackageFailure::UnknownTools {
+            Ok(Err(PackageFailure::UnknownTools {
                 linked: unknown_in,
                 calls,
-            }))) => {
+            })) => {
                 let source_name = match unknown_in {
                     None => "Program".to_string(),
                     Some(index) => linked
@@ -407,8 +413,8 @@ impl RunModule {
                     )
                     .await);
             }
-            Ok(Ok(Err(PackageFailure::Compile(failure)))) => return Err(domain_error(failure)),
-            Ok(Ok(Ok(package))) => package,
+            Ok(Err(PackageFailure::Compile(failure))) => return Err(domain_error(failure)),
+            Ok(Ok(package)) => package,
         };
         package.validate()?;
         Ok((package, linked))
@@ -422,6 +428,7 @@ impl RunModule {
     /// reading one source at a time in the same order would find first.
     async fn read_source_closure(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         roots: Vec<PendingReference>,
@@ -485,7 +492,7 @@ impl RunModule {
             let analyzed = if sources.is_empty() {
                 Vec::new()
             } else {
-                self.analyze(sources, compilation_deadline).await?
+                self.analyze(engine, sources, compilation_deadline).await?
             };
             match stopped {
                 None => {}
@@ -529,11 +536,16 @@ impl RunModule {
 
     async fn analyze_program(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         source: String,
         compilation_deadline: Instant,
     ) -> Result<AdmissionReferences, Error> {
         let mut analyzed = self
-            .analyze(vec![AdmissionSource::Program(source)], compilation_deadline)
+            .analyze(
+                engine,
+                vec![AdmissionSource::Program(source)],
+                compilation_deadline,
+            )
             .await?;
         Ok(analyzed.pop().unwrap_or_default())
     }
@@ -725,21 +737,28 @@ impl RunModule {
         Ok(callable)
     }
 
-    /// Analyzes `sources` on a blocking worker within the admission
-    /// deadline: one result per source, in order.
+    /// Waits until a compiler can take a call: the engine that this
+    /// admission compiles through. A dropped admission stops waiting.
+    async fn ready(&self) -> Result<Arc<dyn ProgramEngine>, Error> {
+        match self.engine.ready().await {
+            Ok(held) => Ok(held.unwrap_or_else(|| self.engine.clone())),
+            Err(failure) => Err(domain_error(failure)),
+        }
+    }
+
+    /// Analyzes `sources` within the admission deadline: one result per
+    /// source, in order.
     async fn analyze(
         &self,
+        engine: &Arc<dyn ProgramEngine>,
         sources: Vec<AdmissionSource>,
         compilation_deadline: Instant,
     ) -> Result<Vec<AdmissionReferences>, Error> {
-        let engine = self.engine.clone();
-        let analyze =
-            tokio::task::spawn_blocking(move || engine.analyze(compilation_deadline, &sources));
+        let analyze = engine.analyze(compilation_deadline, &sources);
         match timeout_at(compilation_deadline.into(), analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
-            Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(failure))) => Err(domain_error(failure)),
-            Ok(Ok(Ok(analyzed))) => Ok(analyzed),
+            Ok(Err(failure)) => Err(domain_error(failure)),
+            Ok(Ok(analyzed)) => Ok(analyzed),
         }
     }
 }
@@ -814,6 +833,7 @@ fn domain_error(failure: CompileFailure) -> Error {
         CompileFailure::Busy => Error::CompilerBusy,
         CompileFailure::TimedOut => Error::CompilationTimedOut,
         CompileFailure::Stopped => Error::ProgramWorkerStopped,
+        CompileFailure::NoCompiler => Error::CompilerUnavailable,
         CompileFailure::Failed(kind) => {
             tracing::warn!(
                 error.type = safe::kind(kind),

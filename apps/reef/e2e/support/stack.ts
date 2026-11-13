@@ -43,6 +43,12 @@ function startProcess(
   })
   let output = ''
   let failed: Error | undefined
+  // Every copy of the output that leaves this process, to the log or in an error.
+  const redact = (text: string) =>
+    privateValues.reduce(
+      (redacted, value) => (value ? redacted.replaceAll(value, '[redacted]') : redacted),
+      text,
+    )
   let writes = Promise.resolve()
   child.on('error', (error) => {
     failed = error
@@ -50,9 +56,8 @@ function startProcess(
   for (const stream of [child.stdout!, child.stderr!]) {
     let pending = ''
     const save = (chunk: string) => {
-      for (const value of privateValues) if (value) chunk = chunk.replaceAll(value, '[redacted]')
       writes = writes
-        .then(() => appendFile(log, chunk))
+        .then(() => appendFile(log, redact(chunk)))
         .catch((error) => {
           failed = error
         })
@@ -72,6 +77,11 @@ function startProcess(
     child.once('close', () => resolve())
   })
   let stopping: Promise<void> | undefined
+  // CI keeps no run directory, so a startup failure carries the cause itself.
+  const ending = () => {
+    const tail = redact(output.split('\n').slice(-40).join('\n').trim())
+    return `See ${log}. Its last output:\n${tail}`
+  }
   return {
     pid: child.pid,
     async match(pattern: RegExp) {
@@ -81,11 +91,14 @@ function startProcess(
         const match = output.match(pattern)
         if (match) return match[1]
         if (child.exitCode !== null || child.signalCode !== null) {
-          throw new Error(`Process exited during startup. See ${log}`)
+          // 'exit' can come before the pipes drain; 'close' brings the last lines.
+          await Promise.race([exited, delay(1000)])
+          const end = child.exitCode ?? child.signalCode
+          throw new Error(`Process exited (${end}) during startup. ${ending()}`)
         }
         await delay(50)
       }
-      throw new Error(`Startup timed out. See ${log}`)
+      throw new Error(`Startup timed out. ${ending()}`)
     },
     stop() {
       stopping ??= (async () => {

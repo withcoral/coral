@@ -75,6 +75,7 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
         | E::PathConflict(Private)
         | E::CompilationTimedOut(_)
         | E::CompilerBusy
+        | E::NoCompiler
         | E::CompilerUnavailable(_)
         | E::CompilerWorkerStopped
         | E::Clock(_)

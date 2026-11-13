@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
@@ -209,12 +211,12 @@ const REPOS_GET_PATH: &str = "coral.providers.github.repos.get";
 /// and its error's code.
 type Called = (String, Option<&'static str>);
 
+/// What a call does, on the client it is given.
+type CallOn =
+    for<'a> fn(&'a dyn CompilerClient) -> Pin<Box<dyn Future<Output = Called> + Send + 'a>>;
+
 /// A call: its name, the error code it ends with, and the call.
-type NamedCall = (
-    &'static str,
-    Option<&'static str>,
-    fn(&dyn CompilerClient) -> Called,
-);
+type NamedCall = (&'static str, Option<&'static str>, CallOn);
 
 fn called<T: std::fmt::Debug>(result: &Result<T, CompileError>) -> Called {
     let code = result.as_ref().err().map(CompileError::code);
@@ -229,147 +231,207 @@ fn analyzed<T: std::fmt::Debug>(result: &Result<T, AnalysisError>) -> Called {
 /// One call of each kind, on success and on a typed error.
 const CALLS: [NamedCall; 12] = [
     ("an analysis", None, |client| {
-        let sources = [
-            AnalyzedSource::Program(PROGRAM.to_owned()),
-            AnalyzedSource::AuthoredTool(SAVED.to_owned()),
-        ];
-        analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources))
+        Box::pin(async move {
+            let sources = [
+                AnalyzedSource::Program(PROGRAM.to_owned()),
+                AnalyzedSource::AuthoredTool(SAVED.to_owned()),
+            ];
+            analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources).await)
+        })
     }),
     (
         "an invalid reference in the second source",
         Some("invalid_linked_tool_reference"),
         |client| {
-            let sources = [
-                AnalyzedSource::Program(PROGRAM.to_owned()),
-                AnalyzedSource::Program("return await coral.private[name]();".to_owned()),
-            ];
-            analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources))
+            Box::pin(async move {
+                let sources = [
+                    AnalyzedSource::Program(PROGRAM.to_owned()),
+                    AnalyzedSource::Program("return await coral.private[name]();".to_owned()),
+                ];
+                analyzed(&client.analyze(TEST_COMPILATION_TIMEOUT, &sources).await)
+            })
         },
     ),
     ("a compile", None, |client| {
-        let none = BuiltinTools::default();
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], &none, None))
+        Box::pin(async move {
+            let none = BuiltinTools::default();
+            called(
+                &client
+                    .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[], &none, None)
+                    .await,
+            )
+        })
     }),
     ("a linked compile with Built-in Tools", None, |client| {
-        let source = "return [await coral.private.team.lookup({}), \
+        Box::pin(async move {
+            let source = "return [await coral.private.team.lookup({}), \
             await coral.shared.team.org({}), await coral.search({ query: \"x\" })];";
-        let linked = [lookup(), org()];
-        let search = BuiltinTools::new(["search"]);
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, source, &linked, &search, None))
+            let linked = [lookup(), org()];
+            let search = BuiltinTools::new(["search"]);
+            called(
+                &client
+                    .compile(TEST_COMPILATION_TIMEOUT, source, &linked, &search, None)
+                    .await,
+            )
+        })
     }),
     ("a checked compile", None, |client| {
-        let source = "return await coral.providers.github.repos.get({});";
-        let callable = [REPOS_GET_PATH.to_owned()];
-        let none = BuiltinTools::default();
-        called(&client.compile(
-            TEST_COMPILATION_TIMEOUT,
-            source,
-            &[],
-            &none,
-            Some(&callable),
-        ))
+        Box::pin(async move {
+            let source = "return await coral.providers.github.repos.get({});";
+            let callable = [REPOS_GET_PATH.to_owned()];
+            let none = BuiltinTools::default();
+            called(
+                &client
+                    .compile(
+                        TEST_COMPILATION_TIMEOUT,
+                        source,
+                        &[],
+                        &none,
+                        Some(&callable),
+                    )
+                    .await,
+            )
+        })
     }),
     ("unknown Tool calls", Some("unknown_tool_calls"), |client| {
-        let callable = [REPOS_GET_PATH.to_owned()];
-        let linked = [lookup(), org()];
-        let none = BuiltinTools::default();
-        called(&client.compile(
-            TEST_COMPILATION_TIMEOUT,
-            PROGRAM,
-            &linked,
-            &none,
-            Some(&callable),
-        ))
+        Box::pin(async move {
+            let callable = [REPOS_GET_PATH.to_owned()];
+            let linked = [lookup(), org()];
+            let none = BuiltinTools::default();
+            called(
+                &client
+                    .compile(
+                        TEST_COMPILATION_TIMEOUT,
+                        PROGRAM,
+                        &linked,
+                        &none,
+                        Some(&callable),
+                    )
+                    .await,
+            )
+        })
     }),
     (
         "unknown Tool calls in a linked Tool",
         Some("unknown_tool_calls"),
         |client| {
-            let callable = [REPOS_GET_PATH.to_owned()];
-            let linked = [LinkedToolSource::shared(
-                vec!["team".to_owned(), "org".to_owned()],
-                "export default async function org() { \
+            Box::pin(async move {
+                let callable = [REPOS_GET_PATH.to_owned()];
+                let linked = [LinkedToolSource::shared(
+                    vec!["team".to_owned(), "org".to_owned()],
+                    "export default async function org() { \
                     return coral.providers.notion.search({}); }"
-                    .to_owned(),
-            )];
-            let source = "return await coral.shared.team.org({});";
-            let none = BuiltinTools::default();
-            called(&client.compile(
-                TEST_COMPILATION_TIMEOUT,
-                source,
-                &linked,
-                &none,
-                Some(&callable),
-            ))
+                        .to_owned(),
+                )];
+                let source = "return await coral.shared.team.org({});";
+                let none = BuiltinTools::default();
+                called(
+                    &client
+                        .compile(
+                            TEST_COMPILATION_TIMEOUT,
+                            source,
+                            &linked,
+                            &none,
+                            Some(&callable),
+                        )
+                        .await,
+                )
+            })
         },
     ),
     ("a rejected compile", Some("compilation"), |client| {
-        let none = BuiltinTools::default();
-        called(&client.compile(TEST_COMPILATION_TIMEOUT, "return (", &[], &none, None))
+        Box::pin(async move {
+            let none = BuiltinTools::default();
+            called(
+                &client
+                    .compile(TEST_COMPILATION_TIMEOUT, "return (", &[], &none, None)
+                    .await,
+            )
+        })
     }),
     ("an untyped prepare", None, |client| {
-        let none = BuiltinTools::default();
-        let prepared = client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, &none, None);
-        // The case carries every reference kind, so a field the wire drops
-        // shows as a difference.
-        let found = prepared.as_ref().map(|prepared| {
-            let tools = prepared.tools();
-            (
-                prepared.references().len(),
-                prepared.shared_references().len(),
-                tools.called_paths(),
-                tools.runtime_built_paths(),
-            )
-        });
-        let expected = (
-            1,
-            1,
-            vec![REPOS_GET_PATH.to_owned()],
-            vec!["coral.providers.github".to_owned()],
-        );
-        assert_eq!(found.ok(), Some(expected));
-        called(&prepared)
+        Box::pin(async move {
+            let none = BuiltinTools::default();
+            let prepared = client
+                .prepare(TEST_COMPILATION_TIMEOUT, SAVED, &none, None)
+                .await;
+            // The case carries every reference kind, so a field the wire drops
+            // shows as a difference.
+            let found = prepared.as_ref().map(|prepared| {
+                let tools = prepared.tools();
+                (
+                    prepared.references().len(),
+                    prepared.shared_references().len(),
+                    tools.called_paths(),
+                    tools.runtime_built_paths(),
+                )
+            });
+            let expected = (
+                1,
+                1,
+                vec![REPOS_GET_PATH.to_owned()],
+                vec!["coral.providers.github".to_owned()],
+            );
+            assert_eq!(found.ok(), Some(expected));
+            called(&prepared)
+        })
     }),
     (
         "a prepare that takes something other than data",
         None,
         |client| {
-            let search = BuiltinTools::new(["search"]);
-            let prepared = client.prepare(TEST_COMPILATION_TIMEOUT, NOT_DATA, &search, None);
-            let not_data = prepared
-                .as_ref()
-                .map(|prepared| prepared.not_data().is_some());
-            assert_eq!(not_data.ok(), Some(true));
-            called(&prepared)
+            Box::pin(async move {
+                let search = BuiltinTools::new(["search"]);
+                let prepared = client
+                    .prepare(TEST_COMPILATION_TIMEOUT, NOT_DATA, &search, None)
+                    .await;
+                let not_data = prepared
+                    .as_ref()
+                    .map(|prepared| prepared.not_data().is_some());
+                assert_eq!(not_data.ok(), Some(true));
+                called(&prepared)
+            })
         },
     ),
     ("a typed prepare", None, |client| {
-        let declaration = |path: &str, text: &str| {
-            CallableDeclaration::new(
-                path.split('.').map(str::to_owned).collect(),
-                text.to_owned(),
+        Box::pin(async move {
+            let declaration = |path: &str, text: &str| {
+                CallableDeclaration::new(
+                    path.split('.').map(str::to_owned).collect(),
+                    text.to_owned(),
+                )
+            };
+            let declarations = CoralDeclarations::new(256 * 1024)
+                .with_tools(vec![declaration("providers.github.repos.get", REPOS_GET)])
+                .with_private_tools(vec![declaration(
+                    "team.lookup",
+                    "export default function lookup(): Promise<string>;",
+                )])
+                .with_shared_tools(vec![declaration(
+                    "team.org",
+                    "export default function org(): Promise<string>;",
+                )]);
+            let none = BuiltinTools::default();
+            called(
+                &client
+                    .prepare(TEST_COMPILATION_TIMEOUT, SAVED, &none, Some(&declarations))
+                    .await,
             )
-        };
-        let declarations = CoralDeclarations::new(256 * 1024)
-            .with_tools(vec![declaration("providers.github.repos.get", REPOS_GET)])
-            .with_private_tools(vec![declaration(
-                "team.lookup",
-                "export default function lookup(): Promise<string>;",
-            )])
-            .with_shared_tools(vec![declaration(
-                "team.org",
-                "export default function org(): Promise<string>;",
-            )]);
-        let none = BuiltinTools::default();
-        called(&client.prepare(TEST_COMPILATION_TIMEOUT, SAVED, &none, Some(&declarations)))
+        })
     }),
     (
         "a rejected prepare",
         Some("invalid_authored_tool"),
         |client| {
-            let none = BuiltinTools::default();
-            let source = "import x from \"y\";";
-            called(&client.prepare(TEST_COMPILATION_TIMEOUT, source, &none, None))
+            Box::pin(async move {
+                let none = BuiltinTools::default();
+                let source = "import x from \"y\";";
+                called(
+                    &client
+                        .prepare(TEST_COMPILATION_TIMEOUT, source, &none, None)
+                        .await,
+                )
+            })
         },
     ),
 ];
@@ -391,15 +453,14 @@ async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns()
     let _retire = start(&coral, None);
     let mut call = coral.next_call().await;
     let remote = Arc::clone(&call.compiler);
-    let results = tokio::task::spawn_blocking(move || {
-        let local = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
-        CALLS.map(|(name, code, call)| (name, code, call(remote.as_ref()), call(&local)))
-    })
-    .await
-    .unwrap();
-    for (name, code, remote, local) in &results {
-        assert_eq!(remote, local, "{name}");
-        assert_eq!(remote.1, *code, "{name}: {}", remote.0);
+    let local = tokio::task::spawn_blocking(|| InProcessCompiler::new(IsolateLimits::defaults()))
+        .await
+        .unwrap()
+        .unwrap();
+    for (name, code, call) in CALLS {
+        let remote = call(remote.as_ref()).await;
+        assert_eq!(remote, call(&local).await, "{name}");
+        assert_eq!(remote.1, code, "{name}: {}", remote.0);
     }
     // Each answer frees the unit its compile held and reports the room.
     for _ in CALLS {
@@ -412,19 +473,20 @@ async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns()
 struct Gated {
     compiler: InProcessCompiler,
     entered: mpsc::UnboundedSender<Duration>,
-    released: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    released: tokio::sync::Mutex<mpsc::UnboundedReceiver<()>>,
 }
 
+#[tonic::async_trait]
 impl CompilerClient for Gated {
-    fn analyze(
+    async fn analyze(
         &self,
         time_left: Duration,
         sources: &[AnalyzedSource],
     ) -> Result<Vec<SourceReferences>, AnalysisError> {
-        self.compiler.analyze(time_left, sources)
+        self.compiler.analyze(time_left, sources).await
     }
 
-    fn compile(
+    async fn compile(
         &self,
         time_left: Duration,
         source: &str,
@@ -434,13 +496,18 @@ impl CompilerClient for Gated {
     ) -> Result<CompiledProgram, CompileError> {
         let stopped = || CompileError::Unavailable(crate::Unavailable::Stopped);
         self.entered.send(time_left).map_err(|_gone| stopped())?;
-        let released = self.released.lock().map_err(|_poisoned| stopped())?;
-        released.recv().map_err(|_gone| stopped())?;
+        self.released
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or_else(stopped)?;
         self.compiler
             .compile(time_left, source, linked_tools, builtin_tools, callable)
+            .await
     }
 
-    fn prepare(
+    async fn prepare(
         &self,
         time_left: Duration,
         source: &str,
@@ -449,6 +516,7 @@ impl CompilerClient for Gated {
     ) -> Result<AuthoredToolCompilation, CompileError> {
         self.compiler
             .prepare(time_left, source, builtin_tools, declarations)
+            .await
     }
 }
 
@@ -456,7 +524,7 @@ impl CompilerClient for Gated {
 async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
     let (entered, mut entries) = mpsc::unbounded_channel();
-    let (release, released) = std::sync::mpsc::channel();
+    let (release, released) = mpsc::unbounded_channel();
     let compiler =
         tokio::task::spawn_blocking(|| InProcessCompiler::new(IsolateLimits::defaults()))
             .await
@@ -465,7 +533,7 @@ async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
     let gated = Gated {
         compiler,
         entered,
-        released: std::sync::Mutex::new(released),
+        released: tokio::sync::Mutex::new(released),
     };
     let heap = IsolateLimits::defaults().compiler_heap_bytes();
     let (linked, _linked) = watch::channel(false);
@@ -476,9 +544,10 @@ async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
     let mut call = coral.next_call().await;
     let compile = |compiler: &Arc<PullStreamCompiler>, time_left| {
         let compiler = Arc::clone(compiler);
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             compiler
                 .compile(time_left, "return 42;", &[], &BuiltinTools::default(), None)
+                .await
                 .map(drop)
         })
     };
@@ -501,9 +570,9 @@ async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
     assert_eq!(entries.recv().await, Some(Duration::ZERO), "no time left");
     release.send(()).unwrap();
     assert_eq!(call.rooms.recv().await, Some(8));
-    assert_eq!(first.join().unwrap(), Ok(()));
+    assert_eq!(first.await.unwrap(), Ok(()));
     // Its caller stopped waiting at its own deadline, before this answer.
-    let _gave_up = second.join().unwrap();
+    let _gave_up = second.await.unwrap();
 }
 
 #[tokio::test]

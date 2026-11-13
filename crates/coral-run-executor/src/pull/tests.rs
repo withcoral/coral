@@ -88,13 +88,11 @@ pub(crate) fn up(compiled: Compiled) -> PullRequest {
     }
 }
 
-/// What `answer` receives within 5 s, or why nothing came.
-async fn answer_within(
-    answer: sync_mpsc::Receiver<Read>,
-) -> Result<Read, sync_mpsc::RecvTimeoutError> {
-    tokio::task::spawn_blocking(move || answer.recv_timeout(Duration::from_secs(5)))
+/// What `answer` receives, or an error once its stream ends unanswered.
+async fn answer_within(answer: oneshot::Receiver<Read>) -> Result<Read, oneshot::error::RecvError> {
+    timeout(Duration::from_secs(5), answer)
         .await
-        .unwrap()
+        .expect("an answer or an end within 5 s")
 }
 
 struct Link {
@@ -585,7 +583,7 @@ async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_an
         } else {
             // The compile held the stream until its deadline, unanswered.
             assert!(
-                matches!(reply, Err(sync_mpsc::RecvTimeoutError::Disconnected)),
+                matches!(reply, Err(oneshot::error::RecvError { .. })),
                 "{label}"
             );
             assert!(Instant::now() >= due, "{label}");
@@ -676,7 +674,7 @@ fn an_answer_that_breaks_the_protocol_changes_nothing() {
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
         let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
-        let answer = streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+        let mut answer = streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
         let refused = streams.receive(stream, up(broken(1)));
         assert_eq!(
             refused.map_err(|status| status.code()),
@@ -730,4 +728,33 @@ async fn a_message_up_to_the_link_bound_reaches_coral() {
         matches!(reply, Ok(Read::Failure(CompileError::Diagnostics(_)))),
         "{reply:?}"
     );
+}
+
+// Catches: a size check that rejects a `Compile` that fits, or passes one
+// that does not, near the message bound.
+#[test]
+fn a_call_is_too_large_exactly_when_its_compile_passes_the_bound() {
+    let encoded = |call: &Call| {
+        let compile = pull_response::Message::Compile(Compile {
+            number: u64::MAX,
+            time_left_ms: u32::MAX,
+            call: Some(call.clone()),
+        });
+        prost::Message::encoded_len(&response(compile))
+    };
+    let near = MESSAGE_MAX_BYTES - 64;
+    for extra in 0..128 {
+        let call = compile_call(
+            &"x".repeat(near + extra),
+            &[],
+            &coral_v8::BuiltinTools::default(),
+            None,
+        );
+        assert_eq!(
+            too_large(&call),
+            encoded(&call) > MESSAGE_MAX_BYTES,
+            "{} bytes encoded",
+            encoded(&call)
+        );
+    }
 }

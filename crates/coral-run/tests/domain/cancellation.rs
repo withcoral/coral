@@ -476,9 +476,13 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
 
 /// A cancel and the Run deadline in one mailbox drain, against the
 /// database: the owner is held at the message it dequeues next while the
-/// deadline's timer fires and the cancel arrives, in the order the arm
+/// deadline's timer message and the cancel arrive, in the order the arm
 /// chooses, and then applies both in one drain with it. The first in the
 /// mailbox decides the kind, and the record shows exactly one.
+///
+/// The test sends the deadline's timer message itself, and waits for the
+/// Run Inbox to deliver the cancel: a real timer would race the cancel's
+/// database work, and on a slow database it came first in either arm.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_applied_kind() {
     for deadline_first in [false, true] {
@@ -494,7 +498,8 @@ async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_app
         let (workspace_id, principal) = fixture
             .user_scope("user:one-drain", "Cancel and deadline in one drain")
             .await;
-        let run_timeout = Duration::from_millis(300);
+        // The real deadline never fires here; the test sends its message.
+        let run_timeout = Duration::from_secs(60);
         let accepted = fixture
             .runs
             .start(
@@ -525,14 +530,21 @@ async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_app
                     .await
             }
         };
-        // Twice the timeout on the host clock: the timer has fired into the
-        // held mailbox by then.
+        let owner = fixture.runs.owners.get(&run_id).expect("live owner");
+        let deadline = || {
+            owner.send(crate::owner::Message::Timer(
+                crate::owner::Timer::RunDeadline,
+            ));
+        };
         let cancelling = if deadline_first {
-            tokio::time::sleep(run_timeout * 2).await;
-            tokio::spawn(cancel())
+            deadline();
+            let cancelling = tokio::spawn(cancel());
+            wait_until(|| probe.delivered() == 1).await;
+            cancelling
         } else {
             let cancelling = tokio::spawn(cancel());
-            tokio::time::sleep(run_timeout * 2).await;
+            wait_until(|| probe.delivered() == 1).await;
+            deadline();
             cancelling
         };
         release.send(()).expect("release the owner");

@@ -485,6 +485,14 @@ your machine. Build the history a claim needs with the cheapest records, start
 those whose order does not matter together, and leave live pages while you
 build it: each record you add makes an open Activity page read again.
 
+After `page.goto`, assert the response status before you wait for content. An
+error page renders at once, and every later wait then times out with a message
+that hides the cause.
+
+A harness failure carries its cause in its message, such as a process's last
+output, so the job log alone explains it. A message that only names a log file
+sends the reader to an artifact they may not have.
+
 ### Run one scenario in both topologies
 
 A parity scenario asserts the same domain facts in the remote and local topologies.

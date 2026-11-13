@@ -69,6 +69,10 @@ pub enum Error {
     /// The compiler queue was full, so the source was not judged. Retryable.
     #[error("the authoring compiler is busy; retry shortly")]
     CompilerBusy,
+    /// No compiler could take the source within the wait for one, so it
+    /// was not judged. Retryable.
+    #[error("{}", coral_v8::CompileFailure::NO_COMPILER_MESSAGE)]
+    NoCompiler,
     /// Current Principal authority does not permit the operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
@@ -135,6 +139,7 @@ impl Error {
             Self::CompilationTimedOut(Shared) => "shared_tool_compilation_timed_out",
             Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
+            Self::NoCompiler => "no_compiler",
             Self::CompilerUnavailable { .. } => "compiler_unavailable",
             Self::CompilerWorkerStopped { .. } => "compiler_worker_stopped",
             Self::Clock { .. } => "clock",
@@ -172,6 +177,7 @@ impl Error {
             | Self::NotData(..)
             | Self::CompilationTimedOut(_) => self.code(),
             Self::CompilerBusy => "authoring_compiler_busy",
+            Self::NoCompiler => "authoring_compiler_unavailable",
             Self::PermissionDenied(_) => "permission_denied",
             _ => return None,
         };

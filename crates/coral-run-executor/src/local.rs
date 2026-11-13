@@ -331,4 +331,4 @@ fn io_error_kind(error: &io::Error) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

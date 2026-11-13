@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use coral_v8::{
@@ -32,11 +33,34 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
 ///
 /// Admission analyzes the Program, then each level of the graph of Private
 /// and Shared Tools it links, then compiles. An Authored Tool save or publish
-/// analyzes the module, then prepares it. Each call carries `time_left`, the time left until its caller's
-/// compilation deadline. A call ends [`CompileError::TimedOut`] once that
-/// time runs out, while it waits or while it compiles. A call carries source
-/// and no authority.
+/// analyzes the module, then prepares it. Each call carries `time_left`, the
+/// time left until its caller's compilation deadline. A call ends
+/// [`CompileError::TimedOut`] once that time runs out while it compiles. A
+/// call that no compiler took within it fails as [`Unavailable::NoCompiler`]
+/// from a pull stream, and as [`CompileError::TimedOut`] from the queue of a
+/// compiler in this process. A call carries source and no authority. Each
+/// call is async, so its caller holds no async worker while it waits for
+/// room or for its answer.
+#[tonic::async_trait]
 pub trait CompilerClient: Send + Sync {
+    /// Waits until a compiler can take a call, for at most the client's
+    /// own bound. A caller starts its compilation deadline after it, so the
+    /// wait for a compiler takes none of the compile's time.
+    ///
+    /// `Some` is a client that holds one unit of room for this caller: its
+    /// first call spends it, so no other caller takes it meanwhile, and
+    /// dropped before any call, it frees the unit. The caller makes its
+    /// calls through it. `None`: this client is ready as
+    /// it is, as a compiler in this process always is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unavailable::NoCompiler`] when none can take a call by the
+    /// bound.
+    async fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
+        Ok(None)
+    }
+
     /// The Private and Shared Tools and the Tool Call Paths each source names
     /// directly, in the order of `sources`.
     ///
@@ -47,7 +71,7 @@ pub trait CompilerClient: Send + Sync {
     /// `coral.shared` access, a Program body with malformed wrapper escapes,
     /// or an Authored Tool module with syntax errors, or it is a timeout or
     /// an unavailable compiler.
-    fn analyze(
+    async fn analyze(
         &self,
         time_left: Duration,
         sources: &[AnalyzedSource],
@@ -68,7 +92,7 @@ pub trait CompilerClient: Send + Sync {
     /// Returns the called chains that name no callable Tool, blocking
     /// diagnostics, invalid linked source, the memory limit, a timeout, or
     /// an unavailable compiler.
-    fn compile(
+    async fn compile(
         &self,
         time_left: Duration,
         source: &str,
@@ -85,7 +109,7 @@ pub trait CompilerClient: Send + Sync {
     ///
     /// Returns a blocking authoring diagnostic, the memory limit, a timeout,
     /// or an unavailable compiler.
-    fn prepare(
+    async fn prepare(
         &self,
         time_left: Duration,
         source: &str,
@@ -93,6 +117,9 @@ pub trait CompilerClient: Send + Sync {
         declarations: Option<&CoralDeclarations>,
     ) -> Result<AuthoredToolCompilation, CompileError>;
 }
+
+/// A call whose compiler stopped before it answered.
+pub(crate) const STOPPED: CompileError = CompileError::Unavailable(Unavailable::Stopped);
 
 /// Why [`CompilerClient::analyze`] stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,7 +139,8 @@ pub fn time_left(deadline: Instant) -> Duration {
 /// Why a compiler call returned no result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
-    /// The call's time ran out while it waited or compiled.
+    /// The call's time ran out while it compiled, or while it waited in the
+    /// queue of a compiler in this process.
     TimedOut,
     /// The compiler rejected the source, with safe diagnostics for its author.
     Diagnostics(Diagnostics),
@@ -164,6 +192,8 @@ pub enum Unavailable {
     /// The compiler failed for a reason the source did not cause, with the
     /// failure's bounded kind and none of its private text.
     Failed(&'static str),
+    /// No compiler could take the call within the wait for one.
+    NoCompiler,
 }
 
 impl CompileError {
@@ -176,7 +206,9 @@ impl CompileError {
             Self::Diagnostics(Diagnostics::UnknownTools { .. }) => "unknown_tool_calls",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
-            Self::Unavailable(Unavailable::Stopped) => "compiler_unavailable",
+            Self::Unavailable(Unavailable::Stopped | Unavailable::NoCompiler) => {
+                "compiler_unavailable"
+            }
             Self::Diagnostics(Diagnostics::Message { kind, .. })
             | Self::Unavailable(Unavailable::Failed(kind)) => kind,
         }
@@ -210,6 +242,7 @@ impl From<CompileError> for CompileFailure {
             CompileError::Unavailable(Unavailable::Busy) => Self::Busy,
             CompileError::Unavailable(Unavailable::Stopped) => Self::Stopped,
             CompileError::Unavailable(Unavailable::Failed(kind)) => Self::Failed(kind),
+            CompileError::Unavailable(Unavailable::NoCompiler) => Self::NoCompiler,
         }
     }
 }

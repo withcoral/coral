@@ -44,6 +44,7 @@ impl RunModule {
         self.inbox.owner_registered(
             &self.owners,
             &self.instance,
+            &self.clock,
             #[cfg(test)]
             &self.execution_observer,
         );

@@ -21,30 +21,30 @@ impl ClosureReadGateEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for ClosureReadGateEngine {
-    fn analyze(
+    async fn analyze(
         &self,
         _deadline: std::time::Instant,
         sources: &[AdmissionSource],
     ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
+        let root_v1 = |source: &AdmissionSource| matches!(source, AdmissionSource::Linked { source, .. } if source.contains("root-v1"));
+        if sources.iter().any(root_v1) {
+            self.reading_root.store(true, Ordering::SeqCst);
+            wait_for_release(&self.release).await?;
+        }
         analyze_each(sources, |source| match source {
             AdmissionSource::Program(_) => {
                 test_private_tool_reference("closure.root").map(|reference| vec![reference])
             }
             AdmissionSource::Linked { source, .. } if source.contains("root-v1") => {
-                self.reading_root.store(true, Ordering::SeqCst);
-                self.release
-                    .lock()
-                    .map_err(|error| error.to_string())?
-                    .recv()
-                    .map_err(|error| error.to_string())?;
                 test_private_tool_reference("closure.dependency").map(|reference| vec![reference])
             }
             AdmissionSource::Linked { .. } => Ok(Vec::new()),
         })
     }
 
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -84,8 +84,9 @@ impl SnapshotEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for SnapshotEngine {
-    fn analyze(
+    async fn analyze(
         &self,
         _deadline: std::time::Instant,
         sources: &[AdmissionSource],
@@ -98,7 +99,7 @@ impl ProgramEngine for SnapshotEngine {
         })
     }
 
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -144,8 +145,9 @@ pub(crate) struct ImmediateEngine {
     pub(crate) executions: Arc<AtomicUsize>,
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for ImmediateEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -200,14 +202,16 @@ impl FailingCompileEngine {
             "busy" => CompileFailure::Busy,
             "timed-out" => CompileFailure::TimedOut,
             "stopped" => CompileFailure::Stopped,
+            "no-compiler" => CompileFailure::NoCompiler,
             "failed" => CompileFailure::Failed("engine"),
             _ => CompileFailure::Rejected("scripted rejection".to_string()),
         })
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for FailingCompileEngine {
-    fn analyze(
+    async fn analyze(
         &self,
         _deadline: std::time::Instant,
         sources: &[AdmissionSource],
@@ -220,7 +224,7 @@ impl ProgramEngine for FailingCompileEngine {
         })
     }
 
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -255,8 +259,9 @@ impl InvokingEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for InvokingEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -323,8 +328,9 @@ impl StaleClaimEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for StaleClaimEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -378,8 +384,9 @@ impl CompletionAttemptingEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for CompletionAttemptingEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -417,8 +424,9 @@ pub(crate) struct StopAwareEngine {
     pub(crate) released: Arc<AtomicBool>,
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for StopAwareEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -472,8 +480,9 @@ impl BlockingEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for BlockingEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -503,6 +512,22 @@ impl ProgramEngine for BlockingEngine {
     }
 }
 
+/// Waits until `release` takes a message. The wait blocks, so it runs on a
+/// blocking worker, as a compiler's own work does.
+async fn wait_for_release(release: &Arc<Mutex<mpsc::Receiver<()>>>) -> Result<(), CompileFailure> {
+    let release = Arc::clone(release);
+    tokio::task::spawn_blocking(move || {
+        release
+            .lock()
+            .map_err(|error| error.to_string())?
+            .recv()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_join_error| CompileFailure::Stopped)?
+    .map_err(CompileFailure::from)
+}
+
 #[derive(Clone)]
 pub(crate) struct CompileGateEngine {
     pub(crate) compiling: Arc<AtomicBool>,
@@ -524,8 +549,9 @@ impl CompileGateEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for CompileGateEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -534,11 +560,7 @@ impl ProgramEngine for CompileGateEngine {
         _callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure> {
         self.compiling.store(true, Ordering::SeqCst);
-        self.release
-            .lock()
-            .map_err(|error| CompileFailure::Rejected(error.to_string()))?
-            .recv()
-            .map_err(|error| CompileFailure::Rejected(error.to_string()))?;
+        wait_for_release(&self.release).await?;
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -580,8 +602,9 @@ impl ReferenceScanningEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for ReferenceScanningEngine {
-    fn analyze(
+    async fn analyze(
         &self,
         _deadline: std::time::Instant,
         sources: &[AdmissionSource],
@@ -596,7 +619,7 @@ impl ProgramEngine for ReferenceScanningEngine {
             .collect()
     }
 
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,
@@ -695,8 +718,9 @@ impl ScriptedCallsEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for ScriptedCallsEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,

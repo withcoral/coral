@@ -7,9 +7,13 @@ import "google/protobuf/empty.proto";
 // Current Organization Owner inspection and atomic offboarding.
 service OrganizationMembershipService {
   // Own current Membership and profile; does not read the administration directory.
-  rpc GetCurrentOrganizationMembership(GetCurrentOrganizationMembershipRequest) returns (OrganizationMembership);
+  rpc GetCurrentOrganizationMembership(GetCurrentOrganizationMembershipRequest) returns (OrganizationMembership) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Only a current enabled Organization Owner can read the directory.
-  rpc ListOrganizationMemberships(ListOrganizationMembershipsRequest) returns (ListOrganizationMembershipsResponse);
+  rpc ListOrganizationMemberships(ListOrganizationMembershipsRequest) returns (ListOrganizationMembershipsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Removes authority and current private work in one domain transaction.
   rpc DeleteOrganizationMembership(DeleteOrganizationMembershipRequest) returns (google.protobuf.Empty);
 }

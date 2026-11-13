@@ -9,9 +9,13 @@ service WorkspaceService {
   // Creates an active Workspace and the User's designated Owner Membership.
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   // Lists the Workspaces where the User holds a Membership.
-  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Inspects a Workspace without granting access to private work.
-  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Changes display_name only; lifecycle uses explicit actions.
   rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (Workspace);
   // Stops configuration and future dispatch without deleting retained work.

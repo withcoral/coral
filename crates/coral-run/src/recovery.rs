@@ -118,6 +118,9 @@ impl RunModule {
             .inbox
             .waiting(transaction, &run.workspace_id, &run.id)
             .await?;
+        for delivery in &waiting {
+            crate::run_inbox::warn_if_late(now_unix_nanos, &run.held_id(), delivery);
+        }
         queued.extend(waiting.into_iter().map(Delivery::into_message));
         Ok(queued)
     }
