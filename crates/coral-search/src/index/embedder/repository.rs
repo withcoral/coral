@@ -48,6 +48,34 @@ pub(super) struct EntityVector<'a> {
 /// oldest write first. A row whose field names an older indexer did not
 /// write, or did not update with the rest of the row, waits until a
 /// reconcile pass indexes it again.
+/// The Search Entities that need a vector, as `s`: rows an older Coral
+/// wrote without field names wait for a pass that indexes them again. `$1`
+/// is the current Embedder revision.
+const STALE: &str = "FROM search_entities s \
+     LEFT JOIN search_entity_embeddings e \
+         ON e.workspace_id = s.workspace_id AND e.doc_id = s.doc_id \
+     WHERE s.field_names_fingerprint = s.fingerprint \
+     AND (e.doc_id IS NULL \
+         OR e.embedder_revision <> $1 \
+         OR e.source_indexed_at_unix_nanos <> s.indexed_at_unix_nanos)";
+
+/// How many Search Entities need a vector of `revision`.
+pub(super) async fn count_stale(
+    transaction: &mut Transaction<'_>,
+    revision: &str,
+) -> Result<u64, IndexError> {
+    let rows: Vec<(i64,)> = transaction
+        .fetch_all_sql(
+            &format!("SELECT count(*) {STALE}"),
+            Values(vec![revision.into()]),
+        )
+        .await?;
+    let (stale,) = rows
+        .first()
+        .ok_or(IndexError::Corrupt("a count returned no row"))?;
+    u64::try_from(*stale).map_err(|_negative| IndexError::Corrupt("a negative count"))
+}
+
 pub(super) async fn stale_entities(
     transaction: &mut Transaction<'_>,
     revision: &str,
@@ -55,16 +83,11 @@ pub(super) async fn stale_entities(
 ) -> Result<Vec<StaleEntity>, IndexError> {
     let rows: Vec<(String, String, i64)> = transaction
         .fetch_all_sql(
-            "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos \
-             FROM search_entities s \
-             LEFT JOIN search_entity_embeddings e \
-                 ON e.workspace_id = s.workspace_id AND e.doc_id = s.doc_id \
-             WHERE s.field_names_fingerprint = s.fingerprint \
-             AND (e.doc_id IS NULL \
-                 OR e.embedder_revision <> $1 \
-                 OR e.source_indexed_at_unix_nanos <> s.indexed_at_unix_nanos) \
-             ORDER BY s.indexed_at_unix_nanos, s.workspace_id, s.doc_id \
-             LIMIT $2",
+            &format!(
+                "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos {STALE} \
+                 ORDER BY s.indexed_at_unix_nanos, s.workspace_id, s.doc_id \
+                 LIMIT $2"
+            ),
             Values(vec![
                 revision.into(),
                 i64::try_from(limit).unwrap_or(i64::MAX).into(),

@@ -962,7 +962,7 @@ pub(crate) async fn start_server(
     // delivery below finds the files.
     let embedder_model = (search_model.is_some()
         && database.system() == coral_db::DatabaseSystem::Postgres)
-        .then(|| watch::channel(None));
+        .then(|| watch::channel(coral_search::ModelLoad::Pending));
     let search_index = match &embedder_model {
         Some((_, model)) => search_index.with_embedder(model.clone()),
         None => search_index,

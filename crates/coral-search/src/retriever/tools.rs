@@ -22,8 +22,8 @@ use super::plan::QueryPlan;
 use super::repository;
 use super::vector_list::{self, VectorList};
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, RetrievalError, ToolRef, WindowEntry, count,
+    Answer, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing, QueryError, QueryRequest,
+    RequestContext, RetrievalError, Semantic, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
 use crate::hit::{HitMaterial, hit_text};
@@ -114,6 +114,7 @@ impl EntityRetriever for ToolRetriever {
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
+                semantic: Some(Semantic::of(&request.vector)),
             });
         };
         let complete = repository::complete_generations(transaction, context.workspace_id)
@@ -164,15 +165,13 @@ impl EntityRetriever for ToolRetriever {
             excluded: &excluded,
             named: &named,
         };
-        let (lexical, vector) = if searched.is_empty() {
-            (Vec::new(), None)
-        } else {
+        let (lexical, vector) =
             lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
-                .await?
-        };
+                .await?;
+        let semantic = Semantic::of(&vector);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
-            vector,
+            vector.ok(),
             |tool: &repository::RankedTool| tool.doc_id.clone(),
             request.window,
         );
@@ -204,6 +203,7 @@ impl EntityRetriever for ToolRetriever {
                 has_more,
             ),
             window,
+            semantic: Some(semantic),
         })
     }
 
@@ -265,8 +265,8 @@ impl EntityRetriever for ToolRetriever {
     }
 }
 
-/// The lexical list, with one row past the window, and the vector list when
-/// the request carries a vector and the vector side answers.
+/// The lexical list, with one row past the window, and the vector list, or
+/// why the vector side gave none.
 async fn lexical_and_vector_lists(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -276,16 +276,24 @@ async fn lexical_and_vector_lists(
 ) -> Result<
     (
         Vec<repository::RankedTool>,
-        Option<VectorList<repository::RankedTool>>,
+        Result<VectorList<repository::RankedTool>, LexicalReason>,
     ),
     QueryError,
 > {
+    if scope.providers.is_empty() {
+        // No Provider is searched, so neither list can hold a Tool.
+        let nothing = request.vector.map(|_vector| VectorList {
+            entries: Vec::new(),
+            has_more: false,
+        });
+        return Ok((Vec::new(), nothing));
+    }
     let lexical =
         repository::rank_tools(transaction, workspace_id, scope, plan, request.window + 1)
             .await
             .map_err(QueryError::Retriever)?;
     let vector = match request.vector {
-        Some(vector) => {
+        Ok(vector) => {
             vector_side(
                 transaction,
                 workspace_id,
@@ -296,14 +304,14 @@ async fn lexical_and_vector_lists(
             )
             .await?
         }
-        None => None,
+        Err(reason) => Err(reason),
     };
     Ok((lexical, vector))
 }
 
-/// The vector list, read in its own savepoint. `None` when the vector side
-/// fails: the savepoint rolls back, the retriever ranks by words alone, and
-/// the page does not say so.
+/// The vector list, read in its own savepoint. When the vector side fails,
+/// the savepoint rolls back, the retriever ranks by words alone, and the
+/// page does not say so.
 async fn vector_side(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -311,7 +319,7 @@ async fn vector_side(
     plan: &QueryPlan,
     vector: &[f32],
     window: usize,
-) -> Result<Option<VectorList<repository::RankedTool>>, QueryError> {
+) -> Result<Result<VectorList<repository::RankedTool>, LexicalReason>, QueryError> {
     repository::begin_vector_query(transaction)
         .await
         .map_err(QueryError::retrieval)?;
@@ -320,7 +328,7 @@ async fn vector_side(
             repository::end_vector_query(transaction)
                 .await
                 .map_err(QueryError::retrieval)?;
-            Ok(Some(tools))
+            Ok(Ok(tools))
         }
         Err(error) => {
             repository::abandon_vector_query(transaction)
@@ -331,7 +339,7 @@ async fn vector_side(
                 error.type = safe::kind(error.code()),
                 "the Tool retriever's vector query failed; it ranks by words alone"
             );
-            Ok(None)
+            Ok(Err(LexicalReason::VectorQueryFailed))
         }
     }
 }

@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use coral_embed::{CpuTooOld, MANIFEST, Manifest, ModelFile};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
+use coral_search::ModelLoad;
 use tempfile::TempDir;
+use tokio::sync::watch;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -417,6 +419,63 @@ fn place_other_model(models_dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&dir).expect("create the old model folder");
     std::fs::write(dir.join("model.onnx"), b"old").expect("write the old model");
     dir
+}
+
+/// Search reads the model's slot to tell why a query ranks by words alone,
+/// so the slot says why no model loaded once the delivery ends without one.
+#[tokio::test]
+async fn the_model_slot_says_why_no_model_loaded() {
+    let too_old = CpuTooOld {
+        missing: vec!["avx2", "fma"],
+    };
+    for (case, bytes, cpu, on_disk, expected) in [
+        (
+            "below the CPU floor",
+            MODEL,
+            Err(too_old),
+            false,
+            "cpu_too_old",
+        ),
+        (
+            "a file with another digest",
+            b"model bytez".as_slice(),
+            Ok(()),
+            false,
+            "failed",
+        ),
+        // Files of the manifest's digests that are not a model.
+        ("files that do not load", MODEL, Ok(()), true, "failed"),
+    ] {
+        let server = MockServer::start().await;
+        serve(&server, "model.onnx", bytes).await;
+        serve(&server, "tokenizer.json", TOKENIZER).await;
+        let dirs = Dirs::new();
+        if on_disk {
+            place_files(&dirs.system);
+        }
+        let (model, _delivery) = SearchModel::start(Delivery {
+            cpu,
+            ..delivery(&server, &dirs)
+        });
+        let (slot, mut load) = watch::channel(ModelLoad::Pending);
+
+        let _loading = model.load_into(slot);
+
+        let load = tokio::time::timeout(
+            PATIENCE,
+            load.wait_for(|load| !matches!(load, ModelLoad::Pending)),
+        )
+        .await
+        .expect("the slot changes in time")
+        .expect("the slot stays open");
+        let label = match &*load {
+            ModelLoad::Pending => "pending",
+            ModelLoad::Ready(_) => "ready",
+            ModelLoad::Failed => "failed",
+            ModelLoad::CpuTooOld => "cpu_too_old",
+        };
+        assert_eq!(label, expected, "{case}");
+    }
 }
 
 #[tokio::test]

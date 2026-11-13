@@ -3774,7 +3774,7 @@ impl TestModules {
     /// An index whose Embedder embeds with `model`, ready at once, and
     /// retries a failed batch after a short pause.
     fn index_with(&self, model: std::sync::Arc<dyn coral_embed::Embed>) -> crate::SearchIndex {
-        let (_ready, model) = tokio::sync::watch::channel(Some(model));
+        let (_ready, model) = tokio::sync::watch::channel(crate::ModelLoad::Ready(model));
         crate::SearchIndex::new(
             self.search.database.clone(),
             std::time::Duration::from_mins(5),

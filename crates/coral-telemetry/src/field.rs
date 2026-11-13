@@ -98,6 +98,11 @@ const CORAL: &[&str] = &[
     "coral.search.warning.code",
     // The kind of Search Entity a Universal Search retriever ranks.
     "coral.search.retriever",
+    // Whether that retriever merged its vector list with its lexical list
+    // (`fused`) or ranked by words alone (`lexical_only`), and the bounded
+    // reason it did.
+    "coral.search.semantic",
+    "coral.search.lexical_only.reason",
     // What one search index reconcile pass did.
     "coral.search.reconcile.generations_indexed",
     "coral.search.reconcile.generations_failed",
