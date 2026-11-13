@@ -108,12 +108,12 @@ impl IndexError {
     }
 
     /// Whether the same attempt fails the same way until something changes:
-    /// an entry that cannot become a row, or a write that ran past its limit
-    /// while it held its Workspace's lock. Each other error may pass,
-    /// including a preparation that ran past its limit: it may have waited
-    /// for a database connection.
+    /// an entry that cannot become a row. Each other error may pass,
+    /// including a write or a preparation that ran past its limit: the limit
+    /// measures the database's work too, so a slow commit or a wait for a
+    /// connection runs past it as a large entry does.
     pub(super) const fn repeats_until_change(&self) -> bool {
-        matches!(self, Self::InvalidEntry(_) | Self::Overran(_))
+        matches!(self, Self::InvalidEntry(_))
     }
 }
 

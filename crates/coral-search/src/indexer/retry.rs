@@ -1,12 +1,12 @@
 //! When a reconcile pass retries a failed attempt.
 //!
-//! A failure that repeats until something changes, such as a write that
-//! overran its limit, waits for a newer Coral version. Any other failure
-//! waits at least one reconcile interval, twice as long after each such
-//! failure in a row, and never more than an hour. A newer Coral version
-//! retries either at once. A notified write always tries, whatever the rule,
-//! so removing a Provider and adding it again, or saving a Private Tool
-//! again, retries it at once.
+//! A failure that repeats until something changes, an entry that cannot
+//! become a row, waits for a newer Coral version. Any other failure, such as
+//! a write that overran its limit, waits at least one reconcile interval,
+//! twice as long after each such failure in a row, and never more than an
+//! hour. A newer Coral version retries either at once. A notified write
+//! always tries, whatever the rule, so removing a Provider and adding it
+//! again, or saving a Private Tool again, retries it at once.
 //!
 //! An older version never retries a failure a newer one recorded, so two
 //! processes of different versions do not retry each other's failures pass
@@ -249,11 +249,11 @@ mod tests {
     }
 
     #[test]
-    fn only_an_invalid_entry_or_a_write_that_overran_after_its_lock_waits_for_a_newer_version() {
+    fn only_an_invalid_entry_waits_for_a_newer_version() {
         let limit = Duration::from_mins(1);
         for (error, waits_for_version) in [
             (IndexError::InvalidEntry("bad path".into()), true),
-            (IndexError::Overran(limit), true),
+            (IndexError::Overran(limit), false),
             (IndexError::WriterBusy(limit), false),
             (IndexError::TimedOut(limit), false),
             (IndexError::Clock, false),

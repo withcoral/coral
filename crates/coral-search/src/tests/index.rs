@@ -809,9 +809,13 @@ async fn a_transient_failure_waits_twice_as_long_after_each_attempt() {
 }
 
 #[tokio::test]
-async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
-    // `NULL` is the version of a row written before Coral recorded one.
-    for older_version in ["'0.0.0'", "NULL"] {
+async fn a_write_that_overran_after_the_workspace_lock_is_retried_once_due() {
+    // The limit measures database work, so a slow commit overruns it as a
+    // Generation too large to write does. The failure is due once its retry
+    // time has passed, or at once under a newer Coral version; `NULL` is the
+    // version of a row written before Coral recorded one. `None` lets the
+    // retry time pass.
+    for older_version in [None, Some("'0.0.0'"), Some("NULL")] {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
         let entries = world.stored_entries(&world.tracer).await;
@@ -827,25 +831,20 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
         assert_eq!(state.state, "failed");
         let error = state.error.expect("a failed state carries its error");
         assert!(error.contains("ran past its"), "{error}");
-        assert_eq!(world.retries().await, [Retry::on_new_version(1)]);
+        assert_eq!(world.retries().await, [Retry::after(1, RECONCILE_INTERVAL)]);
 
-        world.make_retries_due().await;
         let stamps = world.attempt_stamps().await;
         world.index.reconcile().await;
         assert_eq!(
             world.attempt_stamps().await,
             stamps,
-            "a pass under the same Coral version leaves the failure"
+            "a pass before the retry time leaves the failure"
         );
 
-        world
-            .modules
-            .fixture
-            .execute_fixture_sql(&format!(
-                "UPDATE search_index_states SET failed_coral_version = {older_version}"
-            ))
-            .await
-            .expect("record an older Coral version");
+        match older_version {
+            None => world.make_retries_due().await,
+            Some(version) => world.record_coral_version(version).await,
+        }
         world.index.reconcile().await;
         assert_eq!(
             world.states().await,
@@ -854,9 +853,72 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
                 &entries.generation_id().to_string(),
                 "Weather Tracer"
             )],
-            "older version: {older_version}"
+            "older version: {older_version:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn an_invalid_entry_waits_for_a_newer_coral_version() {
+    // The catalog admits `emit` as a Tool's path, and `coral.emit` is no
+    // Call Path: `emit` is a member of the Built-in Provider's Call Root.
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let database = world.modules.search.database.clone();
+    let mut transaction = database.begin().await.unwrap();
+    let builtin = world
+        .modules
+        .providers
+        .install_coral_defined_in_transaction(
+            &mut transaction,
+            &change(world.user.clone(), 20, '2'),
+            &world.workspace,
+            coral_provider::CoralDefinedProvider::Builtin,
+        )
+        .await
+        .unwrap()
+        .skip_search();
+    transaction.commit().await.unwrap();
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(
+            "UPDATE materialized_tools SET relative_path = 'emit' \
+             WHERE protocol = 'builtin' AND relative_path = 'search'",
+        )
+        .await
+        .expect("store a path that makes no Call Path");
+
+    world.index.reconcile().await;
+    assert_eq!(
+        world
+            .search_index_states(Some(builtin.id()))
+            .await
+            .get(builtin.id()),
+        Some(&crate::SearchIndexState::Failed {
+            reason: Some(crate::SearchIndexFailure::InvalidEntry)
+        })
+    );
+    // The tracer's `complete` row, then the Built-in Provider's failure.
+    let mut retries = world.retries().await;
+    retries.sort_by_key(|retry| retry.attempts);
+    assert_eq!(retries, [Retry::none(), Retry::on_new_version(1)]);
+
+    let stamps = world.attempt_stamps().await;
+    world.index.reconcile().await;
+    assert_eq!(
+        world.attempt_stamps().await,
+        stamps,
+        "a pass under the same Coral version leaves the failure"
+    );
+
+    world.record_coral_version("'0.0.0'").await;
+    world.index.reconcile().await;
+    assert_ne!(
+        world.attempt_stamps().await,
+        stamps,
+        "a pass under a newer Coral version tries again"
+    );
 }
 
 #[tokio::test]
@@ -3437,6 +3499,18 @@ impl World {
             )
             .await
             .expect("make the retries due");
+    }
+
+    /// Records `version`, a SQL literal, as the Coral version of every
+    /// state row.
+    async fn record_coral_version(&self, version: &str) {
+        self.modules
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE search_index_states SET failed_coral_version = {version}"
+            ))
+            .await
+            .expect("record a Coral version");
     }
 
     /// The Workspace's Generation state rows, by Generation.

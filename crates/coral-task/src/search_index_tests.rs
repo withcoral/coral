@@ -164,14 +164,16 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
 }
 
 #[tokio::test]
-async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
-    // A newer Coral version, a row written before Coral recorded one, or a
-    // failure of another revision, such as one whose save notification was
-    // lost, each make the failure due.
+async fn a_private_tool_whose_write_overran_its_limit_is_retried_once_due() {
+    // A retry time that has passed, a newer Coral version, a row written
+    // before Coral recorded one, or a failure of another revision, such as
+    // one whose save notification was lost, each make the failure due.
+    // `None` lets the retry time pass.
     for change in [
-        "failed_coral_version = '0.0.0'",
-        "failed_coral_version = NULL",
-        "failed_authored_tool_revision = 0",
+        None,
+        Some("failed_coral_version = '0.0.0'"),
+        Some("failed_coral_version = NULL"),
+        Some("failed_authored_tool_revision = 0"),
     ] {
         let fixture = Fixture::new().await;
         let goal = fixture.goal().await;
@@ -196,7 +198,6 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
         assert_eq!(state.state, "failed");
         assert!(state.error.contains("ran past its"), "{}", state.error);
 
-        make_retries_due(&fixture).await;
         fixture.index.reconcile().await;
         assert_eq!(
             (
@@ -204,17 +205,22 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
                 indexed_paths(&fixture).await
             ),
             (failed, Vec::<String>::new()),
-            "a pass under the same Coral version leaves the failure"
+            "a pass before the retry time leaves the failure"
         );
 
-        fixture
-            .test_database
-            .execute_fixture_sql(&format!("UPDATE search_index_states SET {change}"))
-            .await
-            .expect("change what the failure recorded");
+        match change {
+            None => make_retries_due(&fixture).await,
+            Some(change) => {
+                fixture
+                    .test_database
+                    .execute_fixture_sql(&format!("UPDATE search_index_states SET {change}"))
+                    .await
+                    .expect("change what the failure recorded");
+            }
+        }
         fixture.index.reconcile().await;
-        assert_eq!(indexed_paths(&fixture).await, ["answer"], "{change}");
-        assert!(private_tool_states(&fixture).await.is_empty(), "{change}");
+        assert_eq!(indexed_paths(&fixture).await, ["answer"], "{change:?}");
+        assert!(private_tool_states(&fixture).await.is_empty(), "{change:?}");
     }
 }
 
