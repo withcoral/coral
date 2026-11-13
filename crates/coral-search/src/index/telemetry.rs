@@ -116,6 +116,7 @@ impl SearchIndex {
             } else {
                 None
             };
+            let embedder = self.embedder_backlog(&mut tx).await?;
             tx.rollback().await?;
             Ok::<_, crate::indexer::IndexError>(Snapshot {
                 backlog: metric::SearchBacklog {
@@ -124,6 +125,7 @@ impl SearchIndex {
                     shared_tools: backlog.shared_tools,
                     first_visibility,
                     sample_age: Duration::ZERO,
+                    embedder,
                 },
                 sampled,
             })

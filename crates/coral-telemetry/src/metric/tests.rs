@@ -84,6 +84,14 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &[],
     ),
     ("coral.search.index.first_visibility.age", "gauge", "s", &[]),
+    ("coral.search.embed.backlog", "gauge", "{entity}", &[]),
+    ("coral.search.embed.skipped", "gauge", "{entity}", &[]),
+    (
+        "coral.search.embed.batch.duration",
+        "histogram",
+        "s",
+        &["outcome"],
+    ),
     (
         "coral.search.publication.visibility.duration",
         "histogram",
@@ -298,8 +306,13 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
                 oldest_age: Some(Duration::from_secs(5)),
             }),
             sample_age: Duration::from_secs(1),
+            embedder: Some(EmbedderBacklog {
+                stale: 40,
+                skipped: 1,
+            }),
         })
     });
+    embed_batch_ended(EmbedBatchOutcome::Ok, Duration::from_millis(900));
     publication_visible(VisibilityPath::Initial, Duration::from_secs(2));
     index_recovered(Duration::from_secs(1));
     output_kept(OutputKind::Emission, 512);
@@ -432,6 +445,7 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
                 oldest_age: None,
             }),
             sample_age: Duration::ZERO,
+            embedder: None,
         })
     });
     assert_eq!(
@@ -442,6 +456,11 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
     assert_eq!(
         capture.values("coral.search.index.first_visibility.age"),
         [0.0]
+    );
+    assert!(
+        capture.values("coral.search.embed.backlog").is_empty()
+            && capture.values("coral.search.embed.skipped").is_empty(),
+        "no Embedder gauge while no snapshot has an Embedder"
     );
     let unknown = observe_search_backlog(|| None);
     assert!(capture.values("coral.search.index.backlog").is_empty());

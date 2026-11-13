@@ -17,6 +17,7 @@ pub(crate) mod tools;
 pub(crate) mod vector_list;
 
 pub(crate) use repository::{abandon_query, begin_query, end_query};
+pub(crate) use vector_list::{LexicalReason, Semantic};
 
 use std::sync::Arc;
 
@@ -89,9 +90,9 @@ pub(crate) struct Listing {
 /// query's vector, the Provider Call Root filter, and the window size.
 pub(crate) struct QueryRequest<'a> {
     pub(crate) terms: &'a [String],
-    /// The query's vector, embedded once for every retriever; `None` when
-    /// the vector side is off or could not embed the query.
-    pub(crate) vector: Option<&'a [f32]>,
+    /// The query's vector, embedded once for every retriever, or why there
+    /// is none.
+    pub(crate) vector: Result<&'a [f32], LexicalReason>,
     pub(crate) provider_filter: &'a ProviderFilter,
     pub(crate) window: usize,
 }
@@ -101,6 +102,9 @@ pub(crate) struct QueryRequest<'a> {
 pub(crate) struct Answer {
     pub(crate) window: Vec<WindowEntry>,
     pub(crate) coverage: RetrieverCoverage,
+    /// Whether the window merged a vector list; `None` for a retriever
+    /// that keeps no vectors.
+    pub(crate) semantic: Option<Semantic>,
 }
 
 /// One Entity of a ranked window and its retriever's mark. A retriever

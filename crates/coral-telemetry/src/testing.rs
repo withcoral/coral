@@ -188,6 +188,18 @@ impl ExportCapture {
         format!("{spans:?}{logs:?}")
     }
 
+    /// Every span that has left so far, with the attributes the filter kept.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the in-memory exporter fails.
+    #[must_use]
+    pub fn spans(&self) -> Vec<SpanData> {
+        self.spans
+            .get_finished_spans()
+            .expect("read exported spans")
+    }
+
     /// Every log record that has left so far, each as text to search, so a
     /// test can read one record's message beside its own attributes.
     ///

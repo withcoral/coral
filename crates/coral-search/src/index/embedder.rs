@@ -23,9 +23,10 @@ mod repository;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coral_embed::{Embed, EmbedError, MANIFEST};
+use coral_telemetry::metric::{self, EmbedBatchOutcome};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use tokio::sync::{Notify, oneshot, watch};
@@ -53,7 +54,7 @@ pub(super) const RETRY_PAUSE: Duration = Duration::from_secs(5);
 const PROBE_TEXT: &str = "Coral";
 
 /// The model a running Embedder embeds with, once it is ready.
-pub(crate) type EmbedderModel = watch::Receiver<Option<Arc<dyn Embed>>>;
+pub(crate) type EmbedderModel = watch::Receiver<crate::ModelLoad>;
 
 /// What the Embedder of one Coral Instance shares across its restarts and
 /// with the index writes that wake it.
@@ -101,14 +102,19 @@ impl EmbedderState {
     async fn ready_model(&self) -> Arc<dyn Embed> {
         let mut model = self.model.clone();
         let ready = model
-            .wait_for(Option::is_some)
+            .wait_for(|model| model.model().is_ok())
             .await
             .ok()
-            .and_then(|model| model.clone());
+            .and_then(|model| model.model().ok());
         match ready {
             Some(model) => model,
             None => std::future::pending().await,
         }
+    }
+
+    /// How many rows are on the skip list.
+    fn skipped_count(&self) -> u64 {
+        u64::try_from(self.skipped().len()).unwrap_or(u64::MAX)
     }
 
     fn skipped(&self) -> std::sync::MutexGuard<'_, HashMap<EntityKey, i64>> {
@@ -316,10 +322,19 @@ impl SearchIndex {
             coral.search.embedder.vectors_written = Empty,
             error.type = Empty,
         );
+        let started = Instant::now();
         let written = self
             .embed_rows_in_span(thread, workspace_id, entities)
             .instrument(span.clone())
             .await?;
+        metric::embed_batch_ended(
+            if written.is_ok() {
+                EmbedBatchOutcome::Ok
+            } else {
+                EmbedBatchOutcome::Failed
+            },
+            started.elapsed(),
+        );
         match &written {
             Ok(vectors) => {
                 span.record(
@@ -395,6 +410,23 @@ impl SearchIndex {
             })
             .await;
         Ok(written.map_err(BatchError::Index))
+    }
+
+    /// The Embedder's work for the backlog observer: the rows that need a
+    /// vector, and the rows on the skip list. `None` while the vector side
+    /// is off.
+    pub(super) async fn embedder_backlog(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+    ) -> Result<Option<metric::EmbedderBacklog>, IndexError> {
+        let Some(embedder) = &self.embedder else {
+            return Ok(None);
+        };
+        Ok(Some(metric::EmbedderBacklog {
+            stale: repository::count_stale(transaction, MANIFEST.embedder_revision().as_str())
+                .await?,
+            skipped: embedder.skipped_count(),
+        }))
     }
 
     /// Removes each vector whose Search Entity or Workspace is gone. The

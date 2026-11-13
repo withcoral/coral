@@ -12,8 +12,8 @@ use coral_db::Transaction;
 use coral_telemetry::safe;
 
 use crate::retriever::{
-    EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
-    end_query,
+    EntityRetriever, LexicalReason, QueryError, QueryRequest, RequestContext, abandon_query,
+    begin_query, end_query,
 };
 use crate::{EntityKind, Error, ProviderCallRoot, ProviderFilter, query_terms};
 
@@ -100,7 +100,7 @@ pub(crate) async fn suggestions(
             &QueryRequest {
                 terms: &terms,
                 // A path near a missing one is near by its words.
-                vector: None,
+                vector: Err(LexicalReason::Disabled),
                 provider_filter: &provider_filter,
                 window: SUGGESTIONS_MAX * 2,
             },

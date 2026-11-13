@@ -92,6 +92,7 @@ impl EntityRetriever for AuthoredToolRetriever {
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
+                semantic: None,
             });
         };
         let scope = repository::AuthoredToolScope {
@@ -150,6 +151,7 @@ impl EntityRetriever for AuthoredToolRetriever {
                 has_more,
             ),
             window,
+            semantic: None,
         })
     }
 

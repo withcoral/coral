@@ -14,12 +14,15 @@ use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_provider::ProviderId;
 use coral_provider::access::ProviderCallRoot;
+use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use opentelemetry_sdk::trace::SpanData;
 use tokio::sync::watch;
 
 use super::{TestModules, change, organization_user, paths};
 use crate::{
-    EntityKind, SearchLimit, SearchPage, SearchQuery, SearchRequest, UniversalSearchModule,
+    EntityKind, ModelLoad, SearchLimit, SearchPage, SearchQuery, SearchRequest,
+    UniversalSearchModule,
 };
 
 const USER: &str = "user:search-vector-retrieval";
@@ -316,15 +319,19 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
     }
 
     let cases: [(&str, UniversalSearchModule, Option<&str>); 4] = [
-        ("the model is not ready", world.with_model(None), None),
+        (
+            "the model is not ready",
+            world.with_model(ModelLoad::Pending),
+            None,
+        ),
         (
             "the model fails on the query",
-            world.with_model(Some(Arc::new(FailingQueries))),
+            world.with_model(ModelLoad::Ready(Arc::new(FailingQueries))),
             None,
         ),
         (
             "the vector query fails",
-            world.with_model(Some(Arc::new(ShortQueries))),
+            world.with_model(ModelLoad::Ready(Arc::new(ShortQueries))),
             None,
         ),
         (
@@ -341,6 +348,135 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
             world.search(&search, "rain issues").await,
             lexical,
             "{case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_search() {
+    coral_test_support::database_only!(Postgres);
+    let world = World::new().await;
+    let exported = ExportCapture::default();
+    let spans = SpanCapture::exporting_to(&exported);
+    let _traced = tracing::subscriber::set_default(spans.subscriber());
+
+    world.search(&world.by_meaning(), "rain issues").await;
+
+    let spans = exported.spans();
+    let named = |name: &str| {
+        spans
+            .iter()
+            .filter(|span| span.name == name)
+            .collect::<Vec<_>>()
+    };
+    let [search] = named("coral.search")[..] else {
+        panic!("one search span: {spans:#?}");
+    };
+    let [embed] = named("coral.search.embed_query")[..] else {
+        panic!("one query embedding span: {spans:#?}");
+    };
+    assert_eq!(embed.parent_span_id, search.span_context.span_id());
+    assert!(
+        exported_keys(embed).is_empty() && exported_keys(search).is_empty(),
+        "neither span carries a field: {embed:#?} {search:#?}"
+    );
+    let ranks = named("coral.search.rank");
+    assert_eq!(ranks.len(), 3, "one span for each retriever");
+    assert!(
+        ranks
+            .iter()
+            .all(|rank| rank.parent_span_id == search.span_context.span_id())
+    );
+}
+
+#[tokio::test]
+async fn each_reason_the_tool_retriever_ranks_by_words_alone_leaves_the_host_on_its_span() {
+    let world = World::new().await;
+    let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
+    let exported = ExportCapture::default();
+    let spans = SpanCapture::exporting_to(&exported);
+    let _traced = tracing::subscriber::set_default(spans.subscriber());
+    // Each case's reason on Postgres; `None` is a fused search.
+    let cases = [
+        ("a fused search", world.by_meaning(), None, None),
+        ("the setting off", world.by_words(), None, Some("disabled")),
+        (
+            "the model not ready yet",
+            world.with_model(ModelLoad::Pending),
+            None,
+            Some("model_absent"),
+        ),
+        (
+            "the model failed to load",
+            world.with_model(ModelLoad::Failed),
+            None,
+            Some("model_failed"),
+        ),
+        (
+            "a CPU below the floor",
+            world.with_model(ModelLoad::CpuTooOld),
+            None,
+            Some("cpu_floor"),
+        ),
+        (
+            "the model fails on the query",
+            world.with_model(ModelLoad::Ready(Arc::new(FailingQueries))),
+            None,
+            Some("embed_failed"),
+        ),
+        (
+            "the vector query fails",
+            world.with_model(ModelLoad::Ready(Arc::new(ShortQueries))),
+            None,
+            Some("vector_query_failed"),
+        ),
+        // During a rolling update, an older Coral may have dropped the table.
+        (
+            "the vector table is missing",
+            world.by_meaning(),
+            postgres.then_some("DROP TABLE search_entity_embeddings"),
+            Some("vector_query_failed"),
+        ),
+    ];
+    for (case, search, change, reason) in cases {
+        if let Some(change) = change {
+            world.execute(change).await;
+        }
+        let before = exported.spans().len();
+
+        world.search(&search, "rain issues").await;
+
+        // SQLite keeps no vectors yet, so its vector side is off.
+        let reason = if postgres { reason } else { Some("disabled") };
+        let this_search = exported
+            .spans()
+            .into_iter()
+            .skip(before)
+            .collect::<Vec<_>>();
+        let rank = tool_rank(&this_search, case);
+        assert_eq!(
+            (
+                attribute(rank, "coral.search.semantic").as_deref(),
+                attribute(rank, "coral.search.lexical_only.reason").as_deref(),
+            ),
+            (
+                Some(if reason.is_some() {
+                    "lexical_only"
+                } else {
+                    "fused"
+                }),
+                reason
+            ),
+            "{case}"
+        );
+        let mut keys = vec!["coral.search.retriever", "coral.search.semantic"];
+        if reason.is_some() {
+            keys.insert(0, "coral.search.lexical_only.reason");
+        }
+        assert_eq!(
+            exported_keys(rank),
+            keys,
+            "{case}: the export filter passes the new fields and nothing else new"
         );
     }
 }
@@ -397,6 +533,34 @@ async fn the_vector_query_reads_the_vector_table_alone() {
         !plan.iter().any(|line| line.contains("search_entities")),
         "the vector query joins the entity table: {plan:#?}"
     );
+}
+
+/// The one span of the Tool retriever among `spans`.
+fn tool_rank<'a>(spans: &'a [SpanData], case: &str) -> &'a SpanData {
+    let ranks = spans
+        .iter()
+        .filter(|span| {
+            span.name == "coral.search.rank"
+                && attribute(span, "coral.search.retriever").as_deref() == Some("provider_tool")
+        })
+        .collect::<Vec<_>>();
+    let [rank] = ranks[..] else {
+        panic!("{case}: one Tool retriever span left the host, not {ranks:#?}");
+    };
+    rank
+}
+
+/// The keys of an exported span, in order, less the `code.*` and `thread.*`
+/// keys the tracing bridge adds to every span.
+fn exported_keys(span: &SpanData) -> Vec<&str> {
+    let mut keys = span
+        .attributes
+        .iter()
+        .map(|attribute| attribute.key.as_str())
+        .filter(|key| !key.starts_with("code.") && !key.starts_with("thread."))
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys
 }
 
 /// How many Tools the Tool retriever handed the engine for `page`.
@@ -569,7 +733,7 @@ impl World {
 
     /// Discovery whose engine embeds each query with the World's model.
     fn by_meaning(&self) -> UniversalSearchModule {
-        self.with_model(Some(Arc::clone(&self.model)))
+        self.with_model(ModelLoad::Ready(Arc::clone(&self.model)))
     }
 
     /// Discovery with the vector side off.
@@ -581,7 +745,7 @@ impl World {
     }
 
     /// Discovery whose model slot holds `model`.
-    fn with_model(&self, model: Option<Arc<dyn Embed>>) -> UniversalSearchModule {
+    fn with_model(&self, model: ModelLoad) -> UniversalSearchModule {
         let (_ready, model) = watch::channel(model);
         self.by_words().with_model(model)
     }

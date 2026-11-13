@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_embed::{CpuTooOld, Embed, LoadError, Manifest, Model, ModelFile, ModelState};
+use coral_search::ModelLoad;
 use coral_telemetry::safe;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
@@ -152,47 +153,81 @@ impl SearchModel {
     /// Waits until the files are ready and returns their folder. Returns
     /// `None` when the delivery stops without them.
     pub async fn ready(&self) -> Option<PathBuf> {
+        self.ended().await?.ok()
+    }
+
+    /// Waits until the delivery ends: the files' folder, or why it stopped
+    /// without them. `None` when it ends with the runtime.
+    async fn ended(&self) -> Option<Result<PathBuf, SearchModelStop>> {
         let mut state = self.state.clone();
-        let ready = state
-            .wait_for(|state| matches!(state, SearchModelState::Ready(_)))
+        let ended = state
+            .wait_for(|state| {
+                matches!(
+                    state,
+                    SearchModelState::Ready(_) | SearchModelState::Stopped(_)
+                )
+            })
             .await
             .ok()?;
-        let SearchModelState::Ready(dir) = &*ready else {
-            return None;
-        };
-        Some(dir.clone())
+        match &*ended {
+            SearchModelState::Ready(dir) => Some(Ok(dir.clone())),
+            SearchModelState::Stopped(stop) => Some(Err(stop.clone())),
+            SearchModelState::Looking
+            | SearchModelState::Downloading
+            | SearchModelState::Retrying { .. } => None,
+        }
     }
 
     /// Loads the model into `slot` once its files are ready, on a blocking
-    /// thread. The slot stays empty when the files never arrive, when the
-    /// CPU is below the floor, or when the model does not load: search then
-    /// matches by words alone.
-    pub(crate) fn load_into(&self, slot: watch::Sender<Option<Arc<dyn Embed>>>) -> JoinHandle<()> {
+    /// thread. When the files never arrive, the CPU is below the floor or
+    /// the model does not load, the slot says so, and search matches by
+    /// words alone.
+    pub(crate) fn load_into(&self, slot: watch::Sender<ModelLoad>) -> JoinHandle<()> {
         let files = self.clone();
         tokio::spawn(async move {
-            let Some(dir) = files.ready().await else {
-                return;
+            let dir = match files.ended().await {
+                Some(Ok(dir)) => dir,
+                Some(Err(SearchModelStop::CpuTooOld(_))) => {
+                    slot.send_replace(ModelLoad::CpuTooOld);
+                    return;
+                }
+                Some(Err(SearchModelStop::WrongFile | SearchModelStop::Unreadable(_))) => {
+                    slot.send_replace(ModelLoad::Failed);
+                    return;
+                }
+                // The delivery ends with the runtime.
+                None => return,
             };
-            match tokio::task::spawn_blocking(move || Model::load(&dir)).await {
+            let load = match tokio::task::spawn_blocking(move || Model::load(&dir)).await {
                 Ok(Ok(model)) => {
                     let model: Arc<dyn Embed> = Arc::new(model);
-                    slot.send_replace(Some(model));
+                    ModelLoad::Ready(model)
                 }
-                Ok(Err(LoadError::CpuTooOld(_))) => tracing::info!(
-                    "this CPU is below the floor for search by meaning; search matches by words only"
-                ),
-                Ok(Err(error)) => tracing::error!(
-                    error.type = safe::kind(match error {
-                        LoadError::Tokenizer { .. } => "tokenizer_load_failed",
-                        _ => "model_load_failed",
-                    }),
-                    "failed to load the search model; search matches by words only"
-                ),
-                Err(_) => tracing::error!(
-                    error.type = safe::kind("model_load_panicked"),
-                    "loading the search model panicked; search matches by words only"
-                ),
-            }
+                Ok(Err(LoadError::CpuTooOld(_))) => {
+                    tracing::info!(
+                        "this CPU is below the floor for search by meaning; search matches by words only"
+                    );
+                    ModelLoad::CpuTooOld
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(
+                        error.type = safe::kind(match error {
+                            LoadError::Tokenizer { .. } => "tokenizer_load_failed",
+                            _ => "model_load_failed",
+                        }),
+                        "failed to load the search model; search matches by words only"
+                    );
+                    ModelLoad::Failed
+                }
+                Err(_) => {
+                    tracing::error!(
+                        error.type = safe::kind("model_load_panicked"),
+                        "loading the search model panicked; search matches by words only"
+                    );
+                    ModelLoad::Failed
+                }
+            };
+            slot.send_replace(load);
         })
     }
 }

@@ -3774,7 +3774,7 @@ impl TestModules {
     /// An index whose Embedder embeds with `model`, ready at once, and
     /// retries a failed batch after a short pause.
     fn index_with(&self, model: std::sync::Arc<dyn coral_embed::Embed>) -> crate::SearchIndex {
-        let (_ready, model) = tokio::sync::watch::channel(Some(model));
+        let (_ready, model) = tokio::sync::watch::channel(crate::ModelLoad::Ready(model));
         crate::SearchIndex::new(
             self.search.database.clone(),
             std::time::Duration::from_mins(5),
@@ -4220,3 +4220,25 @@ async fn organization_user(
 }
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
+
+/// Waits until `ready` holds: the backlog observer samples in the
+/// background.
+async fn wait_for_observation(ready: impl Fn() -> bool) {
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || ready()).await,
+        "background backlog observation converges"
+    );
+}
+
+/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
+/// whether it held: what a background write or observation leaves shows a
+/// moment after the call that starts it returns.
+async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
+    tokio::time::timeout(limit, async {
+        while !ready().await {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}

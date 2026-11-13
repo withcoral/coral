@@ -27,9 +27,10 @@ mod attribute;
 pub use attribute::{
     AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome,
     CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
-    DbSystem, DropReason, GateKind, Interface, InvocationEnd, OutputKind, PrincipalKind,
-    ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus, SecretStoreRead,
-    SignalKind, TerminationReason, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd, OutputKind,
+    PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus,
+    SecretStoreRead, SignalKind, TerminationReason, ToolEffect, TransactionOutcome,
+    UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -100,6 +101,9 @@ struct Catalog {
     _search_backlog: ObservableGauge<u64>,
     _search_sample_age: ObservableGauge<f64>,
     _search_pending_age: ObservableGauge<f64>,
+    _search_embed_backlog: ObservableGauge<u64>,
+    _search_embed_skipped: ObservableGauge<u64>,
+    search_embed_batch_duration: Histogram<f64>,
     search_publication_visibility_duration: Histogram<f64>,
     search_index_recovery_duration: Histogram<f64>,
     output_size: Histogram<u64>,
@@ -525,7 +529,31 @@ impl Metrics {
                             && let Some(age) = waiting.iter().filter_map(|s| s.oldest_age).max() { gauge.observe(age.as_secs_f64(), &[]); }
                     }).build()
             },
+            _search_embed_backlog: {
+                let sources = Arc::clone(&search_backlogs);
+                meter.u64_observable_gauge("coral.search.embed.backlog").with_unit("{entity}")
+                    .with_description("Search Entities without a vector of the current Embedder revision made from their current text, rows on the skip list included. Absent while the vector side is off or the count is unknown.")
+                    .with_callback(move |gauge| {
+                        if let Some(embedders) = embedder_snapshots(&sources) {
+                            gauge.observe(embedders.iter().map(|e| e.stale).sum(), &[]);
+                        }
+                    }).build()
+            },
+            _search_embed_skipped: {
+                let sources = Arc::clone(&search_backlogs);
+                meter.u64_observable_gauge("coral.search.embed.skipped").with_unit("{entity}")
+                    .with_description("Search Entities on the Embedder's skip list: their text failed while other rows embedded. A row leaves the list when it changes or the process restarts.")
+                    .with_callback(move |gauge| {
+                        if let Some(embedders) = embedder_snapshots(&sources) {
+                            gauge.observe(embedders.iter().map(|e| e.skipped).sum(), &[]);
+                        }
+                    }).build()
+            },
             search_backlogs,
+            search_embed_batch_duration: seconds(
+                "coral.search.embed.batch.duration",
+                "One write of the search Embedder: reading a batch's text, embedding it and writing its vectors.",
+            ),
             search_publication_visibility_duration: seconds(
                 "coral.search.publication.visibility.duration",
                 "Stored catalog publication time to its first successful index commit. Initial and retried attempts are separate; rebuilds and unknown legacy history record nothing.",
@@ -783,6 +811,16 @@ pub fn index_recovered(elapsed: Duration) {
     });
 }
 
+/// One write of the search Embedder that ended `outcome` after `elapsed`.
+pub fn embed_batch_ended(outcome: EmbedBatchOutcome, elapsed: Duration) {
+    with(|catalog| {
+        catalog.search_embed_batch_duration.record(
+            elapsed.as_secs_f64(),
+            &[KeyValue::new("outcome", outcome.as_str())],
+        );
+    });
+}
+
 /// Known first-visibility work, separate from rebuild backlog.
 #[derive(Clone, Copy)]
 pub struct FirstVisibilityBacklog {
@@ -806,6 +844,19 @@ pub struct SearchBacklog {
     pub first_visibility: Option<FirstVisibilityBacklog>,
     /// Time since the snapshot was read successfully.
     pub sample_age: Duration,
+    /// The Embedder's work; `None` while the vector side is off or its
+    /// count is unknown.
+    pub embedder: Option<EmbedderBacklog>,
+}
+
+/// The search Embedder's work in one snapshot.
+#[derive(Clone, Copy)]
+pub struct EmbedderBacklog {
+    /// Search Entities without a vector of the current Embedder revision
+    /// made from their current text.
+    pub stale: u64,
+    /// Search Entities on the Embedder's skip list.
+    pub skipped: u64,
 }
 
 type SearchSources = Arc<Mutex<Vec<Weak<SearchSource>>>>;
@@ -849,6 +900,15 @@ fn search_snapshots(sources: &SearchSources) -> Vec<SearchBacklog> {
         .map(|source| (source.read)())
         .collect::<Option<Vec<_>>>()
         .unwrap_or_default()
+}
+
+/// The Embedder parts of every live snapshot, or `None` when none has one.
+fn embedder_snapshots(sources: &SearchSources) -> Option<Vec<EmbedderBacklog>> {
+    let embedders = search_snapshots(sources)
+        .iter()
+        .filter_map(|snapshot| snapshot.embedder)
+        .collect::<Vec<_>>();
+    (!embedders.is_empty()).then_some(embedders)
 }
 
 impl fmt::Debug for SearchSource {

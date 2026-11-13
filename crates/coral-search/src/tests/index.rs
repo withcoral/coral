@@ -20,7 +20,7 @@ use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, eventually, organization_user, wait_for_observation};
 use crate::indexer::INDEXER_REVISION;
 use crate::indexer::tools::ToolIndexer;
 use crate::{SearchIndex, SearchQuery, SearchRequest};
@@ -538,26 +538,6 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
             .is_empty(),
         "a stopped observer must not keep publishing its last snapshot"
     );
-}
-
-async fn wait_for_observation(ready: impl Fn() -> bool) {
-    assert!(
-        eventually(std::time::Duration::from_secs(5), async || ready()).await,
-        "background backlog observation converges"
-    );
-}
-
-/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
-/// whether it held: what a background write or observation leaves shows a
-/// moment after the call that starts it returns.
-async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
-    tokio::time::timeout(limit, async {
-        while !ready().await {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .is_ok()
 }
 
 #[tokio::test]

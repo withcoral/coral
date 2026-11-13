@@ -10,6 +10,69 @@ use std::hash::Hash;
 
 use coral_embed::{MANIFEST, Merge};
 
+/// Why a retriever ranked by its lexical list alone (ADR 0035, "The setting
+/// and failures"). The page never says it; the retriever's span does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LexicalReason {
+    /// The `[search] semantic_search_enabled` setting is off, or the
+    /// database keeps no vectors.
+    Disabled,
+    /// The model's files are not ready yet.
+    ModelAbsent,
+    /// The model does not load while this process runs.
+    ModelFailed,
+    /// This CPU is below the model's floor.
+    CpuFloor,
+    /// The model failed on this request's query.
+    EmbedFailed,
+    /// The retriever's vector query failed, or its vector table is missing.
+    VectorQueryFailed,
+}
+
+impl LexicalReason {
+    /// The reason's stable name, as telemetry spells it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ModelAbsent => "model_absent",
+            Self::ModelFailed => "model_failed",
+            Self::CpuFloor => "cpu_floor",
+            Self::EmbedFailed => "embed_failed",
+            Self::VectorQueryFailed => "vector_query_failed",
+        }
+    }
+}
+
+/// Whether a retriever's window merged its vector list with its lexical
+/// list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Semantic {
+    /// The retriever had the query's vector, and its vector query, when it
+    /// ran one, answered.
+    Fused,
+    /// The retriever ranked by its lexical list alone.
+    LexicalOnly(LexicalReason),
+}
+
+impl Semantic {
+    /// What a retriever's vector side gave: its vector list, or why it has
+    /// none.
+    pub(crate) const fn of<T>(vector: &Result<T, LexicalReason>) -> Self {
+        match vector {
+            Ok(_) => Self::Fused,
+            Err(reason) => Self::LexicalOnly(*reason),
+        }
+    }
+
+    /// The stable name, as telemetry spells it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fused => "fused",
+            Self::LexicalOnly(_) => "lexical_only",
+        }
+    }
+}
+
 /// One entry of the vector list as the vector query found it: the Search
 /// Entity's key and the source stamp the vector was made from.
 pub(crate) struct NearestVector {

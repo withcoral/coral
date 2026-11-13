@@ -9,13 +9,14 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use coral_embed::{Embed, EmbedError, MANIFEST};
-use coral_telemetry::testing::{SpanCapture, attribute};
+use coral_telemetry::testing::{MetricCapture, SpanCapture, attribute};
 use coral_workspace::{AuthenticatedUser, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
+use tokio::sync::watch;
 use wiremock::MockServer;
 
-use super::{TestModules, change, organization_user};
-use crate::SearchIndex;
+use super::{TestModules, change, organization_user, wait_for_observation};
+use crate::{ModelLoad, SearchIndex};
 
 const USER: &str = "user:search-embedder";
 
@@ -354,6 +355,68 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
     index.settled().await;
     index.embedded().await;
     world.assert_every_vector_current().await;
+}
+
+#[tokio::test]
+async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let (model, index) = world.index_waiting_for_model();
+    let _background = Background(index.spawn_reconcile_task());
+    index.index_active_generation(world.workspace.clone(), world.tracer.clone());
+    index.settled().await;
+    let backlog = || gauge(&metrics, "coral.search.embed.backlog");
+    wait_for_observation(|| backlog().is_some_and(|stale| stale >= 1.0)).await;
+
+    model.send_replace(ModelLoad::Ready(Arc::new(FixedVectors::default())));
+    index.embedded().await;
+
+    wait_for_observation(|| backlog() == Some(0.0)).await;
+}
+
+#[tokio::test]
+async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_failed() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let many = world
+        .modules
+        .publish_openapi(&world.user, &world.workspace, &many_tools(40), "many", 60)
+        .await;
+    let metrics = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let model = FixedVectors::default();
+    model.fail_texts_with(BROKEN);
+    let index = world.index_with(&model);
+    let _background = Background(index.spawn_reconcile_task());
+
+    index.index_active_generation(world.workspace.clone(), many);
+    index.settled().await;
+    index.embedded().await;
+
+    wait_for_observation(|| {
+        gauge(&metrics, "coral.search.embed.skipped") == Some(1.0)
+            && gauge(&metrics, "coral.search.embed.backlog") == Some(1.0)
+    })
+    .await;
+    let outcomes = metrics
+        .named("coral.search.embed.batch.duration")
+        .into_iter()
+        .filter_map(|point| point.attributes.get("outcome").cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        outcomes,
+        ["failed".to_owned(), "ok".to_owned()].into(),
+        "the batch with the broken row failed, the rows tried alone after it were written"
+    );
+}
+
+/// The last value of the gauge `name`, when one was observed.
+fn gauge(metrics: &MetricCapture, name: &str) -> Option<f64> {
+    metrics.values(name).last().copied()
 }
 
 #[tokio::test]
@@ -799,6 +862,14 @@ impl World {
     /// An index whose Embedder embeds with `model`, ready at once.
     fn index_with(&self, model: &(impl Embed + Clone + 'static)) -> SearchIndex {
         self.modules.index_with(Arc::new(model.clone()))
+    }
+
+    /// An index whose Embedder waits until the test sends it a model.
+    fn index_waiting_for_model(&self) -> (watch::Sender<ModelLoad>, SearchIndex) {
+        let (model, slot) = watch::channel(ModelLoad::Pending);
+        let index = SearchIndex::new(self.modules.search.database.clone(), RECONCILE_INTERVAL)
+            .with_embedder(slot);
+        (model, index)
     }
 
     /// Each Search Entity of the Workspace with its source stamp.
