@@ -174,7 +174,8 @@ async fn every_indexed_tool_hydrates_from_the_stored_generation() {
 }
 
 /// Hydrates every entry of `prepared` as a search hit and checks each one
-/// gives the material of its own Tool.
+/// gives the material of its own Tool: the path and the presentation its
+/// entry indexed.
 async fn assert_indexed_tools_hydrate(
     providers: &crate::ProviderModule,
     prepared: &crate::GenerationEntries,
@@ -192,9 +193,28 @@ async fn assert_indexed_tools_hydrate(
             .await
             .unwrap()
             .expect("an indexed Tool hydrates");
+        let presentation = material.presentation();
         assert_eq!(
-            (material.tool_key(), material.relative_path()),
-            (tool.key(), tool.relative_path())
+            (
+                material.tool_key(),
+                material.relative_path(),
+                presentation.title(),
+                presentation.description(),
+                presentation.tags(),
+                presentation.guidance(),
+                presentation.deprecated(),
+            ),
+            (
+                tool.key(),
+                tool.relative_path(),
+                tool.title(),
+                tool.description(),
+                tool.tags(),
+                tool.guidance(),
+                tool.deprecated(),
+            ),
+            "a hit hydrates the material its entry indexed: {}",
+            tool.key().as_str()
         );
     }
     transaction.rollback().await.unwrap();
