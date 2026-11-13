@@ -43,6 +43,12 @@ function startProcess(
   })
   let output = ''
   let failed: Error | undefined
+  // Every copy of the output that leaves this process, to the log or in an error.
+  const redact = (text: string) =>
+    privateValues.reduce(
+      (redacted, value) => (value ? redacted.replaceAll(value, '[redacted]') : redacted),
+      text,
+    )
   let writes = Promise.resolve()
   child.on('error', (error) => {
     failed = error
@@ -50,9 +56,8 @@ function startProcess(
   for (const stream of [child.stdout!, child.stderr!]) {
     let pending = ''
     const save = (chunk: string) => {
-      for (const value of privateValues) if (value) chunk = chunk.replaceAll(value, '[redacted]')
       writes = writes
-        .then(() => appendFile(log, chunk))
+        .then(() => appendFile(log, redact(chunk)))
         .catch((error) => {
           failed = error
         })
@@ -74,8 +79,7 @@ function startProcess(
   let stopping: Promise<void> | undefined
   // CI keeps no run directory, so a startup failure carries the cause itself.
   const ending = () => {
-    let tail = output.split('\n').slice(-40).join('\n').trim()
-    for (const value of privateValues) if (value) tail = tail.replaceAll(value, '[redacted]')
+    const tail = redact(output.split('\n').slice(-40).join('\n').trim())
     return `See ${log}. Its last output:\n${tail}`
   }
   return {
