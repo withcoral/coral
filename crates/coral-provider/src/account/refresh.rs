@@ -14,6 +14,7 @@ use crate::{
 use coral_catalog::AuthenticationConfiguration;
 use coral_credentials::{CredentialField, CredentialValues, Secret};
 use coral_db::Transaction;
+use coral_telemetry::safe;
 use zeroize::Zeroizing;
 
 use uuid::Uuid;
@@ -330,21 +331,46 @@ impl AccountModule {
         )
         .await;
         let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
-        if result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration)) {
-            self.record_client_result(
-                &workspace.clone(),
-                provider,
-                &evidence.contract,
-                client_secret.as_ref(),
-                result.is_err(),
-            )
-            .await?;
-        }
+        let client_failed = match &result {
+            Ok(_) => Some(false),
+            Err(Error::OAuthClientConfiguration) => Some(true),
+            Err(_) => None,
+        };
         let completed_at = now.saturating_add(elapsed);
-        self.complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
-            .await
+        let completion = self
+            .complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
+            .await;
+        if let Some(failed) = client_failed {
+            let used = client_secret.as_ref();
+            self.note_client_result(workspace, provider, evidence, used, failed)
+                .await;
+        }
+        completion
             .map(CredentialValues::token)
             .map(CredentialResolution::Ready)
+    }
+
+    /// Records what a settled refresh showed about the OAuth application, after
+    /// the renewed token is stored. Application diagnostics must never discard a
+    /// rotated refresh token or leave the claim to lapse into a reconnect, so a
+    /// failed write is logged and not returned.
+    async fn note_client_result(
+        &self,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        evidence: &CredentialEvidence,
+        used: Option<&Secret>,
+        failed: bool,
+    ) {
+        if let Err(error) = self
+            .record_client_result(workspace, provider, &evidence.contract, used, failed)
+            .await
+        {
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "failed to record an OAuth application's status after a token refresh"
+            );
+        }
     }
 
     async fn finish_static(
