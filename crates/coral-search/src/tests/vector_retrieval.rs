@@ -448,8 +448,12 @@ async fn each_reason_the_tool_retriever_ranks_by_words_alone_leaves_the_host_on_
 
         // SQLite keeps no vectors yet, so its vector side is off.
         let reason = if postgres { reason } else { Some("disabled") };
-        let exported = exported.spans();
-        let rank = tool_rank(&exported[before..], case);
+        let this_search = exported
+            .spans()
+            .into_iter()
+            .skip(before)
+            .collect::<Vec<_>>();
+        let rank = tool_rank(&this_search, case);
         assert_eq!(
             (
                 attribute(rank, "coral.search.semantic").as_deref(),
