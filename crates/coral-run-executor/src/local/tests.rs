@@ -29,12 +29,22 @@ struct Started {
 /// A process starter that starts nothing. A child it starts exits when
 /// its stdin closes or it is killed, as a Run Executor does.
 #[derive(Clone, Default)]
-struct FakeStarter {
+pub(crate) struct FakeStarter {
     started: Arc<Mutex<Vec<Arc<Mutex<Started>>>>>,
     failures_left: Arc<AtomicUsize>,
 }
 
 struct FakeChild(Arc<Mutex<Started>>);
+
+impl FakeStarter {
+    /// The bearer header of each child started so far, in order.
+    pub(crate) fn bearers(&self) -> Vec<String> {
+        lock(&self.started)
+            .iter()
+            .map(|child| lock(child).bearer.clone())
+            .collect()
+    }
+}
 
 impl ProcessStarter for FakeStarter {
     fn start(&mut self, token: &Token) -> io::Result<Box<dyn LocalChild>> {

@@ -200,6 +200,7 @@ impl FailingCompileEngine {
             "busy" => CompileFailure::Busy,
             "timed-out" => CompileFailure::TimedOut,
             "stopped" => CompileFailure::Stopped,
+            "no-compiler" => CompileFailure::NoCompiler,
             "failed" => CompileFailure::Failed("engine"),
             _ => CompileFailure::Rejected("scripted rejection".to_string()),
         })

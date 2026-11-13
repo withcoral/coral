@@ -689,6 +689,18 @@ mod tests {
         assert!(!Error::is_compile_rejection(code(Error::ShuttingDown)));
     }
 
+    // Catches: a Program with no compiler that hears no reason it can act on.
+    #[test]
+    fn no_compiler_tells_the_caller_to_try_again_later() {
+        assert_eq!(
+            Error::CompilerUnavailable.safe_rejection(),
+            Some((
+                "program_compiler_unavailable",
+                "No program compiler is available. Try again later.".to_owned()
+            ))
+        );
+    }
+
     #[test]
     fn an_unanswered_database_error_is_operational_through_every_module_wrapper() {
         type Wrap = fn(coral_db::Error) -> Error;

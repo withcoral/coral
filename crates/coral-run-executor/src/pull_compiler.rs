@@ -15,9 +15,13 @@ use crate::{
     Refused, StreamId, Unavailable,
 };
 
-/// How long a call waits for a pull stream with room before it fails: the
-/// Shutdown Drain's length. A Run Executor redials within 5 s.
+/// How long [`CompilerClient::ready`] waits for a pull stream with room
+/// before no compiler is available. A Run Executor redials within 5 s.
 pub(crate) const COMPILE_WAIT: Duration = Duration::from_secs(30);
+
+/// The time left a call keeps when it waits for room, so that it reports
+/// that no compiler took it before its caller's own deadline ends the wait.
+const ROOM_WAIT_RESERVE: Duration = Duration::from_millis(100);
 
 /// How often a waiting call asks the local children for room again: a
 /// request is spent once any room shows, even room another call takes.
@@ -75,10 +79,7 @@ enum Target {
     Stream(StreamId),
     /// Each call goes to the stream with the most room, and waits for one
     /// when none has room, asking the local children for room.
-    MostRoom {
-        children: Option<LocalRunExecutors>,
-        wait: Duration,
-    },
+    MostRoom { children: Option<LocalRunExecutors> },
 }
 
 impl fmt::Debug for PullStreamCompiler {
@@ -98,23 +99,15 @@ impl fmt::Debug for PullStreamCompiler {
 impl PullStreamCompiler {
     /// The client that sends each call to the stream in `streams` with the
     /// most room, ties at random. With no room, [`CompilerClient::ready`]
-    /// waits up to [`COMPILE_WAIT`] and a call waits within its time left;
-    /// both ask `children`, when there are local children, for room.
+    /// waits up to [`COMPILE_WAIT`] and a call waits within its time left,
+    /// less [`ROOM_WAIT_RESERVE`]; both ask `children`, when there are
+    /// local children, for room. A call no stream took fails as
+    /// [`Unavailable::NoCompiler`].
     #[must_use]
     pub const fn new(streams: PullStreams, children: Option<LocalRunExecutors>) -> Self {
-        Self::waiting(streams, children, COMPILE_WAIT)
-    }
-
-    /// [`Self::new`] with `wait` in place of [`COMPILE_WAIT`].
-    #[must_use]
-    pub(crate) const fn waiting(
-        streams: PullStreams,
-        children: Option<LocalRunExecutors>,
-        wait: Duration,
-    ) -> Self {
         Self {
             streams,
-            target: Target::MostRoom { children, wait },
+            target: Target::MostRoom { children },
             held: None,
         }
     }
@@ -130,13 +123,14 @@ impl PullStreamCompiler {
         }
     }
 
-    /// One look for room: the stream with the most room, or else how long
-    /// to wait for room before the next look (`None` at `until`). A look
-    /// that finds none asks the local children for room again.
+    /// One look for room with `left` to wait: the stream with the most
+    /// room, or else how long to wait for room before the next look (`None`
+    /// when no time is left). A look that finds none asks the local children
+    /// for room again.
     fn look(
         &self,
         children: Option<&LocalRunExecutors>,
-        until: Instant,
+        left: Duration,
     ) -> Result<StreamId, Option<Duration>> {
         if let Some(stream) = self.streams.most_room() {
             return Ok(stream);
@@ -144,7 +138,6 @@ impl PullStreamCompiler {
         if let Some(children) = children {
             children.request_room();
         }
-        let left = until.saturating_duration_since(Instant::now());
         Err((!left.is_zero()).then(|| left.min(ASK_AGAIN)))
     }
 
@@ -154,10 +147,11 @@ impl PullStreamCompiler {
         let children = match &self.target {
             #[cfg(any(test, feature = "test-support"))]
             Target::Stream(stream) => return Some(*stream),
-            Target::MostRoom { children, .. } => children.as_ref(),
+            Target::MostRoom { children } => children.as_ref(),
         };
         loop {
-            match self.look(children, until) {
+            let left = until.saturating_duration_since(Instant::now());
+            match self.look(children, left) {
                 Ok(stream) => return Some(stream),
                 Err(None) => return None,
                 Err(Some(wait)) => self.streams.wait_for_room(wait),
@@ -174,7 +168,10 @@ impl PullStreamCompiler {
         time_left: Duration,
         call: &Call,
     ) -> Result<Read, CompileError> {
-        if time_left.saturating_sub(called.elapsed()).is_zero() {
+        let until = called + time_left;
+        let left = || until.saturating_duration_since(Instant::now());
+        let millis = |left: Duration| u32::try_from(left.as_millis()).unwrap_or(u32::MAX);
+        if left().is_zero() {
             return Err(CompileError::TimedOut);
         }
         // The source, not the compiler, passed the bound: rejected before
@@ -185,8 +182,6 @@ impl PullStreamCompiler {
                 message: TOO_LARGE.to_owned(),
             }));
         }
-        let left = || time_left.saturating_sub(called.elapsed());
-        let time_left_ms = || u32::try_from(left().as_millis()).unwrap_or(u32::MAX);
         // The first call spends the unit `ready` held for it, unless its
         // stream is ending: then it looks for room as any call does.
         let on_held = self
@@ -196,7 +191,7 @@ impl PullStreamCompiler {
             .and_then(|stream| {
                 let sent = self
                     .streams
-                    .compile_held(stream, time_left_ms(), call.clone());
+                    .compile_held(stream, millis(left()), call.clone());
                 if sent.is_err() {
                     self.streams.let_go(stream);
                 }
@@ -205,14 +200,17 @@ impl PullStreamCompiler {
         let answer = if let Some(answer) = on_held {
             answer
         } else {
+            // A call no stream took was not judged: it fails as no compiler,
+            // never as a compile timeout.
+            let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
+            let room_until = called + time_left.saturating_sub(ROOM_WAIT_RESERVE);
             loop {
-                let stream = self
-                    .room(called + time_left)
-                    .ok_or(CompileError::TimedOut)?;
-                if left().is_zero() {
-                    return Err(CompileError::TimedOut);
+                let stream = self.room(room_until).ok_or_else(no_compiler)?;
+                let left = left();
+                if left.is_zero() {
+                    return Err(no_compiler());
                 }
-                match self.streams.compile(stream, time_left_ms(), call.clone()) {
+                match self.streams.compile(stream, millis(left), call.clone()) {
                     Ok(answer) => break answer,
                     // Another call took the room first: look again.
                     Err(Refused::NoRoom | Refused::Closed)
@@ -242,13 +240,15 @@ impl PullStreamCompiler {
 #[tonic::async_trait]
 impl CompilerClient for PullStreamCompiler {
     async fn ready(&self) -> Result<Option<Arc<dyn CompilerClient>>, CompileError> {
-        let (children, wait) = match &self.target {
-            Target::MostRoom { children, wait } if self.held.is_none() => (children, *wait),
+        let children = match &self.target {
+            Target::MostRoom { children } if self.held.is_none() => children,
             _ => return Ok(None),
         };
-        let until = Instant::now() + wait;
+        // Tokio's clock, which a test can pause.
+        let until = tokio::time::Instant::now() + COMPILE_WAIT;
         loop {
-            let stream = match self.look(children.as_ref(), until) {
+            let left = until.saturating_duration_since(tokio::time::Instant::now());
+            let stream = match self.look(children.as_ref(), left) {
                 Ok(stream) => stream,
                 Err(None) => return Err(CompileError::Unavailable(Unavailable::NoCompiler)),
                 Err(Some(wait)) => {

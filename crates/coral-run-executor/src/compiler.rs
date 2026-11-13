@@ -33,10 +33,12 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
 ///
 /// Admission analyzes the Program, then each level of the graph of Private
 /// and Shared Tools it links, then compiles. An Authored Tool save or publish
-/// analyzes the module, then prepares it. Each call carries `time_left`, the time left until its caller's
-/// compilation deadline. A call ends [`CompileError::TimedOut`] once that
-/// time runs out, while it waits or while it compiles. A call carries source
-/// and no authority.
+/// analyzes the module, then prepares it. Each call carries `time_left`, the
+/// time left until its caller's compilation deadline. A call ends
+/// [`CompileError::TimedOut`] once that time runs out while it compiles. A
+/// call that no compiler took within it fails as [`Unavailable::NoCompiler`]
+/// from a pull stream, and as [`CompileError::TimedOut`] from the queue of a
+/// compiler in this process. A call carries source and no authority.
 #[tonic::async_trait]
 pub trait CompilerClient: Send + Sync {
     /// Waits until a compiler can take a call, for at most the client's
@@ -133,7 +135,8 @@ pub fn time_left(deadline: Instant) -> Duration {
 /// Why a compiler call returned no result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
-    /// The call's time ran out while it waited or compiled.
+    /// The call's time ran out while it compiled, or while it waited in the
+    /// queue of a compiler in this process.
     TimedOut,
     /// The compiler rejected the source, with safe diagnostics for its author.
     Diagnostics(Diagnostics),

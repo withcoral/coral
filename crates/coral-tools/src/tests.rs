@@ -1000,6 +1000,11 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
         ),
         (CompileFailure::Stopped, "compiler_worker_stopped", None),
         (
+            CompileFailure::NoCompiler,
+            "no_compiler",
+            Some("authoring_compiler_unavailable"),
+        ),
+        (
             CompileFailure::Failed("engine"),
             "compiler_unavailable",
             None,
