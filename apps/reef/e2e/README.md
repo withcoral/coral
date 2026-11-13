@@ -489,6 +489,10 @@ After `page.goto`, assert the response status before you wait for content. An
 error page renders at once, and every later wait then times out with a message
 that hides the cause.
 
+A harness failure carries its cause in its message, such as a process's last
+output, so the job log alone explains it. A message that only names a log file
+sends the reader to an artifact they may not have.
+
 ### Run one scenario in both topologies
 
 A parity scenario asserts the same domain facts in the remote and local topologies.
