@@ -4,7 +4,7 @@
 //! text-search objects each backend needs: generated `tsvector` columns, trigram indexes
 //! and statistics tables on Postgres, an FTS5 table and its triggers on
 //! `SQLite`. Those objects need database features that a migration cannot
-//! create or explain. [`prepare_storage`] checks them before the chain runs,
+//! ensure or explain. [`prepare_storage`] checks them before the chain runs,
 //! and pgvector too while the vector side is on. [`prepare_vector_table`]
 //! keeps the pgvector table of Search Entity embeddings on Postgres after the
 //! chain runs.

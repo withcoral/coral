@@ -78,11 +78,14 @@ done <<<"$added"
 
 # With `[search] semantic_search_enabled = false`, Coral starts on a Postgres
 # without pgvector, and the chain must too. The vector table lives outside the
-# chain: coral_search::prepare_vector_table creates it at boot.
+# chain: coral_search::prepare_vector_table creates it at boot. A bare
+# `vector` counts only as a column type: search migrations also use the word
+# for a text vector, as in `unnest(vector)`.
 pgvector="$(echo "$added" | { grep -v '^$' || true; } | while IFS= read -r file; do
   grep -qiE \
     -e '(^|[^[:alnum:]_])(halfvec|sparsevec)([^[:alnum:]_]|$)' \
     -e '(^|[^[:alnum:]_])vector[[:space:]]*\(' \
+    -e '[[:alnum:]_"][[:space:]]+vector[[:space:]]*([,);[]|$|(not|null|default|primary|references|unique|check|constraint|generated|collate)([^[:alnum:]_]|$))' \
     -e '::[[:space:]]*vector([^[:alnum:]_]|$)' \
     -e 'extension[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?"?vector([^[:alnum:]_]|$)' \
     "$file" && echo "$file"

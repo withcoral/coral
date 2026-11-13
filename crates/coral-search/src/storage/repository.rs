@@ -35,8 +35,8 @@ pub(super) async fn postgres_server_version(
     Ok(version)
 }
 
-/// Whether this role can use `extension` now: `pg_trgm` when the database
-/// has it, `vector` when its `halfvec` type is on the search path.
+/// Whether `extension` is there: `pg_trgm` when the database has it, in any
+/// schema; `vector` when its `halfvec` type is on the search path.
 pub(super) async fn extension_usable(
     transaction: &mut Transaction<'_>,
     extension: Extension,
@@ -90,10 +90,10 @@ pub(super) enum VectorTable {
 ///
 /// The table is keyed like `search_entities` and carries the columns the
 /// vector query filters on, so that query reads this table alone. It has no
-/// foreign key, not even to `workspace_records`: the reconcile pass removes
-/// vectors whose Search Entity or Workspace is gone. The ADR "Universal
-/// Search adds a vector list from a bundled CPU model" amends ADR 0017's
-/// rule that each search table keeps its Workspace key.
+/// foreign key, not even to `workspace_records`: the Embedder's reconcile
+/// pass (#3055) will remove vectors whose Search Entity or Workspace is gone.
+/// The ADR "Universal Search adds a vector list from a bundled CPU model"
+/// amends ADR 0017's rule that each search table keeps its Workspace key.
 fn vector_table_statement(dimension: usize) -> String {
     format!(
         "CREATE TABLE search_entity_embeddings (\

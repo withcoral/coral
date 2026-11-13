@@ -588,9 +588,9 @@ struct SearchSettings {
     /// Seconds between the end of one reconcile pass and the start of the
     /// next.
     reconcile_interval_seconds: u64,
-    /// Whether Coral prepares search by meaning. Off, Coral keeps no
-    /// vectors and needs no pgvector. Off by default until search by
-    /// meaning ships.
+    /// Whether Coral prepares search by meaning. Off, Coral needs no
+    /// pgvector and makes no vectors, and it leaves a vector table from an
+    /// earlier start as it is. Off by default until search by meaning ships.
     semantic_search_enabled: bool,
 }
 

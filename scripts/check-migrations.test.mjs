@@ -53,6 +53,11 @@ const changes = {
       'crates/coral-db/migrations/postgres/0010_embeddings.sql',
       'ALTER TABLE runs ADD COLUMN embedding halfvec(384);\n',
     ),
+  'adds a migration with a pgvector column of no fixed dimension': (repo) =>
+    repo.write(
+      'crates/coral-db/migrations/postgres/0010_embeddings.sql',
+      'ALTER TABLE runs ADD COLUMN embedding vector NOT NULL;\n',
+    ),
   'adds a migration that creates pgvector': (repo) =>
     repo.write('crates/coral-db/migrations/postgres/0010_vector.sql', 'CREATE EXTENSION IF NOT EXISTS vector;\n'),
 }
@@ -82,6 +87,12 @@ const accepted = {
     repo.write(
       'crates/coral-db/migrations/postgres/0010_runs.sql',
       "ALTER TABLE runs ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', id)) STORED;\n",
+    ),
+  'adds the next migration with a text vector named vector': (repo) =>
+    repo.write(
+      'crates/coral-db/migrations/postgres/0010_runs.sql',
+      'CREATE FUNCTION lexemes(vector TSVECTOR) RETURNS BIGINT\n' +
+        "LANGUAGE sql IMMUTABLE AS 'SELECT count(*) FROM unnest(vector)';\n",
     ),
   'adds the next migration for each database': async (repo) => {
     await repo.write('crates/coral-db/migrations/postgres/0010_runs.sql', runs)
