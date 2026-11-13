@@ -105,10 +105,9 @@ impl From<CompileFailure> for PackageFailure {
 #[async_trait::async_trait]
 pub(crate) trait ProgramEngine: Send + Sync {
     /// Waits until a compiler can take a call, for at most the compiler
-    /// client's own bound, holding no thread. The compilation deadline
-    /// starts after it. `Some` is an engine that holds room for this
-    /// admission's first call, which compiles through it; `None`: this
-    /// engine as it is.
+    /// client's own bound. The compilation deadline starts after it. `Some`
+    /// is an engine that holds room for this admission's first call, which
+    /// compiles through it; `None`: this engine as it is.
     async fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
         Ok(None)
     }
@@ -117,7 +116,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
     /// `sources`. The first source that fails stops the analysis, and its
     /// failure names the source. An engine that finds nothing names nothing,
     /// and admission links and checks nothing.
-    fn analyze(
+    async fn analyze(
         &self,
         _deadline: Instant,
         sources: &[AdmissionSource],
@@ -129,7 +128,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
     /// initialization order, and with `builtin_tools`, the Workspace's
     /// Built-in Tools, on `coral`, checked first against the `callable`
     /// Call Paths when there are any.
-    fn compile(
+    async fn compile(
         &self,
         deadline: Instant,
         source: &str,
@@ -201,7 +200,7 @@ impl ProgramEngine for V8ProgramEngine {
         }))
     }
 
-    fn analyze(
+    async fn analyze(
         &self,
         deadline: Instant,
         sources: &[AdmissionSource],
@@ -218,6 +217,7 @@ impl ProgramEngine for V8ProgramEngine {
         let references = self
             .compiler
             .analyze(time_left(deadline), &analyzed)
+            .await
             .map_err(|AnalysisError { index, error }| match sources.get(index) {
                 Some(source) => compile_failure_for_source(error, &source.name()),
                 None => CompileFailure::Failed("compiler_protocol"),
@@ -232,7 +232,7 @@ impl ProgramEngine for V8ProgramEngine {
             .collect()
     }
 
-    fn compile(
+    async fn compile(
         &self,
         deadline: Instant,
         source: &str,
@@ -262,6 +262,7 @@ impl ProgramEngine for V8ProgramEngine {
                 builtin_tools,
                 callable,
             )
+            .await
             .map_err(|error| match error {
                 CompileError::Diagnostics(Diagnostics::UnknownTools { linked, calls }) => {
                     PackageFailure::UnknownTools { linked, calls }

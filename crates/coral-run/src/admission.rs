@@ -379,24 +379,19 @@ impl RunModule {
             .callable_tool_paths(actor, workspace_id, &candidates, compilation_deadline)
             .await;
         let builtin_tools = self.builtin_tools(workspace_id).await?;
-        let engine = engine.clone();
-        let compile_linked = linked.clone();
-        let compile = tokio::task::spawn_blocking(move || {
-            engine.compile(
-                compilation_deadline,
-                &source,
-                &compile_linked,
-                &builtin_tools,
-                callable.as_deref(),
-            )
-        });
+        let compile = engine.compile(
+            compilation_deadline,
+            &source,
+            &linked,
+            &builtin_tools,
+            callable.as_deref(),
+        );
         let package = match timeout_at(compilation_deadline.into(), compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
-            Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(PackageFailure::UnknownTools {
+            Ok(Err(PackageFailure::UnknownTools {
                 linked: unknown_in,
                 calls,
-            }))) => {
+            })) => {
                 let source_name = match unknown_in {
                     None => "Program".to_string(),
                     Some(index) => linked
@@ -420,8 +415,8 @@ impl RunModule {
                     )
                     .await);
             }
-            Ok(Ok(Err(PackageFailure::Compile(failure)))) => return Err(domain_error(failure)),
-            Ok(Ok(Ok(package))) => package,
+            Ok(Err(PackageFailure::Compile(failure))) => return Err(domain_error(failure)),
+            Ok(Ok(package)) => package,
         };
         package.validate()?;
         Ok((package, linked))
@@ -753,22 +748,19 @@ impl RunModule {
         }
     }
 
-    /// Analyzes `sources` on a blocking worker within the admission
-    /// deadline: one result per source, in order.
+    /// Analyzes `sources` within the admission deadline: one result per
+    /// source, in order.
     async fn analyze(
         &self,
         engine: &Arc<dyn ProgramEngine>,
         sources: Vec<AdmissionSource>,
         compilation_deadline: Instant,
     ) -> Result<Vec<AdmissionReferences>, Error> {
-        let engine = engine.clone();
-        let analyze =
-            tokio::task::spawn_blocking(move || engine.analyze(compilation_deadline, &sources));
+        let analyze = engine.analyze(compilation_deadline, &sources);
         match timeout_at(compilation_deadline.into(), analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
-            Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(failure))) => Err(domain_error(failure)),
-            Ok(Ok(Ok(analyzed))) => Ok(analyzed),
+            Ok(Err(failure)) => Err(domain_error(failure)),
+            Ok(Ok(analyzed)) => Ok(analyzed),
         }
     }
 }

@@ -6,14 +6,14 @@ use std::future::{Future, pending};
 use std::hash::{BuildHasher as _, RandomState};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc as sync_mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_db::Database;
 use coral_telemetry::safe;
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior, Sleep, interval_at, sleep_until, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Server;
@@ -205,10 +205,7 @@ pub enum Refused {
 #[derive(Clone, Default)]
 pub struct PullStreams {
     held: Arc<Mutex<HashMap<StreamId, Held>>>,
-    /// Signalled when a stream opens or reports its room, for a call that
-    /// waits on a blocking thread.
-    roomed: Arc<Condvar>,
-    /// The same signal, for a caller that waits asynchronously.
+    /// Signalled when a stream opens or reports its room.
     room_signal: Arc<tokio::sync::Notify>,
     next: Arc<AtomicU64>,
 }
@@ -234,7 +231,7 @@ struct InFlight {
     /// The answers it accepts.
     takes: Takes,
     /// Where its answer goes: a channel of one, sent on once.
-    answered: sync_mpsc::SyncSender<Read>,
+    answered: oneshot::Sender<Read>,
 }
 
 impl Held {
@@ -281,19 +278,6 @@ impl PullStreams {
             .map(|held| held.view.stream)
     }
 
-    /// Blocks until a stream opens or reports its room, or for `wait`.
-    pub(crate) fn wait_for_room(&self, wait: Duration) {
-        let held = lock(&self.held);
-        if has_room(&held) {
-            return;
-        }
-        drop(
-            self.roomed
-                .wait_timeout(held, wait)
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-    }
-
     /// Waits until a stream opens or reports its room, or for `wait`,
     /// holding no thread.
     pub(crate) async fn room_signalled(&self, wait: Duration) {
@@ -309,7 +293,6 @@ impl PullStreams {
 
     /// Wakes every caller that waits for room.
     fn signal_room(&self) {
-        self.roomed.notify_all();
         self.room_signal.notify_waiters();
     }
 
@@ -344,7 +327,7 @@ impl PullStreams {
         stream: StreamId,
         time_left_ms: u32,
         call: Call,
-    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+    ) -> Result<oneshot::Receiver<Read>, Refused> {
         self.send_compile(stream, time_left_ms, call, false)
     }
 
@@ -375,7 +358,7 @@ impl PullStreams {
         stream: StreamId,
         time_left_ms: u32,
         call: Call,
-    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+    ) -> Result<oneshot::Receiver<Read>, Refused> {
         self.send_compile(stream, time_left_ms, call, true)
     }
 
@@ -385,7 +368,7 @@ impl PullStreams {
         time_left_ms: u32,
         call: Call,
         on_held_unit: bool,
-    ) -> Result<sync_mpsc::Receiver<Read>, Refused> {
+    ) -> Result<oneshot::Receiver<Read>, Refused> {
         if too_large(&call) {
             return Err(Refused::TooLarge);
         }
@@ -411,7 +394,7 @@ impl PullStreams {
         if let pull_response::Message::Compile(compile) = &mut message {
             compile.number = number;
         }
-        let (answered, answer) = sync_mpsc::sync_channel(1);
+        let (answered, answer) = oneshot::channel();
         let in_flight = InFlight {
             due: Instant::now() + Duration::from_millis(time_left_ms.into()),
             takes,
@@ -502,7 +485,7 @@ impl PullStreams {
         });
         if let Some(in_flight) = answered {
             // An answer nobody waits for any more is dropped.
-            drop(in_flight.answered.try_send(read));
+            drop(in_flight.answered.send(read));
         }
         Ok(())
     }

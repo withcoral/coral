@@ -48,8 +48,9 @@ impl BurstEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl ProgramEngine for BurstEngine {
-    fn compile(
+    async fn compile(
         &self,
         _deadline: std::time::Instant,
         source: &str,

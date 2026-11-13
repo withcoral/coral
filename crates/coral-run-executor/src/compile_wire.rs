@@ -49,7 +49,7 @@ pub(crate) fn package_sha256(script: &str, source_map: &str) -> [u8; 32] {
 
 /// Serves one `Compile` that arrived at `received` with `compiler`. Its time
 /// runs from its arrival, so its wait in the queue counts.
-pub(crate) fn serve(
+pub(crate) async fn serve(
     compiler: &dyn CompilerClient,
     received: Instant,
     compile: Compile,
@@ -61,7 +61,7 @@ pub(crate) fn serve(
                 .into_iter()
                 .map(analyzed_source)
                 .collect::<Result<Vec<_>, _>>()?;
-            match compiler.analyze(time_left, &sources) {
+            match compiler.analyze(time_left, &sources).await {
                 Ok(analyzed) => Answer::Analyzed(wire::Analyzed {
                     sources: analyzed.iter().map(source_references_wire).collect(),
                 }),
@@ -86,13 +86,15 @@ pub(crate) fn serve(
             let callable = callable.map(|callable| callable.call_paths);
             let builtin_tools = BuiltinTools::new(builtin_tools);
             answer(
-                compiler.compile(
-                    time_left,
-                    &source,
-                    &linked,
-                    &builtin_tools,
-                    callable.as_deref(),
-                ),
+                compiler
+                    .compile(
+                        time_left,
+                        &source,
+                        &linked,
+                        &builtin_tools,
+                        callable.as_deref(),
+                    )
+                    .await,
                 |program| Answer::Package(package(program)),
             )
         }
@@ -104,7 +106,9 @@ pub(crate) fn serve(
             let declarations = declarations.map(coral_declarations).transpose()?;
             let builtin_tools = BuiltinTools::new(builtin_tools);
             answer(
-                compiler.prepare(time_left, &source, &builtin_tools, declarations.as_ref()),
+                compiler
+                    .prepare(time_left, &source, &builtin_tools, declarations.as_ref())
+                    .await,
                 |prepared| Answer::Prepared(prepared_answer(&prepared)),
             )
         }
@@ -616,8 +620,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_call_past_its_time_answers_timed_out() {
+    #[tokio::test]
+    async fn a_call_past_its_time_answers_timed_out() {
         let compiler = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
         let compile = |time_left_ms| Compile {
             number: 7,
@@ -635,14 +639,18 @@ mod tests {
             (now, 0),
             (now.checked_sub(Duration::from_secs(3)).unwrap(), 2_000),
         ] {
-            let served = serve(&compiler, received, compile(time_left_ms)).unwrap();
+            let served = serve(&compiler, received, compile(time_left_ms))
+                .await
+                .unwrap();
             let timed_out = Answer::Failure(wire::CompileFailure {
                 failure: Some(Failure::TimedOut(true)),
             });
             assert_eq!((served.number, served.answer), (7, Some(timed_out)));
         }
         let time_left_ms = u32::try_from(TEST_COMPILATION_TIMEOUT.as_millis()).unwrap();
-        let served = serve(&compiler, Instant::now(), compile(time_left_ms)).unwrap();
+        let served = serve(&compiler, Instant::now(), compile(time_left_ms))
+            .await
+            .unwrap();
         assert!(matches!(served.answer, Some(Answer::Package(_))));
     }
 }

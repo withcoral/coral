@@ -2,7 +2,6 @@
 //! waits when none has room.
 
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
@@ -30,12 +29,12 @@ fn open(streams: &PullStreams, free: u32) -> (StreamId, Sent) {
     (stream, sent)
 }
 
-/// Answers the next `Compile` sent on `stream`, then reports `free` when
-/// there is any to report.
-fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent, free: Option<u32>) {
+/// Answers the next `Compile` sent on `stream`, as a Run Executor does,
+/// then reports `free` when there is any to report.
+async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent, free: Option<u32>) {
     let Some(Ok(PullResponse {
         message: Some(pull_response::Message::Compile(compile)),
-    })) = sent.blocking_recv()
+    })) = sent.recv().await
     else {
         panic!("a Compile");
     };
@@ -50,38 +49,22 @@ fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent, free: Option
     }
 }
 
-fn compile(caller: &dyn CompilerClient) -> Result<String, CompileError> {
-    let program = caller.compile(
-        TEST_COMPILATION_TIMEOUT,
-        "return 42;",
-        &[],
-        &coral_v8::BuiltinTools::default(),
-        None,
-    )?;
+async fn compile(caller: &dyn CompilerClient) -> Result<String, CompileError> {
+    let program = caller
+        .compile(
+            TEST_COMPILATION_TIMEOUT,
+            "return 42;",
+            &[],
+            &coral_v8::BuiltinTools::default(),
+            None,
+        )
+        .await?;
     Ok(program.javascript().to_owned())
 }
 
-/// Answers the next `Compile` sent on `stream` from a blocking worker, as
-/// a Run Executor does, then reports `free` when there is any to report.
-/// Returns what was sent.
-async fn answered(
-    streams: &PullStreams,
-    stream: StreamId,
-    mut sent: Sent,
-    free: Option<u32>,
-) -> Sent {
-    let streams = streams.clone();
-    tokio::task::spawn_blocking(move || {
-        answer(&streams, stream, &mut sent, free);
-        sent
-    })
-    .await
-    .expect("the answer")
-}
-
-/// Compiles through `caller` on a blocking worker, as admission does.
+/// Compiles through `caller` in a task of its own, as admission does.
 fn compiling(caller: Arc<dyn CompilerClient>) -> JoinHandle<Result<String, CompileError>> {
-    tokio::task::spawn_blocking(move || compile(caller.as_ref()))
+    tokio::spawn(async move { compile(caller.as_ref()).await })
 }
 
 /// Waits for a compiler as admission does: the held client.
@@ -108,7 +91,7 @@ fn free(streams: &PullStreams, stream: StreamId) -> u32 {
 async fn a_call_takes_a_unit_of_the_stream_with_the_most_room_until_its_answer() {
     let streams = PullStreams::default();
     let (low, _low_sent) = open(&streams, 1);
-    let (most, sent) = open(&streams, 3);
+    let (most, mut sent) = open(&streams, 3);
     let (mid, _mid_sent) = open(&streams, 2);
     let caller = PullStreamCompiler::new(streams.clone(), None);
     let first = held(&caller).await;
@@ -122,7 +105,7 @@ async fn a_call_takes_a_unit_of_the_stream_with_the_most_room_until_its_answer()
         "one unit of the stream with the most room held"
     );
     let calling = compiling(first);
-    answered(&streams, most, sent, None).await;
+    answer(&streams, most, &mut sent, None).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(
         free(&streams, most),
@@ -139,9 +122,9 @@ async fn a_call_waits_for_a_pull_stream_and_fails_past_the_bound() {
     let waiting = held_later(&caller);
     tokio::time::sleep(COMPILE_WAIT / 2).await;
     assert!(!waiting.is_finished(), "it waits for a stream");
-    let (stream, sent) = open(&streams, 1);
+    let (stream, mut sent) = open(&streams, 1);
     let calling = compiling(waiting.await.unwrap());
-    answered(&streams, stream, sent, Some(1)).await;
+    answer(&streams, stream, &mut sent, Some(1)).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
 
     // A stream with no room is no compiler: past the bound, none is.
@@ -162,36 +145,45 @@ async fn a_call_waits_for_a_pull_stream_and_fails_past_the_bound() {
 }
 
 // Catches: a call no stream took that fails as a compile timeout, which
-// rejects the source, though no compiler judged it.
-#[test]
-fn a_call_no_stream_takes_in_its_time_fails_as_no_compiler() {
+// rejects the source, though no compiler judged it; or that says so only
+// once its caller's own deadline has ended the wait.
+#[tokio::test(start_paused = true)]
+async fn a_call_no_stream_takes_in_its_time_fails_as_no_compiler_before_its_deadline() {
     let streams = PullStreams::default();
     let (_full, _sent) = open(&streams, 0);
     let caller = PullStreamCompiler::new(streams, None);
-    // Less time left than a call keeps when it waits for room: it looks once.
-    let result = caller.compile(
-        ROOM_WAIT_RESERVE / 2,
-        "return 42;",
-        &[],
-        &coral_v8::BuiltinTools::default(),
-        None,
-    );
+    let time_left = Duration::from_secs(2);
+    let started = tokio::time::Instant::now();
+    let result = caller
+        .compile(
+            time_left,
+            "return 42;",
+            &[],
+            &coral_v8::BuiltinTools::default(),
+            None,
+        )
+        .await;
     assert_eq!(
         result.map(|_compiled| ()),
         Err(CompileError::Unavailable(Unavailable::NoCompiler))
     );
+    assert_eq!(
+        Some(started.elapsed()),
+        time_left.checked_sub(ROOM_WAIT_RESERVE),
+        "it stops waiting a reserve before its deadline"
+    );
 }
 
-#[test]
-fn a_stream_that_ends_fails_its_calls_in_flight() {
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_ends_fails_its_calls_in_flight() {
     let streams = PullStreams::default();
     let (stream, mut sent) = open(&streams, 1);
     let caller = PullStreamCompiler::new(streams.clone(), None);
-    let calling = thread::spawn(move || compile(&caller));
-    assert!(sent.blocking_recv().is_some(), "a Compile");
+    let calling = tokio::spawn(async move { compile(&caller).await });
+    assert!(sent.recv().await.is_some(), "a Compile");
     streams.end(stream, None);
     assert_eq!(
-        calling.join().unwrap(),
+        calling.await.unwrap(),
         Err(CompileError::Unavailable(Unavailable::Stopped))
     );
 }
@@ -212,11 +204,11 @@ async fn a_call_with_no_room_starts_a_local_child_that_serves_it() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
-    let (outbound, sent) = mpsc::unbounded_channel();
+    let (outbound, mut sent) = mpsc::unbounded_channel();
     let admitted = credentials.admit(Some(&bearer)).expect("the child's token");
     let child = streams.insert(uuid::Uuid::new_v4().to_string(), admitted, 1, outbound);
     let calling = compiling(waiting.await.unwrap());
-    answered(&streams, child, sent, Some(1)).await;
+    answer(&streams, child, &mut sent, Some(1)).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(starter.bearers().len(), 1, "one child started");
 }
@@ -226,7 +218,7 @@ async fn a_call_with_no_room_starts_a_local_child_that_serves_it() {
 #[tokio::test(start_paused = true)]
 async fn ready_holds_the_unit_for_its_caller_until_its_first_call() {
     let streams = PullStreams::default();
-    let (stream, sent) = open(&streams, 1);
+    let (stream, mut sent) = open(&streams, 1);
     let caller = PullStreamCompiler::new(streams.clone(), None);
     let first = held(&caller).await;
     assert_eq!(free(&streams, stream), 0, "held for the first caller");
@@ -239,10 +231,10 @@ async fn ready_holds_the_unit_for_its_caller_until_its_first_call() {
     // The first call spends the held unit; its room report frees it for
     // the second.
     let calling = compiling(first);
-    let sent = answered(&streams, stream, sent, Some(1)).await;
+    answer(&streams, stream, &mut sent, Some(1)).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
     let calling = compiling(waiting.await.unwrap());
-    answered(&streams, stream, sent, Some(1)).await;
+    answer(&streams, stream, &mut sent, Some(1)).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
 
     // A held unit no call spends is freed when its client drops.

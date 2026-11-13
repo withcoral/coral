@@ -1857,9 +1857,10 @@ async fn one_users_private_tools_at_the_same_path_stay_scoped_to_each_workspace(
     );
 }
 
-/// Compiles every source to one fixed declaration once its gate opens.
+/// Compiles every source to one fixed declaration once its gate opens. The
+/// gate blocks, so it waits on a blocking worker as a compiler does.
 struct GatedAuthoredToolCompiler {
-    gate: Box<dyn Fn() -> Result<(), CompileFailure> + Send + Sync>,
+    gate: Arc<dyn Fn() -> Result<(), CompileFailure> + Send + Sync>,
 }
 
 impl GatedAuthoredToolCompiler {
@@ -1867,7 +1868,7 @@ impl GatedAuthoredToolCompiler {
     fn paired() -> Self {
         let barrier = Barrier::new(2);
         Self {
-            gate: Box::new(move || {
+            gate: Arc::new(move || {
                 barrier.wait();
                 Ok(())
             }),
@@ -1881,7 +1882,7 @@ impl GatedAuthoredToolCompiler {
         let (release, released) = mpsc::channel();
         let released = Mutex::new(released);
         let compiler = Self {
-            gate: Box::new(move || {
+            gate: Arc::new(move || {
                 started.notify_one();
                 released
                     .lock()
@@ -1897,13 +1898,14 @@ impl GatedAuthoredToolCompiler {
     /// Compilation always ends in `failure`.
     fn failing(failure: CompileFailure) -> Self {
         Self {
-            gate: Box::new(move || Err(failure.clone())),
+            gate: Arc::new(move || Err(failure.clone())),
         }
     }
 }
 
+#[async_trait::async_trait]
 impl AuthoredToolCompiler for GatedAuthoredToolCompiler {
-    fn analyze(
+    async fn analyze(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
@@ -1911,13 +1913,16 @@ impl AuthoredToolCompiler for GatedAuthoredToolCompiler {
         None
     }
 
-    fn prepare(
+    async fn prepare(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
         _declarations: Option<&coral_v8::CoralDeclarations>,
     ) -> Result<PreparedAuthoredTool, CompileFailure> {
-        (self.gate)()?;
+        let gate = Arc::clone(&self.gate);
+        tokio::task::spawn_blocking(move || gate())
+            .await
+            .map_err(|_join_error| CompileFailure::Stopped)??;
         Ok(PreparedAuthoredTool {
             declaration: crate::AuthoredToolDeclaration::from_compiler(
                 "declare const _default: () => number;\nexport default _default;\n",

@@ -88,13 +88,11 @@ pub(crate) fn up(compiled: Compiled) -> PullRequest {
     }
 }
 
-/// What `answer` receives within 5 s, or why nothing came.
-async fn answer_within(
-    answer: sync_mpsc::Receiver<Read>,
-) -> Result<Read, sync_mpsc::RecvTimeoutError> {
-    tokio::task::spawn_blocking(move || answer.recv_timeout(Duration::from_secs(5)))
+/// What `answer` receives, or an error once its stream ends unanswered.
+async fn answer_within(answer: oneshot::Receiver<Read>) -> Result<Read, oneshot::error::RecvError> {
+    timeout(Duration::from_secs(5), answer)
         .await
-        .unwrap()
+        .expect("an answer or an end within 5 s")
 }
 
 struct Link {
@@ -585,7 +583,7 @@ async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_an
         } else {
             // The compile held the stream until its deadline, unanswered.
             assert!(
-                matches!(reply, Err(sync_mpsc::RecvTimeoutError::Disconnected)),
+                matches!(reply, Err(oneshot::error::RecvError { .. })),
                 "{label}"
             );
             assert!(Instant::now() >= due, "{label}");
@@ -676,7 +674,7 @@ fn an_answer_that_breaks_the_protocol_changes_nothing() {
         let streams = PullStreams::default();
         let (outbound, _sent) = mpsc::unbounded_channel();
         let stream = streams.insert("a-run-executor".to_owned(), dialed_admission(), 1, outbound);
-        let answer = streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
+        let mut answer = streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
         let refused = streams.receive(stream, up(broken(1)));
         assert_eq!(
             refused.map_err(|status| status.code()),

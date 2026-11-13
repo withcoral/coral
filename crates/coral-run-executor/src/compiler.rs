@@ -38,13 +38,14 @@ pub fn tool_check_deadline(compilation_deadline: Instant) -> Option<Instant> {
 /// [`CompileError::TimedOut`] once that time runs out while it compiles. A
 /// call that no compiler took within it fails as [`Unavailable::NoCompiler`]
 /// from a pull stream, and as [`CompileError::TimedOut`] from the queue of a
-/// compiler in this process. A call carries source and no authority.
+/// compiler in this process. A call carries source and no authority. Each
+/// call is async, so its caller holds no async worker while it waits for
+/// room or for its answer.
 #[tonic::async_trait]
 pub trait CompilerClient: Send + Sync {
     /// Waits until a compiler can take a call, for at most the client's
-    /// own bound, holding no thread. A caller starts its compilation
-    /// deadline after it, so the wait for a compiler takes none of the
-    /// compile's time.
+    /// own bound. A caller starts its compilation deadline after it, so the
+    /// wait for a compiler takes none of the compile's time.
     ///
     /// `Some` is a client that holds one unit of room for this caller: its
     /// first call spends it, so no other caller takes it meanwhile, and
@@ -70,7 +71,7 @@ pub trait CompilerClient: Send + Sync {
     /// `coral.shared` access, a Program body with malformed wrapper escapes,
     /// or an Authored Tool module with syntax errors, or it is a timeout or
     /// an unavailable compiler.
-    fn analyze(
+    async fn analyze(
         &self,
         time_left: Duration,
         sources: &[AnalyzedSource],
@@ -91,7 +92,7 @@ pub trait CompilerClient: Send + Sync {
     /// Returns the called chains that name no callable Tool, blocking
     /// diagnostics, invalid linked source, the memory limit, a timeout, or
     /// an unavailable compiler.
-    fn compile(
+    async fn compile(
         &self,
         time_left: Duration,
         source: &str,
@@ -108,7 +109,7 @@ pub trait CompilerClient: Send + Sync {
     ///
     /// Returns a blocking authoring diagnostic, the memory limit, a timeout,
     /// or an unavailable compiler.
-    fn prepare(
+    async fn prepare(
         &self,
         time_left: Duration,
         source: &str,
@@ -116,6 +117,9 @@ pub trait CompilerClient: Send + Sync {
         declarations: Option<&CoralDeclarations>,
     ) -> Result<AuthoredToolCompilation, CompileError>;
 }
+
+/// A call whose compiler stopped before it answered.
+pub(crate) const STOPPED: CompileError = CompileError::Unavailable(Unavailable::Stopped);
 
 /// Why [`CompilerClient::analyze`] stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
