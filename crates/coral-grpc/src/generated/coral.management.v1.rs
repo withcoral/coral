@@ -815,6 +815,9 @@ pub struct ProviderSetup {
     /// added without a sign-in. False when nothing can be connected.
     #[prost(bool, tag = "23")]
     pub connect_later_available: bool,
+    /// The provisional grant names a Secret Store, so only a shared Account can keep it.
+    #[prost(bool, tag = "24")]
+    pub holds_secret_references: bool,
 }
 /// What a Program asked a Setup to publish when it called addProvider. The
 /// person who finishes the Setup can change either.
@@ -934,6 +937,26 @@ pub struct AuthorizeProviderSetupRequest {
     /// Exact reviewed configuration; stale secret submissions must not seal new settings.
     #[prost(int64, tag = "3")]
     pub configuration_revision: i64,
+    /// Secret References by field name, for the shared Account Publication would make.
+    /// A field appears here or in credential_values, never both. Discovery refuses them.
+    #[prost(map = "string, message", tag = "5")]
+    pub secret_references: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        CredentialFieldReference,
+    >,
+}
+/// The address of one Credential Field's value in a Secret Store granted to the Workspace.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CredentialFieldReference {
+    /// secretStores/{store}.
+    #[prost(string, tag = "1")]
+    pub secret_store: ::prost::alloc::string::String,
+    /// Where the value lives in the store.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+    /// The key within the entry, where the store has keys.
+    #[prost(string, tag = "3")]
+    pub key: ::prost::alloc::string::String,
 }
 /// Selects how every Invocation through the Provider obtains credentials.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1807,7 +1830,8 @@ pub mod provider_setup_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Seals one bearer or header secret for this Setup and User; creates no runtime Account.
+        /// Saves this Setup's Credential Fields for this User: seals the typed values and keeps
+        /// each Secret Reference, read once to check it. Creates no runtime Account.
         /// For a ready Setup, authorization fields report this submission's grant,
         /// not a later concurrent grant.
         pub async fn authorize_provider_setup(
@@ -1954,7 +1978,8 @@ pub(crate) mod provider_setup_service_server {
             &self,
             request: tonic::Request<super::ConfirmProviderSetupConfigurationRequest>,
         ) -> std::result::Result<tonic::Response<super::ProviderSetup>, tonic::Status>;
-        /// Seals one bearer or header secret for this Setup and User; creates no runtime Account.
+        /// Saves this Setup's Credential Fields for this User: seals the typed values and keeps
+        /// each Secret Reference, read once to check it. Creates no runtime Account.
         /// For a ready Setup, authorization fields report this submission's grant,
         /// not a later concurrent grant.
         async fn authorize_provider_setup(
@@ -3962,7 +3987,7 @@ pub struct UserAccountInspection {
     pub pending_connection: ::core::option::Option<AccountConnectionRequest>,
 }
 /// An opaque Account reference with safe readiness, never upstream account metadata.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProviderAccount {
     /// UUID, not a credential or private credential generation.
     #[prost(string, tag = "1")]
@@ -3988,6 +4013,13 @@ pub struct ProviderAccount {
     /// Configuring Coral User identifier, not a verified upstream identity.
     #[prost(string, tag = "8")]
     pub configured_by_user: ::prost::alloc::string::String,
+    /// The Credential Fields a Secret Store holds, by field name. Any other field holds
+    /// a typed value, which is never returned.
+    #[prost(map = "string, message", tag = "9")]
+    pub secret_references: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        CredentialFieldReference,
+    >,
 }
 /// Inspects one exact scope; no all-Users inspection exists.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -4173,6 +4205,13 @@ pub struct SubmitProviderAccountSecretRequest {
     pub credential_values: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
+    >,
+    /// Secret References by field name, for the fields a Secret Store holds. Only a
+    /// shared Account takes one. A field appears here or in credential_values, never both.
+    #[prost(map = "string, message", tag = "4")]
+    pub secret_references: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        CredentialFieldReference,
     >,
 }
 /// Encoded OAuth callback data, passed only from the Reef server to Coral.
@@ -15283,6 +15322,837 @@ pub(crate) mod release_service_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+/// Owner-only request. Config bounds the list, so it has no pages.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSecretStoresRequest {}
+/// Every defined store.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSecretStoresResponse {
+    /// Ordered by name.
+    #[prost(message, repeated, tag = "1")]
+    pub secret_stores: ::prost::alloc::vec::Vec<SecretStore>,
+}
+/// One defined store: what it is called, never how Coral reaches it.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecretStore {
+    /// Canonical immutable name: secretStores/{store}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// The kind's token in deployment config, such as `kv-v2`. Empty while
+    /// config does not define the store.
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    /// What people call the kind, such as "Vault KV v2". A kind this build
+    /// lacks shows its token.
+    #[prost(string, tag = "3")]
+    pub kind_label: ::prost::alloc::string::String,
+    /// Whether Coral can read from the store right now.
+    #[prost(enumeration = "SecretStoreState", tag = "4")]
+    pub state: i32,
+    /// What a Secret Reference to the store holds. Set on a store a grant names,
+    /// where a Workspace Owner may choose it for a reference.
+    #[prost(message, optional, tag = "5")]
+    pub reference_form: ::core::option::Option<SecretReferenceForm>,
+}
+/// The parts of a Secret Reference to one store, so a form asks for exactly those.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecretReferenceForm {
+    /// What the path is, such as "Path" or "Variable name".
+    #[prost(string, tag = "1")]
+    pub path_label: ::prost::alloc::string::String,
+    /// What every path the store reads starts with. Empty when the store sets none.
+    #[prost(string, tag = "2")]
+    pub path_prefix: ::prost::alloc::string::String,
+    /// What the key is, such as "Key". Empty when a reference holds no key.
+    #[prost(string, tag = "3")]
+    pub key_label: ::prost::alloc::string::String,
+    /// Whether a reference must hold a key.
+    #[prost(bool, tag = "4")]
+    pub key_required: bool,
+}
+/// Owner-only request. Config and the Workspace count bound the list, so it has no pages.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSecretStoreGrantsRequest {}
+/// Every grant in the Organization.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSecretStoreGrantsResponse {
+    /// Ordered by store, then Workspace.
+    #[prost(message, repeated, tag = "1")]
+    pub grants: ::prost::alloc::vec::Vec<SecretStoreGrant>,
+}
+/// One store granted to one Workspace: what governance may already see of it.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecretStoreGrant {
+    /// Canonical Workspace name: workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// Mutable human label.
+    #[prost(string, tag = "2")]
+    pub workspace_display_name: ::prost::alloc::string::String,
+    /// Current lifecycle state. Only an active Workspace takes a change.
+    #[prost(enumeration = "WorkspaceState", tag = "3")]
+    pub workspace_state: i32,
+    /// The store the grant names.
+    #[prost(message, optional, tag = "4")]
+    pub secret_store: ::core::option::Option<SecretStore>,
+}
+/// Workspace Owner request. Config bounds the list, so it has no pages.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListWorkspaceSecretStoresRequest {
+    /// Canonical Workspace name.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+}
+/// The stores granted to one Workspace.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListWorkspaceSecretStoresResponse {
+    /// Ordered by name.
+    #[prost(message, repeated, tag = "1")]
+    pub secret_stores: ::prost::alloc::vec::Vec<SecretStore>,
+}
+/// Grant one store. Granting a store again changes nothing.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GrantSecretStoreRequest {
+    /// Canonical Workspace name. The Workspace must be active.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// secretStores/{store}. Config must define it.
+    #[prost(string, tag = "2")]
+    pub secret_store: ::prost::alloc::string::String,
+    /// First-party UUID. Reuse cannot grant again after a revocation.
+    #[prost(string, tag = "3")]
+    pub request_id: ::prost::alloc::string::String,
+}
+/// An accepted grant.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GrantSecretStoreResponse {}
+/// Revoke one grant, even when config no longer defines its store. Revoking a
+/// store with no grant changes nothing.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RevokeSecretStoreRequest {
+    /// Canonical Workspace name. The Workspace must be active.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// secretStores/{store}.
+    #[prost(string, tag = "2")]
+    pub secret_store: ::prost::alloc::string::String,
+    /// First-party UUID. Reuse cannot revoke again after a new grant.
+    #[prost(string, tag = "3")]
+    pub request_id: ::prost::alloc::string::String,
+}
+/// An accepted revocation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RevokeSecretStoreResponse {}
+/// Whether Coral can read from a store right now. Reads still decide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecretStoreState {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// Reads go to the store.
+    Available = 1,
+    /// The kind is an Enterprise Feature and the Edition is Community.
+    NeedsEnterprise = 2,
+    /// This build cannot read this kind of store.
+    KindMissing = 3,
+    /// Config no longer defines the store. A grant naming it is kept, and gives
+    /// nothing until the store is defined again.
+    Removed = 4,
+}
+impl SecretStoreState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECRET_STORE_STATE_UNSPECIFIED",
+            Self::Available => "SECRET_STORE_STATE_AVAILABLE",
+            Self::NeedsEnterprise => "SECRET_STORE_STATE_NEEDS_ENTERPRISE",
+            Self::KindMissing => "SECRET_STORE_STATE_KIND_MISSING",
+            Self::Removed => "SECRET_STORE_STATE_REMOVED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECRET_STORE_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECRET_STORE_STATE_AVAILABLE" => Some(Self::Available),
+            "SECRET_STORE_STATE_NEEDS_ENTERPRISE" => Some(Self::NeedsEnterprise),
+            "SECRET_STORE_STATE_KIND_MISSING" => Some(Self::KindMissing),
+            "SECRET_STORE_STATE_REMOVED" => Some(Self::Removed),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod secret_store_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// The Secret Stores the operator defined in deployment config, and their grants
+    /// to Workspaces. A grant shows an Organization Owner nothing inside a Workspace.
+    #[derive(Debug, Clone)]
+    pub struct SecretStoreServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl SecretStoreServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> SecretStoreServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> SecretStoreServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            SecretStoreServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Lists every defined store, ordered by name, for an Organization Owner.
+        pub async fn list_secret_stores(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSecretStoresRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSecretStoresResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SecretStoreService/ListSecretStores",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SecretStoreService",
+                        "ListSecretStores",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Lists every grant in the Organization, ordered by store, for an Organization Owner.
+        pub async fn list_secret_store_grants(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSecretStoreGrantsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSecretStoreGrantsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SecretStoreService/ListSecretStoreGrants",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SecretStoreService",
+                        "ListSecretStoreGrants",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Lists the stores granted to one Workspace, ordered by name, for its Owner.
+        pub async fn list_workspace_secret_stores(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListWorkspaceSecretStoresRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListWorkspaceSecretStoresResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SecretStoreService/ListWorkspaceSecretStores",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SecretStoreService",
+                        "ListWorkspaceSecretStores",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Grants a defined store to an active Workspace, for an Organization Owner.
+        pub async fn grant_secret_store(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GrantSecretStoreRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GrantSecretStoreResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SecretStoreService/GrantSecretStore",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SecretStoreService",
+                        "GrantSecretStore",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Revokes a grant in an active Workspace, for an Organization Owner.
+        pub async fn revoke_secret_store(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RevokeSecretStoreRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RevokeSecretStoreResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SecretStoreService/RevokeSecretStore",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SecretStoreService",
+                        "RevokeSecretStore",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod secret_store_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with SecretStoreServiceServer.
+    #[async_trait]
+    pub trait SecretStoreService: std::marker::Send + std::marker::Sync + 'static {
+        /// Lists every defined store, ordered by name, for an Organization Owner.
+        async fn list_secret_stores(
+            &self,
+            request: tonic::Request<super::ListSecretStoresRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSecretStoresResponse>,
+            tonic::Status,
+        >;
+        /// Lists every grant in the Organization, ordered by store, for an Organization Owner.
+        async fn list_secret_store_grants(
+            &self,
+            request: tonic::Request<super::ListSecretStoreGrantsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSecretStoreGrantsResponse>,
+            tonic::Status,
+        >;
+        /// Lists the stores granted to one Workspace, ordered by name, for its Owner.
+        async fn list_workspace_secret_stores(
+            &self,
+            request: tonic::Request<super::ListWorkspaceSecretStoresRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListWorkspaceSecretStoresResponse>,
+            tonic::Status,
+        >;
+        /// Grants a defined store to an active Workspace, for an Organization Owner.
+        async fn grant_secret_store(
+            &self,
+            request: tonic::Request<super::GrantSecretStoreRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GrantSecretStoreResponse>,
+            tonic::Status,
+        >;
+        /// Revokes a grant in an active Workspace, for an Organization Owner.
+        async fn revoke_secret_store(
+            &self,
+            request: tonic::Request<super::RevokeSecretStoreRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RevokeSecretStoreResponse>,
+            tonic::Status,
+        >;
+    }
+    /// The Secret Stores the operator defined in deployment config, and their grants
+    /// to Workspaces. A grant shows an Organization Owner nothing inside a Workspace.
+    #[derive(Debug)]
+    pub struct SecretStoreServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> SecretStoreServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for SecretStoreServiceServer<T>
+    where
+        T: SecretStoreService,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/coral.management.v1.SecretStoreService/ListSecretStores" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSecretStoresSvc<T: SecretStoreService>(pub Arc<T>);
+                    impl<
+                        T: SecretStoreService,
+                    > tonic::server::UnaryService<super::ListSecretStoresRequest>
+                    for ListSecretStoresSvc<T> {
+                        type Response = super::ListSecretStoresResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListSecretStoresRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecretStoreService>::list_secret_stores(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSecretStoresSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SecretStoreService/ListSecretStoreGrants" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSecretStoreGrantsSvc<T: SecretStoreService>(pub Arc<T>);
+                    impl<
+                        T: SecretStoreService,
+                    > tonic::server::UnaryService<super::ListSecretStoreGrantsRequest>
+                    for ListSecretStoreGrantsSvc<T> {
+                        type Response = super::ListSecretStoreGrantsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListSecretStoreGrantsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecretStoreService>::list_secret_store_grants(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSecretStoreGrantsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SecretStoreService/ListWorkspaceSecretStores" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListWorkspaceSecretStoresSvc<T: SecretStoreService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: SecretStoreService,
+                    > tonic::server::UnaryService<
+                        super::ListWorkspaceSecretStoresRequest,
+                    > for ListWorkspaceSecretStoresSvc<T> {
+                        type Response = super::ListWorkspaceSecretStoresResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ListWorkspaceSecretStoresRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecretStoreService>::list_workspace_secret_stores(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListWorkspaceSecretStoresSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SecretStoreService/GrantSecretStore" => {
+                    #[allow(non_camel_case_types)]
+                    struct GrantSecretStoreSvc<T: SecretStoreService>(pub Arc<T>);
+                    impl<
+                        T: SecretStoreService,
+                    > tonic::server::UnaryService<super::GrantSecretStoreRequest>
+                    for GrantSecretStoreSvc<T> {
+                        type Response = super::GrantSecretStoreResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GrantSecretStoreRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecretStoreService>::grant_secret_store(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GrantSecretStoreSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SecretStoreService/RevokeSecretStore" => {
+                    #[allow(non_camel_case_types)]
+                    struct RevokeSecretStoreSvc<T: SecretStoreService>(pub Arc<T>);
+                    impl<
+                        T: SecretStoreService,
+                    > tonic::server::UnaryService<super::RevokeSecretStoreRequest>
+                    for RevokeSecretStoreSvc<T> {
+                        type Response = super::RevokeSecretStoreResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RevokeSecretStoreRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SecretStoreService>::revoke_secret_store(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RevokeSecretStoreSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for SecretStoreServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "coral.management.v1.SecretStoreService";
+    impl<T> tonic::server::NamedService for SecretStoreServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
 /// Lists the Shared Tools of one Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListSharedToolsRequest {
@@ -16566,817 +17436,6 @@ pub(crate) mod shared_tool_service_server {
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "coral.management.v1.SharedToolService";
     impl<T> tonic::server::NamedService for SharedToolServiceServer<T> {
-        const NAME: &'static str = SERVICE_NAME;
-    }
-}
-/// Owner-only request. Config bounds the list, so it has no pages.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListSecretStoresRequest {}
-/// Every defined store.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListSecretStoresResponse {
-    /// Ordered by name.
-    #[prost(message, repeated, tag = "1")]
-    pub secret_stores: ::prost::alloc::vec::Vec<SecretStore>,
-}
-/// One defined store: what it is called, never how Coral reaches it.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SecretStore {
-    /// Canonical immutable name: secretStores/{store}.
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    /// The kind's token in deployment config, such as `kv-v2`. Empty while
-    /// config does not define the store.
-    #[prost(string, tag = "2")]
-    pub kind: ::prost::alloc::string::String,
-    /// What people call the kind, such as "Vault KV v2". A kind this build
-    /// lacks shows its token.
-    #[prost(string, tag = "3")]
-    pub kind_label: ::prost::alloc::string::String,
-    /// Whether Coral can read from the store right now.
-    #[prost(enumeration = "SecretStoreState", tag = "4")]
-    pub state: i32,
-}
-/// Owner-only request. Config and the Workspace count bound the list, so it has no pages.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListSecretStoreGrantsRequest {}
-/// Every grant in the Organization.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListSecretStoreGrantsResponse {
-    /// Ordered by store, then Workspace.
-    #[prost(message, repeated, tag = "1")]
-    pub grants: ::prost::alloc::vec::Vec<SecretStoreGrant>,
-}
-/// One store granted to one Workspace: what governance may already see of it.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SecretStoreGrant {
-    /// Canonical Workspace name: workspaces/{workspace}.
-    #[prost(string, tag = "1")]
-    pub workspace: ::prost::alloc::string::String,
-    /// Mutable human label.
-    #[prost(string, tag = "2")]
-    pub workspace_display_name: ::prost::alloc::string::String,
-    /// Current lifecycle state. Only an active Workspace takes a change.
-    #[prost(enumeration = "WorkspaceState", tag = "3")]
-    pub workspace_state: i32,
-    /// The store the grant names.
-    #[prost(message, optional, tag = "4")]
-    pub secret_store: ::core::option::Option<SecretStore>,
-}
-/// Workspace Owner request. Config bounds the list, so it has no pages.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListWorkspaceSecretStoresRequest {
-    /// Canonical Workspace name.
-    #[prost(string, tag = "1")]
-    pub parent: ::prost::alloc::string::String,
-}
-/// The stores granted to one Workspace.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListWorkspaceSecretStoresResponse {
-    /// Ordered by name.
-    #[prost(message, repeated, tag = "1")]
-    pub secret_stores: ::prost::alloc::vec::Vec<SecretStore>,
-}
-/// Grant one store. Granting a store again changes nothing.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GrantSecretStoreRequest {
-    /// Canonical Workspace name. The Workspace must be active.
-    #[prost(string, tag = "1")]
-    pub workspace: ::prost::alloc::string::String,
-    /// secretStores/{store}. Config must define it.
-    #[prost(string, tag = "2")]
-    pub secret_store: ::prost::alloc::string::String,
-    /// First-party UUID. Reuse cannot grant again after a revocation.
-    #[prost(string, tag = "3")]
-    pub request_id: ::prost::alloc::string::String,
-}
-/// An accepted grant.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GrantSecretStoreResponse {}
-/// Revoke one grant, even when config no longer defines its store. Revoking a
-/// store with no grant changes nothing.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RevokeSecretStoreRequest {
-    /// Canonical Workspace name. The Workspace must be active.
-    #[prost(string, tag = "1")]
-    pub workspace: ::prost::alloc::string::String,
-    /// secretStores/{store}.
-    #[prost(string, tag = "2")]
-    pub secret_store: ::prost::alloc::string::String,
-    /// First-party UUID. Reuse cannot revoke again after a new grant.
-    #[prost(string, tag = "3")]
-    pub request_id: ::prost::alloc::string::String,
-}
-/// An accepted revocation.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RevokeSecretStoreResponse {}
-/// Whether Coral can read from a store right now. Reads still decide.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum SecretStoreState {
-    /// Unknown to this client.
-    Unspecified = 0,
-    /// Reads go to the store.
-    Available = 1,
-    /// The kind is an Enterprise Feature and the Edition is Community.
-    NeedsEnterprise = 2,
-    /// This build cannot read this kind of store.
-    KindMissing = 3,
-    /// Config no longer defines the store. A grant naming it is kept, and gives
-    /// nothing until the store is defined again.
-    Removed = 4,
-}
-impl SecretStoreState {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "SECRET_STORE_STATE_UNSPECIFIED",
-            Self::Available => "SECRET_STORE_STATE_AVAILABLE",
-            Self::NeedsEnterprise => "SECRET_STORE_STATE_NEEDS_ENTERPRISE",
-            Self::KindMissing => "SECRET_STORE_STATE_KIND_MISSING",
-            Self::Removed => "SECRET_STORE_STATE_REMOVED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "SECRET_STORE_STATE_UNSPECIFIED" => Some(Self::Unspecified),
-            "SECRET_STORE_STATE_AVAILABLE" => Some(Self::Available),
-            "SECRET_STORE_STATE_NEEDS_ENTERPRISE" => Some(Self::NeedsEnterprise),
-            "SECRET_STORE_STATE_KIND_MISSING" => Some(Self::KindMissing),
-            "SECRET_STORE_STATE_REMOVED" => Some(Self::Removed),
-            _ => None,
-        }
-    }
-}
-/// Generated client implementations.
-pub mod secret_store_service_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// The Secret Stores the operator defined in deployment config, and their grants
-    /// to Workspaces. A grant shows an Organization Owner nothing inside a Workspace.
-    #[derive(Debug, Clone)]
-    pub struct SecretStoreServiceClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl SecretStoreServiceClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
-    impl<T> SecretStoreServiceClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> SecretStoreServiceClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            SecretStoreServiceClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// Lists every defined store, ordered by name, for an Organization Owner.
-        pub async fn list_secret_stores(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListSecretStoresRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListSecretStoresResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SecretStoreService/ListSecretStores",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SecretStoreService",
-                        "ListSecretStores",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Lists every grant in the Organization, ordered by store, for an Organization Owner.
-        pub async fn list_secret_store_grants(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListSecretStoreGrantsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListSecretStoreGrantsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SecretStoreService/ListSecretStoreGrants",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SecretStoreService",
-                        "ListSecretStoreGrants",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Lists the stores granted to one Workspace, ordered by name, for its Owner.
-        pub async fn list_workspace_secret_stores(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListWorkspaceSecretStoresRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListWorkspaceSecretStoresResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SecretStoreService/ListWorkspaceSecretStores",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SecretStoreService",
-                        "ListWorkspaceSecretStores",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Grants a defined store to an active Workspace, for an Organization Owner.
-        pub async fn grant_secret_store(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GrantSecretStoreRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GrantSecretStoreResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SecretStoreService/GrantSecretStore",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SecretStoreService",
-                        "GrantSecretStore",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Revokes a grant in an active Workspace, for an Organization Owner.
-        pub async fn revoke_secret_store(
-            &mut self,
-            request: impl tonic::IntoRequest<super::RevokeSecretStoreRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RevokeSecretStoreResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.SecretStoreService/RevokeSecretStore",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.SecretStoreService",
-                        "RevokeSecretStore",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated server implementations.
-#[allow(dead_code, unreachable_pub)]
-pub(crate) mod secret_store_service_server {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with SecretStoreServiceServer.
-    #[async_trait]
-    pub trait SecretStoreService: std::marker::Send + std::marker::Sync + 'static {
-        /// Lists every defined store, ordered by name, for an Organization Owner.
-        async fn list_secret_stores(
-            &self,
-            request: tonic::Request<super::ListSecretStoresRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListSecretStoresResponse>,
-            tonic::Status,
-        >;
-        /// Lists every grant in the Organization, ordered by store, for an Organization Owner.
-        async fn list_secret_store_grants(
-            &self,
-            request: tonic::Request<super::ListSecretStoreGrantsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListSecretStoreGrantsResponse>,
-            tonic::Status,
-        >;
-        /// Lists the stores granted to one Workspace, ordered by name, for its Owner.
-        async fn list_workspace_secret_stores(
-            &self,
-            request: tonic::Request<super::ListWorkspaceSecretStoresRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListWorkspaceSecretStoresResponse>,
-            tonic::Status,
-        >;
-        /// Grants a defined store to an active Workspace, for an Organization Owner.
-        async fn grant_secret_store(
-            &self,
-            request: tonic::Request<super::GrantSecretStoreRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GrantSecretStoreResponse>,
-            tonic::Status,
-        >;
-        /// Revokes a grant in an active Workspace, for an Organization Owner.
-        async fn revoke_secret_store(
-            &self,
-            request: tonic::Request<super::RevokeSecretStoreRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RevokeSecretStoreResponse>,
-            tonic::Status,
-        >;
-    }
-    /// The Secret Stores the operator defined in deployment config, and their grants
-    /// to Workspaces. A grant shows an Organization Owner nothing inside a Workspace.
-    #[derive(Debug)]
-    pub struct SecretStoreServiceServer<T> {
-        inner: Arc<T>,
-        accept_compression_encodings: EnabledCompressionEncodings,
-        send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
-    }
-    impl<T> SecretStoreServiceServer<T> {
-        pub fn new(inner: T) -> Self {
-            Self::from_arc(Arc::new(inner))
-        }
-        pub fn from_arc(inner: Arc<T>) -> Self {
-            Self {
-                inner,
-                accept_compression_encodings: Default::default(),
-                send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
-            }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
-        where
-            F: tonic::service::Interceptor,
-        {
-            InterceptedService::new(Self::new(inner), interceptor)
-        }
-        /// Enable decompressing requests with the given encoding.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.accept_compression_encodings.enable(encoding);
-            self
-        }
-        /// Compress responses with the given encoding, if the client supports it.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.send_compression_encodings.enable(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
-    }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for SecretStoreServiceServer<T>
-    where
-        T: SecretStoreService,
-        B: Body + std::marker::Send + 'static,
-        B::Error: Into<StdError> + std::marker::Send + 'static,
-    {
-        type Response = http::Response<tonic::body::Body>;
-        type Error = std::convert::Infallible;
-        type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            match req.uri().path() {
-                "/coral.management.v1.SecretStoreService/ListSecretStores" => {
-                    #[allow(non_camel_case_types)]
-                    struct ListSecretStoresSvc<T: SecretStoreService>(pub Arc<T>);
-                    impl<
-                        T: SecretStoreService,
-                    > tonic::server::UnaryService<super::ListSecretStoresRequest>
-                    for ListSecretStoresSvc<T> {
-                        type Response = super::ListSecretStoresResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ListSecretStoresRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SecretStoreService>::list_secret_stores(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ListSecretStoresSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.SecretStoreService/ListSecretStoreGrants" => {
-                    #[allow(non_camel_case_types)]
-                    struct ListSecretStoreGrantsSvc<T: SecretStoreService>(pub Arc<T>);
-                    impl<
-                        T: SecretStoreService,
-                    > tonic::server::UnaryService<super::ListSecretStoreGrantsRequest>
-                    for ListSecretStoreGrantsSvc<T> {
-                        type Response = super::ListSecretStoreGrantsResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ListSecretStoreGrantsRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SecretStoreService>::list_secret_store_grants(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ListSecretStoreGrantsSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.SecretStoreService/ListWorkspaceSecretStores" => {
-                    #[allow(non_camel_case_types)]
-                    struct ListWorkspaceSecretStoresSvc<T: SecretStoreService>(
-                        pub Arc<T>,
-                    );
-                    impl<
-                        T: SecretStoreService,
-                    > tonic::server::UnaryService<
-                        super::ListWorkspaceSecretStoresRequest,
-                    > for ListWorkspaceSecretStoresSvc<T> {
-                        type Response = super::ListWorkspaceSecretStoresResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                super::ListWorkspaceSecretStoresRequest,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SecretStoreService>::list_workspace_secret_stores(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ListWorkspaceSecretStoresSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.SecretStoreService/GrantSecretStore" => {
-                    #[allow(non_camel_case_types)]
-                    struct GrantSecretStoreSvc<T: SecretStoreService>(pub Arc<T>);
-                    impl<
-                        T: SecretStoreService,
-                    > tonic::server::UnaryService<super::GrantSecretStoreRequest>
-                    for GrantSecretStoreSvc<T> {
-                        type Response = super::GrantSecretStoreResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GrantSecretStoreRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SecretStoreService>::grant_secret_store(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GrantSecretStoreSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.SecretStoreService/RevokeSecretStore" => {
-                    #[allow(non_camel_case_types)]
-                    struct RevokeSecretStoreSvc<T: SecretStoreService>(pub Arc<T>);
-                    impl<
-                        T: SecretStoreService,
-                    > tonic::server::UnaryService<super::RevokeSecretStoreRequest>
-                    for RevokeSecretStoreSvc<T> {
-                        type Response = super::RevokeSecretStoreResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::RevokeSecretStoreRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SecretStoreService>::revoke_secret_store(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = RevokeSecretStoreSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
-            }
-        }
-    }
-    impl<T> Clone for SecretStoreServiceServer<T> {
-        fn clone(&self) -> Self {
-            let inner = self.inner.clone();
-            Self {
-                inner,
-                accept_compression_encodings: self.accept_compression_encodings,
-                send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
-            }
-        }
-    }
-    /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "coral.management.v1.SecretStoreService";
-    impl<T> tonic::server::NamedService for SecretStoreServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

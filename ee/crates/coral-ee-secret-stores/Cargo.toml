@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: LicenseRef-Coral-Enterprise
+
+[package]
+name = "coral-ee-secret-stores"
+description = "Secret Store kinds that need the Enterprise Edition."
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-Coral-Enterprise"
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+coral-edition.workspace = true
+coral-outbound = { workspace = true, features = ["transport"] }
+coral-secret-store.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+url.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+toml.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+wiremock.workspace = true

@@ -1197,3 +1197,58 @@ async fn two_processes_that_boot_together_install_each_coral_defined_provider_on
         "a later boot finds the Workspace complete"
     );
 }
+
+/// ADR 0036: a Program cannot set or change a Secret Reference, so it cannot probe a
+/// store through the setup check. Only the private gRPC adapter calls the entry points
+/// that save one; the gRPC wire test shows the MCP audience has no such RPC.
+#[test]
+fn only_the_private_grpc_adapter_saves_a_secret_reference() {
+    fn sources(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !matches!(name.as_str(), "tests" | "target" | "generated") {
+                    sources(&path, found);
+                }
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && !name.ends_with("tests.rs")
+            {
+                found.push(path);
+            }
+        }
+    }
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let mut found = Vec::new();
+    sources(crates, &mut found);
+    let mut callers: Vec<String> = found
+        .iter()
+        .filter(|path| {
+            let text = std::fs::read_to_string(path).unwrap();
+            ["submit_fields(", "authorize_setup_fields("]
+                .iter()
+                .any(|entry| text.contains(entry))
+        })
+        .map(|path| {
+            path.strip_prefix(crates)
+                .unwrap()
+                .components()
+                .next()
+                .unwrap()
+                .as_os_str()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    callers.sort();
+    callers.dedup();
+    assert!(!callers.is_empty(), "the scan found the entry points");
+    for caller in &callers {
+        assert!(
+            ["coral-provider", "coral-grpc"].contains(&caller.as_str()),
+            "{caller} saves a Secret Reference"
+        );
+    }
+}

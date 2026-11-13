@@ -184,6 +184,13 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 F::AccountRequired
                 | F::AccountConnectionExpired
                 | F::CredentialRefreshFailed
+                | F::SecretStoreUnreachable
+                | F::SecretEntryNotFound
+                | F::SecretKeyNotFound
+                | F::SecretStorePermissionDenied
+                | F::SecretStoreMalformedResponse
+                | F::SecretStoreNeedsEnterprise
+                | F::SecretStoreKindMissing
                 | F::OAuthClientConfiguration
                 | F::AccountAuthorizationChanged
                 | F::CredentialRouteChanged
@@ -500,6 +507,13 @@ mod tests {
             (failure(F::AccountConnectionExpired), O::NeedsSetup),
             (failure(F::AccountRequired), O::NeedsSetup),
             (failure(F::CredentialRefreshFailed), O::NeedsSetup),
+            (failure(F::SecretStoreUnreachable), O::NeedsSetup),
+            (failure(F::SecretEntryNotFound), O::NeedsSetup),
+            (failure(F::SecretKeyNotFound), O::NeedsSetup),
+            (failure(F::SecretStorePermissionDenied), O::NeedsSetup),
+            (failure(F::SecretStoreMalformedResponse), O::NeedsSetup),
+            (failure(F::SecretStoreNeedsEnterprise), O::NeedsSetup),
+            (failure(F::SecretStoreKindMissing), O::NeedsSetup),
             (failure(F::OAuthClientConfiguration), O::NeedsSetup),
             (failure(F::AccountAuthorizationChanged), O::NeedsSetup),
             (failure(F::CredentialRouteChanged), O::NeedsSetup),

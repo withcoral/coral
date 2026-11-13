@@ -113,6 +113,26 @@ pub fn env_var_name(field: &str, configured: &str) -> Result<String, SettingErro
     Ok(name.to_owned())
 }
 
+/// The environment variables the rest of deployment config names, each with
+/// the setting that names it, such as `credentials.key_env`.
+#[derive(Clone, Debug, Default)]
+pub struct NamedVariables(Vec<(String, String)>);
+
+impl NamedVariables {
+    /// The `(setting, variable)` pairs config holds.
+    #[must_use]
+    pub fn new(named: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self(named.into_iter().collect())
+    }
+
+    /// Each setting and the variable it names.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(setting, variable)| (setting.as_str(), variable.as_str()))
+    }
+}
+
 /// What bootstrap gives a store kind to build a store.
 pub struct BuildEnvironment<'a> {
     /// The destination policy every request to the store goes through.

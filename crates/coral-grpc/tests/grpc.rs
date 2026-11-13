@@ -208,6 +208,7 @@ impl Fixture {
             .skip_search();
         tx.commit().await.unwrap();
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
+            .with_secret_stores(secret_stores.clone())
             .with_client_id_metadata_document(
                 "https://reef.example/.well-known/oauth-client".into(),
             );
@@ -1333,12 +1334,14 @@ async fn only_an_organization_owner_lists_the_defined_secret_stores() {
                 kind: "absent".into(),
                 kind_label: "absent".into(),
                 state: management::SecretStoreState::KindMissing.into(),
+                reference_form: None,
             },
             management::SecretStore {
                 name: "secretStores/zeta".into(),
                 kind: "test".into(),
                 kind_label: "Test store".into(),
                 state: management::SecretStoreState::Available.into(),
+                reference_form: None,
             },
         ]
     );
@@ -1467,11 +1470,19 @@ async fn grants_cross_the_wire_with_their_availability() {
         .await
         .unwrap();
 
+    // A granted store says what a reference to it holds; the in-memory store
+    // holds a path and a key.
     let platform = management::SecretStore {
         name: "secretStores/platform".into(),
         kind: "test".into(),
         kind_label: "Test store".into(),
         state: management::SecretStoreState::Available.into(),
+        reference_form: Some(management::SecretReferenceForm {
+            path_label: "Path".into(),
+            path_prefix: String::new(),
+            key_label: "Key".into(),
+            key_required: true,
+        }),
     };
     let removed = management::SecretStore {
         name: "secretStores/removed".into(),

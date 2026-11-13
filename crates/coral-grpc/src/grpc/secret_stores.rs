@@ -1,7 +1,7 @@
 use super::workspaces::{administration_error, change, error, invalid, state, workspace_id};
 use super::{GrpcServices, management as wire};
 use coral_administration::GrantedSecretStore;
-use coral_secret_store::{SecretStoreKind, SecretStoreName, StoreStatus};
+use coral_secret_store::{ReferenceForm, SecretStoreKind, SecretStoreName, StoreStatus};
 use coral_workspace::ChangeContext;
 use tonic::{Request, Response, Status};
 
@@ -23,6 +23,20 @@ fn defined(store: &str, kind: &SecretStoreKind, state: StoreStatus) -> wire::Sec
         kind: kind.name().to_owned(),
         kind_label: kind.label().to_owned(),
         state: status(state).into(),
+        reference_form: None,
+    }
+}
+
+fn reference_form(form: &ReferenceForm) -> wire::SecretReferenceForm {
+    wire::SecretReferenceForm {
+        path_label: form.path_label.clone().into_owned(),
+        path_prefix: form.path_prefix.clone().unwrap_or_default(),
+        key_label: form
+            .key
+            .as_ref()
+            .map(|key| key.label.clone().into_owned())
+            .unwrap_or_default(),
+        key_required: form.key.as_ref().is_some_and(|key| key.required),
     }
 }
 
@@ -34,7 +48,10 @@ fn store_name(name: &str) -> Result<SecretStoreName, Status> {
 
 fn granted(store: &GrantedSecretStore) -> wire::SecretStore {
     match &store.defined {
-        Some((kind, state)) => defined(&store.name, kind, *state),
+        Some(described) => wire::SecretStore {
+            reference_form: Some(reference_form(&described.reference_form)),
+            ..defined(&store.name, &described.kind, described.status)
+        },
         None => wire::SecretStore {
             name: name(&store.name),
             state: wire::SecretStoreState::Removed.into(),

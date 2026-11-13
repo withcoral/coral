@@ -5,8 +5,8 @@
 //! [`ReleaseCheck`] reads the release feed through the bootstrap-selected
 //! destination policy and keeps the newest stable version in memory.
 //! [`ReleaseCheck::newer_release`] answers from that memory and never waits
-//! for the network. [`ReleaseCheck::spawn`] refreshes it at boot and then on
-//! a fixed interval.
+//! for the network. [`ReleaseCheck::check`] is one pass: it reads the feed
+//! once. Bootstrap runs it at boot, then every [`CHECK_INTERVAL`].
 //!
 //! The feed is the latest stable release of `withcoral/coral-releases`. The
 //! release workflow publishes it last, after it tags the images, so a version
@@ -23,8 +23,6 @@ use std::time::Duration;
 
 use coral_telemetry::safe;
 use semver::Version;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 use url::Url;
 
 /// The latest stable release of Coral.
@@ -109,7 +107,7 @@ struct Inner {
 
 impl ReleaseCheck {
     /// Prepares a check of `feed` for a process running `current`. Nothing
-    /// is read until [`Self::refresh`] or [`Self::spawn`].
+    /// is read until [`Self::refresh`].
     #[must_use]
     pub fn new(client: coral_outbound::Client, feed: Url, current: Version) -> Self {
         Self {
@@ -168,23 +166,16 @@ impl ReleaseCheck {
         Ok(())
     }
 
-    /// Refreshes at once, then every `interval`. Abort the handle to stop.
-    #[must_use]
-    pub fn spawn(&self, interval: Duration) -> JoinHandle<()> {
-        let check = self.clone();
-        let mut starts = tokio::time::interval(interval);
-        starts.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        tokio::spawn(async move {
-            loop {
-                starts.tick().await;
-                if let Err(error) = check.refresh().await {
-                    tracing::info!(
-                        error.type = safe::kind(error.code()),
-                        "release check found no version; the next check retries"
-                    );
-                }
-            }
-        })
+    /// One pass of the check, for bootstrap to run on [`CHECK_INTERVAL`]:
+    /// [`Self::refresh`], with a read that gave no version logged here. The
+    /// check is a hint, so such a read is no failure of the pass.
+    pub async fn check(&self) {
+        if let Err(error) = self.refresh().await {
+            tracing::info!(
+                error.type = safe::kind(error.code()),
+                "release check found no version; the next check retries"
+            );
+        }
     }
 
     async fn read_feed(&self) -> Result<Version, CheckError> {

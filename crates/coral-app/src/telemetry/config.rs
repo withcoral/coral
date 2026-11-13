@@ -10,8 +10,7 @@ pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=tra
 /// take their trace identifier from whichever of them is current, so a span
 /// left out would start a new trace.
 pub(super) const TRACE_CONTEXT_FILTER: &str = "coral=info";
-pub(super) const DEFAULT_LOG_FILTER: &str =
-    "coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info";
+pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
 
 #[derive(Debug, Clone, Default, Deserialize)]

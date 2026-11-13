@@ -6,6 +6,7 @@ import { ManagementLayout, Section, trail } from '@/views/management/layout'
 import { useAccountAudience } from '@/views/providers/account-labels'
 import type { AccountView, AccountsView, ActionResult } from './types'
 import * as styles from './accounts.css'
+import { referenceDescription } from '@/lib/reference-form'
 
 export function AccountsPage({
   view: v,
@@ -62,6 +63,11 @@ export function AccountsPage({
         {account && (
           <div role="group" aria-label={`Account ${account.id}`} className={styles.account}>
             <AccountSummary account={account} />
+            {v.credentialSources.map(({ name, label, reference, form }) => (
+              <Typography.BodySmall as="p" key={name} className={styles.reference}>
+                {label}: {reference ? referenceDescription(reference, form) : 'entered value'}
+              </Typography.BodySmall>
+            ))}
             {!account.canManage && (
               <Typography.BodySmall as="p">You cannot change this account.</Typography.BodySmall>
             )}

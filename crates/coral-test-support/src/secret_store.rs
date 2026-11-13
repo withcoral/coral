@@ -4,7 +4,28 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use coral_secret_store::{Error, Secret, SecretReference, SecretStore};
+use coral_secret_store::{
+    Error, KeyField, ReferenceForm, Secret, SecretReference, SecretStore, SecretStoreKind,
+    SecretStoreName, SecretStores,
+};
+
+/// A registry that defines each of these stores under its name.
+///
+/// # Panics
+/// On an invalid or repeated name, which is a mistake in the test.
+#[must_use]
+pub fn secret_stores<const N: usize>(
+    stores: [(&str, std::sync::Arc<dyn SecretStore>); N],
+) -> SecretStores {
+    SecretStores::new(stores.map(|(name, store)| {
+        (
+            SecretStoreName::parse(name).expect("store name"),
+            SecretStoreKind::new("test", "Test store").expect("kind name"),
+            store,
+        )
+    }))
+    .expect("store names")
+}
 
 /// Holds entries of named keys, like a KV store, and fails on request.
 #[derive(Default)]
@@ -69,6 +90,17 @@ impl SecretStore for InMemorySecretStore {
         let entry = entries.get(reference.path()).ok_or(Error::EntryNotFound)?;
         let value = entry.get(key).ok_or(Error::KeyNotFound)?;
         Secret::new(value.clone()).map_err(|_error| Error::MalformedResponse)
+    }
+    /// Entries hold named keys, so a reference holds a path and a key.
+    fn reference_form(&self) -> ReferenceForm {
+        ReferenceForm {
+            path_label: "Path".into(),
+            path_prefix: None,
+            key: Some(KeyField {
+                label: "Key".into(),
+                required: true,
+            }),
+        }
     }
 }
 

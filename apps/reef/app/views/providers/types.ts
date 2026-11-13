@@ -1,4 +1,5 @@
 import type { ToolCalls } from '@/lib/activity-summary'
+import type { OfferedSecretStore } from '@/views/accounts/types'
 import type { SelectionKey } from './selection'
 import type { PolicyState } from '@/components/policy-toggle'
 import type { ActionResult, FormContext, WorkspaceView } from '@/views/management/types'
@@ -226,6 +227,13 @@ export interface CredentialFieldPresentation {
   sensitive: boolean
 }
 
+/** The address of a Credential Field's value in a secret store. Never the value. */
+export interface SavedReferenceView {
+  store: string
+  path: string
+  key: string
+}
+
 /** One Credential Field a person enters when connecting an account. */
 export interface CredentialFieldView extends CredentialFieldPresentation {
   name: string
@@ -374,6 +382,8 @@ export interface SetupView {
   credentialFields: CredentialFieldView[]
   /** The inspecting User holds a live sign-in for this attempt. */
   authorized: boolean
+  /** That sign-in names a secret store, so only a shared account can keep it. */
+  holdsSecretReferences?: boolean
   /** The provisional account offered by this Setup, as a bare UUID; never a credential. */
   provisionalGrantId?: string
   clientSecretConfigured?: boolean
@@ -432,6 +442,8 @@ export interface StepperResult extends ActionResult {
   }
   /** The attempt finished with a failure Coral recorded. */
   failed?: string
+  /** The account a refused credential was for, so the step keeps that answer. */
+  connecting?: AccountChoice
 }
 
 export interface StepperPageProps {
@@ -453,6 +465,8 @@ export interface StepperPageProps {
   cancelPath: string
   setup: SetupView | null
   attempt: CreationAttempt
+  /** The stores the shared account's connect dialog can name. Empty hides the choice. */
+  secretStores?: OfferedSecretStore[]
   /** Reef's exact OAuth callback, to register with an OAuth application; empty when not needed. */
   callbackUrl: string
   form: FormContext
@@ -461,6 +475,10 @@ export interface StepperPageProps {
 }
 
 export interface UpdatePageProps {
+  /** The stores a replacement shared account can name. Empty hides the choice. */
+  secretStores?: OfferedSecretStore[]
+  /** The references the shared account holds now, by field name. */
+  savedReferences?: Record<string, SavedReferenceView>
   replacingSource?: boolean
   source?: { url: string; kind: 'mcp' | 'url' }
   currentAccount?: AccountChoice

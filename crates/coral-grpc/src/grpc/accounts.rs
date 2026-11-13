@@ -7,6 +7,42 @@ use coral_provider::{ManagementRequestId, ProviderId};
 use coral_workspace::{AuthenticatedUser, PrincipalId, WorkspaceId};
 use tonic::{Request, Response, Status};
 
+/// Each Credential Field as a value or a reference. A field named twice is refused.
+pub(super) fn credential_fields(
+    values: std::collections::HashMap<String, String>,
+    references: std::collections::HashMap<String, wire::CredentialFieldReference>,
+) -> Result<std::collections::BTreeMap<String, coral_credentials::CredentialField>, Status> {
+    use coral_credentials::{CredentialField, Secret, SecretReference};
+    let mut fields = std::collections::BTreeMap::new();
+    for (name, value) in values {
+        let secret = Secret::new(value)
+            .map_err(coral_provider::Error::from)
+            .map_err(error)?;
+        fields.insert(name, CredentialField::Value(secret));
+    }
+    for (name, reference) in references {
+        let store = reference
+            .secret_store
+            .strip_prefix("secretStores/")
+            .and_then(|store| coral_secret_store::SecretStoreName::parse(store).ok())
+            .ok_or_else(|| invalid("secret store name is invalid"))?
+            .as_str()
+            .to_owned();
+        let key = (!reference.key.is_empty()).then_some(reference.key);
+        let reference = SecretReference::new(store, reference.path, key)
+            .map_err(|_invalid| invalid("secret reference is invalid"))?;
+        if fields
+            .insert(name, CredentialField::Reference(reference))
+            .is_some()
+        {
+            return Err(invalid(
+                "a credential field has both a value and a reference",
+            ));
+        }
+    }
+    Ok(fields)
+}
+
 fn account_id(id: &str) -> Result<domain::ProviderAccountId, Status> {
     domain::ProviderAccountId::parse(id).map_err(error)
 }
@@ -80,6 +116,20 @@ fn account_view(value: domain::AccountSummary) -> wire::ProviderAccount {
             .configured_by_user_id
             .map(|id| id.to_string())
             .unwrap_or_default(),
+        secret_references: value
+            .secret_references
+            .into_iter()
+            .map(|(field, reference)| {
+                (
+                    field,
+                    wire::CredentialFieldReference {
+                        secret_store: format!("secretStores/{}", reference.store()),
+                        path: reference.path().to_owned(),
+                        key: reference.key().unwrap_or_default().to_owned(),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 fn account_inspection_view(value: domain::AccountView) -> wire::GetProviderAccountResponse {
@@ -348,11 +398,11 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         let (owner, id) = authorization(&req.name)?;
         let value = self
             .accounts()?
-            .submit_secret(
+            .submit_fields(
                 &context,
                 &owner,
                 id,
-                super::providers::credential_values(req.credential_values)?,
+                credential_fields(req.credential_values, req.secret_references)?,
             )
             .await
             .map_err(error)?;

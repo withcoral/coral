@@ -7,11 +7,12 @@
 //! all. It knows nothing about Workspaces or grants. [`SecretStores`] is the
 //! name-to-store registry bootstrap builds from deployment config.
 //!
-//! Core knows no store kind by name. A launching binary registers each kind it
-//! has as a [`SecretStoreFactory`] in [`SecretStoreKinds`]; bootstrap hands
-//! that factory a store's settings ([`StoreSettings`]) and keeps the store it
-//! builds. A store whose kind the build lacks is still defined, and every read
-//! of it fails with [`Error::KindMissing`] (ADR 0036).
+//! Core has one store kind, [`EnvKind`], which every build registers. A
+//! launching binary registers each other kind it has as a
+//! [`SecretStoreFactory`] in [`SecretStoreKinds`]; bootstrap hands that factory
+//! a store's settings ([`StoreSettings`]) and keeps the store it builds. A
+//! store whose kind the build lacks is still defined, and every read of it
+//! fails with [`Error::KindMissing`] (ADR 0036).
 //!
 //! [`SecretStores::list`] is open to anything holding the registry, so a caller
 //! serving people goes through `coral_administration::SecretStoreAdministration`.
@@ -25,9 +26,12 @@ use std::sync::Arc;
 
 pub use coral_credentials::{Secret, SecretReference};
 
+mod env;
 mod settings;
 
-pub use settings::{BuildEnvironment, SettingError, StoreSettings, env_var_name};
+pub use env::{EnvKind, EnvReader};
+
+pub use settings::{BuildEnvironment, NamedVariables, SettingError, StoreSettings, env_var_name};
 
 /// Why a store did not give up a value. Each is a different thing to fix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -66,6 +70,27 @@ pub enum StoreStatus {
     KindMissing,
 }
 
+/// What a Secret Reference to one store holds, so a form asks for exactly
+/// that. Labels are what people see; Reef writes any other words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferenceForm {
+    /// What the reference's path is, such as "Path" or "Variable name".
+    pub path_label: Cow<'static, str>,
+    /// What every path the store reads starts with, when the store sets that.
+    pub path_prefix: Option<String>,
+    /// The key, when a reference to the store holds one.
+    pub key: Option<KeyField>,
+}
+
+/// The key part of a [`ReferenceForm`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyField {
+    /// What the key is, such as "Key".
+    pub label: Cow<'static, str>,
+    /// Whether a reference must hold a key.
+    pub required: bool,
+}
+
 /// A connection to one secrets system outside Coral.
 #[async_trait::async_trait]
 pub trait SecretStore: Send + Sync {
@@ -75,6 +100,9 @@ pub trait SecretStore: Send + Sync {
     /// # Errors
     /// Returns why the store gave up no value.
     async fn read(&self, reference: &SecretReference) -> Result<Secret, Error>;
+
+    /// What a reference to this store holds.
+    fn reference_form(&self) -> ReferenceForm;
 
     /// Whether reads can reach the store right now, asked again each time.
     fn status(&self) -> StoreStatus {
@@ -160,11 +188,17 @@ pub trait SecretStoreFactory: Send + Sync {
     /// The kind this factory builds.
     fn kind(&self) -> &SecretStoreKind;
 
-    /// Checks one store's settings without reading the environment.
+    /// Checks one store's settings without reading the environment. `named`
+    /// holds the variables the rest of config names, for a kind that reads
+    /// the environment to stay clear of.
     ///
     /// # Errors
     /// Returns the field and reason a setting is unusable, never its value.
-    fn validate(&self, settings: &StoreSettings) -> Result<(), SettingError>;
+    fn validate(
+        &self,
+        settings: &StoreSettings,
+        named: &NamedVariables,
+    ) -> Result<(), SettingError>;
 
     /// Builds one store. Sends nothing, so an unreachable store does not stop
     /// Coral from starting.
@@ -192,6 +226,15 @@ impl SecretStoreKinds {
         self
     }
 
+    /// Adds each of `other`'s kinds, in order, as [`Self::with`] does.
+    #[must_use]
+    pub fn with_all(self, other: &Self) -> Self {
+        other
+            .0
+            .iter()
+            .fold(self, |kinds, factory| kinds.with(Arc::clone(factory)))
+    }
+
     /// The factory for the kind config names `name`.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Arc<dyn SecretStoreFactory>> {
@@ -206,6 +249,19 @@ pub struct MissingKind;
 impl SecretStore for MissingKind {
     async fn read(&self, _reference: &SecretReference) -> Result<Secret, Error> {
         Err(Error::KindMissing)
+    }
+
+    /// Nothing says what the kind's references hold, so a saved one shows
+    /// whatever it has.
+    fn reference_form(&self) -> ReferenceForm {
+        ReferenceForm {
+            path_label: "Path".into(),
+            path_prefix: None,
+            key: Some(KeyField {
+                label: "Key".into(),
+                required: false,
+            }),
+        }
     }
 
     fn status(&self) -> StoreStatus {
@@ -260,6 +316,17 @@ impl InvalidSetting {
     }
 }
 
+/// What people may learn of one defined store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreDescription {
+    /// The store's kind.
+    pub kind: SecretStoreKind,
+    /// Whether it can read right now.
+    pub status: StoreStatus,
+    /// What a reference to it holds.
+    pub reference_form: ReferenceForm,
+}
+
 #[derive(Clone)]
 struct DefinedStore {
     kind: SecretStoreKind,
@@ -295,13 +362,21 @@ impl SecretStores {
             .map(|(name, defined)| (name, &defined.kind, defined.store.status()))
     }
 
-    /// The kind and current status of the store with this name, while config
-    /// defines it.
+    /// The kind, current status and reference form of the store with this
+    /// name, while config defines it.
     #[must_use]
-    pub fn describe(&self, name: &str) -> Option<(SecretStoreKind, StoreStatus)> {
-        self.0
-            .get(name)
-            .map(|defined| (defined.kind.clone(), defined.store.status()))
+    pub fn describe(&self, name: &str) -> Option<StoreDescription> {
+        self.0.get(name).map(|defined| StoreDescription {
+            kind: defined.kind.clone(),
+            status: defined.store.status(),
+            reference_form: defined.store.reference_form(),
+        })
+    }
+
+    /// The kind of the store with this name, while config defines it.
+    #[must_use]
+    pub fn kind(&self, name: &str) -> Option<&SecretStoreKind> {
+        self.0.get(name).map(|defined| &defined.kind)
     }
 
     /// The store with this name, while config defines it.
@@ -321,6 +396,10 @@ mod tests {
     impl SecretStore for Refusing {
         async fn read(&self, _reference: &SecretReference) -> Result<Secret, Error> {
             Err(Error::PermissionDenied)
+        }
+
+        fn reference_form(&self) -> ReferenceForm {
+            MissingKind.reference_form()
         }
     }
 
@@ -362,6 +441,23 @@ mod tests {
             ]
         );
         assert!(stores.get("missing").is_none());
+        // A store says what its references hold, and describe passes it on.
+        assert_eq!(
+            stores.describe("alpha"),
+            Some(StoreDescription {
+                kind: kind("absent"),
+                status: StoreStatus::KindMissing,
+                reference_form: ReferenceForm {
+                    path_label: "Path".into(),
+                    path_prefix: None,
+                    key: Some(KeyField {
+                        label: "Key".into(),
+                        required: false,
+                    }),
+                },
+            })
+        );
+        assert!(stores.describe("missing").is_none());
 
         let reference =
             |store: &str| SecretReference::new(store.into(), "path".into(), None).unwrap();
@@ -392,7 +488,11 @@ mod tests {
         fn kind(&self) -> &SecretStoreKind {
             &self.0
         }
-        fn validate(&self, _settings: &StoreSettings) -> Result<(), SettingError> {
+        fn validate(
+            &self,
+            _settings: &StoreSettings,
+            _named: &NamedVariables,
+        ) -> Result<(), SettingError> {
             Ok(())
         }
         fn build(

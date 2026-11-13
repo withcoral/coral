@@ -65,8 +65,14 @@ jobs:
           packages: apps/desktop apps/reef
       - name: Stage a release runtime and Desktop's Reef bundle
         run: npm run stage --prefix apps/desktop
+      - uses: ./.github/actions/electron-cache
+        with:
+          mode: restore
       - name: Package the AppImage
         run: npm run package --prefix apps/desktop -- --linux
+      - uses: ./.github/actions/electron-cache
+        with:
+          mode: save
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -100,10 +106,16 @@ jobs:
         run: plutil -lint apps/desktop/resources/entitlements.*.plist
       - name: Stage an arm64 release runtime and Desktop's Reef bundle
         run: npm run stage --prefix apps/desktop
+      - uses: ./.github/actions/electron-cache
+        with:
+          mode: restore
       - name: Package the unsigned arm64 dmg and zip
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run package --prefix apps/desktop -- --mac
+      - uses: ./.github/actions/electron-cache
+        with:
+          mode: save
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -144,8 +156,14 @@ jobs:
 
       - name: Stage a release runtime and Desktop's Reef bundle
         run: npm run stage --prefix apps/desktop
+      - uses: ./.github/actions/electron-cache
+        with:
+          mode: restore
       - name: Package the NSIS installer
         run: npm run package --prefix apps/desktop -- --win
+      - uses: ./.github/actions/electron-cache
+        with:
+          mode: save
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
