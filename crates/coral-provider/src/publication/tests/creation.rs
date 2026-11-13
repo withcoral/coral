@@ -444,6 +444,142 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
+    reason = "one publication journey proves the failed read changes nothing and the retry promotes the grant"
+)]
+async fn unreadable_setup_credential_records_no_outcome_and_leaves_setup_reusable() {
+    use coral_credentials::Secret;
+
+    let (fixture, workspaces, providers) = test_modules().await;
+    let actor = organization_user(
+        fixture.database(),
+        "user:unreadable-setup-credential",
+        OrganizationRole::Owner,
+    )
+    .await;
+    let context = change_context(actor.clone(), 20, '1');
+    let owner = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Unreadable").unwrap())
+        .await
+        .unwrap()
+        .id()
+        .clone();
+    let directory = tempfile::tempdir().unwrap();
+    let accounts = crate::tests::accounts_for(&providers, directory.path());
+    let setup = providers
+        .prepare_openapi_fixture(
+            &context,
+            &owner,
+            OpenApiDocument::parse(CREDENTIAL_FREE_OPENAPI).unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap();
+    let mut values = review.confirmed.unwrap();
+    values.authentication = Some(AuthenticationConfiguration::Bearer);
+    let confirmed = providers
+        .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, values)
+        .await
+        .unwrap();
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
+    let grant = accounts
+        .authorize_setup(
+            &context,
+            &owner,
+            setup.id(),
+            confirmed.revision,
+            coral_credentials::CredentialValues::token(
+                Secret::new("unreadable-setup-canary".into()).unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .provisional_grant_id
+        .unwrap();
+    let request = retention_request(&setup, CredentialRoute::Fixed).with_account_grant(grant);
+    let events_before = terminal_event_count(&providers, &actor, &owner).await;
+    // The stored row no longer decodes, so Publication cannot read the grant.
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_setup_credentials SET oauth_client = '{{' WHERE setup_id = '{}'",
+            setup.id()
+        ))
+        .await
+        .unwrap();
+
+    let error = providers
+        .publish_workspace_provider(&context, request.clone())
+        .await
+        .expect_err("an unreadable setup credential is not a terminal Publication");
+
+    assert!(
+        matches!(&error, Error::CorruptData(reason) if reason == "invalid setup OAuth client"),
+        "{error:?}"
+    );
+    assert!(matches!(
+        providers
+            .get_publication(&actor, &owner, request.request_id())
+            .await,
+        Err(Error::ProviderPublicationNotFound)
+    ));
+    assert_eq!(
+        crate::tests::stored_setup(&providers.database, &owner, setup.id())
+            .await
+            .setup
+            .state(),
+        ProviderSetupState::Ready
+    );
+    assert_eq!(
+        providers.inspect_providers(&actor, &owner).await.unwrap(),
+        [] as [crate::Provider; 0]
+    );
+    assert_eq!(
+        terminal_event_count(&providers, &actor, &owner).await,
+        events_before
+    );
+
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_setup_credentials SET oauth_client = NULL WHERE setup_id = '{}'",
+            setup.id()
+        ))
+        .await
+        .unwrap();
+    assert!(
+        providers
+            .setup_authentication(&actor, &owner, setup.id(), 21)
+            .await
+            .unwrap()
+            .authorized,
+        "the failed attempt kept the sealed grant"
+    );
+    let publication = providers
+        .publish_workspace_provider(&context, request)
+        .await
+        .unwrap()
+        .skip_search();
+    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
+    let shared = accounts
+        .get_account(
+            &context,
+            &owner,
+            publication.published_provider().unwrap().id(),
+            &crate::account::AccountScope::Shared,
+        )
+        .await
+        .unwrap()
+        .account;
+    assert_eq!(shared.map(|account| account.id), Some(grant));
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
     reason = "one controlled publication race verifies rollback, evidence, and successful retry"
 )]
 async fn creation_rechecks_owner_demotion_after_materialization() {
