@@ -118,6 +118,7 @@ tower = "0.5"
 tracing = "0.1.44"
 tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+trybuild = "1"
 tempfile = "3"
 url = "2"
 urlencoding = "2"

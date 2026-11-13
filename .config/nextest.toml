@@ -11,6 +11,13 @@
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 5 }
 
+# The compile-fail proofs check coral-outbound's dependencies in a target
+# directory of their own (`target/tests/trybuild`). That takes seconds once the
+# directory is built and minutes when it starts empty, so allow 20 minutes.
+[[profile.default.overrides]]
+filter = "package(coral-outbound) & binary(compile_fail)"
+slow-timeout = { period = "60s", terminate-after = 20 }
+
 # Real Postgres fixtures each own a pool. Bound concurrent tests so a complete
 # contract run stays below the test server's connection limit.
 [profile.postgres]

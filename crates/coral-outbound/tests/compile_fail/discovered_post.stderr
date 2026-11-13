@@ -1,0 +1,5 @@
+error[E0599]: no method named `post` found for reference `&EndpointUrl<Discovered>` in the current scope
+ --> tests/compile_fail/discovered_post.rs:4:9
+  |
+4 |     url.post(http);
+  |         ^^^^ method not found in `&EndpointUrl<Discovered>`
