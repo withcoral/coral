@@ -14,8 +14,9 @@
 -- the Embedder leaves such a row alone until then.
 --
 -- Adding nullable columns changes only the catalog, but it takes an
--- exclusive lock. lock_timeout makes the step fail instead of queueing every
--- read behind it.
+-- exclusive lock. lock_timeout bounds the wait for that lock to five
+-- seconds: reads queue behind the waiting step for at most that long, and
+-- then the step fails.
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE search_entities

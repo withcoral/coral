@@ -111,8 +111,9 @@ row's `indexed_at`. It takes the oldest Generation first, in small batches, with
 Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries once. When the retry
 fails in the database, the Embedder skips nothing and stops until the next wake. When it fails in the model, the
 Embedder embeds a fixed probe text; if the probe fails too, the model is down, and the Embedder stops the same way.
-Otherwise it tries the batch's rows one by one, and a row that still fails is skipped until its revision or source stamp
-changes or the process restarts. The probe stands in for the rows beside a failing row, so one bad row cannot hold back
+Otherwise it tries the batch's rows one by one, and a row that the model still refuses is skipped until its revision or
+source stamp changes or the process restarts. A database failure in those tries stops the drain as above; it skips no
+row, so the rows refused before it are tried again at the next wake. The probe stands in for the rows beside a failing row, so one bad row cannot hold back
 every row behind it, even when it is alone in its batch. The skip list lives in memory; there is no stored per-row
 failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding runs on a
 blocking thread at normal priority.

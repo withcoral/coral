@@ -41,7 +41,8 @@ use repository::{EntityText, EntityVector, StaleEntity};
 /// The rows one write holds at most.
 const BATCH_ROWS: usize = 32;
 
-/// The stale rows one read of a drain takes, beside those it must leave out.
+/// The stale rows one read of a drain takes, beside the rows the last read
+/// returned that the drain leaves out.
 const READ_ROWS: usize = BATCH_ROWS * 32;
 
 /// The pause before a failed batch's retry.
@@ -131,6 +132,13 @@ impl EmbedderState {
         }
     }
 
+    /// Forgets each skipped row that is not in `stale`, every stale row
+    /// there is: the row went, or it got its vector.
+    fn keep_skipped(&self, stale: &[StaleEntity]) {
+        let stale = stale.iter().map(EntityKey::of).collect::<HashSet<_>>();
+        self.skipped().retain(|key, _stamp| stale.contains(key));
+    }
+
     fn skip(&self, entities: impl IntoIterator<Item = StaleEntity>) {
         let mut skipped = self.skipped();
         for entity in entities {
@@ -198,8 +206,11 @@ impl SearchIndex {
     async fn drain(&self, state: &EmbedderState, thread: &EmbedThread) -> Result<(), ThreadGone> {
         let revision = MANIFEST.embedder_revision();
         let mut attempted = HashSet::new();
+        // A written row leaves the stale rows, so the next read takes only
+        // as many more rows as this read returned and left out.
+        let mut passed_over = 0;
         loop {
-            let limit = READ_ROWS + attempted.len() + state.skipped().len();
+            let limit = READ_ROWS + passed_over;
             let found = self
                 .read_snapshot(async |transaction| {
                     repository::stale_entities(transaction, revision.as_str(), limit).await
@@ -216,11 +227,19 @@ impl SearchIndex {
                 }
             };
             let pending = found
-                .into_iter()
-                .filter(|entity| !attempted.contains(entity) && !state.is_skipped(entity))
+                .iter()
+                .filter(|entity| !attempted.contains(*entity) && !state.is_skipped(entity))
+                .cloned()
                 .collect::<Vec<_>>();
+            passed_over = found.len() - pending.len();
             if pending.is_empty() {
-                return Ok(());
+                if found.len() < limit {
+                    // This read returned every stale row.
+                    state.keep_skipped(&found);
+                    return Ok(());
+                }
+                // Every row read is one to leave out: read past them.
+                continue;
             }
             for batch in batches(&pending) {
                 attempted.extend(batch.iter().cloned());

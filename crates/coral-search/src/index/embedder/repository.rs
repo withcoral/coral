@@ -82,6 +82,17 @@ pub(super) async fn stale_entities(
         .collect()
 }
 
+/// The kind whose stable name a search row stores as `kind`.
+fn entity_kind(kind: &str) -> Option<EntityKind> {
+    [
+        EntityKind::ProviderTool,
+        EntityKind::PrivateTool,
+        EntityKind::SharedTool,
+    ]
+    .into_iter()
+    .find(|candidate| candidate.as_str() == kind)
+}
+
 /// The text columns of the Workspace's rows among `doc_ids` whose field
 /// names are of the row's fingerprint, as they stand now.
 pub(super) async fn entity_texts(
@@ -119,8 +130,7 @@ pub(super) async fn entity_texts(
             )| {
                 Ok(EntityText {
                     doc_id,
-                    kind: EntityKind::parse(&kind)
-                        .ok_or(IndexError::Corrupt("search entity kind"))?,
+                    kind: entity_kind(&kind).ok_or(IndexError::Corrupt("search entity kind"))?,
                     qualified_name,
                     title,
                     description,
