@@ -698,9 +698,11 @@ longer needed.
 
 The opt-in **Reel** GitHub Actions workflow builds the real stack, runs the
 harness self-check and records the selected suite. Its default is `main` on
-SQLite; select Postgres to run the same journeys with that database. A failed
-job uploads its run directory, Coral and Reef logs included, with seven-day
-retention, and in this public repository anyone can download it. That is safe
+SQLite; select Postgres to run the same journeys with that database. A job
+that fails or is cancelled, a timeout included, uploads the run directory Reel
+has written, Coral and Reef logs included, with seven-day retention. A job that
+fails before Reel starts has no run directory, so it uploads nothing. In this
+public repository anyone can download the artifact. That is safe
 only because a CI run's tokens belong to its own Coral, which ends with the job,
 and no workflow secret reaches the suite: never pass one to `reel.yml`. A private
 repository also uploads passing runs.
