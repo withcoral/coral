@@ -260,22 +260,22 @@ async fn read_only_hints_safe_http_methods_and_catalog_declarations_select_the_d
     assert_eq!(by_sql, by_module);
 }
 
-/// The columns an Invocation and its Run give the SQL mirror, as a row
-/// source names them.
-const CALL_COLUMNS: [&str; 8] = [
-    "workspace_id",
-    "provider_id",
-    "provider_generation_id",
-    "tool_key",
-    "call_path",
-    "declared_default",
-    "principal_id",
-    "principal_kind",
-];
+/// The names a row source gives the columns an Invocation and its Run give
+/// the SQL mirror.
+mod call_column {
+    pub(super) const WORKSPACE: &str = "workspace_id";
+    pub(super) const PROVIDER: &str = "provider_id";
+    pub(super) const GENERATION: &str = "provider_generation_id";
+    pub(super) const TOOL: &str = "tool_key";
+    pub(super) const CALL_PATH: &str = "call_path";
+    pub(super) const DECLARED_DEFAULT: &str = "declared_default";
+    pub(super) const PRINCIPAL: &str = "principal_id";
+    pub(super) const PRINCIPAL_KIND: &str = "principal_kind";
+}
 
 /// The Tool Keys of the rows of `calls` that the SQL mirror selects as
 /// approval-required, read the way pending-approval queries read. `calls`
-/// selects [`CALL_COLUMNS`].
+/// selects each column of [`call_column`].
 async fn approval_required_by_sql(
     fixture: &TestDatabase,
     calls: sea_query::SelectStatement,
@@ -286,36 +286,27 @@ async fn approval_required_by_sql(
     struct Row {
         tool_key: String,
     }
-    let [
-        workspace,
-        provider,
-        generation,
-        tool,
-        call_path,
-        declared_default,
-        principal,
-        principal_kind,
-    ] = CALL_COLUMNS.map(|name| (Alias::new("call"), Alias::new(name)).into_column_ref());
+    let column = |name: &str| (Alias::new("call"), Alias::new(name)).into_column_ref();
     let database = fixture.database();
     let mut transaction = database.begin_read_snapshot().await.expect("begin read");
     let rows: Vec<Row> = transaction
         .fetch_all(
             Query::select()
-                .column(tool.clone())
+                .column(column(call_column::TOOL))
                 .from_subquery(calls, Alias::new("call"))
                 .and_where(crate::history_repository::approval_required(
                     crate::history_repository::InvocationColumns {
-                        workspace,
-                        provider,
-                        generation,
-                        tool: tool.clone(),
-                        call_path,
-                        declared_default,
-                        principal,
-                        principal_kind,
+                        workspace: column(call_column::WORKSPACE),
+                        provider: column(call_column::PROVIDER),
+                        generation: column(call_column::GENERATION),
+                        tool: column(call_column::TOOL),
+                        call_path: column(call_column::CALL_PATH),
+                        declared_default: column(call_column::DECLARED_DEFAULT),
+                        principal: column(call_column::PRINCIPAL),
+                        principal_kind: column(call_column::PRINCIPAL_KIND),
                     },
                 ))
-                .order_by(tool, Order::Asc)
+                .order_by(column(call_column::TOOL), Order::Asc)
                 .to_owned(),
         )
         .await
@@ -334,30 +325,38 @@ fn provider_tool_calls(
     use sea_query::{Alias, Expr, ExprTrait as _, IntoColumnRef as _, JoinType, Query};
 
     let column = |table: &str, name: &str| (Alias::new(table), Alias::new(name)).into_column_ref();
-    let [
-        workspace,
-        provider,
-        generation,
-        tool,
-        call_path,
-        declared_default,
-        principal,
-        principal_kind,
-    ] = CALL_COLUMNS.map(Alias::new);
     Query::select()
-        .expr_as(Expr::col(column("provider", "workspace_id")), workspace)
-        .expr_as(Expr::col(column("provider", "id")), provider)
+        .expr_as(
+            Expr::col(column("provider", "workspace_id")),
+            Alias::new(call_column::WORKSPACE),
+        )
+        .expr_as(
+            Expr::col(column("provider", "id")),
+            Alias::new(call_column::PROVIDER),
+        )
         .expr_as(
             Expr::col(column("tool", "provider_generation_id")),
-            generation,
+            Alias::new(call_column::GENERATION),
         )
-        .expr_as(Expr::col(column("tool", "tool_key")), tool)
-        .expr_as(Expr::val("coral.providers.any.tool"), call_path)
-        .expr_as(Expr::val(Option::<String>::None), declared_default)
-        .expr_as(Expr::val(caller.principal().id().as_str()), principal)
+        .expr_as(
+            Expr::col(column("tool", "tool_key")),
+            Alias::new(call_column::TOOL),
+        )
+        .expr_as(
+            Expr::val("coral.providers.any.tool"),
+            Alias::new(call_column::CALL_PATH),
+        )
+        .expr_as(
+            Expr::val(Option::<String>::None),
+            Alias::new(call_column::DECLARED_DEFAULT),
+        )
+        .expr_as(
+            Expr::val(caller.principal().id().as_str()),
+            Alias::new(call_column::PRINCIPAL),
+        )
         .expr_as(
             Expr::val(caller.principal().kind().as_storage_str()),
-            principal_kind,
+            Alias::new(call_column::PRINCIPAL_KIND),
         )
         .from_as(Alias::new("provider_records"), Alias::new("provider"))
         .join_as(
@@ -381,19 +380,27 @@ fn authored_tool_call(
 ) -> sea_query::SelectStatement {
     use sea_query::{Alias, Expr, Query};
 
-    let values = [
-        target.workspace_id().to_string(),
-        target.provider_id().to_string(),
-        // No Generation stores a Private or Shared Tool.
-        "no-generation".to_owned(),
-        target.tool_key().as_str().to_owned(),
-        call_path.to_owned(),
-        declared.as_storage_str().to_owned(),
-        caller.principal().id().as_str().to_owned(),
-        caller.principal().kind().as_storage_str().to_owned(),
-    ];
     let mut call = Query::select();
-    for (name, value) in CALL_COLUMNS.into_iter().zip(values) {
+    for (name, value) in [
+        (call_column::WORKSPACE, target.workspace_id().to_string()),
+        (call_column::PROVIDER, target.provider_id().to_string()),
+        // No Generation stores a Private or Shared Tool.
+        (call_column::GENERATION, "no-generation".to_owned()),
+        (call_column::TOOL, target.tool_key().as_str().to_owned()),
+        (call_column::CALL_PATH, call_path.to_owned()),
+        (
+            call_column::DECLARED_DEFAULT,
+            declared.as_storage_str().to_owned(),
+        ),
+        (
+            call_column::PRINCIPAL,
+            caller.principal().id().as_str().to_owned(),
+        ),
+        (
+            call_column::PRINCIPAL_KIND,
+            caller.principal().kind().as_storage_str().to_owned(),
+        ),
+    ] {
         call.expr_as(Expr::val(value), Alias::new(name));
     }
     call

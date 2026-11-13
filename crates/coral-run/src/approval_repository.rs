@@ -246,6 +246,12 @@ pub(super) fn pending_invocation() -> SimpleExpr {
 /// Whether the policy of the Invocation `i` asks for a decision now, as the
 /// Policy Enforcement Point decides it for the Principal that invoked its
 /// Run. The match reads that Run itself, so a query needs no Run of its own.
+///
+/// It reads the invoker's role and not whether the invoker can still act: a
+/// User who lost Organization authority keeps a Membership row, and the
+/// enforcement point refuses their call whatever its role says. Every reader
+/// pairs this match with the invoking authority
+/// (`history_repository::active_run` or `invoking_authority_current`).
 fn approval_required() -> SimpleExpr {
     use coral_db::{col, column};
     Expr::exists(
