@@ -33,6 +33,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       rust: ${{ steps.filter.outputs.rust }}
+      images: ${{ steps.filter.outputs.images }}
       desktop-app: ${{ steps.filter.outputs.desktop-app }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -66,6 +67,16 @@ jobs:
               - '!**/LICENSE'
               - '!docs/**'
               - '!apps/**/!(.node-version)'
+            # The image gate also ignores Desktop, which neither image builds
+            # from, and Reel, which .dockerignore keeps out of both builds.
+            images:
+              - '**'
+              - '!**/*.md'
+              - '!**/LICENSE'
+              - '!docs/**'
+              - '!apps/docs/**'
+              - '!apps/desktop/**'
+              - '!apps/reef/e2e/**'
             # Desktop's macOS and Windows jobs cost the most, so they are the
             # only ones that name their inputs. desktop.yml also runs nightly.
             desktop-app:
@@ -192,6 +203,30 @@ jobs:
       - run: npm run build --prefix apps/reef
       - run: npm run test:server --prefix apps/reef
 
+  # Builds the runtime and Reef images from this checkout and starts them on
+  # fresh state. release.yml runs the same tests on the images it publishes.
+  images:
+    name: Images / Tests
+    needs: changes
+    if: ${{ needs.changes.outputs.images != 'false' }}
+    # The runtime image's build compiles the release binary.
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # make docker-test checks the Reef Dockerfile with Node before it builds.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/reef/.node-version
+          package-manager-cache: false
+      # Keeps both images' layers and cache mounts between runs.
+      - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        with:
+          cache-key: images
+      - run: make docker-test
+
   dev:
     name: Dev scripts / Tests
     needs: changes
@@ -263,7 +298,7 @@ jobs:
   # requiring the gates one by one would also pass when `changes` fails.
   required:
     name: Required
-    needs: [changes, rust, ee-boundary, rust-embedded-js, postgres, rust-windows, reef, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance]
+    needs: [changes, rust, ee-boundary, rust-embedded-js, postgres, rust-windows, reef, images, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance]
     if: ${{ always() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
