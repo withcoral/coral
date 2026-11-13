@@ -10,7 +10,7 @@ use coral_db::{Database, DatabaseSystem};
 use coral_test_support::TestDatabase;
 use tokio::task::JoinHandle;
 
-use super::CompileRelay;
+use super::{CompileRelay, PROMISE_KEPT};
 use crate::pull::tests::{Sent, compiled, dialed_stream as open, up};
 use crate::relay_repository::count;
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
@@ -101,15 +101,26 @@ fn compiling(
     })
 }
 
-/// Waits until `rows` rows are waiting.
+/// Waits until `rows` rows are waiting, looking again on each change
+/// signal: each row's write raises one.
 async fn rows_reach(database: &Database, rows: i64) {
-    for _ in 0..500 {
-        if count(database).await.expect("the rows") == rows {
-            return;
+    let mut changes = database.subscribe_changes().expect("the change signal");
+    let reached = async {
+        while count(database).await.expect("the rows") != rows {
+            changes.changed().await.expect("the change signal");
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("{rows} rows within 5 s");
+    };
+    tokio::time::timeout(Duration::from_secs(5), reached)
+        .await
+        .unwrap_or_else(|_elapsed| panic!("{rows} rows within 5 s"));
+}
+
+/// Waits for a compiler on `compiler`, as admission does.
+fn readying(
+    compiler: &PullStreamCompiler,
+) -> JoinHandle<Result<Option<Arc<dyn CompilerClient>>, CompileError>> {
+    let compiler = compiler.clone();
+    tokio::spawn(async move { compiler.ready().await })
 }
 
 #[tokio::test]
@@ -121,12 +132,16 @@ async fn a_compile_with_no_room_here_is_served_where_there_is_room() {
     // Ready waits on a probe until a Coral Instance has room. Room
     // elsewhere holds nothing here; room that showed here is held, and
     // freed as the held client drops.
-    let compiler = requester.compiler.clone();
-    let ready = tokio::spawn(async move { compiler.ready().await.map(|held| held.is_some()) });
+    let ready = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
     report(&server.streams, stream, 1);
-    assert_eq!(ready.await.unwrap(), Ok(Arc::ptr_eq(&requester, &server)));
-    rows_reach(&database.database(), 0).await;
+    let held = ready.await.unwrap().map(|held| held.is_some());
+    assert_eq!(held, Ok(Arc::ptr_eq(&requester, &server)));
+    assert_eq!(
+        count(&database.database()).await.unwrap(),
+        0,
+        "the probe is gone"
+    );
 
     report(&server.streams, stream, 0);
     let call = compiling(&requester.compiler, Duration::from_secs(5));
@@ -178,7 +193,7 @@ async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
     let (requester, [server]) = instances(&database).await;
     let (_stream, mut sent) = open(&server.streams, 0);
 
-    let call = compiling(&requester.compiler, Duration::from_millis(500));
+    let call = compiling(&requester.compiler, Duration::from_secs(2));
     rows_reach(&database.database(), 1).await;
     assert_eq!(
         call.await.unwrap(),
@@ -198,7 +213,9 @@ async fn a_row_served_and_never_answered_fails_as_timed_out_and_is_gone() {
     let (requester, [server]) = instances(&database).await;
     let (stream, mut sent) = open(&server.streams, 0);
 
-    let call = compiling(&requester.compiler, Duration::from_millis(800));
+    // Within one look of its untaken bound: the requester sees the take on
+    // the signal it raises, not on a later look.
+    let call = compiling(&requester.compiler, Duration::from_secs(1));
     rows_reach(&database.database(), 1).await;
     report(&server.streams, stream, 1);
     let sent = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
@@ -225,4 +242,37 @@ async fn a_row_written_while_no_run_executor_is_linked_is_served_once_one_dials_
     answer(&server.streams, stream, &mut sent).await;
     assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(count(&database.database()).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn one_unit_of_room_elsewhere_readies_one_waiting_caller_at_a_time() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    // Two Coral Instances: on SQLite they share the one database handle.
+    let requester = instance(database.database(), "requester");
+    let server = match database.database().system() {
+        DatabaseSystem::Postgres => {
+            let peer = database.connect_peer().await.expect("a peer connection");
+            instance(Arc::new(peer), "server")
+        }
+        DatabaseSystem::Sqlite => instance(database.database(), "server"),
+    };
+    let (stream, _sent) = open(&server.streams, 0);
+    let first = readying(&requester.compiler);
+    rows_reach(&database.database(), 1).await;
+    let second = readying(&requester.compiler);
+    rows_reach(&database.database(), 2).await;
+
+    report(&server.streams, stream, 1);
+    let reported = tokio::time::Instant::now();
+    let ready = first.await.unwrap().map(|held| held.is_some());
+    assert_eq!(ready, Ok(false), "the oldest caller relays its calls");
+
+    // The one unit is promised to the first caller's calls. No call comes,
+    // so the promise lapses, and only then does the room ready the other.
+    let ready = second.await.unwrap().map(|held| held.is_some());
+    assert_eq!(ready, Ok(false));
+    assert!(
+        reported.elapsed() >= PROMISE_KEPT,
+        "the other waited for the promise to lapse"
+    );
 }

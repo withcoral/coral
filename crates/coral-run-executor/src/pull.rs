@@ -22,7 +22,8 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::link::{KEEPALIVE, Token};
-use crate::relay::{self, CompileRelay};
+use crate::relay::CompileRelay;
+use crate::time;
 use crate::wire::v1::compile::Call;
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{
@@ -523,11 +524,6 @@ impl PullStreams {
     }
 }
 
-/// `time_left` in whole milliseconds, as a `Compile` carries it.
-pub(crate) fn millis(time_left: Duration) -> u32 {
-    u32::try_from(time_left.as_millis()).unwrap_or(u32::MAX)
-}
-
 /// Whether `call`, sent as a `Compile`, passes [`MESSAGE_MAX_BYTES`]. Sent,
 /// such a message would end the stream and every compile on it.
 pub(crate) fn too_large(call: &Call) -> bool {
@@ -795,7 +791,7 @@ impl PullService {
     }
 
     async fn renew(&self, run_executor_id: &str, kind: Kind) -> Result<(), coral_db::Error> {
-        let lease_until = relay::unix_now().saturating_add(relay::nanos(self.link.timing.lease));
+        let lease_until = time::unix_now().saturating_add(time::nanos(self.link.timing.lease));
         lease_repository::renew(&self.link.database, run_executor_id, kind, lease_until).await
     }
 }

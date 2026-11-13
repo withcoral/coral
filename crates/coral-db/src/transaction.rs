@@ -240,6 +240,8 @@ pub enum RowLock {
     /// transaction holds, so concurrent takers each take a different row.
     /// On Postgres this is `FOR UPDATE SKIP LOCKED`. On `SQLite` the writer
     /// lock already excludes every other taker, so the read runs as it is.
+    /// Only in a read-write transaction: Postgres refuses `FOR UPDATE` in a
+    /// read-only one, and a `SQLite` read snapshot holds no writer lock.
     SkipLocked,
 }
 

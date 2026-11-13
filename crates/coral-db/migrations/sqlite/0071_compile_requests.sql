@@ -7,7 +7,8 @@
 -- it finds. call and answer hold the encoded Compile and Compiled messages.
 -- Times are Unix nanoseconds. SQLite stores the messages as BLOBs.
 CREATE TABLE compile_requests (
-    id TEXT PRIMARY KEY,
+    -- SQLite lets a TEXT primary key hold NULL unless it says otherwise.
+    id TEXT NOT NULL PRIMARY KEY,
     requester TEXT NOT NULL,
     call BLOB,
     created_at BIGINT NOT NULL,

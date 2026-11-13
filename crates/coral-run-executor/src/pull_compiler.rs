@@ -11,8 +11,8 @@ use coral_v8::{
 
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::compiler::STOPPED;
-use crate::pull::millis;
-use crate::relay::CompileRelay;
+use crate::relay::{CompileRelay, Probed};
+use crate::time::millis;
 use crate::wire::v1::compile::Call;
 use crate::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, LocalRunExecutors, PullStreams,
@@ -163,7 +163,7 @@ impl PullStreamCompiler {
     /// with no relay, the stream with the most room once one has room, or
     /// none at `until`. Each look that finds none asks the local children
     /// for room again, then waits for room, holding no thread.
-    async fn room(&self, until: Instant) -> Option<Route<'_>> {
+    async fn route(&self, until: Instant) -> Option<Route<'_>> {
         let (children, relay) = match &self.target {
             #[cfg(any(test, feature = "test-support"))]
             Target::Stream(stream) => return Some(Route::Stream(*stream)),
@@ -232,12 +232,12 @@ impl PullStreamCompiler {
             let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
             let room_until = called + time_left.saturating_sub(ROOM_WAIT_RESERVE);
             loop {
-                let stream = match self.room(room_until).await.ok_or_else(no_compiler)? {
+                let stream = match self.route(room_until).await.ok_or_else(no_compiler)? {
                     Route::Stream(stream) => stream,
-                    // Answered before the caller's own deadline, as a wait
-                    // for room here is.
+                    // Untaken, it answers before the caller's own deadline,
+                    // as a wait for room here does.
                     Route::Relay(relay, children) => {
-                        return relay.call(call, children, room_until).await;
+                        return relay.call(call, children, until).await;
                     }
                 };
                 let left = left();
@@ -296,23 +296,22 @@ impl CompilerClient for PullStreamCompiler {
         let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
         let until = Instant::now() + COMPILE_WAIT;
         loop {
-            match self.room(until).await.ok_or_else(no_compiler)? {
+            match self.route(until).await.ok_or_else(no_compiler)? {
                 Route::Stream(stream) => {
                     // Another caller took the room first: look again.
                     if let Some(held) = self.hold(stream) {
                         return Ok(Some(held));
                     }
                 }
-                // No room here: wait for room anywhere. Room here since, as
-                // a local child that started, is held; otherwise the calls
-                // relay.
-                Route::Relay(relay, children) => {
-                    if !relay.room(children, until).await {
-                        return Err(no_compiler());
-                    }
-                    let here = self.streams.most_room();
-                    return Ok(here.and_then(|stream| self.hold(stream)));
-                }
+                // No room here: wait for room anywhere. Room that shows here,
+                // as a local child that started, is held on the next look, or
+                // waited for again when another caller took it; room
+                // elsewhere relays the calls.
+                Route::Relay(relay, children) => match relay.room(children, until).await {
+                    Probed::Here => {}
+                    Probed::Elsewhere => return Ok(None),
+                    Probed::Nobody => return Err(no_compiler()),
+                },
             }
         }
     }

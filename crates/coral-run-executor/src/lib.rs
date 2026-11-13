@@ -30,6 +30,7 @@ mod relay_repository;
 mod run;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+mod time;
 
 pub use compile_wire::ProtocolError;
 pub use compiler::{
