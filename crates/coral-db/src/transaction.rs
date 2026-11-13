@@ -236,6 +236,11 @@ pub enum RowLock {
     /// a read-write transaction: Postgres refuses `FOR SHARE` in a read-only
     /// one.
     Shared,
+    /// Hold the matched rows for update, and pass over rows another
+    /// transaction holds, so concurrent takers each take a different row.
+    /// On Postgres this is `FOR UPDATE SKIP LOCKED`. On `SQLite` the writer
+    /// lock already excludes every other taker, so the read runs as it is.
+    SkipLocked,
 }
 
 /// Opaque identity of one transaction, usable to bind prepared domain evidence.
@@ -477,13 +482,21 @@ impl Transaction<'_> {
         self.fetch_first(statement).await
     }
 
-    /// The backend idiom for `lock`: Postgres appends `FOR SHARE`; `SQLite`
-    /// relies on the writer lock its read-write transaction already holds.
+    /// The backend idiom for `lock`: Postgres appends `FOR SHARE` or
+    /// `FOR UPDATE SKIP LOCKED`; `SQLite` relies on the writer lock its
+    /// read-write transaction already holds.
     fn apply_lock(&self, statement: &mut SelectStatement, lock: RowLock) {
         match (lock, &self.backend) {
-            (RowLock::None, _) | (RowLock::Shared, TransactionBackend::Sqlite(_)) => {}
+            (RowLock::None, _)
+            | (RowLock::Shared | RowLock::SkipLocked, TransactionBackend::Sqlite(_)) => {}
             (RowLock::Shared, TransactionBackend::Postgres(_)) => {
                 statement.lock_shared();
+            }
+            (RowLock::SkipLocked, TransactionBackend::Postgres(_)) => {
+                statement.lock_with_behavior(
+                    sea_query::LockType::Update,
+                    sea_query::LockBehavior::SkipLocked,
+                );
             }
         }
     }

@@ -3,7 +3,8 @@
 //! On Coral's side it holds the compiler client that Program Admission and
 //! Private Tool save share. [`CompilerClient`] is the one interface.
 //! [`PullStreamCompiler`] sends each call down the held pull stream with the
-//! most room, to a Run Executor, and waits for one when none has room.
+//! most room, to a Run Executor; when none has room, it relays the call
+//! through the database to any Coral Instance with room.
 //! [`InProcessCompiler`] runs one warm Program Compiler on its own thread in
 //! this process, for tests.
 //!
@@ -22,6 +23,8 @@ mod link;
 mod local;
 mod pull;
 mod pull_compiler;
+mod relay;
+mod relay_repository;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 

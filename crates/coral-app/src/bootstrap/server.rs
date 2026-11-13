@@ -975,7 +975,8 @@ pub(crate) async fn start_server(
         None => None,
     };
     // Program Admission and Private Tool save share one compiler client:
-    // the Run Executors' pull streams, or a warm compiler in this process
+    // the Run Executors' pull streams, relayed through the database to any
+    // Coral Instance with room when none has room, or a warm compiler in this process
     // for a test that starts Coral in its own process.
     let compiler: Arc<dyn coral_run_executor::CompilerClient> = if compile_in_process {
         Arc::new(
@@ -986,10 +987,7 @@ pub(crate) async fn start_server(
             )?,
         )
     } else {
-        Arc::new(coral_run_executor::PullStreamCompiler::new(
-            run_executors.1.streams(),
-            local_run_executors.clone(),
-        ))
+        Arc::new(run_executors.1.compiler(local_run_executors.clone()))
     };
     // updateProvider renames through the same workflow as Reef.
     let mut runs = coral_run::RunModule::with_compiler_client(

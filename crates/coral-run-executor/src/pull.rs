@@ -7,7 +7,7 @@ use std::hash::{BuildHasher as _, RandomState};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use coral_db::Database;
 use coral_telemetry::safe;
@@ -22,13 +22,16 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::link::{KEEPALIVE, Token};
+use crate::relay::{self, CompileRelay};
 use crate::wire::v1::compile::Call;
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{
     Compile, Compiled, PullRequest, PullResponse, Taken, TakenRun, Welcome, pull_request,
     pull_response,
 };
-use crate::{MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, lease_repository};
+use crate::{
+    LocalRunExecutors, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, lease_repository,
+};
 
 /// How long the listener keeps a connection, and a pull stream its open
 /// time: then a GOAWAY, and the pull stream ends cleanly (the move).
@@ -520,6 +523,11 @@ impl PullStreams {
     }
 }
 
+/// `time_left` in whole milliseconds, as a `Compile` carries it.
+pub(crate) fn millis(time_left: Duration) -> u32 {
+    u32::try_from(time_left.as_millis()).unwrap_or(u32::MAX)
+}
+
 /// Whether `call`, sent as a `Compile`, passes [`MESSAGE_MAX_BYTES`]. Sent,
 /// such a message would end the stream and every compile on it.
 pub(crate) fn too_large(call: &Call) -> bool {
@@ -567,9 +575,23 @@ impl LinkServer {
         self.streams.clone()
     }
 
+    /// The compiler client over these pull streams. A call that finds no
+    /// stream with room relays through the database to any Coral Instance
+    /// with room; it asks `children`, when there are local children, for
+    /// room.
+    #[must_use]
+    pub fn compiler(&self, children: Option<LocalRunExecutors>) -> PullStreamCompiler {
+        PullStreamCompiler::relayed(self.streams(), children, self.relay())
+    }
+
+    fn relay(&self) -> CompileRelay {
+        CompileRelay::new(self.database.clone(), &self.coral_instance_id)
+    }
+
     /// Serves the link over plaintext HTTP/2 on `listener` until `shutdown`
-    /// completes. Shutdown ends each pull stream cleanly, after its compiles
-    /// in flight, as the connection age does.
+    /// completes, and serves relayed compiles on its streams while one has
+    /// room. Shutdown ends each pull stream cleanly, after its compiles in
+    /// flight, as the connection age does.
     ///
     /// # Errors
     ///
@@ -581,11 +603,12 @@ impl LinkServer {
     ) -> Result<(), tonic::transport::Error> {
         let (close, closing) = watch::channel(false);
         let connection_age = self.timing.connection_age;
+        let pickup = self.relay().serve(self.streams());
         let service = PullService {
             link: Arc::new(self),
             closing,
         };
-        Server::builder()
+        let served = Server::builder()
             .max_connection_age(connection_age)
             .http2_keepalive_interval(Some(KEEPALIVE))
             .http2_keepalive_timeout(Some(KEEPALIVE))
@@ -601,8 +624,11 @@ impl LinkServer {
                     shutdown.await;
                     close.send_replace(true);
                 },
-            )
-            .await
+            );
+        tokio::select! {
+            served = served => served,
+            never = pickup => match never {},
+        }
     }
 }
 
@@ -758,11 +784,7 @@ impl PullService {
     }
 
     async fn renew(&self, run_executor_id: &str, kind: Kind) -> Result<(), coral_db::Error> {
-        let lease_until = (SystemTime::now() + self.link.timing.lease)
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|since| i64::try_from(since.as_nanos()).ok())
-            .unwrap_or(i64::MAX);
+        let lease_until = relay::unix_now().saturating_add(relay::nanos(self.link.timing.lease));
         lease_repository::renew(&self.link.database, run_executor_id, kind, lease_until).await
     }
 }

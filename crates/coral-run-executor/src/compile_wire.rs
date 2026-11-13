@@ -553,6 +553,25 @@ impl Read {
         })
     }
 
+    /// This answer as the wire carries it, for a compile relayed through the
+    /// database.
+    pub(crate) fn into_answer(self) -> Answer {
+        match self {
+            Self::Analyzed(analyzed) => Answer::Analyzed(wire::Analyzed {
+                sources: analyzed.iter().map(source_references_wire).collect(),
+            }),
+            Self::AnalysisFailure(AnalysisError { index, error }) => {
+                Answer::AnalysisFailure(wire::AnalysisFailure {
+                    index: u64::try_from(index).unwrap_or(u64::MAX),
+                    failure: Some(failure(error)),
+                })
+            }
+            Self::Package(program) => Answer::Package(package(program)),
+            Self::Prepared(prepared) => Answer::Prepared(prepared_answer(&prepared)),
+            Self::Failure(error) => Answer::Failure(failure(error)),
+        }
+    }
+
     /// Whether this answers a call that `takes` it: analysis answers with one
     /// result per source, or names one of them as the one it stopped at.
     pub(crate) fn answers(&self, takes: Takes) -> bool {
