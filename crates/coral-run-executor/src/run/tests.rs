@@ -95,6 +95,15 @@ fn private_tool(path: &str, tool_id: &str, source: &str) -> (LinkedToolSource, L
     )
 }
 
+/// A tracker upstream's 404, as Coral relays it.
+fn upstream_not_found() -> UpstreamOutcome {
+    UpstreamOutcome {
+        code: "upstream_not_found".to_owned(),
+        message: "The Tool's upstream answered 404".to_owned(),
+        outcome_json: r#"{"status":404,"data":{},"metadata":{}}"#.to_owned(),
+    }
+}
+
 /// The Private Tool `notes.title`, snapshot `tool-7`, which reads an
 /// issue's title.
 fn notes_title() -> (LinkedToolSource, LinkedSnapshot) {
@@ -288,11 +297,7 @@ catch (error) { return error.code; }",
         trace_id: String::new(),
         suggestions: Vec::new(),
     };
-    let upstream = UpstreamOutcome {
-        code: "upstream_not_found".to_owned(),
-        message: "The Tool's upstream answered 404".to_owned(),
-        outcome_json: r#"{"status":404,"data":{},"metadata":{}}"#.to_owned(),
-    };
+    let upstream = upstream_not_found();
     let caught = |code: &str| finish(finish::Completion::ValueJson(format!(r#""{code}""#)));
     let kind_of = |kind: &request::Kind| match kind {
         request::Kind::Invoke(_) => "an Invoke",
@@ -434,6 +439,12 @@ async fn an_answer_of_the_wrong_kind_closes_the_stream() {
             "return await coral.private.notes.title({ id: 7 });",
             vec![notes_title()],
             invocation_result::Outcome::ResultJson("1".to_owned()),
+        ),
+        (
+            "an Upstream Outcome for a Perform",
+            "return await coral.private.notes.title({ id: 7 });",
+            vec![notes_title()],
+            invocation_result::Outcome::UpstreamOutcome(upstream_not_found()),
         ),
         (
             "a permit for an Invoke",
