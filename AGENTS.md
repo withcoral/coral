@@ -302,6 +302,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   CI, most of all on Postgres. Give the Run a long real deadline and send the
   timer's message to the owner yourself. Order messages by waiting on an
   observer signal, such as `CommitProbe::delivered`, never on `sleep`.
+- A test hook that blocks a Tokio task blocks in `tokio::task::block_in_place`.
+  A plain blocking call also strands the task that worker woke last, and no
+  other worker can run it.
 
 ### Credentials
 

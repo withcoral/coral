@@ -653,9 +653,13 @@ impl ExecutionObserver for CommitProbe {
         let release = self.hold_message.lock().expect("hold lock").take();
         if let Some(release) = release {
             self.message_held.store(true, Ordering::SeqCst);
-            // Blocks the owner's thread on purpose; the test runs on more
-            // than one worker thread.
-            let _released = release.recv();
+            // Blocks the owner's task on purpose, in `block_in_place`: a
+            // plain blocking call would also strand the task this worker
+            // woke last, which no other worker can take. That can be the
+            // Run Inbox reader, woken by the owner's own commit, and the
+            // test would then wait for a delivery that cannot come. Needs a
+            // multi-thread runtime.
+            let _released = tokio::task::block_in_place(|| release.recv());
         }
     }
 
