@@ -8,6 +8,9 @@ service LinkService {
   // The pull stream: one per Run Executor, the first stream on every
   // connection. The Run Executor opens it with Hello.
   rpc Pull(stream PullRequest) returns (stream PullResponse);
+  // A Run stream: one per Run the Run Executor holds, on its current
+  // connection. The Run Executor opens it with Open.
+  rpc Run(stream RunRequest) returns (stream RunResponse);
 }
 
 // A message the Run Executor sends on its pull stream.
@@ -414,4 +417,373 @@ message ReferenceRejection {
   uint64 line = 2;
   // The one-based authored column.
   uint64 column = 3;
+}
+
+// A message the Run Executor sends on a Run stream.
+message RunRequest {
+  // The message.
+  oneof message {
+    // The first message on every Run stream.
+    Open open = 1;
+    // The package is loaded into a fresh isolate.
+    Loaded loaded = 2;
+    // One of the Program's requests.
+    Request request = 3;
+  }
+}
+
+// A message Coral sends on a Run stream.
+message RunResponse {
+  // The message.
+  oneof message {
+    // The Run's package, the answer to Open for a held Run not started.
+    RunPackage package = 1;
+    // The Run started: the Program may run.
+    Started started = 2;
+    // The highest request number committed.
+    Committed committed = 3;
+    // The answer to one Invoke.
+    InvocationResult invocation_result = 4;
+    // A recorded termination: stop the Program.
+    Terminate terminate = 5;
+    // Coral's last message on the stream.
+    Ended ended = 6;
+  }
+}
+
+// Opens a Run stream for one taken Run.
+message Open {
+  // The Run's id.
+  string run_id = 1;
+  // The execution claim it was taken with.
+  string claim_id = 2;
+  // The Run Executor's protocol level.
+  uint32 protocol_level = 3;
+}
+
+// What a Run Executor needs to load and run one Program.
+message RunPackage {
+  // The emitted JavaScript.
+  string script = 1;
+  // The authored source map of the script.
+  string source_map = 2;
+  // The SHA-256 digest of the script and the source map, as `Package`
+  // carries it.
+  bytes sha256 = 3;
+  // The Run's value limits.
+  ValueLimits value_limits = 4;
+  // The Private and Shared Tool snapshots linked into the script.
+  repeated LinkedSnapshot linked_snapshots = 5;
+  // Coral's protocol level.
+  uint32 protocol_level = 6;
+  // The Run's W3C `traceparent`. Empty: none.
+  string traceparent = 7;
+}
+
+// The value limits a Run accepted, in bytes.
+message ValueLimits {
+  // The most decoded bytes per Binary Value.
+  uint64 binary_bytes = 1;
+  // The most encoded JSON bytes at a host crossing.
+  uint64 host_bytes = 2;
+  // The most bytes per upstream request or result.
+  uint64 upstream_bytes = 3;
+  // The Run Output Budget.
+  uint64 run_output_bytes = 4;
+}
+
+// One Private or Shared Tool snapshot linked into a package.
+message LinkedSnapshot {
+  // Its path under its root, such as `debug.fetch`.
+  string path = 1;
+  // The Tool's id, which names it in a source location.
+  string tool_id = 2;
+  // The member of coral that holds it.
+  LinkedToolRoot root = 3;
+}
+
+// The package is loaded; the Run Executor waits for Started. A script the
+// isolate cannot load gets Finish as request 1 in place of Loaded, and a
+// Terminate before Started gets Finish as request 1: the Program never ran.
+// A package that breaks the protocol closes the stream instead.
+message Loaded {}
+
+// The Run started.
+message Started {
+  // The time until the Run's deadline, in milliseconds, counted from this
+  // message.
+  uint64 deadline_ms = 1;
+  // The Run CPU Budget, in milliseconds. Unset: none.
+  optional uint64 cpu_budget_ms = 2;
+}
+
+// The committed watermark.
+message Committed {
+  // The highest request number committed.
+  uint64 request_number = 1;
+}
+
+// One of the Program's requests, numbered from one per Run in the
+// Program's order.
+message Request {
+  // The request's number.
+  uint64 number = 1;
+  // What the Program asks.
+  oneof kind {
+    // A Tool Invocation, which InvocationResult answers.
+    Invoke invoke = 2;
+    // A Program Emission.
+    Emit emit = 3;
+    // A Program Log.
+    Log log = 4;
+    // The Program's end, the last request.
+    Finish finish = 5;
+    // A call to a Private or Shared Tool, which InvocationResult answers.
+    Perform perform = 6;
+    // How the body of a permitted Perform ended, which InvocationResult
+    // answers.
+    Complete complete = 7;
+  }
+}
+
+// One Tool Invocation.
+message Invoke {
+  // The Tool's complete Call Path.
+  string call_path = 1;
+  // The arguments, as native JSON.
+  string arguments_json = 2;
+  // The authored call site. Unset: none.
+  Location location = 3;
+  // The number of the permitted Perform whose body makes the call: its
+  // parent Invocation. Unset: the Program's own call, or one a module's
+  // top-level initialization makes.
+  optional uint64 parent = 4;
+}
+
+// One call to a Private or Shared Tool, which Coral performs by running its
+// body in the Program: ADR 0027's code-performed Invoke. Its InvocationResult
+// comes once admission, approval and enforcement decide the call, not at
+// Applied: `permitted` when the body may run, or a rejection, which settles
+// the call before the body runs. A permitted Perform with no Complete before
+// Finish was abandoned: the Program ended while its body still ran.
+message Perform {
+  // The Tool's complete Call Path, under coral.private or coral.shared.
+  string call_path = 1;
+  // The one object it was called with, as native JSON.
+  string arguments_json = 2;
+  // The authored call site. Unset: none.
+  Location location = 3;
+  // The number of the permitted Perform whose body makes the call. Unset:
+  // the Program's own call, or one a module's top-level initialization
+  // makes.
+  optional uint64 parent = 4;
+}
+
+// How the body of one permitted Perform ended. Its InvocationResult, at
+// Applied, carries the value the call's caller receives, or a rejection. A body that threw a
+// Tool Error rejects its caller with that error whatever rejection answers.
+message Complete {
+  // The Perform's request number.
+  uint64 perform = 1;
+  // How the body ended.
+  oneof outcome {
+    // It returned this value, as native JSON. `undefined` is `null`.
+    string returned_json = 2;
+    // It returned a value that is not data.
+    NotData not_data = 3;
+    // It threw.
+    Threw threw = 4;
+  }
+}
+
+// A body's return value that is not data.
+message NotData {
+  // Where the value is, as a path from `result`.
+  string field = 1;
+  // Why it is not data. Empty: no reason given.
+  string reason = 2;
+}
+
+// A body that threw.
+message Threw {
+  // The thrown Error's message, or the thrown value as text.
+  string message = 1;
+  // The code of the Tool Error the body threw. Unset: it threw no Tool Error.
+  optional string tool_error = 2;
+}
+
+// One Program Emission.
+message Emit {
+  // The value, as native JSON.
+  string value_json = 1;
+  // The authored call site. Unset: none.
+  Location location = 2;
+}
+
+// One Program Log.
+message Log {
+  // Its level.
+  LogLevel level = 1;
+  // Its message.
+  string message = 2;
+  // The authored call site. Unset: none.
+  Location location = 3;
+}
+
+// A Program Log's level.
+enum LogLevel {
+  // Not set; breaks the protocol.
+  LOG_LEVEL_UNSPECIFIED = 0;
+  // `console.debug`.
+  LOG_LEVEL_DEBUG = 1;
+  // `console.info` or `console.log`.
+  LOG_LEVEL_INFO = 2;
+  // `console.warn`.
+  LOG_LEVEL_WARN = 3;
+  // `console.error`.
+  LOG_LEVEL_ERROR = 4;
+}
+
+// An authored source location.
+message Location {
+  // The id of the linked Tool that holds it, as its LinkedSnapshot names it.
+  // Empty: the Program body.
+  string tool_id = 1;
+  // The one-based line.
+  uint32 line = 2;
+  // The one-based column, in UTF-16 code units.
+  uint32 column = 3;
+}
+
+// How the Program ended.
+message Finish {
+  // The completion.
+  oneof completion {
+    // The Final Value, as native JSON.
+    string value_json = 1;
+    // A failure.
+    Failure failure = 2;
+    // An end that carries nothing more.
+    FinishEnd end = 3;
+  }
+}
+
+// A Run failure.
+message Failure {
+  // The Run failure code, such as `program_rejected`.
+  string code = 1;
+  // Its safe message.
+  string message = 2;
+  // The Program error, as JSON. Empty: none.
+  string error_json = 3;
+}
+
+// An end of a Program that carries nothing more.
+enum FinishEnd {
+  // Not set; breaks the protocol.
+  FINISH_END_UNSPECIFIED = 0;
+  // The Program returned `undefined`: an absent Final Value.
+  FINISH_END_ABSENT = 1;
+  // The host stopped the Program.
+  FINISH_END_HOST_TERMINATED = 2;
+  // The isolate reached its heap limit.
+  FINISH_END_MEMORY_LIMIT = 3;
+  // The Program used its Run CPU Budget.
+  FINISH_END_CPU_BUDGET = 4;
+  // The Program's output exceeded the Run Output Budget.
+  FINISH_END_OUTPUT_BUDGET = 5;
+  // The Run Executor ended the Program at the Run's deadline.
+  FINISH_END_DEADLINE_REACHED = 6;
+}
+
+// The answer to one Invoke or Complete, at Applied, or to one Perform, once
+// the call is decided.
+message InvocationResult {
+  // The request number it answers.
+  uint64 number = 1;
+  // The Run Output Budget bytes Coral counted for the result.
+  uint64 bytes = 2;
+  // The outcome.
+  oneof outcome {
+    // The Tool Result, as native JSON.
+    string result_json = 3;
+    // A Coral Failure.
+    CoralFailure coral_failure = 4;
+    // An Upstream Outcome that is not a Declared Success.
+    UpstreamOutcome upstream_outcome = 5;
+    // A host failure: the Program stops without a catchable result.
+    Fatal fatal = 6;
+    // The Perform is permitted, and its body runs. Only a Perform gets it.
+    Permitted permitted = 7;
+  }
+}
+
+// A Perform's body may run.
+message Permitted {}
+
+// A Coral Failure the Program catches as a `ToolError`.
+message CoralFailure {
+  // Its stable code.
+  string code = 1;
+  // Its safe message.
+  string message = 2;
+  // The lowercase W3C trace id it names. Empty: none.
+  string trace_id = 3;
+  // Call Paths near the one named, nearest first.
+  repeated string suggestions = 4;
+}
+
+// An Upstream Outcome the Program catches as a `ToolError`.
+message UpstreamOutcome {
+  // Its stable code.
+  string code = 1;
+  // Its safe message.
+  string message = 2;
+  // The encoded Tool Result the Program does not receive.
+  string outcome_json = 3;
+}
+
+// A host failure.
+message Fatal {}
+
+// A recorded termination.
+message Terminate {
+  // Why the Run ends.
+  TerminateReason reason = 1;
+}
+
+// Why a recorded termination ends a Run.
+enum TerminateReason {
+  // Not set.
+  TERMINATE_REASON_UNSPECIFIED = 0;
+  // A cancellation won.
+  TERMINATE_REASON_CANCELED = 1;
+  // The Run's deadline won.
+  TERMINATE_REASON_TIMED_OUT = 2;
+  // The Run was interrupted.
+  TERMINATE_REASON_INTERRUPTED = 3;
+}
+
+// How the Run ended, or that the Run Executor does not hold it.
+message Ended {
+  // The end.
+  RunEnd end = 1;
+}
+
+// A Run's end on a Run stream.
+enum RunEnd {
+  // Not set.
+  RUN_END_UNSPECIFIED = 0;
+  // The Run succeeded.
+  RUN_END_SUCCEEDED = 1;
+  // The Run failed.
+  RUN_END_FAILED = 2;
+  // The Run was canceled.
+  RUN_END_CANCELED = 3;
+  // The Run timed out.
+  RUN_END_TIMED_OUT = 4;
+  // The Run was interrupted.
+  RUN_END_INTERRUPTED = 5;
+  // The claim does not match: the Run Executor does not hold the Run.
+  RUN_END_NOT_HELD = 6;
 }
