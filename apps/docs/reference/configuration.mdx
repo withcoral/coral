@@ -140,7 +140,7 @@ A workspace owner uses a granted store when they connect a shared account: for e
 
 #### Read from environment variables
 
-The `env` kind reads each value from an environment variable of the Coral process. Use it when your platform injects secrets into the environment, for example from Kubernetes Secrets. Every build of Coral has it, on the Community Edition too.
+The `env` kind reads each value from an environment variable of the Coral process. Use it when your platform injects secrets into the environment, for example from Kubernetes Secrets. The `env` kind is available in both Community and Enterprise editions. 
 
 ```toml
 [[secret_stores]]
