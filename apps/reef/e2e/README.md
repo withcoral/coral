@@ -490,8 +490,8 @@ error page renders at once, and every later wait then times out with a message
 that hides the cause.
 
 A harness failure carries its cause in its message, such as a process's last
-output. CI keeps the run directory only for private repositories, so a message
-that only names a log file leaves nothing to read.
+output, so the job log alone explains it. A message that only names a log file
+sends the reader to an artifact they may not have.
 
 ### Run one scenario in both topologies
 
