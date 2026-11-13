@@ -69,7 +69,7 @@ pub(super) async fn oauth_token(
         Some(_) => Err(TokenError::UnsupportedGrantType),
     };
     match issued {
-        Ok(issued) => token_response(&issued),
+        Ok(issued) => token_response(&issued, now_unix_nanos),
         Err(error) => token_error(error),
     }
 }
@@ -173,23 +173,17 @@ fn refused(refusal: TokenRefusal) -> TokenError {
     TokenError::ServerError
 }
 
-fn token_response(issued: &IssuedTokens) -> Response {
-    let Ok(since_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-        tracing::warn!(
-            error.type = "clock",
-            "token endpoint could not read the system clock"
-        );
-        return token_error(TokenError::ServerError);
-    };
-    let Some(expires_in) = issued
+/// The response for tokens issued at `now_unix_nanos`.
+fn token_response(issued: &IssuedTokens, now_unix_nanos: i64) -> Response {
+    // The token expires after `now_unix_nanos` by construction, so its
+    // lifetime needs no second clock reading, and nothing here can fail once
+    // the code or refresh token is spent.
+    let now_secs = u64::try_from(now_unix_nanos / 1_000_000_000).unwrap_or(0);
+    let expires_in = issued
         .access_token
         .expires_at
-        .checked_sub(since_epoch.as_secs())
-        .filter(|ttl| *ttl > 0)
-    else {
-        tracing::warn!("token endpoint issued an access token that had already expired");
-        return token_error(TokenError::ServerError);
-    };
+        .saturating_sub(now_secs)
+        .max(1);
     let mut body = serde_json::Map::new();
     body.insert(
         "access_token".into(),
@@ -888,8 +882,10 @@ pub(super) mod tests {
         let get = |key| value.get(key).expect("response field");
         assert_eq!(get("token_type"), "Bearer");
         assert!(value.get("scope").is_none());
-        let expires_in = get("expires_in").as_u64().expect("expires_in");
-        assert!(expires_in > 0 && expires_in <= session.access_token_ttl().as_secs());
+        assert_eq!(
+            get("expires_in").as_u64(),
+            Some(session.access_token_ttl().as_secs())
+        );
         let fixture = database().await;
         let organization = coral_workspace::OrganizationModule::new(fixture.database());
         let user = coral_workspace::AuthenticatedUser::organization_member(
@@ -941,6 +937,39 @@ pub(super) mod tests {
 
     /// A User who can refresh: an enabled Organization Member.
     const MEMBER: &str = "0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c05";
+
+    /// `expires_in` is the access token's lifetime from the host time that
+    /// issued it. The response reads no clock, so the real date cannot fail a
+    /// request whose code is already spent.
+    #[tokio::test]
+    async fn expires_in_counts_from_the_host_time_that_issued_the_token() {
+        let (_settings, session) =
+            crate::auth::test_config::resolved_settings("https://accounts.example.test", "");
+        // 2001 and 2100: one long past, one far ahead of any real clock.
+        for now_secs in [1_000_000_000_i64, 4_102_444_800] {
+            // A token carries whole seconds: the last nanosecond of a second
+            // is still that second.
+            let now_unix_nanos = now_secs * 1_000_000_000 + 999_999_999;
+            let access_token = session
+                .issue_access_token(MEMBER, CLIENT, RESOURCE, now_unix_nanos)
+                .expect("issued token");
+            let issued = IssuedTokens {
+                access_token,
+                refresh_token: None,
+            };
+            let response = token_response(&issued, now_unix_nanos);
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("response body");
+            let value: Value = serde_json::from_slice(&body).expect("token JSON");
+            assert_eq!(
+                value["expires_in"].as_u64(),
+                Some(session.access_token_ttl().as_secs()),
+                "issued at {now_secs}"
+            );
+        }
+    }
 
     /// Signs `MEMBER` in through a refresh-eligible code for `RESOURCE` and
     /// returns the token response.
@@ -1038,12 +1067,15 @@ pub(super) mod tests {
             assert_eq!(status, StatusCode::OK, "{body}");
             let value: Value = serde_json::from_str(&body).unwrap();
             assert_eq!(value["token_type"], "Bearer");
-            assert!(value["expires_in"].as_u64().unwrap() > 0);
             let claims = jsonwebtoken::dangerous::insecure_decode::<Value>(
                 value["access_token"].as_str().unwrap(),
             )
             .unwrap()
             .claims;
+            assert_eq!(
+                value["expires_in"].as_u64().unwrap(),
+                claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap()
+            );
             assert_eq!(claims["aud"], "reef");
             assert_eq!(claims["sub"], MEMBER);
             let next = value["refresh_token"].as_str().unwrap().to_owned();
