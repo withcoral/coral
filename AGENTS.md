@@ -189,6 +189,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
   check it at boot before the chain runs, as `coral_search::prepare_storage`
   does. The check names the feature and what the operator can do about it.
+- Universal Search's vector table is the one table outside the chain, so a
+  Postgres without pgvector still runs the chain. While
+  `[search] semantic_search_enabled` is on, boot needs pgvector, and
+  `coral_search::prepare_vector_table` creates the table at boot and
+  recreates it only when the manifest's dimension changes: an existing table
+  keeps any other change to its shape. `scripts/check-migrations.sh` rejects a
+  migration that names pgvector.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.

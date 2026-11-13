@@ -39,7 +39,9 @@
 //!   the index holds each Provider's active Generation, apart from readiness.
 //! - [`prepare_storage`] runs at boot before `Database::migrate` applies
 //!   `coral_db::migration_plan()`, which creates the search index's tables. It
-//!   checks the database features their text search needs.
+//!   checks the database features their text search needs, and pgvector on
+//!   Postgres while the [`VectorStorage`] is on. [`prepare_vector_table`] runs
+//!   right after the chain and keeps the vector table, which lives outside it.
 //! - [`SearchIndex`] writes the search-owned index in the background when a
 //!   committing workflow notifies it, and its reconcile task converges the
 //!   index on what the owners hold.
@@ -90,7 +92,7 @@ pub use caller_declarations::CallerToolDeclarations;
 pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, MissingPath};
 pub use error::{Error, UNKNOWN_NAMESPACE_REASON, searchable_namespaces};
 pub use index::SearchIndex;
-pub use storage::{StorageError, prepare_storage};
+pub use storage::{StorageError, VectorStorage, prepare_storage, prepare_vector_table};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoredToolAuthoringDescription, AuthoringDescription, CallPath,

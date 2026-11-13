@@ -287,7 +287,10 @@ impl ServerBuilder {
             layout,
             deployment_config.raw(),
             resolve_database_config,
-            || deployment_config.validate(&self.launcher.extensions.secret_store_kinds),
+            || {
+                deployment_config.validate(&self.launcher.extensions.secret_store_kinds)?;
+                deployment_config.vector_storage()
+            },
             report_migration.as_deref().unwrap_or(&|_| {}),
         )
         .await?;
