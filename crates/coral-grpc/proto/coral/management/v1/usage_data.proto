@@ -7,7 +7,9 @@ import "google/protobuf/timestamp.proto";
 // Usage Reports Coral sends.
 service UsageDataService {
   // Any Organization Member can read the setting and the reports.
-  rpc GetUsageData(GetUsageDataRequest) returns (UsageData);
+  rpc GetUsageData(GetUsageDataRequest) returns (UsageData) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Only an Organization Owner can change the setting.
   rpc SetUsageDataSharing(SetUsageDataSharingRequest) returns (UsageData);
 }

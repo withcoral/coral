@@ -12,12 +12,18 @@ fn missing(cause: &str) -> FeatureProbe {
 
 #[test]
 fn a_missing_feature_fails_boot_naming_the_feature_and_its_cause() {
-    let postgres = |pg_trgm| {
+    let postgres = |pg_trgm, vector| {
         check_postgres_features(PostgresFeatures {
             server_version: "17.10".to_string(),
             pg_trgm,
+            vector,
         })
     };
+    let pg_trgm_missing = Some(
+        "Postgres 17.10 does not provide required search feature: pg_trgm extension \
+         (permission denied to create extension \"pg_trgm\"); install pg_trgm in a \
+         schema on Coral's search path, or let Coral's database role create it",
+    );
     let sqlite = |fts5, trigram_tokenizer| {
         check_sqlite_features(SqliteFeatures {
             version: "3.33.0".to_string(),
@@ -28,17 +34,50 @@ fn a_missing_feature_fails_boot_naming_the_feature_and_its_cause() {
 
     for (case, result, expected) in [
         (
-            "Postgres with pg_trgm",
-            postgres(FeatureProbe::Present),
+            "Postgres with pg_trgm and pgvector",
+            postgres(FeatureProbe::Present, Some(FeatureProbe::Present)),
+            None,
+        ),
+        (
+            "Postgres with pg_trgm, vector side off",
+            postgres(FeatureProbe::Present, None),
             None,
         ),
         (
             "Postgres without pg_trgm",
-            postgres(missing("permission denied to create extension \"pg_trgm\"")),
+            postgres(
+                missing("permission denied to create extension \"pg_trgm\""),
+                Some(FeatureProbe::Present),
+            ),
+            pg_trgm_missing,
+        ),
+        (
+            "Postgres without pg_trgm, vector side off",
+            postgres(
+                missing("permission denied to create extension \"pg_trgm\""),
+                None,
+            ),
+            pg_trgm_missing,
+        ),
+        (
+            "Postgres without pg_trgm or pgvector",
+            postgres(
+                missing("permission denied to create extension \"pg_trgm\""),
+                Some(missing("permission denied to create extension \"vector\"")),
+            ),
+            pg_trgm_missing,
+        ),
+        (
+            "Postgres whose role may not create vector",
+            postgres(
+                FeatureProbe::Present,
+                Some(missing("permission denied to create extension \"vector\"")),
+            ),
             Some(
-                "Postgres 17.10 does not provide required search feature: pg_trgm extension \
-                 (permission denied to create extension \"pg_trgm\"); install pg_trgm in a \
-                 schema on Coral's search path, or let Coral's database role create it",
+                "Postgres 17.10 does not provide required search feature: vector extension \
+                 (permission denied to create extension \"vector\"); install pgvector 0.7 or \
+                 later in a schema on Coral's search path, let Coral's database role create \
+                 it, or set `[search] semantic_search_enabled = false`",
             ),
         ),
         (

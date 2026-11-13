@@ -18,14 +18,22 @@ import "google/protobuf/timestamp.proto";
 // or name return the same NOT_FOUND.
 service SharedToolService {
   // Lists one page of the Workspace's Shared Tools in path order, without source.
-  rpc ListSharedTools(ListSharedToolsRequest) returns (ListSharedToolsResponse);
+  rpc ListSharedTools(ListSharedToolsRequest) returns (ListSharedToolsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Returns one Shared Tool with its current revision and source.
-  rpc GetSharedTool(GetSharedToolRequest) returns (SharedTool);
+  rpc GetSharedTool(GetSharedToolRequest) returns (SharedTool) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Lists every revision of one Shared Tool, live or removed, newest first,
   // without source.
-  rpc ListSharedToolRevisions(ListSharedToolRevisionsRequest) returns (ListSharedToolRevisionsResponse);
+  rpc ListSharedToolRevisions(ListSharedToolRevisionsRequest) returns (ListSharedToolRevisionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Returns one revision of one Shared Tool, live or removed, with its source.
-  rpc GetSharedToolRevision(GetSharedToolRevisionRequest) returns (SharedToolRevision);
+  rpc GetSharedToolRevision(GetSharedToolRevisionRequest) returns (SharedToolRevision) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   // Publishes the exact source and description of the request as the next
   // revision of the Shared Tool at its path, and makes it current. The Private
   // Tool it copies stays as it was. With validate_only, returns the review and
@@ -61,7 +69,9 @@ service SharedToolService {
   rpc RemoveSharedTool(RemoveSharedToolRequest) returns (RemoveSharedToolResponse);
   // Lists one page of the publishes and removals of the Workspace's Shared
   // Tools, newest first, or those of one Shared Tool, live or removed.
-  rpc ListSharedToolEvents(ListSharedToolEventsRequest) returns (ListSharedToolEventsResponse);
+  rpc ListSharedToolEvents(ListSharedToolEventsRequest) returns (ListSharedToolEventsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // Lists the Shared Tools of one Workspace.

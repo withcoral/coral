@@ -4,7 +4,9 @@ package coral.management.v1;
 // Published Coral releases, as this runtime last read them.
 service ReleaseService {
   // Answers from memory and never waits for the release feed.
-  rpc GetNewerRelease(GetNewerReleaseRequest) returns (GetNewerReleaseResponse);
+  rpc GetNewerRelease(GetNewerReleaseRequest) returns (GetNewerReleaseResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // Asks for a published release newer than this runtime.

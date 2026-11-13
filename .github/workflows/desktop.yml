@@ -149,10 +149,33 @@ jobs:
         with:
           packages: apps/desktop apps/reef
 
+      # A Vitest worker sometimes dies here with 0xC0000409, a native
+      # fast-fail that leaves no stack. Have Windows keep a minidump of any
+      # node.exe that crashes, and Node a report of any fatal error, so the
+      # next one can be read. Both upload only when the job fails.
+      - name: Keep crash dumps and fatal-error reports
+        continue-on-error: true
+        run: |
+          $dumps = Join-Path $env:RUNNER_TEMP 'crash'
+          New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -Value $dumps -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          "CORAL_TEST_REPORT_DIRECTORY=$dumps" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       # The supervisor's process handling differs most on Windows: no signals,
       # and a stop that closes the runtime's stdin.
       - name: Test Desktop on Windows
         run: npm test --prefix apps/desktop
+      - name: Keep the crash evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: desktop-windows-test-crash-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/crash
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Stage a release runtime and Desktop's Reef bundle
         run: npm run stage --prefix apps/desktop

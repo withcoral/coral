@@ -114,6 +114,19 @@ impl LoadedServerConfig {
         self.parse()?.search.reconcile_interval()
     }
 
+    /// Universal Search's vector side: vectors of the model manifest's
+    /// dimension when `[search] semantic_search_enabled` is true, otherwise
+    /// off.
+    pub(crate) fn vector_storage(&self) -> Result<coral_search::VectorStorage, AppError> {
+        Ok(if self.parse()?.search.semantic_search_enabled {
+            coral_search::VectorStorage::On {
+                dimension: coral_embed::MANIFEST.dimension,
+            }
+        } else {
+            coral_search::VectorStorage::Off
+        })
+    }
+
     /// Whether the runtime reads the release feed to tell Organization Owners
     /// about a newer release.
     pub(crate) fn update_check(&self) -> Result<bool, AppError> {
@@ -577,12 +590,17 @@ struct SearchSettings {
     /// Seconds between the end of one reconcile pass and the start of the
     /// next.
     reconcile_interval_seconds: u64,
+    /// Whether Coral prepares search by meaning. Off, Coral needs no
+    /// pgvector and makes no vectors, and it leaves a vector table from an
+    /// earlier start as it is. Off by default until search by meaning ships.
+    semantic_search_enabled: bool,
 }
 
 impl Default for SearchSettings {
     fn default() -> Self {
         Self {
             reconcile_interval_seconds: 5 * 60,
+            semantic_search_enabled: false,
         }
     }
 }
@@ -1373,6 +1391,34 @@ client_secret = 'test-secret'
                 .search_reconcile_interval()
                 .unwrap(),
             std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn the_vector_side_is_off_unless_the_operator_turns_it_on() {
+        let on = coral_search::VectorStorage::On {
+            dimension: coral_embed::MANIFEST.dimension,
+        };
+        let off = coral_search::VectorStorage::Off;
+        for (raw, expected) in [
+            ("", off),
+            ("[search]", off),
+            ("[search]\nsemantic_search_enabled = false", off),
+            ("[search]\nsemantic_search_enabled = true", on),
+        ] {
+            assert_eq!(
+                load(raw).1.vector_storage().expect(raw),
+                expected,
+                "{raw:?}"
+            );
+        }
+        let error = load("[search]\nsemantic_search_enabled = \"no\"")
+            .1
+            .validate(&coral_secret_store::SecretStoreKinds::default())
+            .expect_err("a string is not a boolean");
+        assert!(
+            matches!(&error, AppError::FailedPrecondition(message) if message.contains("semantic_search_enabled")),
+            "{error}"
         );
     }
 
