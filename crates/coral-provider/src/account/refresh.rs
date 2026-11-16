@@ -2,6 +2,15 @@
 //! concurrent callers from exchanging the same refresh token. Renewal changes only
 //! token material, preserving the retained authorization and approval. The triggering
 //! Invocation may continue after its final authority checks; no call is replayed.
+//!
+//! A dispatch reads the retained Account in a read snapshot, holding nothing,
+//! and opens the material once the snapshot has closed. Only a renewal writes.
+//! Its claim is one conditional write on the Account as the read found it, so
+//! of the callers that read the same expired token one takes the claim, and
+//! the others read again and wait for it. A claim commits before its exchange
+//! starts, so no read after it returns the token the exchange replaces. A read
+//! before it returns a token that had not expired when it was read, as a
+//! dispatch that finished a moment earlier would.
 use coral_workspace::WorkspaceId;
 
 use super::{
@@ -30,6 +39,32 @@ enum CredentialResolution {
     /// A Secret Store holds some fields: the caller reads them outside every lock.
     StoreBacked(std::collections::BTreeMap<String, CredentialField>),
     Refreshing(PendingRefresh),
+    /// The Account changed between the read and the write that read called
+    /// for, so the write changed nothing: the caller reads again.
+    Changed,
+}
+
+/// What one read of the retained Account calls for.
+enum RetainedRead {
+    /// Nothing to write.
+    Settled(CredentialResolution),
+    /// A write, which a read never makes: its caller detaches it.
+    Renewal(Box<Renewal>),
+}
+
+/// The Account as a read found it, and the write its material needs.
+struct Renewal {
+    row: LoadedAccount,
+    due: RenewalDue,
+}
+
+enum RenewalDue {
+    /// The access token has expired and no caller holds a refresh claim.
+    Refresh(oauth::TokenResponse),
+    /// A refresh claim outlived its deadline. A lost host may have rotated the
+    /// upstream token without saving it, so that ambiguous exchange is never
+    /// retried automatically: the Account needs a new authorization.
+    Reconnect { attempt_id: String },
 }
 
 /// What an Invocation has once any refresh has settled, before a store is read.
@@ -130,31 +165,44 @@ impl AccountModule {
         let trace = coral_telemetry::TraceId::current_or_new();
         let mut pending = None;
         loop {
-            let module = self.clone();
-            let workspace = workspace.clone();
-            let provider = provider.clone();
-            let evidence = evidence.clone();
-            let trace = trace.clone();
-            let observed = pending.take();
             let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
             let current_time = now.saturating_add(elapsed);
-            // Only one probe/exchange is detached. Dropping a waiting caller stops
-            // polling, while an already-claimed exchange still survives response loss.
-            let result = tokio::spawn(async move {
-                module
-                    .resolve_credentials(
-                        &workspace,
-                        &provider,
-                        &evidence,
-                        current_time,
-                        &trace,
-                        observed.as_ref(),
-                    )
+            let observed = pending.take();
+            let read = self
+                .read_retained(
+                    workspace,
+                    provider,
+                    evidence,
+                    current_time,
+                    observed.as_ref(),
+                )
+                .await?;
+            let resolution = match read {
+                RetainedRead::Settled(resolution) => resolution,
+                RetainedRead::Renewal(renewal) => {
+                    let module = self.clone();
+                    let workspace = workspace.clone();
+                    let provider = provider.clone();
+                    let evidence = evidence.clone();
+                    let trace = trace.clone();
+                    // Only a renewal is detached. Dropping a waiting caller stops
+                    // its reads, while an already-claimed exchange still survives
+                    // response loss.
+                    tokio::spawn(async move {
+                        let dispatch = RetainedDispatch {
+                            workspace: &workspace,
+                            provider: &provider,
+                            evidence: &evidence,
+                            now: current_time,
+                            trace: &trace,
+                        };
+                        module.renew(&dispatch, *renewal).await
+                    })
                     .await
-            })
-            .await
-            .map_err(|_error| Error::CredentialRefreshFailed)??;
-            match result {
+                    .map_err(|_error| Error::CredentialRefreshFailed)??
+                }
+            };
+            match resolution {
                 CredentialResolution::Ready(values) => {
                     return Ok(SettledCredentials::Ready(values));
                 }
@@ -165,6 +213,9 @@ impl AccountModule {
                     pending = Some(claim);
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
+                // The write was conditional on the Account as this caller read
+                // it, so the next read finds the Account in another state.
+                CredentialResolution::Changed => {}
             }
         }
     }
@@ -196,13 +247,9 @@ impl AccountModule {
         evidence: &CredentialEvidence,
         now: i64,
     ) -> Result<Option<CredentialValues>, Error> {
-        let row = retained_account(tx, workspace, provider, evidence).await?;
+        let row = held_account(tx, workspace, provider, evidence).await?;
         let plaintext = self.open_retained(&row)?;
-        if !matches!(
-            evidence.contract.authentication(),
-            AuthenticationConfiguration::OAuthAuthorizationCode { .. }
-                | AuthenticationConfiguration::OAuthDeviceCode { .. }
-        ) {
+        if refresh_endpoint(&evidence.contract).is_none() {
             return field_values(&row, &plaintext).map(Some);
         }
         let token = repository::decode_token(&plaintext)?;
@@ -228,30 +275,36 @@ impl AccountModule {
         provider: &ProviderId,
         evidence: &CredentialEvidence,
     ) -> Result<bool, Error> {
-        let row = retained_account(tx, workspace, provider, evidence).await?;
+        let row = held_account(tx, workspace, provider, evidence).await?;
         if row.secret_references.is_none() {
             return Ok(false);
         }
         let plaintext = self.open_retained(&row)?;
+        let stores_usable = self.stores_usable(tx, workspace, &row).await?;
         Ok(matches!(
-            self.static_resolution(tx, workspace, &row, &plaintext)
-                .await?,
+            static_resolution(&row, &plaintext, stores_usable)?,
             CredentialResolution::StoreBacked(_)
         ))
     }
 
-    async fn resolve_credentials(
+    /// Reads the retained Account as a dispatch at `now` finds it, in a read
+    /// snapshot that holds no row and takes no write lock, and opens its
+    /// material after the snapshot has closed. Material that needs no renewal
+    /// settles here. A read never writes: it returns the renewal it found due.
+    async fn read_retained(
         &self,
         workspace: &WorkspaceId,
         provider: &ProviderId,
         evidence: &CredentialEvidence,
         now: i64,
-        trace: &coral_telemetry::TraceId,
         observed: Option<&PendingRefresh>,
-    ) -> Result<CredentialResolution, Error> {
-        let started = std::time::Instant::now();
-        let mut tx = self.providers.database.begin().await?;
-        let row = retained_account(&mut tx, workspace, provider, evidence).await?;
+    ) -> Result<RetainedRead, Error> {
+        let refreshes = refresh_endpoint(&evidence.contract).is_some();
+        let mut snapshot = self.providers.database.begin_read_snapshot().await?;
+        let row = retained_account(&mut snapshot, workspace, provider, evidence).await?;
+        // Only typed-in fields name a Secret Store.
+        let stores_usable = refreshes || self.stores_usable(&mut snapshot, workspace, &row).await?;
+        snapshot.rollback().await?;
         if observed.is_some_and(|claim| {
             claim.material_revision == row.material_revision
                 && row.refresh_attempt_id.as_deref() != Some(claim.attempt_id.as_str())
@@ -260,50 +313,102 @@ impl AccountModule {
         }
         if let Some(attempt_id) = &row.refresh_attempt_id {
             if row.refresh_deadline.is_some_and(|deadline| now < deadline) {
-                let claim = PendingRefresh {
-                    attempt_id: attempt_id.clone(),
-                    material_revision: row.material_revision.clone(),
-                };
-                tx.commit().await?;
-                return Ok(CredentialResolution::Refreshing(claim));
+                // A claim commits before its exchange starts, so this caller
+                // waits for it whatever its own clock says of the token.
+                return Ok(RetainedRead::Settled(CredentialResolution::Refreshing(
+                    PendingRefresh {
+                        attempt_id: attempt_id.clone(),
+                        material_revision: row.material_revision.clone(),
+                    },
+                )));
             }
-            // A lost host may have rotated the upstream token without saving it.
-            // Never retry that ambiguous exchange automatically.
-            require_authorization(&mut tx, workspace, &row, now, trace).await?;
-            tx.commit().await?;
-            return Err(Error::AccountRequired);
+            let due = RenewalDue::Reconnect {
+                attempt_id: attempt_id.clone(),
+            };
+            return Ok(RetainedRead::Renewal(Box::new(Renewal { row, due })));
         }
         let plaintext = self.open_retained(&row)?;
-        let (token_url, scopes, resource) = match evidence.contract.authentication() {
-            AuthenticationConfiguration::OAuthAuthorizationCode {
-                token_url,
-                scopes,
-                resource,
-                ..
-            }
-            | AuthenticationConfiguration::OAuthDeviceCode {
-                token_url,
-                scopes,
-                resource,
-                ..
-            } => (token_url, scopes, resource.as_deref()),
-            _ => return self.finish_static(tx, workspace, &row, &plaintext).await,
-        };
+        if !refreshes {
+            return static_resolution(&row, &plaintext, stores_usable).map(RetainedRead::Settled);
+        }
         let token = repository::decode_token(&plaintext)?;
         if token.expires_at.is_none_or(|expires| now < expires) {
-            tx.commit().await?;
             return Secret::new(token.access_token)
                 .map(CredentialValues::token)
                 .map(CredentialResolution::Ready)
+                .map(RetainedRead::Settled)
                 .map_err(Error::from);
         }
+        let due = RenewalDue::Refresh(token);
+        Ok(RetainedRead::Renewal(Box::new(Renewal { row, due })))
+    }
+
+    /// Makes the write a read found due. Each write is conditional on the
+    /// Account as that read found it, and one that changes nothing ends as
+    /// [`CredentialResolution::Changed`].
+    async fn renew(
+        &self,
+        dispatch: &RetainedDispatch<'_>,
+        renewal: Renewal,
+    ) -> Result<CredentialResolution, Error> {
+        #[cfg(test)]
+        if let Some(gate) = &self.renewal_gate {
+            gate.entered.add_permits(1);
+            if let Ok(released) = gate.release.acquire().await {
+                released.forget();
+            }
+        }
+        let row = &renewal.row;
+        match renewal.due {
+            RenewalDue::Refresh(token) => self.refresh(dispatch, row, &token).await,
+            RenewalDue::Reconnect { attempt_id } => {
+                let mut tx = self.providers.database.begin().await?;
+                if !repository::lapse_refresh(&mut tx, row, &attempt_id).await? {
+                    return Ok(CredentialResolution::Changed);
+                }
+                let RetainedDispatch {
+                    workspace,
+                    now,
+                    trace,
+                    ..
+                } = *dispatch;
+                reconnection_required(&mut tx, workspace, row, now, trace).await?;
+                tx.commit().await?;
+                Err(Error::AccountRequired)
+            }
+        }
+    }
+
+    /// Claims the refresh of the expired `token`, exchanges it outside
+    /// persistence and stores the result. The write transaction holds only the
+    /// claim and the read of the application's secret.
+    async fn refresh(
+        &self,
+        dispatch: &RetainedDispatch<'_>,
+        row: &LoadedAccount,
+        token: &oauth::TokenResponse,
+    ) -> Result<CredentialResolution, Error> {
+        let RetainedDispatch {
+            workspace,
+            provider,
+            evidence,
+            now,
+            trace,
+        } = *dispatch;
+        let started = std::time::Instant::now();
+        // Only an OAuth contract's token expires.
+        let (token_url, scopes, resource) =
+            refresh_endpoint(&evidence.contract).ok_or(Error::AccountRequired)?;
         let attempt = Uuid::new_v4().to_string();
         let deadline = now.checked_add(60_000_000_000).ok_or(Error::AccountInput)?;
-        repository::claim_refresh(&mut tx, &row, &attempt, deadline).await?;
+        let mut tx = self.providers.database.begin().await?;
+        if !repository::claim_refresh(&mut tx, row, &attempt, deadline).await? {
+            return Ok(CredentialResolution::Changed);
+        }
         let client_secret = self
             .provider_client_secret(
                 &mut tx,
-                &workspace.clone(),
+                workspace,
                 provider,
                 evidence.contract.oauth_client(),
             )
@@ -319,7 +424,7 @@ impl AccountModule {
                 url: token_url,
                 destination_policy: self.providers.outbound_policy,
             },
-            &token,
+            token,
             scopes,
             now,
             resource,
@@ -337,7 +442,7 @@ impl AccountModule {
         };
         let completed_at = now.saturating_add(elapsed);
         let completion = self
-            .complete_refresh(workspace, &row, &attempt, result, completed_at, trace)
+            .complete_refresh(workspace, row, &attempt, result, completed_at, trace)
             .await;
         if let Some(failed) = client_failed {
             // Only after the renewed token is stored: a failed status write must
@@ -351,44 +456,28 @@ impl AccountModule {
             .map(CredentialResolution::Ready)
     }
 
-    async fn finish_static(
-        &self,
-        mut tx: Transaction<'_>,
-        workspace: &WorkspaceId,
-        row: &LoadedAccount,
-        plaintext: &str,
-    ) -> Result<CredentialResolution, Error> {
-        let resolution = self
-            .static_resolution(&mut tx, workspace, row, plaintext)
-            .await;
-        tx.commit().await?;
-        resolution
-    }
-
-    /// An Account's typed fields, or its fields for a read once this transaction
-    /// ends. A store the Workspace lost, or config no longer defines, leaves no
-    /// usable Account, and Coral never falls back to a field it can read.
-    async fn static_resolution(
+    /// Whether config defines, and the Workspace holds a grant for, every
+    /// Secret Store the Account's references name. References that do not
+    /// parse name no store: [`stored_fields`] reports them.
+    async fn stores_usable(
         &self,
         tx: &mut Transaction<'_>,
         workspace: &WorkspaceId,
         row: &LoadedAccount,
-        plaintext: &str,
-    ) -> Result<CredentialResolution, Error> {
-        let fields = stored_fields(row, plaintext)?;
-        let mut store_backed = false;
-        for field in fields.values() {
-            if let CredentialField::Reference(reference) = field {
-                store_backed = true;
-                if !self.store_usable(tx, workspace, reference).await? {
-                    return Err(Error::AccountRequired);
-                }
+    ) -> Result<bool, Error> {
+        let Some(Ok(references)) = row
+            .secret_references
+            .as_ref()
+            .map(repository::StoredReferences::decode)
+        else {
+            return Ok(true);
+        };
+        for reference in references.values() {
+            if !self.store_usable(tx, workspace, reference).await? {
+                return Ok(false);
             }
         }
-        if store_backed {
-            return Ok(CredentialResolution::StoreBacked(fields));
-        }
-        field_values(row, plaintext).map(CredentialResolution::Ready)
+        Ok(true)
     }
 
     async fn complete_refresh(
@@ -433,7 +522,8 @@ impl AccountModule {
                 Ok(secret)
             }
             Err(Error::AccountRequired) => {
-                require_authorization(&mut tx, workspace, row, now, trace).await?;
+                repository::mark_requires_authorization(&mut tx, row).await?;
+                reconnection_required(&mut tx, workspace, row, now, trace).await?;
                 Err(Error::AccountRequired)
             }
             Err(Error::OutboundDestinationRejected) => Err(Error::OutboundDestinationRejected),
@@ -445,13 +535,68 @@ impl AccountModule {
     }
 }
 
+/// The retained selection one dispatch settles, with that dispatch's clock
+/// and trace.
+#[derive(Clone, Copy)]
+struct RetainedDispatch<'a> {
+    workspace: &'a WorkspaceId,
+    provider: &'a ProviderId,
+    evidence: &'a CredentialEvidence,
+    now: i64,
+    trace: &'a coral_telemetry::TraceId,
+}
+
+/// Where an OAuth contract renews its token, with the scopes and the resource
+/// it asks for. `None` for a method whose values a person typed in.
+fn refresh_endpoint(
+    contract: &coral_catalog::ProviderCredentialContract,
+) -> Option<(&str, &[String], Option<&str>)> {
+    match contract.authentication() {
+        AuthenticationConfiguration::OAuthAuthorizationCode {
+            token_url,
+            scopes,
+            resource,
+            ..
+        }
+        | AuthenticationConfiguration::OAuthDeviceCode {
+            token_url,
+            scopes,
+            resource,
+            ..
+        } => Some((token_url, scopes, resource.as_deref())),
+        _ => None,
+    }
+}
+
+/// An Account's typed fields, or its fields for a read once the caller's
+/// transaction ends. A store the Workspace lost, or config no longer defines,
+/// leaves no usable Account, and Coral never falls back to a field it can read.
+fn static_resolution(
+    row: &LoadedAccount,
+    plaintext: &str,
+    stores_usable: bool,
+) -> Result<CredentialResolution, Error> {
+    let fields = stored_fields(row, plaintext)?;
+    let store_backed = fields
+        .values()
+        .any(|field| matches!(field, CredentialField::Reference(_)));
+    if !store_backed {
+        return field_values(row, plaintext).map(CredentialResolution::Ready);
+    }
+    if !stores_usable {
+        return Err(Error::AccountRequired);
+    }
+    Ok(CredentialResolution::StoreBacked(fields))
+}
+
+/// The Account an Invocation selected, read without a hold: the caller reads
+/// in a snapshot, or already holds the row.
 async fn retained_account(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     provider: &ProviderId,
     evidence: &CredentialEvidence,
 ) -> Result<LoadedAccount, Error> {
-    repository::hold_evidence(tx, workspace, provider, evidence).await?;
     let row = match &evidence.selection {
         CredentialSelection::Caller { principal } => {
             repository::caller_account(tx, workspace, provider, principal, evidence.account_id)
@@ -467,14 +612,27 @@ async fn retained_account(
     Ok(row)
 }
 
-async fn require_authorization(
+/// [`retained_account`], held exclusively for the rest of the caller's write
+/// transaction.
+async fn held_account(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    provider: &ProviderId,
+    evidence: &CredentialEvidence,
+) -> Result<LoadedAccount, Error> {
+    repository::hold_evidence(tx, workspace, provider, evidence).await?;
+    retained_account(tx, workspace, provider, evidence).await
+}
+
+/// Records that the Account needs a new authorization, in the transaction
+/// that marked it so.
+async fn reconnection_required(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     row: &LoadedAccount,
     now: i64,
     trace: &coral_telemetry::TraceId,
 ) -> Result<(), Error> {
-    repository::mark_requires_authorization(tx, row).await?;
     refresh_event(
         tx,
         workspace,
