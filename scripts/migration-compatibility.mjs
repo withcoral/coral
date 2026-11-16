@@ -13,7 +13,8 @@
 //   -- rolling-upgrade: compatible. <why no statement breaks an older release>
 //
 // One declaration covers the file. `compatible` does not cover a statement
-// that removes, renames or retypes a table or a column, which `will` marks.
+// that removes, renames or retypes a table or a column, or that drops a view
+// or a schema: `will` marks those.
 // A table rebuild is the exception: a table the migration creates takes the
 // dropped one's name, and the declaration says that it keeps every column.
 //
@@ -181,10 +182,13 @@ function statementBreaks(statement, known) {
     // tell whether the new table keeps them: the declaration must say so.
     if (rebuilt) return [may('rebuilds a table')]
   }
-  const dropped = match(statement, '^drop\\s+(materialized\\s+view|[a-z]+)')
+  const dropped = match(statement, '^drop\\s+(materialized\\s+view|foreign\\s+table|[a-z]+)')
   if (dropped) {
     const kind = dropped[1].replace(/\s+/g, ' ')
-    return [kind === 'table' ? will('drops the table') : may(`drops the ${kind}`)]
+    // A query names these, or what they hold. An index, a function, a
+    // trigger, a type or a sequence may be one that no query depends on.
+    const named = ['table', 'foreign table', 'view', 'materialized view', 'schema'].includes(kind)
+    return [named ? will(`drops the ${kind}`) : may(`drops the ${kind}`)]
   }
   if (/^alter\s+(index|type|view|sequence)\b.*\brename\b/.test(statement)) {
     return [may('renames what an older release names')]
@@ -314,9 +318,10 @@ const HELP = `an older Coral release must keep working after a migration runs.
     -- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>
   If no statement named above breaks an older release, declare:
     -- rolling-upgrade: compatible. <why>
-  That covers a constraint, an index or a rewrite of rows. It does not cover a dropped or renamed
-  table or column, or a changed column type. A table rebuild is the exception: when a table that
-  the migration creates takes the dropped table's name, say that it keeps every column.
+  That covers a constraint, a rewrite of rows, and a dropped index, function, trigger, type or
+  sequence. It does not cover a dropped or renamed table or column, a dropped view or schema, or a
+  changed column type. A table rebuild is the exception: when a table that the migration creates
+  takes the dropped table's name, say that it keeps every column.
   A step with a postgres/ and a sqlite/ half declares in the postgres/ half.`
 
 function main(args) {

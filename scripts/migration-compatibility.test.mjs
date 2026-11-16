@@ -126,6 +126,9 @@ const compatible = {
     'DROP TABLE workspaces;\nALTER TABLE workspaces_new RENAME TO workspaces;\n',
   'a trigger on a table that it creates':
     'CREATE TABLE runs (id TEXT);\nCREATE TRIGGER stamp BEFORE INSERT ON runs FOR EACH ROW EXECUTE FUNCTION stamp();\n',
+  'a dropped index, function and type that it declares compatible':
+    '-- rolling-upgrade: compatible. No query names the index in ON CONFLICT or calls the function.\n' +
+    'DROP INDEX workspaces_name;\nDROP FUNCTION lexemes(tsvector);\nDROP TYPE workspace_kind;\n',
   'a removal that names the release that stopped using it':
     '-- rolling-upgrade: unused since v1.0.0. No query names the column.\nALTER TABLE workspaces DROP COLUMN name;\n',
 }
@@ -151,6 +154,18 @@ const declarations = {
       "ALTER TABLE workspaces DROP CONSTRAINT workspaces_kind, ADD CONSTRAINT workspaces_kind CHECK (kind <> '');\n" +
       'DROP TABLE runs;\n',
     /cannot be `compatible`[^]*drops the table: DROP TABLE runs$/,
+  ],
+  'calls a dropped view compatible': [
+    '-- rolling-upgrade: compatible. Nothing reads it.\nDROP VIEW workspace_names;\n',
+    /cannot be `compatible`[^]*drops the view/,
+  ],
+  'calls a dropped materialized view compatible': [
+    '-- rolling-upgrade: compatible. Nothing reads it.\nDROP MATERIALIZED VIEW workspace_counts;\n',
+    /cannot be `compatible`[^]*drops the materialized view/,
+  ],
+  'calls a dropped schema compatible': [
+    '-- rolling-upgrade: compatible. Nothing reads it.\nDROP SCHEMA archive CASCADE;\n',
+    /cannot be `compatible`[^]*drops the schema/,
   ],
   'calls a renamed column compatible': [
     '-- rolling-upgrade: compatible. Same data.\nALTER TABLE workspaces RENAME COLUMN name TO title;\n',
