@@ -21,7 +21,7 @@ pub enum Error {
     ProviderSetupNotReady,
     /// Authorization metadata discovery failed with a safe typed code.
     #[error("MCP authorization discovery failed: {0}")]
-    AuthorizationDiscovery(&'static str),
+    AuthorizationDiscovery(crate::account::AuthorizationDiscoveryFailure),
     /// No client bootstrap is possible without a manually supplied client identifier.
     #[error("no OAuth client bootstrap is available for this authorization server")]
     ClientBootstrapUnavailable,
@@ -54,7 +54,7 @@ pub enum Error {
     CredentialRefreshFailed,
     /// A host-classified token exchange failure, never an upstream description.
     #[error("OAuth token exchange failed: {0}")]
-    OAuthTokenExchange(&'static str),
+    OAuthTokenExchange(crate::account::TokenExchangeFailure),
     /// The owner must repair the shared OAuth application; account grants remain intact.
     #[error("oauth_client_configuration")]
     OAuthClientConfiguration,
@@ -253,7 +253,10 @@ mod tests {
             assert!(wrap(unanswered()).is_operational(), "{label}");
             assert!(!wrap(definite()).is_operational(), "{label}");
         }
-        assert!(!Error::OAuthTokenExchange("oauth_access_denied").is_operational());
+        assert!(
+            !Error::OAuthTokenExchange(crate::account::TokenExchangeFailure::AccessDenied)
+                .is_operational()
+        );
         assert!(!Error::AccountInput.is_operational());
     }
 }
