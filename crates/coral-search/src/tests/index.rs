@@ -810,7 +810,7 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
         probe.hold_at(WritePoint::HoldsLock);
 
         notify(&stalled, &entries);
-        probe.reached(WritePoint::HoldsLock).await;
+        probe.reached(1, WritePoint::HoldsLock).await;
         probe.advance(LIMIT);
         stalled.settled().await;
         let [state] = world.states().await.try_into().expect("one state row");
@@ -864,7 +864,7 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
         .await
         .expect("hold the Workspace's index lock");
     notify(&index, &entries);
-    probe.reached(WritePoint::WaitingForWriter).await;
+    probe.reached(1, WritePoint::WaitingForWriter).await;
     probe.advance(LIMIT);
     // The write has given up. Its failure records once the writer is free.
     blocker.rollback().await.expect("release the writer");
@@ -889,7 +889,7 @@ async fn another_write_can_take_the_writer_while_a_write_builds_its_rows() {
     let database = world.modules.search.database.clone();
 
     notify(&index, &entries);
-    probe.reached(WritePoint::BuiltRows).await;
+    probe.reached(1, WritePoint::BuiltRows).await;
     // SQLite's writer, or Postgres's lock on the Workspace's index writes.
     // The limit is a liveness bound: a writer that is not free never comes.
     let other = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -932,10 +932,10 @@ async fn a_write_that_waited_for_the_writer_still_has_its_whole_limit() {
     notify(&index, &entries);
     // The wait and the write each take 60% of the limit: together they run
     // past it, each alone stays within it.
-    probe.reached(WritePoint::WaitingForWriter).await;
+    probe.reached(1, WritePoint::WaitingForWriter).await;
     probe.advance(LIMIT * 3 / 5);
     blocker.rollback().await.expect("release the writer");
-    probe.reached(WritePoint::HoldsLock).await;
+    probe.reached(1, WritePoint::HoldsLock).await;
     probe.advance(LIMIT * 3 / 5);
     probe.release();
     index.settled().await;
@@ -2578,7 +2578,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
         );
         notify(&index, &entries);
     }
-    probe.reached(stalled_at).await;
+    probe.reached(1, stalled_at).await;
     probe.advance(LIMIT);
     // The write has given up. Its failure records once the writer is free.
     blocker.rollback().await.expect("release the writer");
@@ -2638,7 +2638,7 @@ async fn a_failure_waits_for_a_busy_writer_to_record_its_state() {
     notify(&index, &entries);
     // The write found the writer busy and failed. Only then is the writer
     // free for the failure's record.
-    probe.reached(WritePoint::Ended).await;
+    probe.reached(1, WritePoint::Ended).await;
     blocker.rollback().await.expect("release the writer");
     index.settled().await;
 

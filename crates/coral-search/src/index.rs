@@ -755,7 +755,7 @@ impl SearchIndex {
     ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
         #[cfg(test)]
-        let _ended = self.write_probe.as_deref().map(WriteProbe::ends);
+        let _ended = self.write_probe.as_deref().map(WriteProbe::starts);
         let rows = without_starving_other_tasks(|| {
             #[cfg(test)]
             if let Some(pause) = &self.row_build_pause {
