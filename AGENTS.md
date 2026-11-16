@@ -97,6 +97,23 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   across Members; the publish that moves its current revision and the removal
   that tombstones it hold the row exclusively. A Private Tool row keeps the
   exclusive hold: only its owner links it.
+- The next three bullets state the Run Owner path of ADR 0018 and ADR 0025.
+  [ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)
+  supersedes both, and
+  [#2884](https://github.com/withcoral/coral/issues/2884) tracks the
+  migration in slices. The owner path stays as it is until
+  [#2911](https://github.com/withcoral/coral/issues/2911) deletes it and
+  rewrites these bullets, so they, and the owner rules under Tests, bind
+  every change to that code. ADR 0027 keeps the Run Ledger and its head, the
+  chunk commit predicated on the claim and the head and never on the clock,
+  a write that ends on the database's answer, the exact Run Output Budget,
+  the Policy Enforcement Point, the Fan-out Limit, and the wake-up as a
+  hint. It retires the Run Owner as a Run's one writer, the Run Inbox, the
+  per-Run worker lease and its expired-lease sweep, each owner's
+  subscription to the change signal, and the Shutdown Drain's interruption
+  of live Runs. Fix a defect in a retiring part under the rules below. Build
+  new Run coordination beside the owner path, in the #2884 slice that
+  replaces that part.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
