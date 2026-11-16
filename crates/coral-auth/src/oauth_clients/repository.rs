@@ -83,28 +83,16 @@ pub(super) struct AdmissionEvidence {
 pub(super) async fn lock_admission(
     tx: &mut Transaction<'_>,
 ) -> Result<AdmissionEvidence, RegistrationError> {
-    // First statement is a write, so admission serializes across pools and
-    // processes.
-    let rows = tx
-        .execute(
-            Query::update()
-                .table(Admission::Table)
-                .value(Admission::Accepted, Expr::col(Admission::Accepted))
-                .and_where(Expr::col(Admission::Singleton).eq(1))
-                .to_owned(),
-        )
-        .await
-        .map_err(unavailable)?;
-    if rows != 1 {
-        return Err(RegistrationError::Unavailable);
-    }
+    // The first statement holds the admission row exclusively, so admission
+    // serializes across pools and processes.
     let (window_started_at, accepted): (i64, i64) = tx
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .columns([Admission::WindowStartedAt, Admission::Accepted])
                 .from(Admission::Table)
                 .and_where(Expr::col(Admission::Singleton).eq(1))
                 .to_owned(),
+            coral_db::RowLock::Exclusive,
         )
         .await
         .map_err(unavailable)?
