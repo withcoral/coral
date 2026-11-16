@@ -816,7 +816,7 @@ impl TestModules {
         self.run_record(workspace_id, run_id).await
     }
 
-    /// The Run row once it is terminal, within a few seconds.
+    /// The Run row once it is terminal; fails after [`EVENTUALLY`].
     pub(crate) async fn terminal_record(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,
