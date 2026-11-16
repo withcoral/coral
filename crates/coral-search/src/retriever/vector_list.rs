@@ -17,17 +17,17 @@ use coral_workspace::WorkspaceId;
 use super::{QueryError, RetrievalError, repository};
 use crate::EntityKind;
 
-/// The vector list that `read` gives, read in its own savepoint. `None`
-/// when `read` fails: the savepoint rolls back, so the snapshot stays
-/// usable, the retriever of `kind` ranks by words alone, and the page does
-/// not say so. Only a failure to open, keep or undo the savepoint is the
+/// The vector list that `read` gives, read in its own savepoint.
+/// `VectorQueryFailed` when `read` fails: the savepoint rolls back, so the
+/// snapshot stays usable, the retriever of `kind` ranks by words alone, and
+/// the page does not say so. Only a failure to open, keep or undo the savepoint is the
 /// retriever's error.
 pub(crate) async fn vector_side<T>(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     kind: EntityKind,
     read: impl AsyncFnOnce(&mut Transaction<'_>) -> Result<VectorList<T>, RetrievalError>,
-) -> Result<Option<VectorList<T>>, QueryError> {
+) -> Result<Result<VectorList<T>, LexicalReason>, QueryError> {
     repository::begin_vector_query(transaction)
         .await
         .map_err(QueryError::retrieval)?;
@@ -36,7 +36,7 @@ pub(crate) async fn vector_side<T>(
             repository::end_vector_query(transaction)
                 .await
                 .map_err(QueryError::retrieval)?;
-            Ok(Some(list))
+            Ok(Ok(list))
         }
         Err(error) => {
             repository::abandon_vector_query(transaction)
@@ -48,7 +48,70 @@ pub(crate) async fn vector_side<T>(
                 error.type = safe::kind(error.code()),
                 "a retriever's vector query failed; it ranks by words alone"
             );
-            Ok(None)
+            Ok(Err(LexicalReason::VectorQueryFailed))
+        }
+    }
+}
+
+/// Why a retriever ranked by its lexical list alone (ADR 0035, "The setting
+/// and failures"). The page never says it; the retriever's span does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LexicalReason {
+    /// The `[search] semantic_search_enabled` setting is off, or the
+    /// database keeps no vectors.
+    Disabled,
+    /// The model's files are not ready yet.
+    ModelAbsent,
+    /// The model does not load while this process runs.
+    ModelFailed,
+    /// This CPU is below the model's floor.
+    CpuFloor,
+    /// The model failed on this request's query.
+    EmbedFailed,
+    /// The retriever's vector query failed, or its vector table is missing.
+    VectorQueryFailed,
+}
+
+impl LexicalReason {
+    /// The reason's stable name, as telemetry spells it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ModelAbsent => "model_absent",
+            Self::ModelFailed => "model_failed",
+            Self::CpuFloor => "cpu_floor",
+            Self::EmbedFailed => "embed_failed",
+            Self::VectorQueryFailed => "vector_query_failed",
+        }
+    }
+}
+
+/// Whether a retriever's window merged its vector list with its lexical
+/// list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Semantic {
+    /// The retriever had the query's vector, and its vector query, when it
+    /// ran one, answered.
+    Fused,
+    /// The retriever ranked by its lexical list alone.
+    LexicalOnly(LexicalReason),
+}
+
+impl Semantic {
+    /// What a retriever's vector side gave: its vector list, or why it has
+    /// none.
+    pub(crate) const fn of<T>(vector: &Result<T, LexicalReason>) -> Self {
+        match vector {
+            Ok(_) => Self::Fused,
+            Err(reason) => Self::LexicalOnly(*reason),
+        }
+    }
+
+    /// The stable name, as telemetry spells it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fused => "fused",
+            Self::LexicalOnly(_) => "lexical_only",
         }
     }
 }

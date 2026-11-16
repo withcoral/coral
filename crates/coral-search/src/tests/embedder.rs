@@ -7,16 +7,19 @@
 //! table. The model is a fixed-vector stand-in, so no test loads the real one.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coral_embed::{Embed, EmbedError, MANIFEST};
-use coral_telemetry::testing::{SpanCapture, attribute};
+use coral_telemetry::testing::{MetricCapture, SpanCapture, attribute};
 use coral_workspace::{AuthenticatedUser, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
+use tokio::sync::watch;
+use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
 use super::{TestModules, change, organization_user};
-use crate::SearchIndex;
+use crate::{ModelLoad, SearchIndex};
 
 const USER: &str = "user:search-embedder";
 
@@ -344,6 +347,116 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
 }
 
 #[tokio::test]
+async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let (model, index) = world.index_waiting_for_model();
+    let _background = Background(index.spawn_reconcile_task());
+    index.index_active_generation(world.workspace.clone(), world.tracer.clone());
+    index.settled().await;
+    index.observe_backlog().await;
+    let backlog = || gauge(&metrics, "coral.search.embed.backlog");
+    let entities = world.entity_stamps().await.len();
+    assert!(entities > 0, "the tracer has Search Entities");
+    assert_eq!(
+        backlog(),
+        Some(f64::from(u32::try_from(entities).unwrap())),
+        "each row waits for its vector while the model is pending"
+    );
+
+    model.send_replace(ModelLoad::Ready(Arc::new(FixedVectors::default())));
+    index.embedded().await;
+    index.observe_backlog().await;
+
+    assert_eq!(backlog(), Some(0.0));
+}
+
+#[tokio::test]
+async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_failed() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let many = world
+        .modules
+        .publish_openapi(&world.user, &world.workspace, &many_tools(40), "many", 60)
+        .await;
+    let metrics = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let model = FixedVectors::default();
+    model.fail_texts_with(BROKEN);
+    let index = world.index_with(&model);
+    let _background = Background(index.spawn_reconcile_task());
+
+    index.index_active_generation(world.workspace.clone(), many);
+    index.settled().await;
+    index.embedded().await;
+    index.observe_backlog().await;
+
+    assert_eq!(gauge(&metrics, "coral.search.embed.skipped"), Some(1.0));
+    assert_eq!(gauge(&metrics, "coral.search.embed.backlog"), Some(1.0));
+    assert_eq!(
+        batch_outcomes(&metrics),
+        ["failed".to_owned(), "ok".to_owned()].into(),
+        "the batch with the broken row failed, the rows tried alone after it were written"
+    );
+}
+
+#[tokio::test]
+async fn a_model_panic_fails_its_batch_and_a_new_thread_embeds_the_rows() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = MetricCapture::default();
+    let spans = SpanCapture::default();
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(spans.layer()),
+    );
+    let index = world.index_with(&FixedVectors::default().panicking_once());
+    let _background = Background(index.spawn_reconcile_task());
+
+    world.index_and_embed(&index, &[&world.tracer]).await;
+
+    assert_eq!(
+        batch_outcomes(&metrics),
+        ["failed".to_owned(), "ok".to_owned()].into(),
+        "the batch the model panicked in failed, the new thread's batch was written"
+    );
+    let failed = metrics
+        .named("coral.search.embed.batch.duration")
+        .into_iter()
+        .filter(|point| point.attributes.get("outcome").map(String::as_str) == Some("failed"))
+        .map(|point| point.count)
+        .sum::<u64>();
+    assert_eq!(failed, 1, "one batch failed: the one the model panicked in");
+    let failures = spans
+        .finished()
+        .iter()
+        .filter(|span| span.name == "coral.search.embed_batch")
+        .filter_map(|span| attribute(span, "error.type"))
+        .collect::<Vec<_>>();
+    assert_eq!(failures, ["thread_gone"]);
+}
+
+/// The outcomes of the Embedder's batches.
+fn batch_outcomes(metrics: &MetricCapture) -> std::collections::BTreeSet<String> {
+    metrics
+        .named("coral.search.embed.batch.duration")
+        .into_iter()
+        .filter_map(|point| point.attributes.get("outcome").cloned())
+        .collect()
+}
+
+/// The last value of the gauge `name`, when one was observed.
+fn gauge(metrics: &MetricCapture, name: &str) -> Option<f64> {
+    metrics.values(name).last().copied()
+}
+
+#[tokio::test]
 async fn a_failing_row_alone_in_its_batch_is_skipped_and_holds_back_no_other_workspace() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -508,6 +621,8 @@ struct FixedVectors {
     first_text: Arc<Mutex<Option<FirstTextWait>>>,
     /// Texts that hold this fail; `None` fails none.
     failing: Arc<Mutex<Option<String>>>,
+    /// The next text panics, which ends the Embedder's thread.
+    panic_next: Arc<AtomicBool>,
 }
 
 impl FixedVectors {
@@ -521,6 +636,12 @@ impl FixedVectors {
     /// and again before it embeds that text.
     fn holding_first_text_at(self, barrier: &Arc<std::sync::Barrier>) -> Self {
         *self.first_text.lock().unwrap() = Some((barrier.clone(), 2));
+        self
+    }
+
+    /// This model panics on its first text, once.
+    fn panicking_once(self) -> Self {
+        self.panic_next.store(true, Ordering::SeqCst);
         self
     }
 
@@ -561,7 +682,15 @@ impl Embed for FixedVectors {
         Ok(Self::vector(text))
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the model panics on purpose, to end the Embedder's thread"
+    )]
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        assert!(
+            !self.panic_next.swap(false, Ordering::SeqCst),
+            "injected model panic"
+        );
         let barrier = lock(&self.first_text).take();
         if let Some((barrier, times)) = barrier {
             for _ in 0..times {
@@ -807,6 +936,14 @@ impl World {
     /// An index whose Embedder embeds with `model`, ready at once.
     fn index_with(&self, model: &(impl Embed + Clone + 'static)) -> SearchIndex {
         self.modules.index_with(Arc::new(model.clone()))
+    }
+
+    /// An index whose Embedder waits until the test sends it a model.
+    fn index_waiting_for_model(&self) -> (watch::Sender<ModelLoad>, SearchIndex) {
+        let (model, slot) = watch::channel(ModelLoad::Pending);
+        let index = SearchIndex::new(self.modules.search.database.clone(), RECONCILE_INTERVAL)
+            .with_embedder(slot);
+        (model, index)
     }
 
     /// Each Search Entity of the Workspace with its source stamp.

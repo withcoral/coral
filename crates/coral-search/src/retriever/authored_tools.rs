@@ -101,6 +101,7 @@ impl EntityRetriever for AuthoredToolRetriever {
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
+                semantic: None,
             });
         };
         let ids = current.keys().cloned().collect::<Vec<_>>();
@@ -162,6 +163,7 @@ impl EntityRetriever for AuthoredToolRetriever {
                 has_more,
             ),
             window,
+            semantic: None,
         })
     }
 
@@ -298,26 +300,25 @@ async fn lexical_and_vector_lists(
             .await
             .map_err(QueryError::Retriever)?;
     let vector = match request.vector {
-        Some(vector) => {
-            vector_list::vector_side(
-                transaction,
-                workspace_id,
-                EntityKind::authored(scope.kind),
-                async |transaction| {
-                    nearest_current_authored_tools(
-                        transaction,
-                        workspace_id,
-                        scope,
-                        plan,
-                        vector,
-                        request.window,
-                    )
-                    .await
-                },
-            )
-            .await?
-        }
-        None => None,
+        Ok(vector) => vector_list::vector_side(
+            transaction,
+            workspace_id,
+            EntityKind::authored(scope.kind),
+            async |transaction| {
+                nearest_current_authored_tools(
+                    transaction,
+                    workspace_id,
+                    scope,
+                    plan,
+                    vector,
+                    request.window,
+                )
+                .await
+            },
+        )
+        .await?
+        .ok(),
+        Err(_reason) => None,
     };
     Ok((lexical, vector))
 }

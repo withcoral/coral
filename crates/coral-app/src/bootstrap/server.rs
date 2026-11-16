@@ -969,7 +969,9 @@ pub(crate) async fn start_server(
     // Every clone of the index is made after this, so each write wakes the
     // Embedder; the model fills the slot once the delivery below finds the
     // files.
-    let embedder_model = search_model.is_some().then(|| watch::channel(None));
+    let embedder_model = search_model
+        .is_some()
+        .then(|| watch::channel(coral_search::ModelLoad::Pending));
     let search_index = match &embedder_model {
         Some((_, model)) => search_index.with_embedder(model.clone()),
         None => search_index,
