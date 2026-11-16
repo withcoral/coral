@@ -778,8 +778,9 @@ impl RunningServer {
     }
 
     /// Shares the process's one search module with companion runtime
-    /// composition, so every surface's search embeds its query with the
-    /// Embedder's model.
+    /// composition, so every surface's search uses the Embedder's model.
+    /// A query is embedded only on Postgres, while semantic search is on and
+    /// the model has loaded.
     #[must_use]
     pub fn search(&self) -> coral_search::UniversalSearchModule {
         self.search.clone()
