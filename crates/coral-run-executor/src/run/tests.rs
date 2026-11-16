@@ -973,12 +973,17 @@ async fn a_lost_run_keeps_running_up_to_a_cap_then_waits() {
 /// Catches: a Run Executor that waits forever for an isolate that ignores
 /// termination, or one that leaves its other Runs behind when it retires.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    clippy::readonly_write_lock,
+    reason = "the held stall keeps a stopped Program's thread until the Run Executor retired"
+)]
 async fn an_isolate_that_misses_its_stop_retires_the_run_executor() {
     for with_another_run in [false, true] {
         let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
         let stall = &*Box::leak(Box::new(std::sync::RwLock::new(())));
-        // Held for good: the stopped isolate never goes.
-        Box::leak(Box::new(stall.write().unwrap()));
+        // The stopped isolate does not go while this is held.
+        let stalled = stall.write().unwrap();
         let limits = RunLimits {
             stop_grace: Duration::from_millis(100),
             stall: Some(stall),
@@ -1013,5 +1018,6 @@ async fn an_isolate_that_misses_its_stop_retires_the_run_executor() {
             run.send(ended()).await;
         }
         crate::testing::retired(task).await;
+        drop(stalled);
     }
 }

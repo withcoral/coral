@@ -34,7 +34,7 @@ enum Awaiting {
 pub(super) struct RunHost {
     state: Mutex<State>,
     changed: Condvar,
-    /// Turns true once the Program is stopped.
+    /// Turns true once the Program is told to stop.
     pub(super) stopping: watch::Sender<bool>,
     control: ProgramExecutionControl,
     value_limits: coral_value::ValueLimits,
