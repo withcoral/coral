@@ -204,17 +204,21 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   Keep the fence that rejects state written by Coral 0.x.
 - A rolling upgrade runs two Coral releases on one database: the newer one
   migrates at boot while the older one still serves. Two rules follow.
-  - An older release keeps working on a newer schema. Keep a migration
-    additive: a new table, a new index, a new column that is nullable or has a
-    default. To drop, rename, retype or tighten what a release uses, stagger
-    the change across releases. One release adds the new shape and still
-    writes the old one, because the release before it reads the old one. A
-    later release, which follows one that no longer uses the old shape,
-    migrates it away. Stored values follow the same rule: a release reads a
-    new value, such as a new `kind`, before any release writes it, and no
-    migration rewrites rows into a form the previous release cannot read.
-    An older Coral also starts on a newer database: the ledger may hold
-    steps above the plan's last one, and no others that the plan lacks.
+  - The previous release keeps working on the schema that a new migration
+    leaves. Keep a migration additive: a new table, a new index, a new column
+    that is nullable or has a default. A new column changes no query that
+    names its columns, so name them: no `SELECT *`, and no `INSERT` without a
+    column list. To drop, rename, retype or tighten what a release uses,
+    stagger the change across releases. One release adds the new shape and
+    still writes the old one, because the release before it reads the old
+    one. A later release, which follows one that no longer uses the old
+    shape, migrates it away. Stored values follow the same rule: a release
+    reads a new value, such as a new `kind`, before any release writes it,
+    and no migration rewrites rows into a form the previous release cannot
+    read. An older Coral also starts on a newer database: the ledger may hold
+    steps above the plan's last one, and no others that the plan lacks. That
+    start promises nothing for a release older than the one a staggered
+    migration names: such a release starts and then fails at a query.
   - A newer release never runs on an older schema. Coral applies its whole
     plan before it serves, and code relies on that schema: do not probe for a
     table or a column, and do not keep a path for a database that lacks a

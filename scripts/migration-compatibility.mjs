@@ -19,12 +19,16 @@ import { pathToFileURL } from 'node:url'
 
 const DECLARATION = /^--[ \t]*rolling-upgrade:[ \t]*(.*)$/i
 const IDENTIFIER_START = /[A-Za-z0-9_$]/
+// A quoted name that names the same object as the bare word.
+const PLAIN_NAME = /^[a-z_][a-z0-9_$]*$/
 
 // Splits `sql` into its SQL and its `--` comments. Every string body is
-// emptied and every quoted identifier keeps only word characters, so a
-// keyword, a quote or a `;` inside either is never read as SQL.
+// emptied, and a quoted identifier that is not a plain lowercase name becomes
+// `"#N"`, with its text at `quoted[N]`. So a keyword, a quote or a `;` inside
+// either is never read as SQL, and two names stay equal only when they are.
 function strip(sql) {
   const comments = []
+  const quoted = []
   let out = ''
   let i = 0
   while (i < sql.length) {
@@ -35,6 +39,8 @@ function strip(sql) {
       i = end === -1 ? sql.length : end
     } else if (sql.startsWith('/*', i)) {
       const end = sql.indexOf('*/', i + 2)
+      // A comment separates the words around it, as in `ALTER/**/TABLE`.
+      out += ' '
       i = end === -1 ? sql.length : end + 2
     } else if (dollar) {
       const end = sql.indexOf(dollar[0], i + dollar[0].length)
@@ -55,14 +61,20 @@ function strip(sql) {
     } else if (sql[i] === '"') {
       let end = i + 1
       while (end < sql.length && (sql[end] !== '"' || sql[end + 1] === '"')) end += sql[end] === '"' ? 2 : 1
-      out += `"${sql.slice(i + 1, end).replace(/\W/g, '_')}"`
+      const text = sql.slice(i + 1, end).replaceAll('""', '"')
+      if (PLAIN_NAME.test(text)) {
+        out += `"${text}"`
+      } else {
+        const known = quoted.indexOf(text)
+        out += `"#${known === -1 ? quoted.push(text) - 1 : known}"`
+      }
       i = end + 1
     } else {
       out += sql[i]
       i += 1
     }
   }
-  return { sql: out, comments }
+  return { sql: out, comments, quoted }
 }
 
 // Splits on `separator` outside parentheses.
@@ -107,7 +119,8 @@ function alterAction(action, table, known) {
   const added = match(action, `^add\\s+(column\\s+)?(if\\s+not\\s+exists\\s+)?${IDENTIFIER}`)
   if (added) {
     known.columns.add(`${table}.${name(added[3])}`)
-    if (/\bnot\s+null\b/.test(action) && !/\b(default|generated)\b/.test(action)) {
+    // `DEFAULT NULL` supplies no value.
+    if (/\bnot\s+null\b/.test(action) && !/\b(default\s+(?!null\b)|generated\b)/.test(action)) {
       return 'adds a required column that an older release does not write'
     }
   }
@@ -120,11 +133,18 @@ function alterAction(action, table, known) {
 function statementBreaks(statement, known) {
   const created = match(statement, `^create\\s+(unlogged\\s+)?table\\s+(if\\s+not\\s+exists\\s+)?${IDENTIFIER}`)
   if (created) {
-    known.tables.add(name(created[3]))
+    // With IF NOT EXISTS the table may be one that a release already uses.
+    if (!created[2]) known.tables.add(name(created[3]))
     return []
   }
-  const droppedTable = match(statement, `^drop\\s+table\\s+(if\\s+exists\\s+)?${IDENTIFIER}`)
-  if (droppedTable && known.tables.has(name(droppedTable[2]))) return []
+  const droppedTables = match(statement, '^drop\\s+table\\s+(if\\s+exists\\s+)?(.*)$')
+  if (droppedTables) {
+    const own = splitTopLevel(droppedTables[2], ',').every((target) => {
+      const table = match(target, `^${IDENTIFIER}`)
+      return table && known.tables.has(name(table[1]))
+    })
+    if (own) return []
+  }
   const dropped = match(statement, '^drop\\s+(materialized\\s+view|[a-z]+)')
   if (dropped) return [`drops the ${dropped[1].replace(/\s+/g, ' ')}`]
   if (/^alter\s+(index|type|view|sequence)\b.*\brename\b/.test(statement)) {
@@ -169,16 +189,17 @@ function statementBreaks(statement, known) {
 
 // Every statement of stripped `sql` that can break an older release, with the
 // reason.
-function breakingStatements(sql) {
+function breakingStatements(sql, quoted) {
   const known = { tables: new Set(), columns: new Set() }
   const found = []
   for (const raw of sql.split(';')) {
     const statement = raw.replace(/\s+/g, ' ').trim()
+    const shown = statement.replace(/"#(\d+)"/g, (_, index) => `"${quoted[index]}"`)
     const reasons = [...new Set(statementBreaks(statement.toLowerCase(), known))]
     if (reasons.length > 0) {
       found.push({
         reason: reasons.join(', '),
-        statement: statement.length > 100 ? `${statement.slice(0, 97)}...` : statement,
+        statement: shown.length > 100 ? `${shown.slice(0, 97)}...` : shown,
       })
     }
   }
@@ -197,8 +218,8 @@ function declarationProblem(declaration, releases) {
 
 // The problems of one migration, as lines to print. Empty when it passes.
 export function check(file, text, releases) {
-  const { sql, comments } = strip(text)
-  const breaking = breakingStatements(sql)
+  const { sql, comments, quoted } = strip(text)
+  const breaking = breakingStatements(sql, quoted)
   const declarations = comments.flatMap((comment) => {
     const found = DECLARATION.exec(comment)
     return found ? [found[1].trim()] : []

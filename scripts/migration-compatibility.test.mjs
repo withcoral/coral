@@ -46,6 +46,17 @@ const breaking = {
     /drops the table/,
   'ALTER TABLE "it\'s" ADD COLUMN owner TEXT;\nDROP TABLE workspaces;\nINSERT INTO runs (id) VALUES (\'z\');':
     /drops the table/,
+  // A default of NULL gives an older release's insert no value.
+  'ALTER TABLE workspaces ADD COLUMN owner TEXT NOT NULL DEFAULT NULL;': /adds a required column/,
+  // The table may be one that a release already uses.
+  'CREATE TABLE IF NOT EXISTS workspaces (id TEXT);\nALTER TABLE workspaces DROP COLUMN name;': /drops a column/,
+  // A comment between two words separates them.
+  'ALTER/**/TABLE workspaces DROP COLUMN name;': /drops a column/,
+  // Every table of one DROP TABLE counts, not only the first.
+  'CREATE TABLE scratch (id TEXT);\nDROP TABLE scratch, workspaces;': /drops the table/,
+  // Two quoted names are one table only when they are the same text.
+  'CREATE TABLE "a-b" (id TEXT);\nDROP TABLE "a_b";': /drops the table: DROP TABLE "a_b"/,
+  'CREATE TABLE "Workspaces" (id TEXT);\nDROP TABLE workspaces;': /drops the table/,
   // A declaration is a comment, not text that a string holds.
   "INSERT INTO runs (id) VALUES ('\n-- rolling-upgrade: compatible. Not a comment.\n');\nDROP TABLE workspaces;":
     /drops the table/,
@@ -67,6 +78,8 @@ const compatible = {
     "INSERT INTO runs (id, name) VALUES ('a', 'b') ON CONFLICT (id) DO UPDATE SET name = 'b';\n" +
     "UPDATE runs SET name = 'c';\nDELETE FROM runs;\n",
   'a scratch table that it drops': 'CREATE TABLE scratch (id TEXT);\nDROP TABLE scratch;\n',
+  'scratch tables that it drops together, one by its quoted name':
+    'CREATE TABLE scratch (id TEXT);\nCREATE TABLE "a-b" (id TEXT);\nDROP TABLE "scratch", "a-b" CASCADE;\n',
   'a nullable column': 'ALTER TABLE workspaces ADD COLUMN owner TEXT;\n',
   'a required column with a default': "ALTER TABLE workspaces ADD COLUMN kind TEXT NOT NULL DEFAULT 'a';\n",
   'a column and its backfill':

@@ -136,7 +136,8 @@ test('a removal that names a release on main passes, and one that names another 
   const repo = await repository(t, '1.0.0-beta.11')
   repo.git('tag', 'v1.0.0')
   await repo.write(next, `-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`)
-  assert.equal(repo.check().status, 0)
+  const accepted = repo.check()
+  assert.equal(accepted.status, 0, accepted.stderr)
 
   await repo.write(next, `-- rolling-upgrade: unused since v9.9.9. No query names the column.\n${drop}`)
   const result = repo.check()
