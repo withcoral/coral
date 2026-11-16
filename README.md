@@ -112,9 +112,8 @@ What you get:
   Opus 5.5, custom tools cut tokens by 37%, cost by 31%, and time by 29%. See
   [every task](https://withcoral.com/docs/examples/custom-tools).
 - **Ahead of other MCP gateways.** In blind benchmarks of 100 enterprise
-  tasks, agents were more accurate and cheaper with Coral than with gateways
-  from Kong, Composio, and Microsoft. See the
-  [benchmarks](https://withcoral.com/#benchmarks).
+  tasks, agents were more accurate and cheaper with Coral than with other MCP
+  gateways. See the [benchmarks](https://withcoral.com/#benchmarks).
 - **Training data you own.** Each run leaves a structured trace of the goal,
   the tools used, and the outcome that works well for post-training your own
   model.
