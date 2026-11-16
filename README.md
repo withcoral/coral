@@ -27,12 +27,14 @@ runs the same task by calling that custom tool.
 
 ![In Claude Code, an agent posts unreviewed pull requests to Slack. It searches Coral for the GitHub and Slack tools, writes code that calls them, and waits for approval before posting. The Coral UI then shows the run, who approved it, and the custom tool the agent saved. The next day, the same request runs by calling that custom tool. A final card compares the two days: 35% fewer tokens and 31% faster, in line with our benchmarks.](./apps/docs/images/demo.gif)
 
-**Control each call, not just each tool.** Most MCP gateways decide only which
-tools an agent can see. That is all or nothing: if an agent can call
-`update_record`, it can update any record in any way the tool allows. Coral
-checks every call against your policy before it reaches the system. You allow
-it, block it, or require a person to approve that exact call and its
-arguments.
+**Control what agents can do, not just what they can reach.** Most MCP
+gateways decide only which tools an agent can see. That is all or nothing: if
+an agent can call `update_record`, it can update any record in any way the
+tool allows. A custom tool is code, so it can hold the rule that Allow and
+Block cannot: `closeStaleTicket` changes one field, only on tickets with no
+activity for 30 days. You set Allow, Ask, or Block on the custom tool like any
+other tool, and Coral still checks every provider call inside it against your
+policy.
 
 **Less duplicated agent work.** Agents start every task from scratch. They
 re-read tool schemas, retry failed calls, and spend tokens rewriting code for
