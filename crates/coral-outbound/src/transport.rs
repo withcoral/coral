@@ -19,6 +19,7 @@ pub struct Client {
 
 impl Client {
     /// Builds a guarded client for an explicitly selected deployment policy.
+    /// It keeps a connection for the next request to the same host.
     /// # Errors
     /// Returns a client initialization error.
     pub fn new(policy: DestinationPolicy, timeout: Duration) -> Result<Self, reqwest::Error> {
@@ -27,6 +28,26 @@ impl Client {
             timeout,
             Arc::new(SystemResolver),
             IdleConnections::Keep,
+        )
+    }
+
+    /// Builds a guarded client that opens a connection for every request.
+    ///
+    /// A server closes an idle connection on its own schedule, and a request
+    /// sent on one at that moment gets no answer. Use this client where one
+    /// unanswered request fails what a person is doing, such as a sign-in,
+    /// and the request must not be sent twice.
+    /// # Errors
+    /// Returns a client initialization error.
+    pub fn with_connection_per_request(
+        policy: DestinationPolicy,
+        timeout: Duration,
+    ) -> Result<Self, reqwest::Error> {
+        Self::with_resolver(
+            policy,
+            timeout,
+            Arc::new(SystemResolver),
+            IdleConnections::Close,
         )
     }
 
