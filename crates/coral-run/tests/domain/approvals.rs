@@ -909,9 +909,13 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
 /// reader derives Expired from the clock.
 #[tokio::test]
 async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_expiry() {
-    let mut fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
+    let timers = Arc::new(TimerProbe::default());
+    let mut fixture = TestModules::with_execution_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RejectingUpstream),
+        Arc::new(NoopInvocationObserver),
+        timers.clone(),
+    )
     .await;
     // Isolate the request's deadline from the Run's, and keep the owner from
     // recording the expiry while the test reads. Two owner paths would: the
@@ -937,6 +941,11 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
         run.run_id(),
     )
     .await;
+    // The owner arms the request's timer when it parks the Invocation, for
+    // the time its clock then leaves until the deadline: a clock moved before
+    // that would fire the timer at once.
+    let timer = crate::owner::Timer::Approval(request.id.clone());
+    wait_until(|| timers.armed(&timer).is_some()).await;
     // The clock passes the deadline; neither the request's timer nor the
     // precheck runs within this test.
     fixture
