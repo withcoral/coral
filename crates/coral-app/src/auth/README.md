@@ -386,13 +386,13 @@ callback.
   error and no code.
 - Rotating the session signing key ends the sign-ins in progress. Start them again.
 
-A sign-in that fails after the provider's answer logs one warning. Its
-`error.type` names the step that failed: `token_exchange`, `jwks` when the
-provider's keys cannot be fetched or parsed, or the check that refused a token,
-such as `id_token_audience`, `id_token_required_claim` or
+A sign-in that fails at the code exchange or at token validation logs one
+warning. Its `error.type` names the step that failed: `token_exchange`, `jwks`
+when the provider's keys cannot be fetched or parsed, or the check that refused
+a token, such as `id_token_audience`, `id_token_required_claim` or
 `access_token_required_claim`. `TokenRejection` lists the checks. The record
 carries that fixed code and nothing the provider sent, and the browser gets the
-same fixed error whichever step failed.
+same `server_error` for all of them.
 
 The remaining authorization-server, signing-key, and MCP listener settings are
 still required. Google domain admission validates the signed `hd` claim; an

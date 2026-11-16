@@ -57,42 +57,33 @@ impl TokenRejection {
     /// The rejection of an ID token as a stable kind, for an event's
     /// `error.type`.
     pub(super) const fn id_token_code(self) -> &'static str {
-        match self {
-            Self::Missing => "id_token_missing",
-            Self::Malformed => "id_token_malformed",
-            Self::Algorithm => "id_token_algorithm",
-            Self::CriticalHeader => "id_token_critical_header",
-            Self::KeyNotFound => "id_token_key_not_found",
-            Self::KeyAmbiguous => "id_token_key_ambiguous",
-            Self::Signature => "id_token_signature",
-            Self::Issuer => "id_token_issuer",
-            Self::Audience => "id_token_audience",
-            Self::Times => "id_token_times",
-            Self::Nonce => "id_token_nonce",
-            Self::Subject => "id_token_subject",
-            Self::RequiredClaim => "id_token_required_claim",
-            Self::DisplayName => "id_token_display_name",
-        }
+        self.codes().0
     }
 
     /// The rejection of an access token as a stable kind, for an event's
     /// `error.type`.
     pub(super) const fn access_token_code(self) -> &'static str {
+        self.codes().1
+    }
+
+    /// The code of this rejection for an ID token, then for an access token.
+    /// Each is written out whole, so a code read in a log is found here.
+    const fn codes(self) -> (&'static str, &'static str) {
         match self {
-            Self::Missing => "access_token_missing",
-            Self::Malformed => "access_token_malformed",
-            Self::Algorithm => "access_token_algorithm",
-            Self::CriticalHeader => "access_token_critical_header",
-            Self::KeyNotFound => "access_token_key_not_found",
-            Self::KeyAmbiguous => "access_token_key_ambiguous",
-            Self::Signature => "access_token_signature",
-            Self::Issuer => "access_token_issuer",
-            Self::Audience => "access_token_audience",
-            Self::Times => "access_token_times",
-            Self::Nonce => "access_token_nonce",
-            Self::Subject => "access_token_subject",
-            Self::RequiredClaim => "access_token_required_claim",
-            Self::DisplayName => "access_token_display_name",
+            Self::Missing => ("id_token_missing", "access_token_missing"),
+            Self::Malformed => ("id_token_malformed", "access_token_malformed"),
+            Self::Algorithm => ("id_token_algorithm", "access_token_algorithm"),
+            Self::CriticalHeader => ("id_token_critical_header", "access_token_critical_header"),
+            Self::KeyNotFound => ("id_token_key_not_found", "access_token_key_not_found"),
+            Self::KeyAmbiguous => ("id_token_key_ambiguous", "access_token_key_ambiguous"),
+            Self::Signature => ("id_token_signature", "access_token_signature"),
+            Self::Issuer => ("id_token_issuer", "access_token_issuer"),
+            Self::Audience => ("id_token_audience", "access_token_audience"),
+            Self::Times => ("id_token_times", "access_token_times"),
+            Self::Nonce => ("id_token_nonce", "access_token_nonce"),
+            Self::Subject => ("id_token_subject", "access_token_subject"),
+            Self::RequiredClaim => ("id_token_required_claim", "access_token_required_claim"),
+            Self::DisplayName => ("id_token_display_name", "access_token_display_name"),
         }
     }
 }

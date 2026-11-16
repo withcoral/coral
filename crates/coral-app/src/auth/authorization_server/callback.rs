@@ -929,6 +929,33 @@ mod tests {
         assert_logged_only_the_code(&captured, "sqlx", &[UPSTREAM_SUBJECT, &server.uri()]);
     }
 
+    /// A corrupt directory row, a database outage and a refused Membership
+    /// each get their own code, and a database failure keeps the database's
+    /// code wherever it surfaced.
+    #[test]
+    fn a_login_that_cannot_be_recorded_is_logged_by_its_kind() {
+        for (error, code) in [
+            (
+                coral_auth::Error::CorruptData("row text".into()),
+                "corrupt_data",
+            ),
+            (
+                coral_auth::Error::Database(coral_db::Error::WriterBusy),
+                "writer_busy",
+            ),
+            (
+                coral_auth::Error::Organization(coral_db::Error::WriterBusy.into()),
+                "writer_busy",
+            ),
+            (
+                coral_auth::Error::Organization(coral_workspace::Error::WorkspaceNotFound),
+                "organization",
+            ),
+        ] {
+            assert_eq!(provisioning_error_code(&error), code);
+        }
+    }
+
     /// Records events at `info` and above, so a test can prove what a failing
     /// login did *not* put in an operator's logs.
     #[derive(Clone, Default)]
