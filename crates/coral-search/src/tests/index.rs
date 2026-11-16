@@ -386,13 +386,16 @@ async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
     tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
         .await
         .expect("row work starts");
-    // Any snapshot taken before the hold is now too old to satisfy this.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // A sample younger than the hold was read while the hold kept the row
+    // work. The hold's age is read first, so a sample cannot pass for
+    // younger than it is.
+    let entered = std::time::Instant::now();
     let fresh = eventually(std::time::Duration::from_secs(2), async || {
+        let held_for = entered.elapsed().as_secs_f64();
         metrics
             .values("coral.search.index.backlog.sample.age")
             .iter()
-            .any(|age| *age < 0.15)
+            .any(|age| *age < held_for)
     })
     .await;
     drop(hold);
