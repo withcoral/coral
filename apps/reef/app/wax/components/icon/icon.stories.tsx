@@ -46,6 +46,7 @@ const productIconNames = [
   'Copy',
   'Coral',
   'Cpu',
+  'CreditCard',
   'ExternalLink',
   'Eye',
   'EyeOff',
