@@ -1097,6 +1097,8 @@ impl From<coral_db::RowLock> for ProviderHold {
         match lock {
             coral_db::RowLock::None => Self::None,
             coral_db::RowLock::Shared => Self::Shared,
+            // A hold for update holds the Provider exclusively.
+            coral_db::RowLock::SkipLocked => Self::Exclusive,
         }
     }
 }

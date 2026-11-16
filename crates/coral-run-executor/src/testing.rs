@@ -111,6 +111,17 @@ impl RunCall {
     }
 }
 
+/// The requests relayed through `database` that are still waiting or
+/// unread: compiles, and the probes `ready()` writes while it waits for
+/// room.
+///
+/// # Errors
+///
+/// Returns the database's failure.
+pub async fn relayed_requests(database: &coral_db::Database) -> Result<i64, coral_db::Error> {
+    crate::relay_repository::count(database).await
+}
+
 /// The token [`start_run_executor`] dials with.
 pub const RUN_EXECUTOR_TOKEN: &str = "test-run-executor-token";
 
