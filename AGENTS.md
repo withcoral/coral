@@ -81,9 +81,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   query expressions to domain callers.
 - Mark observable mutations with `Transaction::execute_change` in the owning
   repository (or through its existing lifecycle/Run evidence write). Reads, row
-  locks, and worker-lease renewals use `execute`, or `fetch_optional_returning`
-  for a lock that returns its row; they must not wake activity observers or Run
-  waits. Time-dependent visibility also needs an observation deadline.
+  holds (`fetch_optional_locked`), and worker-lease renewals (`execute`) must
+  not wake activity observers or Run waits. Time-dependent visibility also
+  needs an observation deadline.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
@@ -91,8 +91,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   rows they never write (a Workspace, a Provider, a policy rule, an Account)
   with `RowLock::Shared`
   (`Transaction::fetch_optional_locked`; `coral_db::RowLock` documents what
-  each backend does). Other decisions still take the exclusive no-op `UPDATE`
-  hold on those rows; a row the transaction goes on to write always keeps it.
+  each backend does). Other decisions hold those rows with
+  `RowLock::Exclusive`, never a no-op `UPDATE`; a row the transaction goes on
+  to write is always held that way.
   A row that two shared-hold decisions may both create for the first time (an
   Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its

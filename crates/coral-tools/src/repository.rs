@@ -1,5 +1,5 @@
 use coral_catalog::ToolAccessState;
-use coral_db::Transaction;
+use coral_db::{RowLock, Transaction};
 use coral_workspace::{Principal, PrincipalId, PrincipalKind};
 use coral_workspace::{TraceId, WorkspaceId};
 use sea_query::{Cond, Expr, ExprTrait as _, Iden, Order, Query};
@@ -213,18 +213,17 @@ pub(crate) async fn find_current_in_transaction(
     row.map(PrivateToolRow::decode).transpose()
 }
 
+/// Whether `principal` has a Private Tool at `path`, holding its row
+/// exclusively for the rest of the transaction.
 pub(crate) async fn hold_current_path_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
     path: &PrivateToolPath,
 ) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(PrivateToolRecords::Table)
-        .value(
-            PrivateToolRecords::DefinitionRevision,
-            Expr::col(PrivateToolRecords::DefinitionRevision),
-        )
+    let statement = Query::select()
+        .column(PrivateToolRecords::DefinitionRevision)
+        .from(PrivateToolRecords::Table)
         .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(
@@ -232,7 +231,10 @@ pub(crate) async fn hold_current_path_in_transaction(
         )
         .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
         .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+    let held: Option<(i64,)> = transaction
+        .fetch_optional_locked(statement, RowLock::Exclusive)
+        .await?;
+    Ok(held.is_some())
 }
 
 /// The rows of the Private Tools within `scope` of `reader`: its own and,
@@ -692,7 +694,7 @@ pub(crate) async fn list_lifecycle_events_in_transaction(
 
 /// Whether `revision` is still the current definition of the Private Tool
 /// `key` of `principal` at `path`, holding its row exclusively for the rest
-/// of the transaction by a no-op `UPDATE`: only its owner links it.
+/// of the transaction: only its owner links it.
 pub(crate) async fn hold_current_revision(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -701,12 +703,9 @@ pub(crate) async fn hold_current_revision(
     path: &PrivateToolPath,
     revision: u64,
 ) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(PrivateToolRecords::Table)
-        .value(
-            PrivateToolRecords::DefinitionRevision,
-            Expr::col(PrivateToolRecords::DefinitionRevision),
-        )
+    let statement = Query::select()
+        .column(PrivateToolRecords::DefinitionRevision)
+        .from(PrivateToolRecords::Table)
         .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(PrivateToolRecords::Id).eq(key.as_str()))
         .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
@@ -716,7 +715,10 @@ pub(crate) async fn hold_current_revision(
         .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
         .and_where(Expr::col(PrivateToolRecords::DefinitionRevision).eq(stored_revision(revision)?))
         .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+    let held: Option<(i64,)> = transaction
+        .fetch_optional_locked(statement, RowLock::Exclusive)
+        .await?;
+    Ok(held.is_some())
 }
 
 pub(crate) fn decode_diagnostics(

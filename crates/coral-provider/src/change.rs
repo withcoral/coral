@@ -21,7 +21,7 @@
 use coral_db::Transaction;
 use coral_workspace::{AuthoritySource, ChangeContext, WorkspaceId};
 
-use crate::repository::{self, ProviderHold, ProviderWithActiveGeneration};
+use crate::repository::{self, ProviderWithActiveGeneration};
 use crate::{
     ActivatedGeneration, Error, LifecycleAction, LifecycleActor, LifecycleOutcome,
     ProviderCallRoot, ProviderId, ProviderModule,
@@ -146,7 +146,7 @@ impl ProviderModule {
             transaction,
             workspace,
             repository::ProviderKey::Id(provider),
-            ProviderHold::Exclusive,
+            coral_db::RowLock::Exclusive,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?;
@@ -207,7 +207,7 @@ pub(crate) async fn load_for_change(
         transaction,
         owner,
         repository::ProviderKey::Id(provider),
-        ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     .ok_or(Error::ProviderNotFound)?;

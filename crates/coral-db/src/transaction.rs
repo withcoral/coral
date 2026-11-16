@@ -19,6 +19,9 @@ pub struct Transaction<'a> {
     backend: TransactionBackend,
     changes: &'a crate::changes::Changes,
     invalidated: bool,
+    /// Whether [`Database::begin`] opened this transaction. A read snapshot
+    /// holds no row, so it refuses every [`RowLock`] but [`RowLock::None`].
+    read_write: bool,
     measure: Measure<'a>,
 }
 
@@ -146,6 +149,7 @@ impl Database {
             backend,
             changes: &self.access.changes,
             invalidated: false,
+            read_write: true,
             token: TransactionToken(std::sync::Arc::new(())),
             measure: Measure::start(&self.backend),
         })
@@ -188,6 +192,7 @@ impl Database {
             backend,
             changes: &self.access.changes,
             invalidated: false,
+            read_write: false,
             token: TransactionToken(std::sync::Arc::new(())),
             measure: Measure::start(&self.backend),
         })
@@ -223,25 +228,40 @@ async fn begin_postgres(
 /// rule, an Account) holds them [`Self::Shared`] so that concurrent decisions
 /// read side by side while a writer's `UPDATE` of those rows waits until the
 /// decisions have committed: a change that commits first is seen, one that
-/// commits later does not undo a recorded decision. On Postgres this is
-/// `SELECT ... FOR SHARE`. On `SQLite` a write transaction takes the one
-/// writer lock at `BEGIN IMMEDIATE`, which already excludes every writer, so
-/// the read runs as it is. Use the exclusive no-op `UPDATE` hold only for a
-/// row the transaction goes on to write.
+/// commits later does not undo a recorded decision. A transaction that goes
+/// on to write a row, or that must not share it with another decision, holds
+/// it [`Self::Exclusive`]: two shared holders that both went on to write
+/// would deadlock.
+///
+/// On Postgres a hold is a row lock on every row the statement matches and
+/// does not pass over, in each table it reads from, until the transaction
+/// ends. No hold makes a plain read wait. `SQLite` takes no row lock: a write
+/// transaction takes the one writer lock at `BEGIN IMMEDIATE`, which already
+/// excludes every other write transaction, so each hold runs as a plain
+/// read. A read snapshot holds nothing on either database, so
+/// [`Transaction::fetch_optional_locked`] refuses a hold there with
+/// [`Error::ReadSnapshotHold`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowLock {
     /// A plain read, as in a read snapshot.
     None,
-    /// Hold the matched rows shared for the rest of the transaction. Only in
-    /// a read-write transaction: Postgres refuses `FOR SHARE` in a read-only
-    /// one.
+    /// Hold the matched rows shared for the rest of the transaction. On
+    /// Postgres this is `FOR SHARE`: other shared holders read side by
+    /// side, and a writer or an exclusive holder waits for them.
     Shared,
-    /// Hold the matched rows for update, and pass over rows another
-    /// transaction holds, so concurrent takers each take a different row.
-    /// On Postgres this is `FOR UPDATE SKIP LOCKED`. On `SQLite` the writer
-    /// lock already excludes every other taker, so the read runs as it is.
-    /// Only in a read-write transaction: Postgres refuses `FOR UPDATE` in a
-    /// read-only one, and a `SQLite` read snapshot holds no writer lock.
+    /// Hold the matched rows against each conflicting hold and write for the
+    /// rest of the transaction, and read them in the same statement. On
+    /// Postgres this is `FOR NO KEY UPDATE`, the lock an `UPDATE` of a
+    /// non-key column takes: it waits for, and then blocks, a shared hold,
+    /// another exclusive hold, an `UPDATE` and a `DELETE` of the row. It
+    /// lets through an insert that references the row by foreign key, and a
+    /// [`Self::SkipLocked`] taker passes over the row. A statement that
+    /// waited reads the row as the other transaction committed it, and
+    /// matches no row that no longer meets its conditions.
+    Exclusive,
+    /// Hold the matched rows for update, and pass over, without waiting, each
+    /// row another transaction holds or is writing, so concurrent takers each
+    /// take a different row. On Postgres this is `FOR UPDATE SKIP LOCKED`.
     SkipLocked,
 }
 
@@ -309,7 +329,8 @@ impl Transaction<'_> {
     }
 
     /// Executes an observable domain mutation. Nonzero affected rows invalidate
-    /// subscribers only after commit. Use `execute` for locks and internal leases.
+    /// subscribers only after commit. Use `execute` for internal leases and
+    /// [`Self::fetch_optional_locked`] for row holds.
     /// Conditional predicates remain the owning repository's responsibility.
     /// # Errors
     /// Returns the same backend errors as `execute`.
@@ -464,12 +485,14 @@ impl Transaction<'_> {
 
     /// Fetches the first matching domain row and holds the matched rows as
     /// `lock` says for the rest of this transaction. With [`RowLock::None`]
-    /// this is [`Self::fetch_optional`].
+    /// this is [`Self::fetch_optional`]. Like a read, a hold does not wake
+    /// change subscribers.
     ///
     /// # Errors
     ///
-    /// Returns a backend query or row-decoding error, including Postgres's
-    /// refusal of a shared hold in a read-only transaction.
+    /// Returns [`Error::ReadSnapshotHold`], before any statement runs, when
+    /// this transaction is a read snapshot and `lock` asks for a hold.
+    /// Otherwise returns a backend query or row-decoding error.
     pub async fn fetch_optional_locked<T>(
         &mut self,
         mut statement: SelectStatement,
@@ -480,6 +503,9 @@ impl Transaction<'_> {
         for<'row> T: FromRow<'row, SqliteRow>,
         for<'row> T: FromRow<'row, PgRow>,
     {
+        if lock != RowLock::None && !self.read_write {
+            return Err(Error::ReadSnapshotHold);
+        }
         self.apply_lock(&mut statement, lock);
         self.fetch_first(statement).await
     }
@@ -489,7 +515,9 @@ impl Transaction<'_> {
     ///
     /// # Errors
     ///
-    /// Returns a backend query or row-decoding error.
+    /// Returns [`Error::ReadSnapshotHold`], before any statement runs, when
+    /// this transaction is a read snapshot and `lock` asks for a hold.
+    /// Otherwise returns a backend query or row-decoding error.
     pub async fn fetch_all_locked<T>(
         &mut self,
         mut statement: SelectStatement,
@@ -500,19 +528,24 @@ impl Transaction<'_> {
         for<'row> T: FromRow<'row, SqliteRow>,
         for<'row> T: FromRow<'row, PgRow>,
     {
+        if lock != RowLock::None && !self.read_write {
+            return Err(Error::ReadSnapshotHold);
+        }
         self.apply_lock(&mut statement, lock);
         self.fetch_all(statement).await
     }
 
-    /// The backend idiom for `lock`: Postgres appends `FOR SHARE` or
-    /// `FOR UPDATE SKIP LOCKED`; `SQLite` relies on the writer lock its
-    /// read-write transaction already holds.
+    /// The backend idiom for `lock`: Postgres appends `FOR SHARE`,
+    /// `FOR NO KEY UPDATE` or `FOR UPDATE SKIP LOCKED`; `SQLite` relies on
+    /// the writer lock its read-write transaction already holds.
     fn apply_lock(&self, statement: &mut SelectStatement, lock: RowLock) {
         match (lock, &self.backend) {
-            (RowLock::None, _)
-            | (RowLock::Shared | RowLock::SkipLocked, TransactionBackend::Sqlite(_)) => {}
+            (RowLock::None, _) | (_, TransactionBackend::Sqlite(_)) => {}
             (RowLock::Shared, TransactionBackend::Postgres(_)) => {
                 statement.lock_shared();
+            }
+            (RowLock::Exclusive, TransactionBackend::Postgres(_)) => {
+                statement.lock(sea_query::LockType::NoKeyUpdate);
             }
             (RowLock::SkipLocked, TransactionBackend::Postgres(_)) => {
                 statement.lock_with_behavior(
@@ -525,9 +558,10 @@ impl Transaction<'_> {
 
     /// Runs one statement with a `RETURNING` clause and fetches its first row.
     ///
-    /// Use it for a row lock that also reads the locked row. Like
-    /// [`Self::execute`], it does not wake change subscribers, so do not use it
-    /// for observable mutations.
+    /// Use it for a write that reads the row it wrote. Like [`Self::execute`],
+    /// it does not wake change subscribers, so do not use it for observable
+    /// mutations. To hold a row and read it, without a write, use
+    /// [`Self::fetch_optional_locked`].
     ///
     /// # Errors
     ///

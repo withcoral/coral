@@ -611,13 +611,12 @@ impl Polling<'_> {
                 Err(Error::OAuthTokenExchange(TokenExchangeFailure::Timeout)) => {
                     interval = interval.saturating_mul(2);
                 }
-                Ok(mut token) => {
-                    token.accept(&self.requirement.scopes)?;
-                    token.stamp(
+                Ok(token) => {
+                    return token.usable(
+                        &self.requirement.scopes,
                         client_id,
                         advanced(self.context, self.started).occurred_at_unix_nanos(),
-                    )?;
-                    return Ok(token);
+                    );
                 }
                 Err(error) => return Err(error),
             }

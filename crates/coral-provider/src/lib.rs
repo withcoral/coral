@@ -397,7 +397,7 @@ impl ProviderModule {
             &mut transaction,
             workspace_id,
             repository::ProviderKey::Id(provider_id),
-            repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .map(|stored| stored.generation_id)
@@ -649,7 +649,7 @@ pub async fn tool_policy_facts_batch_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::Id(&provider_id),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     .map(|stored| stored.generation_id)
@@ -724,7 +724,7 @@ pub async fn provider_tool_paths_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::CallRoot(call_root),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     else {
@@ -752,7 +752,7 @@ pub async fn provider_call_root_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::Id(provider_id),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     .map(|stored| stored.provider.call_root().clone()))
@@ -775,7 +775,7 @@ pub async fn authored_tool_provider_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     .map(|active| active.provider))
@@ -799,7 +799,7 @@ pub async fn builtin_tool_paths_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::CallRoot(&ProviderCallRoot::Builtin),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     else {
@@ -928,7 +928,7 @@ pub async fn resolve_authored_tool_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
-        coral_db::RowLock::Shared.into(),
+        coral_db::RowLock::Shared,
     )
     .await?
     .and_then(repository::ProviderWithActiveGeneration::into_active) else {
@@ -1082,7 +1082,7 @@ async fn reached_tool_by_root(
         transaction,
         workspace_id,
         repository::ProviderKey::CallRoot(call_root),
-        lock.into(),
+        lock,
     )
     .await?
     .and_then(repository::ProviderWithActiveGeneration::into_active) else {
@@ -1126,7 +1126,7 @@ pub async fn verify_invocation_tool_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::Id(provider_access.id()),
-        lock.into(),
+        lock,
     )
     .await?
     .and_then(repository::ProviderWithActiveGeneration::into_active) else {
@@ -1190,7 +1190,7 @@ async fn inspected_provider_in_transaction(
         &mut *transaction,
         evidence.workspace().id(),
         repository::ProviderKey::Id(provider_id),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     .ok_or(Error::ProviderNotFound)?;

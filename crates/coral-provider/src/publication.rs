@@ -480,7 +480,7 @@ impl ProviderModule {
                     transaction,
                     &owner,
                     provider_repository::ProviderKey::Id(request.provider_id()),
-                    provider_repository::ProviderHold::None,
+                    coral_db::RowLock::None,
                 )
                 .await?
                 .and_then(provider_repository::ProviderWithActiveGeneration::into_active)
@@ -547,7 +547,7 @@ impl ProviderModule {
                 transaction,
                 &owner,
                 provider_repository::ProviderKey::Id(provider_id),
-                provider_repository::ProviderHold::None,
+                coral_db::RowLock::None,
             )
             .await?
             .ok_or(Error::ProviderNotFound)?;
@@ -1050,7 +1050,7 @@ impl ProviderModule {
             transaction,
             request.owner(),
             provider_repository::ProviderKey::Id(request.provider_id()),
-            provider_repository::ProviderHold::Exclusive,
+            coral_db::RowLock::Exclusive,
         )
         .await?
         .is_some())
@@ -1329,7 +1329,7 @@ impl ProviderModule {
                         transaction,
                         request.owner(),
                         provider_repository::ProviderKey::Id(request.provider_id()),
-                        provider_repository::ProviderHold::None,
+                        coral_db::RowLock::None,
                     )
                     .await?
                     .ok_or(Error::ProviderNotFound)?;

@@ -864,18 +864,25 @@ pub(super) async fn requested_setups(
     rows.into_iter().map(SetupRow::decode).collect()
 }
 
+/// Whether the Workspace has the Setup, holding its row exclusively for the
+/// rest of the transaction.
 pub(super) async fn lock_setup_for_publication(
     transaction: &mut Transaction<'_>,
     owner: &WorkspaceId,
     setup_id: &ProviderSetupId,
 ) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProviderSetups::Table)
-        .value(ProviderSetups::State, Expr::col(ProviderSetups::State))
-        .and_where(exact_setup_owner(owner))
-        .and_where(Expr::col(ProviderSetups::Id).eq(setup_id.to_string()))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+    let held: Option<(String,)> = transaction
+        .fetch_optional_locked(
+            Query::select()
+                .column(ProviderSetups::State)
+                .from(ProviderSetups::Table)
+                .and_where(exact_setup_owner(owner))
+                .and_where(Expr::col(ProviderSetups::Id).eq(setup_id.to_string()))
+                .to_owned(),
+            coral_db::RowLock::Exclusive,
+        )
+        .await?;
+    Ok(held.is_some())
 }
 
 pub(super) async fn consume_setup(
@@ -1076,33 +1083,6 @@ pub(super) async fn delete_provider(
     Ok(())
 }
 
-/// How [`current_provider`] holds the Provider row it returns, for the rest
-/// of the transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ProviderHold {
-    /// A plain read, as in a read snapshot.
-    None,
-    /// A shared hold, for a decision that reads the Provider but never writes
-    /// it. [`coral_db::RowLock::Shared`] says what each backend does: on
-    /// Postgres, concurrent decisions read side by side and a change waits
-    /// for them; SQLite's writer lock already serializes them.
-    Shared,
-    /// The exclusive no-op `UPDATE` hold, for a change that writes the
-    /// Provider or must exclude every other change while it decides.
-    Exclusive,
-}
-
-impl From<coral_db::RowLock> for ProviderHold {
-    fn from(lock: coral_db::RowLock) -> Self {
-        match lock {
-            coral_db::RowLock::None => Self::None,
-            coral_db::RowLock::Shared => Self::Shared,
-            // A hold for update holds the Provider exclusively.
-            coral_db::RowLock::SkipLocked => Self::Exclusive,
-        }
-    }
-}
-
 /// Which of a Workspace's Providers [`current_provider`] reads.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum ProviderKey<'a> {
@@ -1124,25 +1104,19 @@ impl ProviderKey<'_> {
 }
 
 /// Reads the Workspace's Provider at `key`, in any state, with its active
-/// Generation, holding its row as `hold` says. `None` means the Workspace has
-/// no such Provider.
+/// Generation, holding its row as `lock` says for the rest of the
+/// transaction. `None` means the Workspace has no such Provider.
+///
+/// A decision that reads the Provider but never writes it holds it
+/// [`coral_db::RowLock::Shared`]. A change that writes the Provider, or must
+/// exclude every other change while it decides, holds it
+/// [`coral_db::RowLock::Exclusive`].
 pub(super) async fn current_provider(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     key: ProviderKey<'_>,
-    hold: ProviderHold,
+    lock: coral_db::RowLock,
 ) -> Result<Option<ProviderWithActiveGeneration>, Error> {
-    if hold == ProviderHold::Exclusive {
-        let statement = Query::update()
-            .table(ProviderRecords::Table)
-            .value(ProviderRecords::State, Expr::col(ProviderRecords::State))
-            .and_where(exact_provider_owner(workspace_id))
-            .and_where(key.matches())
-            .to_owned();
-        if transaction.execute(statement).await? != 1 {
-            return Ok(None);
-        }
-    }
     let row: Option<ProviderWithActiveGenerationRow> = transaction
         .fetch_optional_locked(
             Query::select()
@@ -1151,10 +1125,7 @@ pub(super) async fn current_provider(
                 .and_where(exact_provider_owner(workspace_id))
                 .and_where(key.matches())
                 .to_owned(),
-            match hold {
-                ProviderHold::Shared => coral_db::RowLock::Shared,
-                ProviderHold::None | ProviderHold::Exclusive => coral_db::RowLock::None,
-            },
+            lock,
         )
         .await?;
     row.map(ProviderWithActiveGenerationRow::decode).transpose()

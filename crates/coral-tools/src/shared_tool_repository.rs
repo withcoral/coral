@@ -264,25 +264,19 @@ pub(crate) async fn find_live_record(
     row.map(RecordRow::decode).transpose()
 }
 
-/// The live record at `path`, held exclusively for the write that follows
-/// by a no-op `UPDATE` before the read.
+/// The live record at `path`, held exclusively for the write that follows.
 pub(crate) async fn hold_live_record(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
 ) -> Result<Option<SharedToolRecord>, Error> {
-    let statement = Query::update()
-        .table(SharedToolRecords::Table)
-        .value(
-            SharedToolRecords::CurrentRevision,
-            Expr::col(SharedToolRecords::CurrentRevision),
+    let row: Option<RecordRow> = transaction
+        .fetch_optional_locked(
+            live_record_statement(workspace_id, path),
+            RowLock::Exclusive,
         )
-        .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SharedToolRecords::Path).eq(path.as_str()))
-        .and_where(Expr::col(SharedToolRecords::RemovedAtUnixNanos).is_null())
-        .to_owned();
-    transaction.execute(statement).await?;
-    find_live_record(transaction, workspace_id, path).await
+        .await?;
+    row.map(RecordRow::decode).transpose()
 }
 
 /// The paths of every live Shared Tool in the Workspace.

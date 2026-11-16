@@ -146,8 +146,15 @@ mod tests {
             match &error {
                 Error::OAuthTokenExchange(failure) => {
                     assert_eq!(failure.code(), code, "{row}");
-                    // The code an authorization stores when its exchange fails.
-                    assert_eq!(authorization_failure_code(&error), code, "{row}");
+                    // An exchange failure is stored under its own code. A poll
+                    // answer is not: the database accepts neither.
+                    let stored = match failure {
+                        Exchange::AuthorizationPending | Exchange::SlowDown => {
+                            "oauth_request_rejected"
+                        }
+                        _ => code,
+                    };
+                    assert_eq!(authorization_failure_code(&error), stored, "{row}");
                     assert_eq!(
                         error.to_string(),
                         format!("OAuth token exchange failed: {code}"),
@@ -164,6 +171,35 @@ mod tests {
                 }
                 other => panic!("{row} is a failure of another kind: {other:?}"),
             }
+        }
+    }
+
+    /// Catches a cause that the interface explains losing its stored code,
+    /// and an internal fault gaining a code that names it to the person who
+    /// signs in.
+    #[test]
+    fn only_a_cause_the_person_can_act_on_has_its_own_stored_code() {
+        for (error, code) in [
+            (
+                Error::OutboundDestinationRejected,
+                "outbound_destination_rejected",
+            ),
+            (
+                Error::OAuthClientConfiguration,
+                "oauth_client_configuration",
+            ),
+            // No discovery runs during an exchange or a device poll.
+            (
+                Error::AuthorizationDiscovery(Failure::ChallengeUnsupported),
+                "authorization_failed",
+            ),
+            (Error::AccountInput, "authorization_failed"),
+            (
+                Error::CorruptData("private detail".into()),
+                "authorization_failed",
+            ),
+        ] {
+            assert_eq!(authorization_failure_code(&error), code, "{error:?}");
         }
     }
 }
