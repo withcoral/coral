@@ -253,7 +253,7 @@ async fn the_lease_is_renewed_by_a_chunk_commit_and_by_the_idle_tick() {
     // Nothing is pending now. Within a lease the idle tick renews again, with
     // one empty chunk and no Event.
     let events = fixture.events_after(&workspace_id, &run_id, 0).await;
-    let renewed = tokio::time::timeout(Duration::from_secs(5), async {
+    let renewed = tokio::time::timeout(EVENTUALLY, async {
         loop {
             let run = fixture.run_record(&workspace_id, &run_id).await;
             if run.worker_claim_expires_at_unix_nanos > Some(expires_at) {
@@ -303,7 +303,7 @@ async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it()
     fixture.clock.fail();
 
     gates.release.send(()).expect("release the Program");
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENTUALLY, async {
         while fixture.runs.has_owner(&run_id) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

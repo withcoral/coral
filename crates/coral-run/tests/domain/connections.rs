@@ -37,7 +37,7 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
         .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
-    let request = tokio::time::timeout(Duration::from_secs(5), async {
+    let request = tokio::time::timeout(EVENTUALLY, async {
         loop {
             let requests = accounts
                 .list_connection_requests(&context, &tool.workspace_id)

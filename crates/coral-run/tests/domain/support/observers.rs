@@ -1,12 +1,38 @@
 //! Invocation and execution observers that gate and record Run timing.
 use crate::tests::*;
 
-#[derive(Default)]
+/// Returns once `gate` is open: at once when the test has opened it already.
+pub(crate) async fn until_released(gate: &watch::Sender<bool>) {
+    let mut released = gate.subscribe();
+    // A dropped sender never happens: a gate outlives the calls it holds.
+    let _released = released.wait_for(|released| *released).await;
+}
+
+/// Holds the first Run Owner before its start mark until released; every
+/// later one passes.
 pub(crate) struct ClaimGate {
-    pub(crate) claims: AtomicUsize,
+    claims: AtomicUsize,
     pub(crate) finished: AtomicUsize,
     pub(crate) entered: AtomicBool,
-    pub(crate) release: AtomicBool,
+    released: watch::Sender<bool>,
+}
+
+impl Default for ClaimGate {
+    fn default() -> Self {
+        Self {
+            claims: AtomicUsize::new(0),
+            finished: AtomicUsize::new(0),
+            entered: AtomicBool::new(false),
+            released: watch::channel(false).0,
+        }
+    }
+}
+
+impl ClaimGate {
+    /// Lets the held owner commit its start mark.
+    pub(crate) fn release(&self) {
+        self.released.send_replace(true);
+    }
 }
 
 #[async_trait]
@@ -14,9 +40,7 @@ impl ExecutionObserver for ClaimGate {
     async fn owner_starting(&self, _run_id: &crate::RunId, _claim_id: &str) {
         if self.claims.fetch_add(1, Ordering::SeqCst) == 0 {
             self.entered.store(true, Ordering::SeqCst);
-            while !self.release.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
+            until_released(&self.released).await;
         }
     }
 
@@ -374,23 +398,8 @@ impl EnforcementLatch {
         wait_until(|| self.arrived.load(Ordering::SeqCst) >= count).await;
     }
 
-    /// Like [`Self::until_arrived`] for an arrival that may take `within` of
-    /// waiting, such as one behind a parked wait's wake-up.
-    pub(crate) async fn until_arrived_within(&self, count: usize, within: Duration) {
-        wait_until_async_within(within, async || {
-            self.arrived.load(Ordering::SeqCst) >= count
-        })
-        .await;
-    }
-
     pub(crate) async fn until_loaded(&self, count: usize) {
         wait_until(|| self.loaded.load(Ordering::SeqCst) >= count).await;
-    }
-
-    async fn park(gate: &watch::Sender<bool>) {
-        let mut released = gate.subscribe();
-        // A dropped sender never happens: the latch outlives the test.
-        let _released = released.wait_for(|released| *released).await;
     }
 }
 
@@ -398,7 +407,7 @@ impl EnforcementLatch {
 impl InvocationObserver for EnforcementLatch {
     async fn before_enforcement(&self) -> Result<(), Error> {
         self.arrived.fetch_add(1, Ordering::SeqCst);
-        Self::park(&self.arrivals).await;
+        until_released(&self.arrivals).await;
         Ok(())
     }
 
@@ -410,7 +419,7 @@ impl InvocationObserver for EnforcementLatch {
     }
 
     async fn before_failure_commit(&self) -> Result<(), Error> {
-        Self::park(&self.failures).await;
+        until_released(&self.failures).await;
         Ok(())
     }
 
@@ -479,7 +488,7 @@ impl WaitProbe {
 
     /// Returns once the wait has parked `count` times in total.
     pub(crate) async fn until_parked(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(EVENTUALLY, async {
             let mut parked = self.parked.subscribe();
             parked.wait_for(|parked| *parked >= count).await.map(|_| ())
         })

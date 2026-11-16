@@ -347,7 +347,7 @@ async fn agent_lifecycle_loss_after_acceptance_fails_without_executing_program()
         wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
         loss.apply(&fixture, &owner, &workspace_id, &agent, &registration)
             .await;
-        gate.release.store(true, Ordering::SeqCst);
+        gate.release();
         let terminal =
             wait_for_terminal(&fixture.runs, &owner, &workspace_id, accepted.run_id()).await;
         assert!(
@@ -550,7 +550,7 @@ async fn post_enforcement_agent_loss_commits_during_upstream_send_and_blocks_onl
             ),
         )
         .await;
-        upstream.release.store(true, Ordering::SeqCst);
+        upstream.release();
         changed.expect("Agent administration must not wait on upstream send");
         let terminal = wait_for_terminal(
             &fixture.runs,

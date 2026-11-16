@@ -5,6 +5,8 @@
     reason = "assert known tool result JSON members"
 )]
 
+use std::time::Duration;
+
 use coral_mcp::SUPPORTED_PROTOCOL_VERSIONS;
 use opentelemetry::trace::SpanKind;
 use opentelemetry_sdk::trace::SpanData;
@@ -12,7 +14,7 @@ use serde_json::{Value, json};
 
 use coral_telemetry::testing::attribute;
 
-use super::{RawSession, Tracer, capture};
+use super::{Capture, RawSession, Tracer, capture};
 
 const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 
@@ -114,25 +116,55 @@ async fn tool_failures_name_the_trace_of_their_request() {
         None,
     ));
 
-    let spans = capture.spans.finished();
     for (context, trace, tool, failure, task) in &failures {
         assert_spans_in_trace(
-            &spans,
+            capture,
             context,
             trace,
             tool,
             &tracer,
             *failure,
             task.as_deref(),
-        );
+        )
+        .await;
     }
+}
+
+/// The span of a request to a Workspace's MCP endpoint.
+const REQUEST_SPAN: &str = "POST /workspaces/{workspace_id}/mcp";
+
+/// Every span that has finished, once the request span of `trace` is one of
+/// them. The MCP transport lets go of a request in a task of its own, after
+/// it has answered, and the request span ends there. So the client can read
+/// the response before the span ends, and the response is no signal that the
+/// span is there to read.
+async fn spans_once_the_request_ended(
+    capture: &Capture,
+    context: &str,
+    trace: &str,
+) -> Vec<SpanData> {
+    let ended = async {
+        loop {
+            let spans = capture.spans.finished();
+            let request_ended = spans.iter().any(|span| {
+                span.name == REQUEST_SPAN && span.span_context.trace_id().to_string() == trace
+            });
+            if request_ended {
+                return spans;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), ended)
+        .await
+        .unwrap_or_else(|_elapsed| panic!("{context}: the request span shares the failure's trace"))
 }
 
 /// The request span and the tool span both carry `trace`. The tool span is
 /// an MCP server span that names `tracer`'s Workspace and authenticated
 /// Principal, the Task the call names, and a tool failure's Coral code.
-fn assert_spans_in_trace(
-    spans: &[SpanData],
+async fn assert_spans_in_trace(
+    capture: &Capture,
     context: &str,
     trace: &str,
     tool: &str,
@@ -140,15 +172,12 @@ fn assert_spans_in_trace(
     failure: Option<&str>,
     task: Option<&str>,
 ) {
+    let spans = spans_once_the_request_ended(capture, context, trace).await;
     let in_trace = |name: &str| {
         spans
             .iter()
             .find(|span| span.span_context.trace_id().to_string() == trace && span.name == name)
     };
-    assert!(
-        in_trace("POST /workspaces/{workspace_id}/mcp").is_some(),
-        "{context}: the request span shares the failure's trace"
-    );
     let tool_span = in_trace(&format!("tools/call {tool}"))
         .unwrap_or_else(|| panic!("{context}: a tool span shares the failure's trace"));
     assert_eq!(tool_span.span_kind, SpanKind::Server, "{context}");
@@ -356,13 +385,14 @@ async fn records_carry_the_run_trace_that_links_their_request() {
             );
         }
         assert_spans_in_trace(
-            &spans,
+            capture,
             &context,
             &request,
             "exec",
             &tracer,
             None,
             Some(&task),
-        );
+        )
+        .await;
     }
 }

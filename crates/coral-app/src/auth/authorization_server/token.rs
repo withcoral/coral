@@ -51,7 +51,7 @@ pub(super) async fn oauth_token(
     };
     // A confidential client authenticates before either grant spends its
     // code or refresh token, so a refusal spends nothing.
-    let client = match authenticate(&state, header, &mut form, || {
+    let client = match authenticate(&state, header, &mut form, |_error| {
         token_error(TokenError::ServerError)
     })
     .await

@@ -59,10 +59,7 @@ fn dial(link: &Link) {
 
 /// Waits until a Run Executor holds a pull stream on `link`.
 async fn linked(link: &Link) {
-    wait_until_async_within(Duration::from_secs(30), async || {
-        !link.streams.held().is_empty()
-    })
-    .await;
+    wait_until_async(async || !link.streams.held().is_empty()).await;
 }
 
 /// Waits until admission waits on the relay: the write of its request, a

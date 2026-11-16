@@ -82,7 +82,7 @@ async fn poll_setup(
     setup: &crate::ProviderSetupId,
     until: impl Fn(&crate::account::SetupAuthentication) -> bool,
 ) -> crate::account::SetupAuthentication {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         loop {
             let progress = harness
                 .providers
@@ -385,7 +385,7 @@ async fn device_reconnect_showing_its_code(
         .start_reconnect(context, workspace, provider.id(), account, request, None)
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         loop {
             let progress = harness
                 .accounts
@@ -412,7 +412,7 @@ async fn reconnected(
     device: &DeviceSetup,
     id: crate::account::AuthorizationId,
 ) -> crate::account::Authorization {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         loop {
             let progress = device
                 .harness
@@ -845,7 +845,7 @@ async fn canceling_device_setup_discards_a_late_token() {
         .await;
     let (harness, context, workspace, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+    tokio::time::timeout(coral_test_support::EVENTUALLY, entered.notified())
         .await
         .unwrap();
     harness
@@ -1060,7 +1060,7 @@ async fn device_recovery_keeps_the_code_and_slow_down_schedule_with_one_poller()
         .await;
     let (h, context, owner, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         while polls.load(Ordering::SeqCst) == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -1130,7 +1130,7 @@ async fn recovery_does_not_repeat_an_interrupted_token_request_immediately() {
         .mount(&api.server)
         .await;
     let (h, _, _, _) = pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         while polls.load(Ordering::SeqCst) == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -1158,7 +1158,7 @@ async fn recovery_does_not_repeat_an_interrupted_token_request_immediately() {
         .recover_device_authorizations(50_000_000_000)
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         while polls.load(Ordering::SeqCst) < 2 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -1302,18 +1302,33 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
     .await;
     let deadline = before.authorization.unwrap().expires_at_unix_nanos;
     h.accounts.abort_device_authorizations();
+    // The worker dated each renewal of its lease by the wall time it had run,
+    // so the abandoned lease ends 45 seconds after a renewal no test can
+    // date. Put its end back where the claim at 10ns set it.
+    let pinned = h
+        .fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_device_jobs SET lease_until = 45000000010 \
+             WHERE workspace_id = '{owner}' AND setup_id = '{setup}'"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(pinned, 1, "the aborted worker leaves its job behind");
     let restarted = h.restarted_accounts();
     restarted
         .recover_device_authorizations(20_000_000_010)
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Past the lease and the device interval: the worker that reclaims the
+    // job polls at once. A worker that had reclaimed it at 20 seconds would
+    // hold it past this recovery and poll 30 seconds later, which this
+    // bound tells apart.
     restarted
-        .recover_device_authorizations(46_000_000_010)
+        .recover_device_authorizations(60_000_000_000)
         .await
         .unwrap();
     // The reclaimed lease keeps the device grant's original deadline.
-    poll_setup(&h, &context, &owner, &setup, |progress| {
+    let reclaimed = poll_setup(&h, &context, &owner, &setup, |progress| {
         assert_eq!(
             progress
                 .authorization
@@ -1323,8 +1338,10 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
             deadline
         );
         progress.authorized
-    })
-    .await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(15), reclaimed)
+        .await
+        .expect("the worker that reclaims the lapsed lease polls at once");
     restarted.stop_device_authorizations().await.unwrap();
 }
 
@@ -1613,7 +1630,7 @@ async fn device_authorization_sends_comma_scopes_as_independent_requested_tokens
         started.authorization.unwrap().requested_scopes,
         ["read", "write"]
     );
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
         loop {
             if !api.server.received_requests().await.unwrap().is_empty() {
                 break;
