@@ -1808,10 +1808,23 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
         tracer.upstream.signals.clone(),
     )
     .await;
+    // The worker claim lease is 30 seconds, and RunModule has no clock to
+    // inject. The test moves the end of the lost worker's lease back to the
+    // Run's acceptance, the earliest end a lease can have, so it does not
+    // wait out the lease.
+    let lapsed = tracer
+        .database
+        .execute_fixture_sql(&format!(
+            "UPDATE program_run_records \
+             SET worker_claim_expires_at_unix_nanos = accepted_at_unix_nanos \
+             WHERE id = '{lost_worker}' AND worker_claim_expires_at_unix_nanos IS NOT NULL"
+        ))
+        .await
+        .expect("lapse the lost worker's lease");
+    assert_eq!(lapsed, 1, "the lost worker held a lease on its Run");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
-        // The worker claim lease is 30 seconds and RunModule has no injected clock.
-        // This test waits out the whole lease, so allow ample margin under load.
+        // A liveness bound: recovery interrupts the Run in its own time.
         let interrupted = tokio::time::timeout(Duration::from_secs(90), async {
             loop {
                 tracer
