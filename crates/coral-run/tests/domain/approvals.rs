@@ -2538,13 +2538,19 @@ async fn quiet_approval_fixture(
 /// waiting, waits for that chunk and receives the first's recorded answer
 /// (the decision, who made it, when), and so does a third, after the row is
 /// gone. Nothing else changes: one lifecycle event, one dispatch.
+///
+/// The approved call is held at its upstream until the Run Inbox has been
+/// counted. Nothing tells the test that the second decider has submitted, so
+/// on a slow database it may submit after the first's chunk: its row is then
+/// a repeat the owner's next chunk deletes before it is answered, which only
+/// a running Run does. A Run that had ended would keep that row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_learns_the_winner()
 {
-    let upstream = Arc::new(ScriptedUpstream::json(
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
         200,
         serde_json::json!({"temperature": 21}),
-    ));
+    )));
     let (fixture, tool, approvals, probe) = quiet_approval_fixture(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream.clone(),
@@ -2624,6 +2630,7 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
         [ApprovalState::Approved],
         "one decision is recorded"
     );
+    upstream.release();
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
