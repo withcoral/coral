@@ -29,11 +29,11 @@ mod embedder;
 mod reconcile;
 mod statistics;
 mod telemetry;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 mod write_probe;
 
-#[cfg(test)]
-pub(crate) use write_probe::{WritePoint, WriteProbe};
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use write_probe::{WritePoint, WriteProbe};
 
 /// How long one index write may run before it is rolled back and logged as
 /// failed. The limit frees the mutex: a write stalled on a database lock would
@@ -84,14 +84,11 @@ pub struct SearchIndex {
     #[cfg(test)]
     row_build_pause: Option<Arc<RowBuildPause>>,
     /// A test's view of each write, and the clock of the write's limits.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     write_probe: Option<Arc<WriteProbe>>,
     /// A test-only index whose notifications write nothing.
     #[cfg(any(test, feature = "test-fixtures"))]
     inert: bool,
-    /// A test-only pause in each write once it holds its Workspace's lock.
-    #[cfg(any(test, feature = "test-fixtures"))]
-    stall_after_lock: Option<Duration>,
     /// A test-only pause in each write after it builds its rows, before it
     /// begins its transaction.
     #[cfg(any(test, feature = "test-fixtures"))]
@@ -138,8 +135,8 @@ impl SearchIndex {
     /// Probes each later write. From then on the writer wait limit and the
     /// write limit of a write run on the probe's clock, which only the test
     /// advances, so neither passes while the database is slow.
-    #[cfg(test)]
-    pub(crate) fn probe_writes(&mut self) -> Arc<WriteProbe> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn probe_writes(&mut self) -> Arc<WriteProbe> {
         let probe = Arc::new(WriteProbe::new());
         self.write_probe = Some(probe.clone());
         probe
@@ -167,12 +164,10 @@ impl SearchIndex {
             embedder_retry_pause: embedder::RETRY_PAUSE,
             #[cfg(test)]
             row_build_pause: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-fixtures"))]
             write_probe: None,
             #[cfg(any(test, feature = "test-fixtures"))]
             inert: false,
-            #[cfg(any(test, feature = "test-fixtures"))]
-            stall_after_lock: None,
             #[cfg(any(test, feature = "test-fixtures"))]
             stall_before_write: None,
         }
@@ -594,15 +589,6 @@ impl SearchIndex {
         self
     }
 
-    /// Pauses each later write for `stall` once it holds its Workspace's
-    /// lock, so a test can overrun the write limit after the lock.
-    #[cfg(any(test, feature = "test-fixtures"))]
-    #[must_use]
-    pub const fn with_stall_after_lock(mut self, stall: Duration) -> Self {
-        self.stall_after_lock = Some(stall);
-        self
-    }
-
     /// Pauses each later write for `stall` once it has built its rows,
     /// before it begins its transaction, so a test can stand in for a slow
     /// row build.
@@ -705,7 +691,7 @@ impl SearchIndex {
     /// Runs `work` until `limit` passes, and answers `None` when the limit
     /// passes first. Dropping the work rolls back its transaction.
     async fn before_limit<T>(&self, limit: Duration, work: impl Future<Output = T>) -> Option<T> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(probe) = &self.write_probe {
             return probe.before_limit(limit, work).await;
         }
@@ -713,7 +699,7 @@ impl SearchIndex {
     }
 
     /// Tells a test's probe that the write is at `point`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     async fn at(&self, point: WritePoint) {
         if let Some(probe) = &self.write_probe {
             probe.at(point).await;
@@ -754,7 +740,7 @@ impl SearchIndex {
         entry: &'e I::Entry,
     ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         let _ended = self.write_probe.as_deref().map(WriteProbe::starts);
         let rows = without_starving_other_tasks(|| {
             #[cfg(test)]
@@ -771,12 +757,12 @@ impl SearchIndex {
         if let Some(stall) = self.stall_before_write {
             tokio::time::sleep(stall).await;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         self.at(WritePoint::BuiltRows).await;
         let started = Instant::now();
         let mut transaction = self
             .before_limit(self.writer_wait_limit, async {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-fixtures"))]
                 self.at(WritePoint::WaitingForWriter).await;
                 let mut transaction = self.database.begin().await?;
                 if let Err(error) = indexer::lock_workspace(&mut transaction, workspace_id).await {
@@ -791,12 +777,8 @@ impl SearchIndex {
         // Borrowed, so the rows outlive the `async move` write and return.
         let written_rows = &rows;
         let write = async move {
-            #[cfg(test)]
-            self.at(WritePoint::HoldsLock).await;
             #[cfg(any(test, feature = "test-fixtures"))]
-            if let Some(stall) = self.stall_after_lock {
-                tokio::time::sleep(stall).await;
-            }
+            self.at(WritePoint::HoldsLock).await;
             let effect = match indexer.index(&mut transaction, entry, written_rows).await {
                 Ok(effect) => effect,
                 Err(error) => {
