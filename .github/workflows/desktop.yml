@@ -36,7 +36,7 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -52,7 +52,7 @@ jobs:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -74,7 +74,7 @@ jobs:
         with:
           mode: save
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coral-app-linux-unsigned
           path: apps/desktop/dist/*.AppImage
@@ -89,7 +89,7 @@ jobs:
     runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -117,7 +117,7 @@ jobs:
         with:
           mode: save
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coral-app-macos-unsigned
           path: |
@@ -137,7 +137,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -170,7 +170,7 @@ jobs:
         run: npm test --prefix apps/desktop
       - name: Keep the crash evidence
         if: ${{ failure() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-windows-test-crash-${{ github.run_attempt }}
           path: ${{ runner.temp }}/crash
@@ -188,7 +188,7 @@ jobs:
         with:
           mode: save
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coral-app-windows-unsigned
           path: apps/desktop/dist/*.exe
@@ -237,7 +237,7 @@ jobs:
       # automatically if this repository becomes public during the final swap.
       - name: Retain private review evidence, including failed runs
         if: ${{ always() && github.event.repository.private }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reel-desktop-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/

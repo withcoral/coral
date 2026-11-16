@@ -20,7 +20,7 @@ runs:
     # Unreleased main: v2.9.2 and earlier prune only the first stale entry of a
     # partially restored target dir. That can drop a crate's build-script
     # output and keep its fingerprint, so the link fails (Swatinem/rust-cache#377).
-    - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # main after v2.9.2
+    - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # main after v2.9.2
       with:
         # Bump to drop every saved cache.
         prefix-key: v2-rust
