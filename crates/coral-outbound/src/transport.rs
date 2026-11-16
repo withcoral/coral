@@ -22,18 +22,24 @@ impl Client {
     /// # Errors
     /// Returns a client initialization error.
     pub fn new(policy: DestinationPolicy, timeout: Duration) -> Result<Self, reqwest::Error> {
-        Self::with_resolver(policy, timeout, Arc::new(SystemResolver))
+        Self::with_resolver(
+            policy,
+            timeout,
+            Arc::new(SystemResolver),
+            IdleConnections::Keep,
+        )
     }
 
     fn with_resolver(
         policy: DestinationPolicy,
         timeout: Duration,
         resolver: Arc<dyn Resolve>,
+        idle_connections: IdleConnections,
     ) -> Result<Self, reqwest::Error> {
         // Resolve has no scheme argument. Separate connector pools bind the
         // scheme to every lookup, including reconnects and mixed DNS answers.
         let build = |https, resolver| {
-            reqwest::Client::builder()
+            let builder = reqwest::Client::builder()
                 .user_agent("Coral")
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
@@ -45,8 +51,12 @@ impl Client {
                     policy,
                     https,
                     resolver,
-                })
-                .build()
+                });
+            match idle_connections {
+                IdleConnections::Keep => builder,
+                IdleConnections::Close => builder.pool_max_idle_per_host(0),
+            }
+            .build()
         };
         Ok(Self {
             http: build(false, Arc::clone(&resolver))?,
@@ -113,6 +123,10 @@ impl Client {
 /// The loopback setting stays as the operator set it. It serves the exact
 /// operator-derived client ID that `EndpointUrl::<ClientMetadata>::parse`
 /// admits, and [`get`](Self::get) takes no other kind of URL.
+///
+/// Every request opens its own connection, because a sign-in fails when this
+/// fetch does. A server closes an idle connection on its own schedule, and a
+/// request sent on one at that moment gets no answer.
 #[derive(Clone)]
 pub struct MetadataClient(Client);
 
@@ -134,6 +148,7 @@ impl MetadataClient {
             policy.with_private_networks(NetworkAccess::Deny),
             timeout,
             resolver,
+            IdleConnections::Close,
         )
         .map(Self)
     }
@@ -147,6 +162,16 @@ impl MetadataClient {
     ) -> Result<reqwest::RequestBuilder, DestinationRejected> {
         self.0.get(url.as_url())
     }
+}
+
+/// What a client does with a connection once its response is complete.
+#[derive(Clone, Copy)]
+enum IdleConnections {
+    /// Keep it for the next request to the same host.
+    Keep,
+    /// Close it, so that no request is sent on a connection the server may
+    /// already be closing.
+    Close,
 }
 
 /// Safe discrimination between blocked DNS destinations and ordinary transport errors.
@@ -301,6 +326,7 @@ mod tests {
                 DestinationPolicy::default(),
                 Duration::from_secs(2),
                 Arc::new(Answers(answers)),
+                IdleConnections::Keep,
             )
             .unwrap();
             let error = client
