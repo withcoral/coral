@@ -4,7 +4,9 @@
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
 //! hands the engine its window in rank order, each Entity marked strong or
-//! weak by the retriever's own rule. It hydrates and describes the Entities
+//! weak by the retriever's own rule. When the request carries the query's
+//! vector, the Tool retriever also runs a vector query with the same
+//! conditions and merges the two lists ([`vector_list`]). It hydrates and describes the Entities
 //! of its kind. Every method joins the caller's read snapshot and opens no
 //! connection of its own.
 
@@ -12,6 +14,7 @@ pub(crate) mod authored_tools;
 pub(crate) mod plan;
 mod repository;
 pub(crate) mod tools;
+pub(crate) mod vector_list;
 
 pub(crate) use repository::{abandon_query, begin_query, end_query};
 
@@ -83,9 +86,12 @@ pub(crate) struct Listing {
 }
 
 /// What one retriever's `query` asks: the engine's normalized terms, the
-/// Provider Call Root filter, and the window size.
+/// query's vector, the Provider Call Root filter, and the window size.
 pub(crate) struct QueryRequest<'a> {
     pub(crate) terms: &'a [String],
+    /// The query's vector, embedded once for every retriever; `None` when
+    /// the vector side is off or could not embed the query.
+    pub(crate) vector: Option<&'a [f32]>,
     pub(crate) provider_filter: &'a ProviderFilter,
     pub(crate) window: usize,
 }

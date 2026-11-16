@@ -1278,8 +1278,11 @@ impl Provisional {
 /// `fixed` requires retention; `none` needs a credential-free contract and cannot retain a grant.
 /// Every retention requires the exact live, compatible reviewed grant.
 ///
+/// The inner `Err` is a safe publication diagnostic that consumes the Setup.
+///
 /// # Errors
-/// Returns a safe publication diagnostic that consumes the Setup.
+/// Returns the failure to read the provisional row. It publishes nothing and
+/// leaves the Setup reusable.
 pub(crate) async fn decide(
     tx: &mut Transaction<'_>,
     context: &ChangeContext,
@@ -1288,7 +1291,7 @@ pub(crate) async fn decide(
     route: CredentialRoute,
     reviewed_grant: Option<ProviderAccountId>,
     contract: &ProviderCredentialContract,
-) -> Result<Promotion, PublicationDiagnostic> {
+) -> Result<Result<Promotion, PublicationDiagnostic>, Error> {
     let account_required = || {
         PublicationDiagnostic::stable(
             "account_required",
@@ -1297,17 +1300,15 @@ pub(crate) async fn decide(
     };
     match route.fits(contract) {
         crate::RouteFit::Fits => {}
-        crate::RouteFit::SourceNeedsCredential => return Err(account_required()),
+        crate::RouteFit::SourceNeedsCredential => return Ok(Err(account_required())),
         crate::RouteFit::SourceNeedsNoCredential => {
-            return Err(PublicationDiagnostic::stable(
+            return Ok(Err(PublicationDiagnostic::stable(
                 "credential_not_accepted",
                 "the source needs no credential, and the requested route sends one",
-            ));
+            )));
         }
     }
-    let row = load(tx, owner, setup_id)
-        .await
-        .map_err(|_error| account_required())?;
+    let row = load(tx, owner, setup_id).await?;
     // Keep application configuration without implicitly authorizing runtime use.
     if route == CredentialRoute::Caller && reviewed_grant.is_none() {
         let client = row
@@ -1319,30 +1320,30 @@ pub(crate) async fn decide(
                     .filter(|policy| row.contract == contract.clone().with_oauth_client(policy))
             })
             .cloned();
-        return Ok(Promotion::Discard { client });
+        return Ok(Ok(Promotion::Discard { client }));
     }
     if reviewed_grant.is_some() && route == CredentialRoute::None {
-        return Err(account_required());
+        return Ok(Err(account_required()));
     }
     let without_material = || match route {
         CredentialRoute::None => Ok(Promotion::NotRequired),
         CredentialRoute::Caller | CredentialRoute::Fixed => Err(account_required()),
     };
     let Some(row) = row else {
-        return without_material();
+        return Ok(without_material());
     };
     if !row.belongs_to(context.actor()) {
-        return Err(account_required());
+        return Ok(Err(account_required()));
     }
     match row.material(context.occurred_at_unix_nanos()) {
         Material::Live => {}
         Material::Expired => {
-            return Err(PublicationDiagnostic::stable(
+            return Ok(Err(PublicationDiagnostic::stable(
                 "setup_expired",
                 "the setup-scoped credential expired before Publication",
-            ));
+            )));
         }
-        Material::Never => return without_material(),
+        Material::Never => return Ok(without_material()),
     }
     let stored = &row.contract;
     // The material was sealed against the exact contract, or against that
@@ -1355,16 +1356,16 @@ pub(crate) async fn decide(
             Some(policy) if stored == &contract.clone().with_oauth_client(policy) => {
                 Some(policy.clone())
             }
-            _ => return Err(account_required()),
+            _ => return Ok(Err(account_required())),
         }
     };
     if reviewed_grant != Some(row.grant_id) {
-        return Err(account_required());
+        return Ok(Err(account_required()));
     }
-    Ok(Promotion::Promote {
+    Ok(Ok(Promotion::Promote {
         row: Box::new(row),
         client,
-    })
+    }))
 }
 
 /// Replaces one exact shared Account in the owning Publication transaction.

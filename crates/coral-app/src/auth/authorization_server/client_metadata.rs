@@ -210,13 +210,16 @@ trait MetadataFetcher: Send + Sync {
 }
 
 struct ReqwestMetadataFetcher {
-    public_http: coral_outbound::Client,
+    public_http: coral_outbound::MetadataClient,
     configured_http: reqwest::Client,
 }
 
 impl ReqwestMetadataFetcher {
     fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, ClientMetadataError> {
-        let public_http = coral_outbound::Client::new(policy, PUBLIC_METADATA_TIMEOUT)
+        // `policy` sets Provider destinations. `MetadataClient` takes its
+        // loopback setting for the exact local client ID and resolves public
+        // addresses only.
+        let public_http = coral_outbound::MetadataClient::new(policy, PUBLIC_METADATA_TIMEOUT)
             .map_err(|_error| ClientMetadataError::ClientBuild)?;
         let configured_http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -242,7 +245,7 @@ impl MetadataFetcher for ReqwestMetadataFetcher {
             MetadataUrl::ConfiguredReef(url) => url.get(&self.configured_http),
             MetadataUrl::PublicClient(url) => self
                 .public_http
-                .get(url.as_url())
+                .get(url)
                 .map_err(|_error| ClientMetadataError::Fetch)?,
         };
         request

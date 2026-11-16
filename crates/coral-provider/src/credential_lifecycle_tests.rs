@@ -461,6 +461,170 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
+    reason = "one fault-injection journey proves the renewed token is stored and its rotated refresh token renews again"
+)]
+async fn a_renewed_token_survives_an_application_status_write_failure() {
+    use wiremock::matchers::body_string_contains;
+    let server = MockServer::start().await;
+    let (db, workspaces, providers) = test_modules().await;
+    let context = change_context(
+        organization_user(
+            providers.database.clone(),
+            "user:refresh-status-fault",
+            OrganizationRole::Owner,
+        )
+        .await,
+        10,
+        'a',
+    );
+    let principal = coral_workspace::AuthenticatedPrincipal::user(context.actor().clone())
+        .principal()
+        .clone();
+    let workspace = workspaces
+        .create(
+            &context,
+            WorkspaceDisplayName::parse("Refresh status fault").unwrap(),
+        )
+        .await
+        .unwrap();
+    let provider = publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        &oauth_document(&server),
+        "oauth",
+        CredentialRoute::Caller,
+    )
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let accounts = crate::tests::accounts_for(&providers, directory.path());
+    let renewal = |sent: &str, access: &str, rotated: &str| {
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains(format!("refresh_token={sent}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": access, "token_type": "Bearer", "refresh_token": rotated,
+                "expires_in": 1
+            })))
+            .expect(1)
+    };
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "original-canary", "token_type": "Bearer",
+            "refresh_token": "refresh-canary", "expires_in": 1
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let pending = accounts
+        .start_user_authorization(
+            &context,
+            workspace.id(),
+            provider.id(),
+            authorization_request(),
+            Some(client()),
+        )
+        .await
+        .unwrap();
+    let account_id = callback(&accounts, &context, workspace.id(), &pending)
+        .await
+        .account_id
+        .unwrap();
+    let evidence = credential_evidence(
+        &db.database(),
+        workspace.id(),
+        "oauth",
+        "getData",
+        &principal,
+    )
+    .await
+    .unwrap();
+    let application_failure = || async {
+        accounts
+            .oauth_client_status(&context, workspace.id(), provider.id())
+            .await
+            .unwrap()
+            .failure_code
+    };
+    // The service first rejects the application, which records a failed status.
+    // The renewal after it would clear that status, so a status that is still
+    // failed shows that the injected fault failed the write.
+    server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_json(serde_json::json!({"error": "invalid_client"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        accounts
+            .credentials(workspace.id(), provider.id(), &evidence, 2_000_000_000)
+            .await,
+        Err(crate::Error::OAuthClientConfiguration)
+    ));
+    assert_eq!(
+        application_failure().await.as_deref(),
+        Some("oauth_client_configuration")
+    );
+    server.reset().await;
+    renewal("refresh-canary", "renewed-canary", "rotated-canary")
+        .mount(&server)
+        .await;
+    // Fail only the diagnostic status write that follows the exchange.
+    crate::tests::fail_application_status_writes(&db, true).await;
+    let renewed = accounts
+        .credentials(workspace.id(), provider.id(), &evidence, 2_000_000_000)
+        .await;
+    crate::tests::fail_application_status_writes(&db, false).await;
+    assert_eq!(
+        renewed
+            .unwrap()
+            .get(coral_credentials::CredentialValues::TOKEN)
+            .unwrap()
+            .expose(),
+        "renewed-canary",
+        "a failed status write does not discard the renewed token"
+    );
+    assert_eq!(
+        application_failure().await.as_deref(),
+        Some("oauth_client_configuration"),
+        "the injected fault failed the status write"
+    );
+    // The service rotated the refresh token, so only the stored replacement
+    // renews again. The time is past the first claim's deadline.
+    server.reset().await;
+    renewal("rotated-canary", "second-canary", "unused-canary")
+        .mount(&server)
+        .await;
+    assert_eq!(
+        accounts
+            .credentials(workspace.id(), provider.id(), &evidence, 63_000_000_000)
+            .await
+            .unwrap()
+            .get(coral_credentials::CredentialValues::TOKEN)
+            .unwrap()
+            .expose(),
+        "second-canary"
+    );
+    assert_eq!(
+        application_failure().await,
+        None,
+        "with the fault removed, a renewal clears the failed status"
+    );
+    let status = accounts
+        .credential_status(&context, workspace.id(), provider.id(), account_id)
+        .await
+        .unwrap();
+    assert!(!status.requires_authorization);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
     reason = "one journey follows a permanently rejected refresh through the connection request that reconnect satisfies and Disconnect ends"
 )]
 async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnect_satisfies() {

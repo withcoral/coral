@@ -1,0 +1,44 @@
+# Dependabot opens update PRs. `make dependency-check` and the daily advisory
+# run only report a problem; this proposes the fix.
+#
+# Cargo and npm: security updates only. A limit of zero switches off routine
+# version updates, and Dependabot still opens a PR for a dependency that has
+# an advisory. That needs "Dependabot security updates" switched on in the
+# repository settings. The entries are here so those PRs get a Conventional
+# Commits title, which `.github/workflows/pr.yml` requires.
+#
+# GitHub Actions: pinned by commit SHA, so nothing else moves them. One
+# grouped PR a month.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: build(deps)
+
+  - package-ecosystem: npm
+    directories:
+      - /apps/reef
+      - /apps/desktop
+      - /crates/coral-v8
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: build(deps)
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci(deps)
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -16,6 +16,7 @@ use super::*;
 use crate::testing::{
     Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, run_executor_config, start_run_executor,
 };
+use crate::wire::v1::{Ended, RunEnd, run_response};
 use crate::{AnalysisError, CompileError, PullStreamCompiler};
 
 fn config(coral: &ScriptedCoral, compiler_heap_bytes: usize) -> RunExecutorConfig {
@@ -477,7 +478,10 @@ async fn a_held_run_and_a_compile_share_the_room() {
         .await;
     assert!(compiled.is_ok(), "{compiled:?}");
     assert_eq!(call.rooms.recv().await, Some(7), "the Run holds its unit");
-    drop(run);
+    let ended = Ended {
+        end: RunEnd::Succeeded.into(),
+    };
+    run.send(run_response::Message::Ended(ended)).await;
     assert_eq!(call.rooms.recv().await, Some(8), "the Run's unit frees");
 }
 

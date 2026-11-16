@@ -239,12 +239,6 @@ async fn published_device_provider(
     crate::Provider,
     crate::account::SetupAuthentication,
 ) {
-    let device = confirmed_device_setup(api, user, |_| {}, Some(explicit("manual-client"))).await;
-    assert!(
-        device.confirmation.errors.is_empty(),
-        "{:?}",
-        device.confirmation.errors
-    );
     Mock::given(method("POST"))
         .and(path("/device"))
         .and(wiremock::matchers::body_string_contains(
@@ -270,6 +264,25 @@ async fn published_device_provider(
         .expect(exchanges)
         .mount(&api.server)
         .await;
+    publish_device_provider(api, user).await
+}
+
+/// Publishes a Provider from a public-client device-code Setup, with the
+/// sealed grant, through the device and token endpoints the test mounted.
+async fn publish_device_provider(
+    api: &OAuthApi,
+    user: &str,
+) -> (
+    DeviceSetup,
+    crate::Provider,
+    crate::account::SetupAuthentication,
+) {
+    let device = confirmed_device_setup(api, user, |_| {}, Some(explicit("manual-client"))).await;
+    assert!(
+        device.confirmation.errors.is_empty(),
+        "{:?}",
+        device.confirmation.errors
+    );
     let DeviceSetup {
         harness,
         context,
@@ -353,29 +366,23 @@ async fn device_code_configuration_accepts_a_public_application_without_pkce() {
     assert_eq!(credentials.get("token").unwrap().expose(), ACCESS);
 }
 
-#[tokio::test]
-async fn device_reconnect_replays_the_same_authorization_across_a_restart() {
-    let api = OAuthApi::start().await;
-    let (device, provider, completed) =
-        published_device_provider(&api, "user:device-reconnect", 2).await;
+/// Starts a device-code reconnection of `account` and waits until its poller
+/// has stored the device code and shows the user code.
+async fn device_reconnect_showing_its_code(
+    device: &DeviceSetup,
+    provider: &crate::Provider,
+    account: crate::account::ProviderAccountId,
+    request: crate::ManagementRequestId,
+) -> crate::account::Authorization {
     let DeviceSetup {
         harness,
         context,
         workspace,
         ..
-    } = &device;
-    let account = completed.provisional_grant_id.unwrap();
-    let request = crate::account_tests::authorization_request();
+    } = device;
     let pending = harness
         .accounts
-        .start_reconnect(
-            context,
-            workspace,
-            provider.id(),
-            account,
-            request.clone(),
-            None,
-        )
+        .start_reconnect(context, workspace, provider.id(), account, request, None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -397,6 +404,48 @@ async fn device_reconnect_replays_the_same_authorization_across_a_restart() {
     })
     .await
     .unwrap();
+    pending
+}
+
+/// Waits until the reconnection succeeds. It must never report a failure.
+async fn reconnected(
+    device: &DeviceSetup,
+    id: crate::account::AuthorizationId,
+) -> crate::account::Authorization {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let progress = device
+                .harness
+                .accounts
+                .get_authorization(&device.context, &device.workspace, id)
+                .await
+                .unwrap();
+            if progress.state == crate::account::AuthorizationState::Succeeded {
+                break progress;
+            }
+            assert_eq!(progress.failure_code(), None, "{:?}", progress.state);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("reconnection polls without a callback")
+}
+
+#[tokio::test]
+async fn device_reconnect_replays_the_same_authorization_across_a_restart() {
+    let api = OAuthApi::start().await;
+    let (device, provider, completed) =
+        published_device_provider(&api, "user:device-reconnect", 2).await;
+    let DeviceSetup {
+        harness,
+        context,
+        workspace,
+        ..
+    } = &device;
+    let account = completed.provisional_grant_id.unwrap();
+    let request = crate::account_tests::authorization_request();
+    let pending =
+        device_reconnect_showing_its_code(&device, &provider, account, request.clone()).await;
     harness.accounts.stop_device_authorizations().await.unwrap();
     let restarted = harness.restarted_accounts();
     restarted
@@ -408,23 +457,270 @@ async fn device_reconnect_replays_the_same_authorization_across_a_restart() {
         .await
         .unwrap();
     assert_eq!(pending.id, replay.id);
-    let connected = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let progress = harness
-                .accounts
-                .get_authorization(context, workspace, pending.id)
-                .await
-                .unwrap();
-            if progress.state == crate::account::AuthorizationState::Succeeded {
-                break progress;
+    let connected = reconnected(&device, pending.id).await;
+    assert_eq!(connected.account_id, Some(account));
+}
+
+/// A device endpoint that issues one code for two minutes, `expected` times.
+async fn mount_device_endpoint(api: &OAuthApi, expected: u64) {
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "busy-code", "user_code": "BUSY-CODE",
+            "verification_uri": "http://device.fixture.test/activate",
+            "expires_in": 120, "interval": 1
+        })))
+        .expect(expected)
+        .mount(&api.server)
+        .await;
+}
+
+/// A token endpoint that holds one answer until the test releases it.
+struct HeldTokenAnswer {
+    /// The request with the held answer reached the endpoint.
+    arrived: Arc<tokio::sync::Notify>,
+    release: std::sync::mpsc::Sender<()>,
+    requests: Arc<AtomicUsize>,
+}
+
+/// Mounts a token endpoint for `expected` requests. It answers request
+/// `held`, counted from one, with `authorization_pending`, and only after the
+/// test releases that answer. Every other request gets a token.
+async fn mount_token_endpoint_holding(
+    api: &OAuthApi,
+    held: usize,
+    expected: u64,
+) -> HeldTokenAnswer {
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (release, released) = std::sync::mpsc::channel();
+    let released = std::sync::Mutex::new(released);
+    let (signal, seen) = (arrived.clone(), requests.clone());
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(move |_: &Request| {
+            if seen.fetch_add(1, Ordering::SeqCst) + 1 != held {
+                return ResponseTemplate::new(200).set_body_json(
+                    json!({"access_token": ACCESS, "token_type": "Bearer", "scope": "read"}),
+                );
             }
-            assert!(progress.failure_code().is_none());
+            signal.notify_one();
+            // The mock server runs on its own thread, so this blocks no test
+            // task. A test that ends early drops the sender, which also
+            // releases the answer.
+            let _released_or_abandoned = released.lock().unwrap().recv();
+            ResponseTemplate::new(400).set_body_json(json!({"error": "authorization_pending"}))
+        })
+        .with_priority(1)
+        .expect(expected)
+        .mount(&api.server)
+        .await;
+    HeldTokenAnswer {
+        arrived,
+        release,
+        requests,
+    }
+}
+
+/// The write transactions of this test's tasks, as `coral-db` reports them
+/// in its metrics.
+struct Writers {
+    metrics: coral_telemetry::testing::MetricCapture,
+    _recording: tracing::subscriber::DefaultGuard,
+}
+
+impl Writers {
+    fn watch() -> Self {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let recording = tracing::subscriber::set_default(metrics.subscriber());
+        Self {
+            metrics,
+            _recording: recording,
+        }
+    }
+
+    /// The callers that wait to begin a write.
+    fn waiting(&self) -> f64 {
+        self.sum(
+            "coral.persistence.acquisition.waiters",
+            "operation",
+            "begin_write",
+        )
+    }
+
+    /// The writes that failed because the writer stayed busy.
+    fn refused(&self) -> f64 {
+        self.sum(
+            "coral.persistence.transaction.failures",
+            "failure.code",
+            "writer_busy",
+        )
+    }
+
+    fn sum(&self, name: &str, attribute: &str, value: &str) -> f64 {
+        self.metrics
+            .named(name)
+            .into_iter()
+            .filter(|point| point.attributes.get(attribute).map(String::as_str) == Some(value))
+            .map(|point| point.value)
+            .sum()
+    }
+}
+
+async fn until(what: &str, reached: impl Fn() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !reached() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("reconnection polls without a callback");
+    .unwrap_or_else(|_elapsed| panic!("timed out before {what}"));
+}
+
+/// Refuses the device worker's next write as busy, once, and proves that the
+/// worker then wrote nothing.
+///
+/// The worker's token request has no answer yet, so the worker holds no
+/// transaction and its next step is a write. This takes `SQLite`'s one writer
+/// before it releases the answer, and keeps it until the worker has stopped:
+/// no row can change in between.
+#[expect(
+    clippy::float_cmp,
+    reason = "the metrics count whole writers and whole failures"
+)]
+async fn refuse_the_write_after(held: &HeldTokenAnswer, database: &coral_db::Database) {
+    let writers = Writers::watch();
+    tokio::time::timeout(std::time::Duration::from_secs(15), held.arrived.notified())
+        .await
+        .expect("the worker asks the token endpoint");
+    let writer = database.begin().await.unwrap();
+    held.release.send(()).unwrap();
+    until("the worker waits for the writer", || {
+        writers.waiting() == 1.0 || writers.refused() == 1.0
+    })
+    .await;
+    // Only timers are pending now, so paused time lets the writer wait elapse
+    // at once.
+    tokio::time::pause();
+    until("the worker's write fails as busy", || {
+        writers.refused() == 1.0
+    })
+    .await;
+    tokio::time::resume();
+    // The worker has run on from the failure to its next wait. A worker that
+    // went on to renew its lease or end the authorization waits for the
+    // writer here.
+    assert_eq!(
+        writers.waiting(),
+        0.0,
+        "the worker must write nothing after a write the database did not answer"
+    );
+    writer.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_busy_writer_during_a_device_poll_leaves_the_reconnection_to_recovery() {
+    // Postgres has no single writer: a blocked write waits on locks.
+    coral_test_support::database_only!(Sqlite);
+    let api = OAuthApi::start().await;
+    mount_device_endpoint(&api, 2).await;
+    // The Setup's own sign-in takes the first token. The reconnection's first
+    // poll is held.
+    let token = mount_token_endpoint_holding(&api, 2, 3).await;
+    let (device, provider, completed) =
+        publish_device_provider(&api, "user:device-busy-reconnect").await;
+    let account = completed.provisional_grant_id.unwrap();
+    let pending = device_reconnect_showing_its_code(
+        &device,
+        &provider,
+        account,
+        crate::account_tests::authorization_request(),
+    )
+    .await;
+
+    refuse_the_write_after(&token, &device.harness.database).await;
+
+    let stopped = device
+        .harness
+        .accounts
+        .get_authorization(&device.context, &device.workspace, pending.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (stopped.state, stopped.failure_code()),
+        (crate::account::AuthorizationState::Pending, None)
+    );
+    assert_eq!(
+        token.requests.load(Ordering::SeqCst),
+        2,
+        "the stopped worker asks the token endpoint nothing more"
+    );
+
+    // The worker kept its lease unfinished. Recovery resumes the same device
+    // code once that lease has lapsed.
+    let restarted = device.harness.restarted_accounts();
+    restarted
+        .recover_device_authorizations(60_000_000_000)
+        .await
+        .unwrap();
+    let connected = reconnected(&device, pending.id).await;
     assert_eq!(connected.account_id, Some(account));
+    assert_eq!(token.requests.load(Ordering::SeqCst), 3);
+    restarted.stop_device_authorizations().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_busy_writer_during_a_device_poll_leaves_the_setup_authorization_to_recovery() {
+    // Postgres has no single writer: a blocked write waits on locks.
+    coral_test_support::database_only!(Sqlite);
+    let api = OAuthApi::start().await;
+    mount_device_endpoint(&api, 1).await;
+    let token = mount_token_endpoint_holding(&api, 1, 2).await;
+    let (h, context, owner, setup) =
+        pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
+
+    refuse_the_write_after(&token, &h.database).await;
+
+    let stopped = h
+        .providers
+        .setup_authentication(
+            context.actor(),
+            &owner,
+            &setup,
+            context.occurred_at_unix_nanos(),
+        )
+        .await
+        .unwrap();
+    let authorization = stopped.authorization.as_ref().unwrap();
+    assert_eq!(
+        (authorization.state, authorization.failure_code.as_deref()),
+        (SetupAuthorizationState::Pending, None)
+    );
+    assert_eq!(
+        token.requests.load(Ordering::SeqCst),
+        1,
+        "the stopped worker asks the token endpoint nothing more"
+    );
+
+    // The worker kept its lease unfinished. Recovery resumes the same device
+    // code once that lease has lapsed.
+    let restarted = h.restarted_accounts();
+    restarted
+        .recover_device_authorizations(60_000_000_000)
+        .await
+        .unwrap();
+    poll_setup(&h, &context, &owner, &setup, |progress| {
+        let authorization = progress.authorization.as_ref().unwrap();
+        assert_eq!(
+            authorization.failure_code, None,
+            "{:?}",
+            authorization.state
+        );
+        progress.authorized
+    })
+    .await;
+    assert_eq!(token.requests.load(Ordering::SeqCst), 2);
+    restarted.stop_device_authorizations().await.unwrap();
 }
 
 async fn pending_device_setup(

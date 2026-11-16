@@ -81,6 +81,8 @@ pub struct ScriptedCoral {
 
 /// One Run stream a Run Executor opened, which the test answers.
 pub struct RunCall {
+    /// When it arrived.
+    pub at: Instant,
     /// Its first message.
     pub open: Open,
     inbound: Streaming<RunRequest>,
@@ -99,6 +101,12 @@ impl RunCall {
             .expect("the Run stream is open");
     }
 
+    /// Ends Coral's side of the stream with `status`. Dropping the call
+    /// ends it cleanly instead.
+    pub async fn fail(self, status: Status) {
+        drop(self.outbound.send(Err(status)).await);
+    }
+
     /// The Run Executor's next message within 10 s, or `None` once its side
     /// of the stream ends.
     pub async fn next(&mut self) -> Option<run_request::Message> {
@@ -109,6 +117,17 @@ impl RunCall {
             .flatten()
             .and_then(|request| request.message)
     }
+}
+
+/// The requests relayed through `database` that are still waiting or
+/// unread: compiles, and the probes `ready()` writes while it waits for
+/// room.
+///
+/// # Errors
+///
+/// Returns the database's failure.
+pub async fn relayed_requests(database: &coral_db::Database) -> Result<i64, coral_db::Error> {
+    crate::relay_repository::count(database).await
 }
 
 /// The token [`start_run_executor`] dials with.
@@ -278,6 +297,7 @@ impl LinkService for Script {
         &self,
         request: Request<Streaming<RunRequest>>,
     ) -> Result<Response<Self::RunStream>, Status> {
+        let at = Instant::now();
         let mut inbound = request.into_inner();
         let Ok(Some(RunRequest {
             message: Some(run_request::Message::Open(open)),
@@ -287,6 +307,7 @@ impl LinkService for Script {
         };
         let (outbound, stream) = mpsc::channel(16);
         drop(self.runs.send(RunCall {
+            at,
             open,
             inbound,
             outbound,

@@ -37,6 +37,8 @@
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See
   [ADR 0008](docs/adr/0008-outbound-network-permissions.md) for composition defaults.
+  That policy is for Providers. Fetch a client metadata URL through
+  `coral_outbound::MetadataClient`, which resolves public addresses only.
 - Keep cross-crate W3C propagation, safe telemetry fields, the `coral.*`
   metric catalog, and export filtering in `coral-telemetry`. Domain modules own
   signal timing and record metrics through `coral_telemetry::metric`.
@@ -142,13 +144,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   have the request model (requests keyed by the entity they decide, the
   first wins).
 - A Run Owner's write ends on the database's answer, never on the clock: an
-  unanswered write (`Error::is_operational`: a lost connection, a pool
-  timeout, a lock race) means a reread and a retry with bounded backoff until
-  the answer comes or the owner has retired, and a definite answer (a
-  rejection, a claim mismatch, an ended Run, a corrupt head) stops it; the
-  Interrupted record alone retries every answer but a claim mismatch or an
-  ended Run. The worker lease is ownership between Coral Instances, renewed
-  by every commit: never write a Run whose live lease another Coral Instance
+  unanswered write (`Error::is_operational`: a lost connection, a session the
+  database ended or refused, a pool timeout, a lock race) means a reread and
+  a retry with bounded backoff until the answer comes or the owner has
+  retired, and a definite answer (a rejection, a claim mismatch, an ended
+  Run, a corrupt head) stops it; the Interrupted record alone retries every
+  answer but a claim mismatch or an ended Run. The worker lease is ownership
+  between Coral Instances, renewed by every commit: never write a Run whose live lease another Coral Instance
   holds, except to insert an outside request into its Run Inbox.
   The lease never ends a Run from inside its own Coral Instance. The owner's
   own bounds do (suspect after one lease without a commit, self-interrupt

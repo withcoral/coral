@@ -11,7 +11,8 @@ interface ExternalLinkProps {
   disabled?: boolean
   href: string
   size?: ExternalLinkSize
-  variant?: 'primary' | 'subtle'
+  /** `secondary` looks like a secondary button, for a link that is an action. */
+  variant?: 'primary' | 'subtle' | 'secondary'
 }
 
 type ExternalLinkSize = 'default' | 'large' | 'small'
@@ -28,7 +29,8 @@ export function ExternalLink({
   size = 'default',
   variant = 'subtle',
 }: ExternalLinkProps) {
-  const buttonVariant: ButtonVariant = variant === 'subtle' ? 'linkSubtle' : 'link'
+  const buttonVariant: ButtonVariant =
+    variant === 'subtle' ? 'linkSubtle' : variant === 'secondary' ? 'secondary' : 'link'
 
   return (
     <Button.Container
