@@ -132,7 +132,8 @@ function alterAction(action, table, known) {
   }
   const added = match(action, `^add\\s+(column\\s+)?(if\\s+not\\s+exists\\s+)?${IDENTIFIER}`)
   if (added) {
-    known.columns.add(`${table}.${name(added[3])}`)
+    // With IF NOT EXISTS the column may be one that a release already reads.
+    if (!added[2]) known.columns.add(`${table}.${name(added[3])}`)
     // `DEFAULT NULL` supplies no value.
     if (/\bnot\s+null\b/.test(action) && !/\b(default\s+(?!null\b)|generated\b)/.test(action)) {
       return 'adds a required column that an older release does not write'

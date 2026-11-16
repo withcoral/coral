@@ -50,6 +50,8 @@ const breaking = {
   'ALTER TABLE workspaces ADD COLUMN owner TEXT NOT NULL DEFAULT NULL;': /adds a required column/,
   // The table may be one that a release already uses.
   'CREATE TABLE IF NOT EXISTS workspaces (id TEXT);\nALTER TABLE workspaces DROP COLUMN name;': /drops a column/,
+  // Nor is a column new when the migration only may have added it.
+  "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS name TEXT;\nUPDATE workspaces SET name = '';": /rewrites values/,
   // A comment between two words separates them.
   'ALTER/**/TABLE workspaces DROP COLUMN name;': /drops a column/,
   // Every table of one DROP TABLE counts, not only the first.
