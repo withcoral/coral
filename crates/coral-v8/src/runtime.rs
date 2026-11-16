@@ -95,27 +95,7 @@ impl ProgramExecutor {
         host: Option<Arc<dyn ProgramHost>>,
         control: Option<&ProgramExecutionControl>,
     ) -> Result<ExecutionOutput, Error> {
-        crate::v8_support::initialize()?;
-        let mut isolate = v8::Isolate::new(
-            v8::CreateParams::default()
-                .allow_atomics_wait(false)
-                .heap_limits(0, self.limits.execution_heap_bytes()),
-        );
-        let cpu_started = thread_cpu_time();
-        HEAP_PEAK.set(0);
-        let result = crate::memory::with_heap_limit(&mut isolate, |isolate| {
-            Self::execute_in_isolate(isolate, program, host, control)
-        });
-        sample_heap(&mut isolate);
-        let mut heap_peak = HEAP_PEAK.get();
-        if matches!(result, Err(Error::MemoryLimitExceeded)) {
-            heap_peak = heap_peak.max(self.limits.execution_heap_bytes());
-        }
-        let cpu = cpu_started
-            .zip(thread_cpu_time())
-            .map(|(started, ended)| ended.saturating_sub(started));
-        coral_telemetry::metric::program_executed(cpu, heap_peak);
-        result
+        FreshIsolate::new(self.limits)?.execute(program, host, control)
     }
 
     fn execute_in_isolate(
@@ -254,6 +234,70 @@ impl ProgramExecutor {
         } else {
             result
         }
+    }
+}
+
+/// A new execution isolate, made before its Program arrives so the Program
+/// does not wait for one. It runs one Program: executing consumes it. It
+/// stays on the thread that made it.
+pub struct FreshIsolate {
+    isolate: v8::OwnedIsolate,
+    limits: IsolateLimits,
+}
+
+impl FreshIsolate {
+    /// Makes an isolate with `limits`' execution heap limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when V8 cannot start.
+    pub fn new(limits: IsolateLimits) -> Result<Self, Error> {
+        crate::v8_support::initialize()?;
+        let isolate = v8::Isolate::new(
+            v8::CreateParams::default()
+                .allow_atomics_wait(false)
+                .heap_limits(0, limits.execution_heap_bytes()),
+        );
+        Ok(Self { isolate, limits })
+    }
+
+    /// Runs `program` here as [`ProgramExecutor::execute_with_host_control`]
+    /// runs it in an isolate of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as
+    /// [`ProgramExecutor::execute_with_host_control`].
+    pub fn execute_with_host_control(
+        self,
+        program: &CompiledProgram,
+        host: Arc<dyn ProgramHost>,
+        control: &ProgramExecutionControl,
+    ) -> Result<ExecutionOutput, Error> {
+        self.execute(program, Some(host), Some(control))
+    }
+
+    fn execute(
+        mut self,
+        program: &CompiledProgram,
+        host: Option<Arc<dyn ProgramHost>>,
+        control: Option<&ProgramExecutionControl>,
+    ) -> Result<ExecutionOutput, Error> {
+        let cpu_started = thread_cpu_time();
+        HEAP_PEAK.set(0);
+        let result = crate::memory::with_heap_limit(&mut self.isolate, |isolate| {
+            ProgramExecutor::execute_in_isolate(isolate, program, host, control)
+        });
+        sample_heap(&mut self.isolate);
+        let mut heap_peak = HEAP_PEAK.get();
+        if matches!(result, Err(Error::MemoryLimitExceeded)) {
+            heap_peak = heap_peak.max(self.limits.execution_heap_bytes());
+        }
+        let cpu = cpu_started
+            .zip(thread_cpu_time())
+            .map(|(started, ended)| ended.saturating_sub(started));
+        coral_telemetry::metric::program_executed(cpu, heap_peak);
+        result
     }
 }
 

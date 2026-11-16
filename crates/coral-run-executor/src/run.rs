@@ -2,6 +2,7 @@
 //! its own.
 
 mod host;
+mod warm;
 
 use std::sync::Arc;
 
@@ -15,6 +16,9 @@ use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
 use host::RunHost;
+#[cfg(test)]
+pub(crate) use warm::IsolateEvent;
+pub(crate) use warm::Isolates;
 
 /// The Applied cap: while more output bytes than this are above the
 /// committed watermark, the Program's next request waits. Emissions and Logs
@@ -34,6 +38,9 @@ pub struct RunLimits {
     /// test can wait for it.
     #[cfg(test)]
     pub(crate) on_parked: Option<&'static mpsc::UnboundedSender<u64>>,
+    /// Told what happens on each isolate's thread.
+    #[cfg(test)]
+    pub(crate) on_isolate: Option<&'static mpsc::UnboundedSender<IsolateEvent>>,
 }
 
 impl Default for RunLimits {
@@ -43,6 +50,8 @@ impl Default for RunLimits {
             applied_cap_bytes: APPLIED_CAP_BYTES,
             #[cfg(test)]
             on_parked: None,
+            #[cfg(test)]
+            on_isolate: None,
         }
     }
 }
@@ -73,7 +82,12 @@ fn value_limits(limits: &ValueLimits) -> Option<coral_value::ValueLimits> {
 }
 
 /// Holds one Run Coral took for this Run Executor until its stream ends.
-pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits, unit: HeldRun) {
+pub(crate) async fn hold(
+    mut client: Client,
+    taken: TakenRun,
+    isolates: Arc<Isolates>,
+    unit: HeldRun,
+) {
     let (outbound, requests) = mpsc::unbounded_channel();
     let open = Open {
         run_id: taken.run_id,
@@ -95,7 +109,7 @@ pub(crate) async fn hold(mut client: Client, taken: TakenRun, limits: RunLimits,
     else {
         return;
     };
-    let Some((host, exited)) = load(package, outbound, limits, unit) else {
+    let Some((host, exited)) = load(package, outbound, &isolates, unit) else {
         return;
     };
     let host = StopsOnDrop(host);
@@ -142,13 +156,13 @@ impl Drop for StopsOnDrop {
     }
 }
 
-/// Checks `package` and starts its Program's thread, which loads it and
+/// Checks `package` and starts its Program in an isolate, which loads it and
 /// holds `unit` until its isolate is gone. `None` when the package breaks
 /// the protocol.
 fn load(
     package: RunPackage,
     outbound: mpsc::UnboundedSender<RunRequest>,
-    limits: RunLimits,
+    isolates: &Isolates,
     unit: HeldRun,
 ) -> Option<(Arc<RunHost>, oneshot::Receiver<()>)> {
     if !compatible(package.protocol_level) {
@@ -186,12 +200,12 @@ fn load(
     let host = Arc::new(RunHost::new(
         outbound,
         value_limits,
-        &limits,
+        isolates.limits(),
         linked,
         trace_id,
     ));
     let program = coral_v8::CompiledProgram::restore(package.script, package.source_map);
-    let Ok(exited) = host.spawn(program, limits.isolate, unit) else {
+    let Ok(exited) = host.spawn(program, isolates, unit) else {
         tracing::warn!("the Run's thread could not start; closing the Run stream");
         return None;
     };

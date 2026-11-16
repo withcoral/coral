@@ -230,7 +230,8 @@ struct Link {
     /// Told after each `Compile` is queued, so a test can wait for one.
     #[cfg(test)]
     on_queued: Option<mpsc::UnboundedSender<()>>,
-    run_limits: RunLimits,
+    /// Each Run's limits and isolate, and the warm isolate.
+    isolates: Arc<run::Isolates>,
     /// The Runs held, each from its `Taken` to its stream's end.
     held: Arc<AtomicU32>,
     /// A held Run's stream ended, so a unit freed.
@@ -287,7 +288,7 @@ impl Link {
             hello,
             compiler,
             linked,
-            run_limits: config.run_limits,
+            isolates: Arc::new(run::Isolates::new(config.run_limits, config.max_runs_held)),
             held: Arc::default(),
             freed: Arc::default(),
             #[cfg(test)]
@@ -406,7 +407,7 @@ impl Link {
                         // Each Run's stream rides this connection.
                         for taken in taken.runs {
                             let unit = HeldRun::take(&self.held, &self.freed);
-                            tokio::spawn(run::hold(client.clone(), taken, self.run_limits, unit));
+                            tokio::spawn(run::hold(client.clone(), taken, self.isolates.clone(), unit));
                         }
                     }
                     // Anything else breaks the protocol. A clean end before

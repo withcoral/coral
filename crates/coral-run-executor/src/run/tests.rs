@@ -675,7 +675,7 @@ async fn a_panicked_stream_task_stops_its_program() {
     let (host, exited) = load(
         compiled("return 1;").await,
         outbound,
-        RunLimits::default(),
+        &Isolates::new(RunLimits::default(), 1),
         unit,
     )
     .expect("the package loads");
@@ -744,4 +744,46 @@ async fn a_spent_cpu_budget_finishes_with_the_cpu_end() {
     let mut run = started(&mut coral, compiled("while (true) {}").await, Some(100)).await;
     let end = finish_end(FinishEnd::CpuBudget);
     assert_eq!(next_request(&mut run).await, (1, end));
+}
+
+/// The next thing that happens on an isolate's thread, within 10 s.
+async fn isolate_event(events: &mut mpsc::UnboundedReceiver<IsolateEvent>) -> IsolateEvent {
+    tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .expect("an isolate's thread reports")
+        .expect("the Run Executor reports each isolate")
+}
+
+/// Catches: a load that makes its own isolate while one is warm, a warm
+/// isolate never replaced, or an isolate that runs a second Run.
+#[tokio::test]
+async fn each_load_takes_the_warm_isolate_and_a_new_one_replaces_it() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let (on_isolate, mut events) = mpsc::unbounded_channel();
+    let limits = RunLimits {
+        on_isolate: Some(Box::leak(Box::new(on_isolate))),
+        ..RunLimits::default()
+    };
+    let _retire = start_run_executor(&coral, 2, limits, None);
+    let _call = coral.next_call().await;
+    let IsolateEvent::Made(mut warm) = isolate_event(&mut events).await else {
+        panic!("an isolate is warm before any Run");
+    };
+    let mut runs = Vec::new();
+    for run_id in ["run-1", "run-2"] {
+        runs.push(loaded(&mut coral, run_id, compiled("return 1;").await).await);
+        // The Run's thread and its replacement's report in either order.
+        let mut ran = None;
+        let mut made = None;
+        for _ in 0..2 {
+            match isolate_event(&mut events).await {
+                IsolateEvent::Ran(thread) => ran = Some(thread),
+                IsolateEvent::Made(thread) => made = Some(thread),
+            }
+        }
+        assert_eq!(ran, Some(warm), "{run_id} takes the warm isolate");
+        let made = made.expect("a new isolate replaces the warm one");
+        assert_ne!(made, warm, "an isolate runs one Run");
+        warm = made;
+    }
 }
