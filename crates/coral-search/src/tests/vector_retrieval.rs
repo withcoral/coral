@@ -580,9 +580,23 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
 }
 
 #[tokio::test]
-async fn each_reason_the_tool_retriever_ranks_by_words_alone_leaves_the_host_on_its_span() {
+async fn each_reason_a_retriever_ranks_by_words_alone_leaves_the_host_on_its_span() {
     let world = World::new().await;
     let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
+    // A Private Tool and a Shared Tool, so each retriever runs its vector
+    // query.
+    let tides = world
+        .save(&world.principal, "harbour.tideTimes", HARBOUR)
+        .await;
+    world
+        .publish(
+            "harbour.tideTimes",
+            HARBOUR,
+            &tides,
+            ToolAccessState::Enabled,
+        )
+        .await;
+    world.index_and_embed().await;
     let exported = ExportCapture::default();
     let spans = SpanCapture::exporting_to(&exported);
     let _traced = tracing::subscriber::set_default(spans.subscriber());
@@ -643,31 +657,9 @@ async fn each_reason_the_tool_retriever_ranks_by_words_alone_leaves_the_host_on_
             .into_iter()
             .skip(before)
             .collect::<Vec<_>>();
-        let rank = tool_rank(&this_search, case);
-        assert_eq!(
-            (
-                attribute(rank, "coral.search.semantic").as_deref(),
-                attribute(rank, "coral.search.lexical_only.reason").as_deref(),
-            ),
-            (
-                Some(if reason.is_some() {
-                    "lexical_only"
-                } else {
-                    "fused"
-                }),
-                reason
-            ),
-            "{case}"
-        );
-        let mut keys = vec!["coral.search.retriever", "coral.search.semantic"];
-        if reason.is_some() {
-            keys.insert(0, "coral.search.lexical_only.reason");
+        for retriever in ["provider_tool", "private_tool", "shared_tool"] {
+            assert_semantic(rank(&this_search, retriever, case), reason, case);
         }
-        assert_eq!(
-            exported_keys(rank),
-            keys,
-            "{case}: the export filter passes the new fields and nothing else new"
-        );
         let embed_errors = this_search
             .iter()
             .filter(|span| span.name == "coral.search.embed_query")
@@ -839,17 +831,47 @@ async fn searched_providers_and_generations(
     )
 }
 
-/// The one span of the Tool retriever among `spans`.
-fn tool_rank<'a>(spans: &'a [SpanData], case: &str) -> &'a SpanData {
+/// Asserts that `rank` says `fused` when `reason` is `None`, and otherwise
+/// `lexical_only` with `reason`, and that it exports no other new key.
+fn assert_semantic(rank: &SpanData, reason: Option<&str>, case: &str) {
+    let retriever = attribute(rank, "coral.search.retriever");
+    assert_eq!(
+        (
+            attribute(rank, "coral.search.semantic").as_deref(),
+            attribute(rank, "coral.search.lexical_only.reason").as_deref(),
+        ),
+        (
+            Some(if reason.is_some() {
+                "lexical_only"
+            } else {
+                "fused"
+            }),
+            reason
+        ),
+        "{case}: {retriever:?}"
+    );
+    let mut keys = vec!["coral.search.retriever", "coral.search.semantic"];
+    if reason.is_some() {
+        keys.insert(0, "coral.search.lexical_only.reason");
+    }
+    assert_eq!(
+        exported_keys(rank),
+        keys,
+        "{case}: {retriever:?}: the export filter passes the new fields and nothing else new"
+    );
+}
+
+/// The one rank span of `retriever` among `spans`.
+fn rank<'a>(spans: &'a [SpanData], retriever: &str, case: &str) -> &'a SpanData {
     let ranks = spans
         .iter()
         .filter(|span| {
             span.name == "coral.search.rank"
-                && attribute(span, "coral.search.retriever").as_deref() == Some("provider_tool")
+                && attribute(span, "coral.search.retriever").as_deref() == Some(retriever)
         })
         .collect::<Vec<_>>();
     let [rank] = ranks[..] else {
-        panic!("{case}: one Tool retriever span left the host, not {ranks:#?}");
+        panic!("{case}: one {retriever} span left the host, not {ranks:#?}");
     };
     rank
 }
