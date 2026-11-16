@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import type { ReactNode } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect, within } from 'storybook/test'
 
@@ -7,8 +8,10 @@ import { resizeViewport } from '../../../../.storybook/browser'
 import { Banner, Button, Typography } from '@/wax/components'
 import { Brand } from '@/wax/components/brand'
 
-import { PageLayout, TopBar } from './page-layout'
+import { PageLayout, TopBar, type PageLayoutProps } from './page-layout'
 
+// Without `panel`: story args flatten the props' union, which allows a panel only
+// on a standard page that scrolls. The panel stories render it themselves.
 const meta = {
   component: PageLayout,
   title: 'Wax/PageLayout',
@@ -33,7 +36,7 @@ const meta = {
     breadcrumbs: [{ id: 'providers', type: 'text', text: 'Providers' }],
     children: <Typography.Body as="p">Add a provider to start.</Typography.Body>,
   },
-} satisfies Meta<typeof PageLayout>
+} satisfies Meta<Omit<PageLayoutProps, 'panel'>>
 export default meta
 type Story = StoryObj<typeof meta>
 
@@ -150,12 +153,22 @@ const panel = (
   </Typography.Body>
 )
 
+function withPanel(content: ReactNode): Pick<Story, 'render'> {
+  return {
+    render: ({ breadcrumbs, children }) => (
+      <PageLayout breadcrumbs={breadcrumbs} panel={content}>
+        {children}
+      </PageLayout>
+    ),
+  }
+}
+
 /**
  * A light panel beside the content, to the window's right and bottom edges. It
  * stays light in the dark theme.
  */
 export const WithPanel: Story = {
-  args: { panel },
+  ...withPanel(panel),
   globals: { backgrounds: { value: 'dark' } },
   play: async ({ canvasElement }) => {
     if (!(await resizeViewport(1280, 800))) return
@@ -171,7 +184,7 @@ export const WithPanel: Story = {
 
 /** A narrow window puts the panel under the content, the window's full width. */
 export const WithPanelNarrow: Story = {
-  args: { panel },
+  ...withPanel(panel),
   globals: { backgrounds: { value: 'dark' } },
   play: async ({ canvasElement }) => {
     if (!(await resizeViewport(600, 800))) return
@@ -181,5 +194,15 @@ export const WithPanelNarrow: Story = {
     ).toBeGreaterThan(canvas.getByText('Add a provider to start.').getBoundingClientRect().bottom)
     await expect(surfaceAt(20, window.innerHeight - 20)).toBe(WHITE)
     await expect(surfaceAt(window.innerWidth - 20, window.innerHeight - 20)).toBe(WHITE)
+  },
+}
+
+/** A falsy panel, such as `condition && <Form />`, shows none. */
+export const WithFalsePanel: Story = {
+  ...withPanel(false),
+  globals: { backgrounds: { value: 'dark' } },
+  play: async () => {
+    if (!(await resizeViewport(1280, 800))) return
+    await expect(surfaceAt(window.innerWidth - 20, window.innerHeight - 20)).not.toBe(WHITE)
   },
 }

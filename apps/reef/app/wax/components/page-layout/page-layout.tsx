@@ -8,7 +8,7 @@ import * as ScrollArea from '@/wax/components/scroll-area'
 import { lightTheme } from '@/wax/theme/theme-light.css'
 import * as styles from './page-layout.css'
 
-export interface PageLayoutProps {
+interface PageLayoutBaseProps {
   children: ReactNode
   /** Notices and context above the content. No divider is added. */
   header?: ReactNode
@@ -33,14 +33,25 @@ export interface PageLayoutProps {
    * scroll, so put a `layout="scroll"` table in it to scroll its rows instead.
    */
   bounded?: boolean
-  /**
-   * A light panel beside a standard page, to the window's right and bottom
-   * edges, for content that only comes in light colors, such as Stripe's
-   * checkout form. The page's content keeps to the window's middle beside it.
-   * A narrow window puts the panel under the content.
-   */
-  panel?: ReactNode
 }
+
+// Only a standard page that scrolls has room for a panel.
+export type PageLayoutProps = PageLayoutBaseProps &
+  (
+    | { panel?: never }
+    | {
+        variant?: 'standard'
+        bounded?: false
+        /**
+         * A light panel beside the page, to the window's right and bottom
+         * edges, for content that only comes in light colors, such as Stripe's
+         * checkout form. The page's content keeps to the window's middle beside
+         * it. A narrow window puts the panel under the content. A falsy panel,
+         * such as `condition && <Form />`, shows none.
+         */
+        panel?: ReactNode
+      }
+  )
 
 /**
  * The shared page frame. Standard content is centered and capped at 960px;
@@ -59,7 +70,7 @@ export function PageLayout({
   bounded = false,
   panel,
 }: PageLayoutProps) {
-  const beside = panel != null
+  const beside = Boolean(panel)
   const frame = (
     <div className={styles.frame({ variant, bounded, compact, beside })}>
       {header && <div className={styles.header}>{header}</div>}
