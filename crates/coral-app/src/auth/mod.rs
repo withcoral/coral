@@ -22,6 +22,62 @@ pub use error::AuthServerError;
 /// this same path, so the advertised callback is always one the router serves.
 pub(in crate::auth) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
 
+/// A server for tests of what a client does with a connection it has used.
+#[cfg(test)]
+pub(super) mod test_server {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+    use tokio::task::JoinSet;
+
+    /// Answers the first request on each connection with the JSON that
+    /// `respond` returns for the request's path, and keeps the connection
+    /// open. It closes the connection without an answer when a second request
+    /// arrives on it, as a server does when its idle timeout ends while that
+    /// request is on its way.
+    pub(crate) async fn serve_one_request_per_connection(
+        listener: TcpListener,
+        respond: impl Fn(&str) -> String + Clone + Send + 'static,
+    ) {
+        let mut connections = JoinSet::new();
+        loop {
+            let (mut stream, _peer) = listener.accept().await.expect("connection");
+            let respond = respond.clone();
+            connections.spawn(async move {
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(stream.read_u8().await.expect("request"));
+                }
+                let head = String::from_utf8(head).expect("request head");
+                // Read the whole request. Closing a connection with unread
+                // bytes resets it, and the client can lose the response.
+                let content_length = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().expect("content length"))
+                });
+                let mut request_body = vec![0; content_length.unwrap_or(0)];
+                stream
+                    .read_exact(&mut request_body)
+                    .await
+                    .expect("request body");
+                let path = head.split(' ').nth(1).expect("request path");
+                let body = respond(path);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+                // Returns on the first byte of a second request or when the
+                // client closes; dropping the stream then closes it.
+                let _second_request_or_close = stream.read_u8().await;
+            });
+        }
+    }
+}
+
 /// Minimal `[auth]` TOML sections shared by this module's tests.
 ///
 /// `config` and `authorization_server` both build configs from the same

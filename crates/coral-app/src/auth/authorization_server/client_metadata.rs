@@ -354,6 +354,7 @@ fn map_body_error(error: &OutboundUrlPolicyError) -> ClientMetadataError {
 #[expect(clippy::indexing_slicing, reason = "metadata JSON fixture mutation")]
 mod tests {
     use crate::auth::test_config::loopback_policy;
+    use crate::auth::test_server::serve_one_request_per_connection;
     use std::convert::Infallible;
     use std::sync::Arc;
 
@@ -361,9 +362,7 @@ mod tests {
     use axum::body::{Body, Bytes};
     use axum::routing::get;
     use serde_json::{Value, json};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
-    use tokio::task::JoinSet;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -673,35 +672,6 @@ mod tests {
         }
     }
 
-    /// Answers the first request on each connection with `body` and keeps the
-    /// connection open. It closes the connection without an answer when a
-    /// second request arrives on it, as a server does when its idle timeout
-    /// ends while that request is on its way.
-    async fn serve_one_request_per_connection(listener: TcpListener, body: String) {
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        let mut connections = JoinSet::new();
-        loop {
-            let (mut stream, _peer) = listener.accept().await.expect("connection");
-            let response = response.clone();
-            connections.spawn(async move {
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    request.push(stream.read_u8().await.expect("request"));
-                }
-                stream
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("response");
-                // Returns on the first byte of a second request or when the
-                // client closes; dropping the stream then closes it.
-                let _second_request_or_close = stream.read_u8().await;
-            });
-        }
-    }
-
     /// Reef's Node server closes a connection idle for about six seconds. A
     /// sign-in that came at that moment sent its fetch on the closing
     /// connection, and the authorization endpoint answered HTTP 400.
@@ -714,10 +684,10 @@ mod tests {
             let client_id = format!("http://{address}/.well-known/oauth-client");
             let mut metadata = document();
             metadata["client_id"] = json!(client_id);
-            let server = tokio::spawn(serve_one_request_per_connection(
-                listener,
-                metadata.to_string(),
-            ));
+            let metadata = metadata.to_string();
+            let server = tokio::spawn(serve_one_request_per_connection(listener, move |_path| {
+                metadata.clone()
+            }));
             let fetcher =
                 ReqwestMetadataFetcher::new(loopback_policy()).expect("production fetcher");
             let metadata_url = if path == "configured" {

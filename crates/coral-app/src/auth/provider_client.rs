@@ -187,18 +187,25 @@ impl OidcProviderClient {
     /// Refusing redirects keeps a credential-bearing token request from being
     /// replayed to a destination the discovery document did not name and this
     /// module never validated.
+    ///
+    /// Both clients open a connection for every request. A provider closes an
+    /// idle connection on its own schedule, and a request sent on one at that
+    /// moment gets no answer, which fails the sign-in. A retry is no remedy:
+    /// the token request carries a single-use code.
     pub(super) fn new(
         policy: coral_outbound::DestinationPolicy,
     ) -> Result<Self, OidcProviderClientError> {
         let http = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_error| OidcProviderClientError::ClientInitialization)?;
-        let discovered_http = coral_outbound::Client::new(policy, REQUEST_TIMEOUT)
-            .map_err(|_error| OidcProviderClientError::ClientInitialization)?;
+        let discovered_http =
+            coral_outbound::Client::with_connection_per_request(policy, REQUEST_TIMEOUT)
+                .map_err(|_error| OidcProviderClientError::ClientInitialization)?;
         Ok(Self {
             http,
             discovered_http,
@@ -696,9 +703,11 @@ fn discovered_endpoint(
 #[cfg(test)]
 mod tests {
     use crate::auth::test_config::loopback_policy;
+    use crate::auth::test_server::serve_one_request_per_connection;
     use std::collections::BTreeMap;
 
     use serde_json::{Value, json};
+    use tokio::net::TcpListener;
     use tokio::sync::Barrier;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -794,13 +803,14 @@ mod tests {
         }
     }
 
-    fn validation_exchange(server: &MockServer) -> OidcCodeExchange {
-        let issuer = EndpointUrl::<Configured>::parse(&server.uri()).expect("issuer URL");
+    /// A code exchange whose ID token the keys at `origin`'s `/jwks` verify.
+    fn validation_exchange(origin: &str) -> OidcCodeExchange {
+        let issuer = EndpointUrl::<Configured>::parse(origin).expect("issuer URL");
         OidcCodeExchange {
             id_token: Zeroizing::new(id_token(&id_token_claims())),
             access_token: None,
             jwks_uri: EndpointUrl::<Discovered>::parse(
-                &format!("{}/jwks?source=url-secret", server.uri()),
+                &format!("{origin}/jwks?source=url-secret"),
                 &issuer,
             )
             .expect("JWKS URL"),
@@ -1416,7 +1426,7 @@ mod tests {
     async fn fetches_bounded_jwks_and_returns_only_verified_identity() {
         let server = MockServer::start().await;
         let provider = provider("http://localhost/issuer");
-        let exchange = validation_exchange(&server);
+        let exchange = validation_exchange(&server.uri());
         Mock::given(method("GET"))
             .and(path("/jwks"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys":[rsa_key()]})))
@@ -1431,7 +1441,11 @@ mod tests {
         assert_eq!(identity.display_name.as_deref(), Some("User"));
         // With the keys fetched, a refused token names its check, not the fetch.
         let error = client
-            .validate_code_exchange(&provider, validation_exchange(&server), "another-nonce")
+            .validate_code_exchange(
+                &provider,
+                validation_exchange(&server.uri()),
+                "another-nonce",
+            )
             .await
             .map(|_identity| ())
             .expect_err("nonce mismatch");
@@ -1533,7 +1547,7 @@ mod tests {
                 .expect("client")
                 .validate_code_exchange(
                     &provider("http://localhost/issuer"),
-                    validation_exchange(&server),
+                    validation_exchange(&server.uri()),
                     "nonce-secret",
                 )
                 .await
@@ -1561,7 +1575,7 @@ mod tests {
             .expect("client")
             .validate_code_exchange(
                 &provider("http://localhost/issuer"),
-                validation_exchange(&server),
+                validation_exchange(&server.uri()),
                 "nonce-secret",
             )
             .await
@@ -1569,5 +1583,60 @@ mod tests {
             .expect_err("redirect refused");
         assert_eq!(error, OidcProviderClientError::Jwks);
         server.verify().await;
+    }
+
+    /// A provider, or the load balancer before it, closes an idle connection
+    /// on its own schedule. A sign-in that came at that moment sent its
+    /// request on the closing connection, and the browser went back to the
+    /// client with "authorization failed".
+    #[tokio::test]
+    async fn every_request_succeeds_when_the_provider_closes_a_connection_used_again() {
+        let mut failures = Vec::new();
+        // One client sends each kind of request three times.
+        for request in ["discovery", "token", "JWKS"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+            let issuer = format!("http://{}", listener.local_addr().expect("address"));
+            let document = discovery(
+                &issuer,
+                &format!("{issuer}/authorize"),
+                &format!("{issuer}/token"),
+                &format!("{issuer}/jwks"),
+            )
+            .to_string();
+            let server =
+                tokio::spawn(serve_one_request_per_connection(
+                    listener,
+                    move |path| match path {
+                        "/.well-known/openid-configuration" => document.clone(),
+                        "/token" => json!({"id_token": "header.payload.signature"}).to_string(),
+                        _ => json!({"keys": [rsa_key()]}).to_string(),
+                    },
+                ));
+            let client = OidcProviderClient::new(loopback_policy()).expect("client");
+            let configured = provider(&issuer);
+            for attempt in 1..=3 {
+                let error = match request {
+                    "discovery" => client.fetch_discovery(&configured).await.err(),
+                    // Discovery is cached, so this client fetches it only once.
+                    "token" => client
+                        .exchange_code(&configured, "code", "verifier")
+                        .await
+                        .err(),
+                    // The ID token to validate names this issuer.
+                    _ => client
+                        .validate_code_exchange(
+                            &provider("http://localhost/issuer"),
+                            validation_exchange(&issuer),
+                            "expected-nonce",
+                        )
+                        .await
+                        .err(),
+                };
+                failures.extend(error.map(|error| (request, attempt, error)));
+            }
+            server.abort();
+            assert!(server.await.expect_err("aborted server").is_cancelled());
+        }
+        assert!(failures.is_empty(), "requests failed: {failures:?}");
     }
 }
