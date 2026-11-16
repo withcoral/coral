@@ -286,8 +286,9 @@ impl RunHost {
         let mut state = self.state();
         let Some(awaiting) = state.invocations.remove(&result.number) else {
             // Coral may answer a request again after a reconnect, committed
-            // or not; its first answer settled it.
-            return (1..=state.last).contains(&result.number) || state.stopped;
+            // or not, and a stop drops every waiter; the first answer, or the
+            // stop, settled it.
+            return (1..=state.last).contains(&result.number);
         };
         let reply = match (awaiting, answer) {
             // Answers of the wrong kind. A Perform dispatches nothing, so no
