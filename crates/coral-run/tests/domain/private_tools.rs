@@ -1021,7 +1021,9 @@ struct PolicyRow {
 // author is a Member; a call its body makes that does not follow its own
 // rule; a disabled Private Provider that leaves a Private Tool callable; an
 // outer call that needs approval whose body runs before the decision, or at
-// all once declined; or an Agent's call that its Owner cannot approve.
+// all once declined; an Agent's call that its Owner cannot approve; or a
+// call that waits on approval while the action queue or its Run's required
+// actions leave its request out.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1080,6 +1082,13 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
             declared: None,
             gate: RuleThenDemote(ToolAccessState::Disabled),
             decision: None,
+            outcome: hello(),
+        },
+        PolicyRow {
+            author: Author::Owner,
+            declared: Some("approval_required"),
+            gate: RuleThenDemote(ToolAccessState::Enabled),
+            decision: Some(Approve),
             outcome: hello(),
         },
         PolicyRow {
@@ -1170,6 +1179,39 @@ async fn a_private_tool_call_follows_its_declared_default_owner_rules_and_the_pr
             // The approver can decide it: the Invocation keeps the default
             // the linked revision declared.
             assert!(request.actionable, "{label}");
+            // The action queue and the Run's required actions select the
+            // request by the same decision.
+            let expected = crate::RequiredActionRequest::InvocationApproval(request.id.clone());
+            let queue = scope
+                .fixture
+                .runs
+                .required_actions(approver, Some(&scope.workspace_id), None, 10)
+                .await
+                .expect("read the action queue");
+            assert_eq!(
+                queue
+                    .actions
+                    .iter()
+                    .map(|queued| &queued.action.request)
+                    .collect::<Vec<_>>(),
+                [&expected],
+                "{label}"
+            );
+            let observed = scope
+                .fixture
+                .runs
+                .observe(approver, &scope.workspace_id, &run, &immediate(None, 100))
+                .await
+                .expect("observe the Run");
+            assert_eq!(
+                observed
+                    .required_actions()
+                    .iter()
+                    .map(|action| &action.request)
+                    .collect::<Vec<_>>(),
+                [&expected],
+                "{label}"
+            );
             // The call waits on its decision with its body not yet run.
             let paths = |rows: Vec<InvocationRow>| {
                 rows.into_iter()

@@ -446,8 +446,12 @@ impl RetainedPolicy {
 }
 
 /// The decision for the Tool at `policy_target` now, holding its exact rule
-/// as `lock` says. Enforcement and the approval view both decide here, so a
-/// parked call and its Approval Request never disagree.
+/// as `lock` says. Enforcement and an Approval Request's `actionable`
+/// projection both decide here, so a parked call and its request never
+/// disagree. The lists of pending requests (the action queue, a Run's
+/// required actions and Activity's action flag) select in SQL instead, with
+/// `coral_policy::history_repository::approval_required`. It restates this
+/// decision, and coral-policy's tests compare the two.
 ///
 /// `caller` is the invoking Principal's standing, which decides whether an
 /// Owner's rule applies to a Private Tool: the Tool is the caller's own.
