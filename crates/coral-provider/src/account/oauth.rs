@@ -486,12 +486,61 @@ impl AccountModule {
 }
 
 /// Stable safe code for an authorization failure; never an upstream description.
+///
+/// Every variant is named, so a new [`Error`] does not compile until someone
+/// decides whether the person who signs in is told its cause.
 pub(super) const fn authorization_failure_code(error: &Error) -> &'static str {
     match error {
         Error::OutboundDestinationRejected => "outbound_destination_rejected",
         Error::OAuthClientConfiguration => "oauth_client_configuration",
         Error::OAuthTokenExchange(failure) => failure.code(),
-        _ => "authorization_failed",
+        // Discovery and client bootstrap end before an Authorization opens,
+        // so their failures never reach an exchange or a device poll.
+        Error::AuthorizationDiscovery(_)
+        | Error::ClientBootstrapUnavailable
+        | Error::ClientMetadataNotPublic
+        | Error::ClientMetadataUnresolved
+        | Error::ConsentDestinationRejected
+        // Coral's own faults, lost authority, and requests that belong to
+        // other work. The person who signs in cannot act on any of them.
+        | Error::InputUnavailable
+        | Error::SetupPreparationUnavailable
+        | Error::ProviderSetupNotApplicable
+        | Error::ProviderSetupNotReady
+        | Error::AccountInput
+        | Error::SecretReferenceNotAllowed
+        | Error::SecretStoreNotGranted
+        | Error::SecretStoreRead(_)
+        | Error::CredentialRefreshFailed
+        | Error::AccountNotFound
+        | Error::AccountRequired
+        | Error::AccountAuthorizationChanged
+        | Error::AccountConnectionDeclined
+        | Error::AccountConnectionExpired
+        | Error::CredentialRouteChanged
+        | Error::Credentials(_)
+        | Error::InvalidInput(_)
+        | Error::ProviderSetupNotFound
+        | Error::ProviderSetupConsumed
+        | Error::ProviderPublicationNotFound
+        | Error::ProviderNotFound
+        | Error::ProviderAlreadyDisabled
+        | Error::ProviderAlreadyActive
+        | Error::ProviderCallRootConflict
+        | Error::BuiltinProviderManaged
+        | Error::ProviderAccountSettingVersionOverflow
+        | Error::ToolNotFound
+        | Error::RequestIdConflict
+        | Error::PendingAuthorizationLimit
+        | Error::EtagMismatch
+        | Error::IncompatibleConfigurationConfirmationRequired
+        | Error::ProviderChangedDuringPublication
+        | Error::OperationalPublication(_)
+        | Error::CorruptData(_)
+        | Error::Catalog(_)
+        | Error::Workspace(_)
+        | Error::Database(_)
+        | Error::EventFields(_) => "authorization_failed",
     }
 }
 

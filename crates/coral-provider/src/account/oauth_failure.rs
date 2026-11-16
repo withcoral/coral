@@ -166,4 +166,33 @@ mod tests {
             }
         }
     }
+
+    /// Catches a cause that the interface explains losing its stored code,
+    /// and an internal fault gaining a code that names it to the person who
+    /// signs in.
+    #[test]
+    fn only_a_cause_the_person_can_act_on_has_its_own_stored_code() {
+        for (error, code) in [
+            (
+                Error::OutboundDestinationRejected,
+                "outbound_destination_rejected",
+            ),
+            (
+                Error::OAuthClientConfiguration,
+                "oauth_client_configuration",
+            ),
+            // No discovery runs during an exchange or a device poll.
+            (
+                Error::AuthorizationDiscovery(Failure::ChallengeUnsupported),
+                "authorization_failed",
+            ),
+            (Error::AccountInput, "authorization_failed"),
+            (
+                Error::CorruptData("private detail".into()),
+                "authorization_failed",
+            ),
+        ] {
+            assert_eq!(authorization_failure_code(&error), code, "{error:?}");
+        }
+    }
 }

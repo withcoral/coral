@@ -896,42 +896,57 @@ async fn device_start_reports_a_rejected_application_without_exposing_upstream_d
     assert!(!format!("{failed:?}").contains("private-application-canary"));
 }
 
+/// Catches a device sign-in that ends with the generic code although Coral
+/// knows why the token endpoint's answer gave it no usable token, and an
+/// answer whose upstream details reach the stored progress.
 #[tokio::test]
-async fn denied_device_authorization_fails_without_exposing_upstream_details() {
-    let api = OAuthApi::start().await;
-    Mock::given(method("POST"))
-        .and(path("/device"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_code": "private-device-canary", "user_code": "ABCD-EFGH",
-            "verification_uri": format!("{}/activate", api.server.uri()),
-            "expires_in": 60, "interval": 1
-        })))
-        .expect(1)
-        .mount(&api.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "error": "access_denied", "error_description": "private-denial-canary"
-        })))
-        .with_priority(1)
-        .expect(1)
-        .mount(&api.server)
-        .await;
-    let (harness, context, workspace, setup) =
-        pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    let progress = poll_setup(&harness, &context, &workspace, &setup, settled).await;
-    assert!(!progress.authorized);
-    let authorization = progress.authorization.as_ref().unwrap();
-    assert_eq!(authorization.state, SetupAuthorizationState::Failed);
-    assert_eq!(
-        authorization.failure_code.as_deref(),
-        Some("oauth_access_denied")
-    );
-    assert!(authorization.user_code.is_none());
-    let safe = format!("{progress:?}");
-    assert!(!safe.contains("private-device-canary"));
-    assert!(!safe.contains("private-denial-canary"));
+async fn a_device_token_answer_with_no_usable_token_fails_with_its_cause() {
+    for (case, token_answer, code) in [
+        (
+            "the service denies the request",
+            json!({"error": "access_denied", "error_description": "private-answer-canary"}),
+            "oauth_access_denied",
+        ),
+        (
+            "the token is not a bearer token",
+            json!({"access_token": "private-answer-canary", "token_type": "mac"}),
+            "oauth_token_response_invalid",
+        ),
+    ] {
+        let api = OAuthApi::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_code": "private-device-canary", "user_code": "ABCD-EFGH",
+                "verification_uri": format!("{}/activate", api.server.uri()),
+                "expires_in": 60, "interval": 1
+            })))
+            .expect(1)
+            .mount(&api.server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_answer))
+            .with_priority(1)
+            .expect(1)
+            .mount(&api.server)
+            .await;
+        let (harness, context, workspace, setup) =
+            pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
+        let progress = poll_setup(&harness, &context, &workspace, &setup, settled).await;
+        assert!(!progress.authorized, "{case}");
+        let authorization = progress.authorization.as_ref().unwrap();
+        assert_eq!(
+            authorization.state,
+            SetupAuthorizationState::Failed,
+            "{case}"
+        );
+        assert_eq!(authorization.failure_code.as_deref(), Some(code), "{case}");
+        assert!(authorization.user_code.is_none(), "{case}");
+        let safe = format!("{progress:?}");
+        assert!(!safe.contains("private-device-canary"), "{case}");
+        assert!(!safe.contains("private-answer-canary"), "{case}");
+    }
 }
 
 #[tokio::test]

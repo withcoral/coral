@@ -612,11 +612,18 @@ impl Polling<'_> {
                     interval = interval.saturating_mul(2);
                 }
                 Ok(mut token) => {
-                    token.accept(&self.requirement.scopes)?;
-                    token.stamp(
-                        client_id,
-                        advanced(self.context, self.started).occurred_at_unix_nanos(),
-                    )?;
+                    // An answer with no usable token fails with the cause an
+                    // authorization-code exchange gives it, not as Coral's fault.
+                    let invalid = |_error: Error| {
+                        Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid)
+                    };
+                    token.accept(&self.requirement.scopes).map_err(invalid)?;
+                    token
+                        .stamp(
+                            client_id,
+                            advanced(self.context, self.started).occurred_at_unix_nanos(),
+                        )
+                        .map_err(invalid)?;
                     return Ok(token);
                 }
                 Err(error) => return Err(error),
