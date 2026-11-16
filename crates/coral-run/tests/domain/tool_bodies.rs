@@ -791,19 +791,36 @@ async fn retention_deletes_a_run_with_its_nested_invocations() {
 // times out, and both calls end as `run_terminated`. Without the wait, the
 // Program would end at once; a change to that is a deliberate one.
 //
-// The test sends the deadline's timer message itself, once both calls have
-// started: a real timer short enough to wait for would race their start, and
-// on a slow database it fired before the nested call existed.
+// The test sends the deadline's timer message itself: a real timer short
+// enough to wait for would race the calls' start, and on a slow database it
+// fired before the nested call existed. It sends it once the body has
+// ended, which the body's leftover work reports: Coral refuses that work's
+// second call as `parent_invocation_ended` only after the body's end, and
+// the work emits the code. A call that did not wait for its child has by
+// then recorded its own outcome, or ended its Run, so neither a timeout nor
+// `run_terminated` can come from a Run that only ended late.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_deadline() {
     let scope = BodyScope::new("user:tool-bodies-held").await;
+    scope.upstream.release();
     scope
         .save("stuck.hang", "async () => { await new Promise(() => {}); }")
         .await;
     scope
         .save(
             "stuck.leave",
-            "async () => { void coral.private.stuck.hang(); return 1; }",
+            "async () => {
+                void coral.private.stuck.hang();
+                void (async () => {
+                    await coral.providers.weather.getForecast();
+                    try {
+                        await coral.providers.weather.getForecast();
+                    } catch (error) {
+                        await coral.emit((error as { code: string }).code);
+                    }
+                })();
+                return 1;
+            }",
         )
         .await;
     let run = scope
@@ -812,11 +829,25 @@ async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_de
             submission("return await coral.private.stuck.leave();"),
         )
         .await;
-    wait_until_async(async || scope.rows(&run).await.len() == 2).await;
-    // Nothing signals that a body returned. A Program that did not wait for
-    // the child would end within this pause, and the deadline would find no
-    // Run to time out.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The body has ended, with its nested call still running; or the Run
+    // ended, which the assertions below refuse.
+    wait_until_async(async || {
+        let events = retained_events(
+            &scope.fixture.runs,
+            &scope.tool.principal,
+            &scope.tool.workspace_id,
+            &run,
+        )
+        .await;
+        events.iter().any(|event| match event.kind() {
+            RunEventKind::ProgramEmitted { value } => {
+                value.as_json() == &serde_json::json!("parent_invocation_ended")
+            }
+            RunEventKind::Ended { .. } => true,
+            _ => false,
+        })
+    })
+    .await;
     if let Some(owner) = scope.fixture.runs.owners.get(&run) {
         owner.send(crate::owner::Message::Timer(
             crate::owner::Timer::RunDeadline,
@@ -831,6 +862,7 @@ async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_de
         [
             ("coral.private.stuck.hang", terminated),
             ("coral.private.stuck.leave", terminated),
+            (WEATHER, Some(InvocationResultKind::UpstreamOutcome)),
         ]
     );
 }
