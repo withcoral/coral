@@ -6,7 +6,7 @@ use std::time::Duration;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use url::Url;
 
-use crate::{DestinationPolicy, DestinationRejected};
+use crate::{ClientMetadata, DestinationPolicy, DestinationRejected, EndpointUrl, NetworkAccess};
 
 /// HTTP client that checks every request and every DNS answer before connecting.
 /// Redirects, retries, and proxies are disabled. Callers explicitly handle continuation.
@@ -101,6 +101,51 @@ impl Client {
         address: impl AsRef<str>,
     ) -> Result<reqwest::RequestBuilder, DestinationRejected> {
         self.request(reqwest::Method::DELETE, address)
+    }
+}
+
+/// HTTP client for OAuth client metadata documents.
+///
+/// The deployment's private-network setting is for Provider destinations
+/// (ADR 0008) and does not apply here: every DNS answer for a metadata host
+/// must be public.
+///
+/// The loopback setting stays as the operator set it. It serves the exact
+/// operator-derived client ID that `EndpointUrl::<ClientMetadata>::parse`
+/// admits, and [`get`](Self::get) takes no other kind of URL.
+#[derive(Clone)]
+pub struct MetadataClient(Client);
+
+impl MetadataClient {
+    /// Builds the client from the deployment policy, keeping its loopback
+    /// setting alone.
+    /// # Errors
+    /// Returns a client initialization error.
+    pub fn new(policy: DestinationPolicy, timeout: Duration) -> Result<Self, reqwest::Error> {
+        Self::with_resolver(policy, timeout, Arc::new(SystemResolver))
+    }
+
+    fn with_resolver(
+        policy: DestinationPolicy,
+        timeout: Duration,
+        resolver: Arc<dyn Resolve>,
+    ) -> Result<Self, reqwest::Error> {
+        Client::with_resolver(
+            policy.with_private_networks(NetworkAccess::Deny),
+            timeout,
+            resolver,
+        )
+        .map(Self)
+    }
+
+    /// Starts a guarded GET of a client's metadata document.
+    /// # Errors
+    /// Rejects a loopback client ID when the deployment denies loopback HTTP.
+    pub fn get(
+        &self,
+        url: &EndpointUrl<ClientMetadata>,
+    ) -> Result<reqwest::RequestBuilder, DestinationRejected> {
+        self.0.get(url.as_url())
     }
 }
 
@@ -274,6 +319,90 @@ mod tests {
             ));
         }
         assert!(sink.received_requests().await.unwrap().is_empty());
+    }
+
+    fn client_metadata_url(value: &str, issuer: &str) -> EndpointUrl<ClientMetadata> {
+        let issuer = EndpointUrl::<crate::Configured>::parse(issuer).unwrap();
+        EndpointUrl::<ClientMetadata>::parse(value, &issuer, &[value.to_owned()].into()).unwrap()
+    }
+
+    /// The private-network setting is for Provider destinations. A client
+    /// metadata host resolves the same way under every value of it.
+    #[tokio::test]
+    async fn client_metadata_resolves_to_public_addresses_under_every_operator_policy() {
+        use crate::NetworkAccess::{Deny, HttpAndHttps, Https};
+        let sink = MockServer::start().await;
+        let port = sink.address().port();
+        let url = client_metadata_url(
+            &format!("https://client.example.test:{port}/oauth/client.json"),
+            "https://auth.example.test",
+        );
+        for loopback in [Deny, Https, HttpAndHttps] {
+            for private_networks in [Deny, Https, HttpAndHttps] {
+                for answers in [
+                    vec![format!("10.0.0.1:{port}")],
+                    vec![format!("[fd00::1]:{port}")],
+                    vec![format!("8.8.8.8:{port}"), format!("192.168.1.1:{port}")],
+                    vec![format!("169.254.169.254:{port}")],
+                    vec![sink.address().to_string()],
+                ] {
+                    let client = MetadataClient::with_resolver(
+                        DestinationPolicy::new(loopback, private_networks),
+                        Duration::from_secs(2),
+                        Arc::new(Answers(
+                            answers.iter().map(|v| v.parse().unwrap()).collect(),
+                        )),
+                    )
+                    .unwrap();
+                    let error = client.get(&url).unwrap().send().await.unwrap_err();
+                    // The resolver refuses before any connection is attempted.
+                    assert!(
+                        matches!(FetchError::from(error), FetchError::DestinationRejected),
+                        "{loopback:?} {private_networks:?} {answers:?}"
+                    );
+                }
+            }
+        }
+        assert!(sink.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn client_metadata_reaches_an_exact_loopback_client_id_when_the_operator_allows_loopback()
+    {
+        use crate::NetworkAccess::{Deny, HttpAndHttps, Https};
+        let sink = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&sink)
+            .await;
+        let url = client_metadata_url(
+            &format!("{}/.well-known/oauth-client", sink.uri()),
+            "http://localhost:9080",
+        );
+        for private_networks in [Deny, Https, HttpAndHttps] {
+            let client = |loopback| {
+                MetadataClient::new(
+                    DestinationPolicy::new(loopback, private_networks),
+                    Duration::from_secs(2),
+                )
+                .unwrap()
+            };
+            let response = client(HttpAndHttps)
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "{private_networks:?}");
+            // The operator's loopback setting still decides this one case.
+            for loopback in [Deny, Https] {
+                assert_eq!(
+                    client(loopback).get(&url).map(drop),
+                    Err(DestinationRejected),
+                    "{loopback:?} {private_networks:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
