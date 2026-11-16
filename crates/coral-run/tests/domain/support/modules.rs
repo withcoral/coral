@@ -822,7 +822,7 @@ impl TestModules {
         workspace_id: &coral_workspace::WorkspaceId,
         run_id: &crate::RunId,
     ) -> crate::lifecycle::RunRecord {
-        wait_until_async_within(Duration::from_secs(5), async || {
+        wait_until_async(async || {
             self.run_record(workspace_id, run_id)
                 .await
                 .state
@@ -1232,7 +1232,7 @@ pub(crate) async fn wait_for_connection(
     accounts: &coral_provider::account::AccountModule,
     tool: &ToolFixture,
 ) -> coral_provider::account::ConnectionRequest {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENTUALLY, async {
         loop {
             let requests = accounts
                 .list_connection_requests(&change(tool.user.clone(), 40, '4'), &tool.workspace_id)
@@ -1285,27 +1285,54 @@ pub(crate) fn immediate(cursor: Option<crate::RunCursor>, limit: u16) -> RunObse
     RunObservation::immediate(cursor, limit).expect("Run observation")
 }
 
+/// The Run's terminal update, once it has ended. Waits on the product's
+/// waiting observation, which a commit wakes, instead of rereading the Run
+/// on a timer.
 pub(crate) async fn wait_for_terminal(
     runs: &RunModule,
     principal: &AuthenticatedPrincipal,
     workspace_id: &coral_workspace::WorkspaceId,
     run_id: &crate::RunId,
 ) -> crate::RunUpdate {
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + EVENTUALLY;
+    let mut cursor = None;
+    loop {
+        // One observation waits 30 seconds at most. It also returns when the
+        // Run's required actions change: the next one waits from its cursor.
+        let wait = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .min(Duration::from_secs(30));
+        let waiting = RunObservation::immediate(cursor, 100)
+            .expect("Run observation")
+            .batching_output()
+            .with_wait(wait)
+            .expect("Run observation wait");
         let update = runs
-            .observe(principal, workspace_id, run_id, &immediate(None, 100))
+            .observe(principal, workspace_id, run_id, &waiting)
             .await
             .expect("observe Run");
         if update.state().is_terminal() {
-            assert!(
-                update.required_actions().is_empty(),
-                "terminal Runs have no required actions"
-            );
-            return update;
+            break;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Run did not become terminal within {EVENTUALLY:?}"
+        );
+        cursor = Some(update.next_cursor().clone());
     }
-    panic!("Run did not become terminal");
+    let update = runs
+        .observe(principal, workspace_id, run_id, &immediate(None, 100))
+        .await
+        .expect("observe Run");
+    assert!(
+        update.state().is_terminal(),
+        "a terminal Run stays terminal"
+    );
+    assert!(
+        update.required_actions().is_empty(),
+        "terminal Runs have no required actions"
+    );
+    update
 }
 
 /// Every Run-addressed read and command answers `RunNotFound` for `run`: the
@@ -1453,25 +1480,14 @@ pub(crate) async fn assert_run_concealed(
     ));
 }
 
+/// Returns once `predicate` holds; fails after [`EVENTUALLY`].
 pub(crate) async fn wait_until(predicate: impl Fn() -> bool) {
-    for _ in 0..200 {
-        if predicate() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    panic!("condition did not become true");
+    wait_until_async(async || predicate()).await;
 }
 
-/// Like [`wait_until`] for a condition that reads the database.
+/// Like [`wait_until`] for a condition that reads the database. The bound
+/// counts the waits, not the predicate's own reads.
 pub(crate) async fn wait_until_async(predicate: impl AsyncFn() -> bool) {
-    wait_until_async_within(Duration::from_secs(1), predicate).await;
-}
-
-/// Like [`wait_until_async`] for a condition that may take `within` of
-/// waiting to hold, such as a write the owner retries with backoff. The
-/// budget counts the waits, not the predicate's own reads.
-pub(crate) async fn wait_until_async_within(within: Duration, predicate: impl AsyncFn() -> bool) {
     const STEP: Duration = Duration::from_millis(5);
     let mut waited = Duration::ZERO;
     loop {
@@ -1479,8 +1495,8 @@ pub(crate) async fn wait_until_async_within(within: Duration, predicate: impl As
             return;
         }
         assert!(
-            waited < within,
-            "condition did not become true within {within:?} of waiting"
+            waited < EVENTUALLY,
+            "condition did not become true within {EVENTUALLY:?} of waiting"
         );
         tokio::time::sleep(STEP).await;
         waited += STEP;

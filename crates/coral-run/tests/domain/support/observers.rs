@@ -374,15 +374,6 @@ impl EnforcementLatch {
         wait_until(|| self.arrived.load(Ordering::SeqCst) >= count).await;
     }
 
-    /// Like [`Self::until_arrived`] for an arrival that may take `within` of
-    /// waiting, such as one behind a parked wait's wake-up.
-    pub(crate) async fn until_arrived_within(&self, count: usize, within: Duration) {
-        wait_until_async_within(within, async || {
-            self.arrived.load(Ordering::SeqCst) >= count
-        })
-        .await;
-    }
-
     pub(crate) async fn until_loaded(&self, count: usize) {
         wait_until(|| self.loaded.load(Ordering::SeqCst) >= count).await;
     }
@@ -479,7 +470,7 @@ impl WaitProbe {
 
     /// Returns once the wait has parked `count` times in total.
     pub(crate) async fn until_parked(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(EVENTUALLY, async {
             let mut parked = self.parked.subscribe();
             parked.wait_for(|parked| *parked >= count).await.map(|_| ())
         })

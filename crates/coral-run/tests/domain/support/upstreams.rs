@@ -263,10 +263,7 @@ impl SequencedUpstream {
 
     /// Waits until `count` sends have reached the upstream.
     pub(crate) async fn until_sent(&self, count: usize) {
-        wait_until_async_within(Duration::from_secs(10), async || {
-            self.sends.load(Ordering::SeqCst) >= count
-        })
-        .await;
+        wait_until_async(async || self.sends.load(Ordering::SeqCst) >= count).await;
     }
 }
 

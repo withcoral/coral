@@ -331,7 +331,6 @@ async fn queued_user_and_agent_cancellation_record_intent_without_starting_javas
             )
             .await
         });
-        tokio::time::sleep(Duration::from_millis(20)).await;
         let owner = fixture
             .runs
             .owners
@@ -628,7 +627,7 @@ impl Termination {
                 .expect("cancel in-flight work"),
             // The owner's own timer applies the deadline on the host clock.
             Self::Deadline => {
-                wait_until_async_within(Duration::from_secs(5), async || {
+                wait_until_async(async || {
                     fixture.run_record(workspace, run).await.state.is_terminal()
                 })
                 .await;
@@ -873,37 +872,19 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
             runs.cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
                 .await
         });
-        let mut intent_observed = false;
-        for _ in 0..200 {
-            let update = fixture
-                .runs
-                .observe(
-                    &tool.principal,
-                    &tool.workspace_id,
-                    accepted.run_id(),
-                    &immediate(None, 100),
-                )
-                .await
-                .expect("observe cancellation intent");
-            if retained_events(
+        // The cancellation intent is durable before shutdown.
+        wait_until_async(async || {
+            retained_events(
                 &fixture.runs,
                 &tool.principal,
                 &tool.workspace_id,
-                update.run_id(),
+                accepted.run_id(),
             )
             .await
             .iter()
             .any(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
-            {
-                intent_observed = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        assert!(
-            intent_observed,
-            "cancellation intent must be durable before shutdown"
-        );
+        })
+        .await;
         // Give V8 time to stop before the dispatched Invocation settles.
         tokio::time::sleep(Duration::from_millis(20)).await;
         upstream.release.store(true, Ordering::SeqCst);

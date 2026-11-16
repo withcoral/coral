@@ -1640,7 +1640,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
         }
         latch.release_arrivals();
         if exchanges > 0 {
-            tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+            tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
                 .await
                 .expect("the parked Invocation refreshes its token outside the enforcement point");
             endpoint.release.notify_one();

@@ -814,10 +814,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     // deadline, so nothing but the owner's record can show the expiry.
     let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
     let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
-    wait_until_async_within(Duration::from_secs(5), async || {
-        read().await.unwrap().state != ApprovalState::Pending
-    })
-    .await;
+    wait_until_async(async || read().await.unwrap().state != ApprovalState::Pending).await;
     assert_ne!(
         approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await,
         pending,
@@ -2211,7 +2208,7 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     probe.until_parked(1).await;
 
     // Without the timer's chunk, the wait would sleep until the precheck.
-    wait_until_async_within(Duration::from_secs(3), async || {
+    wait_until_async(async || {
         fixture
             .run_record(&tool.workspace_id, run.run_id())
             .await
