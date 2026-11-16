@@ -1,0 +1,5 @@
+error[E0599]: no method named `get` found for reference `&EndpointUrl<Discovered>` in the current scope
+ --> tests/compile_fail/discovered_get.rs:4:9
+  |
+4 |     url.get(http);
+  |         ^^^ method not found in `&EndpointUrl<Discovered>`

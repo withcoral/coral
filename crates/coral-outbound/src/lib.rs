@@ -45,6 +45,9 @@ use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
+// Used by the separate compile-fail integration test target.
+#[cfg(test)]
+use trybuild as _;
 use url::{Host, Url};
 #[cfg(feature = "transport")]
 use zeroize::Zeroizing;
@@ -153,56 +156,20 @@ impl<P: ParsedUrlPolicy> EndpointUrl<P> {
 impl EndpointUrl<Configured> {
     /// Starts a `GET` to this operator-authored endpoint.
     ///
-    /// Untrusted profiles cannot use a raw HTTP client:
-    ///
-    /// ```compile_fail,E0599
-    /// use coral_outbound::{EndpointUrl, Discovered};
-    /// fn fetch(url: &EndpointUrl<Discovered>, http: &reqwest::Client) {
-    ///     url.get(http);
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail,E0599
-    /// use coral_outbound::{EndpointUrl, PublicMetadata};
-    /// fn fetch(url: &EndpointUrl<PublicMetadata>, http: &reqwest::Client) {
-    ///     url.get(http);
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail,E0599
-    /// use coral_outbound::{EndpointUrl, ClientMetadata};
-    /// fn fetch(url: &EndpointUrl<ClientMetadata>, http: &reqwest::Client) {
-    ///     url.get(http);
-    /// }
-    /// ```
+    /// Untrusted profiles cannot use a raw HTTP client: an `EndpointUrl` under
+    /// [`Discovered`], [`PublicMetadata`] or [`ClientMetadata`] has no `get`.
+    /// The cases in `tests/compile_fail` prove that a call to it does not
+    /// compile.
     pub fn get(&self, http: &reqwest::Client) -> reqwest::RequestBuilder {
         http.get(self.0.clone())
     }
 
     /// Starts a `POST` to this operator-authored endpoint.
     ///
-    /// Untrusted profiles cannot use a raw HTTP client:
-    ///
-    /// ```compile_fail,E0599
-    /// use coral_outbound::{EndpointUrl, Discovered};
-    /// fn fetch(url: &EndpointUrl<Discovered>, http: &reqwest::Client) {
-    ///     url.post(http);
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail,E0599
-    /// use coral_outbound::{EndpointUrl, PublicMetadata};
-    /// fn fetch(url: &EndpointUrl<PublicMetadata>, http: &reqwest::Client) {
-    ///     url.post(http);
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail,E0599
-    /// use coral_outbound::{EndpointUrl, ClientMetadata};
-    /// fn fetch(url: &EndpointUrl<ClientMetadata>, http: &reqwest::Client) {
-    ///     url.post(http);
-    /// }
-    /// ```
+    /// Untrusted profiles cannot use a raw HTTP client: an `EndpointUrl` under
+    /// [`Discovered`], [`PublicMetadata`] or [`ClientMetadata`] has no `post`.
+    /// The cases in `tests/compile_fail` prove that a call to it does not
+    /// compile.
     pub fn post(&self, http: &reqwest::Client) -> reqwest::RequestBuilder {
         http.post(self.0.clone())
     }

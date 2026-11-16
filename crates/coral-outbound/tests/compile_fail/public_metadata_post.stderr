@@ -1,0 +1,5 @@
+error[E0599]: no method named `post` found for reference `&EndpointUrl<PublicMetadata>` in the current scope
+ --> tests/compile_fail/public_metadata_post.rs:4:9
+  |
+4 |     url.post(http);
+  |         ^^^^ method not found in `&EndpointUrl<PublicMetadata>`
