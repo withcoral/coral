@@ -106,10 +106,10 @@
 //! While a Run is nonterminal its owner is the only writer of its row and its
 //! Events: approval decisions and cancellation reach the owner as requests,
 //! and the Run and Approval Request deadlines are its own timers, applied in
-//! mailbox order with them (see [`owner`]). Both reach it from any Coral
-//! Instance through the Run Inbox (see [`run_inbox`]). The worker
-//! lease is ownership between processes: a Run whose lease lapsed with no
-//! owner here is the expired-lease sweep's, which recreates its owner, and a
+//! mailbox order with them (see the `owner` module). Both reach it from any
+//! Coral Instance through the Run Inbox (see the `run_inbox` module). The
+//! worker lease is ownership between processes: a Run whose lease lapsed with
+//! no owner here is the expired-lease sweep's, which recreates its owner, and a
 //! Run whose live lease another process holds is never touched. The clock
 //! decides a Run's timeout and an Approval Request's expiry only inside the
 //! owner (its `apply`, and its own writes' clock sample). A connection

@@ -144,7 +144,7 @@ impl ProviderSetupState {
     ];
 
     /// Whether the Setup can still be published: not yet ready, or ready and
-    /// not consumed; one of [`Self::OPEN`]. Only an open Setup expires at its
+    /// not consumed; one of `Self::OPEN`. Only an open Setup expires at its
     /// deadline.
     #[must_use]
     pub const fn is_open(&self) -> bool {

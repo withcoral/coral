@@ -459,7 +459,7 @@ impl UserTokens {
     ///
     /// Minting writes nothing, so any number of requests and processes can
     /// resolve one session at once. Each token serves one request, so it
-    /// lasts [`WEB_SESSION_TOKEN_LIFETIME`] at most, and never past its
+    /// lasts `WEB_SESSION_TOKEN_LIFETIME` at most, and never past its
     /// session.
     ///
     /// # Errors

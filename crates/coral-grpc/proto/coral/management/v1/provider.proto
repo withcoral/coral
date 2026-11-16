@@ -975,7 +975,7 @@ message PublishProviderRequest {
   // Required first-party UUID; exact replay returns the committed result.
   string request_id = 3;
   // Creation only: immutable Workspace-unique Provider Namespace. Coral calls
-  // the Provider under coral.providers.<namespace>.
+  // the Provider under `coral.providers.<namespace>`.
   string namespace = 4;
   // Creation: required. Update: explicit replacement setting, absent to retain it.
   CredentialRoute credential_route = 5;

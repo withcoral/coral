@@ -218,7 +218,7 @@ impl McpOutcome {
         &self.result
     }
 
-    /// Returns [`OutcomeClass::ErrorResponse`] for a tool result with
+    /// Returns [`crate::OutcomeClass::ErrorResponse`] for a tool result with
     /// `isError: true`, and a success otherwise. A resource read has no
     /// `isError`; a field of that name there is a provider extension.
     #[must_use]
