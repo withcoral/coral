@@ -20,9 +20,12 @@ export interface SegmentedOption<Value extends string> {
   disabled?: boolean
 }
 
-export interface SegmentedControlProps<Value extends string> {
-  /** The accessible name of the group. */
-  label: string
+/** The group's name: its own text, or the ID of a visible element that names it. */
+export type SegmentedControlName =
+  | { label: string; labelledBy?: never }
+  | { labelledBy: string; label?: never }
+
+export type SegmentedControlProps<Value extends string> = SegmentedControlName & {
   options: readonly SegmentedOption<Value>[]
   value: Value
   onChange: (value: Value) => void
@@ -39,6 +42,7 @@ export interface SegmentedControlProps<Value extends string> {
  */
 export function SegmentedControl<Value extends string>({
   label,
+  labelledBy,
   options,
   value,
   onChange,
@@ -81,7 +85,13 @@ export function SegmentedControl<Value extends string>({
     if (next !== value) onChange(next)
   }
   return (
-    <div role="radiogroup" aria-label={label} className={styles.group} onKeyDown={onKeyDown}>
+    <div
+      role="radiogroup"
+      aria-label={label}
+      aria-labelledby={labelledBy}
+      className={styles.group}
+      onKeyDown={onKeyDown}
+    >
       {name && <input type="hidden" name={name} value={value} />}
       {options.map((option) => {
         const checked = option.value === value
