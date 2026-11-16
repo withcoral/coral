@@ -999,29 +999,16 @@ impl RunUpdate {
 
     /// Keeps a complete prefix without acknowledging omitted Emissions/Logs.
     /// Terminal data is deferred while authored records remain. Hidden records
-    /// before the first omitted occurrence may be acknowledged.
+    /// before the first omitted occurrence may be acknowledged. A `count` of
+    /// every record or more is this update's own page.
     #[must_use]
-    pub fn event_prefix(&self, count: usize) -> Self {
-        let mut update = self.clone();
-        if count < update.events.len() {
-            if let Some(first_omitted) = update.events.get(count) {
-                update.next_cursor.event_sequence = first_omitted.sequence() - 1;
-            }
-            update.events.truncate(count);
-            update.has_more = true;
+    pub fn event_prefix(&self, count: usize) -> RunUpdatePage<'_> {
+        let events = self.events.get(..count).unwrap_or(&self.events);
+        RunUpdatePage {
+            update: self,
+            events,
+            has_more: self.has_more || events.len() < self.events.len(),
         }
-        update
-    }
-
-    /// Defers terminal data to the observation after this nonempty authored page.
-    /// The cursor advances over these records so the next observation can return
-    /// the complete outcome on its own. Empty pages cannot defer terminal data.
-    #[must_use]
-    pub fn defer_terminal_outcome(mut self) -> Self {
-        if !self.events.is_empty() && self.terminal_outcome.is_some() {
-            self.has_more = true;
-        }
-        self
     }
 
     /// Returns the current public lifecycle state.
@@ -1057,24 +1044,109 @@ impl RunUpdate {
 
     /// Returns the complete terminal data on the final page only.
     #[must_use]
-    pub const fn terminal_outcome(&self) -> Option<&RunTerminalOutcome> {
-        if self.has_more {
-            None
-        } else {
-            self.terminal_outcome.as_ref()
-        }
+    pub fn terminal_outcome(&self) -> Option<&RunTerminalOutcome> {
+        self.event_prefix(self.events.len()).terminal_outcome()
     }
 
     /// Returns, with the failure on the final page, the Tool Result Shapes of
     /// a Run whose Program threw; `None` when it received no Tool Result.
     #[must_use]
     pub fn tool_result_shapes(&self) -> Option<&crate::ToolResultShapes> {
+        self.event_prefix(self.events.len()).tool_result_shapes()
+    }
+}
+
+/// One output page of a [`RunUpdate`]: a complete prefix of its authored
+/// Emissions/Logs, borrowed from the update, with the cursor and the terminal
+/// data that go with that prefix.
+#[derive(Debug, Clone, Copy)]
+pub struct RunUpdatePage<'a> {
+    update: &'a RunUpdate,
+    events: &'a [RunEvent],
+    has_more: bool,
+}
+
+impl<'a> RunUpdatePage<'a> {
+    /// Defers terminal data to the observation after this nonempty authored page.
+    /// The cursor advances over these records so the next observation can return
+    /// the complete outcome on its own. Empty pages cannot defer terminal data.
+    #[must_use]
+    pub const fn defer_terminal_outcome(mut self) -> Self {
+        if !self.events.is_empty() && self.update.terminal_outcome.is_some() {
+            self.has_more = true;
+        }
+        self
+    }
+
+    /// Returns the stable accepted Run identity.
+    #[must_use]
+    pub const fn run_id(&self) -> &'a RunId {
+        &self.update.run_id
+    }
+
+    /// Returns the current public lifecycle state.
+    #[must_use]
+    pub const fn state(&self) -> RunState {
+        self.update.state
+    }
+
+    /// Returns current actions visible to this Principal. They do not depend
+    /// on the page.
+    #[must_use]
+    pub fn required_actions(&self) -> &'a [crate::RequiredAction] {
+        &self.update.required_actions
+    }
+
+    /// Returns this page's authored Emissions/Logs.
+    #[must_use]
+    pub const fn events(&self) -> &'a [RunEvent] {
+        self.events
+    }
+
+    /// Returns the opaque position after this page and the action snapshot.
+    /// It acknowledges none of the update's records that this page omits.
+    #[must_use]
+    pub fn next_cursor(&self) -> RunCursor {
+        let mut cursor = self.update.next_cursor.clone();
+        if let Some(first_omitted) = self.update.events.get(self.events.len()) {
+            cursor.event_sequence = first_omitted.sequence() - 1;
+        }
+        cursor
+    }
+
+    /// Returns whether authored Emissions/Logs or terminal data remain after this page.
+    #[must_use]
+    pub const fn has_more(&self) -> bool {
+        self.has_more
+    }
+
+    /// Returns the complete terminal data on the final page only.
+    #[must_use]
+    pub const fn terminal_outcome(&self) -> Option<&'a RunTerminalOutcome> {
+        if self.has_more {
+            None
+        } else {
+            self.update.terminal_outcome.as_ref()
+        }
+    }
+
+    /// Returns, with the failure on the final page, the Tool Result Shapes of
+    /// a Run whose Program threw; `None` when it received no Tool Result.
+    #[must_use]
+    pub fn tool_result_shapes(&self) -> Option<&'a crate::ToolResultShapes> {
         match self.terminal_outcome() {
-            Some(RunTerminalOutcome::Failed(_)) if !self.tool_result_shapes.is_empty() => {
-                Some(&self.tool_result_shapes)
+            Some(RunTerminalOutcome::Failed(_)) if !self.update.tool_result_shapes.is_empty() => {
+                Some(&self.update.tool_result_shapes)
             }
             _ => None,
         }
+    }
+
+    /// The Run Trace identifier of a Run that failed, timed out or was
+    /// interrupted, for operator correlation. It grants no authority.
+    #[must_use]
+    pub const fn trace_id(&self) -> Option<&'a coral_telemetry::TraceId> {
+        self.update.trace_id.as_ref()
     }
 }
 
