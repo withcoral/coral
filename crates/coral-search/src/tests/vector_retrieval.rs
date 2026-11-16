@@ -1,5 +1,5 @@
 //! The Tool retriever's vector list on Postgres: what an agent finds by
-//! meaning, and what it never finds that way.
+//! semantic search, and what it never finds that way.
 //!
 //! Every test publishes real Providers, indexes them and lets the Embedder
 //! give each Search Entity a vector, then observes pages through
@@ -62,12 +62,12 @@ const GITHUB: &str = r#"{
 }"#;
 
 #[tokio::test]
-async fn a_query_with_no_word_of_a_tool_finds_it_by_meaning() {
+async fn a_query_with_no_word_of_a_tool_finds_it_by_semantic_search() {
     coral_test_support::database_only!(Postgres);
     let world = World::new().await;
 
     let page = world
-        .search(&world.by_meaning(), "will it rain tomorrow")
+        .search(&world.semantic(), "will it rain tomorrow")
         .await;
 
     assert_eq!(
@@ -90,7 +90,7 @@ async fn an_entity_without_a_current_vector_ranks_by_its_words_alone() {
     coral_test_support::database_only!(Postgres);
     let world = World::new().await;
     let forecast = "coral.providers.weather.getForecast";
-    let by_meaning = world.by_meaning();
+    let semantic = world.semantic();
     // Each case leaves the forecast Tool without a vector of the current
     // revision made from the text its row holds.
     for (case, change) in [
@@ -110,7 +110,7 @@ async fn an_entity_without_a_current_vector_ranks_by_its_words_alone() {
         ),
     ] {
         assert_eq!(
-            paths(&world.search(&by_meaning, "will it rain tomorrow").await).first(),
+            paths(&world.search(&semantic, "will it rain tomorrow").await).first(),
             Some(&forecast),
             "{case}: before the change"
         );
@@ -122,11 +122,11 @@ async fn an_entity_without_a_current_vector_ranks_by_its_words_alone() {
             .await;
 
         assert!(
-            !paths(&world.search(&by_meaning, "will it rain tomorrow").await).contains(&forecast),
-            "{case}: never found by meaning"
+            !paths(&world.search(&semantic, "will it rain tomorrow").await).contains(&forecast),
+            "{case}: never found by semantic search"
         );
         assert_eq!(
-            paths(&world.search(&by_meaning, "forecast").await).first(),
+            paths(&world.search(&semantic, "forecast").await).first(),
             Some(&forecast),
             "{case}: still found by words"
         );
@@ -167,10 +167,10 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
         .await
         .unwrap();
     world.index_and_embed().await;
-    let by_meaning = world.by_meaning();
+    let semantic = world.semantic();
     let rain = || SearchRequest::query(SearchQuery::parse("will it rain tomorrow").unwrap());
 
-    let page = world.request(&by_meaning, &world.principal, rain()).await;
+    let page = world.request(&semantic, &world.principal, rain()).await;
     assert_eq!(
         paths(&page),
         [
@@ -185,7 +185,7 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
         "hydration dropped no Tool: the hidden one was never in the window"
     );
     assert_eq!(
-        paths(&world.request(&by_meaning, &agent, rain()).await),
+        paths(&world.request(&semantic, &agent, rain()).await),
         ["coral.providers.github.issues.list"],
         "the Agent cannot discover the Provider of the caller route"
     );
@@ -193,7 +193,7 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
         paths(
             &world
                 .request(
-                    &by_meaning,
+                    &semantic,
                     &world.principal,
                     rain()
                         .with_provider(&ProviderCallRoot::parse("coral.providers.github").unwrap()),
@@ -242,7 +242,7 @@ async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
         )
         .await;
     world.index_and_embed().await;
-    let by_meaning = world.by_meaning();
+    let semantic = world.semantic();
     let page = |limit: u16, offset: u32| {
         SearchRequest::query(SearchQuery::parse("rain notes").unwrap())
             .with_limit(SearchLimit::parse(limit).unwrap())
@@ -251,7 +251,7 @@ async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
 
     let all = paths(
         &world
-            .request(&by_meaning, &world.principal, page(50, 0))
+            .request(&semantic, &world.principal, page(50, 0))
             .await,
     )
     .into_iter()
@@ -273,7 +273,7 @@ async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
         assert_eq!(
             paths(
                 &world
-                    .request(&by_meaning, &world.principal, page(limit, 0))
+                    .request(&semantic, &world.principal, page(limit, 0))
                     .await
             ),
             all.iter()
@@ -288,7 +288,7 @@ async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
         paged.extend(
             paths(
                 &world
-                    .request(&by_meaning, &world.principal, page(3, offset))
+                    .request(&semantic, &world.principal, page(3, offset))
                     .await,
             )
             .into_iter()
@@ -304,7 +304,7 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
     let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
     let lexical = world.search(&world.by_words(), "rain issues").await;
     assert_eq!(paths(&lexical), ["coral.providers.github.issues.list"]);
-    let fused = world.search(&world.by_meaning(), "rain issues").await;
+    let fused = world.search(&world.semantic(), "rain issues").await;
     if postgres {
         assert_eq!(
             paths(&fused),
@@ -331,7 +331,7 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
         ),
         (
             "the vector table is missing",
-            world.by_meaning(),
+            world.semantic(),
             postgres.then_some("DROP TABLE search_entity_embeddings"),
         ),
     ];
@@ -425,7 +425,7 @@ fn tools_returned(page: &SearchPage) -> u64 {
     clippy::disallowed_methods,
     reason = "the test reads where the developer put the model's files"
 )]
-async fn the_real_model_finds_a_tool_by_meaning() {
+async fn the_real_model_finds_a_tool_by_semantic_search() {
     coral_test_support::database_only!(Postgres);
     let dir = std::env::var_os("CORAL_EMBED_MODEL_DIR")
         .expect("set CORAL_EMBED_MODEL_DIR to a folder with model.onnx and tokenizer.json");
@@ -433,7 +433,7 @@ async fn the_real_model_finds_a_tool_by_meaning() {
     let world = World::with(Arc::new(model)).await;
 
     let page = world
-        .search(&world.by_meaning(), "will it rain tomorrow")
+        .search(&world.semantic(), "will it rain tomorrow")
         .await;
 
     assert_eq!(
@@ -570,7 +570,7 @@ impl World {
     }
 
     /// Discovery whose engine embeds each query with the World's model.
-    fn by_meaning(&self) -> UniversalSearchModule {
+    fn semantic(&self) -> UniversalSearchModule {
         self.with_model(Some(Arc::clone(&self.model)))
     }
 

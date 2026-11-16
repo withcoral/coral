@@ -136,7 +136,7 @@ async fn a_program_pages_a_listing_with_the_offset_it_returned() {
 
 // Catches: a Run whose `coral.search` uses a search module of its own, which
 // never holds the Embedder's model, so a Program never finds a Tool by
-// meaning. What the vector list ranks is tested at its owner, coral-search.
+// semantic search. What the vector list ranks is tested at its owner, coral-search.
 #[tokio::test]
 async fn a_program_search_embeds_its_query_with_the_model_of_the_run_modules_search() {
     // Only on Postgres does a search module hold a model.
