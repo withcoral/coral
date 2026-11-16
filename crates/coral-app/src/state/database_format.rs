@@ -7,7 +7,7 @@ use coral_db::{DatabaseOptions, DatabaseSystem, ReadOnlyDatabase};
 use rusqlite::OpenFlags;
 use sea_query::{Alias, Expr, ExprTrait as _, JoinType, Order, Query, SelectStatement};
 
-use super::migrations::rows_match_known_migration_prefix;
+use super::migrations::rows_agree_with_migration_plan;
 use crate::bootstrap::AppError;
 
 const CURRENT_DATABASE_FORMAT: &str = "coral-state-v1";
@@ -237,7 +237,7 @@ fn validate_ledger_rows(
 ) -> Result<(), AppError> {
     if rows.is_empty() || rows.iter().any(|(_, _, success)| !success) {
         Err(malformed_database_marker_error())
-    } else if rows_match_known_migration_prefix(rows, system) {
+    } else if rows_agree_with_migration_plan(rows, system) {
         Ok(())
     } else {
         Err(unknown_migrations_error())
@@ -296,7 +296,7 @@ fn pre_v1_database_error() -> AppError {
 
 fn unknown_migrations_error() -> AppError {
     AppError::FailedPrecondition(
-        "the Coral database has applied migrations this version of Coral does not recognize: a migration was edited or reordered, or a newer version of Coral created the database; move or remove the database before starting this version of Coral"
+        "the Coral database has applied migrations this version of Coral does not recognize: a migration was edited, removed or reordered; move or remove the database before starting this version of Coral"
             .to_string(),
     )
 }
@@ -323,8 +323,8 @@ mod tests {
     #[tokio::test]
     async fn ledger_problems_are_rejected_without_changing_state() {
         let last = "(SELECT MAX(version) FROM _sqlx_migrations)";
-        // The prefix rule itself is tested in `migrations`; these cases pin
-        // which error each kind of ledger problem reports.
+        // The rule itself is tested in `migrations`; these cases pin which
+        // error each kind of ledger problem reports.
         let cases = [
             (
                 "edited migration",
@@ -336,13 +336,10 @@ mod tests {
                 "does not recognize",
             ),
             (
-                "migration from a newer Coral",
-                format!(
-                    "INSERT INTO _sqlx_migrations \
-                     (version, description, success, checksum, execution_time) \
-                     SELECT version + 1, 'from a newer Coral', success, checksum, execution_time \
-                     FROM _sqlx_migrations WHERE version = {last}"
-                ),
+                "removed migration",
+                "DELETE FROM _sqlx_migrations \
+                 WHERE version = (SELECT MIN(version) FROM _sqlx_migrations)"
+                    .to_string(),
                 "does not recognize",
             ),
             (
@@ -377,6 +374,43 @@ mod tests {
                 "{label}: ledger changed"
             );
         }
+    }
+
+    /// A rolling upgrade, or a rollback, starts an older Coral after a newer
+    /// one migrated the database.
+    #[tokio::test]
+    async fn a_coral_older_than_its_database_starts_on_it() {
+        use sqlx::SqlSafeStr as _;
+        let last = coral_db::migration_plan()
+            .for_system(coral_db::DatabaseSystem::Sqlite)
+            .iter()
+            .map(|migration| migration.version)
+            .max()
+            .expect("at least one embedded migration");
+        let newer = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(
+            last + 1,
+            "from a newer Coral".into(),
+            sqlx::migrate::MigrationType::Simple,
+            "CREATE TABLE newer_coral_fixture (id TEXT PRIMARY KEY)".into_sql_str(),
+            false,
+        )]);
+        let fixture = TestDatabase::new(&newer)
+            .await
+            .expect("apply a newer Coral's migrations");
+        let before = ledger_rows(&fixture).await;
+
+        validate_database_state(fixture.options())
+            .await
+            .expect("recognize a newer Coral's database");
+        let reported = std::sync::Mutex::new(Vec::new());
+        super::super::migrations::migrate_current(&fixture.database(), &|progress| {
+            reported.lock().unwrap().push(format!("{progress:?}"));
+        })
+        .await
+        .expect("start on a newer Coral's database");
+
+        assert_eq!(*reported.lock().unwrap(), ["Ahead { steps: 1 }"]);
+        assert_eq!(ledger_rows(&fixture).await, before);
     }
 
     async fn ledger_rows(fixture: &TestDatabase) -> Vec<(i64, Vec<u8>)> {

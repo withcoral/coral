@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use sqlx::migrate::{Migrate, Migration, Migrator};
+use sqlx::migrate::{Migrate, MigrateError, Migration, Migrator};
 use sqlx::{Connection as _, SqliteConnection};
 
 use crate::backend::{DatabaseBackend, DatabaseSystem};
@@ -47,7 +47,12 @@ pub struct MigrationPlan {
 impl MigrationPlan {
     /// Pairs the Postgres and `SQLite` migrations of one plan.
     #[must_use]
-    pub const fn new(postgres: Migrator, sqlite: Migrator) -> Self {
+    pub fn new(mut postgres: Migrator, mut sqlite: Migrator) -> Self {
+        // `SQLx` refuses every applied version a plan lacks. Coral decides
+        // that itself, so that an older Coral runs on a database that a newer
+        // one migrated: see `steps_from_a_newer_coral`.
+        postgres.set_ignore_missing(true);
+        sqlite.set_ignore_missing(true);
         Self { postgres, sqlite }
     }
 
@@ -86,6 +91,13 @@ pub enum MigrationProgress<'a> {
         /// How many steps this call is about to apply.
         pending: usize,
     },
+    /// A newer Coral applied `steps` steps that this plan lacks, and this
+    /// plan has none to apply. Reported once, and then nothing else is: this
+    /// Coral is the older release of a rolling upgrade or of a rollback.
+    Ahead {
+        /// How many applied steps this plan lacks.
+        steps: usize,
+    },
     /// A step is about to run.
     Started {
         /// The step's version.
@@ -112,7 +124,9 @@ pub type MigrationReport<'a> = &'a (dyn Fn(MigrationProgress<'_>) + Send + Sync)
 impl Database {
     /// Validates and applies this database system's half of `plan`.
     ///
-    /// Applied versions and checksums are validated on every call. Migration
+    /// Applied versions and checksums are validated on every call. A database
+    /// may hold steps above the plan's last one: a newer Coral applied them,
+    /// and its migrations keep an older Coral working. Migration
     /// SQL must name every object directly; callers must not use
     /// `IF NOT EXISTS` to conceal unexpected schema state.
     ///
@@ -125,8 +139,8 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error for changed or missing applied migrations, migration
-    /// SQL failure, a foreign key that a `SQLite` migration left without its
+    /// Returns an error for a changed applied migration, an applied migration
+    /// that the plan lacks and no newer Coral explains, migration SQL failure, a foreign key that a `SQLite` migration left without its
     /// row, or a backend connection failure.
     pub async fn migrate(&self, plan: &MigrationPlan) -> Result<(), Error> {
         self.migrate_reporting(plan, &|_| {}).await
@@ -170,7 +184,7 @@ async fn apply_pending<C: Migrate>(
     report: MigrationReport<'_>,
 ) -> Result<bool, Error> {
     // A target below every version creates the ledger if the database has
-    // none, refuses one that this plan cannot continue, and applies nothing.
+    // none, refuses one that holds a failed step, and applies nothing.
     migrator
         .run_direct(Some(i64::MIN), connection, false)
         .await?;
@@ -184,6 +198,14 @@ async fn apply_pending<C: Migrate>(
                 && !applied.iter().any(|row| row.version == migration.version)
         })
         .collect();
+    let ahead = steps_from_a_newer_coral(
+        migrator,
+        applied.iter().map(|row| row.version),
+        pending.is_empty(),
+    )?;
+    if ahead > 0 {
+        report(MigrationProgress::Ahead { steps: ahead });
+    }
     if !pending.is_empty() {
         report(MigrationProgress::Pending {
             applied: applied.len(),
@@ -209,6 +231,30 @@ async fn apply_pending<C: Migrate>(
     // A run with a target checks the checksums up to it. This one checks all.
     migrator.run_direct(None, connection, false).await?;
     Ok(!pending.is_empty())
+}
+
+/// Counts the applied versions that `migrator` lacks, when a newer Coral
+/// explains every one of them.
+///
+/// A newer Coral's plan is this plan and then more steps, so it leaves every
+/// step of this plan applied and its own above them. Any other unknown version
+/// is a ledger this plan cannot continue: a step below the plan's last was
+/// removed or renumbered, or the plan still has a step to apply beneath a
+/// version it does not know.
+fn steps_from_a_newer_coral(
+    migrator: &Migrator,
+    applied: impl Iterator<Item = i64>,
+    plan_is_applied: bool,
+) -> Result<usize, MigrateError> {
+    let last_planned = migrator.iter().map(|migration| migration.version).max();
+    let mut ahead = 0;
+    for version in applied.filter(|version| !migrator.version_exists(*version)) {
+        if !plan_is_applied || last_planned.is_some_and(|last| version < last) {
+            return Err(MigrateError::VersionMissing(version));
+        }
+        ahead += 1;
+    }
+    Ok(ahead)
 }
 
 /// Applies `migrator` with foreign keys off, then checks every foreign key if

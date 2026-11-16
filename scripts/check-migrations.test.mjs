@@ -32,6 +32,7 @@ async function repository(t, version, files = { [migration]: 'CREATE TABLE works
   git('commit', '--quiet', '-m', 'base')
   git('switch', '--quiet', '-c', 'change')
   return {
+    git,
     write,
     remove: (path) => rm(join(root, path)),
     check: () => spawnSync(script, ['main'], { cwd: root, encoding: 'utf8' }),
@@ -112,6 +113,46 @@ for (const [name, change] of Object.entries(accepted)) {
 test('a checkout that starts a ledger main does not have may begin at version 0', async (t) => {
   const repo = await repository(t, '1.0.0-beta.11', {})
   await repo.write('crates/coral-db/migrations/0000_state_format.sql', runs)
+  const result = repo.check()
+  assert.equal(result.status, 0, result.stderr)
+})
+
+// The statements and the declarations are tested in
+// migration-compatibility.test.mjs. These cases cover what only the script
+// does: it runs the check, reads the release tags and skips the SQLite halves.
+const next = 'crates/coral-db/migrations/0010_runs.sql'
+const drop = 'ALTER TABLE workspaces DROP COLUMN name;\n'
+
+test('a checkout whose migration can break an older release fails', async (t) => {
+  const repo = await repository(t, '1.0.0-beta.11')
+  await repo.write(next, drop)
+  const result = repo.check()
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /0010_runs\.sql can break a Coral release/)
+  assert.match(result.stderr, /drops a column/)
+})
+
+test('a removal that names a release on main passes, and one that names another tag fails', async (t) => {
+  const repo = await repository(t, '1.0.0-beta.11')
+  repo.git('tag', 'v1.0.0')
+  await repo.write(next, `-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`)
+  assert.equal(repo.check().status, 0)
+
+  await repo.write(next, `-- rolling-upgrade: unused since v9.9.9. No query names the column.\n${drop}`)
+  const result = repo.check()
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /names v9\.9\.9, which is not a release/)
+})
+
+test('a table rebuild in the SQLite half of an additive step passes', async (t) => {
+  const repo = await repository(t, '1.0.0-beta.11')
+  await repo.write('crates/coral-db/migrations/postgres/0010_runs.sql', 'ALTER TABLE workspaces ADD COLUMN owner TEXT;\n')
+  await repo.write(
+    'crates/coral-db/migrations/sqlite/0010_runs.sql',
+    'CREATE TABLE workspaces_new (id TEXT PRIMARY KEY, owner TEXT);\n' +
+      'INSERT INTO workspaces_new (id) SELECT id FROM workspaces;\n' +
+      'DROP TABLE workspaces;\nALTER TABLE workspaces_new RENAME TO workspaces;\n',
+  )
   const result = repo.check()
   assert.equal(result.status, 0, result.stderr)
 })

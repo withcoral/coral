@@ -175,6 +175,9 @@ mod tests {
                         coral_db::MigrationProgress::Pending { applied, pending } => {
                             format!("{applied} applied, {pending} pending")
                         }
+                        coral_db::MigrationProgress::Ahead { steps } => {
+                            format!("{steps} ahead")
+                        }
                         coral_db::MigrationProgress::Started { version, .. } => {
                             format!("started {version}")
                         }

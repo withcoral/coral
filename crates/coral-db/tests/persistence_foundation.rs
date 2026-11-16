@@ -357,7 +357,10 @@ async fn a_migration_run_reports_each_step_it_applies() {
         (3, REFUSED, REFUSED),
     ]);
 
-    let cases: [(&str, &MigrationPlan, bool, &[&str]); 3] = [
+    // An older Coral holds the first step alone.
+    let older = fixture_plan(&[(1, LINKED_TABLES, LINKED_TABLES)]);
+
+    let cases: [(&str, &MigrationPlan, bool, &[&str]); 4] = [
         (
             "a new database",
             &two_steps,
@@ -371,6 +374,12 @@ async fn a_migration_run_reports_each_step_it_applies() {
             ],
         ),
         ("a database at its plan", &two_steps, true, &[]),
+        (
+            "a database that a newer Coral migrated",
+            &older,
+            true,
+            &["1 ahead"],
+        ),
         (
             "a step that fails",
             &with_refused_step,
@@ -386,6 +395,7 @@ async fn a_migration_run_reports_each_step_it_applies() {
                     MigrationProgress::Pending { applied, pending } => {
                         format!("{applied} applied, {pending} pending")
                     }
+                    MigrationProgress::Ahead { steps } => format!("{steps} ahead"),
                     MigrationProgress::Started {
                         version,
                         description,
@@ -409,6 +419,68 @@ async fn a_migration_run_reports_each_step_it_applies() {
                 "{case}: {result:?}"
             );
         }
+    }
+}
+
+/// An older Coral runs on a database that a newer one migrated. A newer
+/// Coral's plan is the older plan and then more steps, so any other step the
+/// plan lacks is a ledger that the plan must not continue.
+#[tokio::test]
+async fn an_applied_step_the_plan_lacks_is_refused_unless_a_newer_coral_explains_it() {
+    const FIRST: &str = "CREATE TABLE fixture_first (id TEXT NOT NULL PRIMARY KEY);";
+    const SECOND: &str = "CREATE TABLE fixture_second (id TEXT NOT NULL PRIMARY KEY);";
+    const THIRD: &str = "CREATE TABLE fixture_third (id TEXT NOT NULL PRIMARY KEY);";
+    let applied = fixture_plan(&[(10, FIRST, FIRST), (30, SECOND, SECOND)]);
+    let fixture = TestDatabase::new(&applied).await.unwrap();
+    let database = fixture.database();
+    let ledger = || async {
+        let versions: Vec<(i64,)> = database
+            .fetch_all(
+                Query::select()
+                    .column(sea_query::Alias::new("version"))
+                    .from(sea_query::Alias::new("_sqlx_migrations"))
+                    .order_by(sea_query::Alias::new("version"), sea_query::Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .unwrap();
+        versions
+    };
+
+    database
+        .migrate(&fixture_plan(&[(10, FIRST, FIRST)]))
+        .await
+        .expect("an older Coral runs on a newer Coral's database");
+
+    let cases = [
+        (
+            "the plan has a step to apply beneath it",
+            fixture_plan(&[(10, FIRST, FIRST), (20, THIRD, THIRD)]),
+            30,
+        ),
+        (
+            "the plan has a step to apply above it",
+            fixture_plan(&[(10, FIRST, FIRST), (40, THIRD, THIRD)]),
+            30,
+        ),
+        (
+            "it sits below the plan's last step",
+            fixture_plan(&[(30, SECOND, SECOND)]),
+            10,
+        ),
+    ];
+    for (case, plan, unknown) in cases {
+        let result = database.migrate(&plan).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(Error::Migration(sqlx::migrate::MigrateError::VersionMissing(version)))
+                    if version == unknown
+            ),
+            "{case}: {result:?}"
+        );
+        assert_eq!(ledger().await, [(10,), (30,)], "{case}: ledger changed");
     }
 }
 

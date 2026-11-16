@@ -202,6 +202,31 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   earlier `main` must keep booting.
   `scripts/check-migrations.sh` checks this.
   Keep the fence that rejects state written by Coral 0.x.
+- A rolling upgrade runs two Coral releases on one database: the newer one
+  migrates at boot while the older one still serves. Two rules follow.
+  - An older release keeps working on a newer schema. Keep a migration
+    additive: a new table, a new index, a new column that is nullable or has a
+    default. To drop, rename, retype or tighten what a release uses, stagger
+    the change across releases. One release adds the new shape and still
+    writes the old one, because the release before it reads the old one. A
+    later release, which follows one that no longer uses the old shape,
+    migrates it away. Stored values follow the same rule: a release reads a
+    new value, such as a new `kind`, before any release writes it, and no
+    migration rewrites rows into a form the previous release cannot read.
+    An older Coral also starts on a newer database: the ledger may hold
+    steps above the plan's last one, and no others that the plan lacks.
+  - A newer release never runs on an older schema. Coral applies its whole
+    plan before it serves, and code relies on that schema: do not probe for a
+    table or a column, and do not keep a path for a database that lacks a
+    migration.
+
+  `scripts/check-migrations.sh` names each statement in a new migration that
+  can break an older release. It reads the shared files and the Postgres
+  halves. A migration that keeps such a statement declares why in a comment:
+  `-- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>`, or
+  `-- rolling-upgrade: compatible. <why>` when the statement breaks nothing,
+  such as a wider CHECK. The check reads SQL, not stored values: keep the
+  values rule yourself.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot

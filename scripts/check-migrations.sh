@@ -4,10 +4,15 @@
 # adds one where no ledger reads it. Databases record applied migrations by
 # checksum, so either change breaks a database created from an earlier main.
 #
+# Also fails when a migration it adds can break an older Coral release that
+# still runs during a rolling upgrade, unless the migration declares why that
+# release keeps working. scripts/migration-compatibility.mjs has the rules.
+#
 #   scripts/check-migrations.sh [base-ref]   # default: origin/main
 set -euo pipefail
 
 base_ref="${1:-origin/main}"
+scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$(git rev-parse --show-toplevel)"
 
 if ! git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
@@ -93,6 +98,22 @@ done || true)"
 if [ -n "$pgvector" ]; then
   echo "check-migrations: these migrations name pgvector, which a Postgres without it cannot run; change coral_search::prepare_vector_table instead:" >&2
   echo "$pgvector" | sed 's/^/  /' >&2
+  status=1
+fi
+
+# A rolling upgrade runs the previous release while this one migrates, so an
+# older release must keep working on the schema a new migration leaves. The
+# SQLite half of a step is the same step, often written as a table rebuild,
+# so the shared files and the Postgres halves stand for both.
+releases="$(git tag --merged "$fork_point" --list 'v[0-9]*' | tr '\n' ' ')"
+compatibility=()
+while IFS= read -r file; do
+  if [ -n "$file" ] && [[ "$file" != "$chain/sqlite/"* ]]; then
+    compatibility+=("$file")
+  fi
+done <<<"$added"
+if [ "${#compatibility[@]}" -gt 0 ] &&
+  ! node "$scripts/migration-compatibility.mjs" --releases "$releases" "${compatibility[@]}"; then
   status=1
 fi
 
