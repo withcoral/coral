@@ -66,8 +66,10 @@ impl WriteProbe {
     /// # Panics
     ///
     /// Panics when that write ended and never was at `point`: a write that
-    /// fails early skips the points after its failure.
+    /// fails early skips the points after its failure. Panics when `write`
+    /// is zero, which names no write and would wait forever.
     pub(crate) async fn reached(&self, write: usize, point: WritePoint) {
+        assert!(write >= 1, "writes count from one");
         let was_there = |progress: &Progress| match point {
             WritePoint::Ended => progress.ended,
             point => progress.at >= Some(point),
@@ -187,5 +189,15 @@ mod tests {
         let probe = WriteProbe::new();
         drop(probe.starts());
         probe.reached(1, WritePoint::WaitingForWriter).await;
+    }
+
+    // Catches: a wait on write number zero, which names no write, waiting
+    // forever instead of failing the test that asked for it.
+    #[tokio::test]
+    #[should_panic(expected = "writes count from one")]
+    async fn a_wait_on_write_number_zero_is_refused() {
+        let probe = WriteProbe::new();
+        drop(probe.starts());
+        probe.reached(0, WritePoint::Ended).await;
     }
 }
