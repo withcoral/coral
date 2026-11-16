@@ -314,8 +314,8 @@ pub(crate) struct HeldRun {
 /// no Program started, even by a panic.
 pub(crate) struct HeldUnit(Arc<Runs>);
 
-/// One Run stream a retiring Run Executor waits for, until the Run's stream
-/// task drops it.
+/// One Run a retiring Run Executor waits for, until it ends here, across its
+/// reopened streams.
 pub(crate) struct HeldRunStream(Arc<Runs>);
 
 impl HeldRunStream {

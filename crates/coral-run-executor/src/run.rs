@@ -15,7 +15,7 @@ use crate::link::{Backoff, Client, End, HeldRun, HeldRunStream, HeldUnit, compat
 use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
-use host::{Resume, RunHost};
+use host::{Reconnect, RunHost};
 
 /// The Applied cap: while more output bytes than this are above the
 /// committed watermark, the Program's next request waits. Emissions and Logs
@@ -106,8 +106,10 @@ impl std::fmt::Display for RunId {
     }
 }
 
-/// Coral mints every Run id in a form `coral_identifier::validate` accepts,
-/// and [`RunId::new`] keeps no text of another form.
+/// The id comes from Coral's own `Taken`, on a link this Run Executor
+/// dialed and Coral welcomed. Coral mints every Run id in a form
+/// `coral_identifier::validate` accepts, and [`RunId::new`] keeps no text of
+/// another form.
 impl safe::Identifier for RunId {}
 
 /// A Run's Program, once its package loaded here.
@@ -308,20 +310,21 @@ impl Run {
             // Loaded here before: the digest names the package, so the
             // load is skipped.
             (run_response::Message::Package(package), Some(program)) => {
-                let resumed = compatible(package.protocol_level)
+                let reconnected = compatible(package.protocol_level)
                     && package.sha256 == program.sha256
-                    && program.host.resume(outbound, &Resume::Package);
-                if !resumed {
+                    && program.host.reconnect(outbound, &Reconnect::Package);
+                if !reconnected {
                     tracing::warn!(
                         coral.run.id = safe::id(&self.id),
-                        "a package answered a reopened Run stream that it cannot resume; closing it"
+                        "a reopened Run stream sent a package that does not fit the loaded \
+                         Program; closing it"
                     );
                 }
-                resumed
+                reconnected
             }
             (run_response::Message::Committed(committed), Some(program)) => program
                 .host
-                .resume(outbound, &Resume::Committed(committed.request_number)),
+                .reconnect(outbound, &Reconnect::Committed(committed.request_number)),
             // `Ended`, a `Committed` for a Run that never loaded here, or a
             // message that answers no `Open`.
             _ => false,

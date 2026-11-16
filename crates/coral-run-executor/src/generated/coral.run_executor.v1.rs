@@ -887,8 +887,8 @@ pub struct Failure {
 /// the call is decided. An Invoke and a Complete get `result_json`,
 /// `coral_failure`, `upstream_outcome` or `fatal`. A Perform gets `permitted`,
 /// `coral_failure` or `fatal`. Any other outcome breaks the protocol. A
-/// second answer to a resent request, still above the watermark, repeats the
-/// first and changes nothing.
+/// second answer to a request, committed or not, repeats the first and
+/// changes nothing; an answer to a request never sent breaks the protocol.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InvocationResult {
     /// The request number it answers.

@@ -81,12 +81,10 @@ struct Held {
     /// Its weight under the Applied cap: its output bytes, which are zero
     /// for `Finish` and for a request Coral answers.
     weight: usize,
-    /// Coral answered it, so an answer to its resend repeats that one.
-    answered: bool,
 }
 
 /// What answered `Open` on a reopened Run stream.
-pub(super) enum Resume {
+pub(super) enum Reconnect {
     /// The package again: the Run has not started.
     Package,
     /// The highest request number committed.
@@ -108,12 +106,7 @@ impl State {
     fn hold(&mut self, number: u64, kind: request::Kind, weight: usize) {
         self.transmit(numbered(number, kind.clone()));
         self.unconfirmed_bytes = self.unconfirmed_bytes.saturating_add(weight);
-        let held = Held {
-            kind,
-            weight,
-            answered: false,
-        };
-        self.unconfirmed.insert(number, held);
+        self.unconfirmed.insert(number, Held { kind, weight });
     }
 
     /// Drops the requests the committed watermark at `number` covers.
@@ -215,16 +208,20 @@ impl RunHost {
     /// package already loaded, then resends every request above the
     /// watermark in order. `false` when a package answers a Run that
     /// started, which breaks the protocol.
-    pub(super) fn resume(&self, sink: mpsc::UnboundedSender<RunRequest>, answer: &Resume) -> bool {
+    pub(super) fn reconnect(
+        &self,
+        sink: mpsc::UnboundedSender<RunRequest>,
+        answer: &Reconnect,
+    ) -> bool {
         let mut state = self.state();
         match answer {
-            Resume::Package if state.started => return false,
+            Reconnect::Package if state.started => return false,
             // A package still loading sends `Loaded` on this sink itself.
-            Resume::Package => {}
-            Resume::Committed(number) => state.drop_covered(*number),
+            Reconnect::Package => {}
+            Reconnect::Committed(number) => state.drop_covered(*number),
         }
         state.sink = Some(sink);
-        if matches!(answer, Resume::Package) && state.loaded {
+        if matches!(answer, Reconnect::Package) && state.loaded {
             state.transmit(run_request::Message::Loaded(crate::wire::v1::Loaded {}));
         }
         for (number, held) in &state.unconfirmed {
@@ -254,7 +251,7 @@ impl RunHost {
 
     /// Settles the request `result` answers, and counts its bytes against
     /// the Run Output Budget. `false` when it breaks the protocol: no
-    /// outcome, no request waits for it while the Program runs, a permit for
+    /// outcome, an answer to a request never sent, a permit for
     /// an Invoke or a Complete, or a value or an Upstream Outcome for a
     /// Perform.
     pub(super) fn invocation_result(&self, result: InvocationResult) -> bool {
@@ -297,13 +294,9 @@ impl RunHost {
         };
         let mut state = self.state();
         let Some(awaiting) = state.invocations.remove(&result.number) else {
-            // Coral may answer a resent request again; its first answer
-            // settled it.
-            let repeat = state
-                .unconfirmed
-                .get(&result.number)
-                .is_some_and(|held| held.answered);
-            return repeat || state.stopped;
+            // Coral may answer a request again after a reconnect, committed
+            // or not; its first answer settled it.
+            return (1..=state.last).contains(&result.number) || state.stopped;
         };
         let reply = match (awaiting, answer) {
             // Answers of the wrong kind. A Perform dispatches nothing, so no
@@ -317,9 +310,6 @@ impl RunHost {
             (Awaiting::Value(sender), Err(error)) => Reply::Value(sender, Err(error)),
             (Awaiting::Permit(sender), Err(error)) => Reply::Permit(sender, Err(error)),
         };
-        if let Some(held) = state.unconfirmed.get_mut(&result.number) {
-            held.answered = true;
-        }
         let bytes = usize::try_from(result.bytes).unwrap_or(usize::MAX);
         let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
