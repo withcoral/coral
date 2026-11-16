@@ -37,6 +37,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-embed.workspace = true
 coral-tools = { workspace = true, features = ["test-fixtures"] }
 tracing-subscriber.workspace = true
 coral-credentials.workspace = true

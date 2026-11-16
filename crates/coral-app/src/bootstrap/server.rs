@@ -616,6 +616,7 @@ pub struct RunningServer {
     /// The expired-lease sweep, one of `passes`: it stops before the Run
     /// drain, and the others after.
     run_recovery: AbortHandle,
+    search: coral_search::UniversalSearchModule,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
     search_model: Option<SearchModel>,
@@ -774,6 +775,14 @@ impl RunningServer {
     #[must_use]
     pub fn search_index(&self) -> coral_search::SearchIndex {
         self.search_index.clone()
+    }
+
+    /// Shares the process's one search module with companion runtime
+    /// composition, so every surface's search embeds its query with the
+    /// Embedder's model.
+    #[must_use]
+    pub fn search(&self) -> coral_search::UniversalSearchModule {
+        self.search.clone()
     }
 
     /// The state of the search model's files. `None` when `[search]
@@ -1043,9 +1052,9 @@ pub(crate) async fn start_server(
             local_run_executors.clone(),
         ))
     };
-    // The one search module of the process. Its engine embeds queries with
-    // the Embedder's model, so a query waits for at most the one document
-    // the Embedder runs.
+    // The one search module of the process: Runs, gRPC and MCP share it. Its
+    // engine embeds queries with the Embedder's model, so a query waits for at
+    // most the one document the Embedder runs.
     let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
     let search = match &embedder_model {
         Some((_, model)) => search.with_model(model.clone()),
@@ -1094,7 +1103,7 @@ pub(crate) async fn start_server(
                 search.clone(),
                 search_index.clone(),
             ),
-            provider_readiness: search,
+            provider_readiness: search.clone(),
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             access_lifecycle: coral_administration::AccessLifecycleModule::new(
                 database.clone(),
@@ -1220,6 +1229,7 @@ pub(crate) async fn start_server(
         readiness,
         passes,
         run_recovery,
+        search,
         search_index,
         search_reconcile,
         search_model,

@@ -357,6 +357,13 @@ async fn nearest_current_tools(
         window + 1,
     )
     .await?;
+    // No vector in scope: no row to look up.
+    if nearest.is_empty() {
+        return Ok(VectorList {
+            entries: Vec::new(),
+            has_more: false,
+        });
+    }
     let has_more = nearest.len() > window;
     nearest.truncate(window);
     let doc_ids = nearest

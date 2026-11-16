@@ -497,6 +497,7 @@ async fn start_mcp_http(
     let readiness = grpc.readiness().probe();
     let modules = mcp_modules(
         grpc.database(),
+        grpc.search(),
         grpc.search_index(),
         grpc.runs(),
         grpc.compiler(),
@@ -527,11 +528,12 @@ async fn start_mcp_http(
 }
 
 /// Composes MCP domain Modules without selecting authentication or Principal.
-/// `search_index`, `runs` and `compiler` are the running server's, so the
-/// process has one index, one set of Run Owners and one warm compiler that
-/// every surface reaches.
+/// `search`, `search_index`, `runs` and `compiler` are the running server's,
+/// so the process has one search module, one index, one set of Run Owners and
+/// one warm compiler that every surface reaches.
 fn mcp_modules(
     database: Arc<Database>,
+    search: UniversalSearchModule,
     search_index: SearchIndex,
     runs: RunModule,
     compiler: Arc<dyn coral_run_executor::CompilerClient>,
@@ -540,7 +542,6 @@ fn mcp_modules(
 ) -> McpModules {
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
-    let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let private_tools = PrivateToolModule::with_compiler_client(
         database,
         workspaces.clone(),

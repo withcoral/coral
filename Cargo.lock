@@ -1032,6 +1032,7 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
+ "coral-embed",
  "coral-identifier",
  "coral-outbound",
  "coral-policy",

@@ -3,8 +3,10 @@
 //!
 //! Every test publishes real Providers, indexes them and lets the Embedder
 //! give each Search Entity a vector, then observes pages through
-//! `UniversalSearchModule::search`. The model is a fixed-vector stand-in,
-//! [`Meanings`], so no test but the one marked `ignore` loads the real one.
+//! `UniversalSearchModule::search`; one test reads the vector query's
+//! `EXPLAIN` plan instead. One test also runs on SQLite, where the page
+//! stays lexical. The model is a fixed-vector stand-in, [`Meanings`], so no
+//! test but the one marked `ignore` loads the real one.
 
 use std::sync::Arc;
 
