@@ -553,6 +553,13 @@ jobs:
           ref: ${{ needs.validate.outputs.commit-sha }}
           persist-credentials: false
 
+      # The source-only checks of the Reef Dockerfile, before anything builds.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/reef/.node-version
+          package-manager-cache: false
+      - run: make reef-image-checks
+
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io

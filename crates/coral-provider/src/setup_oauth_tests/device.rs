@@ -126,7 +126,10 @@ async fn device_publication_requires_a_client_even_when_everyone_connects_later(
         None,
     )
     .await;
-    assert!(device.confirmation.errors.is_empty());
+    assert_eq!(
+        device.confirmation.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let result = device
         .harness
         .providers
@@ -204,7 +207,10 @@ async fn device_configuration_replay_ignores_inapplicable_pkce() {
     let device =
         confirmed_device_setup(&api, "user:device-replay", |_| {}, Some(application())).await;
     let confirmed = &device.confirmation;
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let replay = device
         .harness
         .accounts
@@ -443,7 +449,10 @@ async fn pending_device_setup(
         ),
     )
     .await;
-    assert!(device.confirmation.errors.is_empty());
+    assert_eq!(
+        device.confirmation.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     device
         .harness
         .accounts

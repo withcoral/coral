@@ -58,7 +58,10 @@ async fn completion_feedback_is_exact_task_detail_with_no_owner_exception_for_us
             .unwrap()
             .into_inner();
         assert_eq!(exact.feedback.as_deref(), Some("Private completion 🪸"));
-        assert!(exact.interactions.is_empty());
+        assert_eq!(
+            exact.interactions,
+            [] as [coral_grpc::coral::management::v1::ActivityInteraction; 0]
+        );
         let rows = client
             .browse_activity_roots(request(
                 wire::BrowseActivityRootsRequest::default(),

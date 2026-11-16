@@ -34,8 +34,7 @@ fn reference_form(form: &ReferenceForm) -> wire::SecretReferenceForm {
         key_label: form
             .key
             .as_ref()
-            .map(|key| key.label.clone().into_owned())
-            .unwrap_or_default(),
+            .map_or_default(|key| key.label.clone().into_owned()),
         key_required: form.key.as_ref().is_some_and(|key| key.required),
     }
 }

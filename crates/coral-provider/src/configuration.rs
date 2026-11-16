@@ -98,8 +98,7 @@ impl SetupConfigurationReview {
     #[must_use]
     pub fn allowed_routes(&self) -> Vec<crate::CredentialRoute> {
         self.confirmed_contract()
-            .map(crate::CredentialRoute::fitting)
-            .unwrap_or_default()
+            .map_or_default(crate::CredentialRoute::fitting)
     }
 }
 
@@ -177,8 +176,7 @@ impl ProviderModule {
         }
         let servers = review(self.outbound_policy, &loaded)?
             .document
-            .map(|document| document.suggested.servers)
-            .unwrap_or_default();
+            .map_or_default(|document| document.suggested.servers);
         Ok(ProviderConfiguration { servers, ..saved })
     }
 

@@ -145,12 +145,12 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
             .await;
         if remove {
             published.unwrap_err();
-            assert!(
+            assert_eq!(
                 providers
                     .inspect_providers(&owner, workspace.id())
                     .await
-                    .unwrap()
-                    .is_empty()
+                    .unwrap(),
+                [] as [coral_provider::Provider; 0]
             );
         } else {
             let publication = published.unwrap().skip_search();

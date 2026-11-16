@@ -36,7 +36,7 @@ async fn one_reconcile_pass_indexes_a_private_tool_a_notification_missed_and_a_s
             .into_iter()
             .map(|row| (row.doc_id, row.fingerprint))
             .collect::<Vec<_>>(),
-        [(saved.id().to_string(), "1.2".to_string())]
+        [(saved.id().to_string(), "1.3".to_string())]
     );
     let stamps = indexed_at(&fixture).await;
     index.reconcile().await;
@@ -79,7 +79,7 @@ async fn a_pass_reindexes_a_private_tool_whose_fingerprint_differs_from_its_revi
             .into_iter()
             .map(|row| (row.description, row.fingerprint))
             .collect::<Vec<_>>(),
-        [("Revision 10".to_string(), "10.2".to_string())]
+        [("Revision 10".to_string(), "10.3".to_string())]
     );
 }
 
@@ -156,7 +156,10 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
         make_retries_due(&fixture).await;
         index.reconcile().await;
         assert_eq!(indexed_paths(&fixture).await, ["answer"]);
-        assert!(private_tool_states(&fixture).await.is_empty());
+        assert_eq!(
+            private_tool_states(&fixture).await,
+            [] as [command_tests::search_index_tests::PrivateToolState; 0]
+        );
     }
 }
 
@@ -246,7 +249,7 @@ async fn a_notified_save_indexes_the_private_tool_and_a_save_over_keeps_one_row(
             provider_name: String::new(),
             searchable_text: "input label string result find number triageopenissues".to_string(),
             deprecated: false,
-            fingerprint: "1.2".to_string(),
+            fingerprint: "1.3".to_string(),
         }]
     );
     let found = fixture
@@ -285,7 +288,7 @@ async fn a_notified_save_indexes_the_private_tool_and_a_save_over_keeps_one_row(
         [(
             first.id().to_string(),
             "Find open bugs".to_string(),
-            "2.2".to_string()
+            "2.3".to_string()
         )]
     );
 }
@@ -379,7 +382,10 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
             .unwrap();
         index.settled().await;
         assert_eq!(private_tool_rows(&fixture).await.len(), 1);
-        assert!(private_tool_states(&fixture).await.is_empty());
+        assert_eq!(
+            private_tool_states(&fixture).await,
+            [] as [command_tests::search_index_tests::PrivateToolState; 0]
+        );
     }
 }
 

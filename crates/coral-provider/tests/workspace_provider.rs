@@ -91,7 +91,10 @@ async fn setup_from(
         )
         .await
         .expect("confirm fixture configuration");
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     providers
         .get_setup(actor, workspace, setup.id())
         .await
@@ -315,10 +318,9 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         "forecast",
         "disablement does not hide administrative catalog inspection"
     );
-    assert!(
-        searchable_providers(&database, workspace.id())
-            .await
-            .is_empty()
+    assert_eq!(
+        searchable_providers(&database, workspace.id()).await,
+        [] as [coral_provider::ProviderCallRoot; 0]
     );
     let after_disable = providers
         .list_lifecycle_events(&actor, workspace.id())
@@ -411,12 +413,12 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .await
         .unwrap()
         .skip_search();
-    assert!(
+    assert_eq!(
         providers
             .inspect_providers(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_provider::Provider; 0]
     );
     let retained_after_deletion = async || {
         let mut tx = database.begin().await.unwrap();
@@ -807,13 +809,16 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
         .list_user_lifecycle_events(&context(&actor), workspace.id())
         .await
         .unwrap();
-    assert!(!private_events.is_empty());
-    assert!(
+    assert_ne!(
+        private_events,
+        [] as [coral_provider::AdministrativeLifecycleEvent; 0]
+    );
+    assert_eq!(
         accounts
             .list_user_lifecycle_events(&context(&other), workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_provider::AdministrativeLifecycleEvent; 0]
     );
     assert!(
         providers
@@ -1196,12 +1201,12 @@ async fn display_names_reject_control_and_format_characters() {
         matches!(rejected, Err(coral_provider::Error::InvalidInput(_))),
         "{rejected:?}"
     );
-    assert!(
+    assert_eq!(
         providers
             .inspect_providers(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_provider::Provider; 0]
     );
     assert_eq!(
         providers

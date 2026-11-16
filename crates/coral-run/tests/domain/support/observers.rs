@@ -627,7 +627,7 @@ impl ExecutionObserver for CommitProbe {
 
     async fn chunk_commit_unanswered(&self) -> bool {
         self.unanswered
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
             .is_ok()

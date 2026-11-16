@@ -330,7 +330,7 @@ paths:
         let dispatch = plan(&prepared, &serde_json::json!({"body":value}));
         let result = send(dispatch).await.expect("response");
         assert_eq!(result.data(), &value, "{schema}");
-        assert!(result.decode_diagnostics().is_empty());
+        assert_eq!(result.decode_diagnostics(), []);
     }
 }
 
@@ -378,7 +378,7 @@ paths:
             let dispatch = plan(&prepared, &serde_json::json!({"body":binary}));
             let result = send(dispatch).await.expect("binary response");
             assert_eq!(result.data(), &binary);
-            assert!(result.decode_diagnostics().is_empty());
+            assert_eq!(result.decode_diagnostics(), []);
         }
     }
 }
@@ -531,7 +531,7 @@ fn plans_parameters_and_request_encoding_from_logical_arguments() {
         dispatch.request_media_type(),
         Some("application/x-www-form-urlencoded")
     );
-    assert!(dispatch.credential_slots().is_empty());
+    assert_eq!(dispatch.credential_slots(), [] as [String; 0]);
 }
 
 #[test]
@@ -1492,7 +1492,7 @@ paths:
         .expect("write-only response property does not become required");
 
     assert_eq!(outcome.data(), &serde_json::json!({"name": "example"}));
-    assert!(outcome.decode_diagnostics().is_empty());
+    assert_eq!(outcome.decode_diagnostics(), []);
 }
 
 #[tokio::test]
@@ -1551,7 +1551,7 @@ paths:
         .iter()
         .find(|request| request.url.path() == "/final")
         .expect("redirected request");
-    assert!(final_request.body.is_empty());
+    assert_eq!(final_request.body, [] as [u8; 0]);
     assert!(!final_request.headers.contains_key("content-type"));
     assert!(!final_request.headers.contains_key("content-language"));
 }

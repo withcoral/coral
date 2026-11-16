@@ -183,11 +183,11 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
         mid_commit, before,
         "a snapshot mid-commit sees no part of the chunk"
     );
-    assert!(
+    assert_eq!(
         fixture
             .events_after(&workspace_id, &run_id, last_sequence(&before))
-            .await
-            .is_empty()
+            .await,
+        [] as [RunEvent; 0]
     );
     transaction.commit().await.expect("commit the chunk");
 

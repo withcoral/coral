@@ -14,7 +14,6 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
-use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
@@ -23,12 +22,11 @@ use super::{
     RequestContext, RetrievalError, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
-use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
     CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, ProviderFilter,
-    RetrieverCoverage, SearchEvidence, SearchHit, SearchableProvider, ToolAuthoringDescription,
+    RetrieverCoverage, SearchHit, SearchableProvider, ToolAuthoringDescription,
 };
 
 /// Ranks, hydrates, and describes Tools.
@@ -85,7 +83,6 @@ impl EntityRetriever for ToolRetriever {
                     provider: Arc::clone(&provider),
                     tool_key: target.key().clone(),
                     rules: Arc::clone(&rules),
-                    near_spellings: Arc::new([]),
                 }));
             }
         }
@@ -153,10 +150,7 @@ impl EntityRetriever for ToolRetriever {
         }
         let named = named_providers(&plan, &searched);
         let ranked = if searched.is_empty() {
-            repository::Ranking {
-                entities: Vec::new(),
-                near_spellings: Vec::new(),
-            }
+            Vec::new()
         } else {
             let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
             let generation_ids = searched
@@ -178,10 +172,9 @@ impl EntityRetriever for ToolRetriever {
             .await
             .map_err(QueryError::Retriever)?
         };
-        let has_more = ranked.entities.len() > request.window;
-        let near_spellings: Arc<[String]> = ranked.near_spellings.into();
+        let has_more = ranked.len() > request.window;
         let mut window = Vec::new();
-        for tool in ranked.entities.into_iter().take(request.window) {
+        for tool in ranked.into_iter().take(request.window) {
             let provider = searched
                 .get(&tool.provider_id)
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
@@ -194,7 +187,6 @@ impl EntityRetriever for ToolRetriever {
                     tool_key: tool.tool_key,
                     rules: Arc::clone(&rules),
                     call_path: tool.call_path,
-                    near_spellings: Arc::clone(&near_spellings),
                 }),
             });
         }
@@ -218,15 +210,14 @@ impl EntityRetriever for ToolRetriever {
         let EntityRef::Tool(tool) = entity else {
             return Ok(Hydrated::Dropped);
         };
-        let hydrated = match coral_provider::hydrate_tool_in_transaction(
+        let material = match coral_provider::tool_material_in_transaction(
             transaction,
-            context.loaded,
             &tool.provider,
             &tool.tool_key,
         )
         .await
         {
-            Ok(Some(hydrated)) => hydrated,
+            Ok(Some(material)) => material,
             Ok(None) => return Ok(Hydrated::Dropped),
             // A corrupt Tool leaves the page; the others stay.
             Err(
@@ -236,57 +227,20 @@ impl EntityRetriever for ToolRetriever {
             Err(error) => return Err(error.into()),
         };
         let Some(description) =
-            describe_material(context, hydrated.material(), &tool.rules, &tool.call_path)?
+            describe_material(context, &material, &tool.rules, &tool.call_path)?
         else {
             return Ok(Hydrated::Dropped);
         };
-        let material = HitMaterial {
+        let text = hit_text(&HitMaterial {
             declaration: description.typescript_declaration(),
             callable: Callable::Tool {
                 leaf: description.call_path().leaf(),
             },
             description: description.description(),
-            guidance: description.guidance(),
-            tags: description.tags(),
-        };
-        let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_tool(
-                &description,
-                hit_text(&material, None),
-                SearchEvidence::default(),
-            ))));
-        };
-        let terms = EvidenceTerms::new(terms, &tool.near_spellings);
-        let mut evidence = EvidenceBuilder::new(&terms);
-        evidence
-            .field("call_path", [description.call_path().as_str()])
-            .field(
-                "provider_namespace",
-                [description.provider_call_root().name()],
-            )
-            .field(
-                "provider_display_name",
-                [description.provider_display_name()],
-            )
-            .field("title", description.title())
-            .field("description", [description.description()])
-            .tags(description.tags().iter().map(String::as_str))
-            .field("guidance", description.guidance());
-        for field in hydrated.declaration_fields() {
-            evidence.path(field.path().as_str(), field.text());
-        }
-        let Some(matched) = evidence.build() else {
-            tracing::debug!(
-                coral.tool.call_path = safe::id(&super::RankedCallPath(description.call_path())),
-                "a ranked Tool has no evidence and leaves the page"
-            );
-            return Ok(Hydrated::Dropped);
-        };
-        let text = hit_text(&material, Some((&terms, &matched)));
+        });
         Ok(Hydrated::Hit(Box::new(SearchHit::from_tool(
             &description,
             text,
-            matched.evidence,
         ))))
     }
 

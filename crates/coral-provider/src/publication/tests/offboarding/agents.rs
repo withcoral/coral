@@ -193,12 +193,12 @@ async fn agent_removal(shared: bool) {
                 .authorized
         );
     }
-    assert!(
+    assert_eq!(
         h.workspaces
             .list_agents(&owner, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_workspace::Agent; 0]
     );
     h.workspaces
         .authenticate_agent(workspace.id(), issued.credential.expose(), 31)

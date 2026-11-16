@@ -1096,10 +1096,7 @@ impl ProviderModule {
             holds_secret_references: own
                 .as_ref()
                 .is_some_and(|row| row.secret_references.is_some()),
-            granted_scope: own
-                .as_ref()
-                .map(|row| row.granted_scope.clone())
-                .unwrap_or_default(),
+            granted_scope: own.as_ref().map_or_default(|row| row.granted_scope.clone()),
             expires_at_unix_nanos: own.as_ref().map(|row| row.expires_at_unix_nanos),
             authorization,
             discovery_failure: loaded.discovery_failure_code,
@@ -1107,8 +1104,7 @@ impl ProviderModule {
         let presented = configuration
             .confirmed
             .as_ref()
-            .map(|confirmed| confirmed.credential_fields.clone())
-            .unwrap_or_default();
+            .map_or_default(|confirmed| confirmed.credential_fields.clone());
         let credential_fields = authentication
             .contract
             .authentication()
