@@ -413,6 +413,15 @@ export const ExternalLink: Story = {
   render: () => (
     <div style={{ display: 'flex', gap: 48 }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <span style={{ color: '#999', fontSize: 12 }}>Secondary variant</span>
+        <ExternalLinkComponent href="https://example.com" variant="secondary">
+          Read the docs
+        </ExternalLinkComponent>
+        <ExternalLinkComponent href="https://example.com" size="small" variant="secondary">
+          Read the docs
+        </ExternalLinkComponent>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <span style={{ color: '#999', fontSize: 12 }}>Primary variant</span>
         <ExternalLinkComponent href="https://example.com" size="large" variant="primary">
           Slack
