@@ -25,40 +25,53 @@ fn loopback() -> DestinationPolicy {
     DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps)
 }
 
-fn ready_input(input: &ProviderSetupInput) -> PreparedProviderCatalog {
+/// A materialized catalog with its schema graph as a resolved Tool holds it:
+/// one handle, which every dispatch planned from the catalog shares.
+struct Prepared {
+    catalog: PreparedProviderCatalog,
+    schemas: Arc<SchemaGraph>,
+}
+
+impl std::ops::Deref for Prepared {
+    type Target = PreparedProviderCatalog;
+
+    fn deref(&self) -> &PreparedProviderCatalog {
+        &self.catalog
+    }
+}
+
+fn ready_input(input: &ProviderSetupInput) -> Prepared {
     match coral_catalog::materialize(loopback(), input, &[]) {
-        MaterializationOutcome::Ready(prepared) => prepared,
+        MaterializationOutcome::Ready(catalog) => Prepared {
+            schemas: Arc::new(catalog.schema_graph().clone()),
+            catalog,
+        },
         MaterializationOutcome::Rejected(diagnostic) => {
             panic!("fixture should materialize: {}", diagnostic.message())
         }
     }
 }
 
-fn ready(document: &str) -> PreparedProviderCatalog {
+fn ready(document: &str) -> Prepared {
     ready_input(&ProviderSetupInput::from(
         OpenApiDocument::parse(document).expect("OpenAPI fixture"),
     ))
 }
 
-/// The catalog's schema graph as a resolved Tool holds it.
-fn schemas(prepared: &PreparedProviderCatalog) -> Arc<SchemaGraph> {
-    Arc::new(prepared.schema_graph().clone())
-}
-
 /// Plans the catalog's only Tool.
 fn try_plan(
-    prepared: &PreparedProviderCatalog,
+    prepared: &Prepared,
     arguments: &serde_json::Value,
 ) -> Result<ReadyHttpDispatch, coral_upstream::Error> {
     ReadyHttpDispatch::plan(
         prepared.tools().first().expect("Tool"),
-        &schemas(prepared),
+        &prepared.schemas,
         arguments,
         limits(4096),
     )
 }
 
-fn plan(prepared: &PreparedProviderCatalog, arguments: &serde_json::Value) -> ReadyHttpDispatch {
+fn plan(prepared: &Prepared, arguments: &serde_json::Value) -> ReadyHttpDispatch {
     try_plan(prepared, arguments).expect("plan HTTP request")
 }
 
@@ -71,11 +84,7 @@ async fn send(dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, coral_upstream
 
 /// Tools under `paths` behind `server`, sent with `authentication`. Each
 /// Credential Field the method reads is presented under its own name.
-fn configured(
-    server: &str,
-    paths: &str,
-    authentication: AuthenticationConfiguration,
-) -> PreparedProviderCatalog {
+fn configured(server: &str, paths: &str, authentication: AuthenticationConfiguration) -> Prepared {
     let document = OpenApiDocument::parse(&format!(
         r#"
 openapi: 3.1.0
@@ -191,7 +200,7 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
         .await;
     for mime in ["image/png", "image/jpeg"] {
         let arguments = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":mime, "byteLength":2}}});
-        let dispatch = ReadyHttpDispatch::plan(tool, &schemas(&prepared), &arguments, limits(4096))
+        let dispatch = ReadyHttpDispatch::plan(tool, &prepared.schemas, &arguments, limits(4096))
             .expect("permitted multipart type");
         send(dispatch).await.expect("uploaded");
     }
@@ -213,7 +222,7 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
     }
     let invalid = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":"application/pdf", "byteLength":2}}});
     assert!(matches!(
-        ReadyHttpDispatch::plan(tool, &schemas(&prepared), &invalid, limits(4096)),
+        ReadyHttpDispatch::plan(tool, &prepared.schemas, &invalid, limits(4096)),
         Err(coral_upstream::Error::InvalidArguments(_))
     ));
     server.verify().await;
@@ -622,7 +631,7 @@ paths:
 
 /// One GET Tool at `{server}/v1` + `template`, whose path parameters
 /// `a` and `b` use `parameters` as their serialization fields.
-fn path_tool(server: &str, template: &str, parameters: &str) -> PreparedProviderCatalog {
+fn path_tool(server: &str, template: &str, parameters: &str) -> Prepared {
     ready(&format!(
         r#"openapi: 3.1.0
 info: {{ title: Path arguments, version: "1" }}
@@ -710,7 +719,7 @@ fn a_path_argument_cannot_become_a_dot_segment() {
 }
 
 /// One `POST` Tool with `parameters` query parameters, and optionally a body.
-fn query_tool(parameters: &[String], body: bool) -> PreparedProviderCatalog {
+fn query_tool(parameters: &[String], body: bool) -> Prepared {
     let parameters = parameters
         .iter()
         .map(|name| {
@@ -743,7 +752,7 @@ paths:
     ))
 }
 
-fn rejection_of(prepared: &PreparedProviderCatalog, argument: &str) -> String {
+fn rejection_of(prepared: &Prepared, argument: &str) -> String {
     let arguments = serde_json::json!({argument: "secret-canary"});
     match try_plan(prepared, &arguments) {
         Err(coral_upstream::Error::InvalidArguments(reason)) => reason,
@@ -752,7 +761,7 @@ fn rejection_of(prepared: &PreparedProviderCatalog, argument: &str) -> String {
     }
 }
 
-fn undeclared_reason(prepared: &PreparedProviderCatalog) -> String {
+fn undeclared_reason(prepared: &Prepared) -> String {
     rejection_of(prepared, "query")
 }
 
@@ -2017,7 +2026,7 @@ fn a_query_credential_is_counted_as_the_url_carries_it() {
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
             prepared.tools().first().expect("Tool"),
-            &schemas(&prepared),
+            &prepared.schemas,
             &serde_json::json!({}),
             limits(budget),
         )
@@ -2135,7 +2144,7 @@ paths:
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
             prepared.tools().first().expect("Tool"),
-            &schemas(&prepared),
+            &prepared.schemas,
             &arguments,
             limits(budget),
         )
@@ -2163,7 +2172,7 @@ async fn a_response_over_the_budget_is_refused() {
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
             prepared.tools().first().expect("Tool"),
-            &schemas(&prepared),
+            &prepared.schemas,
             &serde_json::json!({}),
             limits(budget),
         )
