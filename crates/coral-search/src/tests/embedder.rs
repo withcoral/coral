@@ -348,7 +348,6 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
 
 #[tokio::test]
 async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let metrics = MetricCapture::default();
@@ -376,7 +375,6 @@ async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
 
 #[tokio::test]
 async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_failed() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let many = world
@@ -406,7 +404,6 @@ async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_faile
 
 #[tokio::test]
 async fn a_model_panic_fails_its_batch_and_a_new_thread_embeds_the_rows() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let metrics = MetricCapture::default();

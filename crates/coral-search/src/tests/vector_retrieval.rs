@@ -544,7 +544,6 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
 
 #[tokio::test]
 async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_search() {
-    coral_test_support::database_only!(Postgres);
     let world = World::new().await;
     let exported = ExportCapture::default();
     let spans = SpanCapture::exporting_to(&exported);
@@ -582,7 +581,12 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
 #[tokio::test]
 async fn each_reason_a_retriever_ranks_by_words_alone_leaves_the_host_on_its_span() {
     let world = World::new().await;
-    let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
+    let drop_vector_table = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => "DROP TABLE search_entity_embeddings",
+        DatabaseSystem::Sqlite => {
+            "DROP TABLE search_entity_embedding_vectors; DROP TABLE search_entity_embeddings"
+        }
+    };
     // A Private Tool and a Shared Tool, so each retriever runs its vector
     // query.
     let tides = world
@@ -600,7 +604,7 @@ async fn each_reason_a_retriever_ranks_by_words_alone_leaves_the_host_on_its_spa
     let exported = ExportCapture::default();
     let spans = SpanCapture::exporting_to(&exported);
     let _traced = tracing::subscriber::set_default(spans.subscriber());
-    // Each case's reason on Postgres; `None` is a fused search.
+    // Each case's reason; `None` is a fused search.
     let cases = [
         ("a fused search", world.semantic(), None, None),
         ("the setting off", world.by_words(), None, Some("disabled")),
@@ -638,7 +642,7 @@ async fn each_reason_a_retriever_ranks_by_words_alone_leaves_the_host_on_its_spa
         (
             "the vector table is missing",
             world.semantic(),
-            postgres.then_some("DROP TABLE search_entity_embeddings"),
+            Some(drop_vector_table),
             Some("vector_query_failed"),
         ),
     ];
@@ -650,8 +654,6 @@ async fn each_reason_a_retriever_ranks_by_words_alone_leaves_the_host_on_its_spa
 
         world.search(&search, "rain issues").await;
 
-        // SQLite keeps no vectors yet, so its vector side is off.
-        let reason = if postgres { reason } else { Some("disabled") };
         let this_search = exported
             .spans()
             .into_iter()
