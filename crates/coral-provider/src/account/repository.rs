@@ -360,21 +360,10 @@ pub(super) async fn load_authorization(
     owner: &WorkspaceId,
     id: AuthorizationId,
 ) -> Result<LoadedAuthorization, Error> {
-    // A no-op write provides the same row serialization on SQLite and Postgres.
-    tx.execute(
-        Query::update()
-            .table(ProviderAccountAuthorizations::Table)
-            .value(
-                ProviderAccountAuthorizations::State,
-                Expr::col(ProviderAccountAuthorizations::State),
-            )
-            .and_where(scope(owner, ProviderAccountAuthorizations::WorkspaceId))
-            .and_where(Expr::col(ProviderAccountAuthorizations::Id).eq(id.to_string()))
-            .to_owned(),
-    )
-    .await?;
+    // The exclusive hold serializes every reader of this authorization on
+    // SQLite and Postgres alike.
     let row: AuthorizationRow = tx
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .columns([
                     ProviderAccountAuthorizations::Id,
@@ -401,6 +390,7 @@ pub(super) async fn load_authorization(
                 .and_where(scope(owner, ProviderAccountAuthorizations::WorkspaceId))
                 .and_where(Expr::col(ProviderAccountAuthorizations::Id).eq(id.to_string()))
                 .to_owned(),
+            coral_db::RowLock::Exclusive,
         )
         .await?
         .ok_or(Error::AccountNotFound)?;
@@ -545,19 +535,18 @@ pub(super) async fn hold_evidence(
             .eq(workspace.to_string())
             .and(Expr::col(ProviderAccounts::AgentId).eq(principal.id().as_str())),
     };
-    tx.execute(
-        Query::update()
-            .table(ProviderAccounts::Table)
-            .value(
-                ProviderAccounts::MaterialRevision,
-                Expr::col(ProviderAccounts::MaterialRevision),
-            )
-            .and_where(allowed)
-            .and_where(Expr::col(ProviderAccounts::Id).eq(evidence.account_id.to_string()))
-            .and_where(Expr::col(ProviderAccounts::ProviderId).eq(provider.to_string()))
-            .to_owned(),
-    )
-    .await?;
+    let _held: Option<(String,)> = tx
+        .fetch_optional_locked(
+            Query::select()
+                .column(ProviderAccounts::MaterialRevision)
+                .from(ProviderAccounts::Table)
+                .and_where(allowed)
+                .and_where(Expr::col(ProviderAccounts::Id).eq(evidence.account_id.to_string()))
+                .and_where(Expr::col(ProviderAccounts::ProviderId).eq(provider.to_string()))
+                .to_owned(),
+            coral_db::RowLock::Exclusive,
+        )
+        .await?;
     Ok(())
 }
 

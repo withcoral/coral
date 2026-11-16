@@ -125,7 +125,7 @@ impl ProviderModule {
                 &mut tx,
                 owner,
                 repository::ProviderKey::Id(target),
-                repository::ProviderHold::None,
+                coral_db::RowLock::None,
             )
             .await?
             .ok_or(Error::ProviderNotFound)?;

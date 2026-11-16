@@ -707,7 +707,7 @@ impl AccountModule {
             &mut tx,
             owner,
             crate::repository::ProviderKey::Id(&row.provider_id),
-            crate::repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?;
         if let Some(stored) = stored {
@@ -798,7 +798,7 @@ async fn provider_contract(
         tx,
         owner,
         provider_repository::ProviderKey::Id(provider_id),
-        provider_repository::ProviderHold::Exclusive,
+        coral_db::RowLock::Exclusive,
     )
     .await?
     .and_then(provider_repository::ProviderWithActiveGeneration::into_active)

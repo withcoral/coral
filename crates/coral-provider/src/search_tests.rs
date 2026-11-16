@@ -546,7 +546,7 @@ async fn active_generation(
         &mut transaction,
         workspace_id,
         crate::repository::ProviderKey::Id(provider.id()),
-        crate::repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await
     .unwrap()

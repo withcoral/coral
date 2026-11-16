@@ -624,7 +624,7 @@ pub(crate) async fn update_contract(
         tx,
         loaded.setup.owner(),
         repository::ProviderKey::Id(provider),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     else {
