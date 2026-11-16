@@ -35,10 +35,7 @@ impl Search {
             } => {
                 let input = SearchInput {
                     query,
-                    provider: provider
-                        .as_ref()
-                        .map(ProviderArgument::values)
-                        .unwrap_or_default(),
+                    provider: provider.as_ref().map_or_default(ProviderArgument::values),
                     limit,
                     offset,
                 };

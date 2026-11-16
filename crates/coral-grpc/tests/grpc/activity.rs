@@ -205,7 +205,10 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
         .await
         .unwrap()
         .into_inner();
-    assert!(excluded.roots.is_empty());
+    assert_eq!(
+        excluded.roots,
+        [] as [coral_grpc::coral::management::v1::ActivityRoot; 0]
+    );
     assert!(!excluded.has_before && !excluded.has_after && !excluded.anchor_unavailable);
     let detail = client
         .inspect_run(request(
@@ -428,7 +431,10 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
         .await
         .unwrap()
         .into_inner();
-    assert!(lost.roots.is_empty());
+    assert_eq!(
+        lost.roots,
+        [] as [coral_grpc::coral::management::v1::ActivityRoot; 0]
+    );
     assert!(!lost.has_before && !lost.has_after && !lost.anchor_unavailable);
     assert_eq!(
         client
@@ -604,7 +610,10 @@ async fn activity_transport_keeps_personal_history_private_and_mcp_unreachable()
         .unwrap()
         .into_inner();
     assert_eq!(detail.task.unwrap().name, name);
-    assert!(detail.interactions.is_empty());
+    assert_eq!(
+        detail.interactions,
+        [] as [coral_grpc::coral::management::v1::ActivityInteraction; 0]
+    );
     let owner = f.token(&f.owner, "reef");
     assert_eq!(
         client

@@ -25,21 +25,29 @@ const updateBranch = {
   currentHref: null,
 }
 
-it('reads a search page into hits, with no coverage when every retriever searched', () => {
-  const view = discoveryView(search, stored.complete)
-  if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
-  expect(view.page.hasMore).toBe(true)
-  expect(view.page.coverage).toEqual([])
-  expect(view.page.hits).toHaveLength(5)
-  expect(view.page.hits[4]).toEqual({
-    ...updateBranch,
-    kind: 'provider_tool',
-    // A hit names no title, so it shows its Call Path until the loader links
-    // it to its provider and shortens it.
-    title: 'coral.providers.github.pulls.updateBranch',
-    matched: { fields: [], tags: ['pulls'], paths: [] },
-  })
-})
+// Catches: a page retained while hits said why they matched, or a page Coral
+// writes now, whose hits say nothing of it, failing to load.
+it.each([
+  ['a page whose hits matched a tag', 'complete', ['pulls']],
+  ['a page whose hits carry no evidence', 'current', []],
+] as const)(
+  'reads %s into hits, with no coverage when every retriever searched',
+  (_, fixture, tags) => {
+    const view = discoveryView(search, stored[fixture])
+    if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
+    expect(view.page.hasMore).toBe(true)
+    expect(view.page.coverage).toEqual([])
+    expect(view.page.hits).toHaveLength(5)
+    expect(view.page.hits[4]).toEqual({
+      ...updateBranch,
+      kind: 'provider_tool',
+      // A hit names no title, so it shows its Call Path until the loader links
+      // it to its provider and shortens it.
+      title: 'coral.providers.github.pulls.updateBranch',
+      matched: { fields: [], tags, paths: [] },
+    })
+  },
+)
 
 // Catches: a page Coral retained before pages had an offset failing to load.
 // It loses its mark that more results remain.

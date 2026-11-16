@@ -5,8 +5,7 @@ use std::rc::Rc;
 use serde_json::Value;
 
 use crate::{
-    CatalogDiagnostic, DeclarationPath, ExecutionBinding, MaterializedTool, SchemaGraph, SchemaId,
-    SearchableTool,
+    CatalogDiagnostic, DeclarationPath, ExecutionBinding, SchemaGraph, SchemaId, SearchableTool,
 };
 
 const MAX_SEARCH_FIELDS: usize = 8_192;
@@ -65,19 +64,8 @@ impl StoredDeclarationFields {
         }
     }
 
-    /// Rebuilds one structurally available Tool's declaration fields and
-    /// the warnings its walk left.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::Error::CorruptData`] when the stored Tool's input
-    /// declaration can no longer be read.
-    pub fn tool(&self, tool: &MaterializedTool) -> Result<PreparedDeclarationFields, crate::Error> {
-        self.fields(tool.execution_binding(), tool.input_schema())
-    }
-
-    /// Rebuilds the declaration fields of a Tool as the search index
-    /// reads it, as [`Self::tool`] does for a full one.
+    /// Rebuilds the declaration fields of a Tool as the search index reads
+    /// it, and the warnings its walk left.
     ///
     /// # Errors
     ///
@@ -766,7 +754,7 @@ mod tests {
         );
 
         assert!(indexed_paths(&prepared.entries).contains("result.data.structuredContent.name"));
-        assert!(!prepared.warnings.is_empty());
+        assert_ne!(prepared.warnings, [] as [CatalogDiagnostic; 0]);
     }
 
     #[test]
@@ -822,7 +810,7 @@ mod tests {
 
         // The root, its ten properties, and its open index signature.
         assert_eq!(prepared.entries.len(), 12);
-        assert!(prepared.warnings.is_empty());
+        assert_eq!(prepared.warnings, [] as [CatalogDiagnostic; 0]);
     }
 
     #[test]
@@ -848,6 +836,6 @@ mod tests {
             .find(|field| field.path().as_str() == "input")
             .expect("the root field is indexed");
         assert!(field.text().len() > 256 * 1024);
-        assert!(prepared.warnings.is_empty());
+        assert_eq!(prepared.warnings, [] as [CatalogDiagnostic; 0]);
     }
 }

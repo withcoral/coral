@@ -92,7 +92,7 @@ pub(super) async fn read_profile(
 ) -> Result<UserProfile, Error> {
     let local = user == crate::local_organization_owner().user_id();
     let row = repository::find(tx, user).await?;
-    let (name, email) = row.map(|row| (row.name, row.email)).unwrap_or_default();
+    let (name, email) = row.map_or_default(|row| (row.name, row.email));
     Ok(UserProfile {
         user_id: user.clone(),
         name: if local {

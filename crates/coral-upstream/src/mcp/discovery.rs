@@ -74,15 +74,14 @@ impl BearerChallenge {
         let scopes = params
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("scope"))
-            .map(|(_, value)| {
+            .map_or_default(|(_, value)| {
                 value
                     .split(' ')
                     .filter(|scope| !scope.is_empty())
                     .filter(|scope| scope.len() <= MAX_SCOPE_BYTES && is_scope_token(scope))
                     .map(str::to_owned)
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         Self {
             resource_metadata,
             scopes,
@@ -379,7 +378,7 @@ mod tests {
     fn bare_scheme_and_missing_parameters_are_accepted() {
         let parsed = BearerChallenge::parse(&["bearer".to_owned()]).expect("bare bearer");
         assert_eq!(parsed.resource_metadata(), None);
-        assert!(parsed.scopes().is_empty());
+        assert_eq!(parsed.scopes(), [] as [String; 0]);
         assert!(BearerChallenge::parse(&["Digest realm=\"x\"".to_owned()]).is_none());
     }
 

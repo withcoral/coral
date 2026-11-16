@@ -129,7 +129,6 @@ impl coral_app::RunErrorTelemetry for ProcessError {
 /// # Panics
 ///
 /// Panics if the async runtime cannot start.
-#[must_use]
 #[tokio::main]
 pub async fn run(extensions: coral_app::Extensions) -> ExitCode {
     let ProcessArgs { command } = ProcessArgs::parse();

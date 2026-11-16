@@ -801,8 +801,7 @@ impl AccountModule {
             &loaded
                 .configuration
                 .as_ref()
-                .map(|values| values.request_headers.clone())
-                .unwrap_or_default(),
+                .map_or_default(|values| values.request_headers.clone()),
         )
         .await;
         drop(access);
@@ -866,8 +865,7 @@ impl AccountModule {
                 let mut escalated = requirement.clone();
                 let mut scopes = challenge
                     .as_ref()
-                    .map(|challenge| challenge.scopes().to_vec())
-                    .unwrap_or_default();
+                    .map_or_default(|challenge| challenge.scopes().to_vec());
                 if !scopes.is_empty() {
                     scopes.sort();
                     scopes.dedup();

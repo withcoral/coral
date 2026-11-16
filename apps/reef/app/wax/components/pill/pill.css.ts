@@ -23,6 +23,29 @@ export const interactive = style({
 
 export const active = style({})
 
+// Sits inside the pill's end padding, so a removable pill grows by the icon alone.
+export const removeButton = style({
+  alignItems: 'center',
+  backgroundColor: 'transparent',
+  border: 'none',
+  borderRadius: '4px',
+  color: 'inherit',
+  cursor: 'pointer',
+  display: 'inline-flex',
+  flexShrink: 0,
+  marginInlineEnd: '-3px',
+  opacity: 0.6,
+  padding: 0,
+  transition: animation.fadeTransition,
+  selectors: {
+    '&:hover': { opacity: 1 },
+    '&:focus-visible': {
+      opacity: 1,
+      outline: `2px solid ${theme.stroke.focused}`,
+    },
+  },
+})
+
 const interactiveSelector = `${interactive}&:hover:not(:disabled)`
 const activeSelector = `${active}&`
 

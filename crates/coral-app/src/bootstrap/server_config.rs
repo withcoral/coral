@@ -1933,7 +1933,10 @@ client_secret = 'test-secret'
         ))
         .expect("MCP settings");
         let session_auth = companions.session_auth.expect("session auth");
-        assert!(session_auth.public_audiences.is_empty());
+        assert_eq!(
+            session_auth.public_audiences,
+            [] as [std::string::String; 0]
+        );
 
         // The family must be registered even though it enumerates to nothing,
         // or every real MCP login is refused invalid_target. The base is not a

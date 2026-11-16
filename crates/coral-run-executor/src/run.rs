@@ -34,7 +34,8 @@ pub struct RunLimits {
     pub isolate: coral_v8::IsolateLimits,
     /// The Applied cap, [`APPLIED_CAP_BYTES`] outside tests.
     pub applied_cap_bytes: usize,
-    /// The held cap, [`HELD_CAP_REQUESTS`] outside tests.
+    /// The held cap, [`HELD_CAP_REQUESTS`] outside tests; zero counts as
+    /// one.
     pub held_cap: usize,
     /// How long a stopped Program's isolate has to go before the Run
     /// Executor retires: 5 s outside tests.

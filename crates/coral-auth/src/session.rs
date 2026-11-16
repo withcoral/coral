@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(string_claim(&claims, "aud"), MCP_AUDIENCE);
         assert_eq!(string_claim(&claims, "client_id"), CLIENT_ID);
         let token_id = string_claim(&claims, "jti");
-        assert!(!token_id.is_empty());
+        assert_ne!(token_id, "");
         assert!(claims.get("scope").is_none());
         let session = verifier
             .validate_access_token(&access.access_token, &[MCP_AUDIENCE])

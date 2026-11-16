@@ -5,7 +5,6 @@
 //! stored and ranked. The entries are secret-free and carry no visibility:
 //! Universal Search asks the owners about visibility at query time.
 
-use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
 use coral_catalog::{
@@ -389,120 +388,24 @@ pub(crate) async fn active_providers(
     )
 }
 
-/// One Tool of a Provider's active Generation as a search hit shows it:
-/// its complete authoring material and its readable declaration fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HydratedTool {
-    material: ToolAuthoringMaterial,
-    declaration_fields: Vec<DeclarationIndexEntry>,
-}
-
-impl HydratedTool {
-    /// Returns the complete authoring material.
-    #[must_use]
-    pub const fn material(&self) -> &ToolAuthoringMaterial {
-        &self.material
-    }
-
-    /// Returns the readable declaration paths with the values the schema
-    /// lists, as the index prepares them from the stored Generation.
-    #[must_use]
-    pub fn declaration_fields(&self) -> &[DeclarationIndexEntry] {
-        &self.declaration_fields
-    }
-}
-
-/// The stored Generations one search request has loaded for its hits.
-///
-/// Loading a Generation's schema graph and naming its types cost time in
-/// proportion to the whole Provider, while one hit needs a single Tool's
-/// fields. A request keeps one of these so hits of the same Generation load
-/// it once. Generations are immutable, so what it holds never goes stale.
-#[derive(Default)]
-pub struct LoadedGenerations(Mutex<HashMap<ProviderGenerationId, StoredDeclarationFields>>);
-
-impl LoadedGenerations {
-    fn has(&self, generation_id: &ProviderGenerationId) -> bool {
-        self.0
-            .lock()
-            .expect("loaded generations mutex poisoned")
-            .contains_key(generation_id)
-    }
-
-    fn tool_fields(
-        &self,
-        generation_id: &ProviderGenerationId,
-        tool: &MaterializedTool,
-    ) -> Option<Result<Vec<DeclarationIndexEntry>, coral_catalog::Error>> {
-        self.0
-            .lock()
-            .expect("loaded generations mutex poisoned")
-            .get(generation_id)
-            .map(|fields| {
-                fields
-                    .tool(tool)
-                    .map(PreparedDeclarationFields::into_entries)
-            })
-    }
-
-    fn keep(&self, generation_id: ProviderGenerationId, fields: StoredDeclarationFields) {
-        self.0
-            .lock()
-            .expect("loaded generations mutex poisoned")
-            .insert(generation_id, fields);
-    }
-}
-
-/// Hydrates one Tool of the Provider's active Generation for a search
-/// hit, after ranking: its authoring material and its declaration fields,
-/// rebuilt from the stored schema graph. The graph is read once per
-/// Generation for each `loaded`.
+/// Reads one Tool of the Provider's active Generation by its Tool Key, for
+/// a search hit. Reads that Tool and the shared types its declaration
+/// names, never the whole schema graph.
 ///
 /// `Ok(None)` when the Generation has no structurally available Tool
 /// under the key. The caller decides visibility.
 ///
 /// # Errors
 ///
-/// Returns a shared persistence failure, or corrupt data when the stored
-/// package can no longer be prepared.
-pub async fn hydrate_tool_in_transaction(
+/// Returns a shared persistence or corrupt-package failure.
+pub async fn tool_material_in_transaction(
     transaction: &mut Transaction<'_>,
-    loaded: &LoadedGenerations,
     provider: &ActiveProvider,
     tool_key: &ToolKey,
-) -> Result<Option<HydratedTool>, Error> {
-    let Some(tool) =
-        coral_catalog::tool_in_transaction(transaction, provider.generation_id(), tool_key)
-            .await?
-            .filter(|tool| tool.availability() == ToolAvailability::Available)
-    else {
-        return Ok(None);
-    };
-    let generation_id = provider.generation_id();
-    if !loaded.has(generation_id) {
-        let graph = coral_catalog::schema_graph_in_transaction(transaction, generation_id).await?;
-        // Keep it before reading this Tool, so one corrupt Tool does
-        // not make every later hit of the Generation load the graph again.
-        loaded.keep(generation_id.clone(), StoredDeclarationFields::new(graph));
-    }
-    let declaration_fields =
-        loaded
-            .tool_fields(generation_id, &tool)
-            .ok_or(Error::CorruptData(
-                "a loaded Generation is missing from the request".into(),
-            ))??;
-    let declaration =
-        coral_catalog::authoring_declaration_in_transaction(transaction, generation_id, &tool)
-            .await?;
-    Ok(Some(HydratedTool {
-        material: ToolAuthoringMaterial::new(
-            provider.provider().access(),
-            provider.provider(),
-            &tool,
-            declaration,
-        ),
-        declaration_fields,
-    }))
+) -> Result<Option<ToolAuthoringMaterial>, Error> {
+    let tool =
+        coral_catalog::tool_in_transaction(transaction, provider.generation_id(), tool_key).await?;
+    available_material(transaction, provider, tool).await
 }
 
 /// Reads one Tool of the Provider's active Generation by its path below
@@ -519,13 +422,22 @@ pub async fn tool_material_by_relative_path_in_transaction(
     provider: &ActiveProvider,
     relative_path: &str,
 ) -> Result<Option<ToolAuthoringMaterial>, Error> {
-    let Some(tool) = coral_catalog::tool_by_relative_path_in_transaction(
+    let tool = coral_catalog::tool_by_relative_path_in_transaction(
         transaction,
         provider.generation_id(),
         relative_path,
     )
-    .await?
-    .filter(|tool| tool.availability() == ToolAvailability::Available) else {
+    .await?;
+    available_material(transaction, provider, tool).await
+}
+
+/// The authoring material of `tool` when it is structurally available.
+async fn available_material(
+    transaction: &mut Transaction<'_>,
+    provider: &ActiveProvider,
+    tool: Option<MaterializedTool>,
+) -> Result<Option<ToolAuthoringMaterial>, Error> {
+    let Some(tool) = tool.filter(|tool| tool.availability() == ToolAvailability::Available) else {
         return Ok(None);
     };
     let declaration = coral_catalog::authoring_declaration_in_transaction(

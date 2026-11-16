@@ -32,18 +32,22 @@ macro_rules! step_span {
     };
 }
 
-/// The two lanes share shutdown, not failure. A panic in telemetry must not
-/// retire the indexing worker, and a retired worker is restarted with backoff.
+/// The lanes share shutdown, not failure. A panic in telemetry must not
+/// retire the indexing worker or the Embedder, and a retired lane is
+/// restarted with backoff.
 #[derive(Clone, Copy)]
 enum BackgroundTask {
     Observer,
     Reconcile,
+    /// Runs only while the vector side is on.
+    Embedder,
 }
 impl BackgroundTask {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Observer => "observer",
             Self::Reconcile => "reconcile",
+            Self::Embedder => "embedder",
         }
     }
 }
@@ -54,7 +58,8 @@ impl SearchIndex {
     /// of each interval. A pass that runs past the next start is followed by
     /// the next pass at once. The task runs until the caller aborts it; an
     /// abort during a pass rolls back the pass's open transaction, and later
-    /// passes finish the work.
+    /// passes finish the work. While the vector side is on, the same task
+    /// supervises the Embedder.
     ///
     /// # Panics
     ///
@@ -68,8 +73,13 @@ impl SearchIndex {
         let index = self.clone();
         let supervise = async move {
             let mut tasks = JoinSet::new();
-            let mut observer = index.spawn_background_task(&mut tasks, BackgroundTask::Observer);
-            let mut reconcile = index.spawn_background_task(&mut tasks, BackgroundTask::Reconcile);
+            let mut roles = std::collections::HashMap::new();
+            let lanes = [BackgroundTask::Observer, BackgroundTask::Reconcile]
+                .into_iter()
+                .chain(index.embedder.is_some().then_some(BackgroundTask::Embedder));
+            for role in lanes {
+                roles.insert(index.spawn_background_task(&mut tasks, role), role);
+            }
             while let Some(result) = tasks.join_next_with_id().await {
                 let (id, reason) = match result {
                     Ok((id, ())) => (id, "background_task_ended"),
@@ -82,21 +92,16 @@ impl SearchIndex {
                         },
                     ),
                 };
-                let role = if id == observer {
-                    BackgroundTask::Observer
-                } else {
-                    BackgroundTask::Reconcile
+                let role = roles.remove(&id);
+                debug_assert!(role.is_some(), "each child of the set has a role");
+                let Some(role) = role else {
+                    continue;
                 };
-                debug_assert!(id == observer || id == reconcile);
                 tracing::error!(coral.search.background.task = safe::kind(role.as_str()), error.type = safe::kind(reason), "search background task stopped; restarting");
                 tokio::time::sleep(RESTART_DELAY).await;
-                let restarted = index.spawn_background_task(&mut tasks, role);
-                match role {
-                    BackgroundTask::Observer => observer = restarted,
-                    BackgroundTask::Reconcile => reconcile = restarted,
-                }
+                roles.insert(index.spawn_background_task(&mut tasks, role), role);
             }
-            // Dropping the set aborts both children when the caller shuts down.
+            // Dropping the set aborts every child when the caller shuts down.
         };
         tokio::spawn(supervise.with_current_subscriber())
     }
@@ -114,6 +119,11 @@ impl SearchIndex {
                             loop {
                                 starts.tick().await;
                                 index.reconcile().await;
+                            }
+                        }
+                        BackgroundTask::Embedder => {
+                            if let Some(state) = index.embedder.clone() {
+                                index.embed_loop(state).await;
                             }
                         }
                     }
@@ -137,7 +147,9 @@ impl SearchIndex {
     /// 3. Removes the rows and state rows of every Generation that is no
     ///    Provider's active Generation, and of every Private Tool that no
     ///    longer exists and every Shared Tool that was removed. Best effort. A source's delete never touches these
-    ///    tables, so this step is what guarantees the rows go.
+    ///    tables, so this step is what guarantees the rows go. While the
+    ///    vector side is on, it then removes each vector whose Search Entity
+    ///    or Workspace is gone, which no foreign key does.
     /// 4. On Postgres, recounts the statistics of every Workspace whose rows
     ///    changed after its last count, not only those this pass wrote: a
     ///    notified write schedules its Workspace's recount after it commits,
@@ -179,7 +191,7 @@ impl SearchIndex {
     /// The pass's span records what it indexed and what failed, and the
     /// statistics step's span the Workspaces it checked and recounted and
     /// the statistics rows it wrote. A pass that finds no change writes no
-    /// row.
+    /// row. Once the pass ends, it wakes the Embedder.
     pub async fn reconcile(&self) {
         let pass = tracing::debug_span!(
             parent: None,
@@ -231,6 +243,7 @@ impl SearchIndex {
         if work.failed() {
             coral_telemetry::record_failure(&pass, "reconcile_failed");
         }
+        self.wake_embedder();
     }
 
     /// Runs the steps of one pass, each in its own span. Its statistics are
@@ -259,6 +272,14 @@ impl SearchIndex {
         )
         .await
         .is_err();
+        if self.embedder.is_some() {
+            work.step_failed |= step(
+                step_span!("coral.search.reconcile.remove_orphaned_vectors"),
+                self.remove_orphaned_vectors(),
+            )
+            .await
+            .is_err();
+        }
         match step(
             step_span!("coral.search.reconcile.generations"),
             self.reconcile_generations(now),

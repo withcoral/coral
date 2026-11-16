@@ -106,7 +106,7 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
         .map(|summary| summary.path)
         .collect::<Vec<_>>();
     assert_eq!(paths, ["alpha.first", "reports.total", "zeta.last"]);
-    assert!(second.next_page_token.is_empty());
+    assert_eq!(second.next_page_token, "");
 
     let foreign = list(&f.member, first.next_page_token).await.unwrap_err();
     assert_eq!((foreign.code(), error_reason(&foreign).as_str()), INVALID);

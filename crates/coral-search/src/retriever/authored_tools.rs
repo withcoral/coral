@@ -9,12 +9,10 @@
 //! own Principal columns; a Shared Tool's row names no Principal.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_catalog::AuthoredToolKind;
 use coral_db::Transaction;
-use coral_telemetry::safe;
 use coral_tools::AuthoredToolSearchMaterial;
 
 use super::plan::QueryPlan;
@@ -23,12 +21,11 @@ use super::{
     Answer, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, Listing, QueryError,
     QueryRequest, RequestContext, WindowEntry, count,
 };
-use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
     ApprovalRequirement, AuthoredToolAuthoringDescription, CallPath, EntityKind, Error,
-    ExactAuthoringDescription, ProviderFilter, RetrieverCoverage, SearchEvidence, SearchHit,
+    ExactAuthoringDescription, ProviderFilter, RetrieverCoverage, SearchHit,
 };
 
 /// Ranks, hydrates, and describes the Authored Tools of one kind.
@@ -127,15 +124,11 @@ impl EntityRetriever for AuthoredToolRetriever {
             .await
             .map_err(QueryError::Retriever)?
         } else {
-            repository::Ranking {
-                entities: Vec::new(),
-                near_spellings: Vec::new(),
-            }
+            Vec::new()
         };
-        let has_more = ranked.entities.len() > request.window;
-        let near_spellings: Arc<[String]> = ranked.near_spellings.into();
+        let has_more = ranked.len() > request.window;
         let mut window = Vec::new();
-        for ranked in ranked.entities.into_iter().take(request.window) {
+        for ranked in ranked.into_iter().take(request.window) {
             // A delete or a removal leaves the Tool's row for a later
             // write, so only what the caller discovers now may answer.
             let Some(material) = current.get(&ranked.id) else {
@@ -145,7 +138,6 @@ impl EntityRetriever for AuthoredToolRetriever {
                 entity: EntityRef::AuthoredTool(AuthoredToolRef {
                     material: material.clone(),
                     call_path: ranked.call_path,
-                    near_spellings: Arc::clone(&near_spellings),
                 }),
                 strong: strong_authored_tool(&plan, &ranked.matched),
             });
@@ -187,55 +179,16 @@ impl EntityRetriever for AuthoredToolRetriever {
             Err(coral_tools::Error::CorruptData(_)) => return Ok(Hydrated::Unreadable),
             Err(error) => return Err(error.into()),
         };
-        let hit_material = HitMaterial {
+        let text = hit_text(&HitMaterial {
             declaration: material.declaration().as_str(),
             callable: Callable::AuthoredTool {
                 leaf: tool.call_path.leaf(),
             },
             description: material.description().as_str(),
-            guidance: None,
-            tags: &[],
-        };
-        let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_authored_tool(
-                tool.call_path.clone(),
-                hit_text(&hit_material, None),
-                SearchEvidence::default(),
-            ))));
-        };
-        let terms = EvidenceTerms::new(terms, &tool.near_spellings);
-        let mut evidence = EvidenceBuilder::new(&terms);
-        evidence
-            .field("call_path", [tool.call_path.as_str()])
-            .field("description", [hit_material.description]);
-        let declaration_fields = coral_tools::authored_tool_declaration_fields_in_transaction(
-            transaction,
-            context.workspace_id,
-            context.actor.principal(),
-            tool.material.path(),
-        )
-        .await?;
-        for field in &declaration_fields {
-            evidence.path(field.path(), field.text());
-        }
-        let Some(matched) = evidence.build() else {
-            let ranked = super::RankedCallPath(&tool.call_path);
-            let (private, shared) = match self.kind {
-                AuthoredToolKind::Private => (Some(&ranked), None),
-                AuthoredToolKind::Shared => (None, Some(&ranked)),
-            };
-            tracing::debug!(
-                coral.private_tool.call_path = private.map(safe::id),
-                coral.shared_tool.call_path = shared.map(safe::id),
-                "a ranked Authored Tool has no evidence and leaves the page"
-            );
-            return Ok(Hydrated::Dropped);
-        };
-        let text = hit_text(&hit_material, Some((&terms, &matched)));
+        });
         Ok(Hydrated::Hit(Box::new(SearchHit::from_authored_tool(
             tool.call_path.clone(),
             text,
-            matched.evidence,
         ))))
     }
 
@@ -383,6 +336,5 @@ fn authored_tool_ref(material: AuthoredToolSearchMaterial) -> Result<EntityRef, 
     Ok(EntityRef::AuthoredTool(AuthoredToolRef {
         call_path: CallPath::authored_tool(material.path())?,
         material,
-        near_spellings: Arc::new([]),
     }))
 }

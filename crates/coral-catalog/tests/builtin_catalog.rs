@@ -138,7 +138,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#"export default function (input: { "paths": [string]; "types": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
                 r#""hits": Array<SearchHit>"#,
                 r#""next_offset"?: number"#,
-                r#""signature_line": string"#,
+                // A hit says nothing of why it matched.
+                r#"type SearchHit = { "approval_required"?: boolean; "call_path": string; "complete": boolean; "deprecated"?: boolean; "description_snippet": string; "hints"?: Hints; "signature_line": string };"#,
                 r#""missing": Array<MissingPath>"#,
                 r#""suggestions": Array<string>"#,
                 r#""kind": "provider_tool""#,
@@ -264,7 +265,6 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     assert_eq!(add_provider.relative_path(), full.relative_path());
     assert_eq!(add_provider.presentation(), full.presentation());
     let prepared = fields.searchable_tool(add_provider).unwrap();
-    assert_eq!(prepared, fields.tool(full).unwrap());
     let paths = prepared
         .entries()
         .iter()
