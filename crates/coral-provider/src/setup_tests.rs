@@ -143,7 +143,10 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         )
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     harness
         .providers
         .publish_workspace_provider(
@@ -220,7 +223,10 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
             Some(request("tides", CredentialRoute::Fixed))
         )]
     );
-    assert!(listed(deadline(3)).await.is_empty());
+    assert_eq!(
+        listed(deadline(3)).await,
+        [] as [(crate::ProviderSetupId, Option<crate::SetupRequest>); 0]
+    );
 }
 
 #[tokio::test]
@@ -268,7 +274,10 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
         .confirm_setup_configuration(&context, &owner, setup.id(), 0, configuration.clone())
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     harness
         .accounts
         .authorize_setup(
@@ -287,7 +296,10 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
         .confirm_setup_configuration(&context, &owner, setup.id(), 1, invalid)
         .await
         .unwrap();
-    assert!(!rejected.errors.is_empty());
+    assert_ne!(
+        rejected.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(
         harness
             .providers
@@ -302,7 +314,10 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
         .confirm_setup_configuration(&context, &owner, setup.id(), 1, configuration)
         .await
         .unwrap();
-    assert!(changed.errors.is_empty());
+    assert_eq!(
+        changed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(
         !harness
             .providers
@@ -479,7 +494,10 @@ async fn protected_mcp_reviews_metadata_before_bearer_authorization_and_pins_aft
         .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, values)
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let auth = harness
         .accounts
         .authorize_setup(
@@ -606,7 +624,10 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
         )
         .await
         .unwrap();
-    assert!(confirmation.errors.is_empty());
+    assert_eq!(
+        confirmation.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let reserved = if borrow {
         harness
             .accounts
@@ -702,7 +723,10 @@ async fn changing_mcp_url_requires_fresh_discovery_without_forwarding_old_creden
         .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, values)
         .await
         .unwrap();
-    assert!(!rejected.errors.is_empty());
+    assert_ne!(
+        rejected.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(second.received_requests().await.unwrap().is_empty());
     assert!(
         harness
@@ -816,7 +840,10 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
         .confirm_setup_configuration(&context, &owner, setup.id(), 1, changed)
         .await
         .unwrap();
-    assert!(refreshed.errors.is_empty());
+    assert_eq!(
+        refreshed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let requests = server.received_requests().await.unwrap();
     let tool_lists = requests.iter().filter(|request| {
         request
@@ -1946,13 +1973,13 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(publication.diagnostic().unwrap().code(), "account_required");
     assert!(publication.published_provider().is_none());
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&owner, &scope)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     let after = harness
         .providers
@@ -2332,10 +2359,9 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
     );
 
     assert!(server.received_requests().await.unwrap().is_empty());
-    assert!(
-        open_setups(&harness, &owner, workspace.id())
-            .await
-            .is_empty()
+    assert_eq!(
+        open_setups(&harness, &owner, workspace.id()).await,
+        [] as [crate::ProviderSetupId; 0]
     );
     assert_eq!(
         publications(&harness, &owner, workspace.id()).await,
@@ -2637,10 +2663,9 @@ async fn an_update_of_an_absent_provider_prepares_nothing() {
         ),
         "{prepared:?}"
     );
-    assert!(
-        open_setups(&harness, &owner, workspace.id())
-            .await
-            .is_empty()
+    assert_eq!(
+        open_setups(&harness, &owner, workspace.id()).await,
+        [] as [crate::ProviderSetupId; 0]
     );
 }
 
@@ -2691,10 +2716,9 @@ async fn an_update_with_no_saved_configuration_ends_its_setup() {
         ),
         "{prepared:?}"
     );
-    assert!(
-        open_setups(&harness, &owner, workspace.id())
-            .await
-            .is_empty()
+    assert_eq!(
+        open_setups(&harness, &owner, workspace.id()).await,
+        [] as [crate::ProviderSetupId; 0]
     );
     assert_eq!(
         harness
@@ -3005,13 +3029,13 @@ async fn expired_setup_credential_fails_publication_and_creates_no_account() {
         matches!(publication, Err(Error::ProviderSetupNotReady)),
         "{publication:?}"
     );
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&owner, &scope)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
 }
 

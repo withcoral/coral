@@ -321,7 +321,10 @@ impl PublicClientAccount {
             )
             .await
             .unwrap();
-        assert!(review.errors.is_empty());
+        assert_eq!(
+            review.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         fixture
             .providers
             .regenerate_provider(
@@ -1027,12 +1030,12 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
         };
         assert_eq!(value.as_json(), &expected);
         assert!(!format!("{terminal:?}").contains("agent-run-canary"));
-        assert!(
+        assert_eq!(
             accounts
                 .list_connection_requests(&context, &tool.workspace_id)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [coral_provider::account::ConnectionRequest; 0]
         );
         if stage == 1 {
             let changed = serde_json::json!({

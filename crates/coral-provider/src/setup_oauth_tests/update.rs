@@ -274,7 +274,10 @@ async fn authenticated_update_renews_expired_borrowed_material_without_reconnect
         )
         .await
         .unwrap();
-    assert!(review.errors.is_empty());
+    assert_eq!(
+        review.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let ready = h
         .accounts
         .discover_setup_with_account(&later, owner, update.id(), review.revision)

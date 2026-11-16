@@ -64,11 +64,9 @@ async fn a_burst_of_emits_commits_in_chunks_and_stays_prefix_complete() {
     assert_eq!(engine.rejected.load(Ordering::SeqCst), 0);
     assert!(commit_gate.entered());
     assert_eq!(fixture.run_record(&workspace_id, &run_id).await, started);
-    assert!(
-        fixture
-            .events_after(&workspace_id, &run_id, 1)
-            .await
-            .is_empty()
+    assert_eq!(
+        fixture.events_after(&workspace_id, &run_id, 1).await,
+        [] as [RunEvent; 0]
     );
 
     release_commit.send(()).expect("release the commit");
@@ -1269,8 +1267,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         chunk
             .enforcement
             .as_ref()
-            .map(|batch| batch.invocation_ids())
-            .unwrap_or_default()
+            .map_or_default(|batch| batch.invocation_ids())
     };
 
     // Three requests, one batch, one chunk; nothing commits before the drain.

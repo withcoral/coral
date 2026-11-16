@@ -683,7 +683,7 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
     .await
     .unwrap();
     transaction.rollback().await.unwrap();
-    assert!(marked_again.is_empty());
+    assert_eq!(marked_again, [] as [crate::InvocationId; 0]);
 
     upstream.release.store(true, Ordering::SeqCst);
     let terminal = wait_for_terminal(

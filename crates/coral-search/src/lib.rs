@@ -56,7 +56,6 @@ mod caller_declarations;
 mod discovery;
 mod eligibility;
 mod error;
-mod evidence;
 mod hit;
 mod index;
 mod index_state;
@@ -76,7 +75,6 @@ mod types;
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
-use coral_provider::LoadedGenerations;
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -99,11 +97,10 @@ pub use types::{
     ApprovalRequirement, AuthoredToolAuthoringDescription, AuthoringDescription, CallPath,
     EntityKind, ExactAuthoredToolDetail, ExactAuthoringDescription, ProviderCallRoot,
     ProviderFilter, ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus,
-    SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
-    SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
-    SEARCH_RESULT_LIMIT_MAX, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState,
-    SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest, SearchableProvider,
-    ToolAuthoringDescription, ToolHit, provider_filter_value,
+    SEARCH_DEFAULT_LIMIT, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX,
+    SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit, SearchPage,
+    SearchQuery, SearchRequest, SearchableProvider, ToolAuthoringDescription, ToolHit,
+    provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
@@ -211,9 +208,9 @@ impl UniversalSearchModule {
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
     /// engine fuses the windows by position, strong matches first. Only the
-    /// page's items are hydrated, each into a hit with a signature line,
-    /// snippets, and evidence of why it matched. Every page carries one
-    /// status per retriever. An omitted query
+    /// page's items are hydrated, each into a hit with a signature line and
+    /// the beginning of its description; a hit says nothing of why it
+    /// matched. Every page carries one status per retriever. An omitted query
     /// lists every visible Entity in Call Path order and reads no index.
     ///
     /// # Errors
@@ -243,13 +240,10 @@ impl UniversalSearchModule {
         let authority = self
             .authorize(&mut transaction, actor, workspace_id)
             .await?;
-        let loaded = LoadedGenerations::default();
         let context = RequestContext {
             actor,
             authority: &authority,
             workspace_id,
-            terms: terms.as_deref(),
-            loaded: &loaded,
         };
         let (ranked, statuses) = match &terms {
             None => {
@@ -316,8 +310,6 @@ impl UniversalSearchModule {
                 actor,
                 authority: &authority,
                 workspace_id,
-                terms: None,
-                loaded: &LoadedGenerations::default(),
             },
         )
         .await?;
@@ -455,13 +447,10 @@ impl UniversalSearchModule {
             .await?;
         let mut found = Vec::with_capacity(paths.paths().len());
         let mut missing = Vec::new();
-        let loaded = LoadedGenerations::default();
         let context = RequestContext {
             actor,
             authority: &authority,
             workspace_id,
-            terms: None,
-            loaded: &loaded,
         };
         for written in paths.paths() {
             let exact = match CallPath::parse(written) {
@@ -560,13 +549,10 @@ impl UniversalSearchModule {
             Err(Error::AuthoringDescriptionNotFound) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        let loaded = LoadedGenerations::default();
         let context = RequestContext {
             actor,
             authority: &authority,
             workspace_id,
-            terms: None,
-            loaded: &loaded,
         };
         let descriptions =
             retriever::tools::describe_tools(&mut transaction, context, call_paths).await?;
@@ -583,13 +569,10 @@ impl UniversalSearchModule {
         workspace_id: &WorkspaceId,
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
-        let loaded = LoadedGenerations::default();
         let context = RequestContext {
             actor,
             authority,
             workspace_id,
-            terms: None,
-            loaded: &loaded,
         };
         for retriever in self.retrievers.iter() {
             if let Some(exact) = retriever.describe(transaction, context, call_path).await? {

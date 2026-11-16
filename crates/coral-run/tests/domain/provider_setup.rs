@@ -1470,7 +1470,10 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         "outbound_destination_rejected",
     );
     assert_eq!(fetches(&server).await, 0);
-    assert!(scope.setups_created_since(&before).await.is_empty());
+    assert_eq!(
+        scope.setups_created_since(&before).await,
+        [] as [coral_provider::ProviderSetupId; 0]
+    );
 
     // A policy that permits loopback fetches the source once and prepares one Setup.
     let run = scope

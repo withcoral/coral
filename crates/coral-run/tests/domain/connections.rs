@@ -661,12 +661,12 @@ async fn connection_requests_are_concealed_from_other_users() {
         "a concealed decline changes nothing"
     );
     GateLoss::Decline.apply(&waiting).await;
-    assert!(
+    assert_eq!(
         accounts
             .list_user_lifecycle_events(&stranger, scope)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_provider::AdministrativeLifecycleEvent; 0]
     );
     assert!(
         !waiting

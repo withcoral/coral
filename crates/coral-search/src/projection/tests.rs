@@ -3,10 +3,8 @@ use serde_json::{Value, json};
 
 use crate::{
     ApprovalRequirement, CallPath, EntityKind, ProviderCallRoot, ProviderId, RetrieverCoverage,
-    RetrieverState, RetrieverStatus, SearchEvidence, SearchHit, SearchPage,
-    ToolAuthoringDescription,
-    signature::{Callable, SignatureLine, signature_line},
-    types::HitText,
+    RetrieverState, RetrieverStatus, SearchHit, SearchPage, ToolAuthoringDescription,
+    signature::SignatureLine, types::HitText,
 };
 
 #[test]
@@ -42,22 +40,19 @@ fn hints_project_only_what_the_provider_declared() {
 #[test]
 fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
     let line = "list(input: { repo: string }): Promise<{ data: Array<Pull> }>";
-    let text = |guidance: Option<&str>, tags: &[&str]| HitText {
+    let text = || HitText {
         signature: SignatureLine {
             text: line.into(),
             complete: true,
             input_end: line.find("): ").expect("result") + 1,
         },
         description_snippet: "Lists pull requests.".into(),
-        guidance_snippet: guidance.map(Into::into),
-        matched_tags: tags.iter().map(|&tag| tag.into()).collect(),
     };
     for (name, hit, expected) in [
         (
-            "a Tool listed without a query, with nothing declared or set",
+            "a Tool with nothing declared or set",
             tool_hit(
-                text(None, &[]),
-                SearchEvidence::default(),
+                text(),
                 ToolHints::default(),
                 ApprovalRequirement::NotRequired,
                 false,
@@ -65,54 +60,25 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             json!({ "call_path": "coral.providers.github.pulls.list" }),
         ),
         (
-            "a Tool whose every field and flag applies",
+            "a Tool whose every flag applies: its tags and guidance stay out",
             tool_hit(
-                text(Some("Prefer search for one author."), &["pulls"]),
-                SearchEvidence::new(
-                    vec!["title".into(), "call_path".into(), "tags".into()],
-                    vec!["result.data[].head".into(), "input.repo".into()],
-                ),
+                text(),
                 ToolHints::new(Some(true), None, None, Some(false)),
                 ApprovalRequirement::Required,
                 true,
             ),
             json!({
                 "call_path": "coral.providers.github.pulls.list",
-                "guidance_snippet": "Prefer search for one author.",
-                "matched_tags": ["pulls"],
                 "hints": { "read_only": true, "open_world": false },
                 "approval_required": true,
                 "deprecated": true,
             }),
         ),
         (
-            "a Tool with a matched argument its signature line does not show",
-            tool_hit(
-                text(None, &[]),
-                SearchEvidence::new(
-                    vec!["description".into()],
-                    vec![
-                        "input.query".into(),
-                        "input.query.text".into(),
-                        "input.repo".into(),
-                        "result.data[].query".into(),
-                    ],
-                ),
-                ToolHints::default(),
-                ApprovalRequirement::NotRequired,
-                false,
-            ),
-            json!({
-                "call_path": "coral.providers.github.pulls.list",
-                "matched_inputs": ["query"],
-            }),
-        ),
-        (
-            "a Private Tool that matched in its declaration",
+            "a Private Tool",
             SearchHit::from_authored_tool(
                 CallPath::parse("coral.private.github.openPulls").expect("Call Path"),
-                text(None, &[]),
-                SearchEvidence::new(vec!["title".into()], vec!["input.repo".into()]),
+                text(),
             ),
             json!({ "call_path": "coral.private.github.openPulls" }),
         ),
@@ -178,7 +144,6 @@ fn a_page_states_its_next_offset_and_retriever_statuses_only_when_they_matter() 
 
 fn tool_hit(
     text: HitText,
-    evidence: SearchEvidence,
     hints: ToolHints,
     approval: ApprovalRequirement,
     deprecated: bool,
@@ -202,7 +167,7 @@ fn tool_hit(
         hints,
         approval,
     );
-    SearchHit::from_tool(&description, text, evidence)
+    SearchHit::from_tool(&description, text)
 }
 
 fn status(retriever: EntityKind, state: RetrieverState) -> RetrieverStatus {
@@ -214,44 +179,4 @@ fn merge(target: &mut Value, extra: Value) {
         panic!("objects");
     };
     target.extend(extra);
-}
-
-#[test]
-fn a_matched_argument_the_cut_input_leaves_out_is_listed_though_the_result_shows_its_name() {
-    // The line keeps the result, which here shows `{ data: { content: … } }`;
-    // the `data` and `content` arguments are cut from the input all the same.
-    let members = (0..80)
-        .map(|index| format!("\"field{index}\": string"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let declaration = format!(
-        "export default function (input: {{ {members}; \"content\": string; \"data\": string }}): Promise<{{ data: {{ content: Array<McpContentBlock>; structuredContent?: unknown; isError?: false }}; metadata: {{ kind: \"mcp\" }} }}>;"
-    );
-    let signature = signature_line(&declaration, Callable::Tool { leaf: "post" });
-    assert!(
-        signature.text.contains("{ data: { content: "),
-        "{}",
-        signature.text
-    );
-    let hit = tool_hit(
-        HitText {
-            signature,
-            description_snippet: String::new(),
-            guidance_snippet: None,
-            matched_tags: Vec::new(),
-        },
-        SearchEvidence::new(
-            vec!["declaration".into()],
-            vec![
-                "input.content".into(),
-                "input.data".into(),
-                "input.field0".into(),
-            ],
-        ),
-        ToolHints::default(),
-        ApprovalRequirement::NotRequired,
-        false,
-    );
-
-    assert_eq!(super::matched_inputs(&hit), ["content", "data"]);
 }
