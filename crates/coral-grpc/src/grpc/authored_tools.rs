@@ -23,11 +23,11 @@ pub(super) fn private_tool_agent(
     }
     let (agent_workspace, agent) = resource(name, "agents")?;
     if &agent_workspace != workspace {
-        return Err(invalid("invalid Agent name"));
+        return Err(invalid());
     }
     PrincipalId::parse(agent)
         .map(Some)
-        .map_err(|_error| invalid("invalid Agent name"))
+        .map_err(|_error| invalid())
 }
 
 /// The status of one coral-tools failure, for both services. Each variant

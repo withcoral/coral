@@ -29,9 +29,9 @@ pub(super) fn resource<'a>(
 ) -> Result<(WorkspaceId, &'a str), Status> {
     let (prefix, id) = name
         .rsplit_once(&format!("/{collection}/"))
-        .ok_or_else(|| invalid("invalid resource name"))?;
+        .ok_or_else(invalid)?;
     if id.is_empty() || id.contains('/') {
-        return Err(invalid("invalid resource name"));
+        return Err(invalid());
     }
     Ok((scope(prefix)?, id))
 }
@@ -228,12 +228,12 @@ fn outcome(value: domain::ProviderPublicationOutcome) -> wire::ProviderPublicati
 }
 
 pub(super) fn route(value: Option<wire::CredentialRoute>) -> Result<CredentialRoute, Status> {
-    let value = value.ok_or_else(|| invalid("credential_route required"))?;
+    let value = value.ok_or_else(invalid)?;
     match wire::credential_route::Kind::try_from(value.kind) {
         Ok(wire::credential_route::Kind::None) => Ok(CredentialRoute::None),
         Ok(wire::credential_route::Kind::Caller) => Ok(CredentialRoute::Caller),
         Ok(wire::credential_route::Kind::Fixed) => Ok(CredentialRoute::Fixed),
-        _ => Err(invalid("invalid credential route")),
+        _ => Err(invalid()),
     }
 }
 
@@ -520,9 +520,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
-        let mut configuration = req
-            .configuration
-            .ok_or_else(|| invalid("configuration is required"))?;
+        let mut configuration = req.configuration.ok_or_else(invalid)?;
         let application = match configuration.authentication.as_mut() {
             Some(wire::provider_configuration::Authentication::OauthDeviceCode(settings)) => {
                 settings
@@ -581,23 +579,21 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let context = change(self.management_user(&request).await?)?;
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
-        let input = req.input.ok_or_else(|| invalid("input required"))?;
+        let input = req.input.ok_or_else(invalid)?;
         if !req.discovery_credential.is_empty() {
-            return Err(invalid(
-                "confirm configuration before authorizing discovery",
-            ));
+            return Err(invalid());
         }
         let update_target = if req.provider.is_empty() {
             None
         } else {
             let (target_owner, target) = resource(&req.provider, "providers")?;
             if target_owner != owner {
-                return Err(invalid("provider owner does not match setup"));
+                return Err(invalid());
             }
             Some(domain::ProviderId::parse(target).map_err(error)?)
         };
         if !req.request_headers.is_empty() && !matches!(input, Input::McpUrl(_)) {
-            return Err(invalid("request headers require an MCP URL"));
+            return Err(invalid());
         }
         let source = match input {
             Input::OpenapiDocument(bytes) => domain::ProviderSetupSource::OpenApiDocument(
@@ -766,8 +762,8 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         let request = request.into_inner();
         let (owner, id) = resource(&request.name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
-        let secret = coral_credentials::Secret::new(request.client_secret)
-            .map_err(|_error| invalid("invalid client secret"))?;
+        let secret =
+            coral_credentials::Secret::new(request.client_secret).map_err(|_error| invalid())?;
         self.accounts()?
             .rotate_oauth_client_secret(&context, &owner, &id, &request.client_id, secret)
             .await
@@ -785,17 +781,17 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         let owner = scope(&req.parent)?;
         let (setup_owner, setup_id) = resource(&req.setup, "providerSetups")?;
         if setup_owner != owner {
-            return Err(invalid("Setup owner mismatch"));
+            return Err(invalid());
         }
         let setup_id = ProviderSetupId::parse(setup_id).map_err(error)?;
         let request_id = ManagementRequestId::parse(&req.request_id).map_err(error)?;
         if !req.provider.is_empty() {
             let (target_owner, id) = resource(&req.provider, "providers")?;
             if target_owner != owner {
-                return Err(invalid("Provider owner mismatch"));
+                return Err(invalid());
             }
             if !req.namespace.is_empty() {
-                return Err(invalid("Update preserves the Provider namespace"));
+                return Err(invalid());
             }
             let context = context
                 .with_etag(&req.etag)
@@ -837,7 +833,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             }));
         }
         if !req.etag.is_empty() {
-            return Err(invalid("etag applies to regeneration only"));
+            return Err(invalid());
         }
         let publication_request = domain::WorkspaceProviderPublicationRequest::new(
             request_id,
@@ -1119,10 +1115,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         let after = if after.is_empty() {
             None
         } else {
-            Some(
-                coral_catalog::ToolKey::parse(&after)
-                    .map_err(|_error| invalid("invalid page token"))?,
-            )
+            Some(coral_catalog::ToolKey::parse(&after).map_err(|_error| invalid())?)
         };
         let tools = self
             .providers
