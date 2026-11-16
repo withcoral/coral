@@ -1063,7 +1063,7 @@ async fn resolved(
         provider_access,
         generation_id,
         tool,
-        schema_graph,
+        Arc::new(schema_graph),
     )))
 }
 
