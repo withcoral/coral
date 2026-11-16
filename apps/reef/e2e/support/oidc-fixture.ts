@@ -30,9 +30,6 @@ const starting: RequestListener = (_request, response) => {
 export async function startIdentityProvider(coralCallback: string, reefOrigin: string) {
   let handler = starting
   const server = createServer((request, response) => handler(request, response))
-  // Coral reuses its connection for every sign-in. Node closes an idle one after
-  // five seconds, and a request sent as it closes fails the sign-in.
-  server.keepAliveTimeout = 0
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(0, '127.0.0.1', resolve)
