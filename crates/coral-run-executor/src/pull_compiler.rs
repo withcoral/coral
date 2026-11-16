@@ -45,8 +45,8 @@ const TOO_LARGE: &str = "The source and the declarations of the custom tools it 
 /// each answer back. A call whose stream ends first is routed once more,
 /// since a compile changes nothing, while it has more time left than
 /// `ROOM_WAIT_RESERVE`. It fails as a stopped compiler when no other stream
-/// takes it then, or when that stream ends first too, and as rejected when
-/// it is too large to send.
+/// takes it then, or when that stream ends first or runs out of time too,
+/// and as rejected when it is too large to send.
 #[derive(Clone)]
 pub struct PullStreamCompiler {
     streams: PullStreams,
@@ -101,8 +101,9 @@ enum Route<'a> {
     Relay(&'a CompileRelay, Option<&'a LocalRunExecutors>),
 }
 
-/// A call sent: its answer to come from a stream, or the relay's answer.
-enum Sent {
+/// Where a call went: to a stream, whose answer is to come, or through the
+/// relay, which answered.
+enum Routed {
     Stream(oneshot::Receiver<Read>),
     Relayed(Read),
 }
@@ -232,31 +233,37 @@ impl PullStreamCompiler {
                     .ok()
             });
         let room_until = called + time_left.saturating_sub(ROOM_WAIT_RESERVE);
-        // Whether a stream the call went to ended before it answered.
-        let mut ended = false;
+        // Whether a stream the call went to ended before it answered, so it
+        // was routed once more.
+        let mut routed_again = false;
         loop {
             let answer = match on_held.take() {
                 Some(answer) => answer,
                 None => match self.send(call, until, room_until).await {
-                    Ok(Sent::Stream(answer)) => answer,
-                    Ok(Sent::Relayed(read)) => return Ok(read),
+                    Ok(Routed::Stream(answer)) => answer,
+                    Ok(Routed::Relayed(read)) => return Ok(read),
                     // No other stream took it: it fails as the one that ended.
-                    Err(CompileError::Unavailable(Unavailable::NoCompiler)) if ended => {
+                    Err(CompileError::Unavailable(Unavailable::NoCompiler)) if routed_again => {
                         return Err(STOPPED);
                     }
                     Err(error) => return Err(error),
                 },
             };
             match tokio::time::timeout(left(), answer).await {
+                // Routed again, it had less than its time: no judgement of
+                // the source.
+                Err(_) | Ok(Ok(Read::Failure(CompileError::TimedOut))) if routed_again => {
+                    return Err(STOPPED);
+                }
                 Err(_elapsed) => return Err(CompileError::TimedOut),
                 // The stream ended first: it is routed once more. A call that
                 // ends each stream it reaches ends no more than two.
                 Ok(Err(_closed))
-                    if !ended
+                    if !routed_again
                         && matches!(self.target, Target::MostRoom { .. })
                         && Instant::now() < room_until =>
                 {
-                    ended = true;
+                    routed_again = true;
                 }
                 Ok(Err(_closed)) => return Err(STOPPED),
                 Ok(Ok(Read::Failure(error))) => return Err(error),
@@ -273,7 +280,7 @@ impl PullStreamCompiler {
         call: &Call,
         until: Instant,
         room_until: Instant,
-    ) -> Result<Sent, CompileError> {
+    ) -> Result<Routed, CompileError> {
         // A call no stream took was not judged: it fails as no compiler,
         // never as a compile timeout.
         let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
@@ -283,7 +290,7 @@ impl PullStreamCompiler {
                 // Untaken, it answers before the caller's own deadline, as a
                 // wait for room here does.
                 Route::Relay(relay, children) => {
-                    return relay.call(call, children, until).await.map(Sent::Relayed);
+                    return relay.call(call, children, until).await.map(Routed::Relayed);
                 }
             };
             let left = until.saturating_duration_since(Instant::now());
@@ -291,7 +298,7 @@ impl PullStreamCompiler {
                 return Err(no_compiler());
             }
             match self.streams.compile(stream, millis(left), call.clone()) {
-                Ok(answer) => return Ok(Sent::Stream(answer)),
+                Ok(answer) => return Ok(Routed::Stream(answer)),
                 // Another call took the room first: look again.
                 Err(Refused::NoRoom | Refused::Closed)
                     if matches!(self.target, Target::MostRoom { .. }) => {}

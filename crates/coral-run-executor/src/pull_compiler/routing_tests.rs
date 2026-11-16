@@ -100,37 +100,110 @@ async fn a_call_takes_a_unit_of_the_stream_with_the_most_room_until_its_answer()
     );
 }
 
+/// What the stream after the ones that end does with the call.
+#[derive(Clone, Copy)]
+enum Next {
+    /// It is sent nothing.
+    Untouched,
+    /// It answers.
+    Answers,
+    /// It takes the call and never answers.
+    Silent,
+}
+
 /// Catches: a call that fails when its stream ends before it answers,
-/// although another stream has room; one routed more than once; or one
-/// that then fails as anything but a stopped compiler.
+/// although another stream has room; one routed more than once, or past the
+/// room bound; or one that then fails as anything but a stopped compiler, a
+/// timeout on the next stream included.
 #[tokio::test(start_paused = true)]
 async fn a_call_whose_stream_ends_first_is_routed_once_more() {
+    // A name, each stream's room, how many end before they answer, how long
+    // after its `Compile` the first ends, the next stream, and the result.
+    type Case = (
+        &'static str,
+        &'static [u32],
+        usize,
+        Duration,
+        Next,
+        Result<&'static str, CompileError>,
+    );
     let stopped = Err(CompileError::Unavailable(Unavailable::Stopped));
-    // Each stream's room, how many end before they answer, and the result.
-    let cases: [(&[u32], usize, Result<&str, CompileError>); 3] = [
-        (&[2, 1], 1, Ok("42")),
-        (&[1], 1, stopped.clone()),
-        (&[3, 2, 1], 2, stopped),
+    let bound = TEST_COMPILATION_TIMEOUT.saturating_sub(ROOM_WAIT_RESERVE);
+    let cases: [Case; 5] = [
+        (
+            "another stream",
+            &[2, 1],
+            1,
+            Duration::ZERO,
+            Next::Answers,
+            Ok("42"),
+        ),
+        (
+            "a silent next stream",
+            &[2, 1],
+            1,
+            Duration::ZERO,
+            Next::Silent,
+            stopped.clone(),
+        ),
+        (
+            "past the room bound",
+            &[2, 1],
+            1,
+            bound,
+            Next::Untouched,
+            stopped.clone(),
+        ),
+        (
+            "no other stream",
+            &[1],
+            1,
+            Duration::ZERO,
+            Next::Untouched,
+            stopped.clone(),
+        ),
+        (
+            "two that end",
+            &[3, 2, 1],
+            2,
+            Duration::ZERO,
+            Next::Untouched,
+            stopped,
+        ),
     ];
-    for (rooms, ending, expected) in cases {
+    for (name, rooms, ending, after, next, expected) in cases {
         let streams = PullStreams::default();
         let mut opened: Vec<_> = rooms.iter().map(|&free| open(&streams, free)).collect();
         let calling = compiling(Arc::new(PullStreamCompiler::new(streams.clone(), None)));
         // Each goes to the stream with the most room left.
-        for (stream, sent) in opened.iter_mut().take(ending) {
-            assert!(sent.recv().await.is_some(), "{rooms:?}: a Compile");
+        for (index, (stream, sent)) in opened.iter_mut().take(ending).enumerate() {
+            assert!(sent.recv().await.is_some(), "{name}: a Compile");
+            if index == 0 {
+                tokio::time::advance(after).await;
+            }
             streams.end(*stream, None);
         }
-        if let (Some((stream, sent)), Ok(_)) = (opened.get_mut(ending), &expected) {
-            let answered = answer(&streams, *stream, sent, None);
-            let answered = tokio::time::timeout(TEST_COMPILATION_TIMEOUT, answered).await;
-            answered.expect("the next stream takes the call");
+        let mut rest: Vec<_> = opened.iter_mut().skip(ending).collect();
+        match (next, rest.first_mut()) {
+            (Next::Answers, Some((stream, sent))) => {
+                let answered = answer(&streams, *stream, sent, None);
+                let answered = tokio::time::timeout(TEST_COMPILATION_TIMEOUT, answered).await;
+                answered.expect("the next stream takes the call");
+            }
+            (Next::Silent, Some((_, sent))) => {
+                let taken = tokio::time::timeout(TEST_COMPILATION_TIMEOUT, sent.recv()).await;
+                assert!(
+                    matches!(taken, Ok(Some(_))),
+                    "{name}: the next stream takes it"
+                );
+            }
+            _ => {}
         }
         let returned = calling.await.unwrap();
         let returned = returned.as_deref().map_err(Clone::clone);
-        assert_eq!(returned, expected, "{rooms:?}");
-        for (_, sent) in &mut opened {
-            assert!(sent.try_recv().is_err(), "{rooms:?}: sent no more");
+        assert_eq!(returned, expected, "{name}");
+        for (_, sent) in rest {
+            assert!(sent.try_recv().is_err(), "{name}: sent no more");
         }
     }
 }
