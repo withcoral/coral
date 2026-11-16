@@ -104,15 +104,21 @@ export function configurationNext(page: Page) {
  */
 export async function backToConfiguration(page: Page) {
   const configuring = configurationNext(page)
-  const back = page.getByRole('link', { name: /^(Back|Change choices)$/ }).first()
+  const waysBack = page.getByRole('link', { name: /^(Back|Change choices)$/ })
+  // A source fetch can still be settling when this helper starts. Wait for
+  // either destination state before deciding to navigate away from it.
+  let step = configuring.or(waysBack).first()
   for (let hop = 0; hop < 4; hop += 1) {
-    // A source fetch can still be settling when this helper starts. Wait for
-    // either destination state before deciding to navigate away from it.
-    await configuring.or(back).first().waitFor({ state: 'attached' })
+    await step.waitFor({ state: 'attached' })
     if (await configuring.count()) break
-    const from = page.url()
+    const back = waysBack.first()
+    const leadsTo = (await back.getAttribute('href')) ?? ''
     await back.click()
-    await page.waitForURL((url) => url.href !== from)
+    // The address changes before React renders the step it names, so the page
+    // can still show the step this hop left. Every step's way back leads
+    // somewhere else: wait for a different one, or for Configuration.
+    const elsewhere = page.locator(`:not([href=${JSON.stringify(leadsTo)}])`)
+    step = configuring.or(waysBack.and(elsewhere)).first()
   }
   await configuring.waitFor()
 }

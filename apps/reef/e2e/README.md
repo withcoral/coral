@@ -489,6 +489,11 @@ After `page.goto`, assert the response status before you wait for content. An
 error page renders at once, and every later wait then times out with a message
 that hides the cause.
 
+After a click that moves within Reef, wait for content that only the next page
+has, not for the address. React Router changes the address before React renders
+the page it names, so a locator read just after `waitForURL` can still see the
+page you left.
+
 A harness failure carries its cause in its message, such as a process's last
 output, so the job log alone explains it. A message that only names a log file
 sends the reader to an artifact they may not have.
