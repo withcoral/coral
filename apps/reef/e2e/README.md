@@ -494,6 +494,11 @@ has, not for the address. React Router changes the address before React renders
 the page it names, so a locator read just after `waitForURL` can still see the
 page you left.
 
+Call `page.route` before the action that loads a new document, never just
+after it. A document that loads while the browser turns interception on can
+send its requests past the route. Playwright then reports none of them: the
+handler does not run, and the trace shows no request.
+
 A harness failure carries its cause in its message, such as a process's last
 output, so the job log alone explains it. A message that only names a log file
 sends the reader to an artifact they may not have.
