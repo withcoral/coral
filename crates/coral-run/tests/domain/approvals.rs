@@ -2728,7 +2728,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
                 .collect::<Vec<_>>(),
             [ApprovalState::Closed]
         );
-        upstream.release.store(true, Ordering::SeqCst);
+        upstream.release();
         let canceled = cancel.await.expect("join").expect("cancel");
         assert_eq!(canceled.state(), RunState::Canceled);
         assert_eq!(

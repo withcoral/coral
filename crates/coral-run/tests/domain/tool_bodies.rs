@@ -206,7 +206,7 @@ fn outcomes(rows: &[InvocationRow]) -> Vec<(&str, Option<InvocationResultKind>)>
 #[tokio::test]
 async fn tool_bodies_that_make_more_concurrent_calls_than_the_fan_out_limit_complete() {
     let mut scope = BodyScope::new("user:tool-bodies-fan-out").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope.fixture.runs = scope
         .fixture
         .runs
@@ -300,7 +300,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
         let mut scope = BodyScope::new(&format!("user:tool-bodies-{ending:?}")).await;
         // The body's call returns at once unless the Run ends while it waits.
         if matches!(ending, Ending::CpuLimitExceeded) {
-            scope.upstream.release.store(true, Ordering::SeqCst);
+            scope.upstream.release();
             scope.fixture.runs = scope.fixture.runs.clone().with_cpu_budget(
                 crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"),
             );
@@ -332,7 +332,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
         if !matches!(ending, Ending::CpuLimitExceeded | Ending::LostInstance) {
             // The body's call ends with its own outcome while the Run ends.
             scope.termination_is_recorded(&run).await;
-            scope.upstream.release.store(true, Ordering::SeqCst);
+            scope.upstream.release();
         }
 
         let terminal = scope.terminal(&run).await;
@@ -360,7 +360,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
             let canceled = cancel.await.expect("join").expect("cancel the Run");
             assert_eq!(canceled.state(), RunState::Canceled);
         }
-        scope.upstream.release.store(true, Ordering::SeqCst);
+        scope.upstream.release();
         wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
     }
 }
@@ -410,7 +410,7 @@ async fn a_program_that_ends_before_a_tool_body_settles_ends_its_call_as_run_ter
 async fn a_call_that_ends_with_its_program_is_traced_as_run_terminated_when_it_ends() {
     super::trace::capture();
     let scope = BodyScope::new("user:tool-bodies-traced").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.spin",
@@ -508,7 +508,7 @@ fn tree(rows: &[InvocationRow]) -> Vec<(&str, Option<&str>, Vec<&str>)> {
 async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
     super::trace::capture();
     let scope = BodyScope::new("user:tool-bodies-children").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -581,7 +581,7 @@ async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
 #[tokio::test]
 async fn an_invocation_summary_names_its_tool_kind_and_the_call_that_made_it() {
     let scope = BodyScope::new("user:tool-bodies-summaries").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -648,7 +648,7 @@ async fn an_invocation_summary_names_its_tool_kind_and_the_call_that_made_it() {
 #[tokio::test]
 async fn each_level_of_a_runs_records_lists_the_calls_made_at_it() {
     let scope = BodyScope::new("user:tool-bodies-levels").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -753,7 +753,7 @@ async fn each_level_of_a_runs_records_lists_the_calls_made_at_it() {
 #[tokio::test]
 async fn retention_deletes_a_run_with_its_nested_invocations() {
     let scope = BodyScope::new("user:tool-bodies-retention").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -869,7 +869,7 @@ async fn spans_nest_as_rows_do(run: &crate::RunId, rows: &[InvocationRow]) {
 #[tokio::test]
 async fn a_call_made_after_its_tool_body_ended_is_refused() {
     let scope = BodyScope::new("user:tool-bodies-late").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "stray.fire",
@@ -948,7 +948,7 @@ async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_term
 
     let cancel = scope.end(Ending::Canceled, &run).await.expect("a cancel");
     scope.termination_is_recorded(&run).await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
 
     let terminal = scope.terminal(&run).await;
     assert_eq!(terminal.state(), RunState::Canceled, "{terminal:?}");

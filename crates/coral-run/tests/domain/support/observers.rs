@@ -1,22 +1,41 @@
 //! Invocation and execution observers that gate and record Run timing.
 use crate::tests::*;
 
-#[derive(Default)]
+/// Holds the first Run Owner before its start mark until released; every
+/// later one passes.
 pub(crate) struct ClaimGate {
-    pub(crate) claims: AtomicUsize,
+    claims: AtomicUsize,
     pub(crate) finished: AtomicUsize,
     pub(crate) entered: AtomicBool,
-    pub(crate) release: AtomicBool,
+    released: watch::Sender<bool>,
+}
+
+impl Default for ClaimGate {
+    fn default() -> Self {
+        Self {
+            claims: AtomicUsize::new(0),
+            finished: AtomicUsize::new(0),
+            entered: AtomicBool::new(false),
+            released: watch::channel(false).0,
+        }
+    }
+}
+
+impl ClaimGate {
+    /// Lets the held owner commit its start mark.
+    pub(crate) fn release(&self) {
+        self.released.send_replace(true);
+    }
 }
 
 #[async_trait]
 impl ExecutionObserver for ClaimGate {
     async fn owner_starting(&self, _run_id: &crate::RunId, _claim_id: &str) {
         if self.claims.fetch_add(1, Ordering::SeqCst) == 0 {
+            let mut released = self.released.subscribe();
             self.entered.store(true, Ordering::SeqCst);
-            while !self.release.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
+            // A dropped sender never happens: the gate outlives the test.
+            let _released = released.wait_for(|released| *released).await;
         }
     }
 

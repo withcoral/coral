@@ -109,25 +109,31 @@ impl UpstreamSender for FailingUpstream {
     }
 }
 
+/// Holds every send it receives until released, then answers `outcome`.
 pub(crate) struct BlockingUpstream {
     pub(crate) sends: AtomicUsize,
     pub(crate) entered: AtomicBool,
-    pub(crate) release: AtomicBool,
+    pub(crate) released: watch::Sender<bool>,
     pub(crate) exited: AtomicBool,
     pub(crate) outcome: HttpOutcome,
     pub(crate) result_too_large: bool,
 }
 
 impl BlockingUpstream {
-    pub(crate) const fn new(outcome: HttpOutcome) -> Self {
+    pub(crate) fn new(outcome: HttpOutcome) -> Self {
         Self {
             sends: AtomicUsize::new(0),
             entered: AtomicBool::new(false),
-            release: AtomicBool::new(false),
+            released: watch::channel(false).0,
             exited: AtomicBool::new(false),
             outcome,
             result_too_large: false,
         }
+    }
+
+    /// Lets every held send, and every later one, answer.
+    pub(crate) fn release(&self) {
+        self.released.send_replace(true);
     }
 }
 
@@ -138,11 +144,11 @@ impl UpstreamSender for BlockingUpstream {
         _dispatch: ReadyDispatch,
         _stop: Arc<ExecutionStop>,
     ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
+        let mut released = self.released.subscribe();
         self.sends.fetch_add(1, Ordering::SeqCst);
         self.entered.store(true, Ordering::SeqCst);
-        while !self.release.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-        }
+        // A dropped sender never happens: the upstream outlives its sends.
+        let _released = released.wait_for(|released| *released).await;
         self.exited.store(true, Ordering::SeqCst);
         if self.result_too_large {
             Err(crate::invocation::UpstreamSendError::TooLarge)

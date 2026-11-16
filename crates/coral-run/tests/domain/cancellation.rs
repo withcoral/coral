@@ -273,7 +273,7 @@ async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
         fixture.inbox_rows(&tool.workspace_id, run.run_id()).await,
         0
     );
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
     let first = first.await.expect("join");
     let second = second.await.expect("join");
     assert_eq!(first.state(), RunState::Canceled);
@@ -341,7 +341,7 @@ async fn queued_user_and_agent_cancellation_record_intent_without_starting_javas
             !cancel.is_finished(),
             "{caller:?}: answered only once recorded"
         );
-        claim_gate.release.store(true, Ordering::SeqCst);
+        claim_gate.release();
         let canceled = cancel
             .await
             .expect("join cancellation")
@@ -393,7 +393,7 @@ async fn queued_deadline_expires_without_starting_javascript() {
     // The deadline reaches the owner's mailbox before its start mark lands:
     // the Program never starts, and the timeout is recorded.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    claim_gate.release.store(true, Ordering::SeqCst);
+    claim_gate.release();
 
     let terminal =
         wait_for_terminal(&fixture.runs, &principal, &workspace_id, accepted.run_id()).await;
@@ -724,7 +724,7 @@ impl InFlight {
                 wait_until(|| engine.finished.load(Ordering::SeqCst)).await;
             }
             Self::Dispatching { upstream } => {
-                upstream.release.store(true, Ordering::SeqCst);
+                upstream.release();
                 wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
             }
         }
@@ -887,7 +887,7 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
         .await;
         // Give V8 time to stop before the dispatched Invocation settles.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        upstream.release.store(true, Ordering::SeqCst);
+        upstream.release();
         let canceled = cancel
             .await
             .expect("join cancellation")
@@ -1697,7 +1697,7 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
     assert!(states.contains(&(waiting.id.clone(), ApprovalState::Closed)));
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1, "never replayed");
 
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
     wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
     wait_until(|| !fixture.runs.has_owner(run_id)).await;
     assert_eq!(
