@@ -957,7 +957,7 @@ async fn a_stop_already_set_never_launches_the_upstream_send() {
     };
     let ready = coral_upstream::ReadyHttpDispatch::plan(
         prepared.tools().first().expect("Tool"),
-        prepared.schema_graph(),
+        &Arc::new(prepared.schema_graph().clone()),
         &serde_json::json!({}),
         coral_value::ValueLimits::default(),
     )

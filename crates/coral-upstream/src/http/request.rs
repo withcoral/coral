@@ -1,5 +1,7 @@
 //! HTTP request planning and OpenAPI wire serialization.
 
+use std::sync::Arc;
+
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{
     ExecutionBinding, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding, HttpMethod,
@@ -27,7 +29,8 @@ pub struct ReadyHttpDispatch {
     pub(super) credential_slots: Vec<String>,
     /// The Tool's binding, which selects among its declared responses.
     pub(super) binding: HttpExecutionBinding,
-    pub(super) schema_graph: SchemaGraph,
+    /// The graph the resolved Tool holds, shared for response handling.
+    pub(super) schema_graph: Arc<SchemaGraph>,
     pub(super) limits: coral_value::ValueLimits,
 }
 
@@ -43,7 +46,7 @@ impl ReadyHttpDispatch {
     /// retained HTTP serialization recipe.
     pub fn plan(
         tool: &MaterializedTool,
-        schema_graph: &SchemaGraph,
+        schema_graph: &Arc<SchemaGraph>,
         arguments: &Value,
         limits: coral_value::ValueLimits,
     ) -> Result<Self, Error> {
@@ -143,7 +146,7 @@ impl ReadyHttpDispatch {
             request_media_type,
             credential_slots,
             binding: binding.clone(),
-            schema_graph: schema_graph.clone(),
+            schema_graph: Arc::clone(schema_graph),
             limits,
         })
     }

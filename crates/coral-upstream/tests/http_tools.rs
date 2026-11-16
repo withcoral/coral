@@ -4,9 +4,12 @@
     reason = "integration targets inherit the library's direct dependency set"
 )]
 
+use std::sync::Arc;
+
 use coral_catalog::{
     AuthenticationConfiguration, CredentialField, CredentialSource, HeaderBinding,
     MaterializationOutcome, OpenApiDocument, PreparedProviderCatalog, ProviderSetupInput,
+    SchemaGraph,
 };
 use coral_outbound::DestinationPolicy;
 use coral_upstream::{HttpOutcome, HttpUpstream, OutcomeClass, ReadyHttpDispatch};
@@ -37,6 +40,11 @@ fn ready(document: &str) -> PreparedProviderCatalog {
     ))
 }
 
+/// The catalog's schema graph as a resolved Tool holds it.
+fn schemas(prepared: &PreparedProviderCatalog) -> Arc<SchemaGraph> {
+    Arc::new(prepared.schema_graph().clone())
+}
+
 /// Plans the catalog's only Tool.
 fn try_plan(
     prepared: &PreparedProviderCatalog,
@@ -44,7 +52,7 @@ fn try_plan(
 ) -> Result<ReadyHttpDispatch, coral_upstream::Error> {
     ReadyHttpDispatch::plan(
         prepared.tools().first().expect("Tool"),
-        prepared.schema_graph(),
+        &schemas(prepared),
         arguments,
         limits(4096),
     )
@@ -183,9 +191,8 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
         .await;
     for mime in ["image/png", "image/jpeg"] {
         let arguments = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":mime, "byteLength":2}}});
-        let dispatch =
-            ReadyHttpDispatch::plan(tool, prepared.schema_graph(), &arguments, limits(4096))
-                .expect("permitted multipart type");
+        let dispatch = ReadyHttpDispatch::plan(tool, &schemas(&prepared), &arguments, limits(4096))
+            .expect("permitted multipart type");
         send(dispatch).await.expect("uploaded");
     }
     let requests = server.received_requests().await.expect("requests");
@@ -206,7 +213,7 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
     }
     let invalid = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":"application/pdf", "byteLength":2}}});
     assert!(matches!(
-        ReadyHttpDispatch::plan(tool, prepared.schema_graph(), &invalid, limits(4096)),
+        ReadyHttpDispatch::plan(tool, &schemas(&prepared), &invalid, limits(4096)),
         Err(coral_upstream::Error::InvalidArguments(_))
     ));
     server.verify().await;
@@ -2010,7 +2017,7 @@ fn a_query_credential_is_counted_as_the_url_carries_it() {
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
             prepared.tools().first().expect("Tool"),
-            prepared.schema_graph(),
+            &schemas(&prepared),
             &serde_json::json!({}),
             limits(budget),
         )
@@ -2128,7 +2135,7 @@ paths:
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
             prepared.tools().first().expect("Tool"),
-            prepared.schema_graph(),
+            &schemas(&prepared),
             &arguments,
             limits(budget),
         )
@@ -2156,7 +2163,7 @@ async fn a_response_over_the_budget_is_refused() {
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
             prepared.tools().first().expect("Tool"),
-            prepared.schema_graph(),
+            &schemas(&prepared),
             &serde_json::json!({}),
             limits(budget),
         )
