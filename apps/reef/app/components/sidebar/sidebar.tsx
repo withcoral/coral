@@ -12,7 +12,7 @@ import {
   NavigationClose,
   NavigationFrame,
 } from '@/wax/components/navigation-frame/navigation-frame'
-import { addToast } from '@/wax/components/toast'
+import { useCopy } from '@/wax/components/button/use-copy'
 import { useTheme } from '@/wax/theme/theme-provider'
 import { ActionDialog, NameInput } from '@/views/management/forms'
 import type { FormContext, WorkspaceView } from '@/views/management/types'
@@ -130,7 +130,7 @@ function pendingElsewhere(
  * item of its own beside the Workspace's, so the arrow keys reach it.
  */
 function CopyEndpointItem({ workspace: w }: { workspace: SidebarWorkspace }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, copy] = useCopy()
   const name = `Copy ${w.displayName} MCP URL`
   return (
     <Menu.Item
@@ -139,15 +139,7 @@ function CopyEndpointItem({ workspace: w }: { workspace: SidebarWorkspace }) {
       tooltip={copied ? 'Copied' : 'Copy MCP URL'}
       closeOnClick={false}
       className={styles.menuRowAction}
-      onClick={() => {
-        void navigator.clipboard.writeText(w.mcpEndpoint).then(
-          () => {
-            setCopied(true)
-            setTimeout(() => setCopied(false), 3000)
-          },
-          () => addToast('error', { title: 'Copy failed' }),
-        )
-      }}
+      onClick={() => void copy(w.mcpEndpoint)}
     />
   )
 }

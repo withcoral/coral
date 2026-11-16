@@ -373,8 +373,17 @@ test.each([false, true])(
 )
 // Catches: a workspace whose count did not load hiding the counts that did.
 test('the switcher counts only the workspaces with a known count', () => {
-  render('/workspaces/ops', { actionCounts: { ...counts, '/workspaces/research': null } })
-  expect(switcher()).toHaveAccessibleName('Workspace: Operations')
+  render('/workspaces/ops', {
+    active: [...listed, workspace('lab', 'Lab', 'member')],
+    actionCounts: {
+      ...counts,
+      '/workspaces/research': null,
+      '/workspaces/lab': { total: '2', approvals: '2', connections: '0' },
+    },
+  })
+  expect(switcher()).toHaveAccessibleName(
+    'Workspace: Operations. 2 pending actions in other workspaces',
+  )
 })
 test('a single request reads in the singular', () => {
   render('/workspaces/ops', {

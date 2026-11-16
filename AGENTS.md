@@ -257,7 +257,8 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `app/__tests__/architecture.test.ts` enforce the rest of this boundary.
 - The organization's settings have their own navigation, which replaces the
   sidebar's workspace switcher and pages. A page joins them by sitting under
-  the `routes/settings.tsx` layout in `routes.ts`: do not test its path.
+  the `routes/settings.tsx` layout in `routes.ts`. Do not decide which
+  navigation to show from a page's path: the pages keep unrelated addresses.
 - Add or extend Reef Vitest coverage when a change fixes a reproducible bug,
   introduces branching behavior (validation, state transitions, or error handling),
   or affects security or an architecture invariant. Name the failure the test

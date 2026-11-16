@@ -25,10 +25,10 @@ export async function openCreateWorkspace(page: Page) {
  * the current workspace. It shows the role the navigation acts on.
  */
 export async function showsOwnerPages(page: Page) {
-  const agents = page
-    .getByRole('navigation', { name: 'Coral', exact: true })
-    .getByRole('link', { name: 'Agents', exact: true })
-  return (await agents.count()) > 0
+  const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
+  // Every member has Overview, so its link shows that the workspace's pages are there to read.
+  await nav.getByRole('link', { name: 'Overview', exact: true }).waitFor()
+  return (await nav.getByRole('link', { name: 'Agents', exact: true }).count()) > 0
 }
 
 /**

@@ -5,7 +5,7 @@ import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { SecretStoreState } from '@/generated/coral/management/v1/secret_store_pb'
 import { fakeManagementTransport } from '@/lib/management.test-support'
-import { loader } from './workspace'
+import { action, loader } from './workspace'
 
 const coral = vi.hoisted(() => ({ transport: undefined as unknown }))
 vi.mock('@/lib/coral-request.server', () => ({
@@ -150,4 +150,35 @@ it.each([
   if (!(result instanceof Response)) throw new Error('The loader redirects')
   expect(result.headers.get('location')).toBe(location)
   expect(summaries).toEqual([])
+})
+
+// Catches: the route archiving a workspace for a caller that still posts the
+// intent the sidebar used to send. An organization owner archives from the
+// organization's Workspaces page.
+it('refuses the archive intent without calling Coral', async () => {
+  let archived = 0
+  coral.transport = fakeManagementTransport({
+    workspaces: {
+      archiveWorkspace: () => {
+        archived += 1
+        return {}
+      },
+    },
+  })
+  const origin = 'http://127.0.0.1:3000'
+  const form = new FormData()
+  form.set('intent', 'archive')
+  form.set('etag', 'v1')
+  const request = new Request(`${origin}/${parent}`, {
+    method: 'POST',
+    headers: { origin },
+    body: form,
+  })
+  const refused = await action(authRouteTestArgs(request, { workspace })).then(
+    () => null,
+    (error: unknown) => error,
+  )
+  expect(refused).toBeInstanceOf(Response)
+  expect((refused as Response).status).toBe(400)
+  expect(archived).toBe(0)
 })

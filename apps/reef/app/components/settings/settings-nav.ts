@@ -2,8 +2,8 @@ import type { IconName } from '@/wax/components/icon'
 
 /**
  * The organization's settings: what you administer for everyone, away from the
- * work in a workspace. This module is the one place that knows which sections
- * exist, who sees them and where they live.
+ * work in a workspace. This module lists the sections of the settings nav and
+ * who sees each. `routes.ts` puts each section's page under the settings layout.
  */
 
 export interface SettingsNavItem {
