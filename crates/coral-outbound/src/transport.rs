@@ -22,18 +22,24 @@ impl Client {
     /// # Errors
     /// Returns a client initialization error.
     pub fn new(policy: DestinationPolicy, timeout: Duration) -> Result<Self, reqwest::Error> {
-        Self::with_resolver(policy, timeout, Arc::new(SystemResolver))
+        Self::with_resolver(
+            policy,
+            timeout,
+            Arc::new(SystemResolver),
+            IdleConnections::Keep,
+        )
     }
 
     fn with_resolver(
         policy: DestinationPolicy,
         timeout: Duration,
         resolver: Arc<dyn Resolve>,
+        idle_connections: IdleConnections,
     ) -> Result<Self, reqwest::Error> {
         // Resolve has no scheme argument. Separate connector pools bind the
         // scheme to every lookup, including reconnects and mixed DNS answers.
         let build = |https, resolver| {
-            reqwest::Client::builder()
+            let builder = reqwest::Client::builder()
                 .user_agent("Coral")
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
@@ -45,8 +51,12 @@ impl Client {
                     policy,
                     https,
                     resolver,
-                })
-                .build()
+                });
+            match idle_connections {
+                IdleConnections::Keep => builder,
+                IdleConnections::Close => builder.pool_max_idle_per_host(0),
+            }
+            .build()
         };
         Ok(Self {
             http: build(false, Arc::clone(&resolver))?,
@@ -113,6 +123,10 @@ impl Client {
 /// The loopback setting stays as the operator set it. It serves the exact
 /// operator-derived client ID that `EndpointUrl::<ClientMetadata>::parse`
 /// admits, and [`get`](Self::get) takes no other kind of URL.
+///
+/// Every request opens its own connection, because a sign-in fails when this
+/// fetch does. A server closes an idle connection on its own schedule, and a
+/// request sent on one at that moment gets no answer.
 #[derive(Clone)]
 pub struct MetadataClient(Client);
 
@@ -134,6 +148,7 @@ impl MetadataClient {
             policy.with_private_networks(NetworkAccess::Deny),
             timeout,
             resolver,
+            IdleConnections::Close,
         )
         .map(Self)
     }
@@ -147,6 +162,16 @@ impl MetadataClient {
     ) -> Result<reqwest::RequestBuilder, DestinationRejected> {
         self.0.get(url.as_url())
     }
+}
+
+/// What a client does with a connection once its response is complete.
+#[derive(Clone, Copy)]
+enum IdleConnections {
+    /// Keep it for the next request to the same host.
+    Keep,
+    /// Close it, so that no request is sent on a connection the server may
+    /// already be closing.
+    Close,
 }
 
 /// Safe discrimination between blocked DNS destinations and ordinary transport errors.
@@ -223,6 +248,7 @@ impl Resolve for GuardedResolver {
 mod tests {
     use super::*;
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -301,6 +327,7 @@ mod tests {
                 DestinationPolicy::default(),
                 Duration::from_secs(2),
                 Arc::new(Answers(answers)),
+                IdleConnections::Keep,
             )
             .unwrap();
             let error = client
@@ -403,6 +430,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Sends two requests to a local server that answers every request, and
+    /// returns how many of them arrived on a connection that had already
+    /// carried one.
+    async fn requests_on_a_used_connection(get: impl Fn(&str) -> reqwest::RequestBuilder) -> usize {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/.well-known/oauth-client",
+            listener.local_addr().unwrap()
+        );
+        let reused = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn({
+            let reused = Arc::clone(&reused);
+            async move {
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    let (mut stream, _peer) = listener.accept().await.unwrap();
+                    let reused = Arc::clone(&reused);
+                    connections.spawn(async move {
+                        let mut used = false;
+                        loop {
+                            let mut request = Vec::new();
+                            while !request.ends_with(b"\r\n\r\n") {
+                                // The client closed the connection.
+                                let Ok(byte) = stream.read_u8().await else {
+                                    return;
+                                };
+                                request.push(byte);
+                            }
+                            if used {
+                                reused.fetch_add(1, Ordering::Relaxed);
+                            }
+                            used = true;
+                            stream
+                                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                                .await
+                                .unwrap();
+                        }
+                    });
+                }
+            }
+        });
+        for _ in 0..2 {
+            let response = get(&url).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert!(response.bytes().await.unwrap().is_empty());
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        reused.load(Ordering::Relaxed)
+    }
+
+    /// A server closes an idle connection on its own schedule, and a request
+    /// that arrives on one as it closes gets no answer. A sign-in fails when
+    /// its metadata fetch does, so that client never sends on a used
+    /// connection. Provider calls keep their connection.
+    #[tokio::test]
+    async fn only_the_metadata_client_opens_a_connection_for_every_request() {
+        let policy = DestinationPolicy::default().with_loopback(crate::NetworkAccess::HttpAndHttps);
+        let timeout = Duration::from_secs(2);
+
+        let metadata = MetadataClient::new(policy, timeout).unwrap();
+        let metadata_reuses = requests_on_a_used_connection(|url| {
+            metadata
+                .get(&client_metadata_url(url, "http://localhost:9080"))
+                .unwrap()
+        })
+        .await;
+        let provider = Client::new(policy, timeout).unwrap();
+        let provider_reuses = requests_on_a_used_connection(|url| provider.get(url).unwrap()).await;
+
+        assert_eq!((metadata_reuses, provider_reuses), (0, 1));
     }
 
     #[tokio::test]
