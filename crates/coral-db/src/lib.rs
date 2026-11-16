@@ -27,8 +27,9 @@
 //! - [`Transaction::fetch_optional_locked`] reads a row under a [`RowLock`].
 //!   On Postgres a shared hold lets concurrent decisions read side by side
 //!   while a writer of that row waits for them, and an exclusive hold makes
-//!   every other holder and writer wait; on SQLite a hold adds nothing,
-//!   since the write transaction already excludes writers.
+//!   a shared hold, another exclusive hold and a write of that row wait; on
+//!   SQLite a hold adds nothing, since the write transaction already excludes
+//!   writers.
 //! - [`Transaction::execute_sql`] and [`Transaction::execute_script`] run SQL a
 //!   domain repository wrote for the selected backend, for features the
 //!   portable statements cannot express.

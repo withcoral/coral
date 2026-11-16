@@ -360,8 +360,8 @@ pub(super) async fn load_authorization(
     owner: &WorkspaceId,
     id: AuthorizationId,
 ) -> Result<LoadedAuthorization, Error> {
-    // The exclusive hold serializes every reader of this authorization on
-    // SQLite and Postgres alike.
+    // One caller at a time loads an authorization, and its writers wait: on
+    // Postgres by this exclusive hold, on SQLite by the write transaction.
     let row: AuthorizationRow = tx
         .fetch_optional_locked(
             Query::select()

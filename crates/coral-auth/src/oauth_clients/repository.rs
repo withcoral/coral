@@ -83,8 +83,8 @@ pub(super) struct AdmissionEvidence {
 pub(super) async fn lock_admission(
     tx: &mut Transaction<'_>,
 ) -> Result<AdmissionEvidence, RegistrationError> {
-    // The first statement holds the admission row exclusively, so admission
-    // serializes across pools and processes.
+    // Admission serializes across pools and processes: on Postgres by this
+    // exclusive hold of the admission row, on SQLite by the write transaction.
     let (window_started_at, accepted): (i64, i64) = tx
         .fetch_optional_locked(
             Query::select()

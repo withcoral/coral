@@ -865,11 +865,11 @@ mod postgres_only {
         Update,
     }
 
-    /// An exclusive hold is a read that makes every other holder and writer
-    /// of its row wait until the holder's transaction ends, and that itself
-    /// waits for a shared hold. Each contender is shown waiting by the
-    /// database (`pg_blocking_pids` names the holder), never by elapsed time,
-    /// and then acts on the row as the holder committed it.
+    /// An exclusive hold is a read that makes a shared hold, another exclusive
+    /// hold and an update of its row wait until the holder's transaction
+    /// ends, and that itself waits for a shared hold. Each contender is shown
+    /// waiting by the database (`pg_blocking_pids` names the holder), never
+    /// by elapsed time, and then acts on the row as the holder committed it.
     #[tokio::test]
     async fn an_exclusive_hold_makes_other_holders_and_writers_wait_for_its_commit() {
         coral_test_support::database_only!(Postgres);

@@ -229,16 +229,18 @@ async fn begin_postgres(
 /// read side by side while a writer's `UPDATE` of those rows waits until the
 /// decisions have committed: a change that commits first is seen, one that
 /// commits later does not undo a recorded decision. A transaction that goes
-/// on to write a row, or that must be the row's one holder, holds it
-/// [`Self::Exclusive`]: two shared holders that both went on to write would
-/// deadlock.
+/// on to write a row, or that must not share it with another decision, holds
+/// it [`Self::Exclusive`]: two shared holders that both went on to write
+/// would deadlock.
 ///
-/// A hold covers every row the statement matches, in each table it reads
-/// from, and lasts until the transaction ends. On `SQLite` a write
+/// On Postgres a hold is a row lock on every row the statement matches and
+/// does not pass over, in each table it reads from, until the transaction
+/// ends. No hold makes a plain read wait. `SQLite` takes no row lock: a write
 /// transaction takes the one writer lock at `BEGIN IMMEDIATE`, which already
-/// excludes every writer, so each hold runs as a plain read. A read snapshot
-/// holds nothing on either database, so [`Transaction::fetch_optional_locked`]
-/// refuses a hold there with [`Error::ReadSnapshotHold`].
+/// excludes every other write transaction, so each hold runs as a plain
+/// read. A read snapshot holds nothing on either database, so
+/// [`Transaction::fetch_optional_locked`] refuses a hold there with
+/// [`Error::ReadSnapshotHold`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowLock {
     /// A plain read, as in a read snapshot.
@@ -247,18 +249,19 @@ pub enum RowLock {
     /// Postgres this is `FOR SHARE`: other shared holders read side by
     /// side, and a writer or an exclusive holder waits for them.
     Shared,
-    /// Hold the matched rows against every other holder and writer for the
+    /// Hold the matched rows against each conflicting hold and write for the
     /// rest of the transaction, and read them in the same statement. On
     /// Postgres this is `FOR NO KEY UPDATE`, the lock an `UPDATE` of a
     /// non-key column takes: it waits for, and then blocks, a shared hold,
-    /// another exclusive hold, an `UPDATE` and a `DELETE` of the row, and it
-    /// lets through an insert that references the row by foreign key. A
-    /// statement that waited reads the row as the other transaction
-    /// committed it, and matches no row that no longer meets its conditions.
+    /// another exclusive hold, an `UPDATE` and a `DELETE` of the row. It
+    /// lets through an insert that references the row by foreign key, and a
+    /// [`Self::SkipLocked`] taker passes over the row. A statement that
+    /// waited reads the row as the other transaction committed it, and
+    /// matches no row that no longer meets its conditions.
     Exclusive,
-    /// Hold the matched rows for update, and pass over rows another
-    /// transaction holds, so concurrent takers each take a different row.
-    /// On Postgres this is `FOR UPDATE SKIP LOCKED`.
+    /// Hold the matched rows for update, and pass over, without waiting, each
+    /// row another transaction holds or is writing, so concurrent takers each
+    /// take a different row. On Postgres this is `FOR UPDATE SKIP LOCKED`.
     SkipLocked,
 }
 
