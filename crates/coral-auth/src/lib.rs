@@ -50,6 +50,7 @@ pub use session::{IssuedAccessToken, SessionTokenError, SessionTokenIssuer};
 use std::sync::Arc;
 
 use coral_db::Database;
+use coral_telemetry::safe;
 pub use coral_workspace::UserId;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole, TraceId,
@@ -62,6 +63,26 @@ fn external_user_id(value: &str) -> Result<UserId, ()> {
         return Err(());
     }
     Ok(id)
+}
+
+/// Logs why the database failed a statement and returns `refusal`, which
+/// reports the failure to the caller. The refusal is all the caller sees and
+/// `coral-db` logs nothing, so this record is the only trace of the cause. It
+/// names the error's kind and whether the database answered, never the
+/// error's text.
+fn database_failure<R>(error: &coral_db::Error, refusal: R) -> R {
+    if error.is_unanswered() {
+        tracing::warn!(
+            error.type = safe::kind(error.code()),
+            "the database did not answer the authorization server"
+        );
+    } else {
+        tracing::error!(
+            error.type = safe::kind(error.code()),
+            "the database failed a statement of the authorization server"
+        );
+    }
+    refusal
 }
 
 /// One verified OIDC identity supplied by the authorization-server Adapter.

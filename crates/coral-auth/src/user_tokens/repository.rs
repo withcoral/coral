@@ -78,26 +78,30 @@ struct PresentedRow {
 impl PresentedRow {
     /// Decodes the row; a value no grant could have written is corrupt.
     fn decode(self) -> Result<PresentedToken, TokenRefusal> {
-        let corrupt = |_error| TokenRefusal::Unavailable;
         let private_audience = match self.private_audience.as_deref() {
-            Some(audience) => {
-                Some(PrivateAudience::parse(audience).ok_or(TokenRefusal::Unavailable)?)
-            }
+            Some(audience) => Some(
+                PrivateAudience::parse(audience)
+                    .ok_or(TokenRefusal::Corrupt("corrupt_grant_audience"))?,
+            ),
             None => None,
         };
+        let corrupt_workspace = |_error| TokenRefusal::Corrupt("corrupt_grant_workspace");
         Ok(PresentedToken {
             grant_id: self.grant_id,
             scope: Scope {
-                user_id: UserId::parse(&self.user_id).map_err(corrupt)?,
+                user_id: UserId::parse(&self.user_id)
+                    .map_err(|_error| TokenRefusal::Corrupt("corrupt_grant_user"))?,
                 client_id: self.client_id,
                 resource: self.resource,
                 private_audience,
                 workspace: match self.workspace_id.as_deref().map(WorkspaceId::parse) {
                     None => WorkspaceBinding::None,
                     Some(workspace) if self.scoped_tokens => {
-                        WorkspaceBinding::InToken(workspace.map_err(corrupt)?)
+                        WorkspaceBinding::InToken(workspace.map_err(corrupt_workspace)?)
                     }
-                    Some(workspace) => WorkspaceBinding::ByUrl(workspace.map_err(corrupt)?),
+                    Some(workspace) => {
+                        WorkspaceBinding::ByUrl(workspace.map_err(corrupt_workspace)?)
+                    }
                 },
             },
             expires_at_unix_nanos: self.expires_at_unix_nanos,
@@ -106,8 +110,9 @@ impl PresentedRow {
     }
 }
 
-const fn unavailable(_error: &coral_db::Error) -> TokenRefusal {
-    TokenRefusal::Unavailable
+/// Logs the database's failure and reports it as storage that is unavailable.
+pub(super) fn unavailable(error: &coral_db::Error) -> TokenRefusal {
+    crate::database_failure(error, TokenRefusal::Unavailable)
 }
 
 #[derive(sqlx::FromRow)]

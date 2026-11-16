@@ -69,12 +69,12 @@ impl HeaderCredential {
 /// `invalid_client`, 401 with a challenge for a header credential, when the
 /// request presents two credentials or the client does not authenticate;
 /// otherwise `invalid_request` when `form` names no client, and
-/// `unavailable()` when storage did not answer.
+/// `failed(error)` when storage did not answer or holds a corrupt client.
 pub(super) async fn authenticate(
     state: &AuthorizationServerHttpState,
     header: HeaderCredential,
     form: &mut TokenForm,
-    unavailable: impl FnOnce() -> Response,
+    failed: impl FnOnce(ClientAuthenticationError) -> Response,
 ) -> Result<AuthenticatedClient, Box<Response>> {
     let (presented, challenge) = match (header, form.client_secret.take()) {
         (HeaderCredential::None, None) => (PresentedCredential::None, None),
@@ -104,12 +104,14 @@ pub(super) async fn authenticate(
     match state.clients.authenticate(client_id, &presented).await {
         Ok(client) => Ok(client),
         Err(ClientAuthenticationError::InvalidClient) => Err(Box::new(invalid_client(challenge))),
-        Err(error @ ClientAuthenticationError::Unavailable) => {
+        Err(
+            error @ (ClientAuthenticationError::Unavailable | ClientAuthenticationError::Corrupt),
+        ) => {
             tracing::warn!(
                 error.type = safe::kind(error.code()),
                 "OAuth client authentication could not read the client"
             );
-            Err(Box::new(unavailable()))
+            Err(Box::new(failed(error)))
         }
     }
 }

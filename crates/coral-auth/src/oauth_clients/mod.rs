@@ -248,11 +248,7 @@ impl OAuthClients {
             response_types: ["code"],
             scope: "",
         };
-        let mut tx = self
-            .database
-            .begin()
-            .await
-            .map_err(|_error| RegistrationError::Unavailable)?;
+        let mut tx = self.database.begin().await.map_err(unavailable)?;
         let admission = repository::lock_admission(&mut tx).await?;
         if admission.total >= MAX_REGISTRATIONS {
             return Err(RegistrationError::Capacity);
@@ -268,9 +264,7 @@ impl OAuthClients {
         }
         repository::insert(&mut tx, &registered, &authentication).await?;
         repository::record_admission(&mut tx, window_started_at, accepted + 1).await?;
-        tx.commit()
-            .await
-            .map_err(|_error| RegistrationError::Unavailable)?;
+        tx.commit().await.map_err(unavailable)?;
         Ok(registered)
     }
 
@@ -282,7 +276,8 @@ impl OAuthClients {
     /// # Errors
     /// [`ClientAuthenticationError::InvalidClient`] for an unknown client or a
     /// missing, wrong, or unexpected credential; `Unavailable` when storage
-    /// did not answer. Neither changes anything.
+    /// did not answer; `Corrupt` when it holds a client row the schema
+    /// forbids. None changes anything.
     pub async fn authenticate(
         &self,
         client_id: &str,
@@ -311,6 +306,15 @@ impl OAuthClients {
             client_id: client_id.to_owned(),
         })
     }
+}
+
+/// Logs the database's failure and reports registration as unavailable.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the database error by value"
+)]
+fn unavailable(error: coral_db::Error) -> RegistrationError {
+    crate::database_failure(&error, RegistrationError::Unavailable)
 }
 
 /// Which kind of OAuth Client an identifier names.
@@ -456,7 +460,7 @@ pub enum RegistrationError {
     Unavailable,
 }
 
-/// Why a request did not authenticate as an OAuth Client. Neither changes
+/// Why a request did not authenticate as an OAuth Client. None changes
 /// anything.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum ClientAuthenticationError {
@@ -465,9 +469,13 @@ pub enum ClientAuthenticationError {
     /// discloses nothing about which clients exist.
     #[error("client authentication failed")]
     InvalidClient,
-    /// Storage did not answer, or holds a client row the schema forbids.
+    /// Storage did not answer.
     #[error("client authentication is unavailable")]
     Unavailable,
+    /// Storage holds a client row the schema forbids, so a retry fails the
+    /// same way.
+    #[error("the stored client is corrupt")]
+    Corrupt,
 }
 
 impl ClientAuthenticationError {
@@ -477,6 +485,7 @@ impl ClientAuthenticationError {
         match self {
             Self::InvalidClient => "invalid_client",
             Self::Unavailable => "unavailable",
+            Self::Corrupt => "corrupt_client_authentication",
         }
     }
 }

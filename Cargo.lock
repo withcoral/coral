@@ -730,6 +730,7 @@ dependencies = [
  "base64 0.23.1",
  "coral-db",
  "coral-outbound",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "jsonwebtoken",
@@ -742,6 +743,8 @@ dependencies = [
  "subtle",
  "thiserror",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "zeroize",
 ]
