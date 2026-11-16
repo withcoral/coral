@@ -295,6 +295,9 @@ pub struct AccountModule {
     client_bootstrap_policy: ClientBootstrapPolicy,
     #[cfg(test)]
     exchange_gate: Option<std::sync::Arc<OAuthExchangeGate>>,
+    /// Holds a renewal between the read that found it due and its write.
+    #[cfg(test)]
+    renewal_gate: Option<std::sync::Arc<OAuthExchangeGate>>,
 }
 
 #[cfg(test)]
@@ -428,6 +431,8 @@ impl AccountModule {
             client_bootstrap_policy: ClientBootstrapPolicy::default(),
             #[cfg(test)]
             exchange_gate: None,
+            #[cfg(test)]
+            renewal_gate: None,
         }
     }
 
@@ -457,6 +462,12 @@ impl AccountModule {
     #[cfg(test)]
     pub(crate) fn with_exchange_gate(mut self, gate: std::sync::Arc<OAuthExchangeGate>) -> Self {
         self.exchange_gate = Some(gate);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_renewal_gate(mut self, gate: std::sync::Arc<OAuthExchangeGate>) -> Self {
+        self.renewal_gate = Some(gate);
         self
     }
 

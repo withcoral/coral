@@ -1051,24 +1051,42 @@ pub(super) async fn connect_account(
         .await?)
 }
 
+/// The Account still as `row` read it: the same authorization over the same
+/// material. A reconnect, a disconnect, an access removal and a stored renewal
+/// each move one of the two.
+fn as_read(row: &LoadedAccount) -> sea_query::Expr {
+    account_scope(row)
+        .and(Expr::col(ProviderAccounts::AuthorizationVersion).eq(&row.authorization_version))
+        .and(Expr::col(ProviderAccounts::MaterialRevision).eq(&row.material_revision))
+}
+
+/// Claims the refresh of the material `row` read, and reports whether this
+/// caller took the claim. `row` was read without a hold, so the write itself
+/// decides: it requires the Account still as `row` read it, usable, and with
+/// no claim. Of the callers that read the same expired token, one takes the
+/// claim. A caller whose read came before another's claim, stored renewal or
+/// rejected refresh changes nothing.
 pub(super) async fn claim_refresh(
     tx: &mut Transaction<'_>,
     row: &LoadedAccount,
     attempt: &str,
     deadline: i64,
-) -> Result<(), Error> {
-    tx.execute(
-        Query::update()
-            .table(ProviderAccounts::Table)
-            .values([
-                (ProviderAccounts::RefreshAttemptId, Expr::val(attempt)),
-                (ProviderAccounts::RefreshDeadline, Expr::val(deadline)),
-            ])
-            .and_where(account_scope(row))
-            .to_owned(),
-    )
-    .await?;
-    Ok(())
+) -> Result<bool, Error> {
+    let claimed = tx
+        .execute(
+            Query::update()
+                .table(ProviderAccounts::Table)
+                .values([
+                    (ProviderAccounts::RefreshAttemptId, Expr::val(attempt)),
+                    (ProviderAccounts::RefreshDeadline, Expr::val(deadline)),
+                ])
+                .and_where(as_read(row))
+                .and_where(Expr::col(ProviderAccounts::RequiresAuthorization).eq(0_i64))
+                .and_where(Expr::col(ProviderAccounts::RefreshAttemptId).is_null())
+                .to_owned(),
+        )
+        .await?;
+    Ok(claimed == 1)
 }
 
 pub(super) async fn release_refresh(
@@ -1137,33 +1155,62 @@ pub(super) async fn replace_refreshed_credentials(
     Ok(())
 }
 
+/// Marks an Account as needing a new authorization and clears its claim.
+fn require_authorization() -> sea_query::UpdateStatement {
+    Query::update()
+        .table(ProviderAccounts::Table)
+        .values([
+            (ProviderAccounts::RequiresAuthorization, Expr::val(1_i64)),
+            (
+                ProviderAccounts::TokenExpiresAtUnixNanos,
+                Expr::val(Option::<i64>::None),
+            ),
+            (
+                ProviderAccounts::RefreshAttemptId,
+                Expr::val(Option::<String>::None),
+            ),
+            (
+                ProviderAccounts::RefreshDeadline,
+                Expr::val(Option::<i64>::None),
+            ),
+        ])
+        .to_owned()
+}
+
+/// For the caller that held the Account's refresh claim: [`release_refresh`]
+/// changed its row earlier in this transaction.
 pub(super) async fn mark_requires_authorization(
     tx: &mut Transaction<'_>,
     row: &LoadedAccount,
 ) -> Result<(), Error> {
     tx.execute(
-        Query::update()
-            .table(ProviderAccounts::Table)
-            .values([
-                (ProviderAccounts::RequiresAuthorization, Expr::val(1_i64)),
-                (
-                    ProviderAccounts::TokenExpiresAtUnixNanos,
-                    Expr::val(Option::<i64>::None),
-                ),
-                (
-                    ProviderAccounts::RefreshAttemptId,
-                    Expr::val(Option::<String>::None),
-                ),
-                (
-                    ProviderAccounts::RefreshDeadline,
-                    Expr::val(Option::<i64>::None),
-                ),
-            ])
+        require_authorization()
             .and_where(account_scope(row))
             .to_owned(),
     )
     .await?;
     Ok(())
+}
+
+/// Ends the refresh claim `attempt`, which outlived its deadline, by marking
+/// the Account as needing a new authorization, and reports whether it did.
+/// `row` was read without a hold, so the write requires the Account still as
+/// `row` read it, under that claim: a claim that its exchange released, or
+/// that a reconnect or a disconnect cleared, changes nothing.
+pub(super) async fn lapse_refresh(
+    tx: &mut Transaction<'_>,
+    row: &LoadedAccount,
+    attempt: &str,
+) -> Result<bool, Error> {
+    let lapsed = tx
+        .execute(
+            require_authorization()
+                .and_where(as_read(row))
+                .and_where(Expr::col(ProviderAccounts::RefreshAttemptId).eq(attempt))
+                .to_owned(),
+        )
+        .await?;
+    Ok(lapsed == 1)
 }
 
 pub(super) async fn provider_pending_connections(
