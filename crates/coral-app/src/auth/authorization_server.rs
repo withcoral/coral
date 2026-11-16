@@ -597,6 +597,9 @@ mod test_state {
                 database.database(),
                 coral_workspace::WorkspaceModule::new(database.database()),
                 coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+                coral_catalog::SchemaGraphCache::new(
+                    coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
+                ),
             )),
         )
         .expect("authorization server state")

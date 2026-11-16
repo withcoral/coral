@@ -93,7 +93,8 @@ async fn each_workspace_has_one_private_and_one_shared_provider_installed_at_cre
 
 // Catches: Provider Tool resolution answering for a Call Path under
 // `coral.private` or `coral.shared`. Their Tools are rows coral-tools keeps,
-// so a Run reaches one only through `resolve_authored_tool_in_transaction`,
+// so a Run reaches one only through
+// `ProviderModule::resolve_authored_tool_in_transaction`,
 // with the definition it linked.
 #[tokio::test]
 async fn no_provider_tool_resolves_under_the_private_or_shared_call_root() {
@@ -125,15 +126,16 @@ async fn no_provider_tool_resolves_under_the_private_or_shared_call_root() {
         let mut transaction = database.begin().await.unwrap();
         let caller = || crate::InvocationCaller::new(&workspaces, &principal, 11);
         assert!(
-            crate::resolve_invocation_tool_in_transaction(
-                &mut transaction,
-                workspace.id(),
-                caller(),
-                call_path,
-            )
-            .await
-            .unwrap()
-            .is_none(),
+            providers
+                .resolve_invocation_tool_in_transaction(
+                    &mut transaction,
+                    workspace.id(),
+                    caller(),
+                    call_path,
+                )
+                .await
+                .unwrap()
+                .is_none(),
             "{call_path}"
         );
         assert!(

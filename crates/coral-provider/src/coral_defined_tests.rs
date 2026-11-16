@@ -82,18 +82,67 @@ async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits()
                 "discover {key} as {principal:?}"
             );
             let mut transaction = database.begin().await.unwrap();
-            let resolved = crate::resolve_invocation_tool_in_transaction(
-                &mut transaction,
-                workspace,
-                crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
-                &format!("coral.{key}"),
-            )
-            .await
-            .unwrap();
+            let resolved = arranged
+                .providers
+                .resolve_invocation_tool_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
+                    &format!("coral.{key}"),
+                )
+                .await
+                .unwrap();
             assert_eq!(resolved.is_some(), reaches, "call {key} as {principal:?}");
             transaction.rollback().await.unwrap();
         }
     }
+}
+
+// Catches: a Tool call that parses its Generation's schema graph again, and
+// a call that plans against the graph of a Generation its Provider replaced.
+#[tokio::test]
+async fn tool_calls_share_one_schema_graph_for_each_generation() {
+    let arranged = BuiltinWorkspace::new().await;
+
+    let first = arranged.resolved("coral.listProviders", 11).await;
+    let second = arranged.resolved("coral.getProvider", 11).await;
+    assert_eq!(
+        first.provider_generation_id(),
+        second.provider_generation_id()
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        first.schema_graph(),
+        second.schema_graph()
+    ));
+
+    // A later Coral version's catalog replaces the Generation.
+    assert_eq!(
+        arranged.boot(&catalog_b(), 12).await,
+        [arranged.builtin.id().clone()]
+    );
+    let replaced = arranged.resolved("coral.listProviders", 13).await;
+    assert_ne!(
+        replaced.provider_generation_id(),
+        first.provider_generation_id()
+    );
+    let database = arranged.fixture.database();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let stored = coral_catalog::schema_graph_in_transaction(
+        &mut transaction,
+        replaced.provider_generation_id(),
+    )
+    .await
+    .unwrap();
+    transaction.rollback().await.unwrap();
+    assert_eq!(**replaced.schema_graph(), stored);
+    assert_ne!(replaced.schema_graph(), first.schema_graph());
+    assert!(std::sync::Arc::ptr_eq(
+        replaced.schema_graph(),
+        arranged
+            .resolved("coral.getProvider", 13)
+            .await
+            .schema_graph()
+    ));
 }
 
 #[tokio::test]
@@ -497,7 +546,13 @@ fn serving(providers: &ProviderModule, catalog: BuiltinCatalog) -> ProviderModul
         providers.database.clone(),
         providers.workspaces.clone(),
         catalog,
+        test_schema_graphs(),
     )
+}
+
+/// A schema graph cache of its own, as each process has.
+fn test_schema_graphs() -> coral_catalog::SchemaGraphCache {
+    coral_catalog::SchemaGraphCache::new(coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES)
 }
 
 /// A Workspace created at time 10 by `owner` with this Coral version's catalog.
@@ -566,6 +621,26 @@ impl BuiltinWorkspace {
             }
         }
         updated
+    }
+
+    /// The Tool at `call_path` as the Owner's call resolves it at `at`.
+    async fn resolved(&self, call_path: &str, at: i64) -> crate::ResolvedInvocationTool {
+        let owner = AuthenticatedPrincipal::user(self.owner.clone());
+        let database = self.fixture.database();
+        let mut transaction = database.begin().await.unwrap();
+        let resolved = self
+            .providers
+            .resolve_invocation_tool_in_transaction(
+                &mut transaction,
+                self.workspace.id(),
+                crate::InvocationCaller::new(&self.workspaces, &owner, at),
+                call_path,
+            )
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("the Owner reaches {call_path}"));
+        transaction.rollback().await.unwrap();
+        resolved
     }
 
     /// The Tool Keys the Built-in Provider serves.
@@ -729,6 +804,7 @@ async fn two_processes_that_boot_together_activate_one_generation() {
         peer.clone(),
         coral_workspace::WorkspaceModule::new(peer.clone()),
         catalog_b(),
+        test_schema_graphs(),
     );
     let [outdated] = first
         .outdated_builtin_generations()
@@ -1179,6 +1255,7 @@ async fn two_processes_that_boot_together_install_each_coral_defined_provider_on
         peer.clone(),
         coral_workspace::WorkspaceModule::new(peer.clone()),
         running(),
+        test_schema_graphs(),
     );
     let (left, right) = tokio::join!(boot_installs(&first, 20), boot_installs(&second, 21));
 

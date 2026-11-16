@@ -122,19 +122,22 @@ pub struct ProviderModule {
     outbound_policy: coral_outbound::DestinationPolicy,
     consent: account::consent::Issuer,
     builtin_catalog: coral_catalog::BuiltinCatalog,
+    schema_graphs: coral_catalog::SchemaGraphCache,
     #[cfg(test)]
     publication_observer: Arc<dyn PublicationObserver>,
 }
 
 impl ProviderModule {
-    /// Builds the Module with the bootstrap-selected outbound policy and the
-    /// Built-in Provider catalog that this process serves.
+    /// Builds the Module with the bootstrap-selected outbound policy, the
+    /// Built-in Provider catalog that this process serves, and the cache that
+    /// this process resolves Tool calls' schema graphs from.
     #[must_use]
     pub fn new(
         outbound_policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
         workspaces: WorkspaceModule,
         builtin_catalog: coral_catalog::BuiltinCatalog,
+        schema_graphs: coral_catalog::SchemaGraphCache,
     ) -> Self {
         Self {
             database,
@@ -144,12 +147,15 @@ impl ProviderModule {
             outbound_policy,
             consent: account::consent::Issuer::default(),
             builtin_catalog,
+            schema_graphs,
             #[cfg(test)]
             publication_observer: Arc::new(NoopPublicationObserver),
         }
     }
 
-    /// Builds the Module with the Built-in catalog this Coral version defines.
+    /// Builds the Module with the Built-in catalog this Coral version defines
+    /// and a schema graph cache of its own, so that a test resolves Tool
+    /// calls as production does.
     ///
     /// # Panics
     ///
@@ -163,7 +169,15 @@ impl ProviderModule {
     ) -> Self {
         let catalog =
             coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares");
-        Self::new(outbound_policy, database, workspaces, catalog)
+        Self::new(
+            outbound_policy,
+            database,
+            workspaces,
+            catalog,
+            coral_catalog::SchemaGraphCache::new(
+                coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
+            ),
+        )
     }
 
     #[cfg(test)]
@@ -183,6 +197,9 @@ impl ProviderModule {
             consent: account::consent::Issuer::default(),
             builtin_catalog: coral_catalog::BuiltinCatalog::running()
                 .expect("the built-in catalog prepares"),
+            schema_graphs: coral_catalog::SchemaGraphCache::new(
+                coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
+            ),
             publication_observer,
         }
     }
@@ -874,75 +891,109 @@ impl<'a> InvocationCaller<'a> {
     }
 }
 
-/// Atomically resolves one active Call Path for Invocation admission.
-///
-/// The caller owns the transaction that creates the durable Invocation and its
-/// started Event. The Provider whose stored Call Root starts `call_path` owns
-/// it. `Ok(None)` means no current Provider Call Root or
-/// Tool-relative path matches, or `caller` cannot reach the Tool, so
-/// no Invocation should be created. Both look the same, so a caller cannot
-/// learn of a Tool it cannot discover.
-///
-/// # Errors
-///
-/// Returns a persistence or corrupt-package failure.
-pub async fn resolve_invocation_tool_in_transaction(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    caller: InvocationCaller<'_>,
-    call_path: &str,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
-    let reached = reached_tool(
-        transaction,
-        workspace_id,
-        caller,
-        call_path,
-        coral_db::RowLock::Shared,
-    )
-    .await?;
-    resolved(transaction, reached).await
+impl ProviderModule {
+    /// Atomically resolves one active Call Path for Invocation admission.
+    ///
+    /// The caller owns the transaction that creates the durable Invocation and
+    /// its started Event. The Provider whose stored Call Root starts
+    /// `call_path` owns it. `Ok(None)` means no current Provider Call Root or
+    /// Tool-relative path matches, or `caller` cannot reach the Tool, so
+    /// no Invocation should be created. Both look the same, so a caller cannot
+    /// learn of a Tool it cannot discover.
+    ///
+    /// The schema graph comes from this Module's cache, which reads it through
+    /// `transaction` when it does not hold the Tool's Generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or corrupt-package failure.
+    pub async fn resolve_invocation_tool_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        caller: InvocationCaller<'_>,
+        call_path: &str,
+    ) -> Result<Option<ResolvedInvocationTool>, Error> {
+        let reached = reached_tool(
+            transaction,
+            workspace_id,
+            caller,
+            call_path,
+            coral_db::RowLock::Shared,
+        )
+        .await?;
+        self.resolved(transaction, reached).await
+    }
+
+    /// Resolves one Private or Shared Tool to the Tool its Invocation retains:
+    /// the Tool of `kind` at `relative_path` under its Call Root that Coral
+    /// performs by running the definition `binding` names, with the default
+    /// Tool Access State of that revision, in the Workspace's Provider for the
+    /// kind, which this holds shared as the Policy Enforcement Point does. The
+    /// caller decides which Tools a Principal reaches: a Run links only its
+    /// own Private Tools and the Workspace's Shared Tools, and binds each call
+    /// to the definition it linked. `None` when that Provider is not active.
+    ///
+    /// The schema graph comes from this Module's cache, as in
+    /// [`Self::resolve_invocation_tool_in_transaction`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or corrupt-package failure.
+    pub async fn resolve_authored_tool_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        kind: coral_catalog::AuthoredToolKind,
+        relative_path: &str,
+        binding: coral_catalog::CodeExecutionBinding,
+        declared_default: coral_catalog::ToolAccessState,
+    ) -> Result<Option<ResolvedInvocationTool>, Error> {
+        let tool = coral_catalog::authored_tool(kind, relative_path, binding, declared_default)?;
+        let Some(stored) = repository::current_provider(
+            transaction,
+            workspace_id,
+            repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
+            coral_db::RowLock::Shared.into(),
+        )
+        .await?
+        .and_then(repository::ProviderWithActiveGeneration::into_active) else {
+            return Ok(None);
+        };
+        self.resolved(
+            transaction,
+            Some((stored.provider.access().clone(), stored.generation_id, tool)),
+        )
+        .await
+    }
+
+    /// The reached Tool with the schema graph its Invocation plans against,
+    /// from this Module's cache. The cache is keyed by Generation alone, so
+    /// `reached` must come from a Workspace-scoped read in `transaction`:
+    /// no Generation id from outside reaches it.
+    async fn resolved(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        reached: Option<ReachedTool>,
+    ) -> Result<Option<ResolvedInvocationTool>, Error> {
+        let Some((provider_access, generation_id, tool)) = reached else {
+            return Ok(None);
+        };
+        let schema_graph = self
+            .schema_graphs
+            .schema_graph_in_transaction(transaction, &generation_id)
+            .await?;
+        Ok(Some(ResolvedInvocationTool::new(
+            provider_access,
+            generation_id,
+            tool,
+            schema_graph,
+        )))
+    }
 }
 
-/// Resolves one Private or Shared Tool to the Tool its Invocation retains:
-/// the Tool of `kind` at `relative_path` under its Call Root that Coral
-/// performs by running the definition `binding` names, with the default
-/// Tool Access State of that revision, in the Workspace's Provider for the
-/// kind, which this holds shared as the Policy Enforcement Point does. The
-/// caller decides which Tools a Principal reaches: a Run links only its own
-/// Private Tools and the Workspace's Shared Tools, and binds each call to
-/// the definition it linked. `None` when that Provider is not active.
-///
-/// # Errors
-///
-/// Returns a persistence or corrupt-package failure.
-pub async fn resolve_authored_tool_in_transaction(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    kind: coral_catalog::AuthoredToolKind,
-    relative_path: &str,
-    binding: coral_catalog::CodeExecutionBinding,
-    declared_default: coral_catalog::ToolAccessState,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
-    let tool = coral_catalog::authored_tool(kind, relative_path, binding, declared_default)?;
-    let Some(stored) = repository::current_provider(
-        transaction,
-        workspace_id,
-        repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
-        coral_db::RowLock::Shared,
-    )
-    .await?
-    .and_then(repository::ProviderWithActiveGeneration::into_active) else {
-        return Ok(None);
-    };
-    resolved(
-        transaction,
-        Some((stored.provider.access().clone(), stored.generation_id, tool)),
-    )
-    .await
-}
-
-/// Whether [`resolve_invocation_tool_in_transaction`] would resolve
-/// `call_path` for `caller` now, read in a read snapshot without holding
+/// Whether [`ProviderModule::resolve_invocation_tool_in_transaction`] would
+/// resolve `call_path` for `caller` now, read in a read snapshot without holding
 /// any row: Program Admission's check of the Call Paths a Program names
 /// literally. A Tool that policy disables still resolves, so its call is
 /// recorded and refused when made.
@@ -993,7 +1044,7 @@ async fn reached_tool(
         },
         // No Generation holds a Private or Shared Tool: coral-tools keeps
         // them, and a Run reaches one with the definition it linked, through
-        // `resolve_authored_tool_in_transaction`.
+        // `ProviderModule::resolve_authored_tool_in_transaction`.
         ProviderCallRoot::Private | ProviderCallRoot::Shared => return Ok(None),
     };
     Ok(
@@ -1004,8 +1055,9 @@ async fn reached_tool(
 }
 
 /// Resolves a Call Path under an Owner-added Provider's Call Root for test
-/// fixtures. Every Principal reaches such a root, so admission reads no caller
-/// for it. Use [`resolve_invocation_tool_in_transaction`] for the Built-in
+/// fixtures, reading its schema graph from the database each time. Every
+/// Principal reaches such a root, so admission reads no caller for it. Use
+/// [`ProviderModule::resolve_invocation_tool_in_transaction`] for the Built-in
 /// Provider.
 ///
 /// # Errors
@@ -1039,21 +1091,6 @@ pub async fn resolve_owner_tool_in_transaction(
         coral_db::RowLock::Shared,
     )
     .await?;
-    resolved(transaction, reached).await
-}
-
-/// A Tool's Provider access, the Generation that holds it, and the Tool.
-type ReachedTool = (
-    ProviderAccess,
-    coral_catalog::ProviderGenerationId,
-    coral_catalog::MaterializedTool,
-);
-
-/// The reached Tool with the schema graph its Invocation plans against.
-async fn resolved(
-    transaction: &mut coral_db::Transaction<'_>,
-    reached: Option<ReachedTool>,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
     let Some((provider_access, generation_id, tool)) = reached else {
         return Ok(None);
     };
@@ -1066,6 +1103,13 @@ async fn resolved(
         Arc::new(schema_graph),
     )))
 }
+
+/// A Tool's Provider access, the Generation that holds it, and the Tool.
+type ReachedTool = (
+    ProviderAccess,
+    coral_catalog::ProviderGenerationId,
+    coral_catalog::MaterializedTool,
+);
 
 async fn reached_tool_by_root(
     transaction: &mut coral_db::Transaction<'_>,

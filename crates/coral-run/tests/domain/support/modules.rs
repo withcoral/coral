@@ -1546,15 +1546,17 @@ pub(crate) async fn admitted_invocation(
 ) -> Arc<crate::invocation::AdmittedInvocation> {
     let now = fixture.clock.now_unix_nanos().expect("clock");
     let mut transaction = fixture.database.begin().await.expect("begin resolution");
-    let target = coral_provider::resolve_invocation_tool_in_transaction(
-        &mut transaction,
-        &tool.workspace_id,
-        coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
-        &tool.call_path,
-    )
-    .await
-    .expect("resolve the fixture Tool")
-    .expect("the fixture Tool resolves");
+    let target = fixture
+        .providers
+        .resolve_invocation_tool_in_transaction(
+            &mut transaction,
+            &tool.workspace_id,
+            coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
+            &tool.call_path,
+        )
+        .await
+        .expect("resolve the fixture Tool")
+        .expect("the fixture Tool resolves");
     transaction.rollback().await.expect("end resolution");
     admitted(tool, run_id, target, tool.call_path.clone(), now)
 }
@@ -1570,17 +1572,19 @@ pub(crate) async fn admitted_private_invocation(
 ) -> Arc<crate::invocation::AdmittedInvocation> {
     let now = fixture.clock.now_unix_nanos().expect("clock");
     let mut transaction = fixture.database.begin().await.expect("begin resolution");
-    let target = coral_provider::resolve_authored_tool_in_transaction(
-        &mut transaction,
-        &tool.workspace_id,
-        coral_catalog::AuthoredToolKind::Private,
-        relative_path,
-        coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
-        coral_catalog::ToolAccessState::Enabled,
-    )
-    .await
-    .expect("resolve the Private Tool")
-    .expect("the Private Provider is active");
+    let target = fixture
+        .providers
+        .resolve_authored_tool_in_transaction(
+            &mut transaction,
+            &tool.workspace_id,
+            coral_catalog::AuthoredToolKind::Private,
+            relative_path,
+            coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
+            coral_catalog::ToolAccessState::Enabled,
+        )
+        .await
+        .expect("resolve the Private Tool")
+        .expect("the Private Provider is active");
     transaction.rollback().await.expect("end resolution");
     admitted(
         tool,

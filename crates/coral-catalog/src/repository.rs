@@ -765,6 +765,8 @@ pub(super) async fn load_shared_types(
     Ok(shared_types)
 }
 
+/// The only write to a Generation's row. `SchemaGraphCache` never invalidates
+/// an entry because the row is never updated and its id is never reused.
 #[expect(
     clippy::too_many_arguments,
     reason = "one immutable Generation row receives its complete package evidence"
@@ -1137,6 +1139,21 @@ pub(super) async fn load_schema_graph(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<SchemaGraph, Error> {
+    Ok(load_stored_schema_graph(transaction, generation_id)
+        .await?
+        .graph)
+}
+
+/// A Generation's schema graph with the length of the JSON it is stored as.
+pub(super) struct StoredSchemaGraph {
+    pub(super) graph: SchemaGraph,
+    pub(super) stored_bytes: usize,
+}
+
+pub(super) async fn load_stored_schema_graph(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<StoredSchemaGraph, Error> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
             Query::select()
@@ -1149,7 +1166,10 @@ pub(super) async fn load_schema_graph(
     let (schema_graph_json,) = row.ok_or_else(|| {
         Error::CorruptData("Provider has no retained Generation schema graph".to_string())
     })?;
-    SchemaGraph::from_storage_json(&schema_graph_json)
+    Ok(StoredSchemaGraph {
+        graph: SchemaGraph::from_storage_json(&schema_graph_json)?,
+        stored_bytes: schema_graph_json.len(),
+    })
 }
 
 pub(super) async fn verify_generation(
