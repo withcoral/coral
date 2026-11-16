@@ -207,6 +207,22 @@ impl SearchIndex {
         }
     }
 
+    /// Runs the Embedder without the reconcile task beside it. That task
+    /// starts a pass as it starts, beside whatever a test does next. A test
+    /// that says when each pass runs starts the Embedder with this instead.
+    #[cfg(test)]
+    pub(crate) fn spawn_embedder(&self) -> tokio::task::JoinHandle<()> {
+        use tracing::instrument::WithSubscriber as _;
+
+        let index = self.clone();
+        let embed = async move {
+            if let Some(state) = index.embedder.clone() {
+                index.embed_loop(state).await;
+            }
+        };
+        tokio::spawn(embed.with_current_subscriber())
+    }
+
     /// Embeds every stale row the skip list leaves, until none is left or a
     /// batch finds the database or the model down.
     async fn drain(&self, state: &EmbedderState, thread: &EmbedThread) -> Result<(), ThreadGone> {
