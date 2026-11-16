@@ -94,14 +94,7 @@ pub(crate) type Sent = mpsc::UnboundedReceiver<Result<PullResponse, Status>>;
 
 /// A dialed stream with `free` units of room, and what Coral sends on it.
 pub(crate) fn dialed_stream(streams: &PullStreams, free: u32) -> (StreamId, Sent) {
-    let (outbound, sent) = mpsc::unbounded_channel();
-    let stream = streams.insert(
-        "a-run-executor".to_owned(),
-        dialed_admission(),
-        free,
-        outbound,
-    );
-    (stream, sent)
+    streams.scripted("a-run-executor", free)
 }
 
 /// What `answer` receives, or an error once its stream ends unanswered.
@@ -381,6 +374,34 @@ async fn hello_is_welcomed_one_level_apart_and_refused_two_apart() {
                     .all(|held| held.run_executor_id != id)
             );
         }
+    }
+}
+
+#[test]
+fn a_take_sends_on_the_units_it_held_and_frees_the_rest() {
+    // (held, runs sent, stream closes first, outcome, room after, Taken sent)
+    let cases = [
+        (3, 2, false, Ok(()), 1, true),
+        (3, 0, false, Ok(()), 3, false),
+        (2, 3, false, Err(Refused::NoRoom), 3, false),
+        (2, 1, true, Err(Refused::Closed), 3, false),
+    ];
+    for (held, runs, closes, outcome, room, sends) in cases {
+        let streams = PullStreams::default();
+        let (stream, mut sent) = dialed_stream(&streams, 3);
+        streams.hold_units(stream, held).unwrap();
+        assert_eq!(streams.hold_units(stream, 2), Err(Refused::NoRoom));
+        if closes {
+            streams.close(stream);
+        }
+
+        let taken = streams.take_held(stream, held, (1..=runs).map(run).collect());
+
+        assert_eq!(taken, outcome);
+        let free = lock(&streams.held).get(&stream).map(|held| held.view.free);
+        assert_eq!(free, Some(room));
+        let message = sent.try_recv().ok().and_then(Result::ok);
+        assert_eq!(message.is_some(), sends, "{held} held, {runs} sent");
     }
 }
 

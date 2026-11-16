@@ -449,7 +449,7 @@ pub(crate) fn warn_if_late(now_unix_nanos: i64, run: &HeldRunId, delivery: &Deli
 
 /// Returns once the change signal rings, or an outage of it begins (the
 /// next call then waits for its return); never without a subscription.
-async fn rung(changes: &mut Option<ChangeSubscription>) {
+pub(crate) async fn rung(changes: &mut Option<ChangeSubscription>) {
     match changes {
         Some(changes) => {
             let _rang_or_lost = changes.changed().await;
