@@ -341,7 +341,7 @@ async fn fatal_async_tool_stops_noncooperative_program_code() {
             .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .expect("accept Program");
-        let terminal = tokio::time::timeout(Duration::from_secs(2), async {
+        let terminal = tokio::time::timeout(EVENTUALLY, async {
             loop {
                 let update = fixture
                     .runs
@@ -592,14 +592,14 @@ async fn real_program_dispatches_concurrent_tools_and_waits_for_both() {
         &tool.workspace_id,
         submission("const results = await Promise.all([coral.providers.weather.getForecast(), coral.providers.weather.getForecast()]); return results.length;"),
     ).await.expect("accept Program");
-    let concurrent = tokio::time::timeout(Duration::from_secs(2), async {
+    let concurrent = tokio::time::timeout(EVENTUALLY, async {
         while upstream.sends.load(Ordering::SeqCst) < 2 {
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await;
     // Release even on failure so the regression cannot strand runtime shutdown.
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
     concurrent.expect("both Tools dispatch before either returns");
     let terminal = wait_for_terminal(
         &fixture.runs,
@@ -663,7 +663,7 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     .await
     .expect("policy change must not wait for an upstream-held database lock")
     .expect("post-enforcement policy change commits");
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
 
     let terminal = wait_for_terminal(
         &fixture.runs,

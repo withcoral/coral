@@ -335,7 +335,7 @@ async fn an_mcp_authentication_refusal_is_a_catchable_tool_error() {
             )
             .await
             .expect("accept MCP Program");
-        let terminal = tokio::time::timeout(Duration::from_secs(10), async {
+        let terminal = tokio::time::timeout(EVENTUALLY, async {
             loop {
                 let update = runs
                     .observe(

@@ -271,10 +271,13 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
         original
     );
     server.reset().await;
+    // A reader that waits for the exchange dates each read by the wall time
+    // it has waited. The renewed token lasts ten minutes, so a reader held up
+    // on a slow host still finds it current and does not renew it again.
     Mock::given(method("POST"))
         .and(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token":"replacement-canary", "token_type":"Bearer", "expires_in":1, "scope":"read write extra"
+            "access_token":"replacement-canary", "token_type":"Bearer", "expires_in":600, "scope":"read write extra"
         })))
         .expect(1)
         .mount(&server)
@@ -294,7 +297,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
             )
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+    tokio::time::timeout(coral_test_support::EVENTUALLY, gate.entered.notified())
         .await
         .unwrap();
     let waiting = accounts.credentials(workspace.id(), provider.id(), &original, 2_000_000_000);
@@ -309,7 +312,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
     request.abort();
     gate.release.notify_one();
     assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        tokio::time::timeout(coral_test_support::EVENTUALLY, waiting)
             .await
             .expect("accepted refresh survives caller loss")
             .unwrap()
@@ -378,6 +381,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
         "replacement-canary"
     );
     // A renewed grant the service reports as narrower is recorded, not rejected.
+    // The token renewed above has expired by now.
     server.reset().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -390,7 +394,12 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
         .await;
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &replacement, 4_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &replacement,
+                1_000_000_000_000
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -411,7 +420,12 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
         .expect(1).mount(&server).await;
     assert!(matches!(
         accounts
-            .credentials(workspace.id(), provider.id(), &replacement, 6_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &replacement,
+                2_000_000_000_000
+            )
             .await,
         Err(crate::Error::AccountRequired)
     ));

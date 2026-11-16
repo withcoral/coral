@@ -117,7 +117,7 @@ async fn a_commit_whose_answer_is_lost_before_it_landed_is_recommitted_as_built_
 
     gates.go.send(()).expect("start the burst");
     wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 1).await;
-    wait_until_async_within(Duration::from_secs(10), async || {
+    wait_until_async(async || {
         fixture
             .run_record(&workspace_id, &run_id)
             .await
@@ -493,7 +493,7 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
     fixture
         .inject_fault("DROP INDEX reject_same_instant_events")
         .await;
-    wait_until_async_within(Duration::from_secs(10), async || {
+    wait_until_async(async || {
         fixture
             .run_record(&tool.workspace_id, &run_id)
             .await
@@ -555,7 +555,7 @@ async fn a_takeover_after_the_run_deadline_records_timed_out() {
         .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
     probe.panic_on_next_message();
     gates.go.send(()).expect("start the burst");
-    wait_until_async_within(Duration::from_secs(10), async || {
+    wait_until_async(async || {
         fixture
             .run_record(&workspace_id, &run_id)
             .await
@@ -629,7 +629,7 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
     wait_until(|| engine.started.load(Ordering::SeqCst)).await;
     probe.panic_on_next_message();
     gates.go.send(()).expect("start the burst");
-    wait_until_async_within(Duration::from_secs(10), async || {
+    wait_until_async(async || {
         fixture
             .run_record(&workspace_id, &run_id)
             .await
