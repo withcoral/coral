@@ -66,8 +66,10 @@ impl WriteProbe {
     /// # Panics
     ///
     /// Panics when that write ended and never was at `point`: a write that
-    /// fails early skips the points after its failure.
+    /// fails early skips the points after its failure. Panics when `write`
+    /// is zero, which names no write and would wait forever.
     pub(crate) async fn reached(&self, write: usize, point: WritePoint) {
+        assert!(write >= 1, "writes count from one");
         let was_there = |progress: &Progress| match point {
             WritePoint::Ended => progress.ended,
             point => progress.at >= Some(point),
