@@ -44,9 +44,12 @@ mod tests;
 /// one of about 276 MiB. The graphs of the Built-in, Private and Shared
 /// Providers are Coral's own, and each is under 1 MiB.
 ///
-/// The budget does not count the validators that a graph compiles for its
-/// Tools' responses. Each graph keeps up to 32 MiB of them by weight, and
-/// they leave with it.
+/// The budget does not count the validators that the cached graphs compile
+/// for their Tools' responses. The cache keeps those in a store with a budget
+/// of its own, 128 MiB for all of them, so a validator never evicts a graph
+/// and a graph never evicts a validator. A graph's validators leave the store
+/// when the graph is dropped: once the cache has evicted it and the last Tool
+/// call that uses it has ended.
 ///
 /// Entries are keyed by Generation alone, with no Workspace. Ask only for a
 /// Generation that a Workspace-scoped read in the same transaction just
@@ -70,10 +73,14 @@ struct Entries {
     by_last_use: BTreeMap<u64, ProviderGenerationId>,
     last_tick: u64,
     weight_bytes: usize,
+    /// The store that every graph kept here compiles its validators into. It
+    /// has a budget and a lock of its own: this lock guards only the handle,
+    /// which each load clones.
+    validators: crate::validators::ValidatorStore,
 }
 
-/// One Generation's graph. The graph keeps the validators compiled from it,
-/// within a budget of its own that this weight does not count.
+/// One Generation's graph. The validators compiled from it are in the
+/// cache's store, and this weight does not count them.
 struct Entry {
     graph: Arc<SchemaGraph>,
     weight_bytes: usize,
@@ -137,6 +144,9 @@ impl SchemaGraphCache {
         generation_id: &ProviderGenerationId,
         loaded: SchemaGraph,
     ) -> Arc<SchemaGraph> {
+        let validators = self.entries().validators.clone();
+        let mut loaded = loaded;
+        loaded.keep_validators_in(&validators);
         // The walk of a large graph takes milliseconds, so it runs here,
         // before the lock.
         let weight_bytes = weight_bytes(&loaded);
