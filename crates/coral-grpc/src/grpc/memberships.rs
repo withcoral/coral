@@ -33,7 +33,7 @@ fn parse_role(value: i32) -> Result<WorkspaceRole, Status> {
     match wire::WorkspaceRole::try_from(value) {
         Ok(wire::WorkspaceRole::Owner) => Ok(WorkspaceRole::Owner),
         Ok(wire::WorkspaceRole::Member) => Ok(WorkspaceRole::Member),
-        _ => Err(invalid("invalid Membership role")),
+        _ => Err(invalid()),
     }
 }
 
@@ -132,9 +132,7 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         mask(input.update_mask, &["role"])?;
-        let m = input
-            .membership
-            .ok_or_else(|| invalid("membership required"))?;
+        let m = input.membership.ok_or_else(invalid)?;
         let (w, user) = member(&m.name)?;
         let context = change(actor.clone())?.with_etag(&m.etag).map_err(error)?;
         self.workspaces
