@@ -1,5 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
+import { expect, within } from 'storybook/test'
+
+import { resizeViewport } from '../../../../.storybook/browser'
 
 import { Banner, Button, Typography } from '@/wax/components'
 import { Brand } from '@/wax/components/brand'
@@ -130,4 +133,53 @@ export const TopBarWithStart: Story = {
 export const TopBarWithStartMobile: Story = {
   ...TopBarWithStart,
   globals: { viewport: { value: 'mobile1', isRotated: false } },
+}
+
+/** The surface at a point in the window, ignoring the transparent elements above it. */
+function surfaceAt(x: number, y: number) {
+  let element = document.elementFromPoint(x, y)
+  while (element && getComputedStyle(element).backgroundColor === 'rgba(0, 0, 0, 0)')
+    element = element.parentElement
+  return element ? getComputedStyle(element).backgroundColor : null
+}
+
+const WHITE = 'rgb(255, 255, 255)'
+const panel = (
+  <Typography.Body as="p">
+    A form that only comes in light colors, such as Stripe's.
+  </Typography.Body>
+)
+
+/**
+ * A light panel beside the content, to the window's right and bottom edges. It
+ * stays light in the dark theme.
+ */
+export const WithPanel: Story = {
+  args: { panel },
+  globals: { backgrounds: { value: 'dark' } },
+  play: async ({ canvasElement }) => {
+    if (!(await resizeViewport(1280, 800))) return
+    const canvas = within(canvasElement)
+    const text = canvas.getByText(/only comes in light colors/).getBoundingClientRect()
+    await expect(text.left).toBeGreaterThan(
+      canvas.getByText('Add a provider to start.').getBoundingClientRect().right,
+    )
+    await expect(surfaceAt(window.innerWidth - 20, window.innerHeight - 20)).toBe(WHITE)
+    await expect(surfaceAt(20, window.innerHeight - 20)).not.toBe(WHITE)
+  },
+}
+
+/** A narrow window puts the panel under the content, the window's full width. */
+export const WithPanelNarrow: Story = {
+  args: { panel },
+  globals: { backgrounds: { value: 'dark' } },
+  play: async ({ canvasElement }) => {
+    if (!(await resizeViewport(600, 800))) return
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/only comes in light colors/).getBoundingClientRect().top,
+    ).toBeGreaterThan(canvas.getByText('Add a provider to start.').getBoundingClientRect().bottom)
+    await expect(surfaceAt(20, window.innerHeight - 20)).toBe(WHITE)
+    await expect(surfaceAt(window.innerWidth - 20, window.innerHeight - 20)).toBe(WHITE)
+  },
 }

@@ -1,9 +1,11 @@
+import classNames from 'classnames'
 import type { ReactNode } from 'react'
 
 import { Breadcrumbs, type Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
 import { NavigationTrigger } from '@/wax/components/navigation-frame/navigation-frame'
 
 import * as ScrollArea from '@/wax/components/scroll-area'
+import { lightTheme } from '@/wax/theme/theme-light.css'
 import * as styles from './page-layout.css'
 
 export interface PageLayoutProps {
@@ -31,6 +33,13 @@ export interface PageLayoutProps {
    * scroll, so put a `layout="scroll"` table in it to scroll its rows instead.
    */
   bounded?: boolean
+  /**
+   * A light panel beside a standard page, to the window's right and bottom
+   * edges, for content that only comes in light colors, such as Stripe's
+   * checkout form. The page's content keeps to the window's middle beside it.
+   * A narrow window puts the panel under the content.
+   */
+  panel?: ReactNode
 }
 
 /**
@@ -48,9 +57,11 @@ export function PageLayout({
   actions,
   variant = 'standard',
   bounded = false,
+  panel,
 }: PageLayoutProps) {
+  const beside = panel != null
   const frame = (
-    <div className={styles.frame({ variant, bounded, compact })}>
+    <div className={styles.frame({ variant, bounded, compact, beside })}>
       {header && <div className={styles.header}>{header}</div>}
       {variant === 'split' ? <div className={styles.splitBody}>{children}</div> : children}
     </div>
@@ -70,8 +81,20 @@ export function PageLayout({
           // No tab stop of its own: the page outline would take focus before the
           // content. Browsers make a scroller focusable when nothing in it is.
           scrollDirection="vertical"
+          // A fade would dim the panel's ends, and the scrollbar sits on the panel.
+          fade={beside ? 'none' : 'both'}
+          scrollbarClassName={beside ? lightTheme : undefined}
         >
-          {frame}
+          {beside ? (
+            <div className={styles.withPanel}>
+              {frame}
+              <div className={classNames(lightTheme, styles.panel)}>
+                <div className={styles.panelContent}>{panel}</div>
+              </div>
+            </div>
+          ) : (
+            frame
+          )}
         </ScrollArea.Container>
       )}
     </div>

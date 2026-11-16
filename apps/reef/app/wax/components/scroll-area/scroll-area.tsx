@@ -22,6 +22,8 @@ interface ScrollAreaBaseProps extends React.HTMLAttributes<HTMLDivElement>, Read
   viewportRef?: React.Ref<HTMLDivElement>
   /** Class name applied to the scrollable viewport element. */
   viewportClassName?: string
+  /** Class name applied to the scrollbars, such as a theme for the surface under them. */
+  scrollbarClassName?: string
   /** Defaults to '100%'. */
   width?: string
 }
@@ -85,6 +87,7 @@ export function Container({
   renderViewport,
   scrollDirection = 'both',
   style,
+  scrollbarClassName,
   viewportClassName,
   viewportRef,
   width = '100%',
@@ -151,12 +154,18 @@ export function Container({
         {viewport}
       </ReadingPosition>
       {scrollDirection !== 'horizontal' && (
-        <BaseScrollArea.Scrollbar className={styles.scrollbar} orientation="vertical">
+        <BaseScrollArea.Scrollbar
+          className={classNames(styles.scrollbar, scrollbarClassName)}
+          orientation="vertical"
+        >
           <BaseScrollArea.Thumb className={styles.thumb} />
         </BaseScrollArea.Scrollbar>
       )}
       {horizontal && scrollDirection !== 'vertical' && (
-        <BaseScrollArea.Scrollbar className={styles.scrollbar} orientation="horizontal">
+        <BaseScrollArea.Scrollbar
+          className={classNames(styles.scrollbar, scrollbarClassName)}
+          orientation="horizontal"
+        >
           <BaseScrollArea.Thumb className={styles.thumb} />
         </BaseScrollArea.Scrollbar>
       )}
