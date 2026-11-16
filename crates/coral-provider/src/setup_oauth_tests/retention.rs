@@ -1,6 +1,7 @@
 //! Explicit provisional grant retention and replacement at the authorization/publication seam.
 use super::*;
 use crate::account::{AccountScope, AccountState, ProviderAccountId};
+use crate::tests::authorized_bearer_setup;
 
 #[tokio::test]
 async fn caller_publication_discards_discovery_grant_and_preserves_application() {
@@ -224,61 +225,6 @@ async fn discarding_discovery_grant_keeps_confidential_application_after_restart
             form.get("client_secret").map(std::convert::AsRef::as_ref),
             Some("application-secret-canary")
         );
-    }
-}
-
-struct AuthorizedSetup {
-    id: crate::ProviderSetupId,
-    revision: i64,
-    grant: ProviderAccountId,
-}
-
-async fn authorized_bearer_setup(
-    harness: &Harness,
-    context: &coral_workspace::ChangeContext,
-    owner: &WorkspaceId,
-    document: coral_catalog::OpenApiDocument,
-) -> AuthorizedSetup {
-    let setup = harness
-        .providers
-        .prepare_openapi_fixture(context, owner, document)
-        .await
-        .unwrap();
-    let review = harness
-        .providers
-        .review_setup_configuration(context.actor(), owner, setup.id())
-        .await
-        .unwrap();
-    let mut values = review.confirmed.unwrap();
-    values.authentication = Some(AuthenticationConfiguration::Bearer);
-    let confirmed = harness
-        .providers
-        .confirm_setup_configuration(context, owner, setup.id(), review.revision, values)
-        .await
-        .unwrap();
-    assert_eq!(
-        confirmed.errors,
-        [] as [coral_catalog::ConfigurationFieldError; 0]
-    );
-    let grant = harness
-        .accounts
-        .authorize_setup(
-            context,
-            owner,
-            setup.id(),
-            confirmed.revision,
-            coral_credentials::CredentialValues::token(
-                Secret::new("reviewed-account".into()).unwrap(),
-            ),
-        )
-        .await
-        .unwrap()
-        .provisional_grant_id
-        .unwrap();
-    AuthorizedSetup {
-        id: setup.id().clone(),
-        revision: confirmed.revision,
-        grant,
     }
 }
 
