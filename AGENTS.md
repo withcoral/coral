@@ -215,22 +215,16 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
     shape, migrates it away. Stored values follow the same rule: a release
     reads a new value, such as a new `kind`, before any release writes it,
     and no migration rewrites rows into a form the previous release cannot
-    read. An older Coral also starts on a newer database: the ledger may hold
-    steps above the plan's last one, and no others that the plan lacks. That
-    start promises nothing for a release older than the one a staggered
-    migration names: such a release starts and then fails at a query.
+    read.
   - A newer release never runs on an older schema. Coral applies its whole
     plan before it serves, and code relies on that schema: do not probe for a
     table or a column, and do not keep a path for a database that lacks a
     migration.
 
   `scripts/check-migrations.sh` names each statement in a new migration that
-  can break an older release. It reads the shared files and the Postgres
-  halves. A migration that keeps such a statement declares why in a comment:
-  `-- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>`, or
-  `-- rolling-upgrade: compatible. <why>` when the statement breaks nothing,
-  such as a wider CHECK. The check reads SQL, not stored values: keep the
-  values rule yourself.
+  can break an older release, and says how to declare one that does not. It
+  reads SQL text in the shared files and the Postgres halves, not stored
+  values: keep the values rule yourself.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot

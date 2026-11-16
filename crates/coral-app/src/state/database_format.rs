@@ -381,14 +381,9 @@ mod tests {
     #[tokio::test]
     async fn a_coral_older_than_its_database_starts_on_it() {
         use sqlx::SqlSafeStr as _;
-        let last = coral_db::migration_plan()
-            .for_system(coral_db::DatabaseSystem::Sqlite)
-            .iter()
-            .map(|migration| migration.version)
-            .max()
-            .expect("at least one embedded migration");
+        // Above every version of the plan, as a later release numbers a step.
         let newer = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(
-            last + 1,
+            9001,
             "from a newer Coral".into(),
             sqlx::migrate::MigrationType::Simple,
             "CREATE TABLE newer_coral_fixture (id TEXT PRIMARY KEY)".into_sql_str(),
@@ -402,14 +397,11 @@ mod tests {
         validate_database_state(fixture.options())
             .await
             .expect("recognize a newer Coral's database");
-        let reported = std::sync::Mutex::new(Vec::new());
-        super::super::migrations::migrate_current(&fixture.database(), &|progress| {
-            reported.lock().unwrap().push(format!("{progress:?}"));
-        })
-        .await
-        .expect("start on a newer Coral's database");
+        // What the run reports is coral-db's rule, tested there.
+        super::super::migrations::migrate_current(&fixture.database(), &|_| {})
+            .await
+            .expect("start on a newer Coral's database");
 
-        assert_eq!(*reported.lock().unwrap(), ["Ahead { steps: 1 }"]);
         assert_eq!(ledger_rows(&fixture).await, before);
     }
 

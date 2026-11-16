@@ -57,6 +57,12 @@ const breaking = {
   // Two quoted names are one table only when they are the same text.
   'CREATE TABLE "a-b" (id TEXT);\nDROP TABLE "a_b";': /drops the table: DROP TABLE "a_b"/,
   'CREATE TABLE "Workspaces" (id TEXT);\nDROP TABLE workspaces;': /drops the table/,
+  // What the first version of this check did not read.
+  "DO $$ BEGIN ALTER TABLE workspaces DROP COLUMN name; END $$;": /runs a block that this check cannot read/,
+  'CREATE TRIGGER stamp BEFORE INSERT ON workspaces FOR EACH ROW EXECUTE FUNCTION stamp();': /adds a trigger/,
+  'ALTER TABLE workspaces SET SCHEMA archive;': /moves a table to another schema/,
+  "INSERT OR REPLACE INTO workspaces (id) VALUES ('a');": /rewrites values/,
+  "REPLACE INTO workspaces (id) VALUES ('a');": /rewrites values/,
   // A declaration is a comment, not text that a string holds.
   "INSERT INTO runs (id) VALUES ('\n-- rolling-upgrade: compatible. Not a comment.\n');\nDROP TABLE workspaces;":
     /drops the table/,
@@ -97,6 +103,13 @@ const compatible = {
     '-- The wider rule allows every value an older release writes.\n' +
     '-- rolling-upgrade: compatible. Widens the kind rule.\n' +
     "ALTER TABLE workspaces DROP CONSTRAINT workspaces_kind,\n  ADD CONSTRAINT workspaces_kind CHECK (kind IN ('a', 'b')) NOT VALID;\n",
+  'a table rebuild that it declares compatible':
+    '-- rolling-upgrade: compatible. The rebuilt table keeps every column and row.\n' +
+    'CREATE TABLE workspaces_new (id TEXT PRIMARY KEY, name TEXT);\n' +
+    'INSERT INTO workspaces_new (id, name) SELECT id, name FROM workspaces;\n' +
+    'DROP TABLE workspaces;\nALTER TABLE workspaces_new RENAME TO workspaces;\n',
+  'a trigger on a table that it creates':
+    'CREATE TABLE runs (id TEXT);\nCREATE TRIGGER stamp BEFORE INSERT ON runs FOR EACH ROW EXECUTE FUNCTION stamp();\n',
   'a removal that names the release that stopped using it':
     '-- rolling-upgrade: unused since v1.0.0. No query names the column.\nALTER TABLE workspaces DROP COLUMN name;\n',
 }
@@ -116,6 +129,21 @@ const declarations = {
   'gives no reason': [`-- rolling-upgrade: compatible.\n${drop}`, /must read/],
   'has an unknown form': [`-- rolling-upgrade: safe. Nobody reads it.\n${drop}`, /must read/],
   'is repeated': [`-- rolling-upgrade: compatible. One.\n-- rolling-upgrade: compatible. Two.\n${drop}`, /more than once/],
+  // One declaration covers the file, so `compatible` must not hide a removal.
+  'calls a dropped table compatible beside a wider rule': [
+    '-- rolling-upgrade: compatible. Widens the kind rule.\n' +
+      "ALTER TABLE workspaces DROP CONSTRAINT workspaces_kind, ADD CONSTRAINT workspaces_kind CHECK (kind <> '');\n" +
+      'DROP TABLE runs;\n',
+    /cannot be `compatible`[^]*drops the table: DROP TABLE runs$/,
+  ],
+  'calls a renamed column compatible': [
+    '-- rolling-upgrade: compatible. Same data.\nALTER TABLE workspaces RENAME COLUMN name TO title;\n',
+    /cannot be `compatible`/,
+  ],
+  'calls a changed column type compatible': [
+    '-- rolling-upgrade: compatible. Same data.\nALTER TABLE workspaces ALTER COLUMN name TYPE BIGINT;\n',
+    /cannot be `compatible`/,
+  ],
   'has nothing to declare': [
     '-- rolling-upgrade: compatible. Adds a table.\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n',
     /remove it/,

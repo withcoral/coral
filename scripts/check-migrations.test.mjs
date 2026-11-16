@@ -139,10 +139,15 @@ test('a removal that names a release on main passes, and one that names another 
   const accepted = repo.check()
   assert.equal(accepted.status, 0, accepted.stderr)
 
-  await repo.write(next, `-- rolling-upgrade: unused since v9.9.9. No query names the column.\n${drop}`)
-  const result = repo.check()
-  assert.equal(result.status, 1, result.stderr)
-  assert.match(result.stderr, /names v9\.9\.9, which is not a release/)
+  // Neither a tag that does not exist nor a Coral 0.x release, whose state
+  // Coral 1.x rejects, is a release that stopped using the column.
+  repo.git('tag', 'v0.9.0')
+  for (const tag of ['v9.9.9', 'v0.9.0']) {
+    await repo.write(next, `-- rolling-upgrade: unused since ${tag}. No query names the column.\n${drop}`)
+    const result = repo.check()
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, new RegExp(`names ${tag.replaceAll('.', '\\.')}, which is not a release`))
+  }
 })
 
 test('a table rebuild in the SQLite half of an additive step passes', async (t) => {

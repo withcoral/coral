@@ -273,7 +273,7 @@ fn migration_line(progress: coral_app::MigrationProgress<'_>) -> String {
             };
             format!(
                 "The database has {steps} {migrations} from a newer Coral release. This Coral \
-                 runs as the older release of a rolling upgrade or a rollback."
+                 is older than its database."
             )
         }
         Pending { pending, .. } => {
@@ -551,8 +551,8 @@ mod tests {
                 "a database that a newer Coral migrated",
                 vec![Ahead { steps: 2 }],
                 vec![
-                    "The database has 2 migrations from a newer Coral release. This Coral runs \
-                     as the older release of a rolling upgrade or a rollback."
+                    "The database has 2 migrations from a newer Coral release. This Coral is \
+                     older than its database."
                         .to_owned(),
                 ],
             ),

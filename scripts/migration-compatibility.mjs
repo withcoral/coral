@@ -12,6 +12,9 @@
 //   -- rolling-upgrade: unused since v1.9.0. <what stopped using it>
 //   -- rolling-upgrade: compatible. <why no statement breaks an older release>
 //
+// One declaration covers the file. `compatible` does not cover a statement
+// that removes, renames or retypes a table or a column: see CERTAIN.
+//
 // It reads SQL text, so it does not see what a statement means: a stored value
 // that an older release cannot decode passes. AGENTS.md has the rule for those.
 import { readFileSync } from 'node:fs'
@@ -101,6 +104,15 @@ const IDENTIFIER = `(${PART}(?:\\.${PART})*)`
 const name = (identifier) => identifier.replaceAll('"', '')
 const match = (statement, pattern) => new RegExp(pattern).exec(statement)
 const REWRITES = 'rewrites values that an older release reads'
+// These break every release that uses what they remove, so no `compatible`
+// declaration covers them: the migration names the release that stopped.
+const CERTAIN = new Set([
+  'drops a column',
+  'drops the table',
+  'renames a table or a column',
+  'moves a table to another schema',
+  'changes a column type',
+])
 
 // What one `ALTER TABLE` action can break, or nothing.
 function alterAction(action, table, known) {
@@ -108,7 +120,9 @@ function alterAction(action, table, known) {
   if (/^drop\s+constraint\b/.test(action)) return 'drops a constraint'
   // COLUMN is optional in `DROP [COLUMN] name`.
   if (/^drop\b/.test(action)) return 'drops a column'
-  if (/^rename\b/.test(action)) return 'renames what an older release names'
+  if (/^rename\s+constraint\b/.test(action)) return 'renames a constraint'
+  if (/^rename\b/.test(action)) return 'renames a table or a column'
+  if (/^set\s+schema\b/.test(action)) return 'moves a table to another schema'
   const column = `^alter\\s+(column\\s+)?${IDENTIFIER}\\s+`
   if (match(action, `${column}(set\\s+data\\s+)?type\\b`)) return 'changes a column type'
   if (match(action, `${column}set\\s+not\\s+null\\b`)) return 'requires a value that an older release may not write'
@@ -144,6 +158,12 @@ function statementBreaks(statement, known) {
       return table && known.tables.has(name(table[1]))
     })
     if (own) return []
+    // A rebuild: a table this migration created takes the dropped one's name.
+    const rebuilt = splitTopLevel(droppedTables[2], ',').every((target) => {
+      const table = match(target, `^${IDENTIFIER}`)
+      return table && known.rebuilt.has(name(table[1]))
+    })
+    if (rebuilt) return ['rebuilds a table']
   }
   const dropped = match(statement, '^drop\\s+(materialized\\s+view|[a-z]+)')
   if (dropped) return [`drops the ${dropped[1].replace(/\s+/g, ' ')}`]
@@ -179,7 +199,16 @@ function statementBreaks(statement, known) {
     if (!backfill) return [REWRITES]
   }
 
+  const trigger = match(statement, `^create\\s+(or\\s+replace\\s+)?(constraint\\s+)?trigger\\b.*?\\bon\\s+${IDENTIFIER}`)
+  if (trigger && !known.tables.has(name(trigger[3]))) {
+    return ['adds a trigger to a table that an older release writes']
+  }
+  // The body is a string here, so nothing in it was read.
+  if (/^do\b/.test(statement)) return ['runs a block that this check cannot read']
+
   // A write that another statement carries: read no further into it.
+  const replaced = match(statement, `^(insert\\s+or\\s+replace|replace)\\s+into\\s+${IDENTIFIER}`)
+  if (replaced && !known.tables.has(name(replaced[2]))) return [REWRITES]
   if (/^merge\b/.test(statement)) return [REWRITES]
   if (/^with\b/.test(statement) && /\b(update|delete|merge)\b/.test(statement)) return [REWRITES]
   const upserted = match(statement, `^insert\\s+into\\s+${IDENTIFIER}\\b.*\\bdo\\s+update\\b`)
@@ -190,14 +219,25 @@ function statementBreaks(statement, known) {
 // Every statement of stripped `sql` that can break an older release, with the
 // reason.
 function breakingStatements(sql, quoted) {
-  const known = { tables: new Set(), columns: new Set() }
+  const statements = sql.split(';').map((raw) => raw.replace(/\s+/g, ' ').trim())
+  const known = { tables: new Set(), columns: new Set(), rebuilt: new Set() }
+  // A table that a later statement renames a new table to is rebuilt, not
+  // removed, so its drop is not certain to break a release.
+  const created = new Set()
+  for (const statement of statements) {
+    const lower = statement.toLowerCase()
+    const table = match(lower, `^create\\s+(unlogged\\s+)?table\\s+${IDENTIFIER}`)
+    if (table) created.add(name(table[2]))
+    const renamed = match(lower, `^alter\\s+table\\s+${IDENTIFIER}\\s+rename\\s+to\\s+${IDENTIFIER}`)
+    if (renamed && created.has(name(renamed[1]))) known.rebuilt.add(name(renamed[2]))
+  }
   const found = []
-  for (const raw of sql.split(';')) {
-    const statement = raw.replace(/\s+/g, ' ').trim()
+  for (const statement of statements) {
     const shown = statement.replace(/"#(\d+)"/g, (_, index) => `"${quoted[index]}"`)
     const reasons = [...new Set(statementBreaks(statement.toLowerCase(), known))]
     if (reasons.length > 0) {
       found.push({
+        certain: reasons.some((reason) => CERTAIN.has(reason)),
         reason: reasons.join(', '),
         statement: shown.length > 100 ? `${shown.slice(0, 97)}...` : shown,
       })
@@ -206,13 +246,18 @@ function breakingStatements(sql, quoted) {
   return found
 }
 
-// Why `declaration` does not stand, or nothing.
-function declarationProblem(declaration, releases) {
+// Why `declaration` does not stand for `breaking`, or nothing.
+function declarationProblem(declaration, releases, breaking) {
   const unused = /^unused since (\S+?)\.\s+\S/i.exec(declaration)
   if (unused) {
     return releases.includes(unused[1]) ? null : `names ${unused[1]}, which is not a release this checkout builds on`
   }
-  if (/^compatible\.\s+\S/i.test(declaration)) return null
+  if (/^compatible\.\s+\S/i.test(declaration)) {
+    return breaking.some(({ certain }) => certain)
+      ? 'cannot be `compatible`: a statement below breaks every release that uses what it removes. ' +
+          'Declare `unused since vX.Y.Z. <what stopped using it>` instead'
+      : null
+  }
   return 'must read `unused since vX.Y.Z. <what stopped using it>` or `compatible. <why>`'
 }
 
@@ -231,14 +276,16 @@ export function check(file, text, releases) {
       ? []
       : [`${file} declares rolling-upgrade, but no statement in it needs the declaration; remove it`]
   }
+  const lines = (statements) => statements.map(({ reason, statement }) => `  ${reason}: ${statement}`)
   if (declaration !== undefined) {
-    const problem = declarationProblem(declaration, releases)
-    return problem ? [`${file}: its rolling-upgrade declaration ${problem}`] : []
+    const problem = declarationProblem(declaration, releases, breaking)
+    if (!problem) return []
+    return [
+      `${file}: its rolling-upgrade declaration ${problem}`,
+      ...lines(breaking.filter(({ certain }) => certain && /^compatible/i.test(declaration))),
+    ]
   }
-  return [
-    `${file} can break a Coral release that still runs during a rolling upgrade:`,
-    ...breaking.map(({ reason, statement }) => `  ${reason}: ${statement}`),
-  ]
+  return [`${file} can break a Coral release that still runs during a rolling upgrade:`, ...lines(breaking)]
 }
 
 const HELP = `an older Coral release must keep working after a migration runs.
@@ -248,6 +295,8 @@ const HELP = `an older Coral release must keep working after a migration runs.
     -- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>
   If no statement named above breaks an older release, declare:
     -- rolling-upgrade: compatible. <why>
+  That covers a constraint, an index or a rewrite of rows. It does not cover a dropped or renamed
+  table or column, or a changed column type.
   A step with a postgres/ and a sqlite/ half declares in the postgres/ half.`
 
 function main(args) {

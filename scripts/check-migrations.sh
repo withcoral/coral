@@ -105,7 +105,9 @@ fi
 # older release must keep working on the schema a new migration leaves. The
 # SQLite half of a step is the same step, often written as a table rebuild,
 # so the shared files and the Postgres halves stand for both.
-releases="$(git tag --merged "$fork_point" --list 'v[0-9]*' | tr '\n' ' ')"
+# Coral 0.x kept another schema, so no migration here was ever unused "since"
+# one of its releases.
+releases="$(git tag --merged "$fork_point" --list 'v[1-9]*' | tr '\n' ' ')"
 compatibility=()
 while IFS= read -r file; do
   if [ -n "$file" ] && [[ "$file" != "$chain/sqlite/"* ]]; then

@@ -93,7 +93,7 @@ pub enum MigrationProgress<'a> {
     },
     /// A newer Coral applied `steps` steps that this plan lacks, and this
     /// plan has none to apply. Reported once, and then nothing else is: this
-    /// Coral is the older release of a rolling upgrade or of a rollback.
+    /// Coral is older than its database.
     Ahead {
         /// How many applied steps this plan lacks.
         steps: usize,

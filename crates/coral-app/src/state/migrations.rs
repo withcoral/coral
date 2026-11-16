@@ -40,52 +40,84 @@ mod tests {
 
     #[test]
     fn migration_rows_allow_pending_and_newer_steps_and_reject_drift() {
+        type Rows = Vec<(i64, Vec<u8>, bool)>;
+        fn edited(rows: &Rows, edit: impl FnOnce(&mut Rows)) -> Rows {
+            let mut rows = rows.clone();
+            edit(&mut rows);
+            rows
+        }
+
         for (system, other) in [
             (DatabaseSystem::Sqlite, DatabaseSystem::Postgres),
             (DatabaseSystem::Postgres, DatabaseSystem::Sqlite),
         ] {
-            let current_rows = current_rows(system);
-            assert!(rows_agree_with_migration_plan(&current_rows, system));
-            // The two halves differ, so one database's ledger is not the other's.
-            assert!(!rows_agree_with_migration_plan(&current_rows, other));
-
-            let mut pending_suffix = current_rows.clone();
-            pending_suffix.pop();
-            assert!(rows_agree_with_migration_plan(&pending_suffix, system));
-
-            // A newer Coral applied a step this plan does not hold.
-            let mut newer = current_rows.clone();
-            let (last_version, last_checksum, _) = newer
+            let current = current_rows(system);
+            let (last_version, last_checksum, _) = current
                 .last()
                 .cloned()
                 .expect("at least one embedded migration");
-            newer.push((last_version + 1, last_checksum.clone(), true));
-            assert!(rows_agree_with_migration_plan(&newer, system));
-            // A newer Coral applies every step of this plan first.
-            newer.remove(0);
-            assert!(!rows_agree_with_migration_plan(&newer, system));
-            let mut newer_failed = current_rows.clone();
-            newer_failed.push((last_version + 1, last_checksum, false));
-            assert!(!rows_agree_with_migration_plan(&newer_failed, system));
-            assert!(!rows_agree_with_migration_plan(&[], system));
-
-            let mut missing_first = current_rows.clone();
-            missing_first.remove(0);
-            assert!(!rows_agree_with_migration_plan(&missing_first, system));
-
-            let mut failed_row = current_rows.clone();
-            failed_row
-                .first_mut()
-                .expect("at least one embedded migration")
-                .2 = false;
-            assert!(!rows_agree_with_migration_plan(&failed_row, system));
-
-            let mut bad_checksum = current_rows;
-            bad_checksum
-                .first_mut()
-                .expect("at least one embedded migration")
-                .1 = b"not the embedded checksum".to_vec();
-            assert!(!rows_agree_with_migration_plan(&bad_checksum, system));
+            // A step this plan does not hold, as a newer Coral records it.
+            let newer_step = |success| (last_version + 1, last_checksum.clone(), success);
+            let cases = [
+                ("the plan's own ledger", current.clone(), true),
+                (
+                    "steps still to apply",
+                    edited(&current, |rows| {
+                        rows.pop();
+                    }),
+                    true,
+                ),
+                (
+                    "a step from a newer Coral",
+                    edited(&current, |rows| rows.push(newer_step(true))),
+                    true,
+                ),
+                // A newer Coral applies every step of this plan first.
+                (
+                    "a step from a newer Coral above a missing one",
+                    edited(&current, |rows| {
+                        rows.push(newer_step(true));
+                        rows.remove(0);
+                    }),
+                    false,
+                ),
+                (
+                    "a failed step from a newer Coral",
+                    edited(&current, |rows| rows.push(newer_step(false))),
+                    false,
+                ),
+                ("no steps", Vec::new(), false),
+                (
+                    "a missing first step",
+                    edited(&current, |rows| {
+                        rows.remove(0);
+                    }),
+                    false,
+                ),
+                (
+                    "a failed step",
+                    edited(&current, |rows| {
+                        rows.first_mut().expect("a step").2 = false;
+                    }),
+                    false,
+                ),
+                (
+                    "an edited step",
+                    edited(&current, |rows| {
+                        rows.first_mut().expect("a step").1 = b"not the embedded checksum".to_vec();
+                    }),
+                    false,
+                ),
+            ];
+            for (case, rows, agrees) in cases {
+                assert_eq!(
+                    rows_agree_with_migration_plan(&rows, system),
+                    agrees,
+                    "{system:?}: {case}"
+                );
+            }
+            // The two halves differ, so one database's ledger is not the other's.
+            assert!(!rows_agree_with_migration_plan(&current, other));
         }
     }
 
