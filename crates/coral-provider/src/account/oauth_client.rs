@@ -9,6 +9,7 @@ use coral_catalog::{
 };
 use coral_credentials::Secret;
 use coral_db::Transaction;
+use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 
 /// Application authentication input. Only confidential methods can carry a secret.
@@ -136,7 +137,32 @@ impl AccountModule {
         Ok(status)
     }
 
-    pub(super) async fn record_client_result(
+    /// Records what a settled token exchange showed about the application, as a
+    /// best effort. Application diagnostics must never discard a one-use token
+    /// or a rotated refresh token, so call this after the exchange's result is
+    /// stored: a failed write is logged and not returned.
+    pub(super) async fn record_client_result_or_log(
+        &self,
+        account_workspace: &WorkspaceId,
+        provider: &crate::ProviderId,
+        contract: &coral_catalog::ProviderCredentialContract,
+        used: Option<&Secret>,
+        failed: bool,
+    ) {
+        if let Err(error) = self
+            .record_client_result(account_workspace, provider, contract, used, failed)
+            .await
+        {
+            tracing::warn!(
+                coral.workspace.id = safe::id(account_workspace),
+                coral.provider.id = safe::id(provider),
+                error.type = safe::kind(error.code()),
+                "failed to record an OAuth application's status after a token exchange"
+            );
+        }
+    }
+
+    async fn record_client_result(
         &self,
         account_workspace: &WorkspaceId,
         provider: &crate::ProviderId,

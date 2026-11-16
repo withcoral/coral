@@ -347,6 +347,30 @@ pub(crate) fn accounts_for(providers: &ProviderModule, dir: &std::path::Path) ->
     )
 }
 
+/// Makes every write of a Provider's application status fail on either
+/// database when `fail`, and lets them through again when not. Only the
+/// diagnostic status write touches that column.
+pub(crate) async fn fail_application_status_writes(fixture: &TestDatabase, fail: bool) {
+    let sql = match (coral_test_support::selected_database().unwrap(), fail) {
+        (coral_db::DatabaseSystem::Sqlite, true) => {
+            "CREATE TRIGGER application_status_fault BEFORE UPDATE OF oauth_client_failure_code \
+             ON provider_records BEGIN SELECT RAISE(FAIL, 'application status write fault'); END"
+        }
+        (coral_db::DatabaseSystem::Sqlite, false) => "DROP TRIGGER application_status_fault",
+        (coral_db::DatabaseSystem::Postgres, true) => {
+            "CREATE FUNCTION application_status_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN RAISE EXCEPTION 'application status write fault'; END $$; \
+             CREATE TRIGGER application_status_fault BEFORE UPDATE OF oauth_client_failure_code \
+             ON provider_records FOR EACH ROW EXECUTE FUNCTION application_status_fault()"
+        }
+        (coral_db::DatabaseSystem::Postgres, false) => {
+            "DROP TRIGGER application_status_fault ON provider_records; \
+             DROP FUNCTION application_status_fault()"
+        }
+    };
+    fixture.execute_fixture_sql(sql).await.unwrap();
+}
+
 pub(crate) fn change_context(
     actor: AuthenticatedUser,
     occurred_at_unix_nanos: i64,
