@@ -12,6 +12,11 @@
 //   -- rolling-upgrade: unused since v1.9.0. <what stopped using it>
 //   -- rolling-upgrade: compatible. <why no statement breaks an older release>
 //
+// Coral reads the first form too: on Postgres it applies the migration only
+// when the named release has started on the database, and afterwards no older
+// release starts (crates/coral-db/src/upgrade.rs). So the named release must
+// be one that records itself there, which `--releases` lists, oldest first.
+//
 // One declaration covers the file. `compatible` does not cover a statement
 // that removes, renames or retypes a table or a column, or that drops a view
 // or a schema: `will` marks those.
@@ -28,7 +33,8 @@ const IDENTIFIER_START = /[A-Za-z0-9_$]/
 // A quoted name that names the same object as the bare word.
 const PLAIN_NAME = /^[a-z_][a-z0-9_$]*$/
 
-// Splits `sql` into its SQL and its `--` comments. Every string body is
+// Splits `sql` into its SQL and the `--` comments that have their own line.
+// Every string body is
 // emptied, and a quoted identifier that is not a plain lowercase name becomes
 // `"#N"`, with its text at `quoted[N]`. So a keyword, a quote or a `;` inside
 // either is never read as SQL, and two names stay equal only when they are.
@@ -41,7 +47,9 @@ function strip(sql) {
     const dollar = sql[i] === '$' ? /^\$[A-Za-z_]*\$/.exec(sql.slice(i, i + 64)) : null
     if (sql.startsWith('--', i)) {
       const end = sql.indexOf('\n', i)
-      comments.push(sql.slice(i, end === -1 ? sql.length : end).trim())
+      // Coral reads a declaration only from a comment that has its own line.
+      const line = sql.slice(sql.lastIndexOf('\n', i - 1) + 1, i)
+      if (line.trim() === '') comments.push(sql.slice(i, end === -1 ? sql.length : end).trim())
       i = end === -1 ? sql.length : end
     } else if (sql.startsWith('/*', i)) {
       const end = sql.indexOf('*/', i + 2)
@@ -273,7 +281,12 @@ function breakingStatements(sql, quoted) {
 function declarationProblem(declaration, releases, breaking) {
   const unused = /^unused since (\S+?)\.\s+\S/i.exec(declaration)
   if (unused) {
-    return releases.includes(unused[1]) ? null : `names ${unused[1]}, which is not a release this checkout builds on`
+    if (releases.includes(unused[1])) return null
+    const oldest = releases.length > 0 ? `the oldest is ${releases[0]}` : 'none does yet, so this migration waits for one'
+    return (
+      `names ${unused[1]}, which is not a release this checkout builds on that records itself in the ` +
+      `database (${oldest}). Coral cannot keep an upgrade from skipping any other release`
+    )
   }
   if (/^compatible\.\s+\S/i.test(declaration)) {
     return breaking.some(({ certain }) => certain)
@@ -316,6 +329,8 @@ const HELP = `an older Coral release must keep working after a migration runs.
   To remove or tighten something, stagger it. First ship a release that no longer uses it. Then add
   the migration in a later release, and declare in it:
     -- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>
+  Coral enforces that: on Postgres an upgrade cannot skip vX.Y.Z, and no older release starts after
+  the migration. Name the oldest release for which it is true.
   If no statement named above breaks an older release, declare:
     -- rolling-upgrade: compatible. <why>
   That covers a constraint, a rewrite of rows, and a dropped index, function, trigger, type or

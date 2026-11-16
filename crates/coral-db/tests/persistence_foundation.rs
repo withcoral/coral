@@ -433,20 +433,6 @@ async fn an_applied_step_the_plan_lacks_is_refused_unless_a_newer_coral_explains
     let applied = fixture_plan(&[(10, FIRST, FIRST), (30, SECOND, SECOND)]);
     let fixture = TestDatabase::new(&applied).await.unwrap();
     let database = fixture.database();
-    let ledger = || async {
-        let versions: Vec<(i64,)> = database
-            .fetch_all(
-                Query::select()
-                    .column(sea_query::Alias::new("version"))
-                    .from(sea_query::Alias::new("_sqlx_migrations"))
-                    .order_by(sea_query::Alias::new("version"), sea_query::Order::Asc)
-                    .to_owned(),
-            )
-            .await
-            .unwrap();
-        versions
-    };
-
     database
         .migrate(&fixture_plan(&[(10, FIRST, FIRST)]))
         .await
@@ -480,8 +466,233 @@ async fn an_applied_step_the_plan_lacks_is_refused_unless_a_newer_coral_explains
             ),
             "{case}: {result:?}"
         );
-        assert_eq!(ledger().await, [(10,), (30,)], "{case}: ledger changed");
+        assert_eq!(
+            applied_versions(&database).await,
+            [(10,), (30,)],
+            "{case}: ledger changed"
+        );
     }
+}
+
+/// A step that was applied before the database recorded any release.
+const BEFORE_THE_RECORD: &str = "CREATE TABLE fixture_first (id TEXT NOT NULL PRIMARY KEY);";
+/// The table that records the releases, as Coral's own plan creates it.
+const RELEASE_RECORD: &str = include_str!("../migrations/0073_coral_upgrade_state.sql");
+/// A step that removes what releases before 1.9.0 use.
+const REMOVAL: &str = "-- rolling-upgrade: unused since v1.9.0. Nothing reads it.\n\
+                       CREATE TABLE fixture_removal (id TEXT NOT NULL PRIMARY KEY);";
+/// The steps of a release that records itself.
+const RECORDING: &[FixtureStep] = &[
+    (1, BEFORE_THE_RECORD, BEFORE_THE_RECORD),
+    (2, RELEASE_RECORD, RELEASE_RECORD),
+];
+/// The steps of a release that also holds the removal.
+const REMOVING: &[FixtureStep] = &[
+    (1, BEFORE_THE_RECORD, BEFORE_THE_RECORD),
+    (2, RELEASE_RECORD, RELEASE_RECORD),
+    (3, REMOVAL, REMOVAL),
+];
+
+type FixtureStep = (i64, &'static str, &'static str);
+/// One start: the release, or none for a Coral that records nothing, the
+/// steps it holds, and what its start finds.
+type ReleaseStart = (Option<&'static str>, &'static [FixtureStep], Start);
+
+/// What one start of a Coral release found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    Started,
+    Skipped { newest: Option<&'static str> },
+    TooOld { oldest: &'static str },
+}
+
+fn release(text: &str) -> coral_db::Release {
+    coral_db::Release::parse(text).expect("a release")
+}
+
+async fn applied_versions(database: &Database) -> Vec<(i64,)> {
+    database
+        .fetch_all(
+            Query::select()
+                .column(sea_query::Alias::new("version"))
+                .from(sea_query::Alias::new("_sqlx_migrations"))
+                .order_by(sea_query::Alias::new("version"), sea_query::Order::Asc)
+                .to_owned(),
+        )
+        .await
+        .expect("read the ledger")
+}
+
+/// Starts `coral` with `steps` on `database` and names what it found.
+async fn start(database: &Database, coral: Option<&str>, steps: &[FixtureStep]) -> Start {
+    let plan = match coral {
+        Some(coral) => fixture_plan(steps).for_release(release(coral)),
+        None => fixture_plan(steps),
+    };
+    match database.migrate(&plan).await {
+        Ok(()) => Start::Started,
+        Err(Error::SkippedRelease {
+            migration: 3,
+            required,
+            newest,
+        }) if required == release("1.9.0") => Start::Skipped {
+            newest: [Some("1.8.0"), None]
+                .into_iter()
+                .find(|known| known.map(release) == newest)
+                .expect("a newest release that a case names"),
+        },
+        Err(Error::ReleaseTooOld {
+            release: too_old,
+            oldest,
+        }) if Some(too_old) == coral.map(release) && oldest == release("1.9.0") => {
+            Start::TooOld { oldest: "1.9.0" }
+        }
+        Err(error) => panic!("Coral {coral:?}: {error:?}"),
+    }
+}
+
+/// A step that removes what older releases use names the release that
+/// stopped using it. Coral then keeps a rolling upgrade from skipping that
+/// release, and keeps an older Coral off the schema afterwards.
+#[tokio::test]
+async fn an_upgrade_that_skips_a_release_a_step_depends_on_is_refused_where_two_releases_can_run() {
+    use Start::{Skipped, Started, TooOld};
+
+    let fresh = TestDatabase::new(&fixture_plan(&[])).await.unwrap();
+    // Only Postgres lets an older Coral serve while this one migrates.
+    let shared = fresh.database().system() == DatabaseSystem::Postgres;
+    let skipped = |newest| {
+        if shared { Skipped { newest } } else { Started }
+    };
+    let before_the_record = RECORDING.split_at(1).0;
+    // Each case is the releases that start on one database, in order.
+    let cases: [(&str, Vec<ReleaseStart>); 4] = [
+        (
+            "an upgrade through the release that stopped using it",
+            vec![
+                (Some("1.8.0"), RECORDING, Started),
+                (Some("1.9.0"), RECORDING, Started),
+                (Some("1.10.0"), REMOVING, Started),
+                // The removal is applied, so the schema is no longer 1.8's.
+                (Some("1.8.0"), RECORDING, TooOld { oldest: "1.9.0" }),
+                (Some("1.9.0"), RECORDING, Started),
+            ],
+        ),
+        (
+            "an upgrade that skips it",
+            vec![
+                (Some("1.8.0"), RECORDING, Started),
+                (Some("1.10.0"), REMOVING, skipped(Some("1.8.0"))),
+            ],
+        ),
+        (
+            "an upgrade from a release that records nothing",
+            vec![
+                (None, before_the_record, Started),
+                (Some("1.10.0"), REMOVING, skipped(None)),
+            ],
+        ),
+        ("a new database", vec![(Some("1.10.0"), REMOVING, Started)]),
+    ];
+    for (case, starts) in cases {
+        let fixture = TestDatabase::new(&fixture_plan(&[])).await.unwrap();
+        let database = fixture.database();
+        for (coral, steps, expected) in starts {
+            let before = applied_versions(&database).await;
+
+            let found = start(&database, coral, steps).await;
+
+            assert_eq!(found, expected, "{case}: Coral {coral:?}");
+            if found != Started {
+                assert_eq!(
+                    applied_versions(&database).await,
+                    before,
+                    "{case}: Coral {coral:?} changed the ledger"
+                );
+            }
+        }
+    }
+}
+
+/// Replicas of one release start together. Each must wait for the one that
+/// migrates, not read its half-written ledger as an upgrade that skips a
+/// release.
+#[tokio::test(flavor = "multi_thread")]
+async fn corals_that_start_together_on_a_new_database_all_start() {
+    let fixture = TestDatabase::new(&fixture_plan(&[])).await.unwrap();
+    let plan = fixture_plan(REMOVING).for_release(release("1.10.0"));
+    let first = fixture.connect_peer().await.unwrap();
+    let second = fixture.connect_peer().await.unwrap();
+    let third = fixture.connect_peer().await.unwrap();
+
+    let (first, second, third) = tokio::join!(
+        first.migrate(&plan),
+        second.migrate(&plan),
+        third.migrate(&plan)
+    );
+
+    for start in [first, second, third] {
+        start.expect("start beside a Coral that is migrating");
+    }
+    assert_eq!(
+        applied_versions(&fixture.database()).await,
+        [(1,), (2,), (3,)]
+    );
+}
+
+/// `SQLx` locks each step, not the run. A Coral that started while another
+/// was between steps would read a half-written ledger and record, so a run
+/// with a release waits for the one before it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_with_a_release_waits_for_the_run_before_it_on_postgres() {
+    // The run's advisory lock, as `coral_db` takes it in this schema.
+    const LOCK: &str = "(1131377260, hashtext(current_schema()))";
+    coral_test_support::database_only!(Postgres);
+    let fixture = TestDatabase::new(&fixture_plan(&[])).await.unwrap();
+    let database = fixture.database();
+    let mut earlier_run = database.begin().await.unwrap();
+    earlier_run
+        .execute_script(&format!("SELECT pg_advisory_lock{LOCK}"))
+        .await
+        .expect("stand in for a run that is migrating");
+
+    let peer = fixture.connect_peer().await.unwrap();
+    let run = tokio::spawn(async move {
+        let plan = fixture_plan(REMOVING).for_release(release("1.10.0"));
+        peer.migrate(&plan).await
+    });
+    let waiting = Query::select()
+        .expr(Expr::cust(
+            "EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+             AND classid = 1131377260 \
+             AND objid = (hashtext(current_schema())::bigint & 4294967295)::oid)",
+        ))
+        .to_owned();
+    let mut polls = 0;
+    while database
+        .fetch_optional::<(bool,)>(waiting.clone())
+        .await
+        .unwrap()
+        != Some((true,))
+    {
+        polls += 1;
+        assert!(polls < 400, "the run never waited for the lock");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        applied_versions(&database).await,
+        [],
+        "the waiting run applied a step"
+    );
+
+    earlier_run
+        .execute_script(&format!("SELECT pg_advisory_unlock{LOCK}"))
+        .await
+        .expect("end the earlier run");
+    earlier_run.rollback().await.unwrap();
+
+    run.await.unwrap().expect("start once the earlier run ends");
+    assert_eq!(applied_versions(&database).await, [(1,), (2,), (3,)]);
 }
 
 #[tokio::test]

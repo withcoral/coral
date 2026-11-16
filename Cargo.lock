@@ -798,6 +798,7 @@ dependencies = [
  "coral-test-support",
  "sea-query",
  "sea-query-sqlx",
+ "semver",
  "sqlx",
  "tempfile",
  "thiserror",

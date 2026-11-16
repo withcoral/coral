@@ -38,7 +38,9 @@ To upgrade:
    - **Postgres.** Take a dump or a snapshot of the database. Keep the value of `CORAL_CREDENTIALS_KEY` with it.
 3. Start the new `coral` and `coral-web` images. Upgrade both to the same version.
 
-To return to an earlier version, restore the backup and start that version. An earlier version can start on a database that a later version updated, but its queries can fail there. Do not use it as a way back.
+On Postgres, some upgrades cannot skip a version. If Coral names a version and does not start, start that version first, then start the new one.
+
+To return to an earlier version, restore the backup and start that version. An earlier version can start on a database that a later version updated, or refuse to. Do not use it as a way back.
 
 The [Docker Compose](/getting-started/self-host/docker-compose#upgrade) and [Kubernetes](/getting-started/self-host/kubernetes#upgrade) guides have the commands.
 

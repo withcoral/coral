@@ -5,7 +5,8 @@ use sqlx::migrate::{Migrate, MigrateError, Migration, Migrator};
 use sqlx::{Connection as _, SqliteConnection};
 
 use crate::backend::{DatabaseBackend, DatabaseSystem};
-use crate::{Database, Error};
+use crate::upgrade::{self, UpgradeGuard};
+use crate::{Database, Error, Release};
 
 /// Migrations both databases run.
 static SHARED: Migrator = sqlx::migrate!("./migrations");
@@ -14,8 +15,14 @@ static POSTGRES: Migrator = sqlx::migrate!("./migrations/postgres");
 /// `SQLite`'s half of each step the two databases perform differently.
 static SQLITE: Migrator = sqlx::migrate!("./migrations/sqlite");
 
-static PLAN: LazyLock<MigrationPlan> =
-    LazyLock::new(|| MigrationPlan::new(with_shared(&POSTGRES), with_shared(&SQLITE)));
+static PLAN: LazyLock<MigrationPlan> = LazyLock::new(|| {
+    let plan = MigrationPlan::new(with_shared(&POSTGRES), with_shared(&SQLITE));
+    // Every crate has the workspace's version, which is the release's.
+    match Release::parse(env!("CARGO_PKG_VERSION")) {
+        Some(release) => plan.for_release(release),
+        None => plan,
+    }
+});
 
 fn with_shared(system: &Migrator) -> Migrator {
     Migrator::with_migrations(
@@ -42,6 +49,9 @@ pub fn migration_plan() -> &'static MigrationPlan {
 pub struct MigrationPlan {
     postgres: Migrator,
     sqlite: Migrator,
+    /// The release whose plan this is. Without one, a run neither reads nor
+    /// records the releases that ran on the database.
+    release: Option<Release>,
 }
 
 impl MigrationPlan {
@@ -53,7 +63,44 @@ impl MigrationPlan {
         // one migrated: see `steps_from_a_newer_coral`.
         postgres.set_ignore_missing(true);
         sqlite.set_ignore_missing(true);
-        Self { postgres, sqlite }
+        Self {
+            postgres,
+            sqlite,
+            release: None,
+        }
+    }
+
+    /// Makes this the plan of `release`. A run then records the release in
+    /// the database, refuses an upgrade that skips a release which one of its
+    /// steps depends on, and refuses a database whose schema `release` can no
+    /// longer use.
+    ///
+    /// A step that removes what older releases use names the release that
+    /// stopped using it, in a `-- rolling-upgrade: unused since vX.Y.Z.`
+    /// comment. A step with a half for each database names it in the Postgres
+    /// half, which stands for both.
+    #[must_use]
+    pub const fn for_release(mut self, release: Release) -> Self {
+        self.release = Some(release);
+        self
+    }
+
+    /// What a run of this plan knows before it reads the database, when the
+    /// plan has a release.
+    fn upgrade_guard(&self, shared: bool) -> Option<UpgradeGuard> {
+        Some(UpgradeGuard {
+            release: self.release?,
+            requirements: self
+                .postgres
+                .iter()
+                .filter_map(|migration| {
+                    let release = upgrade::release_that_stopped_using(migration.sql.as_str())?;
+                    Some((migration.version, release))
+                })
+                .collect(),
+            state: None,
+            shared,
+        })
     }
 
     /// A plan in which both databases run `migrations`.
@@ -126,7 +173,9 @@ impl Database {
     ///
     /// Applied versions and checksums are validated on every call. A database
     /// may hold steps above the plan's last one: a newer Coral applied them,
-    /// and its migrations keep an older Coral working. Migration
+    /// and its migrations keep an older Coral working. For a plan with a
+    /// release, [`MigrationPlan::for_release`] says what else a run refuses
+    /// and records. Migration
     /// SQL must name every object directly; callers must not use
     /// `IF NOT EXISTS` to conceal unexpected schema state.
     ///
@@ -140,7 +189,8 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for a changed applied migration, an applied migration
-    /// that the plan lacks and no newer Coral explains, migration SQL failure, a foreign key that a `SQLite` migration left without its
+    /// that the plan lacks and no newer Coral explains, an upgrade that skips
+    /// a release, a release too old for the database, migration SQL failure, a foreign key that a `SQLite` migration left without its
     /// row, or a backend connection failure.
     pub async fn migrate(&self, plan: &MigrationPlan) -> Result<(), Error> {
         self.migrate_reporting(plan, &|_| {}).await
@@ -165,11 +215,24 @@ impl Database {
                 // Foreign keys stay off on this connection, so the pool must
                 // not hand it to another writer.
                 connection.close_on_drop();
-                migrate_sqlite(migrator, &mut connection, report).await?;
+                // The state root's lock keeps every other Coral off the file.
+                let guard = plan.upgrade_guard(false);
+                migrate_sqlite(migrator, &mut connection, report, guard).await?;
             }
             DatabaseBackend::Postgres(pool) => {
                 let mut connection = pool.acquire().await?;
-                apply_pending(migrator, &mut *connection, report).await?;
+                let Some(mut guard) = plan.upgrade_guard(true) else {
+                    apply_pending(migrator, &mut *connection, report, None).await?;
+                    return Ok(());
+                };
+                // A run that fails or is dropped must not leave its lock on a
+                // pooled session.
+                connection.close_on_drop();
+                upgrade::lock_postgres(&mut connection).await?;
+                guard.state = upgrade::read_postgres(&mut connection).await?;
+                apply_pending(migrator, &mut *connection, report, Some(&guard)).await?;
+                upgrade::record_postgres(&mut connection, guard.release, guard.oldest()).await?;
+                upgrade::unlock_postgres(&mut connection).await?;
             }
         }
         Ok(())
@@ -182,6 +245,7 @@ async fn apply_pending<C: Migrate>(
     migrator: &Migrator,
     connection: &mut C,
     report: MigrationReport<'_>,
+    guard: Option<&UpgradeGuard>,
 ) -> Result<bool, Error> {
     // A target below every version creates the ledger if the database has
     // none, refuses one that holds a failed step, and applies nothing.
@@ -203,6 +267,9 @@ async fn apply_pending<C: Migrate>(
         applied.iter().map(|row| row.version),
         pending.is_empty(),
     )?;
+    if let Some(guard) = guard {
+        guard.admit(applied.is_empty(), &pending)?;
+    }
     if ahead > 0 {
         report(MigrationProgress::Ahead { steps: ahead });
     }
@@ -268,13 +335,17 @@ async fn migrate_sqlite(
     migrator: &Migrator,
     connection: &mut SqliteConnection,
     report: MigrationReport<'_>,
+    mut guard: Option<UpgradeGuard>,
 ) -> Result<(), Error> {
     sqlx::query("PRAGMA foreign_keys = OFF")
         .execute(&mut *connection)
         .await?;
     // `SQLx` nests each migration's own transaction in this one as a savepoint.
     let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
-    let pending = apply_pending(migrator, &mut *transaction, report).await?;
+    if let Some(guard) = &mut guard {
+        guard.state = upgrade::read_sqlite(&mut transaction).await?;
+    }
+    let pending = apply_pending(migrator, &mut *transaction, report, guard.as_ref()).await?;
     if pending {
         let tables: Vec<String> = sqlx::query_scalar(
             r#"SELECT DISTINCT "table" FROM pragma_foreign_key_check ORDER BY 1"#,
@@ -286,6 +357,9 @@ async fn migrate_sqlite(
                 tables: tables.join(", "),
             });
         }
+    }
+    if let Some(guard) = &guard {
+        upgrade::record_sqlite(&mut transaction, guard.release, guard.oldest()).await?;
     }
     transaction.commit().await?;
     Ok(())
@@ -306,6 +380,26 @@ mod tests {
             .iter()
             .map(|migration| (migration.version, migration.description.to_string()))
             .collect()
+    }
+
+    /// A step whose named release does not parse would guard nothing.
+    #[test]
+    fn corals_plan_has_a_release_and_reads_each_release_that_a_step_names() {
+        let plan = super::migration_plan();
+        assert!(plan.release.is_some(), "the workspace version is a release");
+        for migration in plan.postgres.iter() {
+            let names_a_release = migration
+                .sql
+                .as_str()
+                .to_ascii_lowercase()
+                .contains("rolling-upgrade: unused since");
+            assert_eq!(
+                crate::upgrade::release_that_stopped_using(migration.sql.as_str()).is_some(),
+                names_a_release,
+                "migration {}",
+                migration.version
+            );
+        }
     }
 
     #[test]

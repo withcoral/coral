@@ -105,9 +105,17 @@ fi
 # older release must keep working on the schema a new migration leaves. The
 # SQLite half of a step is the same step, often written as a table rebuild,
 # so the shared files and the Postgres halves stand for both.
-# Coral 0.x kept another schema, so no migration here was ever unused "since"
-# one of its releases.
-releases="$(git tag --merged "$fork_point" --list 'v[1-9]*' | tr '\n' ' ')"
+# A migration may name only a release that records itself in the database:
+# Coral then keeps an upgrade from skipping it, and keeps older releases off
+# the schema afterwards. Oldest first.
+record="$chain/0073_coral_upgrade_state.sql"
+releases="$(git tag --merged "$fork_point" --list 'v[1-9]*' --sort=version:refname |
+  while IFS= read -r tag; do
+    # A pre-release has not stopped using what its release stopped using.
+    if [[ "$tag" != *-* ]] && git cat-file -e "$tag:$record" 2>/dev/null; then
+      printf '%s ' "$tag"
+    fi
+  done)"
 compatibility=()
 while IFS= read -r file; do
   if [ -n "$file" ] && [[ "$file" != "$chain/sqlite/"* ]]; then

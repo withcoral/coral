@@ -132,21 +132,36 @@ test('a checkout whose migration can break an older release fails', async (t) =>
   assert.match(result.stderr, /drops a column/)
 })
 
-test('a removal that names a release on main passes, and one that names another tag fails', async (t) => {
+// Coral keeps an upgrade from skipping a release only if that release records
+// itself in the database, which it does from the migration that adds the table.
+test('a removal passes only when it names a release on main that records itself', async (t) => {
+  const record = 'crates/coral-db/migrations/0073_coral_upgrade_state.sql'
+  const removal = 'crates/coral-db/migrations/0074_runs.sql'
   const repo = await repository(t, '1.0.0-beta.11')
+  repo.git('tag', 'v0.9.0')
   repo.git('tag', 'v1.0.0')
-  await repo.write(next, `-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`)
+  repo.git('switch', '--quiet', 'main')
+  await repo.write(record, 'CREATE TABLE coral_upgrade_state (id TEXT PRIMARY KEY);\n')
+  repo.git('add', '-A')
+  repo.git('commit', '--quiet', '-m', 'record the releases')
+  repo.git('tag', 'v1.1.0')
+  repo.git('tag', 'v1.2.0-beta.1')
+  repo.git('switch', '--quiet', '-c', 'removal')
+
+  await repo.write(removal, `-- rolling-upgrade: unused since v1.1.0. No query names the column.\n${drop}`)
   const accepted = repo.check()
   assert.equal(accepted.status, 0, accepted.stderr)
 
-  // Neither a tag that does not exist nor a Coral 0.x release, whose state
-  // Coral 1.x rejects, is a release that stopped using the column.
-  repo.git('tag', 'v0.9.0')
-  for (const tag of ['v9.9.9', 'v0.9.0']) {
-    await repo.write(next, `-- rolling-upgrade: unused since ${tag}. No query names the column.\n${drop}`)
+  // A release from before the record, a Coral 0.x release, a pre-release
+  // and a tag that does not exist.
+  for (const tag of ['v1.0.0', 'v0.9.0', 'v1.2.0-beta.1', 'v9.9.9']) {
+    await repo.write(removal, `-- rolling-upgrade: unused since ${tag}. No query names the column.\n${drop}`)
     const result = repo.check()
     assert.equal(result.status, 1, result.stderr)
-    assert.match(result.stderr, new RegExp(`names ${tag.replaceAll('.', '\\.')}, which is not a release`))
+    assert.match(
+      result.stderr,
+      new RegExp(`names ${tag.replaceAll('.', '\\.')}, which is not a release .* \\(the oldest is v1\\.1\\.0\\)`),
+    )
   }
 })
 

@@ -50,9 +50,10 @@ pub enum AppError {
 impl From<coral_db::Error> for AppError {
     fn from(error: coral_db::Error) -> Self {
         match error {
-            coral_db::Error::Config(_) | coral_db::Error::MissingDatabaseParent(_) => {
-                Self::FailedPrecondition(error.to_string())
-            }
+            coral_db::Error::Config(_)
+            | coral_db::Error::MissingDatabaseParent(_)
+            | coral_db::Error::SkippedRelease { .. }
+            | coral_db::Error::ReleaseTooOld { .. } => Self::FailedPrecondition(error.to_string()),
             coral_db::Error::Io(error) => Self::Io(error),
             coral_db::Error::Sqlx(_)
             | coral_db::Error::WriterBusy
