@@ -52,6 +52,19 @@ export const Square: Story = {
   ),
 }
 
+// Two letters tell one person from another better than one does.
+export const TwoLetters: Story = {
+  args: { name: 'James Summerfield', letters: 2 },
+  render: () => (
+    <div style={{ alignItems: 'center', display: 'flex', gap: 16 }}>
+      <Avatar name="James Summerfield" letters={2} />
+      <Avatar name="James Summerfield" letters={2} size="28" />
+      <Avatar name="Ada Byron Lovelace" letters={2} size="28" />
+      <Avatar name="alex@example.com" letters={2} size="28" />
+    </div>
+  ),
+}
+
 /**
  * Beside a visible name, the fallback initial is decorative. A screen reader
  * reads the name once, not the initial and then the name.

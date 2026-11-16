@@ -2,26 +2,29 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../support/actors.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
+import { organizationWorkspaceRow } from '../../../support/members.ts'
+import {
+  archiveConfirmation,
+  backToWorkspace,
+  openArchiveConfirmation,
+} from '../../../support/settings.ts'
+import { switcherCommand } from '../../../support/sidebar.ts'
 
 test('Management bottom actions are reachable by wheel and keyboard in a short viewport', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const name = `Scroll ${crypto.randomUUID()}`
     await page.goto('/')
     await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-    await page
-      .getByRole('navigation', { name: 'Coral', exact: true })
-      .getByRole('button', { name: 'Create workspace', exact: true })
-      .click()
+    await switcherCommand(page, 'Create workspace')
     await page.getByLabel('Workspace name', { exact: true }).fill(name)
     await page
       .getByRole('dialog')
       .getByRole('button', { name: 'Create workspace', exact: true })
       .click()
     await breadcrumb(page, name).waitFor()
-    const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-    const confirmation = page.getByRole('dialog', { name: `Archive ${name}`, exact: true })
+    const confirmation = archiveConfirmation(page)
     const bottom = confirmation.getByRole('button', { name: 'Archive workspace', exact: true })
-    await nav.getByRole('button', { name: `Archive ${name}`, exact: true }).click()
+    await openArchiveConfirmation(page, name)
     await bottom.waitFor()
     await page.setViewportSize({ width: 1000, height: 220 })
     // The dialog scrolls its own content, so the action must sit inside both
@@ -59,6 +62,11 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
         .poll(() => confirmation.evaluate((element) => element.scrollHeight > element.clientHeight))
         .toBe(true)
       await expect.poll(visibleInViewport).toBe(false)
+      // A wheel that arrives while the popup still shrinks scrolls only as far
+      // as the taller popup lets it, and stops short of the bottom.
+      await expect
+        .poll(() => confirmation.evaluate((element) => element.getAnimations().length))
+        .toBe(0)
       await page.mouse.move(...(await center()))
       await scrollAndSettle(() => page.mouse.wheel(0, 2000))
       expect(await visibleInViewport()).toBe(true)
@@ -76,12 +84,14 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       expect(await visibleInViewport()).toBe(true)
       await page.keyboard.press('Escape')
       await expect.poll(() => confirmation.count()).toBe(0)
+      // The confirmation opened from the organization's settings; go back to the work.
+      await backToWorkspace(page)
     })
     const agents = page.getByRole('table', { name: 'Agents', exact: true })
     const filter = page.getByRole('searchbox', { name: 'Filter agents', exact: true })
     await step('Long Agents rows scroll inside the table under its filter', async () => {
       await page.setViewportSize({ width: 1000, height: 700 })
-      // Home may have opened another Workspace in the tree; use the new one.
+      // Home may have opened another Workspace first; use the new one's pages.
       await page
         .getByRole('navigation', { name: 'Coral', exact: true })
         .getByRole('group', { name, exact: true })
@@ -172,7 +182,7 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       },
     )
     await step(
-      'Mobile drawer closes on navigation and opens the archive confirmation',
+      'Mobile drawer closes on navigation, and the archive confirmation scrolls',
       async () => {
         await page.setViewportSize({ width: 390, height: 360 })
         const drawer = page.getByRole('dialog', { name: 'Navigation', exact: true })
@@ -191,18 +201,25 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
         await expect
           .poll(() => openNavigation.evaluate((element) => document.activeElement === element))
           .toBe(true)
-        // The confirmation opens from the drawer's Workspace header.
+        // The drawer's account menu opens the settings, whose nav is in the drawer too.
         await openNavigation.click()
-        await drawer.getByRole('button', { name: `Archive ${name}`, exact: true }).click()
+        await drawer.getByRole('button', { name: /^Open account menu for / }).click()
+        await page.getByRole('menuitem', { name: 'Settings', exact: true }).click()
+        await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
+        await openNavigation.click()
+        await drawer.getByRole('link', { name: 'Workspaces', exact: true }).click()
+        await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
+        const row = await organizationWorkspaceRow(page, name)
+        await row.getByRole('button', { name: `Actions for ${name}`, exact: true }).click()
+        await page.getByRole('menuitem', { name: 'Archive workspace', exact: true }).click()
         await bottom.waitFor()
         await page.mouse.move(195, 180)
         await page.mouse.wheel(0, 3000)
         await expect.poll(visibleInViewport).toBe(true)
         await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click()
         await expect.poll(() => confirmation.count()).toBe(0)
-        await page.keyboard.press('Escape')
         await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
-        await breadcrumb(page, 'Members').waitFor()
+        await breadcrumb(page, 'Workspaces').waitFor()
       },
     )
   })

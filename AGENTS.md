@@ -255,6 +255,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   to a same-origin resource route. Loaders supply initial data; streams only
   push later changes. Reef's `.oxlintrc.json` and
   `app/__tests__/architecture.test.ts` enforce the rest of this boundary.
+- The organization's settings have their own navigation, which replaces the
+  sidebar's workspace switcher and pages. A page joins them by sitting under
+  the `routes/settings.tsx` layout in `routes.ts`: do not test its path.
+  `apps/reef/app/components/settings/settings-nav.ts` lists the sections and
+  who sees each.
 - Add or extend Reef Vitest coverage when a change fixes a reproducible bug,
   introduces branching behavior (validation, state transitions, or error handling),
   or affects security or an architecture invariant. Name the failure the test

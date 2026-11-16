@@ -13,7 +13,13 @@ export interface AvatarProps {
    */
   delayMs?: number
   /**
-   * The name to display as fallback (first character) and for the alt text.
+   * How many letters the fallback shows. Two suit a person: the first letters
+   * of the first and last words of the name, or the first two of a single word.
+   * @default 1
+   */
+  letters?: 1 | 2
+  /**
+   * The name to display as fallback (its first letters) and for the alt text.
    */
   name: string
   ref?: React.Ref<HTMLSpanElement>
@@ -39,9 +45,17 @@ export interface AvatarProps {
 export type AvatarSize = '20' | '28'
 export type AvatarShape = 'circle' | 'square'
 
+/** The letters that stand in for an image. CSS sets them in capitals. */
+function fallbackLetters(name: string, letters: 1 | 2) {
+  const words = name.trim().split(/\s+/)
+  if (letters === 1 || !words[0]) return name.trim().charAt(0)
+  return words.length > 1 ? words[0].charAt(0) + words.at(-1)!.charAt(0) : words[0].slice(0, 2)
+}
+
 export function Avatar({
   className,
   delayMs = 80,
+  letters = 1,
   name,
   ref,
   seed,
@@ -65,7 +79,7 @@ export function Avatar({
         className={styles.avatarFallback({ color, size })}
         delay={src ? delayMs : undefined}
       >
-        {name.charAt(0)}
+        {fallbackLetters(name, letters)}
       </BaseAvatar.Fallback>
       <span className={styles.avatarBorderOverlay} />
     </BaseAvatar.Root>

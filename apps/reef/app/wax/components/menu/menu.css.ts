@@ -91,6 +91,14 @@ export const item = style({
   },
 })
 
+// An item that is only its icon: a square the height of a row.
+export const itemIconOnly = style({
+  flex: 'none',
+  justifyContent: 'center',
+  paddingInline: 0,
+  width: '32px',
+})
+
 export const itemLoading = style([
   item,
   {
@@ -115,6 +123,8 @@ export const itemLabel = style({
 
 export const separator = style({
   backgroundColor: theme.stroke.primary,
+  // A menu taller than its bound scrolls; its rules must not shrink away first.
+  flexShrink: 0,
   height: '1px',
   marginBlock: '4px',
   marginInline: '8px',

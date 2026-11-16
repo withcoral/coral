@@ -231,6 +231,17 @@ export const badgeStyles = recipe({
   },
 })
 
+// Marks a badge, so a trailing icon after it can drop its own push to the end.
+export const badgeClass = style({})
+
+// The icon sits at the row's end. After a badge, the badge has already taken the
+// spare width, and two `auto` margins would share it.
+export const trailingIconStyles = style({
+  flexShrink: 0,
+  marginInlineStart: 'auto',
+  selectors: { [`.${badgeClass} + &`]: { marginInlineStart: 0 } },
+})
+
 export type SidebarButtonVariants = RecipeVariants<typeof sidebarButton>
 
 // Notification badge (transitions.dev): an arriving badge slides up from the

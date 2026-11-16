@@ -4,6 +4,7 @@ import { WorkspaceRole } from '../../generated/coral/management/v1/workspace_pb.
 import { withBrowserSession } from '../../support/browser-session.ts'
 import { managementClients } from '../../support/management.ts'
 import { createWorkspace, programRunner } from '../../support/providers.ts'
+import { archiveConfirmation, openArchiveConfirmation } from '../../support/settings.ts'
 
 test('The implicit local Owner works through a Membership and does not bypass lifecycle rules', async (context) => {
   await withBrowserSession(context, async ({ page, target, step }) => {
@@ -44,14 +45,13 @@ test('The implicit local Owner works through a Membership and does not bypass li
       expect(result.structuredContent.final_value).toEqual({ kind: 'value', value: 'local owner' })
     })
     await step('Apply the normal archive fence to the local Owner', async () => {
-      await page
-        .getByRole('navigation', { name: 'Coral', exact: true })
-        .getByRole('button', { name: `Archive ${displayName}`, exact: true })
-        .click()
-      await page
-        .getByRole('dialog', { name: `Archive ${displayName}`, exact: true })
+      const row = await openArchiveConfirmation(page, displayName)
+      await archiveConfirmation(page)
         .getByRole('button', { name: 'Archive workspace', exact: true })
         .click()
+      await row.getByText('Archived', { exact: true }).waitFor()
+      // The workspace opens on its history.
+      expect((await page.goto(`/${name}`))?.status()).toBe(200)
       await page.waitForURL((url) => url.pathname === `/${name}/activity`)
       await page.getByText('This workspace is archived', { exact: true }).waitFor()
       expect(

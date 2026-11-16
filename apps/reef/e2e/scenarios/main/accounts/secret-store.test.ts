@@ -17,6 +17,7 @@ import {
   programRunner,
 } from '../../../support/providers.ts'
 import { ENV_SECRET_STORE, SECRET_STORE } from '../../../support/secret-store-fixture.ts'
+import { openSettings } from '../../../support/settings.ts'
 
 /**
  * A workspace with a Weather provider whose shared account holds a typed token, and the
@@ -82,11 +83,10 @@ async function weatherProvider(context: TestContext) {
   }
 }
 
-/** The organization owner grants `store` to the workspace from the account menu. */
+/** The organization owner grants `store` to the workspace from the organization's settings. */
 async function grantStore(page: Page, store: string, workspaceDisplay: string) {
   await page.goto('/')
-  await page.getByRole('button', { name: /^Open account menu for / }).click()
-  await page.getByRole('menuitem', { name: 'Secret stores', exact: true }).click()
+  await openSettings(page, 'Secret stores')
   await page.getByRole('button', { name: `Grant ${store} to a workspace` }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByRole('button', { name: 'Workspace' }).click()

@@ -264,7 +264,6 @@ export const titleNameRow = style({ flexWrap: 'nowrap' })
 export const titleNameInput = style({ flex: '0 1 280px', minWidth: 160 })
 
 // What a confirmed action changes, as a short list between two sentences.
-export const consequences = style({ display: 'flex', flexDirection: 'column', gap: 8 })
 export const bulletList = style({
   display: 'flex',
   flexDirection: 'column',

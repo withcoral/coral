@@ -30,10 +30,14 @@ export default [
       route('workspaces/:workspace/approvals', 'routes/approvals.tsx'),
       route('workspaces/:workspace/approvals/:approval', 'routes/approval.tsx'),
       route('workspaces/:workspace/runs/:run', 'routes/run.tsx'),
-      route('organization/members', 'routes/organization-members.tsx'),
-      route('organization/workspaces', 'routes/organization-workspaces.tsx'),
-      route('usage-data', 'routes/usage-data.tsx'),
-      route('organization/secret-stores', 'routes/organization-secret-stores.tsx'),
+      // The organization's settings. Their layout is what tells the shell to show
+      // the settings nav, whatever the page's path.
+      layout('routes/settings.tsx', [
+        route('organization/members', 'routes/organization-members.tsx'),
+        route('organization/workspaces', 'routes/organization-workspaces.tsx'),
+        route('organization/secret-stores', 'routes/organization-secret-stores.tsx'),
+        route('usage-data', 'routes/usage-data.tsx'),
+      ]),
       route('workspaces/:workspace', 'routes/workspace.tsx'),
       route('workspaces/:workspace/agents', 'routes/agents.tsx'),
       route('workspaces/:workspace/agents/:agent', 'routes/agent.tsx'),

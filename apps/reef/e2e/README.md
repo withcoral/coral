@@ -620,12 +620,11 @@ Owner behavior; neither replaces the product Workspace/Agent journeys.
 
 Maintained management recordings:
 
-- `workspaces/lifecycle`: Workspace creation, the workspace MCP URL copied from the sidebar
-  header, the settings dialog over the Overview (shareable URL, closing replaces the history entry),
-  stable identity across rename, archive cancellation/confirmation, configuration
-  lockout, restoration, sidebar Workspace creation, tree expansion without
-  navigation, direct links, and browser Back/Forward. The sidebar tree is the only
-  Workspace listing.
+- `workspaces/lifecycle`: Workspace creation, the workspace MCP URL copied from its row
+  in the sidebar's workspace switcher, stable identity across rename, archive
+  cancellation/confirmation from the organization's Workspaces page, configuration
+  lockout, restoration, switching Workspaces from the switcher, direct links,
+  browser Back/Forward, and the organization's settings with the way back.
 - `workspaces/quick-start`: a new Workspace's overview and its quick start prompt, in
   both topologies (see above).
 - `workspaces/first-workspace`: a User without a Workspace creates one from the
