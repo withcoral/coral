@@ -143,8 +143,10 @@ async fn a_program_search_embeds_its_query_with_the_model_of_the_run_modules_sea
     coral_test_support::database_only!(Postgres);
     let mut scope = AdminScope::new("user:search-model").await;
     let model = Arc::new(RecordingModel::default());
-    let (_slot, loaded) =
-        tokio::sync::watch::channel(Some(Arc::clone(&model) as Arc<dyn coral_embed::Embed>));
+    let (_slot, loaded) = tokio::sync::watch::channel(coral_search::ModelLoad::Ready(Arc::clone(
+        &model,
+    )
+        as Arc<dyn coral_embed::Embed>));
     let search = coral_search::UniversalSearchModule::new(
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),

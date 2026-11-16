@@ -325,6 +325,16 @@ attribute! {
 }
 
 attribute! {
+    /// How one write of the search Embedder ended, for `outcome`.
+    EmbedBatchOutcome {
+        /// Its vectors were written.
+        Ok => "ok",
+        /// The model or the database failed it.
+        Failed => "failed",
+    }
+}
+
+attribute! {
     /// The independently bounded worker queue's production purpose.
     CompilerRole {
         Run => "run",

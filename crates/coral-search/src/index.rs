@@ -164,10 +164,7 @@ impl SearchIndex {
     /// source never calls the model: only the Embedder does, in the
     /// background.
     #[must_use]
-    pub fn with_embedder(
-        mut self,
-        model: tokio::sync::watch::Receiver<Option<Arc<dyn coral_embed::Embed>>>,
-    ) -> Self {
+    pub fn with_embedder(mut self, model: tokio::sync::watch::Receiver<crate::ModelLoad>) -> Self {
         self.embedder = Some(Arc::new(EmbedderState::new(model)));
         self
     }
