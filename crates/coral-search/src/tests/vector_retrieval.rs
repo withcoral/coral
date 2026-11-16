@@ -95,7 +95,6 @@ async fn a_query_with_no_word_of_a_tool_finds_it_by_semantic_search() {
 
 #[tokio::test]
 async fn the_vector_list_holds_only_the_private_and_shared_tools_the_caller_may_see() {
-    coral_test_support::database_only!(Postgres);
     let harbour = Harbour::new().await;
 
     let page = harbour
@@ -148,7 +147,6 @@ async fn the_vector_list_holds_only_the_private_and_shared_tools_the_caller_may_
 
 #[tokio::test]
 async fn a_page_of_three_kinds_puts_the_strong_first_in_one_order_for_every_limit() {
-    coral_test_support::database_only!(Postgres);
     let harbour = Harbour::new().await;
     let semantic = harbour.world.semantic();
     let page = async |limit: u16, offset: u32| {
@@ -202,7 +200,6 @@ async fn a_page_of_three_kinds_puts_the_strong_first_in_one_order_for_every_limi
 #[tokio::test]
 async fn a_private_or_shared_tool_is_found_by_words_at_once_and_by_semantic_search_after_embedding()
 {
-    coral_test_support::database_only!(Postgres);
     let world = World::with(Arc::new(Meanings::tides())).await;
     let semantic = world.semantic();
     let tides = [
@@ -543,50 +540,8 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
 async fn the_vector_query_reads_the_vector_table_alone() {
     coral_test_support::database_only!(Postgres);
     let world = World::new().await;
-    let mut transaction = world
-        .modules
-        .search
-        .database
-        .begin_read_snapshot()
-        .await
-        .unwrap();
-    let (providers, generations) =
-        searched_providers_and_generations(&mut transaction, &world.workspace).await;
-    let excluded = [(
-        world.weather.clone(),
-        ToolKey::parse("getForecast").unwrap(),
-    )];
 
-    let mut plans = vec![(
-        EntityKind::ProviderTool,
-        crate::retriever::tools::explain_vector_query(
-            &mut transaction,
-            &world.workspace,
-            &providers,
-            &generations,
-            &excluded,
-        )
-        .await
-        .unwrap(),
-    )];
-    for kind in [AuthoredToolKind::Private, AuthoredToolKind::Shared] {
-        let ids = [AuthoredToolId::parse(kind, "00000000-0000-4000-8000-000000000001").unwrap()];
-        plans.push((
-            EntityKind::authored(kind),
-            crate::retriever::authored_tools::explain_vector_query(
-                &mut transaction,
-                &world.workspace,
-                world.principal.principal(),
-                kind,
-                &ids,
-            )
-            .await
-            .unwrap(),
-        ));
-    }
-
-    transaction.rollback().await.unwrap();
-    for (kind, plan) in plans {
+    for (kind, plan) in vector_query_plans(&world).await {
         assert!(
             plan.iter()
                 .any(|line| line.contains(" on search_entity_embeddings ")),
@@ -631,10 +586,34 @@ fn of_kind(page: &SearchPage, kind: EntityKind) -> Vec<&str> {
 }
 
 #[tokio::test]
-async fn on_sqlite_the_vector_query_gives_the_eligibility_filter_to_sqlite_vec() {
+async fn on_sqlite_each_vector_query_gives_the_eligibility_filter_to_sqlite_vec() {
     coral_test_support::database_only!(Sqlite);
     let world = World::new().await;
-    // The read snapshot runs on a query-only reader, as every search does.
+
+    for (kind, plan) in vector_query_plans(&world).await {
+        // sqlite-vec names its plan in the index string: `3` is a nearest
+        // neighbour scan, and `[` is a `rowid IN (...)` it reads before any
+        // distance.
+        let vectors = plan
+            .iter()
+            .find(|line| line.starts_with("SCAN v VIRTUAL TABLE INDEX "))
+            .unwrap_or_else(|| panic!("{kind:?}: no scan of the vectors: {plan:#?}"));
+        let index = vectors.rsplit_once(':').map_or_default(|(_, index)| index);
+        assert!(
+            index.starts_with('3') && index.contains('['),
+            "{kind:?}: sqlite-vec does not get the rowids: {plan:#?}"
+        );
+        assert!(
+            plan.iter().any(|line| line.starts_with("LIST SUBQUERY")),
+            "{kind:?}: the eligibility filter is not one list: {plan:#?}"
+        );
+    }
+}
+
+/// The plan of each retriever's vector query, by the kind it ranks. It
+/// reads them on a read snapshot, which runs on a query-only reader on
+/// `SQLite`, as every search does.
+async fn vector_query_plans(world: &World) -> Vec<(EntityKind, Vec<String>)> {
     let mut transaction = world
         .modules
         .search
@@ -642,43 +621,42 @@ async fn on_sqlite_the_vector_query_gives_the_eligibility_filter_to_sqlite_vec()
         .begin_read_snapshot()
         .await
         .unwrap();
+    let (providers, generations) =
+        searched_providers_and_generations(&mut transaction, &world.workspace).await;
     let excluded = [(
         world.weather.clone(),
         ToolKey::parse("getForecast").unwrap(),
     )];
-    let (providers, generations) =
-        searched_providers_and_generations(&mut transaction, &world.workspace).await;
 
-    let plan = crate::retriever::tools::explain_vector_query(
-        &mut transaction,
-        &world.workspace,
-        &providers,
-        &generations,
-        &excluded,
-    )
-    .await
-    .unwrap();
-
+    let mut plans = vec![(
+        EntityKind::ProviderTool,
+        crate::retriever::tools::explain_vector_query(
+            &mut transaction,
+            &world.workspace,
+            &providers,
+            &generations,
+            &excluded,
+        )
+        .await
+        .unwrap(),
+    )];
+    for kind in [AuthoredToolKind::Private, AuthoredToolKind::Shared] {
+        let ids = [AuthoredToolId::parse(kind, "00000000-0000-4000-8000-000000000001").unwrap()];
+        plans.push((
+            EntityKind::authored(kind),
+            crate::retriever::authored_tools::explain_vector_query(
+                &mut transaction,
+                &world.workspace,
+                world.principal.principal(),
+                kind,
+                &ids,
+            )
+            .await
+            .unwrap(),
+        ));
+    }
     transaction.rollback().await.unwrap();
-    // sqlite-vec names its plan in the index string: `3` is a nearest
-    // neighbour scan, and `[` is a `rowid IN (...)` it reads before any
-    // distance.
-    let vectors = plan
-        .iter()
-        .find(|line| line.starts_with("SCAN v VIRTUAL TABLE INDEX "))
-        .unwrap_or_else(|| panic!("no scan of the vectors: {plan:#?}"));
-    let index = vectors
-        .rsplit_once(':')
-        .map(|(_, index)| index)
-        .unwrap_or_default();
-    assert!(
-        index.starts_with('3') && index.contains('['),
-        "sqlite-vec does not get the rowids: {plan:#?}"
-    );
-    assert!(
-        plan.iter().any(|line| line.starts_with("LIST SUBQUERY")),
-        "the eligibility filter is not one list: {plan:#?}"
-    );
+    plans
 }
 
 /// The Providers and active Generations of the Workspace's Tool rows.
