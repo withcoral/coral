@@ -259,7 +259,8 @@ struct Link {
     /// Told after each `Compile` is queued, so a test can wait for one.
     #[cfg(test)]
     on_queued: Option<mpsc::UnboundedSender<()>>,
-    run_limits: RunLimits,
+    /// Each Run's limits and isolate, and the warm isolate.
+    isolates: Arc<run::Isolates>,
     runs: Arc<Runs>,
     current: watch::Sender<Connection>,
 }
@@ -389,7 +390,7 @@ impl Link {
             hello,
             compiler,
             linked,
-            run_limits: config.run_limits,
+            isolates: Arc::new(run::Isolates::new(config.run_limits, config.max_runs_held)),
             runs: Arc::default(),
             current: watch::Sender::new(Connection::Waiting),
             #[cfg(test)]
@@ -456,7 +457,7 @@ impl Link {
     fn hold_run(&self, taken: TakenRun) {
         let held = HeldRun::take(&self.runs);
         let connection = self.current.subscribe();
-        tokio::spawn(run::hold(connection, taken, self.run_limits, held));
+        tokio::spawn(run::hold(connection, taken, self.isolates.clone(), held));
     }
 
     /// Dials a fresh connection and opens the pull stream on it with Hello,
