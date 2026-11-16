@@ -31,8 +31,14 @@ use crate::{CompileError, LocalRunExecutors, PullStreams, Refused, StreamId, Una
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
 
 /// The time a pickup leaves before a row's deadline to write the answer
-/// and for its requester to read it.
+/// and for its requester to read it, the [`TAKEN_RESERVE`] included.
 const ANSWER_RESERVE: Duration = Duration::from_millis(100);
+
+/// How long before its deadline a requester stops waiting for a row a pickup
+/// took, so that its caller hears the taker stopped before its own deadline
+/// ends the wait. A live taker answers [`ANSWER_RESERVE`] before the
+/// deadline, so an answer slower than the difference reads as stopped.
+const TAKEN_RESERVE: Duration = Duration::from_millis(30);
 
 /// How long before its deadline a requester stops waiting for a row nobody
 /// took, so that its caller hears no compiler took the call before its own
@@ -55,6 +61,9 @@ pub(crate) struct CompileRelay {
     /// How long a pickup holds a unit for a probe it answered for another
     /// Coral Instance: [`PROMISE_KEPT`], except in tests.
     promise_kept: Duration,
+    /// How long before a call's deadline a pickup's compile ends:
+    /// [`ANSWER_RESERVE`], except in tests.
+    answer_reserve: Duration,
 }
 
 /// Who had room for a probe.
@@ -85,6 +94,7 @@ impl CompileRelay {
             database,
             instance: Arc::from(instance),
             promise_kept: PROMISE_KEPT,
+            answer_reserve: ANSWER_RESERVE,
         }
     }
 
@@ -92,6 +102,14 @@ impl CompileRelay {
     #[cfg(test)]
     pub(crate) const fn with_promise_kept(mut self, kept: Duration) -> Self {
         self.promise_kept = kept;
+        self
+    }
+
+    /// This relay, ending a compile it serves `reserve` before the call's
+    /// deadline.
+    #[cfg(test)]
+    pub(crate) const fn with_answer_reserve(mut self, reserve: Duration) -> Self {
+        self.answer_reserve = reserve;
         self
     }
 
@@ -110,8 +128,10 @@ impl CompileRelay {
         }
     }
 
-    /// Relays `call` and returns its answer by `until`. A call nobody took
-    /// fails as no compiler; one taken and unanswered, as timed out.
+    /// Relays `call` and returns its answer before `until`. A call nobody
+    /// took fails as no compiler. A live taker answers [`ANSWER_RESERVE`]
+    /// before `until`, a compile timeout included, so one taken and
+    /// unanswered [`TAKEN_RESERVE`] before it fails as a stopped compiler.
     pub(crate) async fn call(
         &self,
         call: &Call,
@@ -122,7 +142,7 @@ impl CompileRelay {
             Waited::Unanswered { taken: false } => {
                 Err(CompileError::Unavailable(Unavailable::NoCompiler))
             }
-            Waited::Unanswered { taken: true } => Err(CompileError::TimedOut),
+            Waited::Unanswered { taken: true } => Err(STOPPED),
             Waited::Answered {
                 answer: Ok(Answered::Call(answer)),
                 ..
@@ -146,9 +166,10 @@ impl CompileRelay {
     /// Writes a row for `call`, none for a probe, with the deadline
     /// `until`, and waits for its answer, asking `children` for room every
     /// [`LOOK_AGAIN`]: until [`UNTAKEN_RESERVE`] before `until` while nobody
-    /// took it, and until `until` once a pickup did. Its write and reads end
-    /// by `until`; the delete of its row after them may take longer. The row
-    /// is gone when it returns, unless that delete failed.
+    /// took it, and until [`TAKEN_RESERVE`] before `until` once a pickup did.
+    /// Its write and reads end by then; the delete of its row after them may
+    /// take longer. The row is gone when it returns, unless that delete
+    /// failed.
     async fn wait(
         &self,
         call: Option<&Call>,
@@ -169,6 +190,7 @@ impl CompileRelay {
         // Armed first: a write that lands after the wait gave up is deleted.
         let mut row = Withdraw(Some((self.database.clone(), id.clone())));
         let untaken_until = until.checked_sub(UNTAKEN_RESERVE).unwrap_or(until);
+        let taken_until = until.checked_sub(TAKEN_RESERVE).unwrap_or(until);
         match tokio::time::timeout_at(untaken_until, self.request(row_values)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
@@ -188,9 +210,9 @@ impl CompileRelay {
         let mut taken = false;
         let mut asked: Option<Instant> = None;
         loop {
-            // Bounded by `until` alone: the read after the last wait runs at
-            // the untaken bound and still sees a take that just landed.
-            let status = tokio::time::timeout_at(until, rows::status(&self.database, &id));
+            // Bounded by the taken bound alone: the read after the last wait
+            // runs at the untaken bound and still sees a take that just landed.
+            let status = tokio::time::timeout_at(taken_until, rows::status(&self.database, &id));
             match status.await {
                 Err(_elapsed) => {}
                 Ok(Ok(Status::Answered { answer, by })) => {
@@ -209,7 +231,7 @@ impl CompileRelay {
                     );
                 }
             }
-            let give_up = if taken { until } else { untaken_until };
+            let give_up = if taken { taken_until } else { untaken_until };
             let left = give_up.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 row.delete().await;
@@ -273,7 +295,7 @@ impl CompileRelay {
                 deadline_after: now.saturating_add(nanos(UNTAKEN_RESERVE)),
                 from,
             };
-            match rows::pending(&self.database, &take, orphaned_before(now)).await {
+            match rows::work_for(&self.database, &take, orphaned_before(now)).await {
                 Ok(true) => {}
                 Ok(false) => return,
                 Err(error) => {
@@ -299,12 +321,12 @@ impl CompileRelay {
             match (taken.request, free) {
                 (Request::Room, Some(stream)) if foreign => {
                     // Room held for the call that this answer invites.
-                    if streams.hold(stream).is_err() {
+                    if !promised.hold(taken.requester, stream) {
                         self.release(&taken.id).await;
                     } else if self.answer(&taken.id, Answered::Room).await {
-                        promised.make(taken.requester, stream);
+                        promised.answered_newest();
                     } else {
-                        streams.let_go(stream);
+                        promised.give_up_newest();
                         self.release(&taken.id).await;
                     }
                 }
@@ -312,10 +334,10 @@ impl CompileRelay {
                     self.answer(&taken.id, Answered::Room).await;
                 }
                 (Request::Unreadable, _) => {
-                    self.answer(&taken.id, failure(ProtocolError.into())).await;
+                    self.answer(&taken.id, failed(ProtocolError.into())).await;
                 }
                 (Request::Call(call), free) => {
-                    let via = match promised.keep(&taken.requester) {
+                    let via = match promised.spend(&taken.requester) {
                         Some(held) => Some(Via::Held(held)),
                         None => free.map(Via::Free),
                     };
@@ -335,7 +357,7 @@ impl CompileRelay {
     /// arrives. A held unit that is gone falls back to free room; a call no
     /// stream takes goes back.
     async fn send(&self, streams: &PullStreams, via: Via, id: String, call: Call, deadline: i64) {
-        let until = deadline.saturating_sub(nanos(ANSWER_RESERVE));
+        let until = deadline.saturating_sub(nanos(self.answer_reserve));
         let left = Duration::from_nanos(u64::try_from(until - unix_now()).unwrap_or(0));
         let time_left_ms = millis(left);
         let sent = match via {
@@ -364,7 +386,7 @@ impl CompileRelay {
             }
             Err(Refused::NoRoom | Refused::Closed) => self.release(&id).await,
             Err(Refused::TooLarge) => {
-                self.answer(&id, failure(ProtocolError.into())).await;
+                self.answer(&id, failed(ProtocolError.into())).await;
             }
         }
     }
@@ -461,17 +483,37 @@ impl Promised {
         }
     }
 
-    /// Records a unit [`PullStreams::hold`] held on `stream` for `requester`.
-    fn make(&mut self, requester: String, stream: StreamId) {
+    /// Holds a unit of `stream` for `requester`'s call, unless another
+    /// caller took the room first.
+    fn hold(&mut self, requester: String, stream: StreamId) -> bool {
+        if self.streams.hold(stream).is_err() {
+            return false;
+        }
         self.promises.push_back(Promise {
             made: Instant::now(),
             requester,
             stream,
         });
+        true
     }
 
-    /// The stream holding a unit for `requester`'s call, which it spends.
-    fn keep(&mut self, requester: &str) -> Option<StreamId> {
+    /// Starts the promise held last from now: its probe's answer is written.
+    fn answered_newest(&mut self) {
+        if let Some(promise) = self.promises.back_mut() {
+            promise.made = Instant::now();
+        }
+    }
+
+    /// Frees the unit held last: its probe's answer was not written.
+    fn give_up_newest(&mut self) {
+        if let Some(promise) = self.promises.pop_back() {
+            self.streams.let_go(promise.stream);
+        }
+    }
+
+    /// The stream holding a unit for `requester`'s call, which the call
+    /// spends.
+    fn spend(&mut self, requester: &str) -> Option<StreamId> {
         let kept = self
             .promises
             .iter()
@@ -525,7 +567,7 @@ fn orphaned_before(now: i64) -> i64 {
     now.saturating_sub(nanos(ORPHAN_GRACE))
 }
 
-fn failure(error: CompileError) -> Answered {
+fn failed(error: CompileError) -> Answered {
     Answered::Call(Read::Failure(error).into_answer())
 }
 
@@ -550,9 +592,12 @@ async fn signalled(changes: &mut Option<ChangeSubscription>, database: &Database
 struct Withdraw(Option<(Arc<Database>, String)>);
 
 impl Withdraw {
+    /// Deletes the row. Dropped before the delete lands, it deletes it again
+    /// from a task of its own.
     async fn delete(&mut self) {
-        if let Some((database, id)) = self.0.take() {
-            withdraw(&database, &id).await;
+        if let Some((database, id)) = &self.0 {
+            withdraw(database, id).await;
+            self.0 = None;
         }
     }
 

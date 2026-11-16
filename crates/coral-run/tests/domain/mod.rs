@@ -4,6 +4,7 @@ mod approvals;
 mod binary;
 mod call_paths;
 mod cancellation;
+mod compile_relay;
 mod connections;
 #[cfg(unix)]
 mod cpu;

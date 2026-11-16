@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 
 use super::CompileRelay;
 use crate::pull::tests::{Sent, compiled, dialed_stream as open, up};
-use crate::relay_repository::count;
+use crate::relay_repository::{Take, count, take_oldest};
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
 use crate::{
     BuiltinTools, CompileError, CompilerClient, PullStreamCompiler, PullStreams, StreamId,
@@ -34,14 +34,28 @@ impl Drop for Instance {
 }
 
 fn instance(database: Arc<Database>, id: &str) -> Arc<Instance> {
-    promising(database, id, super::PROMISE_KEPT)
+    relaying(database, id, super::PROMISE_KEPT, super::ANSWER_RESERVE)
 }
 
 /// A Coral Instance whose pickup holds a unit for a probe it answered for
 /// another one for `kept`.
 fn promising(database: Arc<Database>, id: &str, kept: Duration) -> Arc<Instance> {
+    relaying(database, id, kept, super::ANSWER_RESERVE)
+}
+
+/// A Coral Instance whose pickup holds a unit for a probe it answered for
+/// another one for `kept`, and ends a compile it serves `answer_reserve`
+/// before the call's deadline.
+fn relaying(
+    database: Arc<Database>,
+    id: &str,
+    kept: Duration,
+    answer_reserve: Duration,
+) -> Arc<Instance> {
     let streams = PullStreams::default();
-    let relay = CompileRelay::new(database, id).with_promise_kept(kept);
+    let relay = CompileRelay::new(database, id)
+        .with_promise_kept(kept)
+        .with_answer_reserve(answer_reserve);
     let pickup = tokio::spawn(relay.clone().serve(streams.clone()));
     Arc::new(Instance {
         compiler: PullStreamCompiler::relayed(streams.clone(), None, relay),
@@ -53,6 +67,16 @@ fn promising(database: Arc<Database>, id: &str, kept: Duration) -> Arc<Instance>
 /// The requester, and `N` Coral Instances that serve its rows: on
 /// Postgres each one its own, on SQLite the requester itself.
 async fn instances<const N: usize>(database: &TestDatabase) -> (Arc<Instance>, [Arc<Instance>; N]) {
+    instances_answering(database, super::ANSWER_RESERVE).await
+}
+
+/// [`instances`], each ending a compile it serves `answer_reserve` before
+/// the call's deadline.
+async fn instances_answering<const N: usize>(
+    database: &TestDatabase,
+    answer_reserve: Duration,
+) -> (Arc<Instance>, [Arc<Instance>; N]) {
+    let instance = |database, id: &str| relaying(database, id, super::PROMISE_KEPT, answer_reserve);
     let requester = instance(database.database(), "requester");
     let mut others = Vec::new();
     for index in 0..N {
@@ -219,14 +243,14 @@ async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
 }
 
 #[tokio::test]
-async fn a_row_served_and_never_answered_fails_as_timed_out_and_is_gone() {
+async fn a_row_served_whose_compile_runs_out_of_time_fails_as_timed_out_and_is_gone() {
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    let (requester, [server]) = instances(&database).await;
+    // The served compile ends a second early, so its timed-out answer is
+    // read well before the requester gives up on the taker.
+    let (requester, [server]) = instances_answering(&database, Duration::from_secs(1)).await;
     let (stream, mut sent) = open(&server.streams, 0);
 
-    // Within one look of its untaken bound: the requester sees the take on
-    // the signal it raises, not on a later look.
-    let call = compiling(&requester.compiler, Duration::from_secs(1));
+    let call = compiling(&requester.compiler, Duration::from_secs(3));
     rows_reach(&database.database(), 1).await;
     report(&server.streams, stream, 1);
     let sent = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
@@ -235,6 +259,38 @@ async fn a_row_served_and_never_answered_fails_as_timed_out_and_is_gone() {
         "the call went down the stream"
     );
     assert_eq!(call.await.unwrap(), Err(CompileError::TimedOut));
+    assert_eq!(
+        count(&database.database()).await.unwrap(),
+        0,
+        "the row is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_row_whose_taker_stopped_fails_as_a_stopped_compiler_and_is_gone() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    // No stream with room anywhere, so only the stopped taker takes it.
+    let (requester, [_server]) = instances(&database).await;
+    let call = compiling(&requester.compiler, Duration::from_secs(3));
+    rows_reach(&database.database(), 1).await;
+
+    // A Coral Instance takes the row, then stops before it answers.
+    let db = database.database();
+    let mut transaction = db.begin().await.unwrap();
+    let take = Take {
+        taker: "stopped",
+        deadline_after: 0,
+        from: None,
+    };
+    let taken = take_oldest(&mut transaction, take).await.unwrap();
+    transaction.commit().await.unwrap();
+    assert!(taken.is_some(), "the row is taken");
+
+    assert_eq!(
+        call.await.unwrap(),
+        Err(CompileError::Unavailable(Unavailable::Stopped)),
+        "not a compile timeout: nothing compiled it"
+    );
     assert_eq!(
         count(&database.database()).await.unwrap(),
         0,

@@ -109,23 +109,24 @@ pub(crate) async fn request(
     transaction.execute_change(insert).await.map(drop)
 }
 
-/// Whether [`take_oldest`] would take a row for `take`, or a row has a
-/// deadline at or before `expired`. One read.
-pub(crate) async fn pending(
+/// Whether a pickup has work: a row [`take_oldest`] would take for `take`,
+/// or a row left with a deadline at or before `expired` to delete. One read.
+pub(crate) async fn work_for(
     database: &Database,
     take: &Take<'_>,
     expired: i64,
 ) -> Result<bool, coral_db::Error> {
-    let pending = Query::select()
+    let work = Query::select()
         .column(CompileRequests::Id)
         .from(CompileRequests::Table)
-        .cond_where(takeable(take).add(Expr::col(CompileRequests::Deadline).lte(expired)))
+        .cond_where(
+            sea_query::Condition::any()
+                .add(takeable(take))
+                .add(Expr::col(CompileRequests::Deadline).lte(expired)),
+        )
         .limit(1)
         .to_owned();
-    Ok(database
-        .fetch_optional::<(String,)>(pending)
-        .await?
-        .is_some())
+    Ok(database.fetch_optional::<(String,)>(work).await?.is_some())
 }
 
 /// Deletes the rows whose deadline is at or before `expired`. Nobody waits
@@ -151,21 +152,20 @@ pub(crate) struct Take<'a> {
     pub(crate) from: Option<&'a [String]>,
 }
 
-/// The rows `take` takes, or any of them: untaken, with a deadline after
-/// its bound, and only the calls of `from` when it is set.
+/// The rows `take` takes: untaken, with a deadline after its bound, and
+/// only the calls of `from` when it is set.
 fn takeable(take: &Take<'_>) -> sea_query::Condition {
     let condition = sea_query::Condition::all()
         .add(Expr::col(CompileRequests::TakenBy).is_null())
         .add(Expr::col(CompileRequests::Deadline).gt(take.deadline_after));
-    let condition = match take.from {
+    match take.from {
         Some(requesters) => condition
             .add(Expr::col(CompileRequests::Call).is_not_null())
             .add(
                 Expr::col(CompileRequests::Requester).is_in(requesters.iter().map(String::as_str)),
             ),
         None => condition,
-    };
-    sea_query::Condition::any().add(condition)
+    }
 }
 
 /// Takes the oldest untaken row that `take` names, passing over rows
@@ -298,7 +298,7 @@ pub(crate) async fn withdraw(
 }
 
 /// The rows left, for tests that check a row is gone.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) async fn count(database: &Database) -> Result<i64, coral_db::Error> {
     let count = Query::select()
         .expr(Expr::col(CompileRequests::Id).count())
@@ -307,3 +307,6 @@ pub(crate) async fn count(database: &Database) -> Result<i64, coral_db::Error> {
     let row = database.fetch_optional::<(i64,)>(count).await?;
     Ok(row.map_or(0, |(count,)| count))
 }
+
+#[cfg(test)]
+mod tests;
