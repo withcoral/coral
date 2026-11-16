@@ -1139,6 +1139,29 @@ pub(super) async fn load_schema_graph(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<SchemaGraph, Error> {
+    load_stored_schema_graph(transaction, generation_id)
+        .await?
+        .parse()
+}
+
+/// One Generation's schema graph as its row stores it, read and not yet
+/// parsed.
+pub(super) struct StoredSchemaGraph(String);
+
+impl StoredSchemaGraph {
+    /// Parses and checks the stored graph. It computes without awaiting: see
+    /// [`SchemaGraphCache`](crate::SchemaGraphCache) for how long.
+    pub(super) fn parse(self) -> Result<SchemaGraph, Error> {
+        SchemaGraph::from_storage_json(&self.0)
+    }
+}
+
+/// Reads one Generation's stored schema graph and leaves the parse to the
+/// caller, who may run it off its task.
+pub(super) async fn load_stored_schema_graph(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<StoredSchemaGraph, Error> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
             Query::select()
@@ -1151,7 +1174,7 @@ pub(super) async fn load_schema_graph(
     let (schema_graph_json,) = row.ok_or_else(|| {
         Error::CorruptData("Provider has no retained Generation schema graph".to_string())
     })?;
-    SchemaGraph::from_storage_json(&schema_graph_json)
+    Ok(StoredSchemaGraph(schema_graph_json))
 }
 
 pub(super) async fn verify_generation(
