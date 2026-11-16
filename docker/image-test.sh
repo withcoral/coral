@@ -247,7 +247,7 @@ public_url = "http://127.0.0.1:3000"
     "$ENGINE" run --rm -v "$mounted:/var/lib/coral" --entrypoint /bin/sh "$CORAL_IMAGE" \
         -c "[ -d $config_path ]" || fail 'CORAL_CONFIG replaced a directory at the config path'
 
-    # With search by meaning on, the runtime finds the model that the image
+    # With semantic search on, the runtime finds the model that the image
     # holds, with no network to download it from.
     semantic='[listeners.grpc]
 bind = "127.0.0.1:14555"

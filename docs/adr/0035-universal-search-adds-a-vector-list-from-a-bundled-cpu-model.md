@@ -118,8 +118,8 @@ every row behind it, even when it is alone in its batch. The skip list lives in 
 failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding runs on a
 blocking thread at normal priority.
 
-A Graph-sized Provider (19,830 rows) becomes searchable by meaning in about 11.5 minutes on one x86 vCPU and 2.9 minutes
-on one M4 core; until then it ranks by words. Two Coral Instances that overlap during a rolling update can embed the
+Semantic search finds the Tools of a Graph-sized Provider (19,830 rows) after about 11.5 minutes on one x86 vCPU and 2.9
+minutes on one M4 core; until then they rank by words. Two Coral Instances that overlap during a rolling update can embed the
 same rows; the write checks staleness, so this costs CPU only.
 
 ## Storage

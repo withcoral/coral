@@ -485,8 +485,8 @@ discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Private
 Tools and the Workspace's Shared Tools, which Programs reach through the Built-in Tool `coral.search`. A query returns
-ranked Search Hits, matched by words and by meaning; exact Call Paths return their Authoring Descriptions fitted to the
-describe budget, or the types named in
+ranked Search Hits, matched by words and by semantic search; exact Call Paths return their Authoring Descriptions fitted
+to the describe budget, or the types named in
 `types`, and name the paths that match nothing with nearby Discoverable Call Paths. It searches only
 secret-free catalog material and does not execute a Private or Shared Tool or dispatch to an Upstream Service. Provider-native
 search is an ordinary Tool that only a Coral Program can invoke. V1 Universal Search stores no Tool Result,

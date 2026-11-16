@@ -1,7 +1,10 @@
-//! The boot statements: the feature probes and the vector table's.
+//! The boot statements: the feature probes and the vector table's, and how
+//! a vector is written for pgvector.
 //!
 //! Every function joins the caller's transaction; the storage module owns
 //! when each transaction begins, commits, or rolls back.
+
+use std::fmt::Write as _;
 
 use coral_db::{Error, Transaction};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
@@ -217,4 +220,17 @@ async fn probe_sqlite(
         }
         Err(error) => Err(error),
     }
+}
+
+/// A vector as pgvector reads it: `[0.5,0.25,1]`.
+pub(crate) fn vector_literal(vector: &[f32]) -> String {
+    let mut literal = String::from("[");
+    for (position, value) in vector.iter().enumerate() {
+        if position > 0 {
+            literal.push(',');
+        }
+        write!(literal, "{value}").expect("writing to a String does not fail");
+    }
+    literal.push(']');
+    literal
 }

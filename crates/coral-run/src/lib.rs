@@ -247,6 +247,8 @@ pub struct RunModule {
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     private_tools: Option<PrivateTools>,
     human_interface: Option<HumanInterfaceUrl>,
+    /// What `coral.search` discovers through.
+    search: coral_search::UniversalSearchModule,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     engine: Arc<dyn ProgramEngine>,
@@ -332,6 +334,7 @@ impl RunModule {
             provider_renamer: None,
             private_tools: None,
             human_interface: None,
+            search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
             accounts: None,
@@ -374,6 +377,7 @@ impl RunModule {
             provider_renamer: None,
             private_tools: None,
             human_interface: None,
+            search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
             accounts: None,
@@ -429,6 +433,16 @@ impl RunModule {
     #[must_use]
     pub fn with_private_tools(mut self, private_tools: PrivateTools) -> Self {
         self.private_tools = Some(private_tools);
+        self
+    }
+
+    /// Makes `coral.search` discover through `search`, the process's one
+    /// search module, so a search inside a Program ranks as every other
+    /// search of the process does. Without it, `coral.search` ranks by words
+    /// alone.
+    #[must_use]
+    pub fn with_search(mut self, search: coral_search::UniversalSearchModule) -> Self {
+        self.search = search;
         self
     }
 
