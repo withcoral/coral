@@ -29,6 +29,11 @@ mod embedder;
 mod reconcile;
 mod statistics;
 mod telemetry;
+#[cfg(test)]
+mod write_probe;
+
+#[cfg(test)]
+pub(crate) use write_probe::{WritePoint, WriteProbe};
 
 /// How long one index write may run before it is rolled back and logged as
 /// failed. The limit frees the mutex: a write stalled on a database lock would
@@ -78,6 +83,9 @@ pub struct SearchIndex {
     embedder_retry_pause: Duration,
     #[cfg(test)]
     row_build_pause: Option<Arc<RowBuildPause>>,
+    /// A test's view of each write, and the clock of the write's limits.
+    #[cfg(test)]
+    write_probe: Option<Arc<WriteProbe>>,
     /// A test-only index whose notifications write nothing.
     #[cfg(any(test, feature = "test-fixtures"))]
     inert: bool,
@@ -127,6 +135,16 @@ impl SearchIndex {
         RowBuildHold { entered, release }
     }
 
+    /// Probes each later write. From then on the writer wait limit and the
+    /// write limit of a write run on the probe's clock, which only the test
+    /// advances, so neither passes while the database is slow.
+    #[cfg(test)]
+    pub(crate) fn probe_writes(&mut self) -> Arc<WriteProbe> {
+        let probe = Arc::new(WriteProbe::new());
+        self.write_probe = Some(probe.clone());
+        probe
+    }
+
     /// Builds the write side over migrated domain persistence. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
     /// Generation or Authored Tool by the retry module's rule, whose waits
@@ -149,6 +167,8 @@ impl SearchIndex {
             embedder_retry_pause: embedder::RETRY_PAUSE,
             #[cfg(test)]
             row_build_pause: None,
+            #[cfg(test)]
+            write_probe: None,
             #[cfg(any(test, feature = "test-fixtures"))]
             inert: false,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -682,6 +702,24 @@ impl SearchIndex {
             .map_err(|_elapsed| IndexError::TimedOut(self.write_limit))?
     }
 
+    /// Runs `work` until `limit` passes, and answers `None` when the limit
+    /// passes first. Dropping the work rolls back its transaction.
+    async fn before_limit<T>(&self, limit: Duration, work: impl Future<Output = T>) -> Option<T> {
+        #[cfg(test)]
+        if let Some(probe) = &self.write_probe {
+            return probe.before_limit(limit, work).await;
+        }
+        tokio::time::timeout(limit, work).await.ok()
+    }
+
+    /// Tells a test's probe that the write is at `point`.
+    #[cfg(test)]
+    async fn at(&self, point: WritePoint) {
+        if let Some(probe) = &self.write_probe {
+            probe.at(point).await;
+        }
+    }
+
     /// Runs `read` in one read snapshot, within the write limit, and rolls
     /// the snapshot back. A read takes no write lock, so it never queues for
     /// the writer.
@@ -716,6 +754,8 @@ impl SearchIndex {
         entry: &'e I::Entry,
     ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
+        #[cfg(test)]
+        let _ended = self.write_probe.as_deref().map(WriteProbe::ends);
         let rows = without_starving_other_tasks(|| {
             #[cfg(test)]
             if let Some(pause) = &self.row_build_pause {
@@ -731,21 +771,28 @@ impl SearchIndex {
         if let Some(stall) = self.stall_before_write {
             tokio::time::sleep(stall).await;
         }
+        #[cfg(test)]
+        self.at(WritePoint::BuiltRows).await;
         let started = Instant::now();
-        let mut transaction = tokio::time::timeout(self.writer_wait_limit, async {
-            let mut transaction = self.database.begin().await?;
-            if let Err(error) = indexer::lock_workspace(&mut transaction, workspace_id).await {
-                rollback(transaction).await;
-                return Err(error);
-            }
-            Ok(transaction)
-        })
-        .await
-        .map_err(|_elapsed| IndexError::WriterBusy(self.writer_wait_limit))??;
+        let mut transaction = self
+            .before_limit(self.writer_wait_limit, async {
+                #[cfg(test)]
+                self.at(WritePoint::WaitingForWriter).await;
+                let mut transaction = self.database.begin().await?;
+                if let Err(error) = indexer::lock_workspace(&mut transaction, workspace_id).await {
+                    rollback(transaction).await;
+                    return Err(error);
+                }
+                Ok(transaction)
+            })
+            .await
+            .ok_or(IndexError::WriterBusy(self.writer_wait_limit))??;
         let locked = Instant::now();
         // Borrowed, so the rows outlive the `async move` write and return.
         let written_rows = &rows;
-        let written = tokio::time::timeout(self.write_limit, async move {
+        let write = async move {
+            #[cfg(test)]
+            self.at(WritePoint::HoldsLock).await;
             #[cfg(any(test, feature = "test-fixtures"))]
             if let Some(stall) = self.stall_after_lock {
                 tokio::time::sleep(stall).await;
@@ -759,9 +806,11 @@ impl SearchIndex {
             };
             transaction.commit().await?;
             Ok((effect, crate::unix_now_nanos()))
-        })
-        .await
-        .unwrap_or_else(|_elapsed| Err(IndexError::Overran(self.write_limit)));
+        };
+        let written = self
+            .before_limit(self.write_limit, write)
+            .await
+            .unwrap_or(Err(IndexError::Overran(self.write_limit)));
         let span = tracing::Span::current();
         span.record(
             "coral.search.writer_wait_ms",
