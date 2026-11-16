@@ -82,6 +82,10 @@ pub enum AuthorizationCodeError {
     /// The database did not accept or answer the statement.
     #[error("authorization code storage is unavailable")]
     Unavailable,
+    /// A stored code holds a value Coral could not have written, so a retry
+    /// fails the same way. The code names the value, for `error.type`.
+    #[error("a stored authorization code is corrupt")]
+    Corrupt(&'static str),
 }
 
 impl AuthorizationCodeError {
@@ -93,6 +97,7 @@ impl AuthorizationCodeError {
             Self::EmptySecret { .. } => "empty_secret",
             Self::ClockOutOfRange { .. } => "clock_out_of_range",
             Self::Unavailable { .. } => "unavailable",
+            Self::Corrupt(code) => code,
         }
     }
 }
@@ -153,7 +158,8 @@ impl AuthorizationCodes {
     /// # Errors
     ///
     /// Returns [`AuthorizationCodeError::Unavailable`] when the database does
-    /// not answer.
+    /// not answer, and [`AuthorizationCodeError::Corrupt`] when the stored
+    /// code does not decode, which leaves the code unspent.
     pub async fn redeem(
         &self,
         code: &str,
@@ -186,6 +192,11 @@ fn digest(secret: &str) -> Result<String, AuthorizationCodeError> {
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes())))
 }
 
-fn unavailable(_error: coral_db::Error) -> AuthorizationCodeError {
-    AuthorizationCodeError::Unavailable
+/// Logs the database's failure and reports it as storage that is unavailable.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the database error by value"
+)]
+fn unavailable(error: coral_db::Error) -> AuthorizationCodeError {
+    crate::database_failure(&error, AuthorizationCodeError::Unavailable)
 }

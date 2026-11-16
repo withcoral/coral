@@ -24,6 +24,10 @@ pub enum AppError {
     /// Background server task failed to join cleanly.
     #[error(transparent)]
     TaskJoin(#[from] tokio::task::JoinError),
+    /// A `gRPC` connection stayed open past the shutdown grace period and
+    /// the listener task was aborted.
+    #[error("gRPC listener shutdown timed out; task aborted")]
+    ShutdownTimedOut,
     /// Durable app-state database access failed.
     #[error("database error: {0}")]
     Database(String),
@@ -64,7 +68,8 @@ impl From<coral_search::StorageError> for AppError {
         match error {
             coral_search::StorageError::Database(error) => error.into(),
             coral_search::StorageError::MissingFeature { .. }
-            | coral_search::StorageError::UnexpectedVectorTable { .. } => {
+            | coral_search::StorageError::UnexpectedVectorTable { .. }
+            | coral_search::StorageError::UnexpectedSqliteVectorTables { .. } => {
                 Self::FailedPrecondition(error.to_string())
             }
         }
@@ -121,6 +126,12 @@ mod tests {
                     expected_dimension: 384,
                 },
                 "found vector(384)",
+            ),
+            (
+                coral_search::StorageError::UnexpectedSqliteVectorTables {
+                    expected_dimension: 384,
+                },
+                "drop both",
             ),
         ] {
             let error = AppError::from(error);

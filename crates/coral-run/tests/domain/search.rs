@@ -134,6 +134,69 @@ async fn a_program_pages_a_listing_with_the_offset_it_returned() {
     assert_eq!(both, call_paths(&page("all"), "hits"));
 }
 
+// Catches: a Run whose `coral.search` uses a search module of its own, which
+// never holds the Embedder's model, so a Program never finds a Tool by
+// semantic search. What the vector list ranks is tested at its owner, coral-search.
+#[tokio::test]
+async fn a_program_search_embeds_its_query_with_the_model_of_the_run_modules_search() {
+    // Only on Postgres does a search module hold a model.
+    coral_test_support::database_only!(Postgres);
+    let mut scope = AdminScope::new("user:search-model").await;
+    let model = Arc::new(RecordingModel::default());
+    let (_slot, loaded) = tokio::sync::watch::channel(coral_search::ModelLoad::Ready(Arc::clone(
+        &model,
+    )
+        as Arc<dyn coral_embed::Embed>));
+    let search = coral_search::UniversalSearchModule::new(
+        scope.fixture.database.clone(),
+        scope.fixture.workspaces.clone(),
+    )
+    .with_model(loaded);
+    scope.fixture.runs = scope.fixture.runs.clone().with_search(search);
+
+    let page = scope
+        .outcome(submission(
+            r#"return await coral.search({ query: "will it rain tomorrow" });"#,
+        ))
+        .await;
+
+    assert!(page.pointer("/data/hits").is_some(), "a page: {page}");
+    assert_eq!(model.queries(), ["will it rain tomorrow"]);
+}
+
+/// A model that records each query it embeds and gives every text the same
+/// vector.
+#[derive(Default)]
+struct RecordingModel(Mutex<Vec<String>>);
+
+impl RecordingModel {
+    fn queries(&self) -> Vec<String> {
+        self.0.lock().expect("queries").clone()
+    }
+
+    fn vector() -> Vec<f32> {
+        let mut vector = vec![0.0; coral_embed::MANIFEST.dimension];
+        if let Some(first) = vector.first_mut() {
+            *first = 1.0;
+        }
+        vector
+    }
+}
+
+impl coral_embed::Embed for RecordingModel {
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, coral_embed::EmbedError> {
+        self.0
+            .lock()
+            .map_err(|_poisoned| coral_embed::EmbedError::Output("queries poisoned".to_owned()))?
+            .push(text.to_owned());
+        Ok(Self::vector())
+    }
+
+    fn embed_document(&self, _text: &str) -> Result<Vec<f32>, coral_embed::EmbedError> {
+        Ok(Self::vector())
+    }
+}
+
 // Catches: a refused argument that the Program cannot tell from the others,
 // or that runs a search anyway.
 #[tokio::test]

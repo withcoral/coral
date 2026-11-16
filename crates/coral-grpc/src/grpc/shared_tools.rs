@@ -17,7 +17,7 @@ use coral_workspace::{
 use tonic::{Request, Response, Status};
 
 fn path(value: &str) -> Result<SharedToolPath, Status> {
-    SharedToolPath::parse(value).map_err(|_error| invalid("invalid Shared Tool Path"))
+    SharedToolPath::parse(value).map_err(|_error| invalid())
 }
 
 fn user_name(user: &coral_workspace::UserId) -> String {
@@ -32,7 +32,7 @@ fn resource_name(workspace: &WorkspaceId, id: &SharedToolId) -> String {
 /// The Workspace and identity a Shared Tool's resource name holds.
 fn parse_resource_name(name: &str) -> Result<(WorkspaceId, SharedToolId), Status> {
     let (workspace, id) = resource(name, "sharedTools")?;
-    let id = SharedToolId::parse(id).map_err(|_error| invalid("invalid Shared Tool name"))?;
+    let id = SharedToolId::parse(id).map_err(|_error| invalid())?;
     Ok((workspace, id))
 }
 
@@ -147,11 +147,10 @@ fn origin(
             };
             Ok(SharedToolOrigin::PrivateTool {
                 owner,
-                path: PrivateToolPath::parse(&private_tool.path)
-                    .map_err(|_error| invalid("invalid Private Tool Path"))?,
+                path: PrivateToolPath::parse(&private_tool.path).map_err(|_error| invalid())?,
             })
         }
-        Some(Origin::RestoreRevision(0)) | None => Err(invalid("origin is required")),
+        Some(Origin::RestoreRevision(0)) | None => Err(invalid()),
         Some(Origin::RestoreRevision(restored)) => Ok(SharedToolOrigin::Revision(restored)),
     }
 }
@@ -171,7 +170,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let after = if after.is_empty() {
             None
         } else {
-            Some(SharedToolPath::parse(&after).map_err(|_error| invalid("invalid page token"))?)
+            Some(SharedToolPath::parse(&after).map_err(|_error| invalid())?)
         };
         let shared_provider = self
             .providers
@@ -270,9 +269,8 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let mut publish = SharedToolPublish::review(
             path,
             origin(input.origin, &w, &user)?,
-            AuthoredToolDescription::parse(&input.description)
-                .map_err(|_error| invalid("invalid description"))?,
-            AuthoredToolSource::parse(&input.source).map_err(|_error| invalid("invalid source"))?,
+            AuthoredToolDescription::parse(&input.description).map_err(|_error| invalid())?,
+            AuthoredToolSource::parse(&input.source).map_err(|_error| invalid())?,
             access(input.default_access_state)?,
             input.expected_revision,
         );
@@ -324,7 +322,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         } else {
             let (workspace, id) = parse_resource_name(&input.shared_tool)?;
             if workspace != w {
-                return Err(invalid("invalid Shared Tool name"));
+                return Err(invalid());
             }
             Some(id)
         };
@@ -338,10 +336,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let after = if after.is_empty() {
             None
         } else {
-            Some(
-                SharedToolLifecycleEventId::parse(&after)
-                    .map_err(|_error| invalid("invalid page token"))?,
-            )
+            Some(SharedToolLifecycleEventId::parse(&after).map_err(|_error| invalid())?)
         };
         let page = self
             .shared_tools

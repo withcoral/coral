@@ -772,7 +772,8 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     ))
     .await;
     // The request's own deadline, well inside the Run's and the worker lease.
-    let approval_wait = Duration::from_millis(200);
+    // Its real timer never fires here; the test sends its message.
+    let approval_wait = Duration::from_secs(30);
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait);
     let tool = fixture.user_tool("user:expiry", "Approval expiry").await;
@@ -797,14 +798,20 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
         (started..=fixture.clock.next.load(Ordering::SeqCst)).contains(&created),
         "the request's deadline is the approval wait from its creation: {created} not in {started}..="
     );
-    // The timer fires on the host clock; the test clock stays before the
-    // deadline, so nothing but the owner's record can show the expiry.
+    // The timer's message arrives once the pending set is read: a real
+    // timer would race that read. The test clock stays before the deadline,
+    // so nothing but the owner's record can show the expiry.
     let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
     let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
-    wait_until_async_within(Duration::from_secs(5), async || {
-        read().await.unwrap().state != ApprovalState::Pending
-    })
-    .await;
+    fixture
+        .runs
+        .owners
+        .get(run.run_id())
+        .expect("live owner")
+        .send(crate::owner::Message::Timer(crate::owner::Timer::Approval(
+            request.id.clone(),
+        )));
+    wait_until_async(async || read().await.unwrap().state != ApprovalState::Pending).await;
     assert_ne!(
         approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await,
         pending,
@@ -889,9 +896,13 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
 /// reader derives Expired from the clock.
 #[tokio::test]
 async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_expiry() {
-    let mut fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
+    let timers = Arc::new(TimerProbe::default());
+    let mut fixture = TestModules::with_execution_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RejectingUpstream),
+        Arc::new(NoopInvocationObserver),
+        timers.clone(),
+    )
     .await;
     // Isolate the request's deadline from the Run's, and keep the owner from
     // recording the expiry while the test reads. Two owner paths would: the
@@ -917,6 +928,11 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
         run.run_id(),
     )
     .await;
+    // The owner arms the request's timer when it parks the Invocation, for
+    // the time its clock then leaves until the deadline: a clock moved before
+    // that would fire the timer at once.
+    let timer = crate::owner::Timer::Approval(request.id.clone());
+    wait_until(|| timers.armed(&timer).is_some()).await;
     // The clock passes the deadline; neither the request's timer nor the
     // precheck runs within this test.
     fixture
@@ -2198,7 +2214,7 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     probe.until_parked(1).await;
 
     // Without the timer's chunk, the wait would sleep until the precheck.
-    wait_until_async_within(Duration::from_secs(3), async || {
+    wait_until_async(async || {
         fixture
             .run_record(&tool.workspace_id, run.run_id())
             .await
@@ -2231,26 +2247,25 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
 /// approver, dated at its deadline, its Invocation failed
 /// `approval_expired`, and one Expired lifecycle event. The Run still ends
 /// `timed_out`.
+///
+/// The test sends the deadline's timer message itself, once the Invocation
+/// waits on its request: a real timer would race the request's creation,
+/// and on a slow database the Run timed out with nothing pending.
 #[tokio::test]
 async fn a_run_timeout_expires_its_pending_approval() {
-    let fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
-    .await;
+    let (fixture, probe) = probed_fixture(crate::execution::ExecutionPolicy::testing()).await;
     let tool = fixture
         .user_tool("user:timed-out-review", "Nobody answers in time")
         .await;
     fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
+    // The real deadline never fires here.
     let run = fixture
         .runs
         .start(
             &tool.principal,
             &tool.workspace_id,
-            RunSubmission::new(
-                ProgramSource::parse("await coral.providers.weather.getForecast({});").unwrap(),
-                RunTimeout::from_millis(500).unwrap(),
-            ),
+            submission("await coral.providers.weather.getForecast({});"),
         )
         .await
         .unwrap();
@@ -2261,6 +2276,15 @@ async fn a_run_timeout_expires_its_pending_approval() {
         run.run_id(),
     )
     .await;
+    probe.until_parked(1).await;
+    fixture
+        .runs
+        .owners
+        .get(run.run_id())
+        .expect("live owner")
+        .send(crate::owner::Message::Timer(
+            crate::owner::Timer::RunDeadline,
+        ));
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
@@ -2510,13 +2534,19 @@ async fn quiet_approval_fixture(
 /// waiting, waits for that chunk and receives the first's recorded answer
 /// (the decision, who made it, when), and so does a third, after the row is
 /// gone. Nothing else changes: one lifecycle event, one dispatch.
+///
+/// The approved call is held at its upstream until the Run Inbox has been
+/// counted. Nothing tells the test that the second decider has submitted, so
+/// on a slow database it may submit after the first's chunk: its row is then
+/// a repeat the owner's next chunk deletes before it is answered, which only
+/// a running Run does. A Run that had ended would keep that row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_learns_the_winner()
 {
-    let upstream = Arc::new(ScriptedUpstream::json(
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
         200,
         serde_json::json!({"temperature": 21}),
-    ));
+    )));
     let (fixture, tool, approvals, probe) = quiet_approval_fixture(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream.clone(),
@@ -2596,6 +2626,7 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
         [ApprovalState::Approved],
         "one decision is recorded"
     );
+    upstream.release();
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
@@ -2718,7 +2749,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
                 .collect::<Vec<_>>(),
             [ApprovalState::Closed]
         );
-        upstream.release.store(true, Ordering::SeqCst);
+        upstream.release();
         let canceled = cancel.await.expect("join").expect("cancel");
         assert_eq!(canceled.state(), RunState::Canceled);
         assert_eq!(

@@ -4,16 +4,21 @@
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
 //! hands the engine its window in rank order, each Entity marked strong or
-//! weak by the retriever's own rule. It hydrates and describes the Entities
-//! of its kind. Every method joins the caller's read snapshot and opens no
-//! connection of its own.
+//! weak by the retriever's own rule. When the request carries the query's
+//! vector, the query has a word to rank, and some of what the caller may
+//! search is in the index, the retriever also runs a vector query with its
+//! own visibility rules and merges the two lists ([`vector_list`]). It
+//! hydrates and describes the Entities of its kind. Every method joins the
+//! caller's read snapshot and opens no connection of its own.
 
 pub(crate) mod authored_tools;
 pub(crate) mod plan;
 mod repository;
 pub(crate) mod tools;
+pub(crate) mod vector_list;
 
 pub(crate) use repository::{abandon_query, begin_query, end_query};
+pub(crate) use vector_list::{LexicalReason, Semantic};
 
 use std::sync::Arc;
 
@@ -83,9 +88,12 @@ pub(crate) struct Listing {
 }
 
 /// What one retriever's `query` asks: the engine's normalized terms, the
-/// Provider Call Root filter, and the window size.
+/// query's vector, the Provider Call Root filter, and the window size.
 pub(crate) struct QueryRequest<'a> {
     pub(crate) terms: &'a [String],
+    /// The query's vector, embedded once for every retriever, or why there
+    /// is none.
+    pub(crate) vector: Result<&'a [f32], LexicalReason>,
     pub(crate) provider_filter: &'a ProviderFilter,
     pub(crate) window: usize,
 }
@@ -95,6 +103,9 @@ pub(crate) struct QueryRequest<'a> {
 pub(crate) struct Answer {
     pub(crate) window: Vec<WindowEntry>,
     pub(crate) coverage: RetrieverCoverage,
+    /// Whether the window merged a vector list; `None` for a retriever
+    /// that keeps no vectors.
+    pub(crate) semantic: Option<Semantic>,
 }
 
 /// One Entity of a ranked window and its retriever's mark. A retriever

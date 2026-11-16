@@ -10,6 +10,19 @@ use crate::InvocationResultKind;
 
 const WEATHER: &str = "coral.providers.weather.getForecast";
 
+/// Work a tool body starts and does not await. Its first call starts while
+/// the body runs. Coral refuses its second call as `parent_invocation_ended`
+/// once the body has ended, and the work emits that code, so a test reads
+/// from the Emission that the body's end is recorded.
+const LEFTOVER_WORK: &str = "void (async () => {
+    await coral.providers.weather.getForecast();
+    try {
+        await coral.providers.weather.getForecast();
+    } catch (error) {
+        await coral.emit((error as { code: string }).code);
+    }
+})();";
+
 /// A Workspace whose `weather` Tool sends through an upstream that holds
 /// each send until released, and whose Runs call its Private Tools. Its
 /// shutdown grace is longer than any wait here, so a Run that waits it out
@@ -206,7 +219,7 @@ fn outcomes(rows: &[InvocationRow]) -> Vec<(&str, Option<InvocationResultKind>)>
 #[tokio::test]
 async fn tool_bodies_that_make_more_concurrent_calls_than_the_fan_out_limit_complete() {
     let mut scope = BodyScope::new("user:tool-bodies-fan-out").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope.fixture.runs = scope
         .fixture
         .runs
@@ -300,7 +313,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
         let mut scope = BodyScope::new(&format!("user:tool-bodies-{ending:?}")).await;
         // The body's call returns at once unless the Run ends while it waits.
         if matches!(ending, Ending::CpuLimitExceeded) {
-            scope.upstream.release.store(true, Ordering::SeqCst);
+            scope.upstream.release();
             scope.fixture.runs = scope.fixture.runs.clone().with_cpu_budget(
                 crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"),
             );
@@ -332,7 +345,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
         if !matches!(ending, Ending::CpuLimitExceeded | Ending::LostInstance) {
             // The body's call ends with its own outcome while the Run ends.
             scope.termination_is_recorded(&run).await;
-            scope.upstream.release.store(true, Ordering::SeqCst);
+            scope.upstream.release();
         }
 
         let terminal = scope.terminal(&run).await;
@@ -360,7 +373,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
             let canceled = cancel.await.expect("join").expect("cancel the Run");
             assert_eq!(canceled.state(), RunState::Canceled);
         }
-        scope.upstream.release.store(true, Ordering::SeqCst);
+        scope.upstream.release();
         wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
     }
 }
@@ -410,7 +423,7 @@ async fn a_program_that_ends_before_a_tool_body_settles_ends_its_call_as_run_ter
 async fn a_call_that_ends_with_its_program_is_traced_as_run_terminated_when_it_ends() {
     super::trace::capture();
     let scope = BodyScope::new("user:tool-bodies-traced").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.spin",
@@ -508,7 +521,7 @@ fn tree(rows: &[InvocationRow]) -> Vec<(&str, Option<&str>, Vec<&str>)> {
 async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
     super::trace::capture();
     let scope = BodyScope::new("user:tool-bodies-children").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -581,7 +594,7 @@ async fn each_call_a_tool_body_makes_is_a_child_of_the_call_it_runs_for() {
 #[tokio::test]
 async fn an_invocation_summary_names_its_tool_kind_and_the_call_that_made_it() {
     let scope = BodyScope::new("user:tool-bodies-summaries").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -648,7 +661,7 @@ async fn an_invocation_summary_names_its_tool_kind_and_the_call_that_made_it() {
 #[tokio::test]
 async fn each_level_of_a_runs_records_lists_the_calls_made_at_it() {
     let scope = BodyScope::new("user:tool-bodies-levels").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -753,7 +766,7 @@ async fn each_level_of_a_runs_records_lists_the_calls_made_at_it() {
 #[tokio::test]
 async fn retention_deletes_a_run_with_its_nested_invocations() {
     let scope = BodyScope::new("user:tool-bodies-retention").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "weather.inner",
@@ -790,28 +803,60 @@ async fn retention_deletes_a_run_with_its_nested_invocations() {
 // never settles waits for that child, so its Run runs until its deadline and
 // times out, and both calls end as `run_terminated`. Without the wait, the
 // Program would end at once; a change to that is a deliberate one.
+//
+// The test sends the deadline's timer message itself: a real timer short
+// enough to wait for would race the calls' start, and on a slow database it
+// fired before the nested call existed. It sends it once the body has
+// ended, which the body's leftover work reports: Coral refuses that work's
+// second call as `parent_invocation_ended` only after the body's end, and
+// the work emits the code. A call that did not wait for its child has by
+// then recorded its own outcome, or ended its Run, so neither a timeout nor
+// `run_terminated` can come from a Run that only ended late.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_deadline() {
     let scope = BodyScope::new("user:tool-bodies-held").await;
+    scope.upstream.release();
     scope
         .save("stuck.hang", "async () => { await new Promise(() => {}); }")
         .await;
     scope
         .save(
             "stuck.leave",
-            "async () => { void coral.private.stuck.hang(); return 1; }",
+            &format!(
+                "async () => {{ void coral.private.stuck.hang(); {LEFTOVER_WORK} return 1; }}"
+            ),
         )
         .await;
     let run = scope
         .start(
             &scope.fixture.runs,
-            RunSubmission::new(
-                ProgramSource::parse("return await coral.private.stuck.leave();")
-                    .expect("Program source"),
-                RunTimeout::from_millis(1_000).expect("Run timeout"),
-            ),
+            submission("return await coral.private.stuck.leave();"),
         )
         .await;
+    // The body has ended, with its nested call still running; or the Run
+    // ended, which the assertions below refuse.
+    wait_until_async(async || {
+        let events = retained_events(
+            &scope.fixture.runs,
+            &scope.tool.principal,
+            &scope.tool.workspace_id,
+            &run,
+        )
+        .await;
+        events.iter().any(|event| match event.kind() {
+            RunEventKind::ProgramEmitted { value } => {
+                value.as_json() == &serde_json::json!("parent_invocation_ended")
+            }
+            RunEventKind::Ended { .. } => true,
+            _ => false,
+        })
+    })
+    .await;
+    if let Some(owner) = scope.fixture.runs.owners.get(&run) {
+        owner.send(crate::owner::Message::Timer(
+            crate::owner::Timer::RunDeadline,
+        ));
+    }
 
     let terminal = scope.terminal(&run).await;
     assert_eq!(terminal.state(), RunState::TimedOut, "{terminal:?}");
@@ -821,6 +866,7 @@ async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_de
         [
             ("coral.private.stuck.hang", terminated),
             ("coral.private.stuck.leave", terminated),
+            (WEATHER, Some(InvocationResultKind::UpstreamOutcome)),
         ]
     );
 }
@@ -869,21 +915,11 @@ async fn spans_nest_as_rows_do(run: &crate::RunId, rows: &[InvocationRow]) {
 #[tokio::test]
 async fn a_call_made_after_its_tool_body_ended_is_refused() {
     let scope = BodyScope::new("user:tool-bodies-late").await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
     scope
         .save(
             "stray.fire",
-            "async () => {
-                void (async () => {
-                    await coral.providers.weather.getForecast();
-                    try {
-                        await coral.providers.weather.getForecast();
-                    } catch (error) {
-                        await coral.emit((error as { code: string }).code);
-                    }
-                })();
-                return 1;
-            }",
+            &format!("async () => {{ {LEFTOVER_WORK} return 1; }}"),
         )
         .await;
 
@@ -948,7 +984,7 @@ async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_term
 
     let cancel = scope.end(Ending::Canceled, &run).await.expect("a cancel");
     scope.termination_is_recorded(&run).await;
-    scope.upstream.release.store(true, Ordering::SeqCst);
+    scope.upstream.release();
 
     let terminal = scope.terminal(&run).await;
     assert_eq!(terminal.state(), RunState::Canceled, "{terminal:?}");

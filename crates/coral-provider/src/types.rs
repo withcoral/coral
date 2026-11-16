@@ -1,5 +1,6 @@
 use coral_workspace::WorkspaceId;
 use std::fmt;
+use std::sync::Arc;
 
 use coral_catalog::{
     CatalogSearchTarget, MaterializedTool, ProviderGenerationId, ProviderSetupInputDigest,
@@ -144,7 +145,7 @@ impl ProviderSetupState {
     ];
 
     /// Whether the Setup can still be published: not yet ready, or ready and
-    /// not consumed; one of [`Self::OPEN`]. Only an open Setup expires at its
+    /// not consumed; one of `Self::OPEN`. Only an open Setup expires at its
     /// deadline.
     #[must_use]
     pub const fn is_open(&self) -> bool {
@@ -658,7 +659,8 @@ pub struct ResolvedInvocationTool {
     provider_access: ProviderAccess,
     provider_generation_id: ProviderGenerationId,
     tool: MaterializedTool,
-    schema_graph: coral_catalog::SchemaGraph,
+    /// Shared with each dispatch planned from this Tool, never copied.
+    schema_graph: Arc<coral_catalog::SchemaGraph>,
 }
 
 impl ResolvedInvocationTool {
@@ -666,7 +668,7 @@ impl ResolvedInvocationTool {
         provider_access: ProviderAccess,
         provider_generation_id: ProviderGenerationId,
         tool: MaterializedTool,
-        schema_graph: coral_catalog::SchemaGraph,
+        schema_graph: Arc<coral_catalog::SchemaGraph>,
     ) -> Self {
         Self {
             provider_access,
@@ -703,9 +705,10 @@ impl ResolvedInvocationTool {
         }
     }
 
-    /// Returns the authoritative schema graph selected with the Tool.
+    /// Returns the authoritative schema graph selected with the Tool, as the
+    /// shared handle a dispatch keeps.
     #[must_use]
-    pub const fn schema_graph(&self) -> &coral_catalog::SchemaGraph {
+    pub const fn schema_graph(&self) -> &Arc<coral_catalog::SchemaGraph> {
         &self.schema_graph
     }
 }

@@ -6,7 +6,7 @@
 use coral_db::{Database, Transaction};
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Query};
 
-use super::{AuthorizationCodeError, AuthorizationGrant, CodeRedemption};
+use super::{AuthorizationCodeError, AuthorizationGrant, CodeRedemption, unavailable};
 
 #[derive(Iden)]
 enum Codes {
@@ -37,7 +37,7 @@ pub(super) async fn purge_expired(
             .to_owned(),
     )
     .await
-    .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+    .map_err(unavailable)?;
     Ok(())
 }
 
@@ -85,7 +85,7 @@ pub(super) async fn insert(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+        .map_err(unavailable)?;
     Ok(rows == 1)
 }
 
@@ -128,7 +128,7 @@ pub(super) async fn is_spendable(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+        .map_err(unavailable)?;
     Ok(row.is_some())
 }
 
@@ -160,14 +160,14 @@ pub(super) async fn spend(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+        .map_err(unavailable)?;
     row.map(|row| {
         let workspace_id = row
             .workspace_id
             .as_deref()
             .map(coral_workspace::WorkspaceId::parse)
             .transpose()
-            .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+            .map_err(|_error| AuthorizationCodeError::Corrupt("corrupt_code_workspace"))?;
         Ok(AuthorizationGrant {
             user_id: row.user_id,
             client_id: row.client_id,

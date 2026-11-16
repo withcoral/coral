@@ -1751,7 +1751,9 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
             Some(Ok(CGNAT_ANSWER)),
             true,
             false,
-            Refused(Error::AuthorizationDiscovery("client_bootstrap_failed")),
+            Refused(Error::AuthorizationDiscovery(
+                coral_upstream::AuthorizationDiscoveryError::ClientBootstrapFailed.into(),
+            )),
         ),
         (
             "split DNS with the document preferred",
@@ -1791,7 +1793,9 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
             Some(Ok(PUBLIC_ANSWER)),
             true,
             false,
-            Refused(Error::AuthorizationDiscovery("client_bootstrap_failed")),
+            Refused(Error::AuthorizationDiscovery(
+                coral_upstream::AuthorizationDiscoveryError::ClientBootstrapFailed.into(),
+            )),
         ),
     ];
     let upstream = OAuthMcp::start().await;
@@ -1855,8 +1859,8 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
                     std::mem::discriminant(&expected),
                     "{case}: {error}"
                 );
-                if let Error::AuthorizationDiscovery(code) = &error {
-                    assert_eq!(*code, "client_bootstrap_failed", "{case}");
+                if let Error::AuthorizationDiscovery(failure) = &error {
+                    assert_eq!(failure.code(), "client_bootstrap_failed", "{case}");
                 }
                 // The refusal happened before any handoff: no Authorization exists
                 // and the document was never used in its place.
@@ -1995,7 +1999,10 @@ async fn metadata_failures_are_typed_and_create_no_setup() {
         .await
         .expect_err("resource mismatch");
     assert!(
-        matches!(error, Error::AuthorizationDiscovery("resource_mismatch")),
+        matches!(
+            error,
+            Error::AuthorizationDiscovery(failure) if failure.code() == "resource_mismatch"
+        ),
         "{error:?}"
     );
     // A Basic challenge is unsupported.
@@ -2019,7 +2026,7 @@ async fn metadata_failures_are_typed_and_create_no_setup() {
     assert!(
         matches!(
             error,
-            Error::AuthorizationDiscovery("challenge_unsupported")
+            Error::AuthorizationDiscovery(failure) if failure.code() == "challenge_unsupported"
         ),
         "{error:?}"
     );
@@ -5139,10 +5146,6 @@ async fn automatic_bootstrap_preserves_parameters_and_settles_denied_consent() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one fault-injection journey verifies token persistence and replay"
-)]
 async fn successful_token_survives_application_status_write_failure() {
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
@@ -5196,26 +5199,7 @@ async fn successful_token_survives_application_status_write_failure() {
         .await
         .unwrap();
     // Fail only the diagnostic status write, after the token exchange is arranged.
-    let (install_fault, remove_fault) = match coral_test_support::selected_database().unwrap() {
-        coral_db::DatabaseSystem::Sqlite => (
-            "CREATE TRIGGER cubic_status_fault BEFORE UPDATE OF oauth_client_failure_code \
-             ON provider_records BEGIN SELECT RAISE(FAIL, 'cubic status write fault'); END",
-            "DROP TRIGGER cubic_status_fault",
-        ),
-        coral_db::DatabaseSystem::Postgres => (
-            "CREATE FUNCTION cubic_status_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
-             BEGIN RAISE EXCEPTION 'cubic status write fault'; END $$; \
-             CREATE TRIGGER cubic_status_fault BEFORE UPDATE OF oauth_client_failure_code \
-             ON provider_records FOR EACH ROW EXECUTE FUNCTION cubic_status_fault()",
-            "DROP TRIGGER cubic_status_fault ON provider_records; \
-             DROP FUNCTION cubic_status_fault()",
-        ),
-    };
-    harness
-        .fixture
-        .execute_fixture_sql(install_fault)
-        .await
-        .unwrap();
+    crate::tests::fail_application_status_writes(&harness.fixture, true).await;
     let state = state_of(authorization.authorization_url.as_deref().unwrap());
     let result = harness
         .accounts
@@ -5236,11 +5220,7 @@ async fn successful_token_survives_application_status_write_failure() {
         1,
         "upstream issued the token exactly once"
     );
-    harness
-        .fixture
-        .execute_fixture_sql(remove_fault)
-        .await
-        .unwrap();
+    crate::tests::fail_application_status_writes(&harness.fixture, false).await;
     let after = harness
         .accounts
         .get_authorization(&context, &owner, authorization.id)

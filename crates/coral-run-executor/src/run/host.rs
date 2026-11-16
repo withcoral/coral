@@ -1,6 +1,8 @@
 //! The Program's host on a Run Executor. It numbers the Program's requests
 //! and sends them on the Run stream. It settles Emissions and Logs itself,
 //! and holds each Invoke, Perform and Complete until its `InvocationResult`.
+//! It keeps every request above the committed watermark, so a reopened
+//! stream gets them again, and the Program never sees the loss.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -10,10 +12,10 @@ use coral_v8::{
     AuthoredLocation, AuthoredSource, ConsoleLevel, PermitFuture, ProgramExecutionControl,
     ProgramOutputHostError, ToolBodyOutcome, ToolCalls, ToolCompletion, ToolFuture, ToolHostError,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
-use crate::link::HeldRun;
+use crate::link::HeldUnit;
 use crate::wire::v1::{
     Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location,
     Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete, finish,
@@ -32,10 +34,12 @@ enum Awaiting {
 pub(super) struct RunHost {
     state: Mutex<State>,
     changed: Condvar,
-    outbound: mpsc::UnboundedSender<RunRequest>,
+    /// Turns true once the Program is told to stop.
+    pub(super) stopping: watch::Sender<bool>,
     control: ProgramExecutionControl,
     value_limits: coral_value::ValueLimits,
     applied_cap_bytes: usize,
+    held_cap: usize,
     #[cfg(test)]
     on_parked: Option<&'static mpsc::UnboundedSender<u64>>,
     /// Each linked Tool's root and path, to its id.
@@ -45,26 +49,82 @@ pub(super) struct RunHost {
 
 #[derive(Default)]
 struct State {
+    /// The open Run stream's side, or `None` while it is lost.
+    sink: Option<mpsc::UnboundedSender<RunRequest>>,
+    /// The package loaded and `Loaded` was sent.
+    loaded: bool,
     /// `Started` arrived.
     started: bool,
     /// `Started`'s CPU budget.
     cpu_budget: Option<Duration>,
-    /// The Program must stop: `Terminate`, a host failure, or the stream's end.
+    /// The Program must stop: `Terminate`, a host failure, the deadline, or
+    /// the stream task's end.
     stopped: bool,
-    /// The Program's output exceeded the Run Output Budget.
-    over_budget: bool,
+    /// How the host ended the Program, when the Run Output Budget or the
+    /// Run's deadline did; the first wins.
+    end: Option<FinishEnd>,
     /// The number of the last request sent.
     last: u64,
     /// The Run Output Budget bytes counted.
     output: usize,
-    /// Each request above the committed watermark, with its weight under
-    /// the Applied cap: its output bytes, which are zero for a request Coral
-    /// answers.
-    unconfirmed: BTreeMap<u64, usize>,
+    /// Each request above the committed watermark, kept for a resend.
+    unconfirmed: BTreeMap<u64, Held>,
     /// The sum of `unconfirmed`'s weights.
     unconfirmed_bytes: usize,
     /// Each request that waits for its `InvocationResult`.
     invocations: HashMap<u64, Awaiting>,
+}
+
+/// One request above the committed watermark.
+struct Held {
+    kind: request::Kind,
+    /// Its weight under the Applied cap: its output bytes, which are zero
+    /// for `Finish` and for a request Coral answers.
+    weight: usize,
+}
+
+/// What answered `Open` on a reopened Run stream.
+pub(super) enum Reconnect {
+    /// The package again: the Run has not started.
+    Package,
+    /// The highest request number committed.
+    Committed(u64),
+}
+
+impl State {
+    /// Sends `message` on the open stream, if there is one. A lost stream's
+    /// requests wait above the watermark for the next.
+    fn transmit(&self, message: run_request::Message) {
+        if let Some(sink) = &self.sink {
+            drop(sink.send(RunRequest {
+                message: Some(message),
+            }));
+        }
+    }
+
+    /// Keeps request `number` above the watermark, and sends it.
+    fn hold(&mut self, number: u64, kind: request::Kind, weight: usize) {
+        self.transmit(numbered(number, kind.clone()));
+        self.unconfirmed_bytes = self.unconfirmed_bytes.saturating_add(weight);
+        self.unconfirmed.insert(number, Held { kind, weight });
+    }
+
+    /// Drops the requests the committed watermark at `number` covers.
+    fn drop_covered(&mut self, number: u64) {
+        let above = self.unconfirmed.split_off(&number.saturating_add(1));
+        let covered: usize = std::mem::replace(&mut self.unconfirmed, above)
+            .values()
+            .map(|held| held.weight)
+            .sum();
+        self.unconfirmed_bytes = self.unconfirmed_bytes.saturating_sub(covered);
+    }
+}
+
+fn numbered(number: u64, kind: request::Kind) -> run_request::Message {
+    run_request::Message::Request(Request {
+        number,
+        kind: Some(kind),
+    })
 }
 
 impl RunHost {
@@ -75,13 +135,19 @@ impl RunHost {
         linked: HashMap<(LinkedToolRoot, String), String>,
         trace_id: Option<String>,
     ) -> Self {
+        let state = State {
+            sink: Some(outbound),
+            ..State::default()
+        };
         Self {
-            state: Mutex::default(),
+            state: Mutex::new(state),
             changed: Condvar::new(),
-            outbound,
+            stopping: watch::Sender::new(false),
             control: ProgramExecutionControl::new(),
             value_limits,
             applied_cap_bytes: limits.applied_cap_bytes,
+            // A cap of zero would hold the first request forever.
+            held_cap: limits.held_cap.max(1),
             #[cfg(test)]
             on_parked: limits.on_parked,
             linked,
@@ -89,46 +155,103 @@ impl RunHost {
         }
     }
 
-    /// Runs `program` on a thread of its own, which loads it into a fresh
-    /// isolate, runs it once `Started` arrives, and sends `Finish`. The
-    /// thread frees `unit` and completes the receiver once it has discarded
-    /// the isolate.
+    /// Runs `program` in an isolate from `isolates`, on that isolate's
+    /// thread, which loads it, runs it once `Started` arrives, and sends
+    /// `Finish`. The thread frees `unit` and completes the receiver once it
+    /// has discarded the isolate.
     pub(super) fn spawn(
         self: &Arc<Self>,
         program: coral_v8::CompiledProgram,
-        isolate: coral_v8::IsolateLimits,
-        unit: HeldRun,
+        isolates: &super::Isolates,
+        unit: HeldUnit,
     ) -> std::io::Result<oneshot::Receiver<()>> {
         let host = self.clone();
         let (exiting, exited) = oneshot::channel();
         // The thread records where its creator does.
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        std::thread::Builder::new()
-            .name("coral-run".to_owned())
-            .spawn(move || {
-                // Dropped last, after the isolate.
-                let _unit = unit;
-                let _exiting = exiting;
-                let _dispatch = tracing::dispatcher::set_default(&dispatch);
-                let executor = coral_v8::ProgramExecutor::new(isolate);
-                let result =
-                    executor.execute_with_host_control(&program, host.clone(), &host.control);
-                host.finish(host.completion(result));
-            })?;
+        #[cfg(test)]
+        let stall = isolates.limits().stall;
+        isolates.run(Box::new(move |isolate| {
+            // Dropped last, after the isolate.
+            let _unit = unit;
+            let _exiting = exiting;
+            let _dispatch = tracing::dispatcher::set_default(&dispatch);
+            let result = isolate.and_then(|isolate| {
+                isolate.execute_with_host_control(&program, host.clone(), &host.control)
+            });
+            #[cfg(test)]
+            if let Some(stall) = stall
+                && host.state().stopped
+            {
+                drop(stall.read());
+            }
+            host.finish(host.completion(result));
+        }))?;
         Ok(exited)
     }
 
-    pub(super) fn started(&self, started: &Started) {
+    /// Lets the Program run. `true` for the first `Started`; a repeat
+    /// changes nothing.
+    pub(super) fn started(&self, started: &Started) -> bool {
         let mut state = self.state();
-        state.started = true;
+        if std::mem::replace(&mut state.started, true) {
+            return false;
+        }
         state.cpu_budget = started.cpu_budget_ms.map(Duration::from_millis);
         drop(state);
         self.changed.notify_all();
+        true
+    }
+
+    /// Moves the Run onto a reopened stream's `sink` once Coral answered
+    /// its `Open`: drops what `Committed` covers, sends `Loaded` again for a
+    /// package already loaded, then resends every request above the
+    /// watermark in order. `false` when a package answers a Run that
+    /// started, which breaks the protocol.
+    pub(super) fn reconnect(
+        &self,
+        sink: mpsc::UnboundedSender<RunRequest>,
+        answer: &Reconnect,
+    ) -> bool {
+        let mut state = self.state();
+        match answer {
+            Reconnect::Package if state.started => return false,
+            // A package still loading sends `Loaded` on this sink itself.
+            Reconnect::Package => {}
+            Reconnect::Committed(number) => state.drop_covered(*number),
+        }
+        state.sink = Some(sink);
+        if matches!(answer, Reconnect::Package) && state.loaded {
+            state.transmit(run_request::Message::Loaded(crate::wire::v1::Loaded {}));
+        }
+        for (number, held) in &state.unconfirmed {
+            state.transmit(numbered(*number, held.kind.clone()));
+        }
+        drop(state);
+        self.changed.notify_all();
+        true
+    }
+
+    /// The stream is lost: the Program's requests wait above the watermark.
+    pub(super) fn detach(&self) {
+        self.state().sink = None;
+    }
+
+    /// Ends a Program still running at the Run's deadline; its `Finish`
+    /// says the deadline was reached.
+    pub(super) fn reach_deadline(&self) {
+        let mut state = self.state();
+        if state.stopped {
+            return;
+        }
+        state.end.get_or_insert(FinishEnd::DeadlineReached);
+        drop(state);
+        self.stop();
     }
 
     /// Settles the request `result` answers, and counts its bytes against
     /// the Run Output Budget. `false` when it breaks the protocol: no
-    /// outcome, no request waits for it while the Program runs, a permit for
+    /// outcome, an answer to a request never sent, a permit for
     /// an Invoke or a Complete, or a value or an Upstream Outcome for a
     /// Perform.
     pub(super) fn invocation_result(&self, result: InvocationResult) -> bool {
@@ -171,7 +294,10 @@ impl RunHost {
         };
         let mut state = self.state();
         let Some(awaiting) = state.invocations.remove(&result.number) else {
-            return state.stopped;
+            // Coral may answer a request again after a reconnect, committed
+            // or not, and a stop drops every waiter; the first answer, or the
+            // stop, settled it.
+            return (1..=state.last).contains(&result.number);
         };
         let reply = match (awaiting, answer) {
             // Answers of the wrong kind. A Perform dispatches nothing, so no
@@ -188,7 +314,9 @@ impl RunHost {
         let bytes = usize::try_from(result.bytes).unwrap_or(usize::MAX);
         let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
-        state.over_budget |= over_budget;
+        if over_budget {
+            state.end.get_or_insert(FinishEnd::OutputBudget);
+        }
         drop(state);
         // Output over the budget ends the Run whatever the answer was.
         let stops = over_budget
@@ -215,13 +343,7 @@ impl RunHost {
     /// Drops what the committed watermark at `number` covers, which may let
     /// the Program's next request go.
     pub(super) fn committed(&self, number: u64) {
-        let mut state = self.state();
-        let above = state.unconfirmed.split_off(&number.saturating_add(1));
-        let covered: usize = std::mem::replace(&mut state.unconfirmed, above)
-            .values()
-            .sum();
-        state.unconfirmed_bytes = state.unconfirmed_bytes.saturating_sub(covered);
-        drop(state);
+        self.state().drop_covered(number);
         self.changed.notify_all();
     }
 
@@ -233,23 +355,24 @@ impl RunHost {
         drop(state);
         self.changed.notify_all();
         let _installed = self.control.terminate();
+        self.stopping.send_replace(true);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Numbers and sends one of the Program's requests once no more than the
-    /// Applied cap is above the committed watermark, and counts its output
-    /// `bytes` against the Run Output Budget and the Applied cap. Its number,
-    /// or `None` when the Program must stop instead.
+    /// Numbers and sends one of the Program's requests once the caps let it
+    /// go, and counts its output `bytes` against the Run Output Budget and
+    /// the Applied cap. Its number, or `None` when the Program must stop
+    /// instead.
     fn send(&self, kind: request::Kind, bytes: usize, awaiting: Option<Awaiting>) -> Option<u64> {
-        let mut state = self.below_applied_cap();
+        let mut state = self.below_caps();
         if state.stopped {
             return None;
         }
         if !self.fits(&state, bytes) {
-            state.over_budget = true;
+            state.end.get_or_insert(FinishEnd::OutputBudget);
             drop(state);
             self.stop();
             return None;
@@ -257,12 +380,10 @@ impl RunHost {
         state.output = state.output.saturating_add(bytes);
         let number = state.last.saturating_add(1);
         state.last = number;
-        state.unconfirmed.insert(number, bytes);
-        state.unconfirmed_bytes = state.unconfirmed_bytes.saturating_add(bytes);
         if let Some(awaiting) = awaiting {
             state.invocations.insert(number, awaiting);
         }
-        self.transmit(number, kind);
+        state.hold(number, kind, bytes);
         Some(number)
     }
 
@@ -324,13 +445,15 @@ impl RunHost {
         })
     }
 
-    /// The state once no more than the Applied cap is above the committed
-    /// watermark, or the Program stopped.
-    fn below_applied_cap(&self) -> MutexGuard<'_, State> {
+    /// The state once no more than the Applied cap and fewer than the held
+    /// cap's requests are above the committed watermark, or the Program
+    /// stopped.
+    fn below_caps(&self) -> MutexGuard<'_, State> {
         #[cfg(test)]
         let told = std::cell::Cell::new(false);
         self.wait_until(|state| {
-            let below = state.unconfirmed_bytes <= self.applied_cap_bytes;
+            let below = state.unconfirmed_bytes <= self.applied_cap_bytes
+                && state.unconfirmed.len() < self.held_cap;
             #[cfg(test)]
             if !below && !state.stopped && !told.replace(true) {
                 self.tell_parked(state);
@@ -351,8 +474,8 @@ impl RunHost {
         state
     }
 
-    /// Tells a test the number of the request that parks on the Applied cap,
-    /// before it waits.
+    /// Tells a test the number of the request that parks on a cap, before
+    /// it waits.
     #[cfg(test)]
     fn tell_parked(&self, state: &State) {
         if let Some(on_parked) = self.on_parked {
@@ -366,12 +489,12 @@ impl RunHost {
         state.output.saturating_add(bytes) <= self.value_limits.run_output_bytes()
     }
 
-    /// Numbers and sends `Finish` once the Applied cap lets it go, or at once
-    /// when the Program stopped. A Final Value counts against the Run Output
-    /// Budget too: one that does not fit ends the Run with the output-budget
-    /// end. Nothing is counted after it.
+    /// Numbers and sends `Finish` once the caps let it go, or at once when
+    /// the Program stopped, and keeps it until committed. A Final Value
+    /// counts against the Run Output Budget too: one that does not fit ends
+    /// the Run with the output-budget end. Nothing is counted after it.
     fn finish(&self, completion: finish::Completion) {
-        let mut state = self.below_applied_cap();
+        let mut state = self.below_caps();
         let completion = match completion {
             finish::Completion::ValueJson(json) if !self.fits(&state, json.len()) => {
                 finish::Completion::End(FinishEnd::OutputBudget.into())
@@ -382,19 +505,8 @@ impl RunHost {
         let finish = Finish {
             completion: Some(completion),
         };
-        self.transmit(state.last, request::Kind::Finish(finish));
-    }
-
-    /// Sends request `number`. A closed stream stops the Program, so a
-    /// failed send needs no answer here.
-    fn transmit(&self, number: u64, kind: request::Kind) {
-        let request = RunRequest {
-            message: Some(run_request::Message::Request(Request {
-                number,
-                kind: Some(kind),
-            })),
-        };
-        drop(self.outbound.send(request));
+        let number = state.last;
+        state.hold(number, request::Kind::Finish(finish), 0);
     }
 
     /// Names the snapshot of a linked Tool's call site, as Coral does. A
@@ -445,10 +557,9 @@ impl RunHost {
                 .map_or_else(|| end(FinishEnd::Absent), finish::Completion::ValueJson),
             Err(coral_v8::Error::MemoryLimitExceeded) => end(FinishEnd::MemoryLimit),
             Err(coral_v8::Error::CpuLimitExceeded) => end(FinishEnd::CpuBudget),
-            Err(coral_v8::Error::ProgramHostTerminated) if self.state().over_budget => {
-                end(FinishEnd::OutputBudget)
+            Err(coral_v8::Error::ProgramHostTerminated) => {
+                end(self.state().end.unwrap_or(FinishEnd::HostTerminated))
             }
-            Err(coral_v8::Error::ProgramHostTerminated) => end(FinishEnd::HostTerminated),
             Err(coral_v8::Error::ResourceLimitExceeded) => failure(
                 "resource_limit_exceeded",
                 "Program output exceeds its limit".to_owned(),
@@ -486,9 +597,10 @@ impl coral_v8::ProgramHost for RunHost {
     }
 
     fn start(&self) -> bool {
-        drop(self.outbound.send(RunRequest {
-            message: Some(run_request::Message::Loaded(crate::wire::v1::Loaded {})),
-        }));
+        let mut state = self.state();
+        state.loaded = true;
+        state.transmit(run_request::Message::Loaded(crate::wire::v1::Loaded {}));
+        drop(state);
         !self.wait_until(|state| state.started).stopped
     }
 

@@ -427,7 +427,7 @@ pub(super) fn application_input(
         Ok(wire::OAuthPkcePolicy::Unspecified) => coral_catalog::OAuthPkcePolicy::default(),
         Ok(wire::OAuthPkcePolicy::S256) => coral_catalog::OAuthPkcePolicy::S256,
         Ok(wire::OAuthPkcePolicy::Disabled) => coral_catalog::OAuthPkcePolicy::Disabled,
-        Err(_) => return Err(super::invalid("unknown PKCE policy")),
+        Err(_) => return Err(super::invalid()),
     };
     match application.mode {
         Some(wire::o_auth_application::Mode::ClientId(id)) => {
@@ -452,9 +452,7 @@ pub(super) fn application_input(
             )
             .map_err(super::error)
         }
-        _ => Err(super::invalid(
-            "automatic clients require public authentication and S256",
-        )),
+        _ => Err(super::invalid()),
     }
 }
 
@@ -464,7 +462,7 @@ fn client_secret_input(
     (!value.secret.is_empty())
         .then(|| coral_credentials::Secret::new(value.secret))
         .transpose()
-        .map_err(|_error| super::invalid("invalid client secret"))
+        .map_err(|_error| super::invalid())
 }
 
 fn scope_format(value: i32) -> Result<coral_catalog::OAuthScopeFormat, Status> {

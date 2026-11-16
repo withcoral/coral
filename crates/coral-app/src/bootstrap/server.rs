@@ -31,6 +31,11 @@ use coral_telemetry::safe;
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 
+/// How long shutdown waits for the private gRPC and Run Executor listeners to
+/// close their connections. An open stream ends on the stop signal, so only
+/// a request still in flight, or a client that does not read, lasts this long.
+const SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How often bootstrap sweeps `provider_device_jobs` for leases whose worker
 /// has gone away. The provider sets how often a flow polls it, anywhere from
 /// one second to an hour, so a lost flow resumes up to this long after its
@@ -616,6 +621,7 @@ pub struct RunningServer {
     /// The expired-lease sweep, one of `passes`: it stops before the Run
     /// drain, and the others after.
     run_recovery: AbortHandle,
+    search: coral_search::UniversalSearchModule,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
     search_model: Option<SearchModel>,
@@ -689,11 +695,13 @@ impl RunningServer {
         let _finished = task_finished.wait_for(|finished| *finished).await;
     }
 
-    /// Shuts the server down and waits for the background task to finish.
+    /// Shuts the server down and waits for the background task to finish,
+    /// for the shutdown grace period at most.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the server task fails while shutting down.
+    /// Returns [`AppError`] if the server task fails while shutting down, or
+    /// if a connection is still open when the grace period ends.
     pub async fn shutdown(self) -> Result<(), AppError> {
         self.shutdown_inner().await
     }
@@ -745,12 +753,26 @@ impl RunningServer {
 
         let task = self.task.lock().expect("task mutex poisoned").take();
         match task {
-            Some(task) => match task.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(AppError::from(error)),
-                Err(error) => Err(AppError::from(error)),
-            },
+            Some(task) => join_listeners(task).await,
             None => Ok(()),
+        }
+    }
+}
+
+/// Joins the listener task, which ends once every connection has closed. A
+/// connection still open after [`SHUTDOWN_GRACE_PERIOD`] holds shutdown no
+/// longer: the task is aborted.
+async fn join_listeners(
+    mut task: JoinHandle<Result<(), tonic::transport::Error>>,
+) -> Result<(), AppError> {
+    match tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, &mut task).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(AppError::from(error)),
+        Ok(Err(error)) => Err(AppError::from(error)),
+        Err(_elapsed) => {
+            task.abort();
+            drop(task.await);
+            Err(AppError::ShutdownTimedOut)
         }
     }
 }
@@ -774,6 +796,15 @@ impl RunningServer {
     #[must_use]
     pub fn search_index(&self) -> coral_search::SearchIndex {
         self.search_index.clone()
+    }
+
+    /// Shares the process's one search module with companion runtime
+    /// composition, so every surface's search uses the Embedder's model.
+    /// A query is embedded only on Postgres, while semantic search is on and
+    /// the model has loaded.
+    #[must_use]
+    pub fn search(&self) -> coral_search::UniversalSearchModule {
+        self.search.clone()
     }
 
     /// The state of the search model's files. `None` when `[search]
@@ -956,13 +987,12 @@ pub(crate) async fn start_server(
     // reconcile task's first pass runs in the background, so neither boot nor
     // a request waits for it.
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
-    // Only Postgres keeps vectors yet, so only there does the Embedder need
-    // the model in memory. Every clone of the index is made after this, so
-    // each write wakes the Embedder; the model fills the slot once the
-    // delivery below finds the files.
-    let embedder_model = (search_model.is_some()
-        && database.system() == coral_db::DatabaseSystem::Postgres)
-        .then(|| watch::channel(None));
+    // Every clone of the index is made after this, so each write wakes the
+    // Embedder; the model fills the slot once the delivery below finds the
+    // files.
+    let embedder_model = search_model
+        .is_some()
+        .then(|| watch::channel(coral_search::ModelLoad::Pending));
     let search_index = match &embedder_model {
         Some((_, model)) => search_index.with_embedder(model.clone()),
         None => search_index,
@@ -1027,7 +1057,8 @@ pub(crate) async fn start_server(
         None => None,
     };
     // Program Admission and Private Tool save share one compiler client:
-    // the Run Executors' pull streams, or a warm compiler in this process
+    // the Run Executors' pull streams, relayed through the database to any
+    // Coral Instance with room when none has room, or a warm compiler in this process
     // for a test that starts Coral in its own process.
     let compiler: Arc<dyn coral_run_executor::CompilerClient> = if compile_in_process {
         Arc::new(
@@ -1038,10 +1069,15 @@ pub(crate) async fn start_server(
             )?,
         )
     } else {
-        Arc::new(coral_run_executor::PullStreamCompiler::new(
-            run_executors.1.streams(),
-            local_run_executors.clone(),
-        ))
+        Arc::new(run_executors.1.compiler(local_run_executors.clone()))
+    };
+    // The one search module of the process: Runs, gRPC and MCP share it. Its
+    // engine embeds queries with the Embedder's model, so a query waits for at
+    // most the one document the Embedder runs.
+    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
+    let search = match &embedder_model {
+        Some((_, model)) => search.with_model(model.clone()),
+        None => search,
     };
     // updateProvider renames through the same workflow as Reef.
     let mut runs = coral_run::RunModule::with_compiler_client(
@@ -1055,7 +1091,8 @@ pub(crate) async fn start_server(
         coral_run::RunInbox::table(database.clone()),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-    .with_provider_renamer(Arc::new(provider_workflow.clone()));
+    .with_provider_renamer(Arc::new(provider_workflow.clone()))
+    .with_search(search.clone());
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }
@@ -1074,8 +1111,9 @@ pub(crate) async fn start_server(
         compiler.clone(),
         runtime_limits.compilation_timeout(),
     );
-    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
+    // One stop signal for both listeners and the streams they serve.
+    let (stop, stopping) = watch::channel(false);
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
             organization: coral_workspace::OrganizationModule::new(database.clone()),
@@ -1086,7 +1124,7 @@ pub(crate) async fn start_server(
                 search.clone(),
                 search_index.clone(),
             ),
-            provider_readiness: search,
+            provider_readiness: search.clone(),
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             access_lifecycle: coral_administration::AccessLifecycleModule::new(
                 database.clone(),
@@ -1119,6 +1157,7 @@ pub(crate) async fn start_server(
             authentication,
             mcp_origin: mcp_origin.clone(),
             readiness: readiness.probe(),
+            stopping: stopping.clone(),
         },
     );
 
@@ -1145,6 +1184,7 @@ pub(crate) async fn start_server(
             listener,
             run_executors,
             shutdown_rx,
+            (stop, stopping),
             routes,
             task_finished_tx,
         ),
@@ -1212,6 +1252,7 @@ pub(crate) async fn start_server(
         readiness,
         passes,
         run_recovery,
+        search,
         search_index,
         search_reconcile,
         search_model,
@@ -1259,18 +1300,19 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<(), &'stati
 }
 
 /// Serves the private gRPC listener and the Run Executor listener until
-/// shutdown, or until either fails.
+/// shutdown, or until either fails. Shutdown sets `stop`, which `routes`
+/// observes too; dropping the task drops `stop`, which reads the same.
 fn start_grpc_server(
     listener: TcpListener,
     (run_executor_listener, link): (TcpListener, coral_run_executor::LinkServer),
     shutdown_rx: oneshot::Receiver<()>,
+    (stop, stopping): (watch::Sender<bool>, watch::Receiver<bool>),
     routes: Routes,
     task_finished: watch::Sender<bool>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     // `Server::tcp_nodelay` is ignored for a stream that the caller supplies.
     let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
     tokio::spawn(async move {
-        let (stop, stopping) = watch::channel(false);
         let stopped = |mut stopping: watch::Receiver<bool>| async move {
             drop(stopping.wait_for(|stopping| *stopping).await);
         };
@@ -1296,7 +1338,31 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::ServerBuilder;
+    use super::{AppError, SHUTDOWN_GRACE_PERIOD, ServerBuilder, join_listeners};
+
+    /// A connection that stays open does not hold the process up: the join
+    /// gives up at the grace period and aborts the listener task.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_aborts_a_listener_task_still_open_after_the_grace_period() {
+        // Dropped when the task ends, however it ends.
+        let (held, released) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _held = held;
+            std::future::pending::<Result<(), tonic::transport::Error>>().await
+        });
+        let started = tokio::time::Instant::now();
+
+        let joined = join_listeners(task).await;
+
+        assert!(
+            matches!(joined, Err(AppError::ShutdownTimedOut)),
+            "{joined:?}"
+        );
+        assert_eq!(started.elapsed(), SHUTDOWN_GRACE_PERIOD);
+        released
+            .await
+            .expect_err("the aborted task dropped what it held");
+    }
 
     #[tokio::test]
     async fn the_search_reconcile_task_runs_beside_the_server_until_shutdown() {

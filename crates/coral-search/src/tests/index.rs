@@ -20,7 +20,8 @@ use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, eventually, organization_user, wait_for_observation};
+use crate::index::WritePoint;
 use crate::indexer::INDEXER_REVISION;
 use crate::indexer::tools::ToolIndexer;
 use crate::{SearchIndex, SearchQuery, SearchRequest};
@@ -32,6 +33,12 @@ const INJECTED_FAULT: &str = "injected index fault";
 /// The reconcile interval of the tests' index: long enough that a `failed`
 /// state a test just wrote is newer than it.
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
+
+/// The writer wait limit and the write limit of a test that probes its
+/// writes. The probe's clock passes them, and only when the test advances
+/// it. The real clock still bounds the other work of the index by this
+/// limit, so it is long.
+const LIMIT: std::time::Duration = std::time::Duration::from_hours(1);
 
 #[tokio::test]
 async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retries() {
@@ -379,13 +386,16 @@ async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
     tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
         .await
         .expect("row work starts");
-    // Any snapshot taken before the hold is now too old to satisfy this.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // A sample younger than the hold was read while the hold kept the row
+    // work. The hold's age is read first, so a sample cannot pass for
+    // younger than it is.
+    let entered = std::time::Instant::now();
     let fresh = eventually(std::time::Duration::from_secs(2), async || {
+        let held_for = entered.elapsed().as_secs_f64();
         metrics
             .values("coral.search.index.backlog.sample.age")
             .iter()
-            .any(|age| *age < 0.15)
+            .any(|age| *age < held_for)
     })
     .await;
     drop(hold);
@@ -534,26 +544,6 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
             .is_empty(),
         "a stopped observer must not keep publishing its last snapshot"
     );
-}
-
-async fn wait_for_observation(ready: impl Fn() -> bool) {
-    assert!(
-        eventually(std::time::Duration::from_secs(5), async || ready()).await,
-        "background backlog observation converges"
-    );
-}
-
-/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
-/// whether it held: what a background write or observation leaves shows a
-/// moment after the call that starts it returns.
-async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
-    tokio::time::timeout(limit, async {
-        while !ready().await {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .is_ok()
 }
 
 #[tokio::test]
@@ -815,13 +805,13 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
         let entries = world.stored_entries(&world.tracer).await;
-        let stalled = world
-            .index
-            .clone()
-            .with_write_limit(std::time::Duration::from_millis(100))
-            .with_stall_after_lock(std::time::Duration::from_hours(1));
+        let mut stalled = world.index.clone().with_write_limit(LIMIT);
+        let probe = stalled.probe_writes();
+        probe.hold_at(WritePoint::HoldsLock);
 
         notify(&stalled, &entries);
+        probe.reached(1, WritePoint::HoldsLock).await;
+        probe.advance(LIMIT);
         stalled.settled().await;
         let [state] = world.states().await.try_into().expect("one state row");
         assert_eq!(state.state, "failed");
@@ -864,10 +854,8 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
-    let index = world
-        .index
-        .clone()
-        .with_write_limit(std::time::Duration::from_secs(1));
+    let mut index = world.index.clone().with_write_limit(LIMIT);
+    let probe = index.probe_writes();
     let database = world.modules.search.database.clone();
 
     // SQLite's writer, or Postgres's lock on the Workspace's index writes.
@@ -876,12 +864,11 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
         .await
         .expect("hold the Workspace's index lock");
     notify(&index, &entries);
-    // Released half a limit after the write gives up, so the failure records
-    // its state within its own limit, with room on both sides.
-    tokio::join!(index.settled(), async {
-        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
-        blocker.rollback().await.expect("release the writer");
-    });
+    probe.reached(1, WritePoint::WaitingForWriter).await;
+    probe.advance(LIMIT);
+    // The write has given up. Its failure records once the writer is free.
+    blocker.rollback().await.expect("release the writer");
+    index.settled().await;
 
     let [state] = world.states().await.try_into().expect("one state row");
     assert_eq!(state.state, "failed");
@@ -895,26 +882,27 @@ async fn another_write_can_take_the_writer_while_a_write_builds_its_rows() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
-    // The pause stands in for a slow row build.
-    let index = world
-        .index
-        .clone()
-        .with_stall_before_write(std::time::Duration::from_secs(2));
+    let mut index = world.index.clone();
+    let probe = index.probe_writes();
+    // The hold stands in for a slow row build.
+    probe.hold_at(WritePoint::BuiltRows);
     let database = world.modules.search.database.clone();
 
     notify(&index, &entries);
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    probe.reached(1, WritePoint::BuiltRows).await;
     // SQLite's writer, or Postgres's lock on the Workspace's index writes.
-    let probe = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-        let mut probe = database.begin().await.expect("begin the probe");
-        crate::indexer::lock_workspace(&mut probe, &world.workspace)
+    // The limit is a liveness bound: a writer that is not free never comes.
+    let other = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut other = database.begin().await.expect("begin the other write");
+        crate::indexer::lock_workspace(&mut other, &world.workspace)
             .await
             .expect("take the Workspace's index lock");
-        probe
+        other
     })
     .await
     .expect("the writer is free while the rows build");
-    probe.rollback().await.expect("release the writer");
+    other.rollback().await.expect("release the writer");
+    probe.release();
     index.settled().await;
 
     assert_eq!(
@@ -932,13 +920,9 @@ async fn a_write_that_waited_for_the_writer_still_has_its_whole_limit() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
-    // The wait and the write each take 60% of the limit: together they run
-    // past it, each alone stays within it.
-    let index = world
-        .index
-        .clone()
-        .with_write_limit(std::time::Duration::from_secs(2))
-        .with_stall_after_lock(std::time::Duration::from_millis(1_200));
+    let mut index = world.index.clone().with_write_limit(LIMIT);
+    let probe = index.probe_writes();
+    probe.hold_at(WritePoint::HoldsLock);
     let database = world.modules.search.database.clone();
 
     let mut blocker = database.begin().await.expect("hold the writer");
@@ -946,10 +930,15 @@ async fn a_write_that_waited_for_the_writer_still_has_its_whole_limit() {
         .await
         .expect("hold the Workspace's index lock");
     notify(&index, &entries);
-    tokio::join!(index.settled(), async {
-        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-        blocker.rollback().await.expect("release the writer");
-    });
+    // The wait and the write each take 60% of the limit: together they run
+    // past it, each alone stays within it.
+    probe.reached(1, WritePoint::WaitingForWriter).await;
+    probe.advance(LIMIT * 3 / 5);
+    blocker.rollback().await.expect("release the writer");
+    probe.reached(1, WritePoint::HoldsLock).await;
+    probe.advance(LIMIT * 3 / 5);
+    probe.release();
+    index.settled().await;
 
     assert_eq!(
         world.states().await,
@@ -1247,18 +1236,17 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
-    world
-        .modules
-        .save_private_tool(
-            &principal,
-            &world.workspace,
-            "internal.summarizeTides",
-            "Summarize the tides",
-            60,
-        )
-        .await;
+    for (path, description, at) in [
+        ("internal.summarizeTides", "Summarize the tides", 60),
+        ("internal.tideTables", "Tables of the tides", 65),
+    ] {
+        world
+            .modules
+            .save_private_tool(&principal, &world.workspace, path, description, at)
+            .await;
+    }
     world.index.reconcile().await;
-    let hits = async || {
+    let search = async || {
         world
             .modules
             .search
@@ -1269,10 +1257,8 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
             )
             .await
             .expect("search the Workspace")
-            .hits()
-            .len()
     };
-    assert_eq!(hits().await, 1);
+    assert_eq!(search().await.hits().len(), 2);
 
     world
         .modules
@@ -1281,12 +1267,28 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
 
     assert_eq!(
         world.private_tool_rows().await,
-        1,
+        2,
         "the row outlives the function"
     );
-    assert_eq!(hits().await, 0);
+    let page = search().await;
+    assert_eq!(
+        page.hits()
+            .iter()
+            .map(|hit| hit.call_path().as_str())
+            .collect::<Vec<_>>(),
+        ["coral.private.internal.tideTables"]
+    );
+    // The row of the deleted Tool takes no place in the ranked list, so the
+    // retriever does not fail on it.
+    assert_eq!(
+        page.retriever_statuses()
+            .iter()
+            .find(|status| status.retriever() == crate::EntityKind::PrivateTool)
+            .map(crate::RetrieverStatus::state),
+        Some(crate::RetrieverState::ResultsFound)
+    );
     world.index.reconcile().await;
-    assert_eq!(world.private_tool_rows().await, 0);
+    assert_eq!(world.private_tool_rows().await, 1);
 }
 
 #[tokio::test]
@@ -2549,11 +2551,15 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
-    let index = world
-        .index
-        .clone()
-        .with_write_limit(std::time::Duration::from_millis(200));
+    let mut index = world.index.clone().with_write_limit(LIMIT);
+    let probe = index.probe_writes();
     let database = world.modules.search.database.clone();
+    // SQLite's writer stalls the write before the Workspace's lock;
+    // Postgres's table lock stalls it after.
+    let (stalled_at, expected) = match database.system() {
+        DatabaseSystem::Sqlite => (WritePoint::WaitingForWriter, "\"writer_busy\""),
+        DatabaseSystem::Postgres => (WritePoint::HoldsLock, "\"overran\""),
+    };
 
     let logs = CapturedLogs::default();
     let mut blocker = database.begin().await.expect("hold the writer");
@@ -2572,8 +2578,11 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
         );
         notify(&index, &entries);
     }
-    index.settled().await;
+    probe.reached(1, stalled_at).await;
+    probe.advance(LIMIT);
+    // The write has given up. Its failure records once the writer is free.
     blocker.rollback().await.expect("release the writer");
+    index.settled().await;
 
     assert_eq!(world.tool_rows().await, [] as [ToolRow; 0]);
     let first = logs
@@ -2581,12 +2590,6 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
         .into_iter()
         .find(|event| event.level == tracing::Level::ERROR)
         .expect("the stalled write is logged");
-    // SQLite's writer stalls the write before the Workspace's lock;
-    // Postgres's table lock stalls it after.
-    let expected = match database.system() {
-        DatabaseSystem::Sqlite => "\"writer_busy\"",
-        DatabaseSystem::Postgres => "\"overran\"",
-    };
     assert_eq!(
         first.fields.get("error.type").map(String::as_str),
         Some(expected),
@@ -2618,23 +2621,26 @@ async fn a_failure_waits_for_a_busy_writer_to_record_its_state() {
         return;
     }
     let entries = world.stored_entries(&world.tracer).await;
+    // The write waits this long before it fails as busy. The handle also
+    // opens its writer within this wait, so it leaves room for a loaded host.
     let database = Arc::new(
         world
             .modules
             .fixture
-            .connect_peer_with_writer_wait(std::time::Duration::from_millis(50))
+            .connect_peer_with_writer_wait(std::time::Duration::from_secs(1))
             .await
             .expect("open a handle with a short writer wait"),
     );
-    let index = SearchIndex::new(database.clone(), RECONCILE_INTERVAL)
-        .with_write_limit(std::time::Duration::from_secs(1));
+    let mut index = SearchIndex::new(database.clone(), RECONCILE_INTERVAL);
+    let probe = index.probe_writes();
 
     let blocker = database.begin().await.expect("hold the writer");
     notify(&index, &entries);
-    tokio::join!(index.settled(), async {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        blocker.rollback().await.expect("release the writer");
-    });
+    // The write found the writer busy and failed. Only then is the writer
+    // free for the failure's record.
+    probe.reached(1, WritePoint::Ended).await;
+    blocker.rollback().await.expect("release the writer");
+    index.settled().await;
 
     let [state] = world.states().await.try_into().expect("one state row");
     assert_eq!(

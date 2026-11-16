@@ -7,7 +7,7 @@ pub(super) fn member_id(name: &str) -> Result<UserId, Status> {
     let user = name
         .strip_prefix("organizationMemberships/")
         .filter(|id| !id.contains('/'))
-        .ok_or_else(|| invalid("invalid Organization Membership name"))?;
+        .ok_or_else(invalid)?;
     UserId::parse(user).map_err(error)
 }
 
@@ -92,7 +92,7 @@ impl wire::organization_membership_service_server::OrganizationMembershipService
             .parse::<u64>()
             .ok()
             .filter(|revision| *revision > 0)
-            .ok_or_else(|| invalid("current Organization Membership etag required"))?;
+            .ok_or_else(invalid)?;
         self.access_lifecycle
             .remove_organization_member(&change(actor)?, &user, revision, transfer_to.as_ref())
             .await

@@ -28,6 +28,26 @@ use std::time::Duration;
 /// two-second Program Authoring Limit; deadline tests set a short one.
 pub const TEST_COMPILATION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a test waits for something that must happen before it gives up:
+/// a bound on liveness, never on an order. A wait returns as soon as its
+/// condition holds, so only a broken test waits this long, and a starved
+/// runner still passes. A test whose subject is a duration sets its own.
+pub const EVENTUALLY: Duration = Duration::from_secs(60);
+
+/// The system clock as Unix nanoseconds, for a test whose subject reads the
+/// system clock itself, such as a server that authenticates a token the test
+/// issues. A test that passes its subject the time uses a fixed one instead.
+///
+/// # Panics
+/// Panics when the system clock is before the Unix epoch.
+#[must_use]
+pub fn now_unix_nanos() -> i64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock");
+    i64::try_from(elapsed.as_nanos()).expect("Unix nanoseconds")
+}
+
 pub use coral_credentials::CredentialValues as FixtureCredentialValues;
 pub use coral_credentials::Secret as FixtureSecret;
 pub use coral_db::DatabaseSystem;

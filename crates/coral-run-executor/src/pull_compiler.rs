@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use coral_v8::{
@@ -11,6 +12,8 @@ use coral_v8::{
 
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::compiler::STOPPED;
+use crate::relay::{CompileRelay, Probed};
+use crate::time::millis;
 use crate::wire::v1::compile::Call;
 use crate::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, LocalRunExecutors, PullStreams,
@@ -39,8 +42,11 @@ const TOO_LARGE: &str = "The source and the declarations of the custom tools it 
 /// and waits for its `Compiled` within the call's time left.
 ///
 /// [`PullStreams`] numbers each call, spends its unit of room, and reads
-/// each answer back. A call fails as a stopped compiler when its stream
-/// ends first, and as rejected when it is too large to send.
+/// each answer back. A call whose stream ends first is routed once more,
+/// since a compile changes nothing, while it has more time left than
+/// `ROOM_WAIT_RESERVE`. It fails as a stopped compiler when no other stream
+/// takes it then, or when that stream ends first or runs out of time too,
+/// and as rejected when it is too large to send.
 #[derive(Clone)]
 pub struct PullStreamCompiler {
     streams: PullStreams,
@@ -79,9 +85,27 @@ enum Target {
     /// has no room. Only tests send to one stream alone.
     #[cfg(any(test, feature = "test-support"))]
     Stream(StreamId),
-    /// Each call goes to the stream with the most room, and waits for one
-    /// when none has room, asking the local children for room.
-    MostRoom { children: Option<LocalRunExecutors> },
+    /// Each call goes to the stream with the most room. When none has
+    /// room, it goes through `relay` to any Coral Instance with room, or
+    /// without one waits for room here; both ask the local children for
+    /// room.
+    MostRoom {
+        children: Option<LocalRunExecutors>,
+        relay: Option<CompileRelay>,
+    },
+}
+
+/// Where a call goes.
+enum Route<'a> {
+    Stream(StreamId),
+    Relay(&'a CompileRelay, Option<&'a LocalRunExecutors>),
+}
+
+/// Where a call went: to a stream, whose answer is to come, or through the
+/// relay, which answered.
+enum Routed {
+    Stream(oneshot::Receiver<Read>),
+    Relayed(Read),
 }
 
 impl fmt::Debug for PullStreamCompiler {
@@ -101,15 +125,37 @@ impl fmt::Debug for PullStreamCompiler {
 impl PullStreamCompiler {
     /// The client that sends each call to the stream in `streams` with the
     /// most room, ties at random. With no room, [`CompilerClient::ready`]
-    /// waits up to [`COMPILE_WAIT`] and a call waits within its time left,
-    /// less [`ROOM_WAIT_RESERVE`]; both ask `children`, when there are
+    /// waits up to `COMPILE_WAIT` and a call waits within its time left,
+    /// less `ROOM_WAIT_RESERVE`; both ask `children`, when there are
     /// local children, for room. A call no stream took fails as
-    /// [`Unavailable::NoCompiler`].
+    /// [`Unavailable::NoCompiler`], or as [`Unavailable::Stopped`] once its
+    /// stream ended first.
     #[must_use]
     pub const fn new(streams: PullStreams, children: Option<LocalRunExecutors>) -> Self {
         Self {
             streams,
-            target: Target::MostRoom { children },
+            target: Target::MostRoom {
+                children,
+                relay: None,
+            },
+            held: None,
+        }
+    }
+
+    /// [`Self::new`], relaying a call that finds no stream with room
+    /// through the database. [`CompilerClient::ready`] then waits up to
+    /// [`COMPILE_WAIT`] for room on any Coral Instance.
+    pub(crate) const fn relayed(
+        streams: PullStreams,
+        children: Option<LocalRunExecutors>,
+        relay: CompileRelay,
+    ) -> Self {
+        Self {
+            streams,
+            target: Target::MostRoom {
+                children,
+                relay: Some(relay),
+            },
             held: None,
         }
     }
@@ -125,18 +171,22 @@ impl PullStreamCompiler {
         }
     }
 
-    /// The stream with the most room, once one has room, or none at
-    /// `until`. Each look that finds none asks the local children for room
-    /// again, then waits for room, holding no thread.
-    async fn room(&self, until: Instant) -> Option<StreamId> {
-        let children = match &self.target {
+    /// The stream with the most room, the relay when none has room, or,
+    /// with no relay, the stream with the most room once one has room, or
+    /// none at `until`. Each look that finds none asks the local children
+    /// for room again, then waits for room, holding no thread.
+    async fn route(&self, until: Instant) -> Option<Route<'_>> {
+        let (children, relay) = match &self.target {
             #[cfg(any(test, feature = "test-support"))]
-            Target::Stream(stream) => return Some(*stream),
-            Target::MostRoom { children } => children.as_ref(),
+            Target::Stream(stream) => return Some(Route::Stream(*stream)),
+            Target::MostRoom { children, relay } => (children.as_ref(), relay.as_ref()),
         };
         loop {
             if let Some(stream) = self.streams.most_room() {
-                return Some(stream);
+                return Some(Route::Stream(stream));
+            }
+            if let Some(relay) = relay {
+                return Some(Route::Relay(relay, children));
             }
             if let Some(children) = children {
                 children.request_room();
@@ -160,7 +210,6 @@ impl PullStreamCompiler {
     ) -> Result<Read, CompileError> {
         let until = called + time_left;
         let left = || until.saturating_duration_since(Instant::now());
-        let millis = |left: Duration| u32::try_from(left.as_millis()).unwrap_or(u32::MAX);
         if left().is_zero() {
             return Err(CompileError::TimedOut);
         }
@@ -174,55 +223,110 @@ impl PullStreamCompiler {
         }
         // The first call spends the unit `ready` held for it, unless its
         // stream is ending: then it looks for room as any call does.
-        let on_held = self
+        let mut on_held = self
             .held
             .as_ref()
             .and_then(|held| held.take())
             .and_then(|stream| {
-                let sent = self
-                    .streams
-                    .compile_held(stream, millis(left()), call.clone());
-                if sent.is_err() {
-                    self.streams.let_go(stream);
-                }
-                sent.ok()
+                self.streams
+                    .compile_held(stream, millis(left()), call.clone())
+                    .ok()
             });
-        let answer = if let Some(answer) = on_held {
-            answer
-        } else {
-            // A call no stream took was not judged: it fails as no compiler,
-            // never as a compile timeout.
-            let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
-            let room_until = called + time_left.saturating_sub(ROOM_WAIT_RESERVE);
-            loop {
-                let stream = self.room(room_until).await.ok_or_else(no_compiler)?;
-                let left = left();
-                if left.is_zero() {
-                    return Err(no_compiler());
-                }
-                match self.streams.compile(stream, millis(left), call.clone()) {
-                    Ok(answer) => break answer,
-                    // Another call took the room first: look again.
-                    Err(Refused::NoRoom | Refused::Closed)
-                        if matches!(self.target, Target::MostRoom { .. }) => {}
-                    Err(Refused::NoRoom) => {
-                        return Err(CompileError::Unavailable(Unavailable::Busy));
-                    }
-                    Err(Refused::Closed) => {
+        let room_until = called + time_left.saturating_sub(ROOM_WAIT_RESERVE);
+        // Whether a stream the call went to ended before it answered, so it
+        // was routed once more.
+        let mut routed_again = false;
+        loop {
+            let answer = match on_held.take() {
+                Some(answer) => answer,
+                None => match self.send(call, until, room_until).await {
+                    Ok(Routed::Stream(answer)) => answer,
+                    Ok(Routed::Relayed(read)) => return Ok(read),
+                    // No other stream took it: it fails as the one that ended.
+                    Err(CompileError::Unavailable(Unavailable::NoCompiler)) if routed_again => {
                         return Err(STOPPED);
                     }
-                    // Checked above.
-                    Err(Refused::TooLarge) => return Err(ProtocolError.into()),
+                    Err(error) => return Err(error),
+                },
+            };
+            match tokio::time::timeout(left(), answer).await {
+                // Routed again, it had less than its time: no judgement of
+                // the source.
+                Err(_) | Ok(Ok(Read::Failure(CompileError::TimedOut))) if routed_again => {
+                    return Err(STOPPED);
                 }
+                Err(_elapsed) => return Err(CompileError::TimedOut),
+                // The stream ended first: it is routed once more. A call that
+                // ends each stream it reaches ends no more than two.
+                Ok(Err(_closed))
+                    if !routed_again
+                        && matches!(self.target, Target::MostRoom { .. })
+                        && Instant::now() < room_until =>
+                {
+                    routed_again = true;
+                }
+                Ok(Err(_closed)) => return Err(STOPPED),
+                Ok(Ok(Read::Failure(error))) => return Err(error),
+                Ok(Ok(answer)) => return Ok(answer),
             }
-        };
-        match tokio::time::timeout(left(), answer).await {
-            Err(_elapsed) => Err(CompileError::TimedOut),
-            // The stream ended first.
-            Ok(Err(_closed)) => Err(STOPPED),
-            Ok(Ok(Read::Failure(error))) => Err(error),
-            Ok(Ok(answer)) => Ok(answer),
         }
+    }
+
+    /// Sends `call` to the stream [`Self::route`] finds by `room_until`, or
+    /// relays it and waits for the relay's answer, before `until`. A call no
+    /// stream took fails as [`Unavailable::NoCompiler`].
+    async fn send(
+        &self,
+        call: &Call,
+        until: Instant,
+        room_until: Instant,
+    ) -> Result<Routed, CompileError> {
+        // A call no stream took was not judged: it fails as no compiler,
+        // never as a compile timeout.
+        let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
+        loop {
+            let stream = match self.route(room_until).await.ok_or_else(no_compiler)? {
+                Route::Stream(stream) => stream,
+                // Untaken, it answers before the caller's own deadline, as a
+                // wait for room here does.
+                Route::Relay(relay, children) => {
+                    return relay.call(call, children, until).await.map(Routed::Relayed);
+                }
+            };
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(no_compiler());
+            }
+            match self.streams.compile(stream, millis(left), call.clone()) {
+                Ok(answer) => return Ok(Routed::Stream(answer)),
+                // Another call took the room first: look again.
+                Err(Refused::NoRoom | Refused::Closed)
+                    if matches!(self.target, Target::MostRoom { .. }) => {}
+                Err(Refused::NoRoom) => {
+                    return Err(CompileError::Unavailable(Unavailable::Busy));
+                }
+                Err(Refused::Closed) => return Err(STOPPED),
+                // Checked in `call`.
+                Err(Refused::TooLarge) => return Err(ProtocolError.into()),
+            }
+        }
+    }
+}
+
+impl PullStreamCompiler {
+    /// A client that holds one unit of `stream`'s room for its first call,
+    /// unless another caller took the room first.
+    fn hold(&self, stream: StreamId) -> Option<Arc<dyn CompilerClient>> {
+        self.streams.hold(stream).ok()?;
+        let held = HeldUnit {
+            streams: self.streams.clone(),
+            stream: Mutex::new(Some(stream)),
+        };
+        Some(Arc::new(Self {
+            streams: self.streams.clone(),
+            target: self.target.clone(),
+            held: Some(Arc::new(held)),
+        }))
     }
 }
 
@@ -232,23 +336,25 @@ impl CompilerClient for PullStreamCompiler {
         if !matches!(self.target, Target::MostRoom { .. }) || self.held.is_some() {
             return Ok(None);
         }
+        let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
         let until = Instant::now() + COMPILE_WAIT;
         loop {
-            let stream = self
-                .room(until)
-                .await
-                .ok_or(CompileError::Unavailable(Unavailable::NoCompiler))?;
-            // Another caller took the room first: look again.
-            if self.streams.hold(stream).is_ok() {
-                let held = HeldUnit {
-                    streams: self.streams.clone(),
-                    stream: Mutex::new(Some(stream)),
-                };
-                return Ok(Some(Arc::new(Self {
-                    streams: self.streams.clone(),
-                    target: self.target.clone(),
-                    held: Some(Arc::new(held)),
-                })));
+            match self.route(until).await.ok_or_else(no_compiler)? {
+                Route::Stream(stream) => {
+                    // Another caller took the room first: look again.
+                    if let Some(held) = self.hold(stream) {
+                        return Ok(Some(held));
+                    }
+                }
+                // No room here: wait for room anywhere. Room that shows here,
+                // as a local child that started, is held on the next look, or
+                // waited for again when another caller took it; room
+                // elsewhere relays the calls.
+                Route::Relay(relay, children) => match relay.room(children, until).await {
+                    Probed::Here => {}
+                    Probed::Elsewhere => return Ok(None),
+                    Probed::Nobody => return Err(no_compiler()),
+                },
             }
         }
     }

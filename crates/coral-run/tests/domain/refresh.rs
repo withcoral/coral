@@ -51,7 +51,7 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
             .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+        tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
             .await
             .unwrap();
         let second = runs
@@ -146,7 +146,7 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
             .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+        tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
             .await
             .unwrap();
         let second = runs
@@ -285,7 +285,7 @@ async fn offboarding_and_rejoin_block_a_late_refresh_without_overwriting_the_new
     let runs = fixture.live_runs(None).with_accounts(accounts.clone());
     let run = runs.start(&tool.principal, &tool.workspace_id,
         submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+    tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
         .await
         .unwrap();
     let administrator = fixture.workspace_admin(&tool).await;
@@ -388,7 +388,7 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
             .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+        tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
             .await
             .unwrap();
         let second = runs
@@ -470,7 +470,7 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+    tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
         .await
         .unwrap();
     let second = runs

@@ -4,8 +4,9 @@
 )]
 use std::time::Duration;
 
-use super::tests::{Fixture, NOW, REEF, SECOND, refresh_token};
+use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, real_now, refresh_token};
 use super::{AccessTarget, TokenRefusal, WebSessionToken};
+use crate::oauth_clients::test_support::rewrite_past_checks;
 
 const HOUR: Duration = Duration::from_hours(1);
 
@@ -18,9 +19,17 @@ impl Fixture {
 
     /// Starts a web session from a fresh Reef sign-in and returns its handle.
     async fn web_session(&self, max_age: Duration) -> String {
-        let token = self.reef_refresh_token().await;
+        self.web_session_at(max_age, NOW).await
+    }
+
+    /// [`Self::web_session`], signing in at `now`.
+    async fn web_session_at(&self, max_age: Duration, now: i64) -> String {
+        let issued = self
+            .sign_in_at(REEF, AccessTarget::Reef, true, now)
+            .await
+            .unwrap();
         self.tokens
-            .start_web_session(&token, &self.client, max_age, NOW + SECOND)
+            .start_web_session(&refresh_token(&issued), &self.client, max_age, now + SECOND)
             .await
             .unwrap()
             .handle
@@ -46,11 +55,13 @@ fn claims(token: &WebSessionToken) -> serde_json::Value {
 #[tokio::test]
 async fn a_web_session_mints_reef_tokens_until_it_ends() {
     let fixture = Fixture::new().await;
-    let handle = fixture.web_session(HOUR).await;
+    // The last step authenticates a token, which reads the system clock.
+    let now = real_now();
+    let handle = fixture.web_session_at(HOUR, now).await;
     assert!(handle.starts_with("coral_ws_"));
     for at in [2, 3] {
         let token = fixture
-            .session_token(&handle, NOW + at * SECOND)
+            .session_token(&handle, now + at * SECOND)
             .await
             .unwrap();
         let claims = claims(&token);
@@ -59,7 +70,7 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
         assert!(claims.get("workspace_id").is_none());
     }
     let issued = fixture
-        .session_token(&handle, NOW + 4 * SECOND)
+        .session_token(&handle, now + 4 * SECOND)
         .await
         .unwrap();
     fixture
@@ -68,7 +79,7 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
         .await
         .unwrap();
     assert_eq!(
-        fixture.session_token(&handle, NOW + 5 * SECOND).await.err(),
+        fixture.session_token(&handle, now + 5 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
     );
     // Ending a session ends refresh only: a token minted before keeps its
@@ -329,6 +340,141 @@ async fn resolving_rechecks_membership_and_reports_outages() {
     );
 }
 
+/// A request that reads stored token state.
+#[derive(Clone, Copy, Debug)]
+enum Request {
+    Redeem,
+    Refresh,
+    Revoke,
+    StartSession,
+    SessionToken,
+    EndSession,
+}
+
+/// SQL that makes `column` undecodable in the rows of `table` that `rows`
+/// matches, and SQL that restores it. No ID, audience or role holds a space.
+fn corruption(table: &str, column: &str, rows: &str) -> (String, String) {
+    let update = format!("UPDATE {table} SET {column} =");
+    (
+        format!("{update} 'corrupt ' || {column} WHERE {rows}"),
+        format!("{update} substr({column}, 9) WHERE {rows}"),
+    )
+}
+
+/// Stored state that does not decode is corrupt data: not an outage that a
+/// retry could outlast, and not a rejected credential. Each refusal names the
+/// value and changes nothing, so once the rows are repaired the code redeems,
+/// the refresh tokens refresh and the Web Session mints.
+#[tokio::test]
+async fn stored_state_that_does_not_decode_is_corrupt_and_stays_as_it_was() {
+    use Request::{EndSession, Redeem, Refresh, Revoke, SessionToken, StartSession};
+
+    let fixture = Fixture::new().await;
+    let now = NOW + 2 * SECOND;
+    // A Workspace-scoped MCP grant, a Reef grant, a Reef grant that a Web
+    // Session holds, and the code of a sign-in that has not redeemed it yet.
+    let token = fixture.refreshable().await;
+    let reef = fixture.reef_refresh_token().await;
+    let handle = fixture.web_session(HOUR).await;
+    let (resource, target) = (
+        "https://mcp.example.test/mcp",
+        AccessTarget::PickedWorkspace,
+    );
+    let code = fixture
+        .issue_code(CLIENT, resource, &target, true, now)
+        .await;
+    let (tokens, client) = (&fixture.tokens, &fixture.client);
+    let refusal = async |request: Request| match request {
+        Redeem => fixture
+            .redeem(&code, CLIENT, resource, target.clone(), now)
+            .await
+            .err(),
+        Refresh => fixture.refresh(&token, now).await.err(),
+        Revoke => tokens.revoke(&token, client).await.err(),
+        StartSession => tokens
+            .start_web_session(&reef, client, HOUR, now)
+            .await
+            .err(),
+        SessionToken => fixture.session_token(&handle, now).await.err(),
+        EndSession => tokens.end_web_session(&handle, client).await.err(),
+    };
+
+    let grants = "oauth_refresh_grants";
+    let grant = |column| corruption(grants, column, &format!("{column} IS NOT NULL"));
+    let every_grant: &[Request] = &[Refresh, Revoke, StartSession, SessionToken, EndSession];
+    let member = format!("user_id = '{}'", fixture.user.user_id());
+    // (the refusal's code, the table whose checks forbid the value, the SQL
+    // that corrupts and repairs, the rows it changes, the requests refused)
+    for (code, checked, (corrupt, repair), rows, refused) in [
+        ("corrupt_grant_user", None, grant("user_id"), 3, every_grant),
+        (
+            "corrupt_grant_audience",
+            None,
+            grant("private_audience"),
+            3,
+            every_grant,
+        ),
+        // Only the MCP grant names a Workspace.
+        (
+            "corrupt_grant_workspace",
+            None,
+            grant("workspace_id"),
+            1,
+            &[Refresh, Revoke],
+        ),
+        // A Web Session starts from a Reef grant alone, so its grant always
+        // names an audience.
+        (
+            "corrupt_session_audience",
+            None,
+            (
+                format!("UPDATE {grants} SET private_audience = NULL WHERE resource = '{REEF}'"),
+                format!("UPDATE {grants} SET private_audience = 'reef' WHERE resource = '{REEF}'"),
+            ),
+            2,
+            &[SessionToken],
+        ),
+        // The Organization Membership that every grant answers to.
+        (
+            "corrupt_authority",
+            Some("organization_authority_records"),
+            corruption("organization_authority_records", "role", &member),
+            1,
+            &[Refresh, StartSession, SessionToken],
+        ),
+        (
+            "corrupt_code_workspace",
+            None,
+            corruption(
+                "oauth_authorization_codes",
+                "workspace_id",
+                "workspace_id IS NOT NULL",
+            ),
+            1,
+            &[Redeem],
+        ),
+    ] {
+        let rewrite = async |sql: &str| match checked {
+            Some(table) => rewrite_past_checks(&fixture.database, table, sql).await,
+            None => fixture.database.execute_fixture_sql(sql).await.unwrap(),
+        };
+        assert_eq!(rewrite(&corrupt).await, rows, "{code}");
+        for request in refused {
+            assert_eq!(
+                refusal(*request).await,
+                Some(TokenRefusal::Corrupt(code)),
+                "{code}: {request:?}"
+            );
+        }
+        assert_eq!(rewrite(&repair).await, rows, "{code}");
+    }
+
+    // No refusal spent the code or a token, or ended a grant or the session.
+    for request in [Redeem, Refresh, SessionToken, StartSession] {
+        assert_eq!(refusal(request).await, None, "{request:?}");
+    }
+}
+
 /// A Web Session's tokens serve one request each, so each lasts minutes, not
 /// the deployment's access-token lifetime: few outlive a sign-out.
 #[tokio::test]
@@ -345,6 +491,8 @@ async fn a_web_session_mints_short_lived_tokens() {
             .await
             .unwrap(),
     );
+    // The request's host time issues the token, not the system clock.
+    assert_eq!(claims["iat"], (NOW + 2 * SECOND) / SECOND);
     let lifetime = claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap();
     assert!(
         lifetime <= i64::try_from(super::WEB_SESSION_TOKEN_LIFETIME.as_secs()).unwrap(),

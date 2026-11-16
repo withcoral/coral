@@ -4,7 +4,6 @@
 use std::future::{Future, pending};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use coral_credentials::Secret;
@@ -18,19 +17,33 @@ use tonic::metadata::AsciiMetadataValue;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Server};
+use tonic::{Code, Streaming};
 use tonic_health::ServingStatus;
 
 use crate::compile_wire::{self, ProtocolError};
 use crate::run::{self, RunLimits};
 use crate::wire::v1::link_service_client::LinkServiceClient;
 use crate::wire::v1::{
-    Compile, Compiled, Hello, Limits, PullRequest, PullResponse, Room, pull_request, pull_response,
+    Compile, Compiled, Hello, Limits, PullRequest, PullResponse, Room, TakenRun, pull_request,
+    pull_response,
 };
 use crate::{CompilerClient, InProcessCompiler};
 
 /// A client of Coral on one connection: every call carries the bearer
 /// credential.
 pub(crate) type Client = LinkServiceClient<InterceptedService<Channel, Bearer>>;
+
+/// The connection every Run stream opens on.
+pub(crate) enum Connection {
+    /// No pull stream Coral welcomed holds: a Run stream waits for one.
+    Waiting,
+    /// Coral welcomed the pull stream on this connection.
+    Welcomed(Client),
+    /// Coral refused the token: a lost Run stream reopens no more.
+    Refused,
+}
+/// The Run Executor's side of a pull stream.
+type Outbound = mpsc::Sender<PullRequest>;
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
@@ -90,16 +103,21 @@ pub enum RunError {
     /// The health listener failed.
     #[error("the health listener failed")]
     Health(#[source] tonic::transport::Error),
+    /// Coral refused the token, so the Run Executor retired.
+    #[error("Coral refused the Run Executor's token")]
+    Refused,
 }
 
-/// Warms the Program Compiler, then holds the link to Coral until `retire`
-/// completes. Serves the gRPC health service on `health`, when given, until
-/// then.
+/// Warms the Program Compiler, then holds the link to Coral until it has
+/// retired: once `retire` completes, Coral refuses its token, or a Program
+/// misses its stop, it reports no room and returns after its last Run ends.
+/// Serves the gRPC health service on `health`, when given, until then.
 ///
 /// # Errors
 ///
-/// Returns a compiler that cannot start, before any dial, or the health
-/// listener's failure.
+/// Returns a compiler that cannot start, before any dial, the health
+/// listener's failure, or [`RunError::Refused`] once retired after Coral
+/// refused the token.
 pub async fn run(
     config: RunExecutorConfig,
     health: Option<TcpListener>,
@@ -119,14 +137,21 @@ pub async fn run(
     let link = Link::new(config, Arc::new(compiler), linked);
     let health = async {
         match health {
-            Some(listener) => serve_health(listener, linked_rx).await,
+            Some(listener) => {
+                serve_health(listener, linked_rx, link.runs.holding.subscribe()).await
+            }
             None => pending().await,
         }
     };
+    let retire = async {
+        retire.await;
+        link.runs.retire();
+        pending::<std::convert::Infallible>().await
+    };
     tokio::select! {
-        () = link.hold() => Ok(()),
+        held = link.hold() => held,
         result = health => result.map_err(RunError::Health),
-        () = retire => Ok(()),
+        never = retire => match never {},
     }
 }
 
@@ -211,13 +236,17 @@ impl tonic::service::Interceptor for Bearer {
     }
 }
 
-/// How a pull stream ended.
-enum End {
-    /// Coral ended its side cleanly after Welcome, to move the stream (the
-    /// go-away): reopen at once.
+/// How a pull stream or a Run stream ended.
+pub(crate) enum End {
+    /// Coral ended its side cleanly after its first answer, to move the
+    /// stream, or took a Run as a retiring stream closed: reopen at once.
     Moved,
     /// Anything else: redial after the back-off.
     Failed,
+    /// Coral refused the token: retire, and dial no more.
+    Refused,
+    /// The Run Executor retired and holds nothing: exit.
+    Retired,
 }
 
 struct Link {
@@ -230,35 +259,109 @@ struct Link {
     /// Told after each `Compile` is queued, so a test can wait for one.
     #[cfg(test)]
     on_queued: Option<mpsc::UnboundedSender<()>>,
-    run_limits: RunLimits,
-    /// The Runs held, each from its `Taken` to its stream's end.
-    held: Arc<AtomicU32>,
-    /// A held Run's stream ended, so a unit freed.
-    freed: Arc<Notify>,
+    /// Each Run's limits and isolate, and the warm isolate.
+    isolates: Arc<run::Isolates>,
+    runs: Arc<Runs>,
+    current: watch::Sender<Connection>,
+}
+
+/// The Runs a Run Executor holds, and whether it retires.
+#[derive(Default)]
+pub(crate) struct Runs {
+    pub(crate) holding: watch::Sender<Holding>,
+    /// A held Run's unit freed.
+    freed: Notify,
+}
+
+/// What [`Runs`] counts.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Holding {
+    /// Units of room held, each from its `Taken` until its isolate is gone.
+    held: u32,
+    /// Run streams waited for, each from its `Taken` until it ends or its
+    /// isolate misses its stop.
+    streams: u32,
+    /// The Run Executor retires.
+    retiring: bool,
+}
+
+impl Holding {
+    /// Retiring, with no Run stream to wait for.
+    fn drained(&self) -> bool {
+        self.retiring && self.streams == 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> u32 {
+        self.held
+    }
+}
+
+impl Runs {
+    /// Orders the Run Executor to retire.
+    pub(crate) fn retire(&self) {
+        self.holding
+            .send_if_modified(|holding| !std::mem::replace(&mut holding.retiring, true));
+    }
+
+    /// Once the Run Executor retired and holds nothing.
+    async fn drained(&self) {
+        let mut holding = self.holding.subscribe();
+        // The sender lives as long as `self`. The read lock drops at once.
+        drop(holding.wait_for(Holding::drained).await);
+    }
+}
+
+/// One Run's hold on the Run Executor: its unit of room and its stream.
+pub(crate) struct HeldRun {
+    pub(crate) unit: HeldUnit,
+    pub(crate) stream: HeldRunStream,
 }
 
 /// One unit of room a held Run takes. It frees when dropped: by the Run's
 /// Program thread once its isolate is gone, or by the Run's stream task when
 /// no Program started, even by a panic.
-pub(crate) struct HeldRun {
-    held: Arc<AtomicU32>,
-    freed: Arc<Notify>,
+pub(crate) struct HeldUnit(Arc<Runs>);
+
+/// One Run a retiring Run Executor waits for, until it ends here, across its
+/// reopened streams.
+pub(crate) struct HeldRunStream(Arc<Runs>);
+
+impl HeldRunStream {
+    /// The Run's isolate missed its stop: the Run Executor retires, and no
+    /// longer waits for this Run.
+    pub(crate) fn abandon(self) {
+        self.0.retire();
+    }
 }
 
 impl HeldRun {
-    pub(crate) fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
-        held.fetch_add(1, Ordering::SeqCst);
+    pub(crate) fn take(runs: &Arc<Runs>) -> Self {
+        runs.holding.send_modify(|holding| {
+            holding.held = holding.held.saturating_add(1);
+            holding.streams = holding.streams.saturating_add(1);
+        });
         Self {
-            held: held.clone(),
-            freed: freed.clone(),
+            unit: HeldUnit(runs.clone()),
+            stream: HeldRunStream(runs.clone()),
         }
     }
 }
 
-impl Drop for HeldRun {
+impl Drop for HeldUnit {
     fn drop(&mut self) {
-        self.held.fetch_sub(1, Ordering::SeqCst);
-        self.freed.notify_one();
+        self.0
+            .holding
+            .send_modify(|holding| holding.held = holding.held.saturating_sub(1));
+        self.0.freed.notify_one();
+    }
+}
+
+impl Drop for HeldRunStream {
+    fn drop(&mut self) {
+        self.0
+            .holding
+            .send_modify(|holding| holding.streams = holding.streams.saturating_sub(1));
     }
 }
 
@@ -287,29 +390,34 @@ impl Link {
             hello,
             compiler,
             linked,
-            run_limits: config.run_limits,
-            held: Arc::default(),
-            freed: Arc::default(),
+            isolates: Arc::new(run::Isolates::new(config.run_limits, config.max_runs_held)),
+            runs: Arc::default(),
+            current: watch::Sender::new(Connection::Waiting),
             #[cfg(test)]
             on_queued: None,
         }
     }
 
     /// The units of room free while this stream's `compiling` compiles hold
-    /// a unit each. A `Taken` or a `Compile` that crossed a report of none
-    /// holds a unit above the room.
+    /// a unit each: none while it retires. A `Taken` or a `Compile` that
+    /// crossed a report of none holds a unit above the room.
     fn free(&self, compiling: u32) -> u32 {
+        let holding = *self.runs.holding.borrow();
+        if holding.retiring {
+            return 0;
+        }
         self.hello
             .free
-            .saturating_sub(self.held.load(Ordering::SeqCst))
+            .saturating_sub(holding.held)
             .saturating_sub(compiling)
     }
 
-    /// Opens the pull stream again each time it ends, forever.
-    async fn hold(&self) {
+    /// Opens the pull stream again each time it ends, until it has retired.
+    async fn hold(&self) -> Result<(), RunError> {
         let mut backoff = Backoff::default();
         loop {
             let end = self.pull().await;
+            self.current.send_replace(Connection::Waiting);
             if self
                 .linked
                 .send_if_modified(|linked| std::mem::replace(linked, false))
@@ -317,16 +425,50 @@ impl Link {
                 // Coral welcomed the stream that ended.
                 backoff.reset();
             }
+            match end {
+                End::Retired => return Ok(()),
+                End::Refused => {
+                    tracing::warn!("Coral refused the Run Executor's token; retiring");
+                    self.current.send_replace(Connection::Refused);
+                    self.runs.retire();
+                    self.runs.drained().await;
+                    return Err(RunError::Refused);
+                }
+                End::Moved | End::Failed => {}
+            }
             if let Some(delay) = backoff.after(&end) {
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = self.runs.drained() => return Ok(()),
+                }
             }
         }
     }
 
-    /// Dials a fresh connection and holds the pull stream on it until it ends.
-    async fn pull(&self) -> End {
-        let Ok(channel) = self.endpoint.connect().await else {
-            return End::Failed;
+    /// Coral welcomed the pull stream on `client`'s connection: every Run
+    /// stream opens on it while it holds.
+    fn welcomed(&self, client: &Client) {
+        self.linked.send_replace(true);
+        self.current
+            .send_replace(Connection::Welcomed(client.clone()));
+    }
+
+    /// Holds one Run Coral took, from its unit of room to its end.
+    fn hold_run(&self, taken: TakenRun) {
+        let held = HeldRun::take(&self.runs);
+        let connection = self.current.subscribe();
+        tokio::spawn(run::hold(connection, taken, self.isolates.clone(), held));
+    }
+
+    /// Dials a fresh connection and opens the pull stream on it with Hello,
+    /// unless the Run Executor retired and holds nothing before it connects.
+    async fn open(&self) -> Result<(Client, Outbound, Streaming<PullResponse>), End> {
+        let connected = tokio::select! {
+            connected = self.endpoint.connect() => connected,
+            () = self.runs.drained() => return Err(End::Retired),
+        };
+        let Ok(channel) = connected else {
+            return Err(End::Failed);
         };
         let mut client = LinkServiceClient::with_interceptor(channel, Bearer(self.token.clone()))
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
@@ -344,12 +486,85 @@ impl Link {
             })),
         };
         if outbound.try_send(hello).is_err() {
-            return End::Failed;
+            return Err(End::Failed);
         }
-        let Ok(response) = client.pull(ReceiverStream::new(requests)).await else {
-            return End::Failed;
+        // Coral may take Runs on a Hello it read: its answer is awaited, so a
+        // retire reads them on the close.
+        match client.pull(ReceiverStream::new(requests)).await {
+            Ok(response) => Ok((client, outbound, response.into_inner())),
+            Err(status) if status.code() == Code::Unauthenticated => Err(End::Refused),
+            Err(_) => Err(End::Failed),
+        }
+    }
+
+    /// Closes a retiring pull stream that holds nothing: ends its side, so
+    /// its report of none goes out, and reads until Coral ends its own.
+    /// Each Run Coral took before then is held, and `End::Moved` redials for it.
+    async fn close(
+        &self,
+        client: &Client,
+        outbound: Outbound,
+        mut inbound: Streaming<PullResponse>,
+    ) -> End {
+        drop(outbound);
+        while let Ok(Some(response)) = inbound.message().await {
+            match response.message {
+                // A Welcome that crossed the close: its Runs are held.
+                Some(pull_response::Message::Welcome(welcome))
+                    if !*self.linked.borrow() && compatible(welcome.protocol_level) =>
+                {
+                    self.welcomed(client);
+                }
+                Some(pull_response::Message::Taken(taken)) if *self.linked.borrow() => {
+                    taken
+                        .runs
+                        .into_iter()
+                        .for_each(|taken| self.hold_run(taken));
+                }
+                _ => {}
+            }
+        }
+        if self.runs.holding.borrow().drained() {
+            End::Retired
+        } else {
+            End::Moved
+        }
+    }
+
+    /// Retiring is a report of none, sent once the stream is welcomed, even
+    /// when it holds nothing. `End::Retired` once it holds no Run and no
+    /// compile: the stream closes.
+    async fn retiring(
+        &self,
+        outbound: &Outbound,
+        welcomed: bool,
+        compiling: u32,
+        reported: &mut bool,
+    ) -> Option<End> {
+        if welcomed && !*reported {
+            let room = PullRequest {
+                message: Some(pull_request::Message::Room(Room { free: 0 })),
+            };
+            if outbound.send(room).await.is_err() {
+                return Some(End::Failed);
+            }
+            *reported = true;
+        }
+        let drained = self.runs.holding.borrow().drained();
+        (drained && compiling == 0).then_some(End::Retired)
+    }
+
+    /// Holds a fresh pull stream until it ends, or until the Run Executor
+    /// retired and holds nothing.
+    async fn pull(&self) -> End {
+        let mut holding = self.runs.holding.subscribe();
+        let (client, outbound, mut inbound) = match self.open().await {
+            Ok(opened) => opened,
+            Err(end) => return end,
         };
-        let mut inbound = response.into_inner();
+        // Whether this stream reported the retire. A Hello while it retires
+        // reported none already, so a second report repeats it.
+        let mut reported = false;
         let (queue, queued) = mpsc::unbounded_channel();
         let (answered, mut answers) = mpsc::unbounded_channel();
         tokio::spawn(serve(Arc::clone(&self.compiler), queued, answered));
@@ -357,11 +572,24 @@ impl Link {
         let mut compiling: u32 = 0;
         loop {
             let welcomed = *self.linked.borrow();
+            let retiring = holding.borrow_and_update().retiring;
+            if retiring {
+                match self
+                    .retiring(&outbound, welcomed, compiling, &mut reported)
+                    .await
+                {
+                    Some(End::Retired) => return self.close(&client, outbound, inbound).await,
+                    Some(end) => return end,
+                    None => {}
+                }
+            }
             tokio::select! {
+                // The order to retire, and each Run that ends.
+                _ = holding.changed() => {}
                 // A Run that freed before Hello leaves a permit here too, so
                 // a Room may repeat the room Hello reported. A free between
                 // Hello and Welcome reaches Coral only this way.
-                () = self.freed.notified(), if welcomed => {
+                () = self.runs.freed.notified(), if welcomed && !retiring => {
                     let room = PullRequest {
                         message: Some(pull_request::Message::Room(Room {
                             free: self.free(compiling),
@@ -385,7 +613,7 @@ impl Link {
                             );
                             return End::Failed;
                         }
-                        self.linked.send_replace(true);
+                        self.welcomed(&client);
                     }
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Compile(compile)),
@@ -403,10 +631,10 @@ impl Link {
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Taken(taken)),
                     })) if welcomed => {
-                        // Each Run's stream rides this connection.
+                        // A Run that crossed a report of none is honored, as
+                        // is one that crossed the stream's close.
                         for taken in taken.runs {
-                            let unit = HeldRun::take(&self.held, &self.freed);
-                            tokio::spawn(run::hold(client.clone(), taken, self.run_limits, unit));
+                            self.hold_run(taken);
                         }
                     }
                     // Anything else breaks the protocol. A clean end before
@@ -425,6 +653,7 @@ impl Link {
                         None => return End::Failed,
                     };
                     compiling = compiling.saturating_sub(1);
+                    // While it retires, the room stays none.
                     let free = self.free(compiling);
                     for message in [
                         pull_request::Message::Compiled(compiled),
@@ -461,8 +690,9 @@ async fn serve(
 }
 
 /// The redial delay: 100 ms doubling to 5 s, each jittered down by up to
-/// half, and reset once a pull stream Coral welcomed ends.
-struct Backoff {
+/// half, and reset once a stream Coral answered ends. The pull stream and
+/// each Run stream keep one.
+pub(crate) struct Backoff {
     next: Duration,
 }
 
@@ -477,8 +707,8 @@ impl Default for Backoff {
 impl Backoff {
     /// The wait before the next dial after `end`: none after a move, which
     /// leaves the back-off where it is.
-    fn after(&mut self, end: &End) -> Option<Duration> {
-        if let End::Moved = end {
+    pub(crate) fn after(&mut self, end: &End) -> Option<Duration> {
+        if let End::Moved | End::Refused | End::Retired = end {
             return None;
         }
         let ceiling = self.next;
@@ -490,27 +720,36 @@ impl Backoff {
         Some(half + Duration::from_nanos(random % spread.saturating_add(1)))
     }
 
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.next = FIRST_BACKOFF;
     }
 }
 
 /// Serves the standard gRPC health service on `listener`: the readiness
-/// service serves while `linked` holds.
+/// service serves while `linked` holds and the Run Executor does not retire.
 async fn serve_health(
     listener: TcpListener,
     mut linked: watch::Receiver<bool>,
+    mut holding: watch::Receiver<Holding>,
 ) -> Result<(), tonic::transport::Error> {
     let (reporter, service) = tonic_health::server::health_reporter();
     let report = async move {
         loop {
-            let status = if *linked.borrow_and_update() {
+            let retiring = holding.borrow_and_update().retiring;
+            let status = if *linked.borrow_and_update() && !retiring {
                 ServingStatus::Serving
             } else {
                 ServingStatus::NotServing
             };
             reporter.set_service_status(READINESS_SERVICE, status).await;
-            if linked.changed().await.is_err() {
+            // Retiring never ends, so it is told once.
+            let changed = tokio::select! {
+                changed = linked.changed() => changed,
+                retired = holding.wait_for(|holding| holding.retiring), if !retiring => {
+                    retired.map(drop)
+                }
+            };
+            if changed.is_err() {
                 break;
             }
         }
@@ -520,7 +759,7 @@ async fn serve_health(
         .serve_with_incoming(TcpIncoming::from(listener));
     tokio::select! {
         result = serve => result,
-        // `linked` closes only as `run` returns.
+        // `linked` and `holding` close only as `run` returns.
         () = report => pending().await,
     }
 }

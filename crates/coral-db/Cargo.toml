@@ -14,6 +14,7 @@ workspace = true
 test-support = []
 
 [dependencies]
+coral-sqlite-vec.workspace = true
 coral-telemetry.workspace = true
 sea-query.workspace = true
 sea-query-sqlx.workspace = true

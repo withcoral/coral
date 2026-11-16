@@ -20,6 +20,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             "owner",
             "untrusted-client",
             &fixture.urls.resource(&fixture.workspace),
+            coral_test_support::now_unix_nanos(),
         )
         .unwrap();
     let missing = fixture.request(&fixture.workspace).send().await.unwrap();
@@ -59,6 +60,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             "other",
             "same-client",
             &fixture.urls.resource(&fixture.workspace),
+            coral_test_support::now_unix_nanos(),
         )
         .unwrap();
     let other = coral_workspace::AuthenticatedPrincipal::user(fixture.other.actor().clone());
@@ -330,7 +332,13 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
     let scoped = |user: &str, workspace: &WorkspaceId| {
         fixture
             .issuer
-            .issue_workspace_access_token(user, "untrusted-client", &organization, workspace)
+            .issue_workspace_access_token(
+                user,
+                "untrusted-client",
+                &organization,
+                workspace,
+                coral_test_support::now_unix_nanos(),
+            )
             .unwrap()
             .access_token
     };
@@ -403,12 +411,18 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             "owner",
             "untrusted-client",
             &fixture.urls.resource(&fixture.workspace),
+            coral_test_support::now_unix_nanos(),
         )
         .unwrap()
         .access_token;
     let unscoped = fixture
         .issuer
-        .issue_access_token("owner", "untrusted-client", &organization)
+        .issue_access_token(
+            "owner",
+            "untrusted-client",
+            &organization,
+            coral_test_support::now_unix_nanos(),
+        )
         .unwrap()
         .access_token;
     for (case, token) in [

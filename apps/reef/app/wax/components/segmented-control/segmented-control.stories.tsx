@@ -126,3 +126,24 @@ export const IconsWithCounts: StoryObj = {
     await expect(canvas.getByRole('radio', { name: 'Ask 12' })).toBeInTheDocument()
   },
 }
+
+// A visible label names the group in place of `label`.
+export const LabelledBy: StoryObj<typeof Demo> = {
+  render: function LabelledDemo() {
+    const [value, setValue] = useState<(typeof options)[number]['value']>('url')
+    return (
+      <div>
+        <span id="source-label">Source</span>
+        <SegmentedControl
+          labelledBy="source-label"
+          options={options}
+          value={value}
+          onChange={setValue}
+        />
+      </div>
+    )
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radiogroup', { name: 'Source' })).toBeVisible()
+  },
+}

@@ -167,6 +167,14 @@ impl McpServer {
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
+        // Built before acceptance, so a refused wait accepts no Run. It links
+        // no trace: this request accepts the Run, and acceptance links it to
+        // the Run Trace.
+        let observation = (wait_ms > 0)
+            .then(|| RunObservation::initial(Duration::from_millis(wait_ms)))
+            .transpose()
+            .map_err(invalid_input)?
+            .map(RunObservation::without_trace_link);
         let (started, accepted) = match target {
             ExecTarget::Task(call) => {
                 let accepted = self
@@ -188,26 +196,39 @@ impl McpServer {
                     .map_err(task_failure)?;
                 let accepted = launched
                     .map_err(|error| started_task_failure(task_failure(error), task.id()))?;
-                (Some(task.id().clone()), accepted)
+                (Some(task), accepted)
             }
         };
-        if wait_ms == 0 {
-            return self
-                .run_update(&accepted, Reporter::Exec(started.as_ref()))
-                .map(Into::into)
-                .map_err(DispatchError::Tool);
-        }
-        // This request accepted the Run, so acceptance already linked it to
-        // the Run Trace.
-        let observation = RunObservation::initial(Duration::from_millis(wait_ms))
-            .map_err(invalid_input)?
-            .without_trace_link();
-        self.observe_update(
-            accepted.run_id(),
-            &observation,
-            Reporter::Exec(started.as_ref()),
+        // The Run is accepted, so every answer from here names it. A caller
+        // without its `run_id` can neither read nor cancel the Run, and
+        // another `exec` runs the Program again.
+        let observed = match &observation {
+            Some(observation) => match self.observe(accepted.run_id(), observation).await {
+                Ok(update) => Some(update),
+                Err(error) => {
+                    // The Run stays accepted, so report it as accepted; a
+                    // later `wait` reads it again.
+                    let run_id = accepted.telemetry_id();
+                    let task_id = started.as_ref().map(coral_task::Task::telemetry_id);
+                    tracing::warn!(
+                        coral.workspace.id = safe::id(&self.workspace_id),
+                        coral.run.id = safe::id(&run_id),
+                        coral.task.id = task_id.as_ref().map(safe::id),
+                        error.type = safe::kind(error.code()),
+                        "failed to observe the Run that exec accepted"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let started = started.as_ref().map(coral_task::Task::id);
+        self.run_update(
+            observed.as_ref().unwrap_or(&accepted),
+            Reporter::Exec(started),
         )
-        .await
+        .map(Into::into)
+        .map_err(|failure| accepted_run_failure(failure, accepted.run_id(), started))
     }
 
     async fn wait(
@@ -231,7 +252,7 @@ impl McpServer {
             let peek = RunObservation::immediate(cursor.clone(), RUN_EVENT_PAGE_MAX)
                 .map_err(invalid_input)?
                 .without_trace_link();
-            let current = self.observe(&run_id, &peek).await?;
+            let current = self.observe(&run_id, &peek).await.map_err(run_failure)?;
             if let Some(message) =
                 projection::handoff_progress(&current, &self.runtime.modules.human_interface)
             {
@@ -256,7 +277,10 @@ impl McpServer {
         observation: &RunObservation,
         reporter: Reporter<'_>,
     ) -> Result<CallToolResponse, DispatchError> {
-        let update = self.observe(run_id, observation).await?;
+        let update = self
+            .observe(run_id, observation)
+            .await
+            .map_err(run_failure)?;
         self.run_update(&update, reporter)
             .map(Into::into)
             .map_err(DispatchError::Tool)
@@ -266,7 +290,7 @@ impl McpServer {
         &self,
         run_id: &RunId,
         observation: &RunObservation,
-    ) -> Result<coral_run::RunUpdate, DispatchError> {
+    ) -> Result<coral_run::RunUpdate, coral_run::Error> {
         self.runtime
             .modules
             .runs
@@ -277,7 +301,6 @@ impl McpServer {
                 observation,
             )
             .await
-            .map_err(run_failure)
     }
 
     async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
@@ -546,13 +569,37 @@ fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
     }
 }
 
+/// A failure after `exec` accepted its Run. It names the Run, so the agent
+/// reads it with `wait` instead of running the Program again, and the Task
+/// when this call started it.
+fn accepted_run_failure(
+    failure: ToolFailure,
+    run: &RunId,
+    started: Option<&TaskId>,
+) -> DispatchError {
+    let failure = failure.naming_accepted_run(run);
+    DispatchError::Tool(match started {
+        Some(task) => failure.naming_started_task(task),
+        None => failure,
+    })
+}
+
 /// The kind of a failed namespace lookup, as a log names it.
 const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
     match error {
         coral_search::Error::Database(_) => "database",
         coral_search::Error::Provider(_) => "provider",
         coral_search::Error::Workspace(_) => "workspace",
-        _ => "search",
+        // Name every remaining variant so a new one needs a kind here.
+        coral_search::Error::InvalidInput(_)
+        | coral_search::Error::UnknownProviderCallRoot { .. }
+        | coral_search::Error::ServiceUnavailable
+        | coral_search::Error::AuthoringDescriptionNotFound
+        | coral_search::Error::TypesLimit
+        | coral_search::Error::UndeclaredTypes { .. }
+        | coral_search::Error::PermissionDenied(_)
+        | coral_search::Error::Policy(_)
+        | coral_search::Error::Tools(_) => "search",
     }
 }
 
@@ -566,7 +613,18 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
         }
         coral_search::Error::Workspace(error) => workspace_tool_failure(error),
         coral_search::Error::Tools(error) => return tools_failure(error),
-        _ => ToolFailure::internal(),
+        // Name every remaining variant so a new one needs a decision here.
+        // `safe_rejection` answers these before the match.
+        coral_search::Error::InvalidInput(_)
+        | coral_search::Error::UnknownProviderCallRoot { .. }
+        | coral_search::Error::ServiceUnavailable
+        | coral_search::Error::AuthoringDescriptionNotFound
+        | coral_search::Error::TypesLimit
+        | coral_search::Error::UndeclaredTypes { .. }
+        // `safe_rejection` has no answer for the rest.
+        | coral_search::Error::Provider(_)
+        | coral_search::Error::Policy(_)
+        | coral_search::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }
@@ -578,7 +636,30 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
     }
     let failure = match error {
         Error::Workspace(error) => workspace_tool_failure(error),
-        _ => ToolFailure::internal(),
+        // Name every remaining variant so a new one needs a decision here.
+        // `safe_rejection` answers these before the match.
+        Error::InvalidInput(_)
+        | Error::NotFound(_)
+        | Error::PrivateToolExists
+        | Error::RevisionConflict { .. }
+        | Error::Admission(..)
+        | Error::SharedToolSourceUnreadable
+        | Error::SharedToolRestoreDiffers
+        | Error::SharedToolDeclarationChanged
+        | Error::SharedToolHasDependents { .. }
+        | Error::PathConflict(_)
+        | Error::NotData(..)
+        | Error::CompilationTimedOut(_)
+        | Error::CompilerBusy
+        | Error::NoCompiler
+        | Error::PermissionDenied(_)
+        // `safe_rejection` has no answer for the rest.
+        | Error::CompilerUnavailable(_)
+        | Error::CompilerWorkerStopped
+        | Error::Clock(_)
+        | Error::Json(_)
+        | Error::CorruptData(_)
+        | Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }
@@ -608,7 +689,35 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
             ToolFailure::safe("invocation_rejected", failure.message())
         }
         coral_run::Error::Workspace(error) => workspace_tool_failure(error),
-        _ => ToolFailure::internal(),
+        // Name every remaining variant so a new one needs a decision here.
+        // `safe_rejection` answers these before the match.
+        coral_run::Error::InvalidInput(_)
+        | coral_run::Error::ProgramAdmission(_)
+        | coral_run::Error::PermissionDenied(_)
+        | coral_run::Error::CompilationTimedOut
+        | coral_run::Error::CompilerBusy
+        | coral_run::Error::CompilerUnavailable
+        | coral_run::Error::PackageTooLarge { .. }
+        | coral_run::Error::ShuttingDown
+        // `safe_rejection` has no answer for the rest.
+        | coral_run::Error::ApprovalNotFound
+        | coral_run::Error::ProgramRuntimeUnavailable(_)
+        | coral_run::Error::ProgramWorkerStopped
+        | coral_run::Error::Clock(_)
+        | coral_run::Error::IdentifierIssuance(_)
+        | coral_run::Error::InvalidProgramValue
+        | coral_run::Error::ProgramValueJson(_)
+        | coral_run::Error::InvocationPersistence(_)
+        | coral_run::Error::RunEventPersistence(_)
+        | coral_run::Error::ClaimMismatch
+        | coral_run::Error::HeadMismatch
+        | coral_run::Error::RunEnded
+        | coral_run::Error::ProgramHostTerminated
+        | coral_run::Error::Provider(_)
+        | coral_run::Error::Policy(_)
+        | coral_run::Error::Upstream(_)
+        | coral_run::Error::CorruptData(_)
+        | coral_run::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }

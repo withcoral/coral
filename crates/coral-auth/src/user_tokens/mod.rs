@@ -34,8 +34,9 @@
 //! already issued keep their own expiry and live authority checks.
 //!
 //! Only the SHA-256 digest of a refresh token is stored. Nothing is returned
-//! before its writes commit, and a storage failure is reported as
-//! [`TokenRefusal::Unavailable`], never as a rejected credential.
+//! before its writes commit. A storage failure is reported as
+//! [`TokenRefusal::Unavailable`] and a stored row that does not decode as
+//! [`TokenRefusal::Corrupt`], never as a rejected credential.
 
 mod repository;
 #[cfg(test)]
@@ -58,7 +59,9 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
+use crate::authorization_codes::{
+    AuthorizationCodeError, AuthorizationCodes, AuthorizationGrant, CodeRedemption,
+};
 use crate::oauth_clients::AuthenticatedClient;
 use crate::{IssuedAccessToken, PrivateAudience, SessionTokenIssuer};
 
@@ -205,6 +208,10 @@ pub enum TokenRefusal {
     /// The database did not accept or answer a statement.
     #[error("token storage is unavailable")]
     Unavailable,
+    /// A stored row holds a value Coral could not have written, so a retry
+    /// fails the same way. The code names the value, for `error.type`.
+    #[error("stored token state is corrupt")]
+    Corrupt(&'static str),
     /// The access or refresh token could not be generated.
     #[error("token issuance failed")]
     Issuance,
@@ -217,6 +224,7 @@ impl TokenRefusal {
         match self {
             Self::InvalidGrant => "invalid_grant",
             Self::Unavailable => "unavailable",
+            Self::Corrupt(code) => code,
             Self::Issuance => "issuance",
         }
     }
@@ -276,12 +284,17 @@ impl UserTokens {
             .codes
             .redeem(code, redemption, now_unix_nanos)
             .await
-            .map_err(|_error| TokenRefusal::Unavailable)?
+            .map_err(|error| match error {
+                AuthorizationCodeError::Corrupt(code) => TokenRefusal::Corrupt(code),
+                AuthorizationCodeError::EmptySecret
+                | AuthorizationCodeError::ClockOutOfRange
+                | AuthorizationCodeError::Unavailable => TokenRefusal::Unavailable,
+            })?
             .ok_or(TokenRefusal::InvalidGrant)?;
         let scope = Scope::for_code(target, &grant)?;
         if !grant.refresh_eligible {
             return Ok(IssuedTokens {
-                access_token: self.mint(&scope)?,
+                access_token: self.mint(&scope, now_unix_nanos)?,
                 refresh_token: None,
             });
         }
@@ -295,7 +308,7 @@ impl UserTokens {
             Err(TokenRefusal::InvalidGrant) => {
                 rollback(tx).await;
                 return Ok(IssuedTokens {
-                    access_token: self.mint(&scope)?,
+                    access_token: self.mint(&scope, now_unix_nanos)?,
                     refresh_token: None,
                 });
             }
@@ -315,7 +328,7 @@ impl UserTokens {
         repository::insert_grant(&mut tx, &grant_id, &scope, now_unix_nanos, expires_at).await?;
         let (refresh_token, digest) = RefreshToken::generate()?;
         repository::insert_token(&mut tx, &digest, &grant_id).await?;
-        let access_token = self.mint(&scope)?;
+        let access_token = self.mint(&scope, now_unix_nanos)?;
         tx.commit().await.map_err(unavailable)?;
         self.purge_expired(now_unix_nanos).await;
         Ok(IssuedTokens {
@@ -368,7 +381,7 @@ impl UserTokens {
         }
         let (successor, successor_digest) = RefreshToken::generate()?;
         repository::insert_token(&mut tx, &successor_digest, grant_id).await?;
-        let access_token = match self.mint(scope) {
+        let access_token = match self.mint(scope, now_unix_nanos) {
             Ok(token) => token,
             Err(refusal) => {
                 rollback(tx).await;
@@ -459,7 +472,7 @@ impl UserTokens {
     ///
     /// Minting writes nothing, so any number of requests and processes can
     /// resolve one session at once. Each token serves one request, so it
-    /// lasts [`WEB_SESSION_TOKEN_LIFETIME`] at most, and never past its
+    /// lasts `WEB_SESSION_TOKEN_LIFETIME` at most, and never past its
     /// session.
     ///
     /// # Errors
@@ -493,9 +506,11 @@ impl UserTokens {
         if i64::try_from(session_end).unwrap_or(i64::MAX) <= now_unix_nanos / 1_000_000_000 {
             return Err(TokenRefusal::InvalidGrant);
         }
+        // A Web Session starts from a Reef grant alone, so a session whose
+        // grant names no audience is not one Coral wrote.
         let audience = scope
             .private_audience
-            .ok_or(TokenRefusal::Unavailable)?
+            .ok_or(TokenRefusal::Corrupt("corrupt_session_audience"))?
             .as_str();
         let access_token = self
             .issuer
@@ -505,19 +520,9 @@ impl UserTokens {
                 audience,
                 WEB_SESSION_TOKEN_LIFETIME,
                 session_end,
+                now_unix_nanos,
             )
-            .map_err(|_text| {
-                // The second the session ends can pass between the check above
-                // and minting; the session is then over, not failing.
-                let ended = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .is_ok_and(|elapsed| elapsed.as_secs() >= session_end);
-                if ended {
-                    TokenRefusal::InvalidGrant
-                } else {
-                    TokenRefusal::Issuance
-                }
-            })?;
+            .map_err(|_text| TokenRefusal::Issuance)?;
         Ok(WebSessionToken {
             access_token,
             session_expires_at_unix_nanos: session.expires_at_unix_nanos,
@@ -654,7 +659,7 @@ impl UserTokens {
         Ok(())
     }
 
-    fn mint(&self, scope: &Scope) -> Result<IssuedAccessToken, TokenRefusal> {
+    fn mint(&self, scope: &Scope, now_unix_nanos: i64) -> Result<IssuedAccessToken, TokenRefusal> {
         let audience = match scope.private_audience {
             Some(audience) => audience.as_str(),
             None => scope.resource.as_str(),
@@ -666,10 +671,12 @@ impl UserTokens {
                 &scope.client_id,
                 audience,
                 workspace,
+                now_unix_nanos,
             ),
-            None => self
-                .issuer
-                .issue_access_token(user_id, &scope.client_id, audience),
+            None => {
+                self.issuer
+                    .issue_access_token(user_id, &scope.client_id, audience, now_unix_nanos)
+            }
         }
         .map_err(|_text| TokenRefusal::Issuance)
     }
@@ -791,18 +798,24 @@ fn digest(secret: &str) -> Option<String> {
     (!secret.is_empty()).then(|| URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes())))
 }
 
-/// An authority decision becomes a refusal unless storage failed to answer.
+/// An authority decision becomes a refusal unless storage failed to answer
+/// or holds authority that does not decode.
 fn refusal(error: &coral_workspace::Error) -> TokenRefusal {
     match error {
-        coral_workspace::Error::Database(_)
-        | coral_workspace::Error::CorruptData(_)
-        | coral_workspace::Error::EventFields(_) => TokenRefusal::Unavailable,
+        coral_workspace::Error::Database(error) => repository::unavailable(error),
+        coral_workspace::Error::CorruptData(_) | coral_workspace::Error::EventFields(_) => {
+            TokenRefusal::Corrupt("corrupt_authority")
+        }
         _ => TokenRefusal::InvalidGrant,
     }
 }
 
-fn unavailable(_error: coral_db::Error) -> TokenRefusal {
-    TokenRefusal::Unavailable
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the database error by value"
+)]
+fn unavailable(error: coral_db::Error) -> TokenRefusal {
+    repository::unavailable(&error)
 }
 
 /// Rolls back a transaction that issued nothing. A rollback that fails ends

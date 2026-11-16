@@ -1,0 +1,5 @@
+error[E0599]: no method named `get` found for reference `&EndpointUrl<PublicMetadata>` in the current scope
+ --> tests/compile_fail/public_metadata_get.rs:4:9
+  |
+4 |     url.get(http);
+  |         ^^^ method not found in `&EndpointUrl<PublicMetadata>`

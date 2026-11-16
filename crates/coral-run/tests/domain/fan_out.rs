@@ -15,9 +15,6 @@ use axum::http::StatusCode;
 
 /// How long a call that must not move is watched before it is called still.
 const STILL: Duration = Duration::from_millis(300);
-/// How long a call may take to reach the enforcement point once its owner wakes
-/// its parked wait, on a loaded test machine.
-const UNTIL_ENFORCED: Duration = Duration::from_secs(10);
 
 const WEATHER: &str = "coral.providers.weather.getForecast";
 const ALERTS: &str = "coral.providers.alerts.getItems";
@@ -252,9 +249,9 @@ async fn ready_calls_above_the_limit_wait_in_memory_and_dispatch_in_readiness_or
     run.dispatch(WEATHER, 1).await;
     // The third (alerts) and the fourth (weather) become ready in this order.
     run.admit(ALERTS, 2).await;
-    run.latch.until_arrived_within(3, UNTIL_ENFORCED).await;
+    run.latch.until_arrived(3).await;
     run.admit(WEATHER, 3).await;
-    run.latch.until_arrived_within(4, UNTIL_ENFORCED).await;
+    run.latch.until_arrived(4).await;
     run.assert_slot_wait_is_silent(&[ALERTS, WEATHER], 2).await;
     let rows = run.rows().await;
     assert_eq!(paths(&in_state(&rows, "dispatching")), [WEATHER, WEATHER]);
@@ -366,7 +363,7 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
         )
         .await
         .expect("approve the call");
-    run.latch.until_arrived_within(3, UNTIL_ENFORCED).await;
+    run.latch.until_arrived(3).await;
     run.assert_slot_wait_is_silent(&[WEATHER], 2).await;
     assert_eq!(
         paths(&in_state(&run.rows().await, "dispatching")),
@@ -392,7 +389,7 @@ async fn a_run_terminated_while_a_call_waits_for_a_slot_ends_it_as_run_terminate
     run.dispatch(WEATHER, 0).await;
     run.dispatch(WEATHER, 1).await;
     run.admit(ALERTS, 2).await;
-    run.latch.until_arrived_within(3, UNTIL_ENFORCED).await;
+    run.latch.until_arrived(3).await;
     run.assert_slot_wait_is_silent(&[ALERTS], 2).await;
 
     let canceled = run
@@ -488,7 +485,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_holds_no_slot() {
         Ordering::SeqCst,
     );
     run.latch.release_arrivals();
-    tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+    tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
         .await
         .expect("the parked call refreshes its token outside the enforcement point");
     // The one slot is free: a ready call dispatches while the refresh is held.

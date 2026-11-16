@@ -12,14 +12,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
+use coral_embed::MANIFEST;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
+use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
+use super::vector_list::{self, VectorList};
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, RetrievalError, ToolRef, WindowEntry, count,
+    Answer, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing, QueryError, QueryRequest,
+    RequestContext, RetrievalError, Semantic, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
 use crate::hit::{HitMaterial, hit_text};
@@ -110,6 +113,7 @@ impl EntityRetriever for ToolRetriever {
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
+                semantic: Some(Semantic::of(&request.vector)),
             });
         };
         let complete = repository::complete_generations(transaction, context.workspace_id)
@@ -149,39 +153,39 @@ impl EntityRetriever for ToolRetriever {
             );
         }
         let named = named_providers(&plan, &searched);
-        let ranked = if searched.is_empty() {
-            Vec::new()
-        } else {
-            let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
-            let generation_ids = searched
-                .values()
-                .map(|provider| provider.generation_id().clone())
-                .collect::<Vec<_>>();
-            repository::rank_tools(
-                transaction,
-                context.workspace_id,
-                &repository::ToolScope {
-                    providers: &provider_ids,
-                    generations: &generation_ids,
-                    excluded: &excluded,
-                    named: &named,
-                },
-                &plan,
-                request.window + 1,
-            )
-            .await
-            .map_err(QueryError::Retriever)?
+        let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
+        let generation_ids = searched
+            .values()
+            .map(|provider| provider.generation_id().clone())
+            .collect::<Vec<_>>();
+        let scope = repository::ToolScope {
+            providers: &provider_ids,
+            generations: &generation_ids,
+            excluded: &excluded,
+            named: &named,
         };
-        let has_more = ranked.len() > request.window;
+        let (lexical, vector) =
+            lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
+                .await?;
+        let semantic = Semantic::of(&vector);
+        let (merged, has_more) = vector_list::merged_window(
+            lexical,
+            vector.ok(),
+            |tool: &repository::RankedTool| tool.doc_id.clone(),
+            request.window,
+        );
         let mut window = Vec::new();
-        for tool in ranked.into_iter().take(request.window) {
+        for entry in merged {
+            let strong_by_vector = entry.strong_by_vector();
+            let tool = entry.entry;
             let provider = searched
                 .get(&tool.provider_id)
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
                     "a ranked Tool's Provider was not searched",
                 )))?;
             window.push(WindowEntry {
-                strong: strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
+                strong: strong_by_vector
+                    || strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
                 entity: EntityRef::Tool(ToolRef {
                     provider: Arc::clone(provider),
                     tool_key: tool.tool_key,
@@ -198,6 +202,7 @@ impl EntityRetriever for ToolRetriever {
                 has_more,
             ),
             window,
+            semantic: Some(semantic),
         })
     }
 
@@ -257,6 +262,126 @@ impl EntityRetriever for ToolRetriever {
                 .map(ExactAuthoringDescription::tool),
         )
     }
+}
+
+/// The lexical list, with one row past the window, and the vector list, or
+/// why the vector side gave none.
+async fn lexical_and_vector_lists(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: &repository::ToolScope<'_>,
+    plan: &QueryPlan,
+    request: &QueryRequest<'_>,
+) -> Result<
+    (
+        Vec<repository::RankedTool>,
+        Result<VectorList<repository::RankedTool>, LexicalReason>,
+    ),
+    QueryError,
+> {
+    if scope.providers.is_empty() {
+        // No Provider is searched, so neither list can hold a Tool.
+        let nothing = request.vector.map(|_vector| VectorList {
+            entries: Vec::new(),
+            has_more: false,
+        });
+        return Ok((Vec::new(), nothing));
+    }
+    let lexical =
+        repository::rank_tools(transaction, workspace_id, scope, plan, request.window + 1)
+            .await
+            .map_err(QueryError::Retriever)?;
+    let vector = match request.vector {
+        Ok(vector) => {
+            vector_list::vector_side(
+                transaction,
+                workspace_id,
+                EntityKind::ProviderTool,
+                async |transaction| {
+                    nearest_current_tools(
+                        transaction,
+                        workspace_id,
+                        scope,
+                        plan,
+                        vector,
+                        request.window,
+                    )
+                    .await
+                },
+            )
+            .await?
+        }
+        Err(reason) => Err(reason),
+    };
+    Ok((lexical, vector))
+}
+
+/// The vector list: the `window` Tools of the scope whose vectors of the
+/// current Embedder revision are nearest to `vector`, less each whose vector
+/// was made from other text than its row holds now.
+async fn nearest_current_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: &repository::ToolScope<'_>,
+    plan: &QueryPlan,
+    vector: &[f32],
+    window: usize,
+) -> Result<VectorList<repository::RankedTool>, RetrievalError> {
+    let revision = MANIFEST.embedder_revision();
+    let mut nearest = repository::nearest_tools(
+        transaction,
+        workspace_id,
+        scope,
+        revision.as_str(),
+        vector,
+        window + 1,
+    )
+    .await?;
+    // No vector in scope: no row to look up.
+    if nearest.is_empty() {
+        return Ok(VectorList {
+            entries: Vec::new(),
+            has_more: false,
+        });
+    }
+    let has_more = nearest.len() > window;
+    nearest.truncate(window);
+    let doc_ids = nearest
+        .iter()
+        .map(|vector| vector.doc_id.as_str())
+        .collect::<Vec<_>>();
+    let rows = repository::current_tools(transaction, workspace_id, plan, &doc_ids).await?;
+    Ok(VectorList {
+        entries: vector_list::keep_current(nearest, rows),
+        has_more,
+    })
+}
+
+/// The plan of the vector query over the Tools of `providers`'
+/// `generations`, less `excluded`, one line per row: `EXPLAIN` on Postgres,
+/// the detail of `EXPLAIN QUERY PLAN` on `SQLite`.
+#[cfg(test)]
+pub(crate) async fn explain_vector_query(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    providers: &[ProviderId],
+    generations: &[coral_catalog::ProviderGenerationId],
+    excluded: &[(ProviderId, coral_catalog::ToolKey)],
+) -> Result<Vec<String>, coral_db::Error> {
+    let vector = vec![0.5; MANIFEST.dimension];
+    repository::explain_nearest_tools(
+        transaction,
+        workspace_id,
+        &repository::ToolScope {
+            providers,
+            generations,
+            excluded,
+            named: &[],
+        },
+        MANIFEST.embedder_revision().as_str(),
+        &vector,
+    )
+    .await
 }
 
 /// Whether a ranked Tool is a strong match, by the Tool retriever's own

@@ -39,15 +39,17 @@
 //!   the index holds each Provider's active Generation, apart from readiness.
 //! - [`prepare_storage`] runs at boot before `Database::migrate` applies
 //!   `coral_db::migration_plan()`, which creates the search index's tables. It
-//!   checks the database features their text search needs, and pgvector on
-//!   Postgres while the [`VectorStorage`] is on. [`prepare_vector_table`] runs
-//!   right after the chain and keeps the vector table, which lives outside it.
+//!   checks the database features their text search needs, and pgvector or
+//!   sqlite-vec while the [`VectorStorage`] is on. [`prepare_vector_table`]
+//!   runs right after the chain and keeps the vector table, which lives
+//!   outside it.
 //! - [`SearchIndex`] writes the search-owned index in the background when a
 //!   committing workflow notifies it, and its reconcile task converges the
 //!   index on what the owners hold.
 //!
-//! The engine inside [`UniversalSearchModule`] normalizes the query, hands the
-//! same terms to every retriever, fuses by position, and pages by a plain
+//! The engine inside [`UniversalSearchModule`] normalizes the query, embeds
+//! it once when the vector side is on (ADR 0035), hands the same terms and
+//! vector to every retriever, fuses by position, and pages by a plain
 //! offset that authorizes nothing. It never names a Search Entity kind. Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
@@ -61,6 +63,7 @@ mod index;
 mod index_state;
 mod index_text;
 mod indexer;
+mod model_load;
 mod page;
 pub mod projection;
 mod readiness;
@@ -83,14 +86,17 @@ use page::{Ranked, hydrate_page_in_transaction};
 use retriever::authored_tools::AuthoredToolRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
-    begin_query, count, end_query,
+    Answer, EntityRetriever, LexicalReason, QueryError, QueryRequest, RequestContext, Semantic,
+    WindowEntry, abandon_query, begin_query, count, end_query,
 };
+use tracing::Instrument as _;
+use tracing::field::Empty;
 
 pub use caller_declarations::CallerToolDeclarations;
 pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, MissingPath};
 pub use error::{Error, UNKNOWN_NAMESPACE_REASON, searchable_namespaces};
 pub use index::SearchIndex;
+pub use model_load::ModelLoad;
 pub use storage::{StorageError, VectorStorage, prepare_storage, prepare_vector_table};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
@@ -117,6 +123,9 @@ pub struct UniversalSearchModule {
     /// then Shared Tools. A strong Private or Shared Tool therefore leads
     /// every Tool below its position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
+    /// The model the engine embeds each query with, when the vector side
+    /// is on; until the model is ready, the slot says why there is none.
+    model: Option<index::EmbedderModel>,
 }
 
 /// The most type names one `describe` call may request.
@@ -134,6 +143,17 @@ impl UniversalSearchModule {
             ToolRetriever::default(),
             AuthoredToolRetriever::new,
         )
+    }
+
+    /// Turns the vector side on: once `model` is ready, the engine embeds
+    /// each query with it, and each retriever that keeps vectors merges a
+    /// vector list with its lexical list. Give it the receiver the
+    /// [`SearchIndex`]'s Embedder takes, so a query shares the Embedder's
+    /// model and waits for at most the one document that runs.
+    #[must_use]
+    pub fn with_model(mut self, model: tokio::sync::watch::Receiver<ModelLoad>) -> Self {
+        self.model = Some(model);
+        self
     }
 
     /// Builds discovery whose named retrievers fail to rank, through the
@@ -171,6 +191,7 @@ impl UniversalSearchModule {
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Private)),
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Shared)),
             ]),
+            model: None,
         }
     }
 
@@ -232,9 +253,23 @@ impl UniversalSearchModule {
         workspace_id: &WorkspaceId,
         request: &SearchRequest,
     ) -> Result<SearchPage, Error> {
-        let terms = request
-            .search_query()
-            .map(|query| query_terms(query.as_str()));
+        self.page_in_span(actor, workspace_id, request)
+            .instrument(tracing::info_span!("coral.search"))
+            .await
+    }
+
+    async fn page_in_span(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        request: &SearchRequest,
+    ) -> Result<SearchPage, Error> {
+        // Embedded before the snapshot opens, so the embedding holds no
+        // connection.
+        let ranking = match request.search_query() {
+            Some(query) => Some((query_terms(query.as_str()), self.query_vector(query).await)),
+            None => None,
+        };
 
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
@@ -245,17 +280,18 @@ impl UniversalSearchModule {
             authority: &authority,
             workspace_id,
         };
-        let (ranked, statuses) = match &terms {
+        let (ranked, statuses) = match &ranking {
             None => {
                 self.list_in_transaction(&mut transaction, context, request.provider())
                     .await?
             }
-            Some(terms) => {
+            Some((terms, vector)) => {
                 self.rank_in_transaction(
                     &mut transaction,
                     context,
                     &QueryRequest {
                         terms,
+                        vector: vector.as_deref().map_err(|reason| *reason),
                         provider_filter: request.provider(),
                         window: RETRIEVAL_WINDOW,
                     },
@@ -276,6 +312,33 @@ impl UniversalSearchModule {
         .await?;
         transaction.commit().await?;
         Ok(page)
+    }
+
+    /// The query's vector: the frozen query alone, embedded with the model's
+    /// query prefix on a blocking thread. Without one, because the vector
+    /// side is off, the model is not ready, or the model fails on the query,
+    /// every retriever ranks by words alone, and the page does not say so.
+    async fn query_vector(&self, query: &SearchQuery) -> Result<Vec<f32>, LexicalReason> {
+        let Some(model) = &self.model else {
+            return Err(LexicalReason::Disabled);
+        };
+        let model = model.borrow().model()?;
+        let span = tracing::info_span!("coral.search.embed_query", error.type = Empty);
+        let text = query.as_str().to_owned();
+        let embedded = tokio::task::spawn_blocking(move || model.embed_query(&text))
+            .instrument(span.clone())
+            .await;
+        if let Ok(Ok(vector)) = embedded {
+            return Ok(vector);
+        }
+        coral_telemetry::record_failure(&span, LexicalReason::EmbedFailed.as_str());
+        // The model's error is not logged: its text may quote the query.
+        tracing::warn!(
+            parent: &span,
+            error.type = safe::kind(LexicalReason::EmbedFailed.as_str()),
+            "the search model failed to embed a query; search ranks by words alone"
+        );
+        Err(LexicalReason::EmbedFailed)
     }
 
     /// The Providers the caller can search now, by namespace: the values a
@@ -361,9 +424,25 @@ impl UniversalSearchModule {
         let mut failed = 0usize;
         for (retriever_index, retriever) in self.retrievers.iter().enumerate() {
             begin_query(transaction).await?;
-            let answer = retriever.query(transaction, context, request).await;
+            let span = tracing::info_span!(
+                "coral.search.rank",
+                coral.search.retriever = safe::kind(retriever.kind().as_str()),
+                coral.search.semantic = Empty,
+                coral.search.lexical_only.reason = Empty,
+            );
+            let answer = retriever
+                .query(transaction, context, request)
+                .instrument(span.clone())
+                .await;
             let status = match answer {
-                Ok(Answer { window, coverage }) => {
+                Ok(Answer {
+                    window,
+                    coverage,
+                    semantic,
+                }) => {
+                    if let Some(semantic) = semantic {
+                        record_semantic(&span, semantic);
+                    }
                     end_query(transaction).await?;
                     applied += 1;
                     windows.push((retriever_index, window));
@@ -645,6 +724,18 @@ fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
             entity: entry.entity,
         })
         .collect()
+}
+
+/// Records on a retriever's span whether it merged its vector list, and why
+/// it did not (ADR 0035, "The setting and failures").
+fn record_semantic(span: &tracing::Span, semantic: Semantic) {
+    span.record("coral.search.semantic", safe::kind(semantic.as_str()));
+    if let Semantic::LexicalOnly(reason) = semantic {
+        span.record(
+            "coral.search.lexical_only.reason",
+            safe::kind(reason.as_str()),
+        );
+    }
 }
 
 /// A ranked retriever's state follows from its coverage.

@@ -21,7 +21,7 @@ pub enum Error {
     ProviderSetupNotReady,
     /// Authorization metadata discovery failed with a safe typed code.
     #[error("MCP authorization discovery failed: {0}")]
-    AuthorizationDiscovery(&'static str),
+    AuthorizationDiscovery(crate::account::AuthorizationDiscoveryFailure),
     /// No client bootstrap is possible without a manually supplied client identifier.
     #[error("no OAuth client bootstrap is available for this authorization server")]
     ClientBootstrapUnavailable,
@@ -54,7 +54,7 @@ pub enum Error {
     CredentialRefreshFailed,
     /// A host-classified token exchange failure, never an upstream description.
     #[error("OAuth token exchange failed: {0}")]
-    OAuthTokenExchange(&'static str),
+    OAuthTokenExchange(crate::account::TokenExchangeFailure),
     /// The owner must repair the shared OAuth application; account grants remain intact.
     #[error("oauth_client_configuration")]
     OAuthClientConfiguration,
@@ -207,10 +207,56 @@ impl Error {
         }
     }
 
+    /// Whether the database gave no answer (a lost connection, a pool
+    /// timeout, a lock or serialization race), directly or through the
+    /// Catalog or Workspace error that wraps it. The work may be tried again.
+    /// Every other error is a definite answer.
+    #[must_use]
+    pub(crate) fn is_operational(&self) -> bool {
+        match self {
+            Self::Database(error)
+            | Self::Catalog(coral_catalog::Error::Database(error))
+            | Self::Workspace(coral_workspace::Error::Database(error)) => error.is_unanswered(),
+            _ => false,
+        }
+    }
+
     pub(crate) fn source_fetch(error: reqwest::Error) -> Self {
         match coral_outbound::FetchError::from(error) {
             coral_outbound::FetchError::DestinationRejected => Self::OutboundDestinationRejected,
             coral_outbound::FetchError::Http(_) => Self::InputUnavailable,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn an_unanswered_database_error_is_operational_through_every_module_wrapper() {
+        type Wrap = fn(coral_db::Error) -> Error;
+        let unanswered = || coral_db::Error::WriterBusy;
+        let definite = || coral_db::Error::Sqlx(sqlx::Error::RowNotFound);
+        let wrapped: [(Wrap, &str); 3] = [
+            (|error| Error::Database(error), "provider"),
+            (
+                |error| Error::Catalog(coral_catalog::Error::Database(error)),
+                "catalog",
+            ),
+            (
+                |error| Error::Workspace(coral_workspace::Error::Database(error)),
+                "workspace",
+            ),
+        ];
+        for (wrap, label) in wrapped {
+            assert!(wrap(unanswered()).is_operational(), "{label}");
+            assert!(!wrap(definite()).is_operational(), "{label}");
+        }
+        assert!(
+            !Error::OAuthTokenExchange(crate::account::TokenExchangeFailure::AccessDenied)
+                .is_operational()
+        );
+        assert!(!Error::AccountInput.is_operational());
     }
 }

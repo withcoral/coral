@@ -51,6 +51,8 @@ struct Fixture {
     channel: Channel,
     mcp_origin: Arc<OnceLock<String>>,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Tells the services that the listener is stopping, as bootstrap does.
+    stop: tokio::sync::watch::Sender<bool>,
     issuer: SessionTokenIssuer,
     owner: AuthenticatedUser,
     member: AuthenticatedUser,
@@ -243,6 +245,7 @@ impl Fixture {
         let mcp_origin = Arc::new(OnceLock::new());
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let readiness = ready.clone();
+        let (stop, stopping) = tokio::sync::watch::channel(false);
         let server = TestServer::start(coral_grpc::routes(
             coral_grpc::Dependencies {
                 organization: OrganizationModule::new(database.clone()),
@@ -312,6 +315,7 @@ impl Fixture {
                         readiness.load(std::sync::atomic::Ordering::SeqCst),
                     ))
                 }),
+                stopping,
             },
         ))
         .await;
@@ -322,6 +326,7 @@ impl Fixture {
             _server: server,
             mcp_origin,
             ready,
+            stop,
             issuer,
             owner,
             member,
@@ -353,6 +358,7 @@ impl Fixture {
     }
 
     fn token(&self, user: &AuthenticatedUser, audience: &str) -> String {
+        let now = coral_test_support::now_unix_nanos();
         if audience == "mcp" {
             self.issuer
                 .issue_workspace_access_token(
@@ -360,12 +366,13 @@ impl Fixture {
                     "test",
                     audience,
                     self.workspace.id(),
+                    now,
                 )
                 .unwrap()
                 .access_token
         } else {
             self.issuer
-                .issue_access_token(user.user_id().as_str(), "test", audience)
+                .issue_access_token(user.user_id().as_str(), "test", audience, now)
                 .unwrap()
                 .access_token
         }
@@ -1116,7 +1123,12 @@ async fn task_concealment_and_live_membership_survive_both_audiences() {
     assert_eq!(hidden.code(), tonic::Code::NotFound);
     let unscoped = f
         .issuer
-        .issue_access_token(f.member.user_id().as_str(), "test", "mcp")
+        .issue_access_token(
+            f.member.user_id().as_str(),
+            "test",
+            "mcp",
+            coral_test_support::now_unix_nanos(),
+        )
         .unwrap()
         .access_token;
     for token in [

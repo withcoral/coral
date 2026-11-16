@@ -18,7 +18,7 @@ pub(crate) async fn wait_for_approval(
     workspace: &coral_workspace::WorkspaceId,
     run: &crate::RunId,
 ) -> crate::approval::ApprovalRequest {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENTUALLY, async {
         loop {
             let requests = approvals.list_for_run(actor, workspace, run).await.unwrap();
             if let Some(request) = requests.first() {
@@ -49,7 +49,7 @@ pub(crate) async fn wait_for_actions(
     count: usize,
     invocations: usize,
 ) -> crate::RunUpdate {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENTUALLY, async {
         loop {
             let update = runs
                 .observe(actor, workspace, run, &immediate(None, 100))

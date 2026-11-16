@@ -245,7 +245,7 @@ impl ProviderModule {
                                 coral_upstream::AuthorizationDiscoveryError::ResourceMetadataMissing
                                 | coral_upstream::AuthorizationDiscoveryError::ResourceMetadataUnauthorized,
                             ) => None,
-                            Err(error) => return Err(Error::AuthorizationDiscovery(error.code())),
+                            Err(error) => return Err(Error::AuthorizationDiscovery(error.into())),
                         };
                         return self
                             .create_setup(
@@ -263,7 +263,9 @@ impl ProviderModule {
                             .await;
                     }
                     Err(coral_upstream::Error::McpAuthenticationUnsupported) => {
-                        return Err(Error::AuthorizationDiscovery("challenge_unsupported"));
+                        return Err(Error::AuthorizationDiscovery(
+                            crate::account::AuthorizationDiscoveryFailure::ChallengeUnsupported,
+                        ));
                     }
                     Err(coral_upstream::Error::DestinationRejected) => {
                         return Err(Error::OutboundDestinationRejected);

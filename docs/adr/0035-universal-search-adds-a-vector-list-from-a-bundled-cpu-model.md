@@ -118,14 +118,15 @@ every row behind it, even when it is alone in its batch. The skip list lives in 
 failure state. Saving a Private Tool or publishing a Shared Tool never calls the model. Query embedding runs on a
 blocking thread at normal priority.
 
-A Graph-sized Provider (19,830 rows) becomes searchable by meaning in about 11.5 minutes on one x86 vCPU and 2.9 minutes
-on one M4 core; until then it ranks by words. Two Coral Instances that overlap during a rolling update can embed the
+Semantic search finds the Tools of a Graph-sized Provider (19,830 rows) after about 11.5 minutes on one x86 vCPU and 2.9
+minutes on one M4 core; until then they rank by words. Two Coral Instances that overlap during a rolling update can embed the
 same rows; the write checks staleness, so this costs CPU only.
 
 ## Storage
 
-One vector table per backend, keyed like the entity table, with the revision and source stamp beside each vector. Coral
-creates it at boot from the manifest, before the Embedder starts, and drops and recreates it when the dimension changes. It lives outside
+One vector table per backend (on SQLite, the pair of tables below), keyed like the entity table, with the revision and
+source stamp beside each vector.
+Coral creates it at boot from the manifest, before the Embedder starts, and drops and recreates it when the dimension changes. It lives outside
 the migration chain, the one exception to that rule: a migration with a vector column fails on a Postgres without
 pgvector, and Coral with the vector side off must start there.
 
@@ -139,9 +140,12 @@ pgvector, and Coral with the vector side off must start there.
   role may (the RDS master user may, as for `pg_trgm`) and otherwise refuses to start with a one-line remedy. With the
   setting off it checks nothing.
 - **SQLite:** a sqlite-vec `vec0` table of `float[384]` (sqlite-vec has no fp16 type), version pinned, registered for
-  the whole process before coral-db opens its first pool. The vector query takes the eligibility SQL through `rowid IN
-  (subquery)`. sqlite-vec is best effort: if `EXPLAIN QUERY PLAN` shows the filter does not reach `vec0`, SQLite stays
-  lexical, with no BLOB scan or other workaround.
+  the whole process before coral-db opens its first pool. The registration is one `unsafe` call, so it lives in a crate
+  of its own and every other crate keeps `unsafe` code forbidden. `vec0` finds a vector by an integer rowid, and the
+  entity table has no integer key that `VACUUM` keeps, so a plain key table beside it holds each vector's rowid with
+  its revision and source stamp; the two are created and dropped together. The vector query takes the eligibility SQL
+  through `rowid IN (subquery)`. sqlite-vec is best effort: if `EXPLAIN QUERY PLAN` shows the filter does not reach
+  `vec0`, SQLite stays lexical, with no BLOB scan or other workaround.
 - **No foreign keys**, not even to `workspace_records`. A `vec0` table cannot hold one, and a cascade from a source
   makes a delete wait for the index ([#2684](https://github.com/withcoral/coral/issues/2684)). The Reconcile task removes
   vectors whose Search Entity or Workspace is gone. Retrieval reads only live sources

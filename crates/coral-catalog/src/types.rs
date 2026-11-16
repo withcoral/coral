@@ -409,6 +409,14 @@ impl SchemaId {
     }
 }
 
+/// A schema reference names its target by this identity's text, so a map
+/// keyed by identity finds the target from the reference itself.
+impl std::borrow::Borrow<str> for SchemaId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 /// JSON Schema semantics selected by the pinned Provider Definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -581,11 +589,7 @@ fn bundled_schema(
         if !seen.insert(id.clone()) {
             continue;
         }
-        let schema = graph
-            .schemas
-            .iter()
-            .find_map(|(candidate, schema)| (candidate.as_str() == id).then_some(schema))?;
-        let mut schema = schema.clone();
+        let mut schema = graph.schemas.get(id.as_str())?.clone();
         rewrite_schema_references(&mut schema, &mut pending, graph, direction);
         definitions.insert(id, schema);
     }

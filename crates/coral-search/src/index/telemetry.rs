@@ -53,7 +53,9 @@ impl SearchIndex {
         }
     }
 
-    pub(super) async fn observe_backlog(&self) {
+    /// Takes one backlog snapshot. Tests call it to read a snapshot without
+    /// the loop's timer.
+    pub(crate) async fn observe_backlog(&self) {
         {
             let mut registered = self
                 .telemetry
@@ -116,6 +118,7 @@ impl SearchIndex {
             } else {
                 None
             };
+            let embedder = self.embedder_backlog(&mut tx).await?;
             tx.rollback().await?;
             Ok::<_, crate::indexer::IndexError>(Snapshot {
                 backlog: metric::SearchBacklog {
@@ -124,6 +127,7 @@ impl SearchIndex {
                     shared_tools: backlog.shared_tools,
                     first_visibility,
                     sample_age: Duration::ZERO,
+                    embedder,
                 },
                 sampled,
             })

@@ -687,7 +687,7 @@ impl MixedActions {
     /// Activity rows once every Invocation, including the second Account
     /// waiter, shows that it requires action.
     async fn waiting_rows(&self) -> crate::RunEntries {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(EVENTUALLY, async {
             loop {
                 let page = self
                     .runs
@@ -951,7 +951,7 @@ async fn a_connection_request_shared_by_different_tools_names_no_tool() {
         .unwrap();
     wait_for_actions(&runs, user, scope, accepted.run_id(), 1, 2).await;
     // The second call joins the request after it starts, so read until both wait on it.
-    let action = tokio::time::timeout(Duration::from_secs(5), async {
+    let action = tokio::time::timeout(EVENTUALLY, async {
         loop {
             let update = runs
                 .observe(user, scope, accepted.run_id(), &immediate(None, 1))

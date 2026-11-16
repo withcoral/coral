@@ -38,6 +38,7 @@ import { CopyIcon } from '@/wax/components/icon/custom-icons/copy'
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
 import { CornerDownLeftIcon } from '@/wax/components/icon/custom-icons/corner-down-left'
 import { CpuIcon } from '@/wax/components/icon/custom-icons/cpu'
+import { CreditCardIcon } from '@/wax/components/icon/custom-icons/credit-card'
 import { DocIcon } from '@/wax/components/icon/custom-icons/doc'
 import { DownloadIcon } from '@/wax/components/icon/custom-icons/download'
 import { EllipsisIcon } from '@/wax/components/icon/custom-icons/ellipsis'
@@ -152,6 +153,7 @@ export const customIcons = {
   Coral: CoralIcon,
   CornerDownLeft: CornerDownLeftIcon,
   Cpu: CpuIcon,
+  CreditCard: CreditCardIcon,
   Doc: DocIcon,
   Download: DownloadIcon,
   Ellipsis: EllipsisIcon,

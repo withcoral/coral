@@ -6,7 +6,9 @@ use serde::Deserialize;
 
 use super::setup::{SetupAuthorizationState, StoredRequirement};
 use super::setup_oauth::{advanced, end_open_authorization};
-use super::{AccountModule, device_repository, oauth, repository, setup_repository};
+use super::{
+    AccountModule, TokenExchangeFailure, device_repository, oauth, repository, setup_repository,
+};
 use crate::{Error, LifecycleAction, LifecycleOutcome, ProviderSetupId, ProviderSetupState};
 
 #[derive(Deserialize)]
@@ -34,12 +36,14 @@ impl DeviceResponse {
             || self.interval == 0
             || self.interval > 3600
         {
-            return Err(Error::OAuthTokenExchange("oauth_token_response_invalid"));
+            return Err(Error::OAuthTokenExchange(
+                TokenExchangeFailure::ResponseInvalid,
+            ));
         }
         // Verification is browser navigation, not Coral's registered callback.
         // ConsentPolicy screens the address every time it is issued to Reef.
         let uri = url::Url::parse(&self.verification_uri)
-            .map_err(|_error| Error::OAuthTokenExchange("oauth_token_response_invalid"))?;
+            .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))?;
         if !bounded(&self.verification_uri, 4096)
             || !matches!(uri.scheme(), "http" | "https")
             || uri.host_str().is_none()
@@ -47,13 +51,17 @@ impl DeviceResponse {
             || uri.password().is_some()
             || uri.fragment().is_some()
         {
-            return Err(Error::OAuthTokenExchange("oauth_token_response_invalid"));
+            return Err(Error::OAuthTokenExchange(
+                TokenExchangeFailure::ResponseInvalid,
+            ));
         }
         i64::try_from(self.expires_in)
             .ok()
             .and_then(|seconds| seconds.checked_mul(1_000_000_000))
             .and_then(|duration| now.checked_add(duration))
-            .ok_or(Error::OAuthTokenExchange("oauth_token_response_invalid"))
+            .ok_or(Error::OAuthTokenExchange(
+                TokenExchangeFailure::ResponseInvalid,
+            ))
     }
 }
 
@@ -82,7 +90,7 @@ async fn request_device(
     .await?;
     oauth::check_response(status, &body)?;
     serde_json::from_slice(&body)
-        .map_err(|_error| Error::OAuthTokenExchange("oauth_token_response_invalid"))
+        .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))
 }
 
 impl AccountModule {
@@ -106,6 +114,9 @@ impl AccountModule {
             let result = module
                 .poll_setup_device(&context, &owner, &id, &requirement, started, &lease)
                 .await;
+            if unanswered(&result) {
+                return;
+            }
             let context = advanced(&context, started);
             if lease.renew(context.occurred_at_unix_nanos()).await.is_err() {
                 return;
@@ -276,7 +287,10 @@ impl AccountModule {
                 LifecycleOutcome::Succeeded
             }
             Err(error) => {
-                let state = if matches!(error, Error::OAuthTokenExchange("oauth_device_expired")) {
+                let state = if matches!(
+                    error,
+                    Error::OAuthTokenExchange(TokenExchangeFailure::DeviceExpired)
+                ) {
                     SetupAuthorizationState::Expired
                 } else {
                     SetupAuthorizationState::Failed
@@ -337,6 +351,9 @@ impl AccountModule {
             let result = module
                 .poll_account_device(&context, &owner, id, &requirement, started, &lease)
                 .await;
+            if unanswered(&result) {
+                return;
+            }
             let context = advanced(&context, started);
             if lease.renew(context.occurred_at_unix_nanos()).await.is_err() {
                 return;
@@ -352,12 +369,14 @@ impl AccountModule {
                     .await
                     .map(|_| ()),
                 Err(error) => {
-                    let state =
-                        if matches!(error, Error::OAuthTokenExchange("oauth_device_expired")) {
-                            super::AuthorizationState::Expired
-                        } else {
-                            super::AuthorizationState::Failed
-                        };
+                    let state = if matches!(
+                        error,
+                        Error::OAuthTokenExchange(TokenExchangeFailure::DeviceExpired)
+                    ) {
+                        super::AuthorizationState::Expired
+                    } else {
+                        super::AuthorizationState::Failed
+                    };
                     module
                         .end_authorization(
                             &context,
@@ -532,7 +551,9 @@ impl Polling<'_> {
             let now = advanced(self.context, self.started);
             let remaining = self.expires.saturating_sub(now.occurred_at_unix_nanos());
             if remaining <= 0 {
-                return Err(Error::OAuthTokenExchange("oauth_device_expired"));
+                return Err(Error::OAuthTokenExchange(
+                    TokenExchangeFailure::DeviceExpired,
+                ));
             }
             self.lease.renew(now.occurred_at_unix_nanos()).await?;
             let wait = self
@@ -583,11 +604,11 @@ impl Polling<'_> {
             )
             .await;
             match result {
-                Err(Error::OAuthTokenExchange("oauth_authorization_pending")) => {}
-                Err(Error::OAuthTokenExchange("oauth_slow_down")) => {
+                Err(Error::OAuthTokenExchange(TokenExchangeFailure::AuthorizationPending)) => {}
+                Err(Error::OAuthTokenExchange(TokenExchangeFailure::SlowDown)) => {
                     interval = interval.saturating_add(5);
                 }
-                Err(Error::OAuthTokenExchange("oauth_token_timeout")) => {
+                Err(Error::OAuthTokenExchange(TokenExchangeFailure::Timeout)) => {
                     interval = interval.saturating_mul(2);
                 }
                 Ok(mut token) => {
@@ -608,6 +629,13 @@ impl Polling<'_> {
             tx.commit().await?;
         }
     }
+}
+
+/// Whether a poll stopped because the database gave no answer. That says
+/// nothing about the device grant, so the worker ends nothing and keeps its
+/// lease unfinished: recovery resumes the job once the lease lapses.
+fn unanswered(result: &Result<oauth::TokenResponse, Error>) -> bool {
+    result.as_ref().is_err_and(Error::is_operational)
 }
 
 fn next_poll(now: i64, interval: u64) -> i64 {
