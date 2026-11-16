@@ -84,7 +84,7 @@ async fn organization_owner_lists_archives_restores_and_assigns_without_a_member
     let found = listed(&mut client, &token, &name).await;
     assert_eq!(found.display_name, "Members only");
     assert_eq!(found.state, management::WorkspaceState::Active as i32);
-    assert!(!found.etag.is_empty());
+    assert_ne!(found.etag, "");
     assert_eq!(owners(&found), [("users/member", true)]);
     let own = format!("workspaces/{}", f.workspace.id());
     assert_eq!(

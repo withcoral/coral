@@ -107,7 +107,10 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
                 .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, values)
                 .await
                 .unwrap();
-            assert!(confirmed.errors.is_empty());
+            assert_eq!(
+                confirmed.errors,
+                [] as [coral_catalog::ConfigurationFieldError; 0]
+            );
             let authorized = accounts
                 .authorize_setup(
                     &context,
@@ -176,19 +179,16 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
             );
 
             if before_commit {
-                assert!(
-                    providers
-                        .inspect_providers(&actor, &owner)
-                        .await
-                        .unwrap()
-                        .is_empty()
+                assert_eq!(
+                    providers.inspect_providers(&actor, &owner).await.unwrap(),
+                    [] as [crate::Provider; 0]
                 );
-                assert!(
+                assert_eq!(
                     accounts
                         .list_user_lifecycle_events(&context, &owner)
                         .await
-                        .unwrap()
-                        .is_empty()
+                        .unwrap(),
+                    [] as [crate::AdministrativeLifecycleEvent; 0]
                 );
             }
             let restarted = ProviderModule::with_test_dependencies(
@@ -394,12 +394,12 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
     )
     .await;
     materializer.release();
-    assert!(
+    assert_eq!(
         change
             .expect("configuration edit holds no materialization lock")
             .unwrap()
-            .errors
-            .is_empty()
+            .errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
     );
     assert!(matches!(
         publishing.await.unwrap(),
@@ -419,12 +419,12 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
             .state(),
         ProviderSetupState::Ready
     );
-    assert!(
+    assert_eq!(
         providers
             .inspect_providers(&actor, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     assert_eq!(
         terminal_event_count(&providers, &actor, workspace.id()).await,
@@ -534,12 +534,12 @@ async fn creation_rechecks_owner_demotion_after_materialization() {
             .state(),
         ProviderSetupState::Ready
     );
-    assert!(
+    assert_eq!(
         providers
             .inspect_providers(&administrator, workspace.id())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     assert_eq!(
         terminal_event_count(&providers, &administrator, workspace.id()).await,

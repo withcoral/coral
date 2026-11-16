@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM docker.io/library/node:24-trixie-slim AS node
-FROM docker.io/library/rust:1.98-trixie AS reel
+FROM docker.io/library/rust:1.100-trixie AS reel
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \

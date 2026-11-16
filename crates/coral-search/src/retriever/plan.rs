@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use crate::indexer::compact_identifier_variant;
 
 /// Terms shorter than this cannot meet a trigram index; both backends drop them.
-pub(crate) const MIN_TERM_CHARS: usize = 3;
+const MIN_TERM_CHARS: usize = 3;
 /// A near-spelling joins a query word to a catalog word only when both have
 /// this many letters. Shorter words sit one edit from too many others:
 /// `maya` from `may`, `chen` from `when` and `then`.
@@ -230,7 +230,6 @@ impl QueryPlan {
                         })
                         .map(spelling);
                     ScoredWord {
-                        word: stat.word.clone(),
                         spellings: std::iter::once(spelling(stat)).chain(near).collect(),
                     }
                 })
@@ -463,24 +462,8 @@ pub(super) struct ScoringPlan {
     pub(super) avgdl: f64,
 }
 
-impl ScoringPlan {
-    /// The catalog words that query words reach as near-spellings.
-    pub(super) fn near_spellings(&self) -> Vec<String> {
-        self.words
-            .iter()
-            .flat_map(|word| {
-                word.spellings
-                    .iter()
-                    .filter(|spelling| spelling.word != word.word)
-                    .map(|spelling| spelling.word.clone())
-            })
-            .collect()
-    }
-}
-
 /// One query word that scores, and the spellings it scores by.
 pub(super) struct ScoredWord {
-    pub(super) word: String,
     pub(super) spellings: Vec<Spelling>,
 }
 
@@ -594,7 +577,7 @@ fn with_compact_variants(terms: &[String]) -> Vec<Term> {
 }
 
 /// The words of `term`, as [`split_words`] splits them.
-pub(crate) fn lexeme_words(term: &str) -> Vec<String> {
+fn lexeme_words(term: &str) -> Vec<String> {
     split_words(term).map(str::to_string).collect()
 }
 

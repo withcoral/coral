@@ -347,7 +347,7 @@ impl LatestPath {
     }
 
     fn path(self) -> String {
-        self.latest.map(|(_, path)| path).unwrap_or_default()
+        self.latest.map_or_default(|(_, path)| path)
     }
 }
 

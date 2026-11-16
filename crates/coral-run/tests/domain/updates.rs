@@ -118,7 +118,10 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             .confirm_setup_configuration(&context, scope, setup.id(), review.revision, values)
             .await
             .unwrap();
-        assert!(review.errors.is_empty());
+        assert_eq!(
+            review.errors,
+            [] as [coral_catalog::ConfigurationFieldError; 0]
+        );
         let mut request = ProviderRegenerationRequest::new(
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             scope.clone(),

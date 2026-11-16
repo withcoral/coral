@@ -11,8 +11,10 @@ DOCKER_NO_CACHE ?= 0
 RUST_WORKSPACE_TESTS = cargo nextest run --workspace --all-targets --locked --no-fail-fast
 
 # Podman drops HEALTHCHECK unless it writes the Docker image format. Docker
-# needs --load so an image built by a container builder reaches the local
-# store; Podman does not accept that flag.
+# builds with `buildx build`: plain `docker build` ignores the builder that
+# `docker buildx use` selects, which is how CI supplies a cached one. It needs
+# --load so an image built by a container builder reaches the local store;
+# Podman does not accept that flag.
 define image_build
 set -eu; \
 case "$(DOCKER_NO_CACHE)" in \
@@ -21,11 +23,11 @@ case "$(DOCKER_NO_CACHE)" in \
   *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
 esac; \
 if $(CONTAINER_ENGINE) --version | grep -qi podman; then \
-  set -- "$$@" --format docker; \
+  set -- build "$$@" --format docker; \
 else \
-  set -- "$$@" --load; \
+  set -- buildx build "$$@" --load; \
 fi; \
-$(CONTAINER_ENGINE) build "$$@"
+$(CONTAINER_ENGINE) "$$@"
 endef
 
 # Installs the released binary, built from ee/crates/coral-ee, as `coral`.
@@ -72,7 +74,7 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks: lint-migrations license-check ee-boundary
+rust-checks: lint-migrations lint-proto license-check ee-boundary
 	scripts/check-migrations.sh
 	# A plain build at the root builds only the Apache-2.0 crates; prove they
 	# stand alone without ee/ (ADR 0033).
@@ -172,12 +174,22 @@ lint-migrations:
 	squawk crates/coral-db/migrations/postgres/*.sql
 
 # ----------------------------------------------------------------------------
-# Protobuf API linting
+# Protobuf linting and bindings
 # ----------------------------------------------------------------------------
-# Lints crates/coral-grpc/proto with Buf.
+# Lints the protobufs of every crate that has a buf.yaml with Buf. Then
+# generates their Rust bindings again and fails when the checked-in ones
+# differ. Installs `@bufbuild/buf` from npm, which ships a prebuilt binary.
+# rust-checks runs it too.
 #
-#   make lint-proto   # check protobuf style and API-shape rules
+#   make lint-proto                        # check the protobufs and bindings
+#   cargo run -p xtask -- generate-proto   # write the bindings again
+
+# CI has no Buf on PATH and installs this one.
+BUF_VERSION ?= 1.75.0
 
 lint-proto:
-	cd crates/coral-grpc && buf lint
+	buf --version >/dev/null 2>&1 || npm install --global @bufbuild/buf@$(BUF_VERSION)
+	set -eu; for crate in $(dir $(wildcard crates/*/buf.yaml)); do \
+	  (cd "$$crate" && buf lint); \
+	done
 	cargo run -p xtask --locked -- generate-proto --check

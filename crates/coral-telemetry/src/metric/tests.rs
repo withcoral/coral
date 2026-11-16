@@ -444,11 +444,10 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
         [0.0]
     );
     let unknown = observe_search_backlog(|| None);
-    assert!(capture.values("coral.search.index.backlog").is_empty());
-    assert!(
-        capture
-            .values("coral.search.index.first_visibility.age")
-            .is_empty()
+    assert_eq!(capture.values("coral.search.index.backlog"), [] as [f64; 0]);
+    assert_eq!(
+        capture.values("coral.search.index.first_visibility.age"),
+        [] as [f64; 0]
     );
     drop(unknown);
     assert_eq!(
@@ -461,7 +460,7 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
         [0.0]
     );
     drop(known);
-    assert!(capture.values("coral.search.index.backlog").is_empty());
+    assert_eq!(capture.values("coral.search.index.backlog"), [] as [f64; 0]);
 }
 
 /// Without the layer, domain code records nothing and does not fail.

@@ -273,3 +273,12 @@ export const bulletList = style({
   paddingLeft: 20,
   listStyle: 'disc',
 })
+
+// A secret store's workspaces, removable unless archived, then the button that adds one.
+export const grants = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 4,
+  minWidth: 0,
+})

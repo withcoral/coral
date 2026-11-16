@@ -1090,8 +1090,7 @@ mod tests {
             .filter_map(|cookie| cookie.to_str().ok())
             .find(|cookie| cookie.starts_with("__Host-coral_oauth_approval="))
             .and_then(|cookie| cookie.split(';').next())
-            .map(str::to_owned)
-            .unwrap_or_default();
+            .map_or_default(str::to_owned);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (String::from_utf8(body.to_vec()).unwrap(), cookie)
     }

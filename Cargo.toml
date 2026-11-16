@@ -9,7 +9,7 @@ resolver = "2"
 edition = "2024"
 version = "1.8.0" # x-release-please-version
 license = "Apache-2.0"
-rust-version = "1.97"
+rust-version = "1.100"
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -103,6 +103,7 @@ sqlx = { version = "0.9", default-features = false, features = ["macros", "migra
 sourcemap = "9.3.2"
 sse-stream = "0.2.6"
 thiserror = "2"
+thread-priority = "3.1.1"
 tokio = { version = "1", features = ["full"] }
 tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
 tokio-stream = "0.1"

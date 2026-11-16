@@ -12,6 +12,3 @@ lint:
     - COMMENT_ONEOF
     - COMMENT_RPC
     - COMMENT_SERVICE
-breaking:
-  use:
-    - FILE

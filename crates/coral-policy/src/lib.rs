@@ -300,13 +300,12 @@ impl ToolPolicyModule {
                         &root,
                     )
                     .await?
-                    .map(|(_provider, paths)| {
+                    .map_or_default(|(_provider, paths)| {
                         paths
                             .into_iter()
                             .map(|path| (path.key().clone(), path.relative_path().to_owned()))
                             .collect()
                     })
-                    .unwrap_or_default()
                 }
                 ProviderCallRoot::Shared => {
                     shared_tool_paths_in_transaction(&mut transaction, workspace_id).await?

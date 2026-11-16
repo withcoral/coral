@@ -1,7 +1,6 @@
 //! The text of a Search Hit, derived at hydration from the authoritative
 //! material the hydrate read loads, never from the index row.
 
-use crate::evidence::{EvidenceTerms, Matched};
 use crate::signature::{Callable, signature_line};
 use crate::snippet::snippet;
 use crate::types::HitText;
@@ -22,42 +21,13 @@ pub(crate) struct HitMaterial<'a> {
     pub(crate) declaration: &'a str,
     pub(crate) callable: Callable<'a>,
     pub(crate) description: &'a str,
-    pub(crate) guidance: Option<&'a str>,
-    pub(crate) tags: &'a [String],
 }
 
-/// The hit text for a listing, or for a query with its terms and what they
-/// matched. The Guidance Snippet and the tags appear only on a match.
-pub(crate) fn hit_text(
-    material: &HitMaterial<'_>,
-    query: Option<(&EvidenceTerms, &Matched)>,
-) -> HitText {
-    let signature = signature_line(material.declaration, material.callable);
-    let Some((terms, matched)) = query else {
-        return HitText {
-            signature,
-            description_snippet: snippet(material.description, None),
-            guidance_snippet: None,
-            matched_tags: Vec::new(),
-        };
-    };
-    let guidance_matched = matched
-        .evidence
-        .fields()
-        .iter()
-        .any(|field| field == "guidance");
+/// The hit text: the signature line and the Description Snippet. A query
+/// changes neither.
+pub(crate) fn hit_text(material: &HitMaterial<'_>) -> HitText {
     HitText {
-        signature,
-        description_snippet: snippet(material.description, terms.leftmost(material.description)),
-        guidance_snippet: material
-            .guidance
-            .filter(|_guidance| guidance_matched)
-            .map(|guidance| snippet(guidance, terms.leftmost(guidance))),
-        matched_tags: material
-            .tags
-            .iter()
-            .filter(|tag| matched.tags.contains(tag))
-            .cloned()
-            .collect(),
+        signature: signature_line(material.declaration, material.callable),
+        description_snippet: snippet(material.description),
     }
 }
