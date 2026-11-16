@@ -1302,14 +1302,25 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
     .await;
     let deadline = before.authorization.unwrap().expires_at_unix_nanos;
     h.accounts.abort_device_authorizations();
+    // The worker dated each renewal of its lease by the wall time it had run,
+    // so the abandoned lease ends 45 seconds after a renewal no test can
+    // date. Put its end back where the claim at 10ns set it.
+    let pinned = h
+        .fixture
+        .execute_fixture_sql("UPDATE provider_device_jobs SET lease_until = 45000000010")
+        .await
+        .unwrap();
+    assert_eq!(pinned, 1, "the aborted worker leaves its job behind");
     let restarted = h.restarted_accounts();
     restarted
         .recover_device_authorizations(20_000_000_010)
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Past the lease and the device interval: the worker that reclaims the
+    // job polls at once. A worker that had reclaimed it at 20 seconds would
+    // hold it past this recovery and poll 30 seconds later.
     restarted
-        .recover_device_authorizations(46_000_000_010)
+        .recover_device_authorizations(60_000_000_000)
         .await
         .unwrap();
     // The reclaimed lease keeps the device grant's original deadline.
