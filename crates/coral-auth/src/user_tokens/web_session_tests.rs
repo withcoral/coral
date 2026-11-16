@@ -4,7 +4,7 @@
 )]
 use std::time::Duration;
 
-use super::tests::{Fixture, NOW, REEF, SECOND, refresh_token};
+use super::tests::{Fixture, NOW, REEF, SECOND, real_now, refresh_token};
 use super::{AccessTarget, TokenRefusal, WebSessionToken};
 
 const HOUR: Duration = Duration::from_hours(1);
@@ -18,9 +18,17 @@ impl Fixture {
 
     /// Starts a web session from a fresh Reef sign-in and returns its handle.
     async fn web_session(&self, max_age: Duration) -> String {
-        let token = self.reef_refresh_token().await;
+        self.web_session_at(max_age, NOW).await
+    }
+
+    /// [`Self::web_session`], signing in at `now`.
+    async fn web_session_at(&self, max_age: Duration, now: i64) -> String {
+        let issued = self
+            .sign_in_at(REEF, AccessTarget::Reef, true, now)
+            .await
+            .unwrap();
         self.tokens
-            .start_web_session(&token, &self.client, max_age, NOW + SECOND)
+            .start_web_session(&refresh_token(&issued), &self.client, max_age, now + SECOND)
             .await
             .unwrap()
             .handle
@@ -46,11 +54,13 @@ fn claims(token: &WebSessionToken) -> serde_json::Value {
 #[tokio::test]
 async fn a_web_session_mints_reef_tokens_until_it_ends() {
     let fixture = Fixture::new().await;
-    let handle = fixture.web_session(HOUR).await;
+    // The last step authenticates a token, which reads the system clock.
+    let now = real_now();
+    let handle = fixture.web_session_at(HOUR, now).await;
     assert!(handle.starts_with("coral_ws_"));
     for at in [2, 3] {
         let token = fixture
-            .session_token(&handle, NOW + at * SECOND)
+            .session_token(&handle, now + at * SECOND)
             .await
             .unwrap();
         let claims = claims(&token);
@@ -59,7 +69,7 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
         assert!(claims.get("workspace_id").is_none());
     }
     let issued = fixture
-        .session_token(&handle, NOW + 4 * SECOND)
+        .session_token(&handle, now + 4 * SECOND)
         .await
         .unwrap();
     fixture
@@ -68,7 +78,7 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
         .await
         .unwrap();
     assert_eq!(
-        fixture.session_token(&handle, NOW + 5 * SECOND).await.err(),
+        fixture.session_token(&handle, now + 5 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
     );
     // Ending a session ends refresh only: a token minted before keeps its
@@ -345,6 +355,8 @@ async fn a_web_session_mints_short_lived_tokens() {
             .await
             .unwrap(),
     );
+    // The request's host time issues the token, not the system clock.
+    assert_eq!(claims["iat"], (NOW + 2 * SECOND) / SECOND);
     let lifetime = claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap();
     assert!(
         lifetime <= i64::try_from(super::WEB_SESSION_TOKEN_LIFETIME.as_secs()).unwrap(),

@@ -281,7 +281,7 @@ impl UserTokens {
         let scope = Scope::for_code(target, &grant)?;
         if !grant.refresh_eligible {
             return Ok(IssuedTokens {
-                access_token: self.mint(&scope)?,
+                access_token: self.mint(&scope, now_unix_nanos)?,
                 refresh_token: None,
             });
         }
@@ -295,7 +295,7 @@ impl UserTokens {
             Err(TokenRefusal::InvalidGrant) => {
                 rollback(tx).await;
                 return Ok(IssuedTokens {
-                    access_token: self.mint(&scope)?,
+                    access_token: self.mint(&scope, now_unix_nanos)?,
                     refresh_token: None,
                 });
             }
@@ -315,7 +315,7 @@ impl UserTokens {
         repository::insert_grant(&mut tx, &grant_id, &scope, now_unix_nanos, expires_at).await?;
         let (refresh_token, digest) = RefreshToken::generate()?;
         repository::insert_token(&mut tx, &digest, &grant_id).await?;
-        let access_token = self.mint(&scope)?;
+        let access_token = self.mint(&scope, now_unix_nanos)?;
         tx.commit().await.map_err(unavailable)?;
         self.purge_expired(now_unix_nanos).await;
         Ok(IssuedTokens {
@@ -368,7 +368,7 @@ impl UserTokens {
         }
         let (successor, successor_digest) = RefreshToken::generate()?;
         repository::insert_token(&mut tx, &successor_digest, grant_id).await?;
-        let access_token = match self.mint(scope) {
+        let access_token = match self.mint(scope, now_unix_nanos) {
             Ok(token) => token,
             Err(refusal) => {
                 rollback(tx).await;
@@ -505,19 +505,9 @@ impl UserTokens {
                 audience,
                 WEB_SESSION_TOKEN_LIFETIME,
                 session_end,
+                now_unix_nanos,
             )
-            .map_err(|_text| {
-                // The second the session ends can pass between the check above
-                // and minting; the session is then over, not failing.
-                let ended = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .is_ok_and(|elapsed| elapsed.as_secs() >= session_end);
-                if ended {
-                    TokenRefusal::InvalidGrant
-                } else {
-                    TokenRefusal::Issuance
-                }
-            })?;
+            .map_err(|_text| TokenRefusal::Issuance)?;
         Ok(WebSessionToken {
             access_token,
             session_expires_at_unix_nanos: session.expires_at_unix_nanos,
@@ -654,7 +644,7 @@ impl UserTokens {
         Ok(())
     }
 
-    fn mint(&self, scope: &Scope) -> Result<IssuedAccessToken, TokenRefusal> {
+    fn mint(&self, scope: &Scope, now_unix_nanos: i64) -> Result<IssuedAccessToken, TokenRefusal> {
         let audience = match scope.private_audience {
             Some(audience) => audience.as_str(),
             None => scope.resource.as_str(),
@@ -666,10 +656,12 @@ impl UserTokens {
                 &scope.client_id,
                 audience,
                 workspace,
+                now_unix_nanos,
             ),
-            None => self
-                .issuer
-                .issue_access_token(user_id, &scope.client_id, audience),
+            None => {
+                self.issuer
+                    .issue_access_token(user_id, &scope.client_id, audience, now_unix_nanos)
+            }
         }
         .map_err(|_text| TokenRefusal::Issuance)
     }

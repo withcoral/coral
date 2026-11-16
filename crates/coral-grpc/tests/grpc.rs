@@ -353,6 +353,7 @@ impl Fixture {
     }
 
     fn token(&self, user: &AuthenticatedUser, audience: &str) -> String {
+        let now = coral_test_support::now_unix_nanos();
         if audience == "mcp" {
             self.issuer
                 .issue_workspace_access_token(
@@ -360,12 +361,13 @@ impl Fixture {
                     "test",
                     audience,
                     self.workspace.id(),
+                    now,
                 )
                 .unwrap()
                 .access_token
         } else {
             self.issuer
-                .issue_access_token(user.user_id().as_str(), "test", audience)
+                .issue_access_token(user.user_id().as_str(), "test", audience, now)
                 .unwrap()
                 .access_token
         }
@@ -1116,7 +1118,12 @@ async fn task_concealment_and_live_membership_survive_both_audiences() {
     assert_eq!(hidden.code(), tonic::Code::NotFound);
     let unscoped = f
         .issuer
-        .issue_access_token(f.member.user_id().as_str(), "test", "mcp")
+        .issue_access_token(
+            f.member.user_id().as_str(),
+            "test",
+            "mcp",
+            coral_test_support::now_unix_nanos(),
+        )
         .unwrap()
         .access_token;
     for token in [
