@@ -100,6 +100,41 @@ async fn a_call_takes_a_unit_of_the_stream_with_the_most_room_until_its_answer()
     );
 }
 
+/// Catches: a call that fails when its stream ends before it answers,
+/// although another stream has room; one routed more than once; or one
+/// that then fails as anything but a stopped compiler.
+#[tokio::test(start_paused = true)]
+async fn a_call_whose_stream_ends_first_is_routed_once_more() {
+    let stopped = Err(CompileError::Unavailable(Unavailable::Stopped));
+    // Each stream's room, how many end before they answer, and the result.
+    let cases: [(&[u32], usize, Result<&str, CompileError>); 3] = [
+        (&[2, 1], 1, Ok("42")),
+        (&[1], 1, stopped.clone()),
+        (&[3, 2, 1], 2, stopped),
+    ];
+    for (rooms, ending, expected) in cases {
+        let streams = PullStreams::default();
+        let mut opened: Vec<_> = rooms.iter().map(|&free| open(&streams, free)).collect();
+        let calling = compiling(Arc::new(PullStreamCompiler::new(streams.clone(), None)));
+        // Each goes to the stream with the most room left.
+        for (stream, sent) in opened.iter_mut().take(ending) {
+            assert!(sent.recv().await.is_some(), "{rooms:?}: a Compile");
+            streams.end(*stream, None);
+        }
+        if let (Some((stream, sent)), Ok(_)) = (opened.get_mut(ending), &expected) {
+            let answered = answer(&streams, *stream, sent, None);
+            let answered = tokio::time::timeout(TEST_COMPILATION_TIMEOUT, answered).await;
+            answered.expect("the next stream takes the call");
+        }
+        let returned = calling.await.unwrap();
+        let returned = returned.as_deref().map_err(Clone::clone);
+        assert_eq!(returned, expected, "{rooms:?}");
+        for (_, sent) in &mut opened {
+            assert!(sent.try_recv().is_err(), "{rooms:?}: sent no more");
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_call_waits_for_a_pull_stream_and_fails_past_the_bound() {
     // No stream yet: the call is served by the one that opens.
@@ -157,20 +192,6 @@ async fn a_call_no_stream_takes_in_its_time_fails_as_no_compiler_before_its_dead
         Some(started.elapsed()),
         time_left.checked_sub(ROOM_WAIT_RESERVE),
         "it stops waiting a reserve before its deadline"
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_stream_that_ends_fails_its_calls_in_flight() {
-    let streams = PullStreams::default();
-    let (stream, mut sent) = open(&streams, 1);
-    let caller = PullStreamCompiler::new(streams.clone(), None);
-    let calling = tokio::spawn(async move { compile(&caller).await });
-    assert!(sent.recv().await.is_some(), "a Compile");
-    streams.end(stream, None);
-    assert_eq!(
-        calling.await.unwrap(),
-        Err(CompileError::Unavailable(Unavailable::Stopped))
     );
 }
 
