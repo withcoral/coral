@@ -80,9 +80,9 @@ async fn a_local_child_says_hello_with_its_stdin_token_and_retires_when_stdin_cl
 #[cfg(unix)]
 #[tokio::test]
 async fn after_sigterm_the_run_executor_exits_once_its_run_ends() {
-    use coral_run_executor::testing::package;
+    use coral_run_executor::testing::{ended, package};
     use coral_run_executor::wire::v1::{
-        Ended, InvocationResult, RunEnd, Started, invocation_result, run_request, run_response,
+        InvocationResult, Started, invocation_result, run_request, run_response,
     };
     use coral_run_executor::{BuiltinTools, CompilerClient as _, InProcessCompiler, RunLimits};
 
@@ -136,10 +136,7 @@ async fn after_sigterm_the_run_executor_exits_once_its_run_ends() {
         child.try_wait().expect("poll the Run Executor").is_none(),
         "the Run Executor holds the Run until it ends"
     );
-    run.send(run_response::Message::Ended(Ended {
-        end: RunEnd::Succeeded.into(),
-    }))
-    .await;
+    run.send(ended()).await;
     let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
         .await
         .expect("the Run Executor exits once its Run ends")

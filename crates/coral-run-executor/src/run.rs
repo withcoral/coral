@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::PROTOCOL_LEVEL;
-use crate::link::{Backoff, Client, End, HeldRun, HeldRunStream, HeldUnit, compatible};
+use crate::link::{Backoff, Client, Connection, End, HeldRun, HeldRunStream, HeldUnit, compatible};
 use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
@@ -148,9 +148,10 @@ enum Reopen {
 /// Holds one Run Coral took for this Run Executor until Coral says it
 /// ended, or its stream breaks the protocol. A lost stream reopens with the
 /// same `Open` on the link's current connection, after the back-off, until
-/// then: past the Run's deadline too, so its `Finish` reaches Coral.
+/// then: past the Run's deadline too, so its `Finish` reaches Coral. Once
+/// Coral refused the token, a lost stream ends the Run here.
 pub(crate) async fn hold(
-    mut connection: watch::Receiver<Option<Client>>,
+    mut connection: watch::Receiver<Connection>,
     taken: TakenRun,
     limits: RunLimits,
     held: HeldRun,
@@ -171,11 +172,12 @@ pub(crate) async fn hold(
     let mut backoff = Backoff::default();
     loop {
         // The pull stream publishes each connection Coral welcomes it on.
-        let client = match connection.wait_for(Option::is_some).await {
-            Ok(current) => current.clone(),
-            Err(_link_gone) => None,
+        let current = connection.wait_for(|current| !matches!(current, Connection::Waiting));
+        let client = match current.await.as_deref() {
+            Ok(Connection::Welcomed(client)) => client.clone(),
+            // Refused, or the link is gone.
+            _ => break,
         };
-        let Some(client) = client else { break };
         match run.stream(client).await {
             Reopen::Never => break,
             Reopen::After { end, answered } => {

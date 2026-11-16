@@ -8,12 +8,13 @@ use tonic::Status;
 
 use super::*;
 use crate::link::{HeldRun, Runs};
-use crate::testing::{Answer, PullCall, RunCall, ScriptedCoral, package, start_run_executor};
+use crate::testing::{
+    Answer, PullCall, RunCall, ScriptedCoral, ended, package, start_run_executor,
+};
 use crate::wire::v1::{
-    Committed, Complete, CoralFailure, Emit, Ended, Fatal, Finish, FinishEnd, InvocationResult,
-    Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request,
-    RunEnd, Started, Terminate, TerminateReason, UpstreamOutcome, complete, finish,
-    invocation_result, request,
+    Committed, Complete, CoralFailure, Emit, Fatal, Finish, FinishEnd, InvocationResult, Invoke,
+    LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request, Started,
+    Terminate, TerminateReason, UpstreamOutcome, complete, finish, invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
@@ -761,12 +762,6 @@ fn committed(request_number: u64) -> run_response::Message {
     run_response::Message::Committed(Committed { request_number })
 }
 
-fn ended() -> run_response::Message {
-    run_response::Message::Ended(Ended {
-        end: RunEnd::Succeeded.into(),
-    })
-}
-
 fn title(number: u64, title: &str) -> run_response::Message {
     let json = format!(r#"{{"title":"{title}"}}"#);
     result(number, 0, invocation_result::Outcome::ResultJson(json))
@@ -1014,10 +1009,8 @@ async fn an_isolate_that_misses_its_stop_retires_the_run_executor() {
             run.send(result(1, 2, json)).await;
             let end = finish_end(FinishEnd::Absent);
             assert_eq!(next_request(&mut run).await, (2, end));
-            run.send(run_response::Message::Ended(Ended {
-                end: RunEnd::Succeeded.into(),
-            }))
-            .await;
+            assert!(!task.is_finished(), "it waits for its other Run to end");
+            run.send(ended()).await;
         }
         crate::testing::retired(task).await;
     }

@@ -32,6 +32,16 @@ use crate::{CompilerClient, InProcessCompiler};
 /// A client of Coral on one connection: every call carries the bearer
 /// credential.
 pub(crate) type Client = LinkServiceClient<InterceptedService<Channel, Bearer>>;
+
+/// The connection every Run stream opens on.
+pub(crate) enum Connection {
+    /// No pull stream Coral welcomed holds: a Run stream waits for one.
+    Waiting,
+    /// Coral welcomed the pull stream on this connection.
+    Welcomed(Client),
+    /// Coral refused the token: a lost Run stream reopens no more.
+    Refused,
+}
 /// The Run Executor's side of a pull stream.
 type Outbound = mpsc::Sender<PullRequest>;
 
@@ -136,12 +146,12 @@ pub async fn run(
     let retire = async {
         retire.await;
         link.runs.retire();
-        pending::<()>().await;
+        pending::<std::convert::Infallible>().await
     };
     tokio::select! {
         held = link.hold() => held,
         result = health => result.map_err(RunError::Health),
-        () = retire => Ok(()),
+        never = retire => match never {},
     }
 }
 
@@ -229,7 +239,7 @@ impl tonic::service::Interceptor for Bearer {
 /// How a pull stream or a Run stream ended.
 pub(crate) enum End {
     /// Coral ended its side cleanly after its first answer, to move the
-    /// stream: reopen at once.
+    /// stream, or took a Run as a retiring stream closed: reopen at once.
     Moved,
     /// Anything else: redial after the back-off.
     Failed,
@@ -251,9 +261,7 @@ struct Link {
     on_queued: Option<mpsc::UnboundedSender<()>>,
     run_limits: RunLimits,
     runs: Arc<Runs>,
-    /// The client of the connection Coral welcomed the pull stream on, while
-    /// it holds: every Run stream opens on it.
-    current: watch::Sender<Option<Client>>,
+    current: watch::Sender<Connection>,
 }
 
 /// The Runs a Run Executor holds, and whether it retires.
@@ -383,7 +391,7 @@ impl Link {
             linked,
             run_limits: config.run_limits,
             runs: Arc::default(),
-            current: watch::Sender::new(None),
+            current: watch::Sender::new(Connection::Waiting),
             #[cfg(test)]
             on_queued: None,
         }
@@ -408,7 +416,7 @@ impl Link {
         let mut backoff = Backoff::default();
         loop {
             let end = self.pull().await;
-            self.current.send_replace(None);
+            self.current.send_replace(Connection::Waiting);
             if self
                 .linked
                 .send_if_modified(|linked| std::mem::replace(linked, false))
@@ -420,6 +428,7 @@ impl Link {
                 End::Retired => return Ok(()),
                 End::Refused => {
                     tracing::warn!("Coral refused the Run Executor's token; retiring");
+                    self.current.send_replace(Connection::Refused);
                     self.runs.retire();
                     self.runs.drained().await;
                     return Err(RunError::Refused);
@@ -439,7 +448,8 @@ impl Link {
     /// stream opens on it while it holds.
     fn welcomed(&self, client: &Client) {
         self.linked.send_replace(true);
-        self.current.send_replace(Some(client.clone()));
+        self.current
+            .send_replace(Connection::Welcomed(client.clone()));
     }
 
     /// Holds one Run Coral took, from its unit of room to its end.
@@ -450,7 +460,7 @@ impl Link {
     }
 
     /// Dials a fresh connection and opens the pull stream on it with Hello,
-    /// unless the Run Executor retired and holds nothing first.
+    /// unless the Run Executor retired and holds nothing before it connects.
     async fn open(&self) -> Result<(Client, Outbound, Streaming<PullResponse>), End> {
         let connected = tokio::select! {
             connected = self.endpoint.connect() => connected,
@@ -477,11 +487,9 @@ impl Link {
         if outbound.try_send(hello).is_err() {
             return Err(End::Failed);
         }
-        let response = tokio::select! {
-            response = client.pull(ReceiverStream::new(requests)) => response,
-            () = self.runs.drained() => return Err(End::Retired),
-        };
-        match response {
+        // Coral may take Runs on a Hello it read: its answer is awaited, so a
+        // retire reads them on the close.
+        match client.pull(ReceiverStream::new(requests)).await {
             Ok(response) => Ok((client, outbound, response.into_inner())),
             Err(status) if status.code() == Code::Unauthenticated => Err(End::Refused),
             Err(_) => Err(End::Failed),
@@ -490,7 +498,7 @@ impl Link {
 
     /// Closes a retiring pull stream that holds nothing: ends its side, so
     /// its report of none goes out, and reads until Coral ends its own.
-    /// Each Run Coral took before then is held, and waited for.
+    /// Each Run Coral took before then is held, and `End::Moved` redials for it.
     async fn close(
         &self,
         client: &Client,
@@ -500,8 +508,7 @@ impl Link {
         drop(outbound);
         while let Ok(Some(response)) = inbound.message().await {
             match response.message {
-                // A Welcome that crossed the close: its Runs ride this
-                // connection.
+                // A Welcome that crossed the close: its Runs are held.
                 Some(pull_response::Message::Welcome(welcome))
                     if !*self.linked.borrow() && compatible(welcome.protocol_level) =>
                 {
@@ -516,8 +523,11 @@ impl Link {
                 _ => {}
             }
         }
-        self.runs.drained().await;
-        End::Retired
+        if self.runs.holding.borrow().drained() {
+            End::Retired
+        } else {
+            End::Moved
+        }
     }
 
     /// Retiring is a report of none, sent once the stream is welcomed, even

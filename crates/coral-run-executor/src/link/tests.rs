@@ -8,16 +8,15 @@ use coral_v8::{
     CoralDeclarations, LinkedToolSource, SourceReferences,
 };
 use tokio::sync::oneshot;
-use tonic::Code;
+use tonic::{Code, Status};
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
 use crate::testing::{
-    Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, retired, run_executor_config, spawn_run_executor,
-    start_run_executor,
+    Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, ended, retired, run_executor_config,
+    spawn_run_executor, start_run_executor,
 };
-use crate::wire::v1::{Ended, RunEnd, run_response};
 use crate::{AnalysisError, CompileError, PullStreamCompiler};
 
 fn config(coral: &ScriptedCoral, compiler_heap_bytes: usize) -> RunExecutorConfig {
@@ -186,10 +185,6 @@ async fn a_retiring_run_executor_reports_no_room_and_exits_after_its_last_run() 
     coral.take("run-2", "claim-2");
     let second = coral.next_run().await;
     assert_eq!(second.open.run_id, "run-2", "the crossed take is honored");
-    let ended = || {
-        let end = RunEnd::Succeeded.into();
-        run_response::Message::Ended(Ended { end })
-    };
     first.send(ended()).await;
     second.send(ended()).await;
     retired(task).await;
@@ -217,13 +212,46 @@ async fn a_run_executor_that_holds_nothing_exits_at_once_when_it_retires() {
     }
 }
 
-/// Catches: a refused token that redials, or that ends the Run Executor
-/// without the refusal.
+/// Catches: a Run taken as a retiring stream closes, then held with no
+/// pull stream open, or one the Run Executor exits before.
+#[tokio::test]
+async fn a_run_taken_as_the_stream_closes_is_held_on_a_fresh_stream() {
+    let script = [
+        Answer::TakeAtClose("run-1"),
+        Answer::Welcome(PROTOCOL_LEVEL),
+    ];
+    let mut coral = ScriptedCoral::start(script).await;
+    let (retire, task) = spawn_run_executor(&coral, 8, RunLimits::default(), None);
+    coral.next_call().await;
+    drop(retire);
+    let run = coral.next_run().await;
+    assert_eq!(run.open.run_id, "run-1", "the crossed take is honored");
+    let mut fresh = coral.next_call().await;
+    assert_eq!(fresh.hello.as_ref().map(|hello| hello.free), Some(0));
+    assert_eq!(fresh.rooms.recv().await, Some(0), "it reports none again");
+    assert!(!task.is_finished(), "it holds the Run");
+    run.send(ended()).await;
+    retired(task).await;
+    assert_eq!(fresh.rooms.recv().await, None, "it closes after the Run");
+}
+
+/// Catches: a refused token that redials, that waits for a Run whose stream
+/// is lost, or that ends the Run Executor without the refusal.
 #[tokio::test]
 async fn a_refused_token_retires_the_run_executor() {
-    let mut coral = ScriptedCoral::start([Answer::Refuse(Code::Unauthenticated); 2]).await;
+    let script = [
+        Answer::Welcome(PROTOCOL_LEVEL),
+        Answer::Refuse(Code::Unauthenticated),
+    ];
+    let mut coral = ScriptedCoral::start(script).await;
     let (_retire, task) = spawn_run_executor(&coral, 8, RunLimits::default(), None);
     coral.next_call().await;
+    coral.take("run-1", "claim-1");
+    let run = coral.next_run().await;
+    coral.release();
+    coral.next_call().await;
+    run.fail(Status::unavailable("the Run stream is lost"))
+        .await;
     let retired = tokio::time::timeout(Duration::from_secs(10), task).await;
     assert!(matches!(retired, Ok(Ok(Err(RunError::Refused)))));
     assert!(coral.try_next_call().is_none(), "it dials no more");
@@ -542,10 +570,7 @@ async fn a_held_run_and_a_compile_share_the_room() {
         .await;
     assert!(compiled.is_ok(), "{compiled:?}");
     assert_eq!(call.rooms.recv().await, Some(7), "the Run holds its unit");
-    let ended = Ended {
-        end: RunEnd::Succeeded.into(),
-    };
-    run.send(run_response::Message::Ended(ended)).await;
+    run.send(ended()).await;
     assert_eq!(call.rooms.recv().await, Some(8), "the Run's unit frees");
 }
 
