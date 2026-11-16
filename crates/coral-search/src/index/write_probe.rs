@@ -190,4 +190,14 @@ mod tests {
         drop(probe.starts());
         probe.reached(1, WritePoint::WaitingForWriter).await;
     }
+
+    // Catches: a wait on write number zero, which names no write, waiting
+    // forever instead of failing the test that asked for it.
+    #[tokio::test]
+    #[should_panic(expected = "writes count from one")]
+    async fn a_wait_on_write_number_zero_is_refused() {
+        let probe = WriteProbe::new();
+        drop(probe.starts());
+        probe.reached(0, WritePoint::Ended).await;
+    }
 }
