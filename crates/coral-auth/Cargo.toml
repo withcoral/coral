@@ -22,13 +22,17 @@ sha2.workspace = true
 sqlx.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
 coral-db.workspace = true
+coral-telemetry.workspace = true
 coral-workspace.workspace = true
 
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true

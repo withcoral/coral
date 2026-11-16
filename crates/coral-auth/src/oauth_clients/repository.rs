@@ -5,7 +5,7 @@ use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
 use super::{
     ClientAuthenticationError, ClientMetadataError, OAuthClientRegistration, RegisteredClient,
-    RegistrationError, StoredAuthentication,
+    RegistrationError, StoredAuthentication, unavailable,
 };
 
 #[derive(Iden)]
@@ -61,7 +61,7 @@ pub(super) async fn insert(
             .to_owned(),
     )
     .await
-    .map_err(|_error| RegistrationError::Unavailable)?;
+    .map_err(unavailable)?;
     Ok(())
 }
 
@@ -94,7 +94,7 @@ pub(super) async fn lock_admission(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| RegistrationError::Unavailable)?;
+        .map_err(unavailable)?;
     if rows != 1 {
         return Err(RegistrationError::Unavailable);
     }
@@ -107,7 +107,7 @@ pub(super) async fn lock_admission(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| RegistrationError::Unavailable)?
+        .map_err(unavailable)?
         .ok_or(RegistrationError::Unavailable)?;
     let (total,): (i64,) = tx
         .fetch_optional(
@@ -117,7 +117,7 @@ pub(super) async fn lock_admission(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| RegistrationError::Unavailable)?
+        .map_err(unavailable)?
         .ok_or(RegistrationError::Unavailable)?;
     Ok(AdmissionEvidence {
         total,
@@ -142,7 +142,7 @@ pub(super) async fn record_admission(
             .to_owned(),
     )
     .await
-    .map_err(|_error| RegistrationError::Unavailable)?;
+    .map_err(unavailable)?;
     Ok(())
 }
 
@@ -170,7 +170,7 @@ pub(super) async fn resolve(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| ClientMetadataError::Fetch)?
+        .map_err(|error| crate::database_failure(&error, ClientMetadataError::Fetch))?
         .ok_or(ClientMetadataError::InvalidClientId)?;
     Ok(OAuthClientRegistration {
         client_name: row.client_name,
@@ -204,7 +204,7 @@ pub(super) async fn authentication(
                 .to_owned(),
         )
         .await
-        .map_err(|_error| ClientAuthenticationError::Unavailable)?;
+        .map_err(|error| crate::database_failure(&error, ClientAuthenticationError::Unavailable))?;
     row.map(|row| {
         match (
             row.token_endpoint_auth_method.as_str(),
@@ -215,7 +215,7 @@ pub(super) async fn authentication(
                 Ok(StoredAuthentication::ClientSecretPost { verifier })
             }
             // The schema forbids any other pair; a row that holds one is corrupt.
-            _ => Err(ClientAuthenticationError::Unavailable),
+            _ => Err(ClientAuthenticationError::Corrupt),
         }
     })
     .transpose()

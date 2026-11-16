@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use super::test_support::NoFetch;
+use super::test_support::{NoFetch, rewrite_past_checks};
 use super::{ClientAuthenticationError, ClientSecret, PresentedCredential};
 use super::{ClientMetadataError, ClientMetadataResolver as _, OAuthClients};
 use super::{RegistrationError, RegistrationRequest};
@@ -375,4 +375,62 @@ async fn a_client_authenticates_only_by_its_registered_method() {
         .refresh(refresh_token.expose(), request, now + 2)
         .await
         .expect("no refusal ended the grant");
+}
+
+/// A client row the schema forbids is corrupt data: not an outage that a
+/// retry could outlast, and not the client's doing. The refusal changes
+/// nothing, so the client authenticates again once its row is repaired.
+#[tokio::test]
+async fn a_client_row_the_schema_forbids_is_corrupt_and_stays_as_it_was() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let clients = OAuthClients::new(fixture.database(), Arc::new(NoFetch));
+    let (public, _) = register(&clients, "none").await;
+    let (confidential, secret) = register(&clients, "client_secret_post").await;
+    let secret = secret.unwrap();
+    let presented = |client: &str| {
+        if client == confidential {
+            PresentedCredential::ClientSecretPost(ClientSecret::from(zeroize::Zeroizing::new(
+                secret.clone(),
+            )))
+        } else {
+            PresentedCredential::None
+        }
+    };
+    // (client, the method it registered, the method its row is rewritten to)
+    for (client, registered, stored) in [
+        // A confidential client's method beside no verifier.
+        (&public, "none", "client_secret_post"),
+        // A public client's method beside a verifier.
+        (&confidential, "client_secret_post", "none"),
+        // A method no registration stores.
+        (&public, "none", "private_key_jwt"),
+        (&confidential, "client_secret_post", "private_key_jwt"),
+    ] {
+        let case = format!("{registered} stored as {stored}");
+        let store = |method: &str| {
+            format!(
+                "UPDATE oauth_clients SET token_endpoint_auth_method = '{method}' \
+                 WHERE client_id = '{client}'"
+            )
+        };
+        assert_eq!(
+            rewrite_past_checks(&fixture, "oauth_clients", &store(stored)).await,
+            1,
+            "{case}"
+        );
+        assert_eq!(
+            clients.authenticate(client, &presented(client)).await.err(),
+            Some(ClientAuthenticationError::Corrupt),
+            "{case}"
+        );
+        assert_eq!(
+            rewrite_past_checks(&fixture, "oauth_clients", &store(registered)).await,
+            1,
+            "{case}"
+        );
+        clients
+            .authenticate(client, &presented(client))
+            .await
+            .expect("the repaired client authenticates");
+    }
 }
