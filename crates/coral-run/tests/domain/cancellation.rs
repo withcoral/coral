@@ -377,22 +377,23 @@ async fn queued_deadline_expires_without_starting_javascript() {
     let (workspace_id, principal) = fixture
         .user_scope("user:queued-timeout", "Time out queued Run")
         .await;
+    // The real deadline never fires here; the test sends its message.
     let accepted = fixture
         .runs
-        .start(
-            &principal,
-            &workspace_id,
-            RunSubmission::new(
-                ProgramSource::parse("queued-timeout").expect("Program source"),
-                RunTimeout::from_millis(25).expect("Run timeout"),
-            ),
-        )
+        .start(&principal, &workspace_id, submission("queued-timeout"))
         .await
         .expect("accept queued Program");
     wait_until(|| claim_gate.entered.load(Ordering::SeqCst)).await;
     // The deadline reaches the owner's mailbox before its start mark lands:
     // the Program never starts, and the timeout is recorded.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    fixture
+        .runs
+        .owners
+        .get(accepted.run_id())
+        .expect("live owner")
+        .send(crate::owner::Message::Timer(
+            crate::owner::Timer::RunDeadline,
+        ));
     claim_gate.release();
 
     let terminal =
@@ -404,10 +405,13 @@ async fn queued_deadline_expires_without_starting_javascript() {
 
 /// A cancel and the Run deadline: the first the owner applies decides the
 /// terminal kind, and the record shows exactly one. The cancel first: the
-/// Run ends Canceled with `cancellation.requested`, and the deadline's
-/// timer, which fires on the host clock later, changes nothing. The
-/// deadline's timer first: the Run ends `TimedOut`, the cancel joins no chunk
-/// and writes no Event, and the requester is answered from the record.
+/// Run ends Canceled with `cancellation.requested`. The deadline's timer
+/// first: the Run ends `TimedOut`, the cancel joins no chunk and writes no
+/// Event, and the requester is answered from the record.
+///
+/// The test sends the deadline's timer message itself, once the Program
+/// runs: a real timer short enough to wait for would race the Run's start,
+/// and on a slow database it fired before the Program ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
     for deadline_first in [false, true] {
@@ -416,19 +420,10 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
         let (workspace_id, principal) = fixture
             .user_scope("user:cancel-vs-deadline", "Cancel against the deadline")
             .await;
-        // The deadline's timer fires on the host clock: far enough for the
-        // cancel to come first, soon enough to wait for when it comes second.
-        let run_timeout = if deadline_first { 300 } else { 5_000 };
+        // The real deadline never fires here.
         let accepted = fixture
             .runs
-            .start(
-                &principal,
-                &workspace_id,
-                RunSubmission::new(
-                    ProgramSource::parse("blocked").expect("Program source"),
-                    RunTimeout::from_millis(run_timeout).expect("Run timeout"),
-                ),
-            )
+            .start(&principal, &workspace_id, submission("blocked"))
             .await
             .expect("accept the Program");
         let run_id = accepted.run_id().clone();
@@ -446,6 +441,9 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
         if deadline_first {
             // The deadline's timer stops the Program; the clock stays
             // before the deadline, so only the timer's order decides.
+            owner.send(crate::owner::Message::Timer(
+                crate::owner::Timer::RunDeadline,
+            ));
             wait_until(|| owner.is_stopping()).await;
         }
         let terminal = fixture

@@ -785,7 +785,8 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     ))
     .await;
     // The request's own deadline, well inside the Run's and the worker lease.
-    let approval_wait = Duration::from_millis(200);
+    // Its real timer never fires here; the test sends its message.
+    let approval_wait = Duration::from_secs(30);
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait);
     let tool = fixture.user_tool("user:expiry", "Approval expiry").await;
@@ -810,10 +811,19 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
         (started..=fixture.clock.next.load(Ordering::SeqCst)).contains(&created),
         "the request's deadline is the approval wait from its creation: {created} not in {started}..="
     );
-    // The timer fires on the host clock; the test clock stays before the
-    // deadline, so nothing but the owner's record can show the expiry.
+    // The timer's message arrives once the pending set is read: a real
+    // timer would race that read. The test clock stays before the deadline,
+    // so nothing but the owner's record can show the expiry.
     let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
     let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
+    fixture
+        .runs
+        .owners
+        .get(run.run_id())
+        .expect("live owner")
+        .send(crate::owner::Message::Timer(crate::owner::Timer::Approval(
+            request.id.clone(),
+        )));
     wait_until_async(async || read().await.unwrap().state != ApprovalState::Pending).await;
     assert_ne!(
         approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await,
@@ -2241,26 +2251,25 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
 /// approver, dated at its deadline, its Invocation failed
 /// `approval_expired`, and one Expired lifecycle event. The Run still ends
 /// `timed_out`.
+///
+/// The test sends the deadline's timer message itself, once the Invocation
+/// waits on its request: a real timer would race the request's creation,
+/// and on a slow database the Run timed out with nothing pending.
 #[tokio::test]
 async fn a_run_timeout_expires_its_pending_approval() {
-    let fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
-    .await;
+    let (fixture, probe) = probed_fixture(crate::execution::ExecutionPolicy::testing()).await;
     let tool = fixture
         .user_tool("user:timed-out-review", "Nobody answers in time")
         .await;
     fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
+    // The real deadline never fires here.
     let run = fixture
         .runs
         .start(
             &tool.principal,
             &tool.workspace_id,
-            RunSubmission::new(
-                ProgramSource::parse("await coral.providers.weather.getForecast({});").unwrap(),
-                RunTimeout::from_millis(500).unwrap(),
-            ),
+            submission("await coral.providers.weather.getForecast({});"),
         )
         .await
         .unwrap();
@@ -2271,6 +2280,15 @@ async fn a_run_timeout_expires_its_pending_approval() {
         run.run_id(),
     )
     .await;
+    probe.until_parked(1).await;
+    fixture
+        .runs
+        .owners
+        .get(run.run_id())
+        .expect("live owner")
+        .send(crate::owner::Message::Timer(
+            crate::owner::Timer::RunDeadline,
+        ));
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,

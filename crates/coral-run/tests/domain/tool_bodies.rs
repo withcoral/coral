@@ -790,6 +790,10 @@ async fn retention_deletes_a_run_with_its_nested_invocations() {
 // never settles waits for that child, so its Run runs until its deadline and
 // times out, and both calls end as `run_terminated`. Without the wait, the
 // Program would end at once; a change to that is a deliberate one.
+//
+// The test sends the deadline's timer message itself, once both calls have
+// started: a real timer short enough to wait for would race their start, and
+// on a slow database it fired before the nested call existed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_deadline() {
     let scope = BodyScope::new("user:tool-bodies-held").await;
@@ -805,13 +809,19 @@ async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_de
     let run = scope
         .start(
             &scope.fixture.runs,
-            RunSubmission::new(
-                ProgramSource::parse("return await coral.private.stuck.leave();")
-                    .expect("Program source"),
-                RunTimeout::from_millis(1_000).expect("Run timeout"),
-            ),
+            submission("return await coral.private.stuck.leave();"),
         )
         .await;
+    wait_until_async(async || scope.rows(&run).await.len() == 2).await;
+    // Nothing signals that a body returned. A Program that did not wait for
+    // the child would end within this pause, and the deadline would find no
+    // Run to time out.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if let Some(owner) = scope.fixture.runs.owners.get(&run) {
+        owner.send(crate::owner::Message::Timer(
+            crate::owner::Timer::RunDeadline,
+        ));
+    }
 
     let terminal = scope.terminal(&run).await;
     assert_eq!(terminal.state(), RunState::TimedOut, "{terminal:?}");
