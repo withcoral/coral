@@ -39,9 +39,10 @@
 //!   the index holds each Provider's active Generation, apart from readiness.
 //! - [`prepare_storage`] runs at boot before `Database::migrate` applies
 //!   `coral_db::migration_plan()`, which creates the search index's tables. It
-//!   checks the database features their text search needs, and pgvector on
-//!   Postgres while the [`VectorStorage`] is on. [`prepare_vector_table`] runs
-//!   right after the chain and keeps the vector table, which lives outside it.
+//!   checks the database features their text search needs, and pgvector or
+//!   sqlite-vec while the [`VectorStorage`] is on. [`prepare_vector_table`]
+//!   runs right after the chain and keeps the vector table, which lives
+//!   outside it.
 //! - [`SearchIndex`] writes the search-owned index in the background when a
 //!   committing workflow notifies it, and its reconcile task converges the
 //!   index on what the owners hold.
@@ -140,20 +141,17 @@ impl UniversalSearchModule {
         )
     }
 
-    /// Turns the vector side on, on Postgres: once `model` holds a model,
-    /// the engine embeds each query with it, and each retriever that keeps
-    /// vectors merges a vector list with its lexical list. Give it the receiver the
+    /// Turns the vector side on: once `model` holds a model, the engine
+    /// embeds each query with it, and each retriever that keeps vectors
+    /// merges a vector list with its lexical list. Give it the receiver the
     /// [`SearchIndex`]'s Embedder takes, so a query shares the Embedder's
-    /// model and waits for at most the one document that runs. On `SQLite`,
-    /// which keeps no vectors yet, nothing changes.
+    /// model and waits for at most the one document that runs.
     #[must_use]
     pub fn with_model(
         mut self,
         model: tokio::sync::watch::Receiver<Option<Arc<dyn coral_embed::Embed>>>,
     ) -> Self {
-        if self.database.system() == coral_db::DatabaseSystem::Postgres {
-            self.model = Some(model);
-        }
+        self.model = Some(model);
         self
     }
 

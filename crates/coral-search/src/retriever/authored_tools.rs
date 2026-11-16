@@ -359,8 +359,9 @@ async fn nearest_current_authored_tools(
     })
 }
 
-/// The Postgres plan of the vector query over the Authored Tools of `kind`
-/// among `ids`, as `principal` would search them, one line per row.
+/// The plan of the vector query over the Authored Tools of `kind` among
+/// `ids`, as `principal` would search them, one line per row: `EXPLAIN` on
+/// Postgres, the detail of `EXPLAIN QUERY PLAN` on `SQLite`.
 #[cfg(test)]
 pub(crate) async fn explain_vector_query(
     transaction: &mut Transaction<'_>,

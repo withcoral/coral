@@ -1,5 +1,6 @@
 //! The Embedder: it gives each Search Entity a vector of the current
-//! Embedder revision and source stamp, in the background, on Postgres.
+//! Embedder revision and source stamp, in the background, on both
+//! databases.
 //!
 //! Every test indexes through `SearchIndex`, waits for the index to settle and
 //! for the Embedder to drain, then reads the vector table beside the entity
@@ -23,7 +24,6 @@ const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5
 
 #[tokio::test]
 async fn the_embedder_embeds_the_text_the_bench_measured() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let model = FixedVectors::default();
@@ -49,7 +49,6 @@ async fn the_embedder_embeds_the_text_the_bench_measured() {
 
 #[tokio::test]
 async fn a_private_tool_gets_a_vector_of_its_path_description_and_input_names() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = coral_workspace::AuthenticatedPrincipal::user(world.user.clone());
@@ -87,7 +86,6 @@ async fn a_private_tool_gets_a_vector_of_its_path_description_and_input_names() 
 
 #[tokio::test]
 async fn a_row_an_older_coral_changed_gets_no_vector_until_a_pass_indexes_it_again() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = coral_workspace::AuthenticatedPrincipal::user(world.user.clone());
@@ -159,7 +157,6 @@ async fn a_row_an_older_coral_changed_gets_no_vector_until_a_pass_indexes_it_aga
 #[tokio::test]
 async fn a_missing_vector_another_revision_or_a_changed_row_is_embedded_again_and_a_current_row_is_not()
  {
-    coral_test_support::database_only!(Postgres);
     // Each case changes what the Embedder finds, and names the rows it
     // embeds again: one of the ledger's three, all three, or none.
     let cases: [(&str, Staleness, usize); 4] = [
@@ -197,7 +194,6 @@ async fn a_missing_vector_another_revision_or_a_changed_row_is_embedded_again_an
 
 #[tokio::test]
 async fn two_embedders_on_the_same_rows_write_each_vector_once() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let ledger = world.publish_ledger().await;
@@ -236,7 +232,6 @@ async fn two_embedders_on_the_same_rows_write_each_vector_once() {
 
 #[tokio::test]
 async fn a_reconcile_pass_removes_the_vectors_of_a_deleted_provider_and_keeps_the_rest() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let ledger = world.publish_ledger().await;
@@ -265,12 +260,16 @@ async fn a_reconcile_pass_removes_the_vectors_of_a_deleted_provider_and_keeps_th
     index.reconcile().await;
 
     assert_eq!(world.vectors().await, tracer_vectors);
+    assert_eq!(
+        world.unkeyed_vectors().await,
+        0,
+        "the ledger's vectors are gone"
+    );
 }
 
 #[tokio::test]
 async fn a_batch_that_fails_with_the_model_or_the_database_down_skips_nothing_and_the_next_pass_embeds_it()
  {
-    coral_test_support::database_only!(Postgres);
     for down in ["the model", "the database"] {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
@@ -279,7 +278,7 @@ async fn a_batch_that_fails_with_the_model_or_the_database_down_skips_nothing_an
         if down == "the model" {
             model.fail_texts_with("");
         } else {
-            world.execute(REFUSE_VECTOR_WRITES).await;
+            world.refuse_vector_writes(true).await;
         }
         let index = world.index_with(&model);
         let _background = Background(index.spawn_reconcile_task());
@@ -291,7 +290,7 @@ async fn a_batch_that_fails_with_the_model_or_the_database_down_skips_nothing_an
         assert_eq!(world.vectors().await, BTreeMap::new(), "{down} is down");
 
         model.fail_texts_with_nothing();
-        world.execute(ALLOW_VECTOR_WRITES).await;
+        world.refuse_vector_writes(false).await;
         index.reconcile().await;
         index.embedded().await;
 
@@ -299,20 +298,8 @@ async fn a_batch_that_fails_with_the_model_or_the_database_down_skips_nothing_an
     }
 }
 
-/// A database fault: each vector write fails.
-const REFUSE_VECTOR_WRITES: &str = "\
-    CREATE FUNCTION refuse_vector_write() RETURNS trigger LANGUAGE plpgsql AS \
-        $$ BEGIN RAISE EXCEPTION 'injected vector write fault'; END $$; \
-    CREATE TRIGGER refuse_vector_write BEFORE INSERT OR UPDATE ON search_entity_embeddings \
-        FOR EACH ROW EXECUTE FUNCTION refuse_vector_write()";
-
-const ALLOW_VECTOR_WRITES: &str = "\
-    DROP TRIGGER IF EXISTS refuse_vector_write ON search_entity_embeddings; \
-    DROP FUNCTION IF EXISTS refuse_vector_write()";
-
 #[tokio::test]
 async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back_no_other_row() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     // More Tools than one batch holds; the first in document order fails.
@@ -358,7 +345,6 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
 
 #[tokio::test]
 async fn a_failing_row_alone_in_its_batch_is_skipped_and_holds_back_no_other_workspace() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let other = world.modules.create_workspace(&world.user).await;
@@ -392,7 +378,6 @@ async fn a_failing_row_alone_in_its_batch_is_skipped_and_holds_back_no_other_wor
 
 #[tokio::test]
 async fn an_index_write_does_not_wait_for_the_embedder() {
-    coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let ledger = world.publish_ledger().await;
@@ -419,26 +404,6 @@ async fn an_index_write_does_not_wait_for_the_embedder() {
     meet(&held).await;
     index.embedded().await;
     world.assert_every_vector_current().await;
-}
-
-#[tokio::test]
-async fn on_sqlite_the_embedder_never_runs() {
-    coral_test_support::database_only!(Sqlite);
-    let upstream = MockServer::start().await;
-    let world = World::publish_tracer(&upstream).await;
-    let model = FixedVectors::default();
-    let index = world.index_with(&model);
-    let _background = Background(index.spawn_reconcile_task());
-
-    index.index_active_generation(world.workspace.clone(), world.tracer.clone());
-    index.settled().await;
-    index.embedded().await;
-
-    assert!(
-        !world.entity_stamps().await.is_empty(),
-        "the index has rows"
-    );
-    assert_eq!(model.documents(), Vec::<String>::new());
 }
 
 /// Waits at `barrier` on a blocking thread, beside the Embedder's.
@@ -692,7 +657,7 @@ impl World {
         staleness: Staleness,
     ) {
         let one_vector = format!(
-            "WHERE doc_id = (SELECT min(doc_id) FROM search_entity_embeddings \
+            "WHERE doc_id = (SELECT min(doc_id) FROM search_entities \
              WHERE workspace_id = '{}' AND provider_id = '{provider}')",
             self.workspace
         );
@@ -729,7 +694,21 @@ impl World {
                     .column(Alias::new("doc_id"))
                     .from(Alias::new("search_entity_embeddings"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("provider_id")).eq(provider.to_string()))
+                    .and_where(
+                        Expr::col(Alias::new("doc_id")).in_subquery(
+                            Query::select()
+                                .column(Alias::new("doc_id"))
+                                .from(Alias::new("search_entities"))
+                                .and_where(
+                                    Expr::col(Alias::new("workspace_id"))
+                                        .eq(self.workspace.to_string()),
+                                )
+                                .and_where(
+                                    Expr::col(Alias::new("provider_id")).eq(provider.to_string()),
+                                )
+                                .to_owned(),
+                        ),
+                    )
                     .to_owned(),
             )
             .await
@@ -772,6 +751,35 @@ impl World {
             panic!("one broken row: {rows:?}");
         };
         doc_id.clone()
+    }
+
+    /// Makes each vector write fail while `refuse`, and lets them through
+    /// again when not: a database fault.
+    async fn refuse_vector_writes(&self, refuse: bool) {
+        let sql = match (self.modules.search.database.system(), refuse) {
+            (coral_db::DatabaseSystem::Postgres, true) => {
+                "CREATE FUNCTION refuse_vector_write() RETURNS trigger LANGUAGE plpgsql AS \
+                     $$ BEGIN RAISE EXCEPTION 'injected vector write fault'; END $$; \
+                 CREATE TRIGGER refuse_vector_write \
+                     BEFORE INSERT OR UPDATE ON search_entity_embeddings \
+                     FOR EACH ROW EXECUTE FUNCTION refuse_vector_write()"
+            }
+            (coral_db::DatabaseSystem::Postgres, false) => {
+                "DROP TRIGGER IF EXISTS refuse_vector_write ON search_entity_embeddings; \
+                 DROP FUNCTION IF EXISTS refuse_vector_write()"
+            }
+            (coral_db::DatabaseSystem::Sqlite, true) => {
+                "CREATE TRIGGER refuse_vector_insert BEFORE INSERT ON search_entity_embeddings \
+                     BEGIN SELECT RAISE(ABORT, 'injected vector write fault'); END; \
+                 CREATE TRIGGER refuse_vector_update BEFORE UPDATE ON search_entity_embeddings \
+                     BEGIN SELECT RAISE(ABORT, 'injected vector write fault'); END"
+            }
+            (coral_db::DatabaseSystem::Sqlite, false) => {
+                "DROP TRIGGER IF EXISTS refuse_vector_insert; \
+                 DROP TRIGGER IF EXISTS refuse_vector_update"
+            }
+        };
+        self.execute(sql).await;
     }
 
     async fn execute(&self, sql: &str) {
@@ -827,29 +835,65 @@ impl World {
 
     /// Each vector of `workspace` with its Embedder revision and source
     /// stamp.
+    /// On `SQLite`, a key row counts only beside its vector.
     async fn vectors_in(&self, workspace: &WorkspaceId) -> BTreeMap<String, (String, i64)> {
-        let rows: Vec<(String, String, i64)> = self
-            .modules
-            .search
-            .database
-            .fetch_all(
-                Query::select()
-                    .columns(
-                        [
-                            "doc_id",
-                            "embedder_revision",
-                            "source_indexed_at_unix_nanos",
-                        ]
-                        .map(Alias::new),
-                    )
-                    .from(Alias::new("search_entity_embeddings"))
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.to_string()))
-                    .to_owned(),
-            )
-            .await
-            .expect("read the vectors");
+        let sql = match self.modules.search.database.system() {
+            coral_db::DatabaseSystem::Postgres => {
+                "SELECT doc_id, embedder_revision, source_indexed_at_unix_nanos \
+                 FROM search_entity_embeddings WHERE workspace_id = $1"
+            }
+            coral_db::DatabaseSystem::Sqlite => {
+                "SELECT k.doc_id, k.embedder_revision, k.source_indexed_at_unix_nanos \
+                 FROM search_entity_embeddings AS k \
+                 JOIN search_entity_embedding_vectors AS v ON v.rowid = k.vector_rowid \
+                 WHERE k.workspace_id = ?1"
+            }
+        };
+        let rows: Vec<(String, String, i64)> =
+            self.read(sql, vec![workspace.to_string().into()]).await;
         rows.into_iter()
             .map(|(doc_id, revision, stamp)| (doc_id, (revision, stamp)))
             .collect()
+    }
+
+    /// How many stored vectors no key row names: on `SQLite`, rows of the
+    /// sqlite-vec table whose key row is gone. Postgres keeps each vector in
+    /// its key row.
+    async fn unkeyed_vectors(&self) -> i64 {
+        match self.modules.search.database.system() {
+            coral_db::DatabaseSystem::Postgres => 0,
+            coral_db::DatabaseSystem::Sqlite => {
+                let rows: Vec<(i64,)> = self
+                    .read(
+                        "SELECT count(*) FROM search_entity_embedding_vectors \
+                         WHERE rowid NOT IN (SELECT vector_rowid FROM search_entity_embeddings)",
+                        Vec::new(),
+                    )
+                    .await;
+                rows.first().map_or(0, |(count,)| *count)
+            }
+        }
+    }
+
+    /// Rows of one statement written for the test database's backend.
+    async fn read<T>(&self, sql: &str, values: Vec<sea_query::Value>) -> Vec<T>
+    where
+        T: Send + Unpin,
+        for<'row> T: sqlx::FromRow<'row, sqlx::sqlite::SqliteRow>,
+        for<'row> T: sqlx::FromRow<'row, sqlx::postgres::PgRow>,
+    {
+        let mut transaction = self
+            .modules
+            .search
+            .database
+            .begin_read_snapshot()
+            .await
+            .expect("begin a read");
+        let rows = transaction
+            .fetch_all_sql(sql, sea_query::Values(values))
+            .await
+            .expect("read the vector tables");
+        transaction.rollback().await.expect("end the read");
+        rows
     }
 }

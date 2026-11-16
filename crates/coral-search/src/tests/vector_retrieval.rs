@@ -1,13 +1,12 @@
-//! The retrievers' vector lists on Postgres: what an agent finds by
+//! The retrievers' vector lists on both databases: what an agent finds by
 //! semantic search, and what it never finds that way.
 //!
 //! Every test publishes real Providers, saves and publishes real Authored
 //! Tools where it needs them, indexes them and lets the Embedder give each
 //! Search Entity a vector, then observes pages through
-//! `UniversalSearchModule::search`; one test reads the vector queries'
-//! `EXPLAIN` plans instead. One test also runs on SQLite, where the page
-//! stays lexical. The model is a fixed-vector stand-in, [`Meanings`], so no
-//! test but the one marked `ignore` loads the real one.
+//! `UniversalSearchModule::search`; two tests read the vector queries'
+//! plans instead, one per database. The model is a fixed-vector stand-in,
+//! [`Meanings`], so no test but the one marked `ignore` loads the real one.
 
 use std::sync::Arc;
 
@@ -73,7 +72,6 @@ const GITHUB: &str = r#"{
 
 #[tokio::test]
 async fn a_query_with_no_word_of_a_tool_finds_it_by_semantic_search() {
-    coral_test_support::database_only!(Postgres);
     let world = World::new().await;
 
     let page = world
@@ -97,7 +95,6 @@ async fn a_query_with_no_word_of_a_tool_finds_it_by_semantic_search() {
 
 #[tokio::test]
 async fn the_vector_list_holds_only_the_private_and_shared_tools_the_caller_may_see() {
-    coral_test_support::database_only!(Postgres);
     let harbour = Harbour::new().await;
 
     let page = harbour
@@ -150,7 +147,6 @@ async fn the_vector_list_holds_only_the_private_and_shared_tools_the_caller_may_
 
 #[tokio::test]
 async fn a_page_of_three_kinds_puts_the_strong_first_in_one_order_for_every_limit() {
-    coral_test_support::database_only!(Postgres);
     let harbour = Harbour::new().await;
     let semantic = harbour.world.semantic();
     let page = async |limit: u16, offset: u32| {
@@ -204,7 +200,6 @@ async fn a_page_of_three_kinds_puts_the_strong_first_in_one_order_for_every_limi
 #[tokio::test]
 async fn a_private_or_shared_tool_is_found_by_words_at_once_and_by_semantic_search_after_embedding()
 {
-    coral_test_support::database_only!(Postgres);
     let world = World::with(Arc::new(Meanings::tides())).await;
     let semantic = world.semantic();
     let tides = [
@@ -264,7 +259,6 @@ async fn a_private_or_shared_tool_is_found_by_words_at_once_and_by_semantic_sear
 
 #[tokio::test]
 async fn an_entity_without_a_current_vector_ranks_by_its_words_alone() {
-    coral_test_support::database_only!(Postgres);
     let world = World::new().await;
     let outlook = world
         .save(&world.principal, "outlook.daily", "Daily forecast summary")
@@ -345,7 +339,6 @@ async fn an_entity_without_a_current_vector_ranks_by_its_words_alone() {
 
 #[tokio::test]
 async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_names() {
-    coral_test_support::database_only!(Postgres);
     let world = World::new().await;
     let agent = world.agent().await;
     // A Provider whose caller route the Agent has no Account for, so it is
@@ -415,7 +408,6 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
 
 #[tokio::test]
 async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
-    coral_test_support::database_only!(Postgres);
     let world = World::new().await;
     // Twelve more Tools whose vectors are all the same, as is the GitHub
     // Tool's, so the vector list holds a tie of thirteen.
@@ -495,23 +487,24 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
         )
         .await;
     world.index_and_embed().await;
-    let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
     let lexical = world.search(&world.by_words(), "rain issues").await;
     assert_eq!(paths(&lexical), ["coral.providers.github.issues.list"]);
     let fused = world.search(&world.semantic(), "rain issues").await;
-    if postgres {
-        assert_eq!(
-            paths(&fused),
-            [
-                "coral.providers.github.issues.list",
-                "coral.private.outlook.daily",
-                "coral.shared.outlook.daily",
-                "coral.providers.weather.getForecast",
-            ]
-        );
-    } else {
-        assert_eq!(fused, lexical, "SQLite keeps no vectors yet");
-    }
+    assert_eq!(
+        paths(&fused),
+        [
+            "coral.providers.github.issues.list",
+            "coral.private.outlook.daily",
+            "coral.shared.outlook.daily",
+            "coral.providers.weather.getForecast",
+        ]
+    );
+    let drop_vector_table = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => "DROP TABLE search_entity_embeddings",
+        DatabaseSystem::Sqlite => {
+            "DROP TABLE search_entity_embedding_vectors; DROP TABLE search_entity_embeddings"
+        }
+    };
 
     let cases: [(&str, UniversalSearchModule, Option<&str>); 4] = [
         ("the model is not ready", world.with_model(None), None),
@@ -528,7 +521,7 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
         (
             "the vector table is missing",
             world.semantic(),
-            postgres.then_some("DROP TABLE search_entity_embeddings"),
+            Some(drop_vector_table),
         ),
     ];
     for (case, search, change) in cases {
@@ -547,64 +540,8 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
 async fn the_vector_query_reads_the_vector_table_alone() {
     coral_test_support::database_only!(Postgres);
     let world = World::new().await;
-    let mut transaction = world
-        .modules
-        .search
-        .database
-        .begin_read_snapshot()
-        .await
-        .unwrap();
-    let scope: Vec<(String, String)> = transaction
-        .fetch_all_sql(
-            "SELECT DISTINCT provider_id, provider_generation_id FROM search_entities \
-             WHERE workspace_id = $1 AND kind = 'provider_tool'",
-            sea_query::Values(vec![world.workspace.to_string().into()]),
-        )
-        .await
-        .unwrap();
-    let providers = scope
-        .iter()
-        .map(|(provider, _)| ProviderId::parse(provider).unwrap())
-        .collect::<Vec<_>>();
-    let generations = scope
-        .iter()
-        .map(|(_, generation)| coral_catalog::ProviderGenerationId::parse(generation).unwrap())
-        .collect::<Vec<_>>();
-    let excluded = [(
-        world.weather.clone(),
-        ToolKey::parse("getForecast").unwrap(),
-    )];
 
-    let mut plans = vec![(
-        EntityKind::ProviderTool,
-        crate::retriever::tools::explain_vector_query(
-            &mut transaction,
-            &world.workspace,
-            &providers,
-            &generations,
-            &excluded,
-        )
-        .await
-        .unwrap(),
-    )];
-    for kind in [AuthoredToolKind::Private, AuthoredToolKind::Shared] {
-        let ids = [AuthoredToolId::parse(kind, "00000000-0000-4000-8000-000000000001").unwrap()];
-        plans.push((
-            EntityKind::authored(kind),
-            crate::retriever::authored_tools::explain_vector_query(
-                &mut transaction,
-                &world.workspace,
-                world.principal.principal(),
-                kind,
-                &ids,
-            )
-            .await
-            .unwrap(),
-        ));
-    }
-
-    transaction.rollback().await.unwrap();
-    for (kind, plan) in plans {
+    for (kind, plan) in vector_query_plans(&world).await {
         assert!(
             plan.iter()
                 .any(|line| line.contains(" on search_entity_embeddings ")),
@@ -648,6 +585,111 @@ fn of_kind(page: &SearchPage, kind: EntityKind) -> Vec<&str> {
         .collect()
 }
 
+#[tokio::test]
+async fn on_sqlite_each_vector_query_gives_the_eligibility_filter_to_sqlite_vec() {
+    coral_test_support::database_only!(Sqlite);
+    let world = World::new().await;
+
+    for (kind, plan) in vector_query_plans(&world).await {
+        // sqlite-vec names its plan in the index string: `3` is a nearest
+        // neighbour scan, and `[` is a `rowid IN (...)` it reads before any
+        // distance.
+        let vectors = plan
+            .iter()
+            .find(|line| line.starts_with("SCAN v VIRTUAL TABLE INDEX "))
+            .unwrap_or_else(|| panic!("{kind:?}: no scan of the vectors: {plan:#?}"));
+        let index = vectors.rsplit_once(':').map_or_default(|(_, index)| index);
+        assert!(
+            index.starts_with('3') && index.contains('['),
+            "{kind:?}: sqlite-vec does not get the rowids: {plan:#?}"
+        );
+        assert!(
+            plan.iter().any(|line| line.starts_with("LIST SUBQUERY")),
+            "{kind:?}: the eligibility filter is not one list: {plan:#?}"
+        );
+    }
+}
+
+/// The plan of each retriever's vector query, by the kind it ranks. It
+/// reads them on a read snapshot, which runs on a query-only reader on
+/// `SQLite`, as every search does.
+async fn vector_query_plans(world: &World) -> Vec<(EntityKind, Vec<String>)> {
+    let mut transaction = world
+        .modules
+        .search
+        .database
+        .begin_read_snapshot()
+        .await
+        .unwrap();
+    let (providers, generations) =
+        searched_providers_and_generations(&mut transaction, &world.workspace).await;
+    let excluded = [(
+        world.weather.clone(),
+        ToolKey::parse("getForecast").unwrap(),
+    )];
+
+    let mut plans = vec![(
+        EntityKind::ProviderTool,
+        crate::retriever::tools::explain_vector_query(
+            &mut transaction,
+            &world.workspace,
+            &providers,
+            &generations,
+            &excluded,
+        )
+        .await
+        .unwrap(),
+    )];
+    for kind in [AuthoredToolKind::Private, AuthoredToolKind::Shared] {
+        let ids = [AuthoredToolId::parse(kind, "00000000-0000-4000-8000-000000000001").unwrap()];
+        plans.push((
+            EntityKind::authored(kind),
+            crate::retriever::authored_tools::explain_vector_query(
+                &mut transaction,
+                &world.workspace,
+                world.principal.principal(),
+                kind,
+                &ids,
+            )
+            .await
+            .unwrap(),
+        ));
+    }
+    transaction.rollback().await.unwrap();
+    plans
+}
+
+/// The Providers and active Generations of the Workspace's Tool rows.
+async fn searched_providers_and_generations(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace: &WorkspaceId,
+) -> (Vec<ProviderId>, Vec<coral_catalog::ProviderGenerationId>) {
+    let sql = match transaction.system() {
+        DatabaseSystem::Postgres => {
+            "SELECT DISTINCT provider_id, provider_generation_id FROM search_entities \
+             WHERE workspace_id = $1 AND kind = 'provider_tool'"
+        }
+        DatabaseSystem::Sqlite => {
+            "SELECT DISTINCT provider_id, provider_generation_id FROM search_entities \
+             WHERE workspace_id = ?1 AND kind = 'provider_tool'"
+        }
+    };
+    let scope: Vec<(String, String)> = transaction
+        .fetch_all_sql(sql, sea_query::Values(vec![workspace.to_string().into()]))
+        .await
+        .unwrap();
+    (
+        scope
+            .iter()
+            .map(|(provider, _)| ProviderId::parse(provider).unwrap())
+            .collect(),
+        scope
+            .iter()
+            .map(|(_, generation)| coral_catalog::ProviderGenerationId::parse(generation).unwrap())
+            .collect(),
+    )
+}
+
 /// How many Tools the Tool retriever handed the engine for `page`.
 fn tools_returned(page: &SearchPage) -> u64 {
     page.retriever_statuses()
@@ -659,7 +701,8 @@ fn tools_returned(page: &SearchPage) -> u64 {
 }
 
 /// The whole path once with the real model: index, embed, search. Run it
-/// with the model's files and a Postgres:
+/// with the model's files, on `SQLite` or, with the two `CORAL_TEST_*`
+/// variables, on Postgres:
 ///
 /// ```text
 /// CORAL_EMBED_MODEL_DIR=<folder with model.onnx and tokenizer.json> \
@@ -673,7 +716,6 @@ fn tools_returned(page: &SearchPage) -> u64 {
     reason = "the test reads where the developer put the model's files"
 )]
 async fn the_real_model_finds_a_tool_by_semantic_search() {
-    coral_test_support::database_only!(Postgres);
     let dir = std::env::var_os("CORAL_EMBED_MODEL_DIR")
         .expect("set CORAL_EMBED_MODEL_DIR to a folder with model.onnx and tokenizer.json");
     let model = coral_embed::Model::load(std::path::Path::new(&dir)).expect("the model loads");

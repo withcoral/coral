@@ -1,12 +1,18 @@
-//! The Embedder's statements on Postgres: which Search Entities have no
-//! current vector, their text, the vector write and the orphan sweep.
+//! The Embedder's statements: which Search Entities have no current vector,
+//! their text, the vector write and the orphan sweep.
+//!
+//! On Postgres one table holds each vector beside its key, revision and
+//! source stamp. On `SQLite` the table of that name holds the key, revision,
+//! stamp and the rowid of the vector in the sqlite-vec table
+//! `search_entity_embedding_vectors`, so the statements that read only
+//! revisions and stamps are the same on both.
 //!
 //! Every function joins the caller's transaction; the Embedder owns when
 //! each transaction begins, commits or rolls back.
 
 use std::fmt::Write as _;
 
-use coral_db::{Error, Transaction};
+use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_workspace::WorkspaceId;
 use sea_query::{Value, Values};
 
@@ -53,18 +59,21 @@ pub(super) async fn stale_entities(
     revision: &str,
     limit: usize,
 ) -> Result<Vec<StaleEntity>, IndexError> {
+    let [revision_bind, limit_bind] = [1, 2].map(|position| bind(transaction, position));
     let rows: Vec<(String, String, i64)> = transaction
         .fetch_all_sql(
-            "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos \
-             FROM search_entities s \
-             LEFT JOIN search_entity_embeddings e \
-                 ON e.workspace_id = s.workspace_id AND e.doc_id = s.doc_id \
-             WHERE s.field_names_fingerprint = s.fingerprint \
-             AND (e.doc_id IS NULL \
-                 OR e.embedder_revision <> $1 \
-                 OR e.source_indexed_at_unix_nanos <> s.indexed_at_unix_nanos) \
-             ORDER BY s.indexed_at_unix_nanos, s.workspace_id, s.doc_id \
-             LIMIT $2",
+            &format!(
+                "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos \
+                 FROM search_entities s \
+                 LEFT JOIN search_entity_embeddings e \
+                     ON e.workspace_id = s.workspace_id AND e.doc_id = s.doc_id \
+                 WHERE s.field_names_fingerprint = s.fingerprint \
+                 AND (e.doc_id IS NULL \
+                     OR e.embedder_revision <> {revision_bind} \
+                     OR e.source_indexed_at_unix_nanos <> s.indexed_at_unix_nanos) \
+                 ORDER BY s.indexed_at_unix_nanos, s.workspace_id, s.doc_id \
+                 LIMIT {limit_bind}"
+            ),
             Values(vec![
                 revision.into(),
                 i64::try_from(limit).unwrap_or(i64::MAX).into(),
@@ -101,18 +110,19 @@ pub(super) async fn entity_texts(
     workspace_id: &WorkspaceId,
     doc_ids: &[&str],
 ) -> Result<Vec<EntityText>, IndexError> {
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT doc_id, kind, qualified_name, title, description, provider_name, field_names, \
          indexed_at_unix_nanos \
          FROM search_entities \
-         WHERE workspace_id = $1 AND field_names_fingerprint = fingerprint AND doc_id IN (",
+         WHERE workspace_id = {} AND field_names_fingerprint = fingerprint AND doc_id IN (",
+        bind(transaction, 1)
     );
     let mut values = vec![Value::from(workspace_id.to_string())];
     for (position, doc_id) in doc_ids.iter().enumerate() {
         if position > 0 {
             sql.push_str(", ");
         }
-        write!(sql, "${}", position + 2).expect("writing to a String does not fail");
+        sql.push_str(&bind(transaction, position + 2));
         values.push((*doc_id).into());
     }
     sql.push(')');
@@ -154,6 +164,22 @@ type EntityTextRow = (String, String, String, String, String, String, String, i6
 /// vector that another Embedder wrote first, or whose row changed or went,
 /// is not.
 pub(super) async fn write_vectors(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    revision: &str,
+    vectors: &[EntityVector<'_>],
+) -> Result<u64, Error> {
+    match transaction.system() {
+        DatabaseSystem::Postgres => {
+            write_postgres_vectors(transaction, workspace_id, revision, vectors).await
+        }
+        DatabaseSystem::Sqlite => {
+            write_sqlite_vectors(transaction, workspace_id, revision, vectors).await
+        }
+    }
+}
+
+async fn write_postgres_vectors(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     revision: &str,
@@ -201,18 +227,108 @@ pub(super) async fn write_vectors(
     transaction.execute_sql(&sql, Values(values)).await
 }
 
+/// Writes each vector on `SQLite`, one row at a time: the key row first,
+/// under the same conditions as on Postgres, then the vector at the key
+/// row's rowid. sqlite-vec 0.1.9 has no upsert, and a rowid that a removed
+/// key row left can hold an old vector, so the vector row is deleted before
+/// it is written.
+async fn write_sqlite_vectors(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    revision: &str,
+    vectors: &[EntityVector<'_>],
+) -> Result<u64, Error> {
+    let mut written = 0;
+    for vector in vectors {
+        let keyed: Vec<(i64,)> = transaction
+            .fetch_all_sql(
+                "INSERT INTO search_entity_embeddings (\
+                    workspace_id, doc_id, embedder_revision, source_indexed_at_unix_nanos) \
+                 SELECT s.workspace_id, s.doc_id, ?3, s.indexed_at_unix_nanos \
+                 FROM search_entities AS s \
+                 WHERE s.workspace_id = ?1 AND s.doc_id = ?2 AND s.indexed_at_unix_nanos = ?4 \
+                 ON CONFLICT (workspace_id, doc_id) DO UPDATE SET \
+                    embedder_revision = excluded.embedder_revision, \
+                    source_indexed_at_unix_nanos = excluded.source_indexed_at_unix_nanos \
+                 WHERE search_entity_embeddings.embedder_revision <> excluded.embedder_revision \
+                 OR search_entity_embeddings.source_indexed_at_unix_nanos \
+                     <> excluded.source_indexed_at_unix_nanos \
+                 RETURNING vector_rowid",
+                Values(vec![
+                    workspace_id.to_string().into(),
+                    vector.doc_id.into(),
+                    revision.into(),
+                    vector.indexed_at_unix_nanos.into(),
+                ]),
+            )
+            .await?;
+        let Some((vector_rowid,)) = keyed.into_iter().next() else {
+            continue;
+        };
+        transaction
+            .execute_sql(
+                "DELETE FROM search_entity_embedding_vectors WHERE rowid = ?1",
+                Values(vec![vector_rowid.into()]),
+            )
+            .await?;
+        transaction
+            .execute_sql(
+                "INSERT INTO search_entity_embedding_vectors (rowid, embedding) VALUES (?1, ?2)",
+                Values(vec![
+                    vector_rowid.into(),
+                    vector_literal(vector.vector).into(),
+                ]),
+            )
+            .await?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Deletes each vector whose Search Entity is gone, with its Workspace or
 /// alone. Returns the vectors deleted.
 pub(super) async fn delete_orphaned_vectors(
     transaction: &mut Transaction<'_>,
 ) -> Result<u64, Error> {
-    transaction
-        .execute_sql(
-            "DELETE FROM search_entity_embeddings e \
-             WHERE NOT EXISTS (\
-                 SELECT 1 FROM search_entities s \
-                 WHERE s.workspace_id = e.workspace_id AND s.doc_id = e.doc_id)",
-            Values(Vec::new()),
-        )
-        .await
+    match transaction.system() {
+        DatabaseSystem::Postgres => {
+            transaction
+                .execute_sql(
+                    "DELETE FROM search_entity_embeddings e \
+                     WHERE NOT EXISTS (\
+                         SELECT 1 FROM search_entities s \
+                         WHERE s.workspace_id = e.workspace_id AND s.doc_id = e.doc_id)",
+                    Values(Vec::new()),
+                )
+                .await
+        }
+        DatabaseSystem::Sqlite => {
+            transaction
+                .execute_sql(
+                    "DELETE FROM search_entity_embeddings \
+                     WHERE NOT EXISTS (\
+                         SELECT 1 FROM search_entities s \
+                         WHERE s.workspace_id = search_entity_embeddings.workspace_id \
+                         AND s.doc_id = search_entity_embeddings.doc_id)",
+                    Values(Vec::new()),
+                )
+                .await?;
+            transaction
+                .execute_sql(
+                    "DELETE FROM search_entity_embedding_vectors \
+                     WHERE rowid NOT IN (SELECT vector_rowid FROM search_entity_embeddings)",
+                    Values(Vec::new()),
+                )
+                .await
+        }
+    }
+}
+
+/// The placeholder of the bind at `position`, from 1, in this transaction's
+/// backend.
+fn bind(transaction: &Transaction<'_>, position: usize) -> String {
+    match transaction.system() {
+        DatabaseSystem::Postgres => format!("${position}"),
+        DatabaseSystem::Sqlite => format!("?{position}"),
+    }
 }

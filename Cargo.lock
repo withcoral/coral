@@ -790,6 +790,7 @@ dependencies = [
 name = "coral-db"
 version = "1.8.0"
 dependencies = [
+ "coral-sqlite-vec",
  "coral-telemetry",
  "coral-test-support",
  "sea-query",
@@ -1143,6 +1144,15 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "coral-sqlite-vec"
+version = "1.8.0"
+dependencies = [
+ "libsqlite3-sys",
+ "sqlite-vec",
+ "thiserror",
 ]
 
 [[package]]
@@ -4740,6 +4750,15 @@ dependencies = [
  "nom",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "sqlite-vec"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0ba424237a9a5db2f6071f193319e2b6a32f7f3961debb2fbbfe67067abce3f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
