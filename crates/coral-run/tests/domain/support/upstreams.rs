@@ -144,11 +144,9 @@ impl UpstreamSender for BlockingUpstream {
         _dispatch: ReadyDispatch,
         _stop: Arc<ExecutionStop>,
     ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
-        let mut released = self.released.subscribe();
         self.sends.fetch_add(1, Ordering::SeqCst);
         self.entered.store(true, Ordering::SeqCst);
-        // A dropped sender never happens: the upstream outlives its sends.
-        let _released = released.wait_for(|released| *released).await;
+        until_released(&self.released).await;
         self.exited.store(true, Ordering::SeqCst);
         if self.result_too_large {
             Err(crate::invocation::UpstreamSendError::TooLarge)

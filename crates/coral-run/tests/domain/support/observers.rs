@@ -1,6 +1,13 @@
 //! Invocation and execution observers that gate and record Run timing.
 use crate::tests::*;
 
+/// Returns once `gate` is open: at once when the test has opened it already.
+pub(crate) async fn until_released(gate: &watch::Sender<bool>) {
+    let mut released = gate.subscribe();
+    // A dropped sender never happens: a gate outlives the calls it holds.
+    let _released = released.wait_for(|released| *released).await;
+}
+
 /// Holds the first Run Owner before its start mark until released; every
 /// later one passes.
 pub(crate) struct ClaimGate {
@@ -32,10 +39,8 @@ impl ClaimGate {
 impl ExecutionObserver for ClaimGate {
     async fn owner_starting(&self, _run_id: &crate::RunId, _claim_id: &str) {
         if self.claims.fetch_add(1, Ordering::SeqCst) == 0 {
-            let mut released = self.released.subscribe();
             self.entered.store(true, Ordering::SeqCst);
-            // A dropped sender never happens: the gate outlives the test.
-            let _released = released.wait_for(|released| *released).await;
+            until_released(&self.released).await;
         }
     }
 
@@ -396,19 +401,13 @@ impl EnforcementLatch {
     pub(crate) async fn until_loaded(&self, count: usize) {
         wait_until(|| self.loaded.load(Ordering::SeqCst) >= count).await;
     }
-
-    async fn park(gate: &watch::Sender<bool>) {
-        let mut released = gate.subscribe();
-        // A dropped sender never happens: the latch outlives the test.
-        let _released = released.wait_for(|released| *released).await;
-    }
 }
 
 #[async_trait]
 impl InvocationObserver for EnforcementLatch {
     async fn before_enforcement(&self) -> Result<(), Error> {
         self.arrived.fetch_add(1, Ordering::SeqCst);
-        Self::park(&self.arrivals).await;
+        until_released(&self.arrivals).await;
         Ok(())
     }
 
@@ -420,7 +419,7 @@ impl InvocationObserver for EnforcementLatch {
     }
 
     async fn before_failure_commit(&self) -> Result<(), Error> {
-        Self::park(&self.failures).await;
+        until_released(&self.failures).await;
         Ok(())
     }
 
