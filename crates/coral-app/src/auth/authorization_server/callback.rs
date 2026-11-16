@@ -929,9 +929,9 @@ mod tests {
         assert_logged_only_the_code(&captured, "sqlx", &[UPSTREAM_SUBJECT, &server.uri()]);
     }
 
-    /// A corrupt directory row, a database outage and a refused Membership
-    /// each get their own code, and a database failure keeps the database's
-    /// code wherever it surfaced.
+    /// A corrupt directory row has its own code, a database failure keeps the
+    /// database's code whichever module met it, and any other Organization
+    /// failure is `organization`.
     #[test]
     fn a_login_that_cannot_be_recorded_is_logged_by_its_kind() {
         for (error, code) in [
