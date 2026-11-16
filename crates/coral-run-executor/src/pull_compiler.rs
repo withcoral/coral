@@ -216,13 +216,9 @@ impl PullStreamCompiler {
             .as_ref()
             .and_then(|held| held.take())
             .and_then(|stream| {
-                let sent = self
-                    .streams
-                    .compile_held(stream, millis(left()), call.clone());
-                if sent.is_err() {
-                    self.streams.let_go(stream);
-                }
-                sent.ok()
+                self.streams
+                    .compile_held(stream, millis(left()), call.clone())
+                    .ok()
             });
         let answer = if let Some(answer) = on_held {
             answer

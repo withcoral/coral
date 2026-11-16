@@ -147,20 +147,23 @@ pub(crate) struct Take<'a> {
     pub(crate) taker: &'a str,
     /// The row's deadline must be after this.
     pub(crate) deadline_after: i64,
-    /// Pass over probes.
-    pub(crate) calls_only: bool,
+    /// Only the calls of these Coral Instances, when set.
+    pub(crate) from: Option<&'a [String]>,
 }
 
 /// The rows `take` takes, or any of them: untaken, with a deadline after
-/// its bound, and calls only when it says so.
+/// its bound, and only the calls of `from` when it is set.
 fn takeable(take: &Take<'_>) -> sea_query::Condition {
     let condition = sea_query::Condition::all()
         .add(Expr::col(CompileRequests::TakenBy).is_null())
         .add(Expr::col(CompileRequests::Deadline).gt(take.deadline_after));
-    let condition = if take.calls_only {
-        condition.add(Expr::col(CompileRequests::Call).is_not_null())
-    } else {
-        condition
+    let condition = match take.from {
+        Some(requesters) => condition
+            .add(Expr::col(CompileRequests::Call).is_not_null())
+            .add(
+                Expr::col(CompileRequests::Requester).is_in(requesters.iter().map(String::as_str)),
+            ),
+        None => condition,
     };
     sea_query::Condition::any().add(condition)
 }

@@ -1,13 +1,13 @@
 //! Compiles relayed through the database (ADR 0027): Coral Instances talk
 //! only through it. A Coral Instance that holds no pull stream with room
 //! writes a row and waits on the change signal for its answer; every Coral
-//! Instance that holds one with room, itself included, takes the oldest
-//! row, serves it on that stream, and writes the answer back.
+//! Instance that holds one with room, itself included, takes the oldest row
+//! it can serve, serves it on that stream, and writes the answer back.
 //!
 //! A row with no call is a probe: [`crate::CompilerClient::ready`] waits on
 //! one until some Coral Instance has room, before the compile's own time
-//! starts. A pickup answers no more probes from other Coral Instances than
-//! it has room for calls that have not yet arrived.
+//! starts. A pickup holds one unit of its room for each probe it answers
+//! for another Coral Instance, which that Coral Instance's next call spends.
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -43,8 +43,8 @@ const UNTAKEN_RESERVE: Duration = Duration::from_millis(100);
 /// requester deletes it first unless the requester stopped.
 const ORPHAN_GRACE: Duration = Duration::from_secs(5);
 
-/// How long a pickup counts a probe it answered for another Coral Instance
-/// against its room, while that requester's call is on its way.
+/// How long a pickup holds a unit for a probe it answered for another Coral
+/// Instance, while that Coral Instance's call is on its way.
 const PROMISE_KEPT: Duration = Duration::from_secs(1);
 
 /// This Coral Instance's side of the relay.
@@ -52,6 +52,9 @@ const PROMISE_KEPT: Duration = Duration::from_secs(1);
 pub(crate) struct CompileRelay {
     database: Arc<Database>,
     instance: Arc<str>,
+    /// How long a pickup holds a unit for a probe it answered for another
+    /// Coral Instance: [`PROMISE_KEPT`], except in tests.
+    promise_kept: Duration,
 }
 
 /// Who had room for a probe.
@@ -81,7 +84,15 @@ impl CompileRelay {
         Self {
             database,
             instance: Arc::from(instance),
+            promise_kept: PROMISE_KEPT,
         }
+    }
+
+    /// This relay, holding a unit for a probe it answered for `kept`.
+    #[cfg(test)]
+    pub(crate) const fn with_promise_kept(mut self, kept: Duration) -> Self {
+        self.promise_kept = kept;
+        self
     }
 
     /// Waits up to `until` for a Coral Instance with room to answer a probe.
@@ -135,8 +146,9 @@ impl CompileRelay {
     /// Writes a row for `call`, none for a probe, with the deadline
     /// `until`, and waits for its answer, asking `children` for room every
     /// [`LOOK_AGAIN`]: until [`UNTAKEN_RESERVE`] before `until` while nobody
-    /// took it, and until `until` once a pickup did. No database wait runs
-    /// past `until`. The row is gone when it returns.
+    /// took it, and until `until` once a pickup did. Its write and reads end
+    /// by `until`; the delete of its row after them may take longer. The row
+    /// is gone when it returns, unless that delete failed.
     async fn wait(
         &self,
         call: Option<&Call>,
@@ -164,9 +176,14 @@ impl CompileRelay {
                     error.type = safe::kind(error.code()),
                     "a compile could not be relayed"
                 );
+                row.delete().await;
                 return Waited::Unanswered { taken: false };
             }
-            Err(_elapsed) => return Waited::Unanswered { taken: false },
+            // The write may still land: the delete after it removes it.
+            Err(_elapsed) => {
+                row.delete().await;
+                return Waited::Unanswered { taken: false };
+            }
         }
         let mut taken = false;
         let mut asked: Option<Instant> = None;
@@ -208,20 +225,28 @@ impl CompileRelay {
         }
     }
 
-    /// Serves the relayed compiles on `streams` while one has room.
+    /// Serves the relayed compiles on `streams` while one has room, or holds
+    /// room for a call it promised.
     pub(crate) async fn serve(self, streams: PullStreams) -> Infallible {
         let mut changes = self.database.subscribe_changes().ok();
-        let mut promised = Promised::default();
+        let mut promised = Promised::new(streams.clone(), self.promise_kept);
         loop {
-            if streams.most_room().is_some() {
+            promised.lapse();
+            if streams.most_room().is_some() || !promised.is_empty() {
                 self.serve_pending(&streams, &mut promised).await;
             }
+            // A lapsing promise frees its room.
+            let wait = promised
+                .next_lapse()
+                .map_or(LOOK_AGAIN, |lapse| lapse.min(LOOK_AGAIN));
             if streams.most_room().is_some() {
-                // A lapsing promise frees room for a probe held back.
-                let wait = promised
-                    .next_lapse()
-                    .map_or(LOOK_AGAIN, |lapse| lapse.min(LOOK_AGAIN));
                 signalled(&mut changes, &self.database, wait).await;
+            } else if !promised.is_empty() {
+                // Its promised calls come as rows; probes wait for room.
+                tokio::select! {
+                    () = signalled(&mut changes, &self.database, wait) => {}
+                    () = streams.room_signalled(wait) => {}
+                }
             } else {
                 // A row written while no stream had room is taken once one has.
                 streams.room_signalled(LOOK_AGAIN).await;
@@ -229,76 +254,103 @@ impl CompileRelay {
         }
     }
 
-    /// Takes rows while a stream has room. Room already promised to another
-    /// Coral Instance's probe takes only calls. One read first, so a pickup
-    /// with nothing to take takes no write lock.
+    /// Takes rows while a stream has room. With none free, it takes only the
+    /// calls of the Coral Instances it holds room for. One read first, so a
+    /// pickup with nothing to take takes no write lock.
     async fn serve_pending(&self, streams: &PullStreams, promised: &mut Promised) {
-        while let Some(stream) = streams.most_room() {
+        loop {
             promised.lapse();
-            let free: u32 = streams.held().iter().map(|held| held.free).sum();
-            let calls_only = usize::try_from(free).unwrap_or(usize::MAX) <= promised.len();
+            let free = streams.most_room();
+            let requesters = promised.requesters();
+            let from = match free {
+                Some(_) => None,
+                None if !requesters.is_empty() => Some(requesters.as_slice()),
+                None => return,
+            };
             let now = unix_now();
             let take = Take {
                 taker: &self.instance,
                 deadline_after: now.saturating_add(nanos(UNTAKEN_RESERVE)),
-                calls_only,
+                from,
             };
             match rows::pending(&self.database, &take, orphaned_before(now)).await {
                 Ok(true) => {}
-                Ok(false) => break,
+                Ok(false) => return,
                 Err(error) => {
                     tracing::warn!(
                         error.type = safe::kind(error.code()),
                         "relayed compiles could not be read"
                     );
-                    break;
+                    return;
                 }
             }
-            match self.take(take, orphaned_before(now)).await {
-                Ok(None) => break,
-                Ok(Some(taken)) => {
-                    let requester = taken.requester.clone();
-                    let foreign = requester != *self.instance;
-                    match self.serve_one(streams, stream, taken).await {
-                        Served::Probe if foreign => promised.make(requester),
-                        Served::Call if foreign => promised.keep(&requester),
-                        Served::Probe | Served::Call | Served::Other => {}
-                    }
-                }
+            let taken = match self.take(from).await {
+                Ok(Some(taken)) => taken,
+                Ok(None) => return,
                 Err(error) => {
                     tracing::warn!(
                         error.type = safe::kind(error.code()),
                         "a relayed compile could not be taken"
                     );
-                    break;
+                    return;
+                }
+            };
+            let foreign = taken.requester != *self.instance;
+            match (taken.request, free) {
+                (Request::Room, Some(stream)) if foreign => {
+                    // Room held for the call that this answer invites.
+                    if streams.hold(stream).is_err() {
+                        self.release(&taken.id).await;
+                    } else if self.answer(&taken.id, Answered::Room).await {
+                        promised.make(taken.requester, stream);
+                    } else {
+                        streams.let_go(stream);
+                        self.release(&taken.id).await;
+                    }
+                }
+                (Request::Room, _) => {
+                    self.answer(&taken.id, Answered::Room).await;
+                }
+                (Request::Unreadable, _) => {
+                    self.answer(&taken.id, failure(ProtocolError.into())).await;
+                }
+                (Request::Call(call), free) => {
+                    let via = match promised.keep(&taken.requester) {
+                        Some(held) => Some(Via::Held(held)),
+                        None => free.map(Via::Free),
+                    };
+                    match via {
+                        Some(via) => {
+                            self.send(streams, via, taken.id, call, taken.deadline)
+                                .await;
+                        }
+                        None => self.release(&taken.id).await,
+                    }
                 }
             }
         }
     }
 
-    /// Answers a probe at once, and sends a call down `stream`, answering it
-    /// once its `Compiled` arrives. A call the stream refused goes back.
-    async fn serve_one(&self, streams: &PullStreams, stream: StreamId, taken: Taken) -> Served {
-        let Taken {
-            id,
-            request,
-            deadline,
-            ..
-        } = taken;
-        let call = match request {
-            Request::Room => {
-                self.answer(&id, Answered::Room).await;
-                return Served::Probe;
-            }
-            Request::Unreadable => {
-                self.answer(&id, failure(ProtocolError.into())).await;
-                return Served::Other;
-            }
-            Request::Call(call) => call,
-        };
+    /// Sends a taken call down a stream, and answers it once its `Compiled`
+    /// arrives. A held unit that is gone falls back to free room; a call no
+    /// stream takes goes back.
+    async fn send(&self, streams: &PullStreams, via: Via, id: String, call: Call, deadline: i64) {
         let until = deadline.saturating_sub(nanos(ANSWER_RESERVE));
         let left = Duration::from_nanos(u64::try_from(until - unix_now()).unwrap_or(0));
-        match streams.compile(stream, millis(left), call) {
+        let time_left_ms = millis(left);
+        let sent = match via {
+            Via::Free(stream) => streams.compile(stream, time_left_ms, call),
+            Via::Held(stream) => {
+                let fallback = streams.most_room().map(|free| (free, call.clone()));
+                match (streams.compile_held(stream, time_left_ms, call), fallback) {
+                    (Err(Refused::NoRoom | Refused::Closed), Some((free, call))) => {
+                        streams.compile(free, time_left_ms, call)
+                    }
+                    (sent, _) => sent,
+                }
+            }
+        };
+        match sent {
             Ok(answered) => {
                 let relay = self.clone();
                 tokio::spawn(async move {
@@ -309,20 +361,10 @@ impl CompileRelay {
                     };
                     relay.answer(&id, Answered::Call(read.into_answer())).await;
                 });
-                Served::Call
             }
-            Err(Refused::NoRoom | Refused::Closed) => {
-                if let Err(error) = self.release(&id).await {
-                    tracing::warn!(
-                        error.type = safe::kind(error.code()),
-                        "a relayed compile could not be given back"
-                    );
-                }
-                Served::Other
-            }
+            Err(Refused::NoRoom | Refused::Closed) => self.release(&id).await,
             Err(Refused::TooLarge) => {
                 self.answer(&id, failure(ProtocolError.into())).await;
-                Served::Other
             }
         }
     }
@@ -333,81 +375,148 @@ impl CompileRelay {
         transaction.commit().await
     }
 
-    /// Deletes the rows left over from before `expired`, then takes the
-    /// oldest row that `take` names.
-    async fn take(&self, take: Take<'_>, expired: i64) -> Result<Option<Taken>, coral_db::Error> {
+    /// Deletes the rows left over past their deadline and [`ORPHAN_GRACE`],
+    /// then takes the oldest row its requester still waits for, only a call
+    /// of one of `from` when it is set. The clock is read once the
+    /// transaction has begun, so a wait to begin it cannot take a row inside
+    /// its reserve.
+    async fn take(&self, from: Option<&[String]>) -> Result<Option<Taken>, coral_db::Error> {
         let mut transaction = self.database.begin().await?;
-        rows::delete_past(&mut transaction, expired).await?;
+        let now = unix_now();
+        rows::delete_past(&mut transaction, orphaned_before(now)).await?;
+        let take = Take {
+            taker: &self.instance,
+            deadline_after: now.saturating_add(nanos(UNTAKEN_RESERVE)),
+            from,
+        };
         let taken = rows::take_oldest(&mut transaction, take).await?;
         transaction.commit().await?;
         Ok(taken)
     }
 
-    async fn release(&self, id: &str) -> Result<(), coral_db::Error> {
-        let mut transaction = self.database.begin().await?;
-        rows::release(&mut transaction, id).await?;
-        transaction.commit().await
+    /// Gives a taken row back for another pickup.
+    async fn release(&self, id: &str) {
+        let released = async {
+            let mut transaction = self.database.begin().await?;
+            rows::release(&mut transaction, id).await?;
+            transaction.commit().await
+        };
+        if let Err(error) = released.await {
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "a relayed compile could not be given back"
+            );
+        }
     }
 
-    async fn answer(&self, id: &str, answered: Answered) {
+    /// Writes the answer to row `id`; false when the write failed.
+    async fn answer(&self, id: &str, answered: Answered) -> bool {
         let written = async {
             let mut transaction = self.database.begin().await?;
             rows::answer(&mut transaction, id, answered).await?;
             transaction.commit().await
         };
-        if let Err(error) = written.await {
-            tracing::warn!(
-                error.type = safe::kind(error.code()),
-                "a relayed compile's answer could not be written"
-            );
-        }
+        written
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(
+                    error.type = safe::kind(error.code()),
+                    "a relayed compile's answer could not be written"
+                );
+            })
+            .is_ok()
     }
 }
 
-/// What a pickup did with a row it took.
-enum Served {
-    /// Answered a probe.
-    Probe,
-    /// Sent a call down a stream.
-    Call,
-    /// Answered it with a failure, or gave it back.
-    Other,
+/// The stream a taken call goes down.
+enum Via {
+    /// Its free room.
+    Free(StreamId),
+    /// A unit held for this call's Coral Instance.
+    Held(StreamId),
 }
 
-/// The probes a pickup answered for other Coral Instances whose calls have
-/// not come yet: room it counts as spoken for, for [`PROMISE_KEPT`].
-#[derive(Default)]
-struct Promised(VecDeque<(Instant, String)>);
+/// The units a pickup holds for probes it answered for other Coral
+/// Instances, until their calls come or the promise lapses. Another pickup
+/// with free room may still take a promised Coral Instance's call; the unit
+/// held for it then lapses unused. Dropped, it frees every unit it holds.
+struct Promised {
+    streams: PullStreams,
+    kept: Duration,
+    promises: VecDeque<Promise>,
+}
+
+struct Promise {
+    made: Instant,
+    requester: String,
+    stream: StreamId,
+}
 
 impl Promised {
-    fn make(&mut self, requester: String) {
-        self.0.push_back((Instant::now(), requester));
-    }
-
-    /// A call from `requester` came: one of its promises is kept.
-    fn keep(&mut self, requester: &str) {
-        if let Some(kept) = self
-            .0
-            .iter()
-            .position(|(_, promised)| promised == requester)
-        {
-            self.0.remove(kept);
+    const fn new(streams: PullStreams, kept: Duration) -> Self {
+        Self {
+            streams,
+            kept,
+            promises: VecDeque::new(),
         }
     }
 
-    fn lapse(&mut self) {
-        self.0.retain(|(made, _)| made.elapsed() < PROMISE_KEPT);
+    /// Records a unit [`PullStreams::hold`] held on `stream` for `requester`.
+    fn make(&mut self, requester: String, stream: StreamId) {
+        self.promises.push_back(Promise {
+            made: Instant::now(),
+            requester,
+            stream,
+        });
     }
 
-    fn len(&self) -> usize {
-        self.0.len()
+    /// The stream holding a unit for `requester`'s call, which it spends.
+    fn keep(&mut self, requester: &str) -> Option<StreamId> {
+        let kept = self
+            .promises
+            .iter()
+            .position(|promise| promise.requester == requester)?;
+        self.promises.remove(kept).map(|promise| promise.stream)
+    }
+
+    /// Frees the units of the promises that lapsed.
+    fn lapse(&mut self) {
+        while let Some(promise) = self.promises.front()
+            && promise.made.elapsed() >= self.kept
+        {
+            self.streams.let_go(promise.stream);
+            self.promises.pop_front();
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.promises.is_empty()
+    }
+
+    fn requesters(&self) -> Vec<String> {
+        let mut requesters: Vec<String> = self
+            .promises
+            .iter()
+            .map(|promise| promise.requester.clone())
+            .collect();
+        requesters.sort_unstable();
+        requesters.dedup();
+        requesters
     }
 
     /// The time until the oldest promise lapses.
     fn next_lapse(&self) -> Option<Duration> {
-        self.0
+        self.promises
             .front()
-            .map(|(made, _)| PROMISE_KEPT.saturating_sub(made.elapsed()))
+            .map(|promise| self.kept.saturating_sub(promise.made.elapsed()))
+    }
+}
+
+impl Drop for Promised {
+    fn drop(&mut self) {
+        for promise in self.promises.drain(..) {
+            self.streams.let_go(promise.stream);
+        }
     }
 }
 

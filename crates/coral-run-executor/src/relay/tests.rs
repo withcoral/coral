@@ -10,7 +10,7 @@ use coral_db::{Database, DatabaseSystem};
 use coral_test_support::TestDatabase;
 use tokio::task::JoinHandle;
 
-use super::{CompileRelay, PROMISE_KEPT};
+use super::CompileRelay;
 use crate::pull::tests::{Sent, compiled, dialed_stream as open, up};
 use crate::relay_repository::count;
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
@@ -34,8 +34,14 @@ impl Drop for Instance {
 }
 
 fn instance(database: Arc<Database>, id: &str) -> Arc<Instance> {
+    promising(database, id, super::PROMISE_KEPT)
+}
+
+/// A Coral Instance whose pickup holds a unit for a probe it answered for
+/// another one for `kept`.
+fn promising(database: Arc<Database>, id: &str, kept: Duration) -> Arc<Instance> {
     let streams = PullStreams::default();
-    let relay = CompileRelay::new(database, id);
+    let relay = CompileRelay::new(database, id).with_promise_kept(kept);
     let pickup = tokio::spawn(relay.clone().serve(streams.clone()));
     Arc::new(Instance {
         compiler: PullStreamCompiler::relayed(streams.clone(), None, relay),
@@ -62,6 +68,11 @@ async fn instances<const N: usize>(database: &TestDatabase) -> (Arc<Instance>, [
         unreachable!("{N} servers");
     };
     (requester, others)
+}
+
+/// The units the streams can still take.
+fn free(streams: &PullStreams) -> u32 {
+    streams.held().iter().map(|held| held.free).sum()
 }
 
 /// `stream`'s Run Executor reports `free` units of room.
@@ -244,18 +255,61 @@ async fn a_row_written_while_no_run_executor_is_linked_is_served_once_one_dials_
     assert_eq!(count(&database.database()).await.unwrap(), 0);
 }
 
-#[tokio::test]
-async fn one_unit_of_room_elsewhere_readies_one_waiting_caller_at_a_time() {
-    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    // Two Coral Instances: on SQLite they share the one database handle.
+/// The requester, and another Coral Instance whose pickup holds a unit for
+/// a probe it answered for `kept`: on SQLite they share the one database
+/// handle.
+async fn requester_and_promising_server(
+    database: &TestDatabase,
+    kept: Duration,
+) -> (Arc<Instance>, Arc<Instance>) {
     let requester = instance(database.database(), "requester");
     let server = match database.database().system() {
         DatabaseSystem::Postgres => {
             let peer = database.connect_peer().await.expect("a peer connection");
-            instance(Arc::new(peer), "server")
+            promising(Arc::new(peer), "server", kept)
         }
-        DatabaseSystem::Sqlite => instance(database.database(), "server"),
+        DatabaseSystem::Sqlite => promising(database.database(), "server", kept),
     };
+    (requester, server)
+}
+
+#[tokio::test]
+async fn one_unit_of_room_elsewhere_readies_one_waiting_caller_at_a_time() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    // A promise that outlasts the test, so only its call or new room frees
+    // the unit.
+    let (requester, server) =
+        requester_and_promising_server(&database, Duration::from_secs(600)).await;
+    let (stream, mut sent) = open(&server.streams, 0);
+    let first = readying(&requester.compiler);
+    rows_reach(&database.database(), 1).await;
+    let second = readying(&requester.compiler);
+    rows_reach(&database.database(), 2).await;
+
+    report(&server.streams, stream, 1);
+    let ready = first.await.unwrap().map(|held| held.is_some());
+    assert_eq!(ready, Ok(false), "the oldest caller relays its calls");
+    // The server holds its one unit for the first caller's call, so the
+    // other's probe finds no room.
+    assert_eq!(free(&server.streams), 0, "the unit is held");
+    assert!(!second.is_finished(), "the other waits for room");
+
+    // The first caller's call spends the held unit.
+    let call = compiling(&requester.compiler, Duration::from_secs(5));
+    answer(&server.streams, stream, &mut sent).await;
+    assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
+    assert!(!second.is_finished(), "the other still waits for room");
+
+    report(&server.streams, stream, 1);
+    let ready = second.await.unwrap().map(|held| held.is_some());
+    assert_eq!(ready, Ok(false), "new room readies the other");
+}
+
+#[tokio::test]
+async fn a_unit_held_for_a_call_that_never_comes_readies_the_next_caller() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, server) =
+        requester_and_promising_server(&database, Duration::from_millis(200)).await;
     let (stream, _sent) = open(&server.streams, 0);
     let first = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
@@ -263,16 +317,9 @@ async fn one_unit_of_room_elsewhere_readies_one_waiting_caller_at_a_time() {
     rows_reach(&database.database(), 2).await;
 
     report(&server.streams, stream, 1);
-    let reported = tokio::time::Instant::now();
     let ready = first.await.unwrap().map(|held| held.is_some());
-    assert_eq!(ready, Ok(false), "the oldest caller relays its calls");
-
-    // The one unit is promised to the first caller's calls. No call comes,
-    // so the promise lapses, and only then does the room ready the other.
+    assert_eq!(ready, Ok(false));
+    // No call comes: the promise lapses, and the unit readies the other.
     let ready = second.await.unwrap().map(|held| held.is_some());
     assert_eq!(ready, Ok(false));
-    assert!(
-        reported.elapsed() >= PROMISE_KEPT,
-        "the other waited for the promise to lapse"
-    );
 }

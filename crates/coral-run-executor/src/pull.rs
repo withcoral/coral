@@ -221,8 +221,9 @@ struct Held {
     closing: bool,
     outbound: mpsc::UnboundedSender<Result<PullResponse, Status>>,
     compiles_sent: u64,
-    /// Units held for callers that wait for room, until each sends its
-    /// first compile or lets the unit go. `free` leaves them out.
+    /// Units held for callers that wait for room, and for the calls a
+    /// relay pickup promised another Coral Instance, until each sends its
+    /// compile or lets the unit go. `free` leaves them out.
     kept_for_callers: u32,
     /// Each compile in flight, by number.
     compiles: HashMap<u64, InFlight>,
@@ -357,13 +358,18 @@ impl PullStreams {
     }
 
     /// [`Self::compile`] on a unit [`Self::hold`] held, which it spends.
+    /// A refused call frees the unit.
     pub(crate) fn compile_held(
         &self,
         stream: StreamId,
         time_left_ms: u32,
         call: Call,
     ) -> Result<oneshot::Receiver<Read>, Refused> {
-        self.send_compile(stream, time_left_ms, call, true)
+        let sent = self.send_compile(stream, time_left_ms, call, true);
+        if sent.is_err() {
+            self.let_go(stream);
+        }
+        sent
     }
 
     fn send_compile(
@@ -585,9 +591,9 @@ impl LinkServer {
     }
 
     /// Serves the link over plaintext HTTP/2 on `listener` until `shutdown`
-    /// completes, and serves relayed compiles on its streams while one has
-    /// room. Shutdown ends each pull stream cleanly, after its compiles in
-    /// flight, as the connection age does.
+    /// completes, and serves relayed compiles on its streams. Shutdown ends
+    /// each pull stream cleanly, after its compiles in flight, as the
+    /// connection age does.
     ///
     /// # Errors
     ///
