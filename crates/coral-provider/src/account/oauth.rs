@@ -486,12 +486,67 @@ impl AccountModule {
 }
 
 /// Stable safe code for an authorization failure; never an upstream description.
+///
+/// Every variant is named, so a new [`Error`] does not compile until someone
+/// decides whether the person who signs in is told its cause.
 pub(super) const fn authorization_failure_code(error: &Error) -> &'static str {
     match error {
         Error::OutboundDestinationRejected => "outbound_destination_rejected",
         Error::OAuthClientConfiguration => "oauth_client_configuration",
+        // The device poll consumes these answers. Anywhere else the service
+        // gave one to a request that is not a poll, which is one more refusal.
+        // The database accepts neither as a failure code.
+        Error::OAuthTokenExchange(
+            TokenExchangeFailure::AuthorizationPending | TokenExchangeFailure::SlowDown,
+        ) => TokenExchangeFailure::RequestRejected.code(),
         Error::OAuthTokenExchange(failure) => failure.code(),
-        _ => "authorization_failed",
+        // Discovery and client bootstrap end before an Authorization opens,
+        // so their failures never reach an exchange or a device poll.
+        Error::AuthorizationDiscovery(_)
+        | Error::ClientBootstrapUnavailable
+        | Error::ClientMetadataNotPublic
+        | Error::ClientMetadataUnresolved
+        | Error::ConsentDestinationRejected
+        // Coral's own faults, lost authority, and requests that belong to
+        // other work. The person who signs in cannot act on any of them.
+        | Error::InputUnavailable
+        | Error::SetupPreparationUnavailable
+        | Error::ProviderSetupNotApplicable
+        | Error::ProviderSetupNotReady
+        | Error::AccountInput
+        | Error::SecretReferenceNotAllowed
+        | Error::SecretStoreNotGranted
+        | Error::SecretStoreRead(_)
+        | Error::CredentialRefreshFailed
+        | Error::AccountNotFound
+        | Error::AccountRequired
+        | Error::AccountAuthorizationChanged
+        | Error::AccountConnectionDeclined
+        | Error::AccountConnectionExpired
+        | Error::CredentialRouteChanged
+        | Error::Credentials(_)
+        | Error::InvalidInput(_)
+        | Error::ProviderSetupNotFound
+        | Error::ProviderSetupConsumed
+        | Error::ProviderPublicationNotFound
+        | Error::ProviderNotFound
+        | Error::ProviderAlreadyDisabled
+        | Error::ProviderAlreadyActive
+        | Error::ProviderCallRootConflict
+        | Error::BuiltinProviderManaged
+        | Error::ProviderAccountSettingVersionOverflow
+        | Error::ToolNotFound
+        | Error::RequestIdConflict
+        | Error::PendingAuthorizationLimit
+        | Error::EtagMismatch
+        | Error::IncompatibleConfigurationConfirmationRequired
+        | Error::ProviderChangedDuringPublication
+        | Error::OperationalPublication(_)
+        | Error::CorruptData(_)
+        | Error::Catalog(_)
+        | Error::Workspace(_)
+        | Error::Database(_)
+        | Error::EventFields(_) => "authorization_failed",
     }
 }
 
@@ -538,14 +593,9 @@ pub(super) async fn exchange(
     if let Some(resource) = resource {
         form.push(("resource", resource));
     }
-    let mut token = token_request(endpoint, &form, authentication).await?;
-    token
-        .accept(scopes)
-        .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))?;
-    token
-        .stamp(&flow.client_id, now)
-        .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))?;
-    Ok(token)
+    token_request(endpoint, &form, authentication)
+        .await?
+        .usable(scopes, &flow.client_id, now)
 }
 
 pub(super) struct TokenAuthentication<'a> {
@@ -733,6 +783,22 @@ pub(super) async fn refresh_token(
 }
 
 impl TokenResponse {
+    /// The token a sign-in keeps: accepted for the requested scopes and
+    /// stamped with host metadata. An answer that holds no usable token is an
+    /// invalid response from the service, never Coral's own fault.
+    pub(super) fn usable(
+        mut self,
+        requested: &[String],
+        client_id: &str,
+        now: i64,
+    ) -> Result<Self, Error> {
+        let invalid =
+            |_error: Error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid);
+        self.accept(requested).map_err(invalid)?;
+        self.stamp(client_id, now).map_err(invalid)?;
+        Ok(self)
+    }
+
     pub(super) fn stamp(&mut self, client_id: &str, now: i64) -> Result<(), Error> {
         // Never trust host-only fields supplied by the upstream response.
         self.client_id = client_id.to_string();
