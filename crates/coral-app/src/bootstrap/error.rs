@@ -64,7 +64,8 @@ impl From<coral_search::StorageError> for AppError {
         match error {
             coral_search::StorageError::Database(error) => error.into(),
             coral_search::StorageError::MissingFeature { .. }
-            | coral_search::StorageError::UnexpectedVectorTable { .. } => {
+            | coral_search::StorageError::UnexpectedVectorTable { .. }
+            | coral_search::StorageError::UnexpectedSqliteVectorTables { .. } => {
                 Self::FailedPrecondition(error.to_string())
             }
         }
@@ -121,6 +122,12 @@ mod tests {
                     expected_dimension: 384,
                 },
                 "found vector(384)",
+            ),
+            (
+                coral_search::StorageError::UnexpectedSqliteVectorTables {
+                    expected_dimension: 384,
+                },
+                "drop both",
             ),
         ] {
             let error = AppError::from(error);

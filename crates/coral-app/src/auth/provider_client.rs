@@ -13,9 +13,10 @@
 //!
 //! # Errors
 //!
-//! Failures name the stage that failed and nothing else. No status code, body,
-//! or URL from the provider travels in an error, so nothing a provider sends
-//! can reach a log or an HTTP response by that route.
+//! Failures name the stage that failed and nothing else. A refused token also
+//! names the check that refused it, as a fixed [`TokenRejection`]. No status
+//! code, body, URL, or claim from the provider travels in an error, so nothing
+//! a provider sends can reach a log or an HTTP response by that route.
 
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
 
@@ -36,7 +37,9 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::config::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
-use super::id_token::{ValidatedOidcIdentity, validate_access_token_admission, validate_id_token};
+use super::id_token::{
+    TokenRejection, ValidatedOidcIdentity, validate_access_token_admission, validate_id_token,
+};
 use super::sealed_handshake::HandshakeKeys;
 use coral_outbound::{Configured, Discovered, EndpointUrl, read_bounded_body};
 
@@ -147,15 +150,21 @@ pub(super) enum OidcProviderClientError {
     /// The token request failed, or its response was unusable.
     #[error("OIDC provider token exchange failed")]
     TokenExchange,
+    /// The key set that verifies the tokens could not be fetched or parsed.
+    #[error("OIDC provider JWKS fetch failed")]
+    Jwks,
+    /// The ID token failed the check the field names.
     #[error("OIDC ID token validation failed")]
-    IdTokenValidation,
+    IdTokenValidation(TokenRejection),
+    /// The access token failed the admission check the field names.
     #[error("OIDC access token admission failed")]
-    AccessTokenAdmission,
+    AccessTokenAdmission(TokenRejection),
 }
 
 impl OidcProviderClientError {
     /// The error's stable kind, for an event's `error.type`: a bounded
-    /// code that never carries the error's text.
+    /// code that never carries the error's text. A refused token's code
+    /// names the check that refused it.
     pub(super) const fn code(&self) -> &'static str {
         match self {
             Self::ClientInitialization { .. } => "client_initialization",
@@ -165,8 +174,9 @@ impl OidcProviderClientError {
             Self::UnsupportedTokenEndpointAuth { .. } => "unsupported_token_endpoint_auth",
             Self::Randomness { .. } => "randomness",
             Self::TokenExchange { .. } => "token_exchange",
-            Self::IdTokenValidation { .. } => "id_token_validation",
-            Self::AccessTokenAdmission { .. } => "access_token_admission",
+            Self::Jwks { .. } => "jwks",
+            Self::IdTokenValidation(rejection) => rejection.id_token_code(),
+            Self::AccessTokenAdmission(rejection) => rejection.access_token_code(),
         }
     }
 }
@@ -293,19 +303,18 @@ impl OidcProviderClient {
         let response = self
             .discovered_http
             .get(jwks_uri.as_url())
-            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?
+            .map_err(|_error| OidcProviderClientError::Jwks)?
             .header(ACCEPT, "application/json")
             .send()
             .await
-            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+            .map_err(|_error| OidcProviderClientError::Jwks)?;
         if !response.status().is_success() {
-            return Err(OidcProviderClientError::IdTokenValidation);
+            return Err(OidcProviderClientError::Jwks);
         }
         let body = read_bounded_body(response, RESPONSE_MAX_BYTES)
             .await
-            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
-        let jwks = serde_json::from_slice(&body)
-            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+            .map_err(|_error| OidcProviderClientError::Jwks)?;
+        let jwks = serde_json::from_slice(&body).map_err(|_error| OidcProviderClientError::Jwks)?;
         let identity = validate_id_token(
             provider,
             &id_token,
@@ -314,14 +323,14 @@ impl OidcProviderClient {
             &jwks,
         );
         drop(id_token);
-        let identity = identity.map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+        let identity = identity.map_err(OidcProviderClientError::IdTokenValidation)?;
         validate_access_token_admission(
             provider,
             access_token.as_ref().map(|token| token.as_str()),
             &identity,
             &jwks,
         )
-        .map_err(|_error| OidcProviderClientError::AccessTokenAdmission)?;
+        .map_err(OidcProviderClientError::AccessTokenAdmission)?;
         Ok(identity)
     }
 
@@ -1188,7 +1197,7 @@ mod tests {
                 .validate_code_exchange(&provider, exchange, "nonce")
                 .await
                 .err(),
-            Some(OidcProviderClientError::IdTokenValidation)
+            Some(OidcProviderClientError::Jwks)
         );
         assert_eq!(server.received_requests().await.expect("requests").len(), 1);
     }
@@ -1413,13 +1422,25 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys":[rsa_key()]})))
             .mount(&server)
             .await;
-        let identity = OidcProviderClient::new(loopback_policy())
-            .expect("client")
+        let client = OidcProviderClient::new(loopback_policy()).expect("client");
+        let identity = client
             .validate_code_exchange(&provider, exchange, "expected-nonce")
             .await
             .expect("identity");
         assert_eq!(identity.subject, "subject");
         assert_eq!(identity.display_name.as_deref(), Some("User"));
+        // With the keys fetched, a refused token names its check, not the fetch.
+        let error = client
+            .validate_code_exchange(&provider, validation_exchange(&server), "another-nonce")
+            .await
+            .map(|_identity| ())
+            .expect_err("nonce mismatch");
+        assert_eq!(
+            error,
+            OidcProviderClientError::IdTokenValidation(TokenRejection::Nonce)
+        );
+        assert_eq!(error.code(), "id_token_nonce");
+        assert_eq!(error.to_string(), "OIDC ID token validation failed");
     }
 
     #[tokio::test]
@@ -1444,11 +1465,17 @@ mod tests {
         set_claim(&mut access_claims, "org_id", json!("org_allowed"));
         let valid_access_token = id_token(&access_claims);
         set_claim(&mut access_claims, "org_id", json!("org_other"));
-        for (access_token, accepted) in [
-            (Some(valid_access_token), true),
-            (Some(id_token(&access_claims)), false),
-            (Some("opaque-token-must-not-leak".to_string()), false),
-            (None, false),
+        for (access_token, rejection) in [
+            (Some(valid_access_token), None),
+            (
+                Some(id_token(&access_claims)),
+                Some(TokenRejection::RequiredClaim),
+            ),
+            (
+                Some("opaque-token-must-not-leak".to_string()),
+                Some(TokenRejection::Malformed),
+            ),
+            (None, Some(TokenRejection::Missing)),
         ] {
             server.reset().await;
             mount_discovery(
@@ -1476,11 +1503,15 @@ mod tests {
                 .exchange_code(&provider, "code", "verifier")
                 .await
                 .expect("code exchange");
-            let result = client
+            let error = client
                 .validate_code_exchange(&provider, exchange, "expected-nonce")
-                .await;
-            assert_eq!(result.is_ok(), accepted);
-            if let Err(error) = result {
+                .await
+                .err();
+            assert_eq!(
+                error,
+                rejection.map(OidcProviderClientError::AccessTokenAdmission)
+            );
+            if let Some(error) = error {
                 assert_eq!(error.to_string(), "OIDC access token admission failed");
             }
         }
@@ -1509,8 +1540,8 @@ mod tests {
                 .map(|_| ())
                 .expect_err("invalid JWKS");
             assert_eq!(
-                format!("{error:?} {error}"),
-                "IdTokenValidation OIDC ID token validation failed"
+                format!("{error:?} {error} {}", error.code()),
+                "Jwks OIDC provider JWKS fetch failed jwks"
             );
         }
         let server = MockServer::start().await;
@@ -1526,7 +1557,7 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        OidcProviderClient::new(loopback_policy())
+        let error = OidcProviderClient::new(loopback_policy())
             .expect("client")
             .validate_code_exchange(
                 &provider("http://localhost/issuer"),
@@ -1536,6 +1567,7 @@ mod tests {
             .await
             .map(|_| ())
             .expect_err("redirect refused");
+        assert_eq!(error, OidcProviderClientError::Jwks);
         server.verify().await;
     }
 }

@@ -6,7 +6,7 @@ use coral_workspace::{AuthenticatedPrincipal, TraceId};
 use tonic::{Request, Response, Status};
 
 fn path(value: &str) -> Result<PrivateToolPath, Status> {
-    PrivateToolPath::parse(value).map_err(|_error| invalid("invalid Private Tool Path"))
+    PrivateToolPath::parse(value).map_err(|_error| invalid())
 }
 
 fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
@@ -44,7 +44,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let after = if after.is_empty() {
             None
         } else {
-            Some(PrivateToolPath::parse(&after).map_err(|_error| invalid("invalid page token"))?)
+            Some(PrivateToolPath::parse(&after).map_err(|_error| invalid())?)
         };
         let private_provider = self
             .providers

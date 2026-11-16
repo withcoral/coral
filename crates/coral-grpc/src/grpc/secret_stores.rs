@@ -42,7 +42,7 @@ fn reference_form(form: &ReferenceForm) -> wire::SecretReferenceForm {
 fn store_name(name: &str) -> Result<SecretStoreName, Status> {
     name.strip_prefix("secretStores/")
         .and_then(|store| SecretStoreName::parse(store).ok())
-        .ok_or_else(|| invalid("secret store name is invalid"))
+        .ok_or_else(invalid)
 }
 
 fn granted(store: &GrantedSecretStore) -> wire::SecretStore {

@@ -44,6 +44,11 @@
   signal timing and record metrics through `coral_telemetry::metric`.
   Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
+- A build that Coral publishes sets `RUSTY_V8_ARCHIVE_SHA256` to its target's
+  digest in `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8
+  crate's build script rejects a downloaded V8 archive with another digest.
+  Desktop staging reads the table and `docker/Dockerfile` repeats its Linux
+  rows; give a new published build the same pin.
 
 ### Enterprise code in `ee/`
 
@@ -208,13 +213,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
   check it at boot before the chain runs, as `coral_search::prepare_storage`
   does. The check names the feature and what the operator can do about it.
-- Universal Search's vector table is the one table outside the chain, so a
-  Postgres without pgvector still runs the chain. While
-  `[search] semantic_search_enabled` is on, boot needs pgvector, and
-  `coral_search::prepare_vector_table` creates the table at boot and
-  recreates it only when the manifest's dimension changes: an existing table
-  keeps any other change to its shape. `scripts/check-migrations.sh` rejects a
-  migration that names pgvector.
+- Universal Search's vector table (on SQLite, a key table and a sqlite-vec
+  table) is the one table outside the chain, so a Postgres without pgvector
+  still runs the chain. While
+  `[search] semantic_search_enabled` is on, boot needs pgvector on Postgres
+  and sqlite-vec on SQLite, and `coral_search::prepare_vector_table` creates
+  the table at boot and recreates it only when the manifest's dimension
+  changes: an existing table keeps any other change to its shape.
+  `scripts/check-migrations.sh` rejects a migration that names pgvector.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.

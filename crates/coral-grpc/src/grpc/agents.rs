@@ -11,10 +11,7 @@ fn agent_id(name: &str) -> Result<(WorkspaceId, PrincipalId), Status> {
     Ok((w, PrincipalId::parse(id).map_err(error)?))
 }
 fn registration_id(name: &str) -> Result<(WorkspaceId, PrincipalId), Status> {
-    agent_id(
-        name.strip_suffix("/registration")
-            .ok_or_else(|| invalid("invalid Registration name"))?,
-    )
+    agent_id(name.strip_suffix("/registration").ok_or_else(invalid)?)
 }
 #[expect(
     clippy::needless_pass_by_value,
@@ -72,12 +69,12 @@ fn expiration(value: Option<prost_types::Timestamp>) -> Result<Option<i64>, Stat
     value
         .map(|t| {
             if !(0..1_000_000_000).contains(&t.nanos) {
-                return Err(invalid("invalid expiration"));
+                return Err(invalid());
             }
             t.seconds
                 .checked_mul(1_000_000_000)
                 .and_then(|v| v.checked_add(i64::from(t.nanos)))
-                .ok_or_else(|| invalid("expiration out of range"))
+                .ok_or_else(invalid)
         })
         .transpose()
 }
@@ -180,12 +177,12 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         mask(input.update_mask, &["state"])?;
-        let a = input.agent.ok_or_else(|| invalid("agent required"))?;
+        let a = input.agent.ok_or_else(invalid)?;
         let (w, id) = agent_id(&a.name)?;
         let state = match wire::AgentState::try_from(a.state) {
             Ok(wire::AgentState::Enabled) => AgentState::Enabled,
             Ok(wire::AgentState::Disabled) => AgentState::Disabled,
-            _ => return Err(invalid("invalid Agent state")),
+            _ => return Err(invalid()),
         };
         self.workspaces
             .set_agent_state(
@@ -250,9 +247,7 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let fields = mask(input.update_mask, &["enabled", "expire_time"])?;
-        let r = input
-            .registration
-            .ok_or_else(|| invalid("registration required"))?;
+        let r = input.registration.ok_or_else(invalid)?;
         let (w, id) = registration_id(&r.name)?;
         let view = self
             .workspaces

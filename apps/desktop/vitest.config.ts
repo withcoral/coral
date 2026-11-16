@@ -8,7 +8,7 @@ const reports = process.env.CORAL_TEST_REPORT_DIRECTORY
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts', '*.test.ts'],
+    include: ['src/**/*.test.ts', '*.test.ts', 'scripts/**/*.test.mjs'],
     execArgv: reports ? ['--report-on-fatalerror', `--report-directory=${reports}`] : [],
   },
 })

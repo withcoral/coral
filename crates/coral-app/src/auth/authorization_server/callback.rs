@@ -253,10 +253,25 @@ async fn provision(
             Err(ProvisioningFailure::IssuerMismatch)
         }
         Err(error) => {
-            let _error = error;
-            tracing::warn!("OIDC callback could not provision the verified login");
+            tracing::warn!(
+                error.type = safe::kind(provisioning_error_code(&error)),
+                "OIDC callback could not provision the verified login"
+            );
             Err(ProvisioningFailure::Unavailable)
         }
+    }
+}
+
+/// The kind of a login that could not be recorded, for an event's
+/// `error.type`. A database failure keeps the database's own code, so an
+/// outage does not read as a corrupt directory row. The error's text can
+/// quote stored data and is never read.
+const fn provisioning_error_code(error: &coral_auth::Error) -> &'static str {
+    match error {
+        coral_auth::Error::CorruptData { .. } => "corrupt_data",
+        coral_auth::Error::Database(error)
+        | coral_auth::Error::Organization(coral_workspace::Error::Database(error)) => error.code(),
+        coral_auth::Error::Organization { .. } => "organization",
     }
 }
 
@@ -701,7 +716,7 @@ mod tests {
                 .with_priority(1)
                 .mount(&server)
                 .await;
-            let response = callback(
+            let (response, captured) = callback_with_logs(
                 app.clone(),
                 &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
             )
@@ -724,6 +739,11 @@ mod tests {
                 assert!(!values.iter().any(|(key, _)| key == "code"));
                 assert!(!values.iter().any(|(_, value)| value.contains(organization)));
                 assert!(clears_sign_in_cookie(&response));
+                assert_logged_only_the_code(
+                    &captured,
+                    "access_token_required_claim",
+                    &[organization, UPSTREAM_SUBJECT, &server.uri()],
+                );
             }
         }
     }
@@ -898,12 +918,42 @@ mod tests {
         let mut app = state(&fixture, &server.uri());
         app.user_directory = UserDirectory::new(unmigrated.database());
 
-        let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
+        let (response, captured) =
+            callback_with_logs(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
 
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));
         assert!(!values.iter().any(|(key, _value)| key == "code"));
         assert_security(&response);
+        // The database's own code tells an outage from a corrupt directory row.
+        assert_logged_only_the_code(&captured, "sqlx", &[UPSTREAM_SUBJECT, &server.uri()]);
+    }
+
+    /// A corrupt directory row has its own code, a database failure keeps the
+    /// database's code whichever module met it, and any other Organization
+    /// failure is `organization`.
+    #[test]
+    fn a_login_that_cannot_be_recorded_is_logged_by_its_kind() {
+        for (error, code) in [
+            (
+                coral_auth::Error::CorruptData("row text".into()),
+                "corrupt_data",
+            ),
+            (
+                coral_auth::Error::Database(coral_db::Error::WriterBusy),
+                "writer_busy",
+            ),
+            (
+                coral_auth::Error::Organization(coral_db::Error::WriterBusy.into()),
+                "writer_busy",
+            ),
+            (
+                coral_auth::Error::Organization(coral_workspace::Error::WorkspaceNotFound),
+                "organization",
+            ),
+        ] {
+            assert_eq!(provisioning_error_code(&error), code);
+        }
     }
 
     /// Records events at `info` and above, so a test can prove what a failing
@@ -944,11 +994,53 @@ mod tests {
         }
     }
 
-    async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
+    /// Runs the callback and returns its response beside what it logged at
+    /// `info` and above.
+    async fn callback_with_logs(
+        state: AuthorizationServerHttpState,
+        pairs: &[(&str, &str)],
+    ) -> (Response, String) {
+        let logs = CapturedLogs::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(logs.clone()),
+        );
+        let response = Box::pin(callback(state, pairs)).await;
+        (response, logs.captured())
+    }
+
+    /// Asserts that `captured` names the failure as `error_type`, once, and
+    /// holds none of `provider_data`.
+    fn assert_logged_only_the_code(captured: &str, error_type: &str, provider_data: &[&str]) {
+        assert_eq!(
+            captured.matches(" error.type=").count(),
+            1,
+            "a failed sign-in is logged once: {captured}"
+        );
+        assert!(
+            captured.contains(&format!(" error.type={error_type:?}")),
+            "the operator's log must name the failure as {error_type}: {captured}"
+        );
+        for data in provider_data {
+            assert!(
+                !captured.contains(data),
+                "provider data must stay out of the log: {captured}"
+            );
+        }
+    }
+
+    /// Fails the sign-in at the provider, asserts that the log names the
+    /// failure as `error_type`, and returns the query of the redirect the
+    /// browser gets.
+    async fn assert_provider_failure(
+        token_status: u16,
+        jwks_status: u16,
+        nonce: &str,
+        error_type: &str,
+    ) -> Vec<(String, String)> {
         let server = MockServer::start().await;
         mount_provider(&server, token_status, jwks_status, nonce).await;
         let database = database().await;
-        let response = callback(
+        let (response, captured) = callback_with_logs(
             state(&database, &server.uri()),
             &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
         )
@@ -961,21 +1053,41 @@ mod tests {
             .to_str()
             .expect("location");
         let verifier = pkce_verifier();
-        for secret in [
+        let secrets = [
             verifier.as_str(),
             PROVIDER_SECRET,
             PROVIDER_CODE,
             "internal-provider-body",
-        ] {
+        ];
+        for secret in secrets {
             assert!(!location.contains(secret));
         }
+        let issuer = server.uri();
+        assert_logged_only_the_code(
+            &captured,
+            error_type,
+            &[&secrets[..], &[UPSTREAM_SUBJECT, &issuer, nonce][..]].concat(),
+        );
+        values
     }
 
+    /// The operator's log tells the failures apart. The browser's redirect
+    /// does not: it is the same fixed error for all of them.
     #[tokio::test]
     async fn exchange_jwks_and_nonce_failures_are_equally_sanitized() {
-        assert_provider_failure(500, 200, &nonce()).await;
-        assert_provider_failure(200, 500, &nonce()).await;
-        assert_provider_failure(200, 200, "wrong-nonce").await;
+        let exchange = assert_provider_failure(500, 200, &nonce(), "token_exchange").await;
+        let jwks = assert_provider_failure(200, 500, &nonce(), "jwks").await;
+        let rejected = assert_provider_failure(200, 200, "wrong-nonce", "id_token_nonce").await;
+        let fixed_error = [
+            ("tenant", "one"),
+            ("error", "server_error"),
+            ("error_description", "authorization failed"),
+            ("state", CLIENT_STATE),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned()));
+        for values in [exchange, jwks, rejected] {
+            assert_eq!(values, fixed_error);
+        }
     }
 
     #[tokio::test]
