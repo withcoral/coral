@@ -214,8 +214,8 @@ pub use summary::{
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,
-    COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FanOutLimit, FinalValue, InvocationId,
-    InvocationResultKind, LINKED_TOOL_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
+    COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FanOutLimit, FinalValue, HeldRunId,
+    InvocationId, InvocationResultKind, LINKED_TOOL_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCpuBudget, RunCursor, RunEvent, RunEventKind, RunFailure,
     RunFailureCode, RunId, RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout,
