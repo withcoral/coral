@@ -2447,6 +2447,7 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
                     h.workspaces.clone(),
                     coral_catalog::BuiltinCatalog::running()
                         .expect("the built-in catalog prepares"),
+                    coral_catalog::SchemaGraphCache::with_default_budget(),
                 ),
             )
         })

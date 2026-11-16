@@ -105,6 +105,7 @@ pub use credentials::{
 pub mod history_repository;
 mod repository;
 mod schema;
+mod schema_graph_cache;
 mod search;
 mod types;
 
@@ -134,6 +135,7 @@ pub use paths::{
     ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid,
     unknown_call_path_message,
 };
+pub use schema_graph_cache::SchemaGraphCache;
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,
@@ -379,7 +381,10 @@ pub async fn generation_publication_times_in_transaction(
     repository::generation_publication_times(transaction, ids).await
 }
 
-/// Loads the authoritative schema graph for one retained private Generation.
+/// Loads the authoritative schema graph for one retained private Generation
+/// from the database: it reads, parses and checks the whole stored graph on
+/// every call. A Tool call resolves its graph through a [`SchemaGraphCache`]
+/// instead.
 ///
 /// # Errors
 ///

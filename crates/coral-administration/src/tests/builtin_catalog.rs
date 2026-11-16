@@ -53,6 +53,7 @@ impl Fixture {
             self.db.database(),
             self.workspaces.clone(),
             catalog,
+            coral_catalog::SchemaGraphCache::with_default_budget(),
         )
     }
 

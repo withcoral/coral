@@ -490,15 +490,17 @@ impl ToolInvoker {
             self.actor.principal().kind(),
             authority.effective_user_role(),
         );
-        let resolved = coral_provider::resolve_authored_tool_in_transaction(
-            &mut transaction,
-            &self.workspace_id,
-            linked.kind,
-            relative_path,
-            linked.binding,
-            linked.declared_default,
-        )
-        .await?;
+        let resolved = self
+            .providers
+            .resolve_authored_tool_in_transaction(
+                &mut transaction,
+                &self.workspace_id,
+                linked.kind,
+                relative_path,
+                linked.binding,
+                linked.declared_default,
+            )
+            .await?;
         let Some(target) = resolved else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(
@@ -686,13 +688,15 @@ impl ToolInvoker {
     > {
         let mut transaction = self.database.begin().await?;
         let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
-        let Some(target) = coral_provider::resolve_invocation_tool_in_transaction(
-            &mut transaction,
-            &self.workspace_id,
-            InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
-            call_path,
-        )
-        .await?
+        let Some(target) = self
+            .providers
+            .resolve_invocation_tool_in_transaction(
+                &mut transaction,
+                &self.workspace_id,
+                InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
+                call_path,
+            )
+            .await?
         else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(Rejection::tool_not_found(

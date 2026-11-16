@@ -973,6 +973,7 @@ pub(crate) async fn start_server(
         database.clone(),
         workspaces.clone(),
         builtin_catalog,
+        coral_catalog::SchemaGraphCache::new(coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES),
     );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)

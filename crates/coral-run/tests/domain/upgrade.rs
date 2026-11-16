@@ -138,15 +138,17 @@ async fn builtin_tools_a_rule_and_a_private_tool(
     // An Owner's rule keys a Built-in Tool by its Provider and Tool Key,
     // which the move leaves as they were.
     let mut transaction = fixture.database.begin().await.unwrap();
-    let get_provider = coral_provider::resolve_invocation_tool_in_transaction(
-        &mut transaction,
-        &workspace_id,
-        coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
-        "coral.getProvider",
-    )
-    .await
-    .unwrap()
-    .expect("the Built-in Tool resolves");
+    let get_provider = fixture
+        .providers
+        .resolve_invocation_tool_in_transaction(
+            &mut transaction,
+            &workspace_id,
+            coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
+            "coral.getProvider",
+        )
+        .await
+        .unwrap()
+        .expect("the Built-in Tool resolves");
     transaction.rollback().await.unwrap();
     fixture
         .policies

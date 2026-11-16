@@ -765,6 +765,8 @@ pub(super) async fn load_shared_types(
     Ok(shared_types)
 }
 
+/// The only write to a Generation's row. `SchemaGraphCache` never invalidates
+/// an entry because the row is never updated and its id is never reused.
 #[expect(
     clippy::too_many_arguments,
     reason = "one immutable Generation row receives its complete package evidence"

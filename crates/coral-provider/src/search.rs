@@ -208,6 +208,8 @@ pub async fn prepare_active_generation_entries_in_transaction(
     else {
         return Ok(None);
     };
+    // Read from the database, not through the cache that Tool calls resolve
+    // from: a reindex of every Provider must not evict the graphs in use.
     let graph =
         coral_catalog::schema_graph_in_transaction(transaction, &stored.generation_id).await?;
     let tools =

@@ -187,15 +187,17 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-policy").await;
     let mut transaction = fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_tool_in_transaction(
-        &mut transaction,
-        &workspace_id,
-        coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
-        "coral.addProvider",
-    )
-    .await
-    .unwrap()
-    .expect("the Built-in Tool resolves");
+    let target = fixture
+        .providers
+        .resolve_invocation_tool_in_transaction(
+            &mut transaction,
+            &workspace_id,
+            coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
+            "coral.addProvider",
+        )
+        .await
+        .unwrap()
+        .expect("the Built-in Tool resolves");
     let decision = coral_policy::invocation_decision_in_transaction(
         &mut transaction,
         &ToolPolicyTarget::new(
