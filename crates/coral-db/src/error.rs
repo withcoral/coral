@@ -134,9 +134,11 @@ fn is_unanswered_code(code: &str) -> bool {
     is_conflict_code(code)
         || matches!(
             code,
-            // The session failed or was never established. `08P01` is left
-            // out: it is the server's answer to a message it could not accept.
+            // The session failed or was never established.
             "08000" | "08001" | "08003" | "08004" | "08006" | "08007"
+            // A protocol violation. A connection pooler (PgBouncer) reports a
+            // lost server connection and its own timeouts with this code.
+            | "08P01"
             // The server does not know whether the statement completed.
             | "40003"
             // No connection slot was free, so no statement was read.
@@ -227,20 +229,20 @@ mod tests {
         assert!(is_unanswered_code("40P01"), "a conflict is unanswered");
         assert!(is_unanswered_code("40003"), "an unknown completion");
         let sessions = [
-            "08000", "08001", "08003", "08004", "08006", "08007", "53300", "57P01", "57P02",
-            "57P03", "57P05",
+            "08000", "08001", "08003", "08004", "08006", "08007", "08P01", "53300", "57P01",
+            "57P02", "57P03", "57P05",
         ];
         for code in sessions {
             assert!(is_unanswered_code(code), "{code} must be unanswered");
             assert!(!is_conflict_code(code), "{code} must not be a conflict");
         }
-        // A constraint, a syntax error, an aborted transaction; a protocol
-        // violation, a rollback for a constraint or for no named cause; a
-        // statement that ran out of a resource; a canceled statement, a
-        // dropped database; `SQLite` errors other than a busy or locked writer.
+        // A constraint, a syntax error, an aborted transaction; a rollback
+        // for a constraint or for no named cause; a statement that ran out
+        // of a resource; a canceled statement, a dropped database; `SQLite`
+        // errors other than a busy or locked writer.
         let definite = [
-            "23505", "23503", "42601", "25P02", "08P01", "40000", "40002", "53000", "53100",
-            "53200", "53400", "57000", "57014", "57P04", "1", "19", "2067", "",
+            "23505", "23503", "42601", "25P02", "40000", "40002", "53000", "53100", "53200",
+            "53400", "57000", "57014", "57P04", "1", "19", "2067", "",
         ];
         for code in definite {
             assert!(!is_unanswered_code(code), "{code} must be definite");

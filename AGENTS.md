@@ -147,8 +147,8 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   a retry with bounded backoff until the answer comes or the owner has
   retired, and a definite answer (a rejection, a claim mismatch, an ended
   Run, a corrupt head) stops it; the Interrupted record alone retries every
-  answer but a claim mismatch or an ended Run. The worker lease is ownership between Coral Instances, renewed
-  by every commit: never write a Run whose live lease another Coral Instance
+  answer but a claim mismatch or an ended Run. The worker lease is ownership
+  between Coral Instances, renewed by every commit: never write a Run whose live lease another Coral Instance
   holds, except to insert an outside request into its Run Inbox.
   The lease never ends a Run from inside its own Coral Instance. The owner's
   own bounds do (suspect after one lease without a commit, self-interrupt
