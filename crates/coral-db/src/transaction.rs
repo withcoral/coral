@@ -326,7 +326,8 @@ impl Transaction<'_> {
     }
 
     /// Executes an observable domain mutation. Nonzero affected rows invalidate
-    /// subscribers only after commit. Use `execute` for locks and internal leases.
+    /// subscribers only after commit. Use `execute` for internal leases and
+    /// [`Self::fetch_optional_locked`] for row holds.
     /// Conditional predicates remain the owning repository's responsibility.
     /// # Errors
     /// Returns the same backend errors as `execute`.
@@ -529,9 +530,10 @@ impl Transaction<'_> {
 
     /// Runs one statement with a `RETURNING` clause and fetches its first row.
     ///
-    /// Use it for a row lock that also reads the locked row. Like
-    /// [`Self::execute`], it does not wake change subscribers, so do not use it
-    /// for observable mutations.
+    /// Use it for a write that reads the row it wrote. Like [`Self::execute`],
+    /// it does not wake change subscribers, so do not use it for observable
+    /// mutations. To hold a row and read it, without a write, use
+    /// [`Self::fetch_optional_locked`].
     ///
     /// # Errors
     ///
