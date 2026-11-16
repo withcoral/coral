@@ -10,7 +10,7 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
     match value {
         coral_policy::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_policy::Error::Provider(inner) => super::providers::error(inner),
-        coral_policy::Error::InvalidBatch => invalid("invalid policy batch"),
+        coral_policy::Error::InvalidBatch => invalid(),
         // Only a Program sets policy by Tool Call Path, so the service never
         // meets a refused path; it reads as a Tool not found.
         coral_policy::Error::ToolNotFound | coral_policy::Error::RefusedToolPaths { .. } => {
@@ -28,7 +28,7 @@ pub(super) fn access(state: i32) -> Result<ToolAccessState, Status> {
         Ok(wire::ToolAccessState::Enabled) => Ok(ToolAccessState::Enabled),
         Ok(wire::ToolAccessState::ApprovalRequired) => Ok(ToolAccessState::ApprovalRequired),
         Ok(wire::ToolAccessState::Disabled) => Ok(ToolAccessState::Disabled),
-        _ => Err(invalid("invalid access state")),
+        _ => Err(invalid()),
     }
 }
 pub(super) fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
@@ -72,39 +72,36 @@ impl GrpcServices {
     ) -> Result<Vec<ToolPolicyTarget>, Status> {
         let mut distinct = std::collections::HashSet::new();
         if tools.is_empty() || tools.len() > 100 || tools.iter().any(|op| !distinct.insert(op)) {
-            return Err(invalid("policy selection requires 1–100 distinct Tools"));
+            return Err(invalid());
         }
         let (ws, id) = super::resource(parent, "providers")?;
         let id = ProviderId::parse(id).map_err(super::providers::error)?;
         let provider_access = self.provider_access(actor, &ws, &id).await?;
         let mut targets = Vec::with_capacity(tools.len());
         for tool in tools {
-            let (provider_name, encoded) = tool
-                .rsplit_once("/tools/")
-                .ok_or_else(|| invalid("invalid Tool name"))?;
+            let (provider_name, encoded) = tool.rsplit_once("/tools/").ok_or_else(invalid)?;
             let (owner, provider) = super::providers::resource(provider_name, "providers")?;
             let provider =
                 coral_provider::ProviderId::parse(provider).map_err(super::providers::error)?;
             if &provider != provider_access.id() {
-                return Err(invalid("Tool Provider mismatch"));
+                return Err(invalid());
             }
             if owner != ws {
-                return Err(invalid("Tool Workspace mismatch"));
+                return Err(invalid());
             }
             let key = String::from_utf8(
                 URL_SAFE_NO_PAD
                     .decode(encoded)
-                    .map_err(|_invalid| invalid("invalid Tool name"))?,
+                    .map_err(|_invalid| invalid())?,
             )
-            .map_err(|_invalid| invalid("invalid Tool name"))?;
+            .map_err(|_invalid| invalid())?;
             if URL_SAFE_NO_PAD.encode(&key) != encoded {
-                return Err(invalid("invalid Tool name"));
+                return Err(invalid());
             }
             targets.push(ToolPolicyTarget::new(
                 ws.clone(),
                 id.clone(),
-                coral_catalog::ToolKey::parse(&key)
-                    .map_err(|_invalid| invalid("invalid Tool Key"))?,
+                coral_catalog::ToolKey::parse(&key).map_err(|_invalid| invalid())?,
             ));
         }
         Ok(targets)
@@ -123,8 +120,7 @@ impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
         let id = ProviderId::parse(id).map_err(super::providers::error)?;
         let scope = format!("{}:{}:tool-access", actor.user_id(), req.parent);
         let (page_size, after) = page_start_within(
-            i32::try_from(coral_catalog::MAX_TOOL_LISTING_PAGE)
-                .map_err(|_error| invalid("invalid page size"))?,
+            i32::try_from(coral_catalog::MAX_TOOL_LISTING_PAGE).map_err(|_error| invalid())?,
             req.page_size,
             &req.page_token,
             &scope,
@@ -132,10 +128,7 @@ impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
         let after = if after.is_empty() {
             None
         } else {
-            Some(
-                coral_catalog::ToolKey::parse(&after)
-                    .map_err(|_error| invalid("invalid page token"))?,
-            )
+            Some(coral_catalog::ToolKey::parse(&after).map_err(|_error| invalid())?)
         };
         let listed = self
             .policies

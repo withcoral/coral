@@ -347,7 +347,7 @@ impl ProviderArgument {
 }
 
 /// What `search` returns: a page of hits for a query, or the exact
-/// descriptions of the paths it named. [`OVERLOADS`] names each variant by
+/// descriptions of the paths it named. `OVERLOADS` names each variant by
 /// its position, so the declaration gives each input mode its own result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(untagged)]

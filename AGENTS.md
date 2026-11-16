@@ -44,6 +44,11 @@
   signal timing and record metrics through `coral_telemetry::metric`.
   Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
+- A build that Coral publishes sets `RUSTY_V8_ARCHIVE_SHA256` to its target's
+  digest in `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8
+  crate's build script rejects a downloaded V8 archive with another digest.
+  Desktop staging reads the table and `docker/Dockerfile` repeats its Linux
+  rows; give a new published build the same pin.
 
 ### Enterprise code in `ee/`
 
@@ -97,6 +102,23 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   across Members; the publish that moves its current revision and the removal
   that tombstones it hold the row exclusively. A Private Tool row keeps the
   exclusive hold: only its owner links it.
+- The next three bullets state the Run Owner path of ADR 0018 and ADR 0025.
+  [ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)
+  supersedes both, and
+  [#2884](https://github.com/withcoral/coral/issues/2884) tracks the
+  migration in slices. The owner path stays as it is until
+  [#2911](https://github.com/withcoral/coral/issues/2911) deletes it and
+  rewrites these bullets, so they, and the owner rules under Tests, bind
+  every change to that code. ADR 0027 keeps the Run Ledger and its head, the
+  chunk commit predicated on the claim and the head and never on the clock,
+  a write that ends on the database's answer, the exact Run Output Budget,
+  the Policy Enforcement Point, the Fan-out Limit, and the wake-up as a
+  hint. It retires the Run Owner as a Run's one writer, the Run Inbox, the
+  per-Run worker lease and its expired-lease sweep, each owner's
+  subscription to the change signal, and the Shutdown Drain's interruption
+  of live Runs. Fix a defect in a retiring part under the rules below. Build
+  new Run coordination beside the owner path, in the #2884 slice that
+  replaces that part.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
@@ -191,13 +213,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
   check it at boot before the chain runs, as `coral_search::prepare_storage`
   does. The check names the feature and what the operator can do about it.
-- Universal Search's vector table is the one table outside the chain, so a
-  Postgres without pgvector still runs the chain. While
-  `[search] semantic_search_enabled` is on, boot needs pgvector, and
-  `coral_search::prepare_vector_table` creates the table at boot and
-  recreates it only when the manifest's dimension changes: an existing table
-  keeps any other change to its shape. `scripts/check-migrations.sh` rejects a
-  migration that names pgvector.
+- Universal Search's vector table (on SQLite, a key table and a sqlite-vec
+  table) is the one table outside the chain, so a Postgres without pgvector
+  still runs the chain. While
+  `[search] semantic_search_enabled` is on, boot needs pgvector on Postgres
+  and sqlite-vec on SQLite, and `coral_search::prepare_vector_table` creates
+  the table at boot and recreates it only when the manifest's dimension
+  changes: an existing table keeps any other change to its shape.
+  `scripts/check-migrations.sh` rejects a migration that names pgvector.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.

@@ -27,7 +27,7 @@ use coral_test_support::TestDatabase;
 use coral_tools::test_fixtures_repository as tool_faults;
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolModule,
-    PrivateToolPath, PrivateToolSave,
+    PrivateToolPath, PrivateToolSave, SharedToolModule, SharedToolPublish,
 };
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
@@ -3728,12 +3728,17 @@ fn credential_document() -> serde_json::Value {
     })
 }
 
+/// The source of a small Authored Tool whose one input is `limit`.
+const SMALL_TOOL_SOURCE: &str =
+    "export default function run(input: { limit: number }): number { return input.limit; }";
+
 struct TestModules {
     fixture: TestDatabase,
     workspaces: WorkspaceModule,
     providers: ProviderModule,
     policies: ToolPolicyModule,
     private_tools: PrivateToolModule,
+    shared_tools: SharedToolModule,
     search: UniversalSearchModule,
     index: crate::SearchIndex,
 }
@@ -3764,6 +3769,13 @@ impl TestModules {
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .expect("start Private Tool compiler");
+        let shared_tools = SharedToolModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_tools::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+        )
+        .expect("start the Shared Tool compiler");
         let index = crate::SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
         let search = UniversalSearchModule::new(database, workspaces.clone());
         Self {
@@ -3772,6 +3784,7 @@ impl TestModules {
             providers,
             policies,
             private_tools,
+            shared_tools,
             search,
             index,
         }
@@ -3798,7 +3811,7 @@ impl TestModules {
     /// An index whose Embedder embeds with `model`, ready at once, and
     /// retries a failed batch after a short pause.
     fn index_with(&self, model: std::sync::Arc<dyn coral_embed::Embed>) -> crate::SearchIndex {
-        let (_ready, model) = tokio::sync::watch::channel(Some(model));
+        let (_ready, model) = tokio::sync::watch::channel(crate::ModelLoad::Ready(model));
         crate::SearchIndex::new(
             self.search.database.clone(),
             std::time::Duration::from_mins(5),
@@ -3821,10 +3834,48 @@ impl TestModules {
             workspace_id,
             path,
             description,
-            "export default function run(input: { limit: number }): number { return input.limit; }",
+            SMALL_TOOL_SOURCE,
             occurred_at_unix_nanos,
         )
         .await
+    }
+
+    /// Publishes `review` as the Workspace Owner `owner`, and notifies
+    /// nothing. Returns the published Shared Tool.
+    async fn publish_shared_tool(
+        &self,
+        owner: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+        review: SharedToolPublish,
+    ) -> coral_tools::SharedTool {
+        self.shared_tools
+            .publish_as_reviewed(&change(owner.clone(), 60, '6'), workspace_id, review, None)
+            .await
+            .expect("publish the Shared Tool")
+            .published()
+            .expect("the published Shared Tool")
+            .clone()
+    }
+
+    /// Adds a new User, `id`, to the Workspace as a Member, as its Owner
+    /// `owner`.
+    async fn add_member(
+        &self,
+        owner: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+        id: &str,
+    ) -> AuthenticatedPrincipal {
+        let member = organization_user(self.search.database.clone(), id).await;
+        self.workspaces
+            .set_membership(
+                &change(owner.clone(), 50, '5'),
+                workspace_id,
+                &member,
+                coral_workspace::WorkspaceRole::Member,
+            )
+            .await
+            .expect("add the Member");
+        AuthenticatedPrincipal::user(member)
     }
 
     /// Saves `source` as the Private Tool at `path` with `description`.
@@ -4244,3 +4295,25 @@ async fn organization_user(
 }
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
+
+/// Waits until `ready` holds: the backlog observer samples in the
+/// background.
+async fn wait_for_observation(ready: impl Fn() -> bool) {
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || ready()).await,
+        "background backlog observation converges"
+    );
+}
+
+/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
+/// whether it held: what a background write or observation leaves shows a
+/// moment after the call that starts it returns.
+async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
+    tokio::time::timeout(limit, async {
+        while !ready().await {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}

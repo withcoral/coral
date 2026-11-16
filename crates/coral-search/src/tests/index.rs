@@ -20,7 +20,7 @@ use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, eventually, organization_user, wait_for_observation};
 use crate::indexer::INDEXER_REVISION;
 use crate::indexer::tools::ToolIndexer;
 use crate::{SearchIndex, SearchQuery, SearchRequest};
@@ -534,26 +534,6 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
             .is_empty(),
         "a stopped observer must not keep publishing its last snapshot"
     );
-}
-
-async fn wait_for_observation(ready: impl Fn() -> bool) {
-    assert!(
-        eventually(std::time::Duration::from_secs(5), async || ready()).await,
-        "background backlog observation converges"
-    );
-}
-
-/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
-/// whether it held: what a background write or observation leaves shows a
-/// moment after the call that starts it returns.
-async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
-    tokio::time::timeout(limit, async {
-        while !ready().await {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .is_ok()
 }
 
 #[tokio::test]
@@ -1247,18 +1227,17 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
-    world
-        .modules
-        .save_private_tool(
-            &principal,
-            &world.workspace,
-            "internal.summarizeTides",
-            "Summarize the tides",
-            60,
-        )
-        .await;
+    for (path, description, at) in [
+        ("internal.summarizeTides", "Summarize the tides", 60),
+        ("internal.tideTables", "Tables of the tides", 65),
+    ] {
+        world
+            .modules
+            .save_private_tool(&principal, &world.workspace, path, description, at)
+            .await;
+    }
     world.index.reconcile().await;
-    let hits = async || {
+    let search = async || {
         world
             .modules
             .search
@@ -1269,10 +1248,8 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
             )
             .await
             .expect("search the Workspace")
-            .hits()
-            .len()
     };
-    assert_eq!(hits().await, 1);
+    assert_eq!(search().await.hits().len(), 2);
 
     world
         .modules
@@ -1281,12 +1258,28 @@ async fn a_deleted_private_tool_leaves_search_before_its_row_leaves_the_index() 
 
     assert_eq!(
         world.private_tool_rows().await,
-        1,
+        2,
         "the row outlives the function"
     );
-    assert_eq!(hits().await, 0);
+    let page = search().await;
+    assert_eq!(
+        page.hits()
+            .iter()
+            .map(|hit| hit.call_path().as_str())
+            .collect::<Vec<_>>(),
+        ["coral.private.internal.tideTables"]
+    );
+    // The row of the deleted Tool takes no place in the ranked list, so the
+    // retriever does not fail on it.
+    assert_eq!(
+        page.retriever_statuses()
+            .iter()
+            .find(|status| status.retriever() == crate::EntityKind::PrivateTool)
+            .map(crate::RetrieverStatus::state),
+        Some(crate::RetrieverState::ResultsFound)
+    );
     world.index.reconcile().await;
-    assert_eq!(world.private_tool_rows().await, 0);
+    assert_eq!(world.private_tool_rows().await, 1);
 }
 
 #[tokio::test]

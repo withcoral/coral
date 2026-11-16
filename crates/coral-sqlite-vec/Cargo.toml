@@ -1,0 +1,51 @@
+[package]
+name = "coral-sqlite-vec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The workspace's lints, but `unsafe_code` is `deny`, not `forbid`: this crate
+# holds the one `unsafe` block of Coral's own code, under `#[expect]`. Cargo
+# cannot change one workspace lint, so keep this table equal to
+# `[workspace.lints]` in the root `Cargo.toml` apart from that line.
+[lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+unsafe_code = "deny"
+unused_crate_dependencies = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -2 }
+# enforcement
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+# don't panic
+unwrap_used = "warn"
+get_unwrap = "warn"
+unwrap_in_result = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
+panic_in_result_fn = "warn"
+unchecked_time_subtraction = "warn"
+# don't fail silently
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+# easy wins
+dbg_macro = "warn"
+mem_forget = "warn"
+rc_mutex = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+disallowed_methods = "deny"
+print_stderr = "warn"
+print_stdout = "warn"
+
+[dependencies]
+libsqlite3-sys.workspace = true
+sqlite-vec.workspace = true
+thiserror.workspace = true

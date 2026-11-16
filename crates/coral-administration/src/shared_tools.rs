@@ -97,8 +97,8 @@ impl SharedToolWorkflow {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`SharedToolModule::remove`]. Failure changes
-    /// nothing.
+    /// Returns the errors of [`SharedToolModule::remove_in_transaction`].
+    /// Failure changes nothing.
     pub async fn remove(
         &self,
         context: &ChangeContext,

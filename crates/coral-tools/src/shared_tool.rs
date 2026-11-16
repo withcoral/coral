@@ -1249,7 +1249,7 @@ impl SharedToolModule {
         Ok(tool)
     }
 
-    /// Stages the removal of [`Self::remove`] and its lifecycle Event in
+    /// Stages the removal of `Self::remove` and its lifecycle Event in
     /// the caller's transaction, and returns the removed Shared Tool's
     /// identity. The caller removes its exact rule in the same transaction,
     /// through `coral_policy::remove_authored_tool_rules_in_transaction`,
@@ -1258,7 +1258,7 @@ impl SharedToolModule {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::remove`]. Failure requires rollback.
+    /// Returns the errors of `Self::remove`. Failure requires rollback.
     pub async fn remove_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,

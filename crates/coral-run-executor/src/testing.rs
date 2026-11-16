@@ -32,8 +32,8 @@ use crate::wire::v1::{
     Welcome, pull_request, pull_response, run_request, run_response,
 };
 use crate::{
-    MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, PullStreams, RunExecutorConfig,
-    RunLimits, Token, compile_wire,
+    MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, PullStreams, RunError,
+    RunExecutorConfig, RunLimits, Token, compile_wire,
 };
 
 /// How the scripted Coral answers one pull stream.
@@ -43,6 +43,9 @@ pub enum Answer {
     /// [`ScriptedCoral::release`]: it carries [`ScriptedCoral::take`] and
     /// reports each `Room`.
     Welcome(u32),
+    /// [`Answer::Welcome`] at [`PROTOCOL_LEVEL`], and take the Run with this
+    /// id as the Run Executor ends its side: the take crosses the close.
+    TakeAtClose(&'static str),
     /// Welcome, then end the stream cleanly: the move (the go-away).
     Move,
     /// End the stream cleanly before any message.
@@ -163,12 +166,40 @@ pub fn start_run_executor(
     run_limits: RunLimits,
     health: Option<TcpListener>,
 ) -> oneshot::Sender<()> {
+    spawn_run_executor(coral, max_runs_held, run_limits, health).0
+}
+
+/// [`start_run_executor`], with the task that ends once the Run Executor
+/// has retired.
+#[must_use]
+pub fn spawn_run_executor(
+    coral: &ScriptedCoral,
+    max_runs_held: u32,
+    run_limits: RunLimits,
+    health: Option<TcpListener>,
+) -> (
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), RunError>>,
+) {
     let config = run_executor_config(coral, max_runs_held, run_limits);
     let (retire, retired) = oneshot::channel::<()>();
-    tokio::spawn(crate::run(config, health, async {
+    let task = tokio::spawn(crate::run(config, health, async {
         drop(retired.await);
     }));
-    retire
+    (retire, task)
+}
+
+/// Waits up to 10 s for the Run Executor to retire with no error.
+pub async fn retired(task: tokio::task::JoinHandle<Result<(), RunError>>) {
+    let retired = tokio::time::timeout(Duration::from_secs(10), task).await;
+    assert!(matches!(retired, Ok(Ok(Ok(())))), "{retired:?}");
+}
+
+/// Coral's `Ended` for a Run that succeeded.
+#[must_use]
+pub fn ended() -> run_response::Message {
+    let end = crate::wire::v1::RunEnd::Succeeded.into();
+    run_response::Message::Ended(crate::wire::v1::Ended { end })
 }
 
 /// The package of `script` and `source_map` with the default value limits.
@@ -225,17 +256,9 @@ impl ScriptedCoral {
 
     /// Takes one Run for the Run Executor on every pull stream it holds.
     pub fn take(&self, run_id: &str, claim_id: &str) {
-        let run = TakenRun {
-            run_id: run_id.to_owned(),
-            claim_id: claim_id.to_owned(),
-        };
-        self.takers.lock().expect("the takers").retain(|taker| {
-            taker
-                .send(Taken {
-                    runs: vec![run.clone()],
-                })
-                .is_ok()
-        });
+        let taken = one_taken(run_id, claim_id);
+        let mut takers = self.takers.lock().expect("the takers");
+        takers.retain(|taker| taker.send(taken.clone()).is_ok());
     }
 
     /// The next Run stream a Run Executor opens, within 10 s.
@@ -277,6 +300,14 @@ impl Drop for ScriptedCoral {
     }
 }
 
+fn one_taken(run_id: &str, claim_id: &str) -> Taken {
+    let run_id = run_id.to_owned();
+    let claim_id = claim_id.to_owned();
+    Taken {
+        runs: vec![TakenRun { run_id, claim_id }],
+    }
+}
+
 /// One queue of `Taken` per pull stream, which loses none.
 type Takers = Arc<Mutex<Vec<mpsc::UnboundedSender<Taken>>>>;
 
@@ -315,6 +346,7 @@ impl LinkService for Script {
         Ok(Response::new(Box::pin(ReceiverStream::new(stream))))
     }
 
+    #[expect(clippy::too_many_lines, reason = "one scripted pull stream")]
     async fn pull(
         &self,
         request: Request<Streaming<PullRequest>>,
@@ -342,7 +374,7 @@ impl LinkService for Script {
         let mut inbound = request.into_inner();
         let hello = match answer {
             Answer::Refuse(_) => None,
-            Answer::Welcome(_) | Answer::Move | Answer::Close => match inbound.message().await {
+            _ => match inbound.message().await {
                 Ok(Some(PullRequest {
                     message: Some(pull_request::Message::Hello(hello)),
                 })) => Some(hello),
@@ -373,7 +405,7 @@ impl LinkService for Script {
                 return Ok(Response::new(Box::pin(tokio_stream::empty())));
             }
             Answer::Welcome(level) => level,
-            Answer::Move => PROTOCOL_LEVEL,
+            Answer::TakeAtClose(_) | Answer::Move => PROTOCOL_LEVEL,
         };
         let welcome = crate::pull::response(pull_response::Message::Welcome(Welcome {
             protocol_level,
@@ -384,7 +416,7 @@ impl LinkService for Script {
             if outbound.send(Ok(welcome)).await.is_err() {
                 return;
             }
-            if let Answer::Welcome(_) = answer {
+            if let Answer::Welcome(_) | Answer::TakeAtClose(_) = answer {
                 loop {
                     tokio::select! {
                         _ = released.changed() => {
@@ -418,6 +450,10 @@ impl LinkService for Script {
                         },
                     }
                 }
+            }
+            if let Answer::TakeAtClose(run_id) = answer {
+                let taken = pull_response::Message::Taken(one_taken(run_id, "claim"));
+                drop(outbound.send(Ok(crate::pull::response(taken))).await);
             }
             streams.end(held, None);
             // Holds the Run Executor's side open until Coral's side ends.

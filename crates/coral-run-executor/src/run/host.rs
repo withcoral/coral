@@ -12,10 +12,10 @@ use coral_v8::{
     AuthoredLocation, AuthoredSource, ConsoleLevel, PermitFuture, ProgramExecutionControl,
     ProgramOutputHostError, ToolBodyOutcome, ToolCalls, ToolCompletion, ToolFuture, ToolHostError,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
-use crate::link::HeldRun;
+use crate::link::HeldUnit;
 use crate::wire::v1::{
     Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location,
     Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete, finish,
@@ -34,6 +34,8 @@ enum Awaiting {
 pub(super) struct RunHost {
     state: Mutex<State>,
     changed: Condvar,
+    /// Turns true once the Program is told to stop.
+    pub(super) stopping: watch::Sender<bool>,
     control: ProgramExecutionControl,
     value_limits: coral_value::ValueLimits,
     applied_cap_bytes: usize,
@@ -140,6 +142,7 @@ impl RunHost {
         Self {
             state: Mutex::new(state),
             changed: Condvar::new(),
+            stopping: watch::Sender::new(false),
             control: ProgramExecutionControl::new(),
             value_limits,
             applied_cap_bytes: limits.applied_cap_bytes,
@@ -160,12 +163,14 @@ impl RunHost {
         self: &Arc<Self>,
         program: coral_v8::CompiledProgram,
         isolates: &super::Isolates,
-        unit: HeldRun,
+        unit: HeldUnit,
     ) -> std::io::Result<oneshot::Receiver<()>> {
         let host = self.clone();
         let (exiting, exited) = oneshot::channel();
         // The thread records where its creator does.
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        #[cfg(test)]
+        let stall = isolates.limits().stall;
         isolates.run(Box::new(move |isolate| {
             // Dropped last, after the isolate.
             let _unit = unit;
@@ -174,6 +179,12 @@ impl RunHost {
             let result = isolate.and_then(|isolate| {
                 isolate.execute_with_host_control(&program, host.clone(), &host.control)
             });
+            #[cfg(test)]
+            if let Some(stall) = stall
+                && host.state().stopped
+            {
+                drop(stall.read());
+            }
             host.finish(host.completion(result));
         }))?;
         Ok(exited)
@@ -344,6 +355,7 @@ impl RunHost {
         drop(state);
         self.changed.notify_all();
         let _installed = self.control.terminate();
+        self.stopping.send_replace(true);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {

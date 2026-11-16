@@ -15,15 +15,14 @@ use coral_db::Transaction;
 use coral_embed::MANIFEST;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
-use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
 use super::vector_list::{self, VectorList};
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, RetrievalError, ToolRef, WindowEntry, count,
+    Answer, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing, QueryError, QueryRequest,
+    RequestContext, RetrievalError, Semantic, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
 use crate::hit::{HitMaterial, hit_text};
@@ -114,6 +113,7 @@ impl EntityRetriever for ToolRetriever {
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
+                semantic: Some(Semantic::of(&request.vector)),
             });
         };
         let complete = repository::complete_generations(transaction, context.workspace_id)
@@ -164,15 +164,13 @@ impl EntityRetriever for ToolRetriever {
             excluded: &excluded,
             named: &named,
         };
-        let (lexical, vector) = if searched.is_empty() {
-            (Vec::new(), None)
-        } else {
+        let (lexical, vector) =
             lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
-                .await?
-        };
+                .await?;
+        let semantic = Semantic::of(&vector);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
-            vector,
+            vector.ok(),
             |tool: &repository::RankedTool| tool.doc_id.clone(),
             request.window,
         );
@@ -204,6 +202,7 @@ impl EntityRetriever for ToolRetriever {
                 has_more,
             ),
             window,
+            semantic: Some(semantic),
         })
     }
 
@@ -265,8 +264,8 @@ impl EntityRetriever for ToolRetriever {
     }
 }
 
-/// The lexical list, with one row past the window, and the vector list when
-/// the request carries a vector and the vector side answers.
+/// The lexical list, with one row past the window, and the vector list, or
+/// why the vector side gave none.
 async fn lexical_and_vector_lists(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -276,64 +275,45 @@ async fn lexical_and_vector_lists(
 ) -> Result<
     (
         Vec<repository::RankedTool>,
-        Option<VectorList<repository::RankedTool>>,
+        Result<VectorList<repository::RankedTool>, LexicalReason>,
     ),
     QueryError,
 > {
+    if scope.providers.is_empty() {
+        // No Provider is searched, so neither list can hold a Tool.
+        let nothing = request.vector.map(|_vector| VectorList {
+            entries: Vec::new(),
+            has_more: false,
+        });
+        return Ok((Vec::new(), nothing));
+    }
     let lexical =
         repository::rank_tools(transaction, workspace_id, scope, plan, request.window + 1)
             .await
             .map_err(QueryError::Retriever)?;
     let vector = match request.vector {
-        Some(vector) => {
-            vector_side(
+        Ok(vector) => {
+            vector_list::vector_side(
                 transaction,
                 workspace_id,
-                scope,
-                plan,
-                vector,
-                request.window,
+                EntityKind::ProviderTool,
+                async |transaction| {
+                    nearest_current_tools(
+                        transaction,
+                        workspace_id,
+                        scope,
+                        plan,
+                        vector,
+                        request.window,
+                    )
+                    .await
+                },
             )
             .await?
         }
-        None => None,
+        Err(reason) => Err(reason),
     };
     Ok((lexical, vector))
-}
-
-/// The vector list, read in its own savepoint. `None` when the vector side
-/// fails: the savepoint rolls back, the retriever ranks by words alone, and
-/// the page does not say so.
-async fn vector_side(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    scope: &repository::ToolScope<'_>,
-    plan: &QueryPlan,
-    vector: &[f32],
-    window: usize,
-) -> Result<Option<VectorList<repository::RankedTool>>, QueryError> {
-    repository::begin_vector_query(transaction)
-        .await
-        .map_err(QueryError::retrieval)?;
-    match nearest_current_tools(transaction, workspace_id, scope, plan, vector, window).await {
-        Ok(tools) => {
-            repository::end_vector_query(transaction)
-                .await
-                .map_err(QueryError::retrieval)?;
-            Ok(Some(tools))
-        }
-        Err(error) => {
-            repository::abandon_vector_query(transaction)
-                .await
-                .map_err(QueryError::retrieval)?;
-            tracing::warn!(
-                coral.workspace.id = safe::id(workspace_id),
-                error.type = safe::kind(error.code()),
-                "the Tool retriever's vector query failed; it ranks by words alone"
-            );
-            Ok(None)
-        }
-    }
 }
 
 /// The vector list: the `window` Tools of the scope whose vectors of the
@@ -377,8 +357,9 @@ async fn nearest_current_tools(
     })
 }
 
-/// The Postgres plan of the vector query over the Tools of `providers`'
-/// `generations`, less `excluded`, one line per row.
+/// The plan of the vector query over the Tools of `providers`'
+/// `generations`, less `excluded`, one line per row: `EXPLAIN` on Postgres,
+/// the detail of `EXPLAIN QUERY PLAN` on `SQLite`.
 #[cfg(test)]
 pub(crate) async fn explain_vector_query(
     transaction: &mut Transaction<'_>,
