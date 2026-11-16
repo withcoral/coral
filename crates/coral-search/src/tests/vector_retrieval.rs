@@ -25,7 +25,7 @@ use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 use opentelemetry_sdk::trace::SpanData;
 use tokio::sync::watch;
 
-use super::{SMALL_TOOL_SOURCE, TestModules, change, organization_user, paths};
+use super::{SMALL_TOOL_SOURCE, TestModules, change, eventually, organization_user, paths};
 use crate::{
     EntityKind, ModelLoad, SearchHit, SearchLimit, SearchPage, SearchQuery, SearchRequest,
     UniversalSearchModule,
@@ -551,6 +551,17 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
 
     world.search(&world.semantic(), "rain issues").await;
 
+    // SQLite's connection thread holds the span of each statement until
+    // after it has answered it. The search span is the span of the last
+    // statement, so the search can return before that span ends.
+    let search_left = eventually(std::time::Duration::from_secs(30), async || {
+        exported
+            .spans()
+            .iter()
+            .any(|span| span.name == "coral.search")
+    })
+    .await;
+    assert!(search_left, "the search span leaves the host");
     let spans = exported.spans();
     let named = |name: &str| {
         spans
