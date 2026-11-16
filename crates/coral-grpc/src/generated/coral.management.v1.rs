@@ -1038,7 +1038,7 @@ pub struct PublishProviderRequest {
     #[prost(string, tag = "3")]
     pub request_id: ::prost::alloc::string::String,
     /// Creation only: immutable Workspace-unique Provider Namespace. Coral calls
-    /// the Provider under coral.providers.<namespace>.
+    /// the Provider under `coral.providers.<namespace>`.
     #[prost(string, tag = "4")]
     pub namespace: ::prost::alloc::string::String,
     /// Creation: required. Update: explicit replacement setting, absent to retain it.
