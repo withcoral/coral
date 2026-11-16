@@ -1,4 +1,4 @@
-//! Compiles relayed through the database (ADR 0027): Coral Instances talk
+//! Compiles relayed through the database: Coral Instances talk
 //! only through it. A Coral Instance that holds no pull stream with room
 //! writes a row and waits on the change signal for its answer; every Coral
 //! Instance that holds one with room, itself included, takes the oldest row

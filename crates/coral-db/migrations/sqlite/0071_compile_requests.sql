@@ -1,4 +1,4 @@
--- A compile relayed through the database (ADR 0027). A Coral Instance that
+-- A compile relayed through the database. A Coral Instance that
 -- holds no pull stream with room writes a row with its own deadline; any Coral
 -- Instance with room, the requester included, takes the oldest untaken row,
 -- serves it and writes the answer back. A row with no call asks only for room,
