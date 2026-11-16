@@ -311,34 +311,262 @@ async fn exec_reports_the_run_it_accepted_when_its_first_observation_fails() {
     }
 }
 
-/// A Run Owner that stopped before answering and a request not yet recorded
-/// by its owner each project one stable code; neither is an internal error.
-#[test]
-fn owner_lost_and_not_yet_recorded_project_stable_retryable_codes() {
-    let cases = [
-        (coral_run::Error::OwnerLost, "run_owner_lost"),
+/// A fault no decoder accepts, for a variant that wraps a JSON error.
+fn json_fault() -> serde_json::Error {
+    serde_json::from_str::<Value>("{").unwrap_err()
+}
+
+/// Each Run Module error with the code its tool failure reports.
+/// `Upstream` is absent: this crate cannot build its error.
+fn run_error_codes() -> Vec<(coral_run::Error, &'static str)> {
+    use coral_run::Error;
+    let internal = "internal_error";
+    vec![
+        (Error::InvalidInput("bad".into()), "invalid_input"),
+        (Error::RunNotFound, "run_not_found"),
+        (Error::ApprovalNotFound, internal),
         (
-            coral_run::Error::RunRequestNotYetRecorded,
+            Error::ProgramAdmission("bad".into()),
+            "program_admission_failed",
+        ),
+        (
+            Error::Tools(coral_tools::Error::PrivateToolExists),
+            "private_tool_exists",
+        ),
+        (
+            Error::Tools(coral_tools::Error::Clock("bad".into())),
+            internal,
+        ),
+        (Error::PermissionDenied("denied"), "permission_denied"),
+        (Error::CompilationTimedOut, "program_compilation_timed_out"),
+        (Error::CompilerBusy, "program_compiler_busy"),
+        (Error::CompilerUnavailable, "program_compiler_unavailable"),
+        (
+            Error::PackageTooLarge {
+                component: "source",
+                maximum_bytes: 1,
+            },
+            "program_package_too_large",
+        ),
+        (Error::ProgramRuntimeUnavailable("bad".into()), internal),
+        (Error::ProgramWorkerStopped, internal),
+        (Error::Clock("bad".into()), internal),
+        (Error::IdentifierIssuance("bad".into()), internal),
+        (Error::ProgramValueTooLarge, "program_value_too_large"),
+        (Error::InvalidProgramValue, internal),
+        (Error::ProgramValueJson(json_fault()), internal),
+        (
+            Error::InvocationRejected(coral_run::CoralFailure::ToolNotFound.into()),
+            "invocation_rejected",
+        ),
+        (Error::InvocationPersistence("bad".into()), internal),
+        (Error::RunEventPersistence("bad".into()), internal),
+        (Error::ClaimMismatch, internal),
+        (Error::HeadMismatch, internal),
+        (Error::RunEnded, internal),
+        // A Run Owner that stopped before answering and a request its owner
+        // has not yet recorded are retryable, not internal errors.
+        (Error::OwnerLost, "run_owner_lost"),
+        (
+            Error::RunRequestNotYetRecorded,
             "run_request_not_yet_recorded",
         ),
-    ];
-    for (error, code) in cases {
-        let label = format!("{error:?}");
-        let super::DispatchError::Tool(failure) = super::run_failure(error) else {
+        (Error::ShuttingDown, "shutting_down"),
+        (Error::ProgramHostTerminated, internal),
+        (
+            Error::Provider(coral_provider::Error::ConsentDestinationRejected),
+            internal,
+        ),
+        (Error::Policy(coral_policy::Error::ToolNotFound), internal),
+        (
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+            "workspace_archived",
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::EtagMismatch),
+            internal,
+        ),
+        (Error::CorruptData("bad".into()), internal),
+        (Error::Database(coral_db::Error::WriterBusy), internal),
+    ]
+}
+
+/// Each authored Tool error with the code its tool failure reports.
+fn tools_error_codes() -> Vec<(coral_tools::Error, &'static str)> {
+    use coral_catalog::AuthoredToolKind::{Private, Shared};
+    use coral_tools::Error;
+    let internal = "internal_error";
+    vec![
+        (Error::InvalidInput("bad".into()), "invalid_input"),
+        (Error::NotFound(Shared), "shared_tool_not_found"),
+        (Error::PrivateToolExists, "private_tool_exists"),
+        (
+            Error::RevisionConflict {
+                kind: Private,
+                current: 1,
+            },
+            "private_tool_revision_conflict",
+        ),
+        (
+            Error::Admission(Shared, "bad".into()),
+            "shared_tool_admission_failed",
+        ),
+        (
+            Error::SharedToolSourceUnreadable,
+            "shared_tool_source_unreadable",
+        ),
+        (
+            Error::SharedToolRestoreDiffers,
+            "shared_tool_restore_differs",
+        ),
+        (
+            Error::SharedToolDeclarationChanged,
+            "shared_tool_declaration_changed",
+        ),
+        (
+            Error::SharedToolHasDependents {
+                dependent: coral_tools::SharedToolPath::parse("reports.weekly").unwrap(),
+            },
+            "shared_tool_has_dependents",
+        ),
+        (Error::PathConflict(Shared), "shared_tool_path_conflict"),
+        (
+            Error::NotData(Private, "bad".into()),
+            "private_tool_not_data",
+        ),
+        (
+            Error::CompilationTimedOut(Shared),
+            "shared_tool_compilation_timed_out",
+        ),
+        (Error::CompilerBusy, "authoring_compiler_busy"),
+        (Error::NoCompiler, "authoring_compiler_unavailable"),
+        (Error::PermissionDenied("denied"), "permission_denied"),
+        (Error::CompilerUnavailable("bad".into()), internal),
+        (Error::CompilerWorkerStopped, internal),
+        (Error::Clock("bad".into()), internal),
+        (Error::Json(json_fault()), internal),
+        (
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+            "workspace_archived",
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::EtagMismatch),
+            internal,
+        ),
+        (Error::CorruptData("bad".into()), internal),
+        (Error::Database(coral_db::Error::WriterBusy), internal),
+    ]
+}
+
+/// Each Universal Search error with the code its tool failure reports and
+/// the kind a log names it by.
+fn search_error_codes() -> Vec<(coral_search::Error, &'static str, &'static str)> {
+    use coral_search::Error;
+    let internal = "internal_error";
+    vec![
+        (Error::InvalidInput("bad".into()), "invalid_input", "search"),
+        (
+            Error::UnknownProviderCallRoot {
+                searchable: Vec::new(),
+                unmatched: vec![0],
+            },
+            "invalid_input",
+            "search",
+        ),
+        (Error::ServiceUnavailable, "service_unavailable", "search"),
+        (
+            Error::AuthoringDescriptionNotFound,
+            "authoring_description_not_found",
+            "search",
+        ),
+        (Error::TypesLimit, "types_limit", "search"),
+        (
+            Error::UndeclaredTypes {
+                undeclared: vec!["Missing".into()],
+                declared: Vec::new(),
+            },
+            "undeclared_types",
+            "search",
+        ),
+        (
+            Error::PermissionDenied("denied"),
+            "permission_denied",
+            "search",
+        ),
+        (
+            Error::Provider(coral_provider::Error::ConsentDestinationRejected),
+            internal,
+            "provider",
+        ),
+        (
+            Error::Policy(coral_policy::Error::ToolNotFound),
+            internal,
+            "search",
+        ),
+        (
+            Error::Tools(coral_tools::Error::PrivateToolExists),
+            "private_tool_exists",
+            "search",
+        ),
+        (
+            Error::Tools(coral_tools::Error::Clock("bad".into())),
+            internal,
+            "search",
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+            "workspace_archived",
+            "workspace",
+        ),
+        (
+            Error::Workspace(coral_workspace::Error::EtagMismatch),
+            internal,
+            "workspace",
+        ),
+        (
+            Error::Database(coral_db::Error::WriterBusy),
+            internal,
+            "database",
+        ),
+    ]
+}
+
+// Catches: a domain error whose tool failure changes its code, or loses its
+// message, when its match arm moves.
+#[test]
+fn each_domain_error_projects_one_code_and_a_message() {
+    let mut cases = Vec::new();
+    for (error, code) in run_error_codes() {
+        cases.push((format!("run {error:?}"), super::run_failure(error), code));
+    }
+    for (error, code) in tools_error_codes() {
+        cases.push((
+            format!("tools {error:?}"),
+            super::tools_failure(error),
+            code,
+        ));
+    }
+    for (error, code, kind) in search_error_codes() {
+        let label = format!("search {error:?}");
+        assert_eq!(super::lookup_error_kind(&error), kind, "{label}");
+        cases.push((label, super::search_failure(error), code));
+    }
+    for (label, error, code) in cases {
+        let super::DispatchError::Tool(failure) = error else {
             panic!("{label}: a tool failure, not a protocol error");
         };
         let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
             .structured_content
             .expect("structured failure");
         assert_eq!(
-            projected.get("code").and_then(serde_json::Value::as_str),
+            projected.get("code").and_then(Value::as_str),
             Some(code),
             "{label}"
         );
         assert!(
             projected
                 .get("message")
-                .and_then(serde_json::Value::as_str)
+                .and_then(Value::as_str)
                 .is_some_and(|message| !message.is_empty()),
             "{label}"
         );

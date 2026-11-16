@@ -590,7 +590,16 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
         coral_search::Error::Database(_) => "database",
         coral_search::Error::Provider(_) => "provider",
         coral_search::Error::Workspace(_) => "workspace",
-        _ => "search",
+        // Name every remaining variant so a new one needs a kind here.
+        coral_search::Error::InvalidInput(_)
+        | coral_search::Error::UnknownProviderCallRoot { .. }
+        | coral_search::Error::ServiceUnavailable
+        | coral_search::Error::AuthoringDescriptionNotFound
+        | coral_search::Error::TypesLimit
+        | coral_search::Error::UndeclaredTypes { .. }
+        | coral_search::Error::PermissionDenied(_)
+        | coral_search::Error::Policy(_)
+        | coral_search::Error::Tools(_) => "search",
     }
 }
 
@@ -604,7 +613,18 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
         }
         coral_search::Error::Workspace(error) => workspace_tool_failure(error),
         coral_search::Error::Tools(error) => return tools_failure(error),
-        _ => ToolFailure::internal(),
+        // Name every remaining variant so a new one needs a decision here.
+        // `safe_rejection` answers these before the match.
+        coral_search::Error::InvalidInput(_)
+        | coral_search::Error::UnknownProviderCallRoot { .. }
+        | coral_search::Error::ServiceUnavailable
+        | coral_search::Error::AuthoringDescriptionNotFound
+        | coral_search::Error::TypesLimit
+        | coral_search::Error::UndeclaredTypes { .. }
+        // `safe_rejection` has no answer for the rest.
+        | coral_search::Error::Provider(_)
+        | coral_search::Error::Policy(_)
+        | coral_search::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }
@@ -616,7 +636,30 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
     }
     let failure = match error {
         Error::Workspace(error) => workspace_tool_failure(error),
-        _ => ToolFailure::internal(),
+        // Name every remaining variant so a new one needs a decision here.
+        // `safe_rejection` answers these before the match.
+        Error::InvalidInput(_)
+        | Error::NotFound(_)
+        | Error::PrivateToolExists
+        | Error::RevisionConflict { .. }
+        | Error::Admission(..)
+        | Error::SharedToolSourceUnreadable
+        | Error::SharedToolRestoreDiffers
+        | Error::SharedToolDeclarationChanged
+        | Error::SharedToolHasDependents { .. }
+        | Error::PathConflict(_)
+        | Error::NotData(..)
+        | Error::CompilationTimedOut(_)
+        | Error::CompilerBusy
+        | Error::NoCompiler
+        | Error::PermissionDenied(_)
+        // `safe_rejection` has no answer for the rest.
+        | Error::CompilerUnavailable(_)
+        | Error::CompilerWorkerStopped
+        | Error::Clock(_)
+        | Error::Json(_)
+        | Error::CorruptData(_)
+        | Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }
@@ -646,7 +689,35 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
             ToolFailure::safe("invocation_rejected", failure.message())
         }
         coral_run::Error::Workspace(error) => workspace_tool_failure(error),
-        _ => ToolFailure::internal(),
+        // Name every remaining variant so a new one needs a decision here.
+        // `safe_rejection` answers these before the match.
+        coral_run::Error::InvalidInput(_)
+        | coral_run::Error::ProgramAdmission(_)
+        | coral_run::Error::PermissionDenied(_)
+        | coral_run::Error::CompilationTimedOut
+        | coral_run::Error::CompilerBusy
+        | coral_run::Error::CompilerUnavailable
+        | coral_run::Error::PackageTooLarge { .. }
+        | coral_run::Error::ShuttingDown
+        // `safe_rejection` has no answer for the rest.
+        | coral_run::Error::ApprovalNotFound
+        | coral_run::Error::ProgramRuntimeUnavailable(_)
+        | coral_run::Error::ProgramWorkerStopped
+        | coral_run::Error::Clock(_)
+        | coral_run::Error::IdentifierIssuance(_)
+        | coral_run::Error::InvalidProgramValue
+        | coral_run::Error::ProgramValueJson(_)
+        | coral_run::Error::InvocationPersistence(_)
+        | coral_run::Error::RunEventPersistence(_)
+        | coral_run::Error::ClaimMismatch
+        | coral_run::Error::HeadMismatch
+        | coral_run::Error::RunEnded
+        | coral_run::Error::ProgramHostTerminated
+        | coral_run::Error::Provider(_)
+        | coral_run::Error::Policy(_)
+        | coral_run::Error::Upstream(_)
+        | coral_run::Error::CorruptData(_)
+        | coral_run::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }

@@ -9,6 +9,12 @@ import { TOP_BAR_HEIGHT_PX } from './constants'
 // A breadcrumb link's height: the one row the bar holds.
 const LINK_HEIGHT_PX = 32
 
+const mobile = `screen and (max-width: ${breakpoints.mobile})`
+// A page with a panel puts the panel under the content in a window this narrow.
+const stacked = `screen and (max-width: ${breakpoints.md})`
+// Beside a panel, the content and the panel's content keep this far from the split.
+const PANEL_GUTTER_PX = 48
+
 export const container = style({
   display: 'flex',
   flexDirection: 'column',
@@ -78,6 +84,21 @@ export const frame = recipe({
       false: {},
       true: { height: '100%', minHeight: 0 },
     },
+    // Beside a panel, the content ends at the split, as wide as a form. The
+    // page's other gutters stay.
+    beside: {
+      false: {},
+      true: {
+        justifySelf: 'end',
+        marginInline: 0,
+        maxWidth: 480,
+        paddingInline: PANEL_GUTTER_PX,
+        '@media': {
+          [stacked]: { justifySelf: 'stretch', maxWidth: 'none', paddingInline: 24 },
+          [mobile]: { paddingInline: 16 },
+        },
+      },
+    },
     compact: {
       false: {},
       true: {
@@ -89,7 +110,7 @@ export const frame = recipe({
       },
     },
   },
-  defaultVariants: { bounded: false, compact: false },
+  defaultVariants: { beside: false, bounded: false, compact: false },
 })
 
 export const header = style({
@@ -100,6 +121,40 @@ export const header = style({
   minWidth: 0,
   // Conditional notices can all render nothing; the frame's gap must not remain.
   selectors: { '&:empty': { display: 'none' } },
+})
+
+// The content and the panel, each half the width. The scroll area's content is
+// a flex row, so this takes all of it.
+export const withPanel = style({
+  display: 'grid',
+  flex: '1 1 auto',
+  gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+  '@media': {
+    [stacked]: { gridTemplateColumns: 'minmax(0, 1fr)', gridTemplateRows: 'auto 1fr' },
+  },
+})
+
+// In the light theme, so its own text and controls are light too. The page's
+// gutters, as the frame's are.
+export const panel = style({
+  backgroundColor: theme.surface.card,
+  borderInlineStart: `1px solid ${theme.stroke.mainContent}`,
+  color: theme.content.primary,
+  padding: `32px ${PANEL_GUTTER_PX}px`,
+  '@media': {
+    [stacked]: {
+      borderBlockStart: `1px solid ${theme.stroke.mainContent}`,
+      borderInlineStart: 'none',
+      paddingInline: 24,
+    },
+    [mobile]: { paddingBlock: 24, paddingInline: 16 },
+    'screen and (max-height: 480px)': { paddingBlock: 16 },
+  },
+})
+
+export const panelContent = style({
+  maxWidth: 560,
+  '@media': { [stacked]: { maxWidth: 'none' } },
 })
 
 export const splitBody = style({ flex: '1 1 auto', minHeight: 0, minWidth: 0 })
