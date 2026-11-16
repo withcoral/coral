@@ -19,7 +19,7 @@ pub(super) struct RunRow {
     principal_kind: String,
     state: String,
     accepted_at_unix_nanos: i64,
-    deadline_at_unix_nanos: i64,
+    deadline_at_unix_nanos: Option<i64>,
     worker_claim_id: Option<String>,
     worker_claim_expires_at_unix_nanos: Option<i64>,
     holder_instance_id: Option<String>,
@@ -143,7 +143,9 @@ impl RunRow {
             })
             .transpose()?;
 
-        if self.deadline_at_unix_nanos < self.accepted_at_unix_nanos
+        if self
+            .deadline_at_unix_nanos
+            .is_some_and(|deadline| deadline < self.accepted_at_unix_nanos)
             || self.shutdown_grace_nanos <= 0
             || self.worker_claim_id.is_some() != self.worker_claim_expires_at_unix_nanos.is_some()
             || self.execution_claim_id.is_some() != self.execution_started_at_unix_nanos.is_some()

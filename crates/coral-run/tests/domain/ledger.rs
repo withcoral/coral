@@ -48,7 +48,7 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
             .await
             .expect("read")
             .expect("Run exists");
-        let chunk = Chunk::new(&run, chunk_claim)
+        let chunk = Chunk::new(&run, chunk_claim, 2_000)
             .event(
                 NewEvent::Logged(ProgramLogLevel::Info, "stale", None),
                 2_000,
@@ -95,7 +95,7 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
         .expect("Run exists");
     commit_chunk(
         &mut transaction,
-        Chunk::new(&run, Some("claim-a"))
+        Chunk::new(&run, Some("claim-a"), 2_000)
             .event(NewEvent::Logged(ProgramLogLevel::Info, "one", None), 2_000),
     )
     .await
@@ -112,7 +112,7 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
             .await
             .expect("read")
             .expect("Run exists");
-        let chunk = Chunk::new(&run, Some("claim-a"))
+        let chunk = Chunk::new(&run, Some("claim-a"), 2_000)
             .built_on_head(stale_head)
             .event(
                 NewEvent::Logged(ProgramLogLevel::Info, "stale", None),
@@ -157,13 +157,19 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     let before = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(before.worker_claim_expires_at_unix_nanos, Some(LEASE_UNTIL));
     let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
+    let last_commit_at = async || {
+        crate::run_repository::last_commit_at(&fixture.database, &workspace_id, &run_id)
+            .await
+            .expect("read the last commit time")
+    };
+    assert_eq!(last_commit_at().await, None, "no chunk committed yet");
 
     let mut transaction = fixture.database.begin().await.expect("begin");
     let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
         .expect("read")
         .expect("Run exists");
-    let mut chunk = Chunk::new(&run, Some("claim-a"))
+    let mut chunk = Chunk::new(&run, Some("claim-a"), 2_000)
         .output_bytes(run.accumulated_output_bytes + 5 * EVENTS)
         .renew_lease(LEASE_UNTIL + 1);
     for index in 0..events {
@@ -201,6 +207,11 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     assert_eq!(
         after.worker_claim_expires_at_unix_nanos,
         Some(LEASE_UNTIL + 1)
+    );
+    assert_eq!(
+        last_commit_at().await,
+        Some(2_000),
+        "the chunk records its commit time"
     );
     // The previous release numbers its Events from this counter during a
     // rolling update, so the chunk moves it by exactly its Event count.
@@ -243,7 +254,7 @@ async fn writers_racing_on_one_head_land_once_and_the_rest_write_nothing() {
             let mut transaction = fixture.database.begin().await.expect("begin");
             let written = commit_chunk(
                 &mut transaction,
-                Chunk::new(&before, Some("claim-a"))
+                Chunk::new(&before, Some("claim-a"), 2_000)
                     .event(NewEvent::Logged(ProgramLogLevel::Info, "race", None), 2_000),
             )
             .await;
@@ -313,7 +324,7 @@ async fn no_chunk_lands_after_run_ended() {
         .expect("Run exists");
     let rejected = commit_chunk(
         &mut transaction,
-        Chunk::new(&run, Some("claim-a"))
+        Chunk::new(&run, Some("claim-a"), 2_000)
             .event(NewEvent::Logged(ProgramLogLevel::Info, "late", None), 3_000),
     )
     .await;
@@ -353,7 +364,15 @@ async fn a_start_mark_on_a_released_worker_claim_is_refused() {
     assert_eq!(released.worker_claim_id, None);
 
     let mut transaction = fixture.database.begin().await.expect("begin");
-    let refused = start_execution(&mut transaction, &claimed, "claim-a", 2_000, LEASE_UNTIL).await;
+    let refused = start_execution(
+        &mut transaction,
+        &claimed,
+        "claim-a",
+        2_000,
+        3_000,
+        LEASE_UNTIL,
+    )
+    .await;
     assert!(matches!(refused, Err(Error::ClaimMismatch)), "{refused:?}");
     transaction
         .commit()

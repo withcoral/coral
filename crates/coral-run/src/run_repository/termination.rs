@@ -22,7 +22,11 @@ pub(crate) async fn request_termination(
     run: &RunRecord,
     request: &RequestedTermination,
 ) -> Result<(), Error> {
-    let mut chunk = Chunk::new(run, run.execution_claim_id.as_deref());
+    let mut chunk = Chunk::new(
+        run,
+        run.execution_claim_id.as_deref(),
+        request.termination.started_at_unix_nanos,
+    );
     if let Some(requester) = &request.requester {
         chunk = chunk.event(
             NewEvent::CancellationRequested(requester),
@@ -222,7 +226,7 @@ async fn finish_terminal_run(
         ),
     ]);
     values.extend(released_worker_claim());
-    let chunk = Chunk::new(run, execution_claim_id)
+    let chunk = Chunk::new(run, execution_claim_id, terminal_at_unix_nanos)
         .owned_events(invocation_events)
         .event(
             NewEvent::Ended(outcome.state(), final_value_bytes),

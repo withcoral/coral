@@ -57,4 +57,4 @@ pub(crate) use handle::{CommitRejection, Reply};
 pub(crate) use host::{OwnerStart, host};
 #[cfg(test)]
 pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};
-pub(crate) use state::{Recovered, RecoveryStep};
+pub(crate) use state::{NO_DEADLINE, Recovered, RecoveryStep};

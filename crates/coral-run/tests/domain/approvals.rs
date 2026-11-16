@@ -705,30 +705,17 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
         run.run_id(),
     )
     .await;
-    let accepted_at = fixture
-        .runs
-        .inspect_run(
-            &tool.principal,
-            &tool.workspace_id,
-            run.run_id(),
-            &crate::RunInspection {
-                event_limit: 1,
-                ..Default::default()
-            },
-        )
+    let started_at = fixture
+        .run_record(&tool.workspace_id, run.run_id())
         .await
-        .unwrap()
-        .summary
-        .started_at;
-    assert_eq!(
-        pending.deadline_at_unix_nanos,
-        accepted_at + 900_000_000_000
-    );
+        .execution_started_at_unix_nanos
+        .expect("the start mark");
+    assert_eq!(pending.deadline_at_unix_nanos, started_at + 900_000_000_000);
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     fixture
         .clock
         .next
-        .store(accepted_at + 70_000_000_000, Ordering::SeqCst);
+        .store(started_at + 70_000_000_000, Ordering::SeqCst);
     let review = approvals
         .get(&tool.principal, &tool.workspace_id, &pending.id)
         .await
@@ -752,7 +739,7 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
         .unwrap();
     assert_eq!(decided.state, ApprovalState::Approved);
     let decided_at = decided.decided_at_unix_nanos.unwrap();
-    assert!(decided_at > accepted_at + 60_000_000_000);
+    assert!(decided_at > started_at + 60_000_000_000);
     assert!(decided_at < pending.deadline_at_unix_nanos);
     let terminal = wait_for_terminal(
         &fixture.runs,
