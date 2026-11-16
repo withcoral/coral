@@ -12,8 +12,7 @@ use coral_run::RUN_TIMEOUT_MAX_MS;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
 const TASK_ID_DESCRIPTION: &str = "The task_id returned by the exec that started the Task.";
-const EXEC_TASK_ID_DESCRIPTION: &str =
-    "The task_id of the Task this call continues. Pass exactly one of task_id or goal.";
+const EXEC_TASK_ID_DESCRIPTION: &str = "The task_id of the Task this call continues. Given with `goal`, it wins and `goal` is ignored.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this run. Without it, the response returns the run's events from the start.";
@@ -156,7 +155,7 @@ pub(crate) struct ExecArguments {
     pub(crate) task_id: Option<String>,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = "What the user asked for, in one short phrase. Starts a new Task for this unit of user work; the result returns its task_id. Pass exactly one of task_id or goal."
+        description = "What the user asked for, in one short phrase. Starts a new Task for this unit of user work, unless task_id is given; the result returns its task_id."
     )]
     pub(crate) goal: Option<String>,
     #[schemars(
