@@ -48,6 +48,7 @@ coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-administration.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 coral-test-support.workspace = true
 flate2.workspace = true
