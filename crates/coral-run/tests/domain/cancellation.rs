@@ -475,7 +475,9 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
 ///
 /// The test sends the deadline's timer message itself, and waits for the
 /// Run Inbox to deliver the cancel: a real timer would race the cancel's
-/// database work, and on a slow database it came first in either arm.
+/// database work, and on a slow database it came first in either arm. The
+/// Run Inbox delivers the cancel again on every read until a chunk records
+/// it, so the wait is for the first delivery, not for a count of one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_applied_kind() {
     for deadline_first in [false, true] {
@@ -532,11 +534,11 @@ async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_app
         let cancelling = if deadline_first {
             deadline();
             let cancelling = tokio::spawn(cancel());
-            wait_until(|| probe.delivered() == 1).await;
+            wait_until(|| probe.delivered() >= 1).await;
             cancelling
         } else {
             let cancelling = tokio::spawn(cancel());
-            wait_until(|| probe.delivered() == 1).await;
+            wait_until(|| probe.delivered() >= 1).await;
             deadline();
             cancelling
         };
