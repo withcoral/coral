@@ -146,8 +146,15 @@ mod tests {
             match &error {
                 Error::OAuthTokenExchange(failure) => {
                     assert_eq!(failure.code(), code, "{row}");
-                    // The code an authorization stores when its exchange fails.
-                    assert_eq!(authorization_failure_code(&error), code, "{row}");
+                    // An exchange failure is stored under its own code. A poll
+                    // answer is not: the database accepts neither.
+                    let stored = match failure {
+                        Exchange::AuthorizationPending | Exchange::SlowDown => {
+                            "oauth_request_rejected"
+                        }
+                        _ => code,
+                    };
+                    assert_eq!(authorization_failure_code(&error), stored, "{row}");
                     assert_eq!(
                         error.to_string(),
                         format!("OAuth token exchange failed: {code}"),

@@ -866,34 +866,44 @@ async fn canceling_device_setup_discards_a_late_token() {
     );
 }
 
+/// Catches a refused device start that exposes upstream details, and one
+/// whose failure the database does not accept: the sign-in then never ends.
 #[tokio::test]
-async fn device_start_reports_a_rejected_application_without_exposing_upstream_details() {
-    let api = OAuthApi::start().await;
-    Mock::given(method("POST"))
-        .and(path("/device"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "error": "invalid_client", "error_description": "private-application-canary"
-        })))
-        .expect(1)
-        .mount(&api.server)
-        .await;
-    let (harness, context, workspace, setup) =
-        pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    let failed = poll_setup(&harness, &context, &workspace, &setup, settled).await;
-    assert_eq!(
-        failed.authorization.as_ref().unwrap().state,
-        SetupAuthorizationState::Failed
-    );
-    assert_eq!(
-        failed
-            .authorization
-            .as_ref()
-            .unwrap()
-            .failure_code
-            .as_deref(),
-        Some("oauth_client_configuration")
-    );
-    assert!(!format!("{failed:?}").contains("private-application-canary"));
+async fn a_device_start_that_the_service_refuses_fails_with_a_stored_cause() {
+    for (refusal, code) in [
+        ("invalid_client", "oauth_client_configuration"),
+        // A poll answer to a request that is not a poll is one more refusal.
+        ("authorization_pending", "oauth_request_rejected"),
+        ("slow_down", "oauth_request_rejected"),
+    ] {
+        let api = OAuthApi::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "error": refusal, "error_description": "private-application-canary"
+            })))
+            .expect(1)
+            .mount(&api.server)
+            .await;
+        let (harness, context, workspace, setup) =
+            pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
+        let failed = poll_setup(&harness, &context, &workspace, &setup, settled).await;
+        let authorization = failed.authorization.as_ref().unwrap();
+        assert_eq!(
+            authorization.state,
+            SetupAuthorizationState::Failed,
+            "{refusal}"
+        );
+        assert_eq!(
+            authorization.failure_code.as_deref(),
+            Some(code),
+            "{refusal}"
+        );
+        assert!(
+            !format!("{failed:?}").contains("private-application-canary"),
+            "{refusal}"
+        );
+    }
 }
 
 /// Catches a device sign-in that ends with the generic code although Coral

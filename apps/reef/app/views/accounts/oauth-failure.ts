@@ -12,10 +12,7 @@ export function oauthFailureMessage(code: string | undefined, canConfigure = fal
       return 'You denied access. Sign in again to approve access.'
     case 'oauth_device_expired':
       return 'The sign-in code expired. Sign in again to get a new code.'
-    // The last two are answers to a device sign-in's poll. Anywhere else they do not fit the request.
     case 'oauth_token_response_invalid':
-    case 'oauth_authorization_pending':
-    case 'oauth_slow_down':
       return canConfigure
         ? 'The token endpoint returned an invalid response. Check the token URL.'
         : 'The token endpoint returned an invalid response. Ask the provider owner to check the token URL.'
