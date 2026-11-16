@@ -167,8 +167,10 @@ test('Update retains saved choices and requires acceptance only for incompatible
         expect(await api.providers.getProvider({ name: providerPath.slice(1) })).toMatchObject({
           credentialRoute: { kind: CredentialRoute_Kind.CALLER },
         })
-        await page.getByRole('button', { name: 'Save', exact: true }).click()
         let requestId = ''
+        // Save loads a new document. Route before that click: a document that
+        // commits while the browser turns interception on sends its requests
+        // past the route, and the publication then reaches Coral unobserved.
         await page.route(
           '**/update.data*',
           async (route) => {
@@ -186,6 +188,7 @@ test('Update retains saved choices and requires acceptance only for incompatible
           },
           { times: 1 },
         )
+        await page.getByRole('button', { name: 'Save', exact: true }).click()
         await confirm.getByRole('button', { name: 'Save', exact: true }).click()
         await page.waitForURL(
           (url) => Boolean(requestId) && url.searchParams.get('requestId') === requestId,
