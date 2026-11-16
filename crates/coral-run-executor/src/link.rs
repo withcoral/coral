@@ -232,9 +232,10 @@ struct Link {
     #[cfg(test)]
     on_queued: Option<mpsc::UnboundedSender<()>>,
     run_limits: RunLimits,
-    /// The Runs held, each from its `Taken` to its stream's end.
+    /// The Runs held, each from its `Taken` until it ends here, across its
+    /// reopened streams.
     held: Arc<AtomicU32>,
-    /// A held Run's stream ended, so a unit freed.
+    /// A held Run ended, so a unit freed.
     freed: Arc<Notify>,
     /// The client of the connection Coral welcomed the pull stream on, while
     /// it holds: every Run stream opens on it.

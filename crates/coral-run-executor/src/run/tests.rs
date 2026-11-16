@@ -171,6 +171,16 @@ async fn next_request(run: &mut RunCall) -> (u64, request::Kind) {
     }
 }
 
+/// Skips requests up to the `Finish`.
+async fn next_finish(run: &mut RunCall) -> (u64, request::Kind) {
+    loop {
+        let request = next_request(run).await;
+        if matches!(request.1, request::Kind::Finish(_)) {
+            return request;
+        }
+    }
+}
+
 fn finish(completion: finish::Completion) -> request::Kind {
     request::Kind::Finish(Finish {
         completion: Some(completion),
@@ -760,7 +770,7 @@ fn title(number: u64, title: &str) -> run_response::Message {
 
 /// Catches: a reopen that resends what `Committed` covers, sends a request
 /// twice or out of order, loses the `Invoke` in flight or the `Finish`, or
-/// closes the stream on Coral's repeat answer to a resent request.
+/// closes the stream on Coral's repeat answer to a committed request.
 #[tokio::test]
 async fn a_lost_stream_reopens_and_resends_what_is_above_the_watermark_once() {
     let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
@@ -779,14 +789,10 @@ return second.title;";
     run.fail(Status::unavailable("lost")).await;
     let mut run = coral.next_run().await;
     assert_eq!(run.open, open, "the same Open");
-    run.send(committed(0)).await;
-    assert!(matches!(
-        next_request(&mut run).await,
-        (1, request::Kind::Invoke(_))
-    ));
+    run.send(committed(1)).await;
     assert_eq!(next_request(&mut run).await, (2, emit(r#""a""#, 2)));
     assert_eq!(next_request(&mut run).await, (3, invoke.clone()));
-    // Coral answers the resent Invoke 1 again: the stream stays open.
+    // Coral answers the committed Invoke 1 again: the stream stays open.
     run.send(title(1, "a")).await;
     run.send(title(3, "b")).await;
     let value = finish(finish::Completion::ValueJson(r#""b""#.to_owned()));
@@ -827,6 +833,24 @@ async fn a_reopen_skips_the_load_by_the_digest() {
     );
     start(&run, 60_000, None).await;
     assert_eq!(next_request(&mut run).await, (1, emit(r#""ran""#, 1)));
+}
+
+/// Catches: a `Started` after `Committed` on a reopen that does not start
+/// the Program or arm its deadline, or a repeat `Started` that closes the
+/// stream.
+#[tokio::test]
+async fn a_started_lost_with_its_stream_arrives_on_the_reopen() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let source = "await coral.providers.tracker.issues.list({});";
+    let run = loaded(&mut coral, "run-1", compiled(source).await).await;
+    // Coral recorded the start, and its `Started` is lost with the stream.
+    run.fail(Status::unavailable("lost")).await;
+    let mut run = coral.next_run().await;
+    run.send(committed(0)).await;
+    start(&run, 200, None).await;
+    start(&run, 60_000, None).await;
+    let (_, kind) = next_finish(&mut run).await;
+    assert_eq!(kind, finish_end(FinishEnd::DeadlineReached));
 }
 
 /// How a case answers the reopen of a Run.
@@ -896,14 +920,13 @@ async fn a_lost_run_redials_with_the_backoff_and_ends_at_its_deadline() {
             "{reopens:?}"
         );
     }
-    run.send(committed(1)).await;
+    // On a slow runner the deadline can beat the Program's first request,
+    // so the `Finish` is found by its kind.
+    run.send(committed(0)).await;
+    let (number, kind) = next_finish(&mut run).await;
     let end = finish_end(FinishEnd::DeadlineReached);
-    assert_eq!(
-        next_request(&mut run).await,
-        (2, end),
-        "kept for this stream"
-    );
-    run.send(committed(2)).await;
+    assert_eq!(kind, end, "kept for this stream");
+    run.send(committed(number)).await;
     run.send(ended()).await;
     assert_eq!(run.next().await, None);
 }
