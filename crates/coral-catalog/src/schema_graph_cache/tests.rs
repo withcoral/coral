@@ -341,6 +341,21 @@ fn a_graph_weighs_what_its_values_hold_not_its_stored_length() {
     );
 }
 
+// Catches: the room an object is weighed at drifting from what its index map
+// really grows to, as an upgrade of `indexmap` could cause. Every weight
+// rests on it: measure the graphs again before changing `object_room`.
+#[test]
+fn an_object_is_weighed_at_the_room_its_index_map_grows_to() {
+    assert_eq!(object_room(0), (0, 0));
+    let mut object = indexmap::IndexMap::<String, Value>::new();
+    for len in 1..=1024 {
+        object.insert(len.to_string(), Value::Null);
+        let (slots, buckets) = object_room(len);
+        assert_eq!(slots, object.capacity(), "{len} entries");
+        assert!(buckets > slots, "{len} entries");
+    }
+}
+
 // Catches: two loads of one uncached Generation leaving two graphs in use,
 // or the later insert replacing the entry a caller already holds.
 #[tokio::test]

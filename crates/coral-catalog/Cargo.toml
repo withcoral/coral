@@ -40,4 +40,7 @@ uuid.workspace = true
 coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 coral-v8.workspace = true
+# The index map `serde_json` keeps an object in: a test checks the room the
+# schema graph cache weighs an object at against it.
+indexmap.workspace = true
 tokio.workspace = true
