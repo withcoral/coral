@@ -16,6 +16,8 @@ pub(crate) mod consent;
 pub use consent::ConsentNavigation;
 mod management;
 pub(crate) mod oauth_client;
+mod oauth_failure;
+pub use oauth_failure::{AuthorizationDiscoveryFailure, TokenExchangeFailure};
 mod secret_references;
 pub use oauth_client::{OAuthClientAuthentication, OAuthClientConfiguration, OAuthClientStatus};
 #[cfg(test)]

@@ -270,10 +270,13 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::ClientBootstrapUnavailable => (Code::FailedPrecondition, "CLIENT_BOOTSTRAP_UNAVAILABLE"),
         E::ClientMetadataNotPublic => (Code::FailedPrecondition, "CLIENT_METADATA_NOT_PUBLIC"),
         E::ClientMetadataUnresolved => (Code::FailedPrecondition, "CLIENT_METADATA_UNRESOLVED"),
-        E::AuthorizationDiscovery(code) => {
+        E::AuthorizationDiscovery(failure) => {
             return safe_status(
                 Code::FailedPrecondition,
-                &format!("AUTHORIZATION_DISCOVERY_{}", code.to_ascii_uppercase()),
+                &format!(
+                    "AUTHORIZATION_DISCOVERY_{}",
+                    failure.code().to_ascii_uppercase()
+                ),
             );
         }
         E::ProviderCallRootConflict => (Code::AlreadyExists, "NAMESPACE_IN_USE"),
@@ -1313,9 +1316,11 @@ mod tests {
                 "INVALID_PROVIDER_INPUT",
             ),
             (
-                E::AuthorizationDiscovery("no_metadata"),
+                E::AuthorizationDiscovery(
+                    coral_provider::account::AuthorizationDiscoveryFailure::ChallengeUnsupported,
+                ),
                 Code::FailedPrecondition,
-                "AUTHORIZATION_DISCOVERY_NO_METADATA",
+                "AUTHORIZATION_DISCOVERY_CHALLENGE_UNSUPPORTED",
             ),
             (E::ProviderNotFound, Code::NotFound, "NOT_FOUND"),
             (
